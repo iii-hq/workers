@@ -4,7 +4,7 @@
 //! slot per declared pair; no per-record stage/prior or journal allocation.
 use super::{
     Lease, PathRole,
-    catalog::{Hold, HoldKind, ResourceOwner},
+    catalog::{EffectIntent, EffectKind, Hold, HoldKind, Journal, Operation, ResourceOwner},
     storage::*,
 };
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,27 @@ pub(super) struct LogRecord {
     pub previous_hash: Option<String>,
     pub current_stamp: LogStamp,
     pub previous_stamp: Option<LogStamp>,
+    /// Operation epoch at which `current_id`/`previous_id` were bound (issue or
+    /// exact re-issue). Absent only on records bound before re-issue existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_epoch: Option<u64>,
+    /// The last explicit recreation step; earlier ones are folded into `chain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recreated: Option<LogRecreation>,
+}
+/// One explicit recreation step of a ledger slot: the committed same-operation
+/// Remove that removed the previously bound pair, the later committed
+/// ControlFiles journal that created the pair now bound, and the finished
+/// history it closes. The new chain commits to all of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LogRecreation {
+    pub removed: String,
+    pub created: String,
+    pub previous_chain: String,
+    pub previous_sequence: u64,
+    pub previous_current_hash: String,
+    pub previous_previous_hash: Option<String>,
 }
 pub(crate) struct LogSpec<'a> {
     pub current: &'a Path,
@@ -128,6 +149,9 @@ pub(crate) enum LogFaultPhase {
     FinishSync,
     /// `Lease::open_log_fault` refuses to reopen an actually Finished log.
     Reopen,
+    /// `open_log` re-issued an exactly recreated record durably (rebound
+    /// identities, holds recorded); the writer is never returned.
+    Reissue,
     /// Recovery reconcile failed before observing the log files.
     RecoveryObserve,
     /// Recovery proved the bytes; the exact-inode fsync failed.
@@ -206,6 +230,99 @@ fn copy(src: &File, dst: &File, size: u64) -> io::Result<()> {
     }
     dst.set_len(size)
 }
+/// Completed, uncancelled owned effects on one exact member path from this
+/// operation's committed journals, in journal epoch order (intent order kept).
+fn member_effects<'a>(op: &'a Operation, path: &HostPath) -> Vec<(&'a Journal, &'a EffectIntent)> {
+    let mut effects = Vec::new();
+    for journal in op.journals.iter().filter(|j| j.committed) {
+        for intent in &journal.intents {
+            if intent.completed
+                && !intent.cancelled
+                && (&intent.to == path || intent.from.as_ref() == Some(path))
+            {
+                effects.push((journal, intent));
+            }
+        }
+    }
+    effects.sort_by_key(|(journal, _)| journal.epoch);
+    effects
+}
+/// Exact recreation proof for a Finished record, from journals only (never a
+/// pathname, hash, PID or flag): for EVERY member, the latest owned effect is a
+/// committed ControlFiles publication from absence of exactly the identity now
+/// opened, and the owned effect right before it is a committed Remove, strictly
+/// after the record's binding, of exactly the identity the record was bound to.
+/// All members must name the same Remove and the same ControlFiles journal.
+/// Returns `(remove journal id, control-files journal id)`.
+fn recreation_proof(
+    op: &Operation,
+    record: &LogRecord,
+    members: &[(HostPath, Identity, Identity)],
+) -> Option<(String, String)> {
+    // A record bound before `bound_epoch` existed cannot tell an owned
+    // recreation from inode reuse of its own files: every identity must change.
+    if record.bound_epoch.is_none() && members.iter().any(|(_, old, new)| old == new) {
+        return None;
+    }
+    let bound = record.bound_epoch.unwrap_or(0);
+    let mut proof: Option<(&str, &str)> = None;
+    for (path, old, new) in members {
+        let effects = member_effects(op, path);
+        let &(created_in, created) = effects.last()?;
+        if created_in.plan != "control-files"
+            || created.kind != EffectKind::Publish
+            || created.old.is_some()
+            || created.new.as_ref() != Some(new)
+            || !created_in
+                .changes
+                .iter()
+                .any(|c| &c.path == path && c.old.is_none() && c.new.as_ref() == Some(new))
+        {
+            return None;
+        }
+        let &(removed_in, removed) = effects
+            .iter()
+            .rev()
+            .find(|(journal, _)| journal.epoch < created_in.epoch)?;
+        if removed_in.plan != "remove"
+            || removed.kind != EffectKind::Remove
+            || removed.old.as_ref() != Some(old)
+            || removed_in.epoch <= bound
+            || !removed_in
+                .changes
+                .iter()
+                .any(|c| &c.path == path && c.old.as_ref() == Some(old) && c.new.is_none())
+            || effects
+                .iter()
+                .filter(|(journal, _)| journal.epoch > removed_in.epoch)
+                .count()
+                != 1
+        {
+            return None;
+        }
+        let pair = (removed_in.id.as_str(), created_in.id.as_str());
+        if proof.is_some_and(|seen| seen != pair) {
+            return None;
+        }
+        proof = Some(pair);
+    }
+    proof.map(|(removed, created)| (removed.to_owned(), created.to_owned()))
+}
+/// The explicit recreation step extends the hash chain; it never restarts it.
+fn recreation_chain(step: &LogRecreation) -> String {
+    hex::encode(Sha256::digest(
+        format!(
+            "{}:recreated:{}:{}:{}:{}:{}",
+            step.previous_chain,
+            step.previous_sequence,
+            step.removed,
+            step.created,
+            step.previous_current_hash,
+            step.previous_previous_hash.as_deref().unwrap_or("-"),
+        )
+        .as_bytes(),
+    ))
+}
 impl Lease {
     #[cfg(test)]
     pub(crate) fn open_log_fault(
@@ -226,11 +343,25 @@ impl Lease {
             }
             return Err(io::Error::other("injected log reopen boundary"));
         }
+        if phase == LogFaultPhase::Reissue {
+            return self.open_log_inner(spec, Some(phase));
+        }
         let writer = self.open_log(spec)?;
         writer.inject_fault(phase);
         Ok(writer)
     }
     pub(crate) fn open_log(&self, spec: LogSpec<'_>) -> io::Result<LogWriter> {
+        self.open_log_inner(
+            spec,
+            #[cfg(test)]
+            None,
+        )
+    }
+    fn open_log_inner(
+        &self,
+        spec: LogSpec<'_>,
+        #[cfg(test)] fault: Option<LogFaultPhase>,
+    ) -> io::Result<LogWriter> {
         if spec.cap_bytes == 0 || spec.cap_bytes > MAX_CAP {
             return Err(invalid("log cap must be1..64MiB"));
         }
@@ -254,8 +385,11 @@ impl Lease {
         {
             return Err(invalid("log pair must be distinct siblings"));
         }
-        // Caller creates exact files ONCE through a normal owned Create/ControlFiles
-        // transaction before acquiring a long-lived writer; never reinitializes them.
+        // Caller creates exact files through a normal owned Create/ControlFiles
+        // transaction before acquiring a long-lived writer; the core never
+        // reinitializes them. After a committed same-operation Remove of the whole
+        // bound pair and a later committed ControlFiles recreation, the SAME
+        // record is re-issued from that exact journal proof (`recreation_proof`).
         self.revalidate()?;
         let parent = Directory::open(current.parent().ok_or_else(|| invalid("log parent"))?)?;
         parent.private(uid())?;
@@ -324,11 +458,11 @@ impl Lease {
                 return Err(invalid("log opened a different inode than admitted"));
             }
         }
-        let id = if let Some(record) = op.logs.iter_mut().find(|r| r.current == current_path) {
+        let mut rebound: Option<bool> = None;
+        let id = if let Some(index) = op.logs.iter().position(|r| r.current == current_path) {
+            let record = &op.logs[index];
             if record.phase != LogPhase::Finished
                 || record.previous != previous_path
-                || record.current_id != current_id
-                || record.previous_id != previous_id
                 || record.cap != spec.cap_bytes
                 || record.pending.is_some()
             {
@@ -336,30 +470,96 @@ impl Lease {
                     "log history is unresolved or configuration changed",
                 ));
             }
-            if file.metadata()?.len() != record.cursor.len
-                || old
+            let mut members = vec![(
+                current_path.clone(),
+                record.current_id.clone(),
+                current_id.clone(),
+            )];
+            if let (Some(path), Some(old), Some(new)) =
+                (&previous_path, &record.previous_id, &previous_id)
+            {
+                members.push((path.clone(), old.clone(), new.clone()));
+            }
+            if let Some((removed, created)) = recreation_proof(op, record, &members) {
+                // The whole bound pair was removed by one committed Remove of
+                // this operation and created again by one later committed
+                // ControlFiles journal: re-issue the SAME record over it.
+                let len = file.metadata()?.len();
+                let previous_len = old
                     .as_ref()
                     .map(|f| f.metadata().map(|m| m.len()))
                     .transpose()?
-                    .unwrap_or(0)
-                    != record.cursor.previous_len
-            {
-                return Err(invalid("log size changed after writer finish"));
-            }
-            if record.current_hash != hash(&file, record.cursor.len, &[])?
-                || record.previous_hash
-                    != old
+                    .unwrap_or(0);
+                if len > MAX_CAP + MAX_RECORD as u64 || previous_len > MAX_CAP + MAX_RECORD as u64 {
+                    return Err(limit());
+                }
+                let current_hash = hash(&file, len, &[])?;
+                let previous_hash = old
+                    .as_ref()
+                    .map(|f| hash(f, previous_len, &[]))
+                    .transpose()?;
+                let current_stamp = log_stamp(&file)?;
+                let previous_stamp = old.as_ref().map(log_stamp).transpose()?;
+                let record = &mut op.logs[index];
+                let step = LogRecreation {
+                    removed,
+                    created,
+                    previous_chain: record.chain.clone(),
+                    previous_sequence: record.sequence,
+                    previous_current_hash: record.current_hash.clone(),
+                    previous_previous_hash: record.previous_hash.clone(),
+                };
+                record.chain = recreation_chain(&step);
+                record.sequence = record.sequence.checked_add(1).ok_or_else(limit)?;
+                record.recreated = Some(step);
+                record.current_id = current_id.clone();
+                record.previous_id = previous_id.clone();
+                record.cursor = LogCursor {
+                    base: previous_len,
+                    len,
+                    previous_base: 0,
+                    previous_len,
+                };
+                record.current_hash = current_hash;
+                record.previous_hash = previous_hash;
+                record.current_stamp = current_stamp;
+                record.previous_stamp = previous_stamp;
+                record.phase = LogPhase::Clean;
+                record.holder = self.0.holder.clone();
+                rebound = Some(true);
+                record.id.clone()
+            } else {
+                let record = &mut op.logs[index];
+                if record.current_id != current_id || record.previous_id != previous_id {
+                    return Err(invalid(
+                        "log history is unresolved or configuration changed",
+                    ));
+                }
+                if file.metadata()?.len() != record.cursor.len
+                    || old
                         .as_ref()
-                        .map(|f| hash(f, record.cursor.previous_len, &[]))
+                        .map(|f| f.metadata().map(|m| m.len()))
                         .transpose()?
-                || record.current_stamp != log_stamp(&file)?
-                || record.previous_stamp != old.as_ref().map(log_stamp).transpose()?
-            {
-                return Err(invalid("finished log content changed"));
+                        .unwrap_or(0)
+                        != record.cursor.previous_len
+                {
+                    return Err(invalid("log size changed after writer finish"));
+                }
+                if record.current_hash != hash(&file, record.cursor.len, &[])?
+                    || record.previous_hash
+                        != old
+                            .as_ref()
+                            .map(|f| hash(f, record.cursor.previous_len, &[]))
+                            .transpose()?
+                    || record.current_stamp != log_stamp(&file)?
+                    || record.previous_stamp != old.as_ref().map(log_stamp).transpose()?
+                {
+                    return Err(invalid("finished log content changed"));
+                }
+                record.phase = LogPhase::Clean;
+                record.holder = self.0.holder.clone();
+                record.id.clone()
             }
-            record.phase = LogPhase::Clean;
-            record.holder = self.0.holder.clone();
-            record.id.clone()
         } else {
             if op.logs.len() >= MAX_LOGS {
                 return Err(limit());
@@ -399,7 +599,10 @@ impl Lease {
                     .transpose()?,
                 current_stamp: log_stamp(&file)?,
                 previous_stamp: old.as_ref().map(log_stamp).transpose()?,
+                bound_epoch: None,
+                recreated: None,
             });
+            rebound = Some(false);
             id
         };
         if op.holds.len() + 1 + usize::from(previous.is_some()) > 256 {
@@ -407,6 +610,15 @@ impl Lease {
         }
         op.epoch = op.epoch.checked_add(1).ok_or_else(limit)?;
         let epoch = op.epoch;
+        if rebound.is_some() {
+            // Identities bound (new record or exact re-issue) at this epoch; a
+            // later re-issue needs a Remove strictly after it.
+            op.logs
+                .iter_mut()
+                .find(|r| r.id == id)
+                .ok_or_else(|| invalid("log record missing"))?
+                .bound_epoch = Some(epoch);
+        }
         for path in std::iter::once(current_path).chain(previous_path) {
             op.holds.push(Hold {
                 id: id.clone(),
@@ -419,8 +631,19 @@ impl Lease {
                 }),
             });
         }
+        #[cfg(test)]
+        if fault == Some(LogFaultPhase::Reissue) && rebound != Some(true) {
+            return Err(invalid(
+                "re-issue fault requires an actual recreation proof",
+            ));
+        }
         tx.save()?;
         drop(tx);
+        #[cfg(test)]
+        if fault == Some(LogFaultPhase::Reissue) {
+            // Crash-equivalent boundary: the re-issue is durable, no writer exists.
+            return Err(io::Error::other("injected log re-issue boundary"));
+        }
         let hasher = hash_state(&file, file.metadata()?.len())?;
         let result = LogWriter(Arc::new(LogHeld {
             lease: self.clone(),
@@ -924,6 +1147,26 @@ pub(super) fn validate_record(op: &super::catalog::Operation) -> io::Result<()> 
         {
             return Err(invalid("invalid log record"));
         }
+        if row.bound_epoch.is_some_and(|epoch| epoch > op.epoch) {
+            return Err(invalid("log binding epoch is ahead of its operation"));
+        }
+        if let Some(step) = &row.recreated {
+            if !id_valid(&step.removed)
+                || !id_valid(&step.created)
+                || step.removed == step.created
+                || step.previous_chain.len() != 64
+                || step.previous_current_hash.len() != 64
+                || step
+                    .previous_previous_hash
+                    .as_ref()
+                    .is_some_and(|h| h.len() != 64)
+                || step.previous_previous_hash.is_some() != row.previous.is_some()
+                || step.previous_sequence >= row.sequence
+                || row.bound_epoch.is_none()
+            {
+                return Err(invalid("invalid log recreation step"));
+            }
+        }
         if row.cursor.base.checked_add(row.cursor.len).is_none()
             || row
                 .cursor
@@ -1135,6 +1378,9 @@ fn reconcile_inner(
     }
     Ok(true)
 }
+#[cfg(test)]
+#[path = "log_relaunch_tests.rs"]
+mod relaunch_tests;
 #[cfg(test)]
 #[path = "log_tests.rs"]
 mod tests;
