@@ -1280,16 +1280,37 @@ mod tests {
     #[test]
     fn managed_owner_read_preserves_zero_modes_and_internal_hardlinks() {
         use crate::worker_admission::{PathRequest, PathRole};
-        let t = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::DirBuilderExt;
+        // The EROFS output, spool and lock are published into this directory
+        // and core refuses a group/other-writable publication parent, so use
+        // core's private test storage instead of inheriting the process umask.
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let catalog = t.path().join("catalog");
         fs::create_dir(&catalog).unwrap();
         fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
         let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
         let root = t.path().join("managed");
-        let lease = context.local(&t.path().join("state")).unwrap();
+        // ManagedCacheRead pins every component of an EXISTING owned cache
+        // directory when it is declared (an absent root is NotFound), and a
+        // staged tree can publish neither internal hardlinks nor an
+        // untraversable directory. As in the core owner-read fixtures, the
+        // whole cache therefore exists, created with the exact modes the
+        // scenario intends, BEFORE any lease declares it.
+        let mut dirs = fs::DirBuilder::new();
+        dirs.mode(0o700);
+        dirs.create(&root).unwrap();
+        dirs.create(root.join("private")).unwrap();
+        fs::write(root.join("private/data"), b"original").unwrap();
+        fs::hard_link(root.join("private/data"), root.join("private/alias")).unwrap();
+        fs::set_permissions(root.join("private/data"), fs::Permissions::from_mode(0)).unwrap();
+        // Armed before the 0600 (no owner x) chmod and dropped before the
+        // TempDir: the tree stays removable whether the test passes or fails.
+        let _restore = RestoreModes(vec![(root.join("private"), 0o700)]);
+        fs::set_permissions(root.join("private"), fs::Permissions::from_mode(0o600)).unwrap();
         let out = base_erofs_path(&root);
         let spool = PathBuf::from(format!("{}.spool", out.display()));
         let lock = PathBuf::from(format!("{}.lock", out.display()));
+        let lease = context.local(&t.path().join("state")).unwrap();
         let lease = crate::worker_admission::with_paths(
             lease,
             &[
@@ -1312,36 +1333,6 @@ mod tests {
             ],
         )
         .unwrap();
-        let mut cache = lease
-            .begin(crate::worker_admission::MutationPlan::Cache { root: root.clone() })
-            .unwrap();
-        let staged = cache.stage_tree(&root).unwrap();
-        fs::create_dir(staged.path().join("private")).unwrap();
-        fs::write(staged.path().join("private/data"), b"original").unwrap();
-        fs::hard_link(
-            staged.path().join("private/data"),
-            staged.path().join("private/alias"),
-        )
-        .unwrap();
-        fs::set_permissions(
-            staged.path().join("private/data"),
-            fs::Permissions::from_mode(0),
-        )
-        .unwrap();
-        // Armed before the 0600 (no owner x) chmod and dropped before the
-        // TempDir, for the stage and the published path alike: the tree stays
-        // removable whether the test passes or fails.
-        let _restore = RestoreModes(vec![
-            (staged.path().join("private"), 0o700),
-            (root.join("private"), 0o700),
-        ]);
-        fs::set_permissions(
-            staged.path().join("private"),
-            fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-        cache.publish_tree(staged).unwrap();
-        cache.commit().unwrap();
         ensure_base_erofs_admitted(&lease, &root).unwrap();
         let mut reader = ErofsReader::new(File::open(&out).unwrap()).unwrap();
         assert_eq!(reader.read_file("/private/data").unwrap(), b"original");
