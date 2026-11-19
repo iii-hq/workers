@@ -2285,3 +2285,37 @@ fn f_lineage_never_spawned_after_adopt_tracks_only_owned_origins() {
     assert!(destination.exists());
     assert!(!source.exists());
 }
+
+#[test]
+fn catalog_mutex_serializes_contended_open_without_relaxing_sentinels() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let f = fixture();
+    let held = f.context.namespace.transaction().unwrap();
+    let path = f.catalog.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        done_tx
+            .send(testing::open_context(&path).map(|_| ()))
+            .unwrap();
+    });
+    started_rx.recv().unwrap();
+    let blocked = done_rx.recv_timeout(Duration::from_millis(100));
+    drop(held);
+    let completed = done_rx.recv_timeout(Duration::from_secs(5));
+    thread.join().unwrap();
+    assert!(matches!(blocked, Err(mpsc::RecvTimeoutError::Timeout)));
+    completed.unwrap().unwrap();
+
+    // Lifetime fences remain a nonblocking refusal, not this catalog mutex.
+    let path = f.data.join("sentinel-check");
+    let owner = File::create(&path).unwrap();
+    super::storage::flock(&owner).unwrap();
+    let contender = File::open(&path).unwrap();
+    assert_eq!(
+        super::storage::flock(&contender).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+}

@@ -1158,7 +1158,9 @@ pub(crate) async fn runtime_test_session_resources(
     keep_running: bool,
     resources: RuntimeTestResources,
 ) -> std::sync::Arc<RuntimeSession> {
-    runtime_test_session_resources_inner(lease, namespace, keep_running, resources, None).await
+    runtime_test_session_resources_inner(lease, namespace, keep_running, resources, None)
+        .await
+        .expect("owned fixture activation failed after child was reaped and drained")
 }
 
 #[cfg(test)]
@@ -1168,7 +1170,7 @@ pub(crate) async fn runtime_test_session_registered(
     registry: &super::registry::SandboxRegistry,
     id: uuid::Uuid,
     resources: RuntimeTestResources,
-) -> std::sync::Arc<RuntimeSession> {
+) -> std::io::Result<std::sync::Arc<RuntimeSession>> {
     runtime_test_session_resources_inner(lease, namespace, true, resources, Some((registry, id)))
         .await
 }
@@ -1180,7 +1182,7 @@ async fn runtime_test_session_resources_inner(
     keep_running: bool,
     resources: RuntimeTestResources,
     attach: Option<(&super::registry::SandboxRegistry, uuid::Uuid)>,
-) -> std::sync::Arc<RuntimeSession> {
+) -> std::io::Result<std::sync::Arc<RuntimeSession>> {
     let mut command = tokio::process::Command::new("/bin/sh");
     command.arg("-c").arg(r#"
         binary=$1; shift
@@ -1210,27 +1212,58 @@ async fn runtime_test_session_resources_inner(
         .unwrap_or_else(|e| panic!("runtime fixture spawn: {}", e.error()));
     let stdout = child.take_stdout().unwrap();
     let session = RuntimeSession::supervise(child, lease, resources.endpoints);
-    if let Some((registry, id)) = attach {
-        registry.attach_runtime(id, session.clone()).await.unwrap();
-    }
+    let attached = if let Some((registry, id)) = attach {
+        registry
+            .attach_runtime(id, session.clone())
+            .await
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    } else {
+        Ok(())
+    };
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some(line) = lines.next_line().await.unwrap() {
-            if line.contains("RUNTIME_READY") {
-                return;
+    let activated = if attached.is_ok() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(line) = lines.next_line().await? {
+                if line.contains("RUNTIME_READY") {
+                    return Ok(());
+                }
             }
-        }
-        panic!("runtime fixture exited without activation acknowledgement");
-    })
-    .await
-    .unwrap();
+            Err(std::io::Error::other(
+                "runtime fixture exited without activation acknowledgement",
+            ))
+        })
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "fixture activation timed out")
+        })
+        .and_then(|result| result)
+    } else {
+        attached
+    };
     let drain = tokio::spawn(async move {
         while lines.next_line().await?.is_some() {}
         Ok(())
     });
     session.host_writers.lock().await.push(drain);
-    session
+    if let Err(error) = activated {
+        // Report failure only after this actual owned child has exited and the
+        // pipe has drained. Never delete its namespace or signal a raw PID.
+        let signal_error = if session.observation().os_status().is_none() {
+            session
+                .signal(crate::worker_admission::RuntimeSignal::Kill)
+                .err()
+        } else {
+            None
+        };
+        let (status, retirement) = session.wait().await;
+        let drained = session.finish_host_writers().await;
+        return Err(std::io::Error::other(format!(
+            "{error}; signal={signal_error:?}; status={status:?}; retirement={:?}; drain={drained:?}",
+            retirement.err()
+        )));
+    }
+    Ok(session)
 }
 
 #[cfg(test)]

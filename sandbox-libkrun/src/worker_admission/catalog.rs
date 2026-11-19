@@ -424,7 +424,7 @@ impl Namespace {
         if Identity::of(&mutex)? != self.mutex {
             return Err(invalid("catalog mutex replaced"));
         }
-        flock(&mutex)?;
+        catalog_mutex(&mutex)?;
         let file = self.directory.file("catalog.json", false)?;
         if Identity::of(&file)? != self.catalog {
             return Err(invalid("catalog inode replaced"));

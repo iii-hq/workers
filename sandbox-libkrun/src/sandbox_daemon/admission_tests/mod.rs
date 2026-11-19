@@ -32,6 +32,25 @@ struct Fixture {
     temporary: std::sync::Mutex<Option<(tempfile::TempDir, tempfile::TempDir)>>,
     cache: PathBuf,
 }
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // Successful finish explicitly disposes of owned temporary storage.
+        // Failure/unwind retains it for diagnostics instead of racing children.
+        if let Some((namespace, data)) = self
+            .temporary
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            eprintln!(
+                "retained failed fixture namespace: {}",
+                namespace.keep().display()
+            );
+            eprintln!("retained failed fixture data: {}", data.keep().display());
+        }
+    }
+}
+
 impl Deref for TestRegistry {
     type Target = SandboxRegistry;
     fn deref(&self) -> &Self::Target {
@@ -156,6 +175,8 @@ impl TestRegistry {
             .await
             .unwrap();
         assert_eq!(self.count().await, 0);
+        // Test-owned cleanup is allowed only after every runtime stopped.
+        self.0.temporary.lock().unwrap().take();
     }
 }
 
@@ -212,7 +233,8 @@ pub(super) async fn owned_boot(
             ..Default::default()
         },
     )
-    .await;
+    .await
+    .map_err(|error| SandboxError::BootFailed(error.to_string()))?;
     // PID is diagnostic only. All stop/cleanup authority is in the attached session.
     let vm_pid = session.test_diagnostic_pid().ok_or_else(|| {
         SandboxError::BootFailed("owned fixture child has no diagnostic PID".into())

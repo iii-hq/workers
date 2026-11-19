@@ -221,12 +221,19 @@ async fn parallel_creates_stop_at_max_concurrent_sandboxes() {
         .iter()
         .map(|r| r.as_ref().map_or_else(|e| e.code().as_str(), |_| "ok"))
         .collect();
+    let count_after_create = reg.count().await;
+    // Join owned children before assertions can unwind the runtime. On a
+    // failed oracle the fixture keeps its remaining namespace and evidence.
+    let stopped =
+        crate::sandbox_daemon::stop::stop_all(&reg, &super::sandbox_fakes::FakeVmStopper::ok())
+            .await;
     assert_eq!(codes.iter().filter(|c| **c == "ok").count(), 2, "{codes:?}");
     assert_eq!(
         codes.iter().filter(|c| **c == "S400").count(),
         2,
         "{codes:?}"
     );
-    assert_eq!(reg.count().await, 2);
+    assert_eq!(count_after_create, 2);
+    stopped.unwrap();
     reg.finish().await;
 }

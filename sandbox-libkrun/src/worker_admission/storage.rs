@@ -303,6 +303,21 @@ pub(super) fn write_json<T: Serialize>(file: &File, value: &T) -> io::Result<()>
     file.set_len(bytes.len() as u64)?;
     file.sync_all()
 }
+/// Serialize short catalog transactions, not lifetime/authority sentinels.
+/// Wait before inspecting catalog contents; an interrupted wait has no effects.
+/// No transaction holder may await external work or reacquire this mutex.
+pub(super) fn catalog_mutex(file: &File) -> io::Result<()> {
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
 pub(super) fn flock(file: &File) -> io::Result<()> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
         return Err(io::Error::last_os_error());
