@@ -656,7 +656,9 @@ pub async fn resolve_parent(
         is_error: Some(is_error),
         details: Some(details),
     };
-    match resolve(deps, req).await {
+    // Boxed: every child finalize awaits this inline, and a debug build reserves
+    // `resolve`'s large state in each of their frames (`turn_loop::stack_tests`).
+    match Box::pin(resolve(deps, req)).await {
         Ok(resp) => resp.resolved,
         Err(e) => {
             tracing::warn!(
