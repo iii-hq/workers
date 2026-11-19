@@ -1,6 +1,7 @@
 import { formatRelative } from '@iii-dev/console-ui/format'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronsUp,
@@ -21,6 +22,7 @@ import {
   GitPullRequestDraft,
   Globe,
   ImageIcon,
+  LoaderCircle,
   SquareTerminal,
   Ticket,
   TriangleAlert,
@@ -139,14 +141,26 @@ import {
 } from './ObserverDetailDialog'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
 import {
+  groupsByPhase,
+  nodeFacts,
   nodeLabel,
   nodeLine,
   nodeMark,
+  phaseCurrent,
+  phaseFacts,
+  phaseMark,
+  phaseNodeLine,
+  phaseOpens,
+  phaseState,
   runFacts,
   runMark,
   soleFacts,
   soleNode,
+  solePhaseNode,
+  underPhase,
   type WorkflowMark,
+  type WorkflowNodeView,
+  type WorkflowPhaseView,
   type WorkflowRunView,
 } from './workflow/run-view'
 
@@ -159,7 +173,7 @@ const deltaClassName = 'font-mono text-meta leading-4 tabular-nums'
 /** Sub-agents are what people come here for; every other section shows less. */
 const SUBAGENT_CAP = 5
 const SECTION_CAP = 3
-/** A run lists this many nodes before "Show N more". */
+/** A run, or one phase of it, lists this many nodes before "Show N more". */
 const WORKFLOW_NODE_CAP = 8
 /** One row of the four-across strip: three pictures and a "+N". */
 const IMAGE_CAP = 3
@@ -244,6 +258,8 @@ export function ChatContextPanel({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const toggle = (key: string) =>
     setExpanded((current) => ({ ...current, [key]: !current[key] }))
+  const setOpen = (key: string, open: boolean) =>
+    setExpanded((current) => ({ ...current, [key]: open }))
 
   // git, re-read when a turn ends (status changes) and when the window
   // regains focus: that is when the folder has most likely changed.
@@ -971,7 +987,6 @@ export function ChatContextPanel({
         >
           {workflowRows.shown.map((run, index) => {
             const runKey = `workflow-run:${run.runId}`
-            const nodesKey = `workflow-nodes:${run.runId}`
             const open =
               expanded[runKey] ??
               (run.live || run.status === 'failed' || index === 0)
@@ -980,11 +995,9 @@ export function ChatContextPanel({
                 key={run.runId}
                 run={run}
                 open={open}
-                onToggle={() =>
-                  setExpanded((current) => ({ ...current, [runKey]: !open }))
-                }
-                allNodes={!!expanded[nodesKey]}
-                onToggleNodes={() => toggle(nodesKey)}
+                onToggle={() => setOpen(runKey, !open)}
+                expanded={expanded}
+                onSetOpen={setOpen}
                 onOpenNode={onOpenConversation}
               />
             )
@@ -1299,12 +1312,18 @@ function SubagentStatus({
   )
 }
 
-/** The dot and word at a workflow row's end, as a sub-agent row has them. */
-function WorkflowStatus({ mark }: { mark: WorkflowMark }) {
+/** The dot and word at a workflow row's end, as a sub-agent row has them; no dot where a leading mark already says it. */
+function WorkflowStatus({
+  mark,
+  dot = true,
+}: {
+  mark: WorkflowMark
+  dot?: boolean
+}) {
   const quiet = mark.tone === 'ok' || mark.tone === 'ghost'
   return (
     <>
-      <StatusDot tone={mark.tone} pulse={mark.pulse} />
+      {dot ? <StatusDot tone={mark.tone} pulse={mark.pulse} /> : null}
       {mark.text ? (
         <span
           className={
@@ -1320,21 +1339,24 @@ function WorkflowStatus({ mark }: { mark: WorkflowMark }) {
 
 /**
  * One run. A run of one node is that node's row and opens its session; a
- * larger run is a row that folds its nodes, in the order they ran.
+ * larger run is a row that folds its nodes, in the order they ran, under a
+ * header per phase when it has two or more; a phase of one node is that
+ * node's row.
  */
 function WorkflowRunItem({
   run,
   open,
   onToggle,
-  allNodes,
-  onToggleNodes,
+  expanded,
+  onSetOpen,
   onOpenNode,
 }: {
   run: WorkflowRunView
   open: boolean
   onToggle: () => void
-  allNodes: boolean
-  onToggleNodes: () => void
+  /** The panel's open state, by key: phases and "Show more". */
+  expanded: Record<string, boolean>
+  onSetOpen: (key: string, open: boolean) => void
   onOpenNode: (sessionId: string) => void
 }) {
   const now = Date.now()
@@ -1372,8 +1394,39 @@ function WorkflowRunItem({
       />
     )
   }
-  const nodes = run.phases.flatMap((phase) => phase.nodes)
-  const rows = capRows(nodes, WORKFLOW_NODE_CAP, allNodes)
+  const grouped = groupsByPhase(run)
+  // A run, or each phase of it, caps its rows on its own.
+  const list = (
+    nodes: WorkflowNodeView[],
+    phase: string,
+    style: CSSProperties,
+  ) => {
+    const key = `workflow-nodes:${run.runId}:${phase}`
+    const rows = capRows(nodes, WORKFLOW_NODE_CAP, !!expanded[key])
+    return (
+      <>
+        {rows.shown.map((node) => (
+          <WorkflowNodeRow
+            key={node.uid}
+            run={run}
+            node={node}
+            grouped={grouped}
+            style={style}
+            now={now}
+            onOpenNode={onOpenNode}
+          />
+        ))}
+        <ShowMore
+          style={style}
+          hidden={rows.hidden}
+          expanded={!!expanded[key]}
+          total={nodes.length}
+          cap={WORKFLOW_NODE_CAP}
+          onToggle={() => onSetOpen(key, !expanded[key])}
+        />
+      </>
+    )
+  }
   return (
     <>
       <Row
@@ -1402,59 +1455,53 @@ function WorkflowRunItem({
       />
       {open ? (
         <>
-          {rows.shown.map((node) => {
-            const label = nodeLabel(run, node)
-            const name = node.suffix ? `${label} ${node.suffix}` : label
-            const sessionId = node.sessionId
-            return (
-              <Row
-                key={node.uid}
-                style={NESTED_ROW}
-                icon={<Agent aria-hidden />}
-                // Passes and items share the label, so their suffix stays out of its ellipsis.
-                label={
-                  node.suffix ? (
-                    <span className="flex min-w-0 items-baseline">
-                      <span className="truncate">{label}</span>
-                      <span className="ml-2 shrink-0 font-mono text-[11px] font-normal text-ink-ghost">
-                        {node.suffix}
-                      </span>
-                    </span>
-                  ) : (
-                    label
+          {!grouped
+            ? list(
+                run.phases.flatMap((phase) => phase.nodes),
+                '',
+                NESTED_ROW,
+              )
+            : run.phases.map((phase) => {
+                // Nodes without a phase sit beside the headers.
+                if (!phase.phase)
+                  return (
+                    <Fragment key="">
+                      {list(phase.nodes, '', NESTED_ROW)}
+                    </Fragment>
                   )
-                }
-                title={[node.label, node.profile, node.uid, node.error]
-                  .filter(Boolean)
-                  .join(' · ')}
-                ariaLabel={
-                  sessionId
-                    ? `Open ${name} in a new panel (${node.state})`
-                    : `${name} (${node.state})`
-                }
-                disabled={!sessionId}
-                onActivate={sessionId ? () => onOpenNode(sessionId) : undefined}
-                description={
-                  node.error ? (
-                    <span className="truncate text-alert">{node.error}</span>
-                  ) : (
-                    <span className="truncate">
-                      {nodeLine(run, node) || node.uid}
-                    </span>
+                const sole = solePhaseNode(phase)
+                if (sole)
+                  return (
+                    <WorkflowNodeRow
+                      key={phase.phase}
+                      run={run}
+                      node={sole}
+                      grouped
+                      phase={phase}
+                      style={NESTED_ROW}
+                      now={now}
+                      onOpenNode={onOpenNode}
+                    />
                   )
-                }
-                meta={<WorkflowStatus mark={nodeMark(node, now)} />}
-              />
-            )
-          })}
-          <ShowMore
-            style={NESTED_ROW}
-            hidden={rows.hidden}
-            expanded={allNodes}
-            total={nodes.length}
-            cap={WORKFLOW_NODE_CAP}
-            onToggle={onToggleNodes}
-          />
+                const key = `workflow-phase:${run.runId}:${phase.phase}`
+                // A phase whose nodes the status left out has nothing to fold.
+                const phaseOpen = phase.nodes.length
+                  ? (expanded[key] ?? phaseOpens(run, phase))
+                  : undefined
+                return (
+                  <Fragment key={phase.phase}>
+                    <WorkflowPhaseRow
+                      run={run}
+                      phase={phase}
+                      open={phaseOpen}
+                      onToggle={() => onSetOpen(key, !phaseOpen)}
+                    />
+                    {phaseOpen
+                      ? list(phase.nodes, phase.phase, PHASE_NODE_ROW)
+                      : null}
+                  </Fragment>
+                )
+              })}
           {run.phases.length > 0 && run.unlisted > 0 ? (
             <p className="py-1 pr-3 pl-6 text-[11px] leading-4 text-ink-faint">
               {run.unlisted} more {run.unlisted === 1 ? 'node' : 'nodes'} not
@@ -1464,6 +1511,149 @@ function WorkflowRunItem({
         </>
       ) : null}
     </>
+  )
+}
+
+/** A phase's leading mark: a glyph once settled or while the run is at it, the panel's dot while it waits. */
+const PHASE_MARKS = {
+  running: (
+    <LoaderCircle
+      aria-hidden
+      className="animate-spin text-accent motion-reduce:animate-none"
+    />
+  ),
+  failed: <X aria-hidden className="text-alert" />,
+  cancelled: <X aria-hidden className="text-warn" />,
+  done: <Check aria-hidden className="text-ok" />,
+  pending: <StatusDot tone="ghost" />,
+}
+
+/** A phase of a run: its mark, its name and done/total (in ink while current); folds its nodes. */
+function WorkflowPhaseRow({
+  run,
+  phase,
+  open,
+  onToggle,
+}: {
+  run: WorkflowRunView
+  phase: WorkflowPhaseView
+  /** Unset when the phase lists no nodes: the header folds nothing. */
+  open?: boolean
+  onToggle: () => void
+}) {
+  const state = phaseState(phase)
+  const mark = phaseMark(run, phase)
+  const current = phaseCurrent(run, phase)
+  return (
+    <Row
+      style={NESTED_ROW}
+      icon={PHASE_MARKS[mark]}
+      label={
+        <span className={cn(!current && 'text-ink-faint')}>{phase.phase}</span>
+      }
+      ariaLabel={`${phase.phase} phase, ${phase.done} of ${phase.total} done (${state})`}
+      aria-expanded={open}
+      aria-current={mark === 'running' ? 'step' : undefined}
+      data-workflow-phase={state}
+      disabled={open === undefined}
+      onActivate={open === undefined ? undefined : onToggle}
+      meta={
+        <span
+          className={
+            current
+              ? 'text-[11px] font-normal leading-4 tabular-nums text-ink'
+              : uiClasses.treeItemMeta
+          }
+        >
+          {phaseFacts(phase)}
+        </span>
+      }
+    />
+  )
+}
+
+/**
+ * A node of a run; under a phase header its label leaves the phase out. The
+ * only node of a phase stands for both: the phase's mark and name, its own line.
+ */
+function WorkflowNodeRow({
+  run,
+  node,
+  grouped,
+  phase,
+  style,
+  now,
+  onOpenNode,
+}: {
+  run: WorkflowRunView
+  node: WorkflowNodeView
+  grouped: boolean
+  /** The phase this node is the only one of: the row stands for both. */
+  phase?: WorkflowPhaseView
+  style: CSSProperties
+  now: number
+  onOpenNode: (sessionId: string) => void
+}) {
+  const Agent = SUBAGENT_ICON_COMPONENTS.agent
+  const named = nodeLabel(run, node)
+  const current = !!phase && phaseCurrent(run, phase)
+  const label = phase ? (
+    <span className={cn(!current && 'text-ink-faint')}>{phase.phase}</span>
+  ) : grouped ? (
+    underPhase(named, node.phase)
+  ) : (
+    named
+  )
+  const name = node.suffix ? `${named} ${node.suffix}` : named
+  const sessionId = node.sessionId
+  const mark = nodeMark(node, now)
+  const leading = phase && phaseMark(run, phase)
+  const line = phase
+    ? phaseNodeLine(run, node)
+    : (grouped ? nodeFacts(node) : nodeLine(run, node)) || node.uid
+  const action = sessionId
+    ? `Open ${name} in a new panel (${node.state})`
+    : `${name} (${node.state})`
+  return (
+    <Row
+      style={style}
+      icon={leading ? PHASE_MARKS[leading] : <Agent aria-hidden />}
+      // Passes and items share the label, so their suffix stays out of its ellipsis.
+      label={
+        node.suffix ? (
+          <span className="flex min-w-0 items-baseline">
+            <span className="truncate">{label}</span>
+            <span className="ml-2 shrink-0 font-mono text-[11px] font-normal text-ink-ghost">
+              {node.suffix}
+            </span>
+          </span>
+        ) : (
+          label
+        )
+      }
+      title={[node.label, node.profile, node.uid, node.error]
+        .filter(Boolean)
+        .join(' · ')}
+      ariaLabel={phase ? `${phase.phase} phase, ${action}` : action}
+      aria-current={leading === 'running' ? 'step' : undefined}
+      data-workflow-phase={phase ? phaseState(phase) : undefined}
+      disabled={!sessionId}
+      onActivate={sessionId ? () => onOpenNode(sessionId) : undefined}
+      description={
+        node.error ? (
+          <span className="truncate text-alert">{node.error}</span>
+        ) : line ? (
+          <span className="truncate">{line}</span>
+        ) : undefined
+      }
+      // The leading spinner says only "going": an idle or parked node keeps its dot.
+      meta={
+        <WorkflowStatus
+          mark={mark}
+          dot={!phase || (node.state === 'running' && !mark.pulse)}
+        />
+      }
+    />
   )
 }
 
@@ -1898,8 +2088,10 @@ interface RowProps
 
 /** A two-line row keeps the recipe's padding and grows to the list height. */
 const TWO_LINE_ROW = { '--iii-ui-tree-row': '2.75rem' } as CSSProperties
-/** A row one level in: a run's nodes. */
+/** A row one level in: a run's nodes, or its phases. */
 const NESTED_ROW = { '--iii-ui-tree-depth': 1 } as CSSProperties
+/** A row two levels in: the nodes of a phase. */
+const PHASE_NODE_ROW = { '--iii-ui-tree-depth': 2 } as CSSProperties
 
 /**
  * One tree row. Without actions it is the button itself (and can be a menu

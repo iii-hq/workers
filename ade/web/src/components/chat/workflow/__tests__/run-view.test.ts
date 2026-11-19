@@ -3,6 +3,7 @@ import type { Conversation, Message } from '@/types/chat'
 import {
   buildRunView,
   collectWorkflowRuns,
+  groupsByPhase,
   labelTitle,
   nodeDepths,
   nodeFacts,
@@ -10,13 +11,21 @@ import {
   nodeLine,
   nodeMark,
   parseRunDetails,
+  phaseCurrent,
+  phaseFacts,
+  phaseMark,
+  phaseNodeLine,
+  phaseOpens,
+  phaseState,
   runFacts,
   runMark,
   soleFacts,
   soleNode,
+  solePhaseNode,
   splitNodeUid,
+  underPhase,
 } from '../run-view'
-import { BATCH, LIVE, T } from './run-fixtures'
+import { BATCH, KIT, KIT_NEXT, LIVE, T } from './run-fixtures'
 
 const task = 't'
 /** work ⇄ verify (a loop), then plan → map (a fanout) → critic → a_report. */
@@ -362,6 +371,103 @@ describe('buildRunView', () => {
     )
     expect(runFacts(view)).toBe('2 nodes · ≥1.5k tokens · ≥$0.500')
   })
+
+  describe('a node whose transient retry left generations without usage', () => {
+    const run = (usage: Record<string, unknown>) => {
+      const view = buildRunView(
+        { runId: 'r_e64a', at: 1 },
+        parsed({
+          status: 'completed',
+          nodes: { plan: 'done', 'explore-a': 'done' },
+          node_details: {
+            plan: {
+              state: 'done',
+              started_at: 1,
+              model: 'codex/gpt-6.1-terra',
+              usage: { input_tokens: 16464, output_tokens: 900, turns: 1 },
+            },
+            'explore-a': {
+              state: 'done',
+              started_at: 2,
+              model: 'codex/gpt-6.1-terra',
+              usage: { complete: true, ...usage },
+            },
+          },
+        }),
+      )
+      const [, explore] = view.phases.flatMap((phase) => phase.nodes)
+      return { view, explore }
+    }
+
+    it('reads no known counter as an unknown count, never 0 tokens', () => {
+      const { view, explore } = run({
+        input_tokens: null,
+        output_tokens: null,
+        cache_read_tokens: null,
+        cache_write_tokens: null,
+        turns: 5,
+      })
+      expect(explore.tokens).toBeNull()
+      expect(nodeFacts(explore)).toBe('codex/gpt-6.1-terra')
+      expect(runFacts(view)).toBe('2 nodes · ≥17k tokens')
+    })
+
+    it('marks the tokens it did report as a lower bound', () => {
+      const { view, explore } = run({
+        input_tokens: 16464,
+        output_tokens: 900,
+        unreported_generations: 4,
+        turns: 5,
+      })
+      expect(nodeFacts(explore)).toBe('codex/gpt-6.1-terra · ≥17k tokens')
+      expect(runFacts(view)).toBe('2 nodes · ≥35k tokens')
+    })
+
+    it('counts a node that generated nothing as a measured zero', () => {
+      const { view, explore } = run({ turns: 0, sessions: 1 })
+      expect(explore.tokens).toBe(0)
+      expect(runFacts(view)).toBe('2 nodes · 17k tokens')
+    })
+
+    it('reads a node whose session the metrics could not find as unknown', () => {
+      const { view, explore } = run({ turns: 0, sessions: 0, complete: false })
+      expect(explore.tokens).toBeNull()
+      expect(nodeFacts(explore)).toBe('codex/gpt-6.1-terra')
+      expect(runFacts(view)).toBe('2 nodes · ≥17k tokens')
+    })
+
+    it('marks no bound on a running node, whose in-flight generation has no usage yet', () => {
+      const view = buildRunView(
+        { runId: 'r_e64a', at: 1 },
+        parsed({
+          status: 'running',
+          nodes: { plan: 'done', 'explore-a': 'running' },
+          node_details: {
+            plan: {
+              state: 'done',
+              started_at: 1,
+              usage: { input_tokens: 16464, output_tokens: 900, turns: 1 },
+            },
+            'explore-a': {
+              state: 'running',
+              started_at: 2,
+              model: 'codex/gpt-6.1-terra',
+              usage: {
+                input_tokens: 30000,
+                output_tokens: 6000,
+                unreported_generations: 1,
+                turns: 3,
+              },
+            },
+          },
+        }),
+      )
+      const [, explore] = view.phases.flatMap((phase) => phase.nodes)
+      expect(explore.atLeast).toBe(false)
+      expect(nodeFacts(explore)).toBe('codex/gpt-6.1-terra · 36k tokens')
+      expect(runFacts(view)).not.toContain('≥')
+    })
+  })
 })
 
 describe('nodeMark', () => {
@@ -447,5 +553,324 @@ describe('compact rows', () => {
     expect(soleNode(one)).toBe(work)
     expect(soleFacts(one, work)).toBe('codex/gpt-6-luna · 256k tokens · 1m 51s')
     expect(soleNode({ ...one, unlisted: 1 })).toBeNull()
+  })
+})
+
+describe('phase rows', () => {
+  const view = (value: unknown) =>
+    buildRunView({ runId: 'r', at: 1 }, parsed(value))
+  const phaseOf = (run: ReturnType<typeof view>, name: string) => {
+    const found = run.phases.find((phase) => phase.phase === name)
+    if (!found) throw new Error(name)
+    return found
+  }
+  /** Each phase's mark, whether it is current, whether it opens, and its facts. */
+  const read = (run: ReturnType<typeof view>, name: string) => {
+    const phase = phaseOf(run, name)
+    return [
+      phaseState(phase),
+      phaseCurrent(run, phase),
+      phaseOpens(run, phase),
+      phaseFacts(phase),
+    ]
+  }
+
+  it('counts failed and running nodes per phase, from the status or the nodes', () => {
+    const live = view(LIVE)
+    expect(phaseOf(live, 'work')).toMatchObject({
+      done: 1,
+      total: 2,
+      failed: 1,
+      cancelled: 0,
+      running: 0,
+    })
+    expect(phaseOf(live, 'check')).toMatchObject({ running: 1 })
+    // `map` and the unphased group are not in the status's `phases`.
+    expect(phaseOf(live, 'map')).toMatchObject({
+      done: 0,
+      total: 1,
+      failed: 0,
+      running: 0,
+    })
+    const loose = view({
+      status: 'cancelled',
+      nodes: { a: 'cancelled', b: 'running', c: 'done' },
+      node_details: {
+        a: { state: 'cancelled' },
+        b: { state: 'running' },
+        c: { state: 'done' },
+      },
+    })
+    expect(phaseOf(loose, '')).toMatchObject({
+      done: 1,
+      total: 3,
+      failed: 0,
+      cancelled: 1,
+      running: 1,
+    })
+  })
+
+  it('marks each phase, and only a live run has a current one', () => {
+    const live = view(LIVE)
+    expect(read(live, 'work')).toEqual([
+      'failed',
+      false,
+      true,
+      '1 failed · 1/2',
+    ])
+    expect(read(live, 'check')).toEqual(['running', true, true, '1/2'])
+    expect(read(live, 'plan')).toEqual(['pending', false, false, '0/1'])
+    expect(read(view(BATCH), 'test')).toEqual(['done', false, false, '1/1'])
+    // Between two of its nodes, a phase stays current.
+    const between = { ...phaseOf(live, 'plan'), done: 1, total: 3 }
+    expect([phaseState(between), phaseCurrent(live, between)]).toEqual([
+      'pending',
+      true,
+    ])
+  })
+
+  it('moves the current phase on, a failed one still open', () => {
+    const kit = view(KIT)
+    expect(read(kit, 'explore')).toEqual(['done', false, false, '2/2'])
+    expect(read(kit, 'design')).toEqual([
+      'running',
+      true,
+      true,
+      '1 failed · 0/2',
+    ])
+    expect(read(kit, 'refute')).toEqual(['pending', false, false, '0/2'])
+    const next = view(KIT_NEXT)
+    expect(read(next, 'design')).toEqual([
+      'failed',
+      false,
+      true,
+      '1 failed · 1/2',
+    ])
+    expect(read(next, 'refute')).toEqual(['running', true, true, '0/2'])
+  })
+
+  it('keeps a phase current while its nodes wait on a retry', () => {
+    // Both refute nodes timed out and went back to pending, sessions kept.
+    const retry = view({
+      ...KIT_NEXT,
+      nodes: {
+        ...KIT_NEXT.nodes,
+        'refute-minimal': 'pending',
+        'refute-robust': 'pending',
+      },
+      phases: {
+        ...KIT_NEXT.phases,
+        refute: { total: 2, done: 0, failed: 0, running: 0 },
+      },
+      node_details: {
+        ...KIT_NEXT.node_details,
+        'refute-minimal': {
+          ...KIT_NEXT.node_details['refute-minimal'],
+          state: 'pending',
+        },
+        // Reserved for its next attempt: a session, no start yet.
+        'refute-robust': {
+          ...KIT_NEXT.node_details['refute-robust'],
+          session_id: 'wf_r_kit_refute-robust@r1',
+        },
+      },
+    })
+    expect(read(retry, 'refute')).toEqual(['pending', true, true, '0/2'])
+    expect(read(retry, 'plan')).toEqual(['pending', false, false, '0/1'])
+    // The phase the run waits at still leads with the going mark.
+    expect(phaseMark(retry, phaseOf(retry, 'refute'))).toBe('running')
+    expect(phaseMark(retry, phaseOf(retry, 'plan'))).toBe('pending')
+  })
+
+  it("leaves a loop's waiting phase pending while the other one runs", () => {
+    // Pass 1 creates both members at once: verify#it1 waits on work#it1, no session.
+    const pass = view({
+      ...LIVE,
+      nodes: { ...LIVE.nodes, 'work#it1': 'running', 'verify#it1': 'pending' },
+      node_errors: {},
+      phases: {
+        ...LIVE.phases,
+        work: { total: 2, done: 1, failed: 0, running: 1 },
+        check: { total: 2, done: 1, failed: 0, running: 0 },
+      },
+      node_details: {
+        ...LIVE.node_details,
+        'work#it1': {
+          state: 'running',
+          phase: 'work',
+          label: 'Work',
+          started_at: T + 4000,
+          session_id: 'wf_r_live_work#it1@r0',
+        },
+        'verify#it1': { state: 'pending', phase: 'check', label: 'Check' },
+      },
+    })
+    expect(phaseMark(pass, phaseOf(pass, 'work'))).toBe('running')
+    expect(phaseMark(pass, phaseOf(pass, 'check'))).toBe('pending')
+  })
+
+  it('leaves an ended run without a current phase', () => {
+    // A tolerated failure in a finished run: open, not current.
+    const done = view({ ...KIT_NEXT, status: 'completed' })
+    expect(read(done, 'design')).toEqual([
+      'failed',
+      false,
+      true,
+      '1 failed · 1/2',
+    ])
+    // A failed run left a phase part done: folded, not current.
+    const failed = view({
+      ...KIT,
+      status: 'failed',
+      phases: {
+        ...KIT.phases,
+        refute: { total: 3, done: 1, failed: 0, running: 0 },
+      },
+    })
+    expect(read(failed, 'refute')).toEqual(['pending', false, false, '1/3'])
+    expect(phaseMark(failed, phaseOf(failed, 'refute'))).toBe('pending')
+    expect(phaseMark(done, phaseOf(done, 'design'))).toBe('failed')
+  })
+
+  it("tells a phase's failed nodes from its cancelled ones", () => {
+    // design:robust failed, then design:minimal was cancelled.
+    const design = (status: string) =>
+      view({
+        ...KIT,
+        status,
+        nodes: { ...KIT.nodes, 'design-minimal': 'cancelled' },
+        phases: {
+          ...KIT.phases,
+          design: { total: 2, done: 0, failed: 2, running: 0 },
+        },
+        node_details: {
+          ...KIT.node_details,
+          'design-minimal': {
+            ...KIT.node_details['design-minimal'],
+            state: 'cancelled',
+          },
+        },
+      })
+    for (const status of ['failed', 'cancelled'])
+      expect(read(design(status), 'design')).toEqual([
+        'failed',
+        false,
+        true,
+        '1 failed · 1 cancelled · 0/2',
+      ])
+    // A failed run cancelled the nodes still going: their phase failed nothing.
+    const failed = view({
+      ...KIT_NEXT,
+      status: 'failed',
+      nodes: { ...KIT_NEXT.nodes, 'refute-minimal': 'cancelled' },
+      phases: {
+        ...KIT_NEXT.phases,
+        refute: { total: 2, done: 0, failed: 1, running: 0 },
+      },
+      node_details: {
+        ...KIT_NEXT.node_details,
+        'refute-minimal': {
+          ...KIT_NEXT.node_details['refute-minimal'],
+          state: 'cancelled',
+        },
+      },
+    })
+    expect(read(failed, 'refute')).toEqual([
+      'cancelled',
+      false,
+      false,
+      '1 cancelled · 0/2',
+    ])
+  })
+
+  it('keeps a header for a phase whose nodes the status left out', () => {
+    const {
+      'explore-code': _,
+      'explore-options': __,
+      ...listed
+    } = KIT_NEXT.node_details
+    const cut = view({ ...KIT_NEXT, node_details: listed })
+    expect(cut.phases.map((phase) => phase.phase)).toEqual([
+      'explore',
+      'design',
+      'refute',
+      'plan',
+    ])
+    expect(phaseOf(cut, 'explore').nodes).toEqual([])
+    expect(read(cut, 'explore')).toEqual(['done', false, false, '2/2'])
+    // Nodes left out of a stopped run count as cancelled.
+    const stopped = view({
+      ...KIT_NEXT,
+      status: 'cancelled',
+      phases: {
+        ...KIT_NEXT.phases,
+        explore: { total: 2, done: 1, failed: 1, running: 0 },
+      },
+      node_details: listed,
+    })
+    expect(read(stopped, 'explore')).toEqual([
+      'cancelled',
+      false,
+      false,
+      '1 cancelled · 1/2',
+    ])
+    // A read without details shows no phases yet.
+    expect(view({ ...KIT_NEXT, node_details: null }).phases).toEqual([])
+  })
+
+  it('groups a run with two phases or more', () => {
+    expect(groupsByPhase(view(LIVE))).toBe(true)
+    expect(groupsByPhase(view(KIT))).toBe(true)
+    // One node per phase still groups, so a loop pass adds rows, not headers.
+    expect(groupsByPhase(view(BATCH))).toBe(true)
+    const run = (phases: Record<string, string | undefined>) =>
+      view({
+        status: 'running',
+        nodes: Object.fromEntries(
+          Object.keys(phases).map((uid) => [uid, 'pending']),
+        ),
+        node_details: Object.fromEntries(
+          Object.entries(phases).map(([uid, phase]) => [
+            uid,
+            { state: 'pending', phase },
+          ]),
+        ),
+      })
+    expect(groupsByPhase(run({ a: 'x', b: 'x', c: 'y' }))).toBe(true)
+    expect(groupsByPhase(run({ a: 'x', b: 'x', c: undefined }))).toBe(false)
+    expect(
+      groupsByPhase(view({ status: 'running', nodes: { a: 'pending' } })),
+    ).toBe(false)
+  })
+
+  it('reads a phase of one node as one line', () => {
+    const kit = view(KIT)
+    const plan = phaseOf(kit, 'plan')
+    expect(solePhaseNode(plan)?.uid).toBe('plan')
+    expect(solePhaseNode(phaseOf(kit, 'design'))).toBeNull()
+    // A phase whose other nodes the status left out keeps its header.
+    expect(solePhaseNode({ ...plan, total: 3 })).toBeNull()
+    expect(solePhaseNode({ ...plan, nodes: [] })).toBeNull()
+    // The node's own name stays when the phase does not already say it.
+    const batch = view(BATCH)
+    const [test] = phaseOf(batch, 'test').nodes
+    const [check] = phaseOf(batch, 'check').nodes
+    expect(phaseNodeLine(batch, test)).toBe(
+      'tests · codex/gpt-6-luna · 256k tokens',
+    )
+    expect(phaseNodeLine(batch, check)).not.toMatch(/^check ·/)
+    expect(phaseNodeLine(batch, check)).toMatch(/^codex\/gpt-6-luna · /)
+    // A waiting node named like its phase has nothing to add.
+    expect(phaseNodeLine(kit, plan.nodes[0])).toBe('')
+  })
+
+  it('leaves the phase out of a label under its header', () => {
+    expect(underPhase('explore:code', 'explore')).toBe('code')
+    expect(underPhase('Explore: code', 'explore')).toBe('code')
+    expect(underPhase('verify:tests r1w1', 'verify')).toBe('tests r1w1')
+    expect(underPhase('tests', 'test')).toBe('tests')
+    expect(underPhase('plan', 'plan')).toBe('plan')
+    expect(underPhase('KAN-12 · Title', 'work')).toBe('KAN-12 · Title')
+    expect(underPhase('explore:code', '')).toBe('explore:code')
   })
 })
