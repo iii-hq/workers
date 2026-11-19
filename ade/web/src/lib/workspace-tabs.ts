@@ -256,6 +256,78 @@ export interface ScreenPlacement {
    * side chat swapping one conversation for the next). Absent there, the screen is placed as usual.
    */
   replaces?: TabScreen
+  /**
+   * The column directly on `direction`'s side of `relativeTo` takes the screen when it shows a session chat
+   * (`chat:<id>`): a page's side chat is the chat beside it, wherever the layout came from (another browser, a
+   * reload). The workspace's own chat column (`chat`) is never taken.
+   */
+  reuseBeside?: boolean
+  /** The screen is an unsent chat draft (`chat:<id>`): kept with the layout so a reload or another browser opens it. */
+  draft?: ChatDraftSeed
+}
+
+/** What an unsent chat draft opened in a column starts with. */
+export interface ChatDraftSeed {
+  title?: string
+  text: string
+}
+
+const CHAT_DRAFTS_KEY = 'chatDrafts'
+
+/** The draft seeds the layout keeps, by session id (malformed entries dropped). */
+export function parseChatDrafts(
+  layout: WorkspaceLayoutDocument,
+): Record<string, ChatDraftSeed> {
+  const raw = layout[CHAT_DRAFTS_KEY]
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const drafts: Record<string, ChatDraftSeed> = {}
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue
+    const { title, text } = value as { title?: unknown; text?: unknown }
+    if (typeof text !== 'string') continue
+    drafts[id] = typeof title === 'string' ? { title, text } : { text }
+  }
+  return drafts
+}
+
+/** Only the seeds a tab still shows: a draft's column closed or swapped takes its seed with it. */
+export function liveChatDrafts(
+  drafts: Record<string, ChatDraftSeed>,
+  tabs: readonly WorkspaceTab[],
+): Record<string, ChatDraftSeed> {
+  const shown = new Set(
+    tabs
+      .flatMap((tab) => tab.screens)
+      .map((screen) => (screen ? sessionIdForChatScreen(screen) : null)),
+  )
+  return Object.fromEntries(
+    Object.entries(drafts).filter(([id]) => shown.has(id)),
+  )
+}
+
+export function withChatDrafts(
+  layout: WorkspaceLayoutDocument,
+  drafts: Record<string, ChatDraftSeed>,
+): WorkspaceLayoutDocument {
+  return withLayout(layout, { [CHAT_DRAFTS_KEY]: drafts })
+}
+
+/**
+ * Put `screen` in the column directly on `direction`'s side of `anchor` when that column shows a session chat.
+ * `null` when there is no such column (or the tab already shows `screen`).
+ */
+export function withAdjacentChatSwapped(
+  tab: WorkspaceTab,
+  anchor: TabScreen,
+  direction: OpenDirection,
+  screen: TabScreen,
+  makePaneId: () => string = newPaneId,
+): WorkspaceTab | null {
+  const at = tab.screens.indexOf(anchor)
+  if (at < 0) return null
+  const beside = tab.screens[direction === 'right' ? at + 1 : at - 1]
+  if (!beside || sessionIdForChatScreen(beside) === null) return null
+  return withScreenSwapped(tab, beside, screen, makePaneId)
 }
 
 /**
@@ -709,6 +781,8 @@ export function isUnfollowedFunctionActivation(
 export interface WorkspaceState {
   tabs: WorkspaceTab[]
   activeTabId: string
+  /** Unsent chat drafts shown in a column, by session id (see `ScreenPlacement.draft`). */
+  chatDrafts?: Record<string, ChatDraftSeed>
 }
 
 /** Closing the active tab lands on its right neighbour, else the left; the last tab never closes. */

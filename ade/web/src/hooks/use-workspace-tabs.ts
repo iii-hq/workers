@@ -29,6 +29,7 @@ import {
   WORKSPACE_LAYOUT_QUERY_KEY,
   workspaceLayoutWriter,
 } from '@/hooks/lib/workspace-layout-writer'
+import { publishChatDraftSeeds } from '@/lib/chat-draft-seeds'
 import { getIiiClient } from '@/lib/iii-client'
 import { moveItem } from '@/lib/reorder'
 import { canCreateTab, DEFAULT_TAB_LIMIT } from '@/lib/tab-limit'
@@ -38,13 +39,16 @@ import {
   defaultTabs,
   isUnfollowedFunctionActivation,
   type LocalActivation,
+  liveChatDrafts,
   newTabId,
   parseActivation,
   parseActiveTabId,
+  parseChatDrafts,
   parseWorkspaceTabs,
   resolveActiveTab,
   resolvePointer,
   type ScreenPlacement,
+  sessionIdForChatScreen,
   shouldFlushPendingWrite,
   type TabScreen,
   tabColumns,
@@ -53,6 +57,8 @@ import {
   type WorkspaceState,
   type WorkspaceTab,
   withActiveTabId,
+  withAdjacentChatSwapped,
+  withChatDrafts,
   withColumnAdded,
   withOnlyPane,
   withPaneMoved,
@@ -85,7 +91,7 @@ function workspaceState(layout: WorkspaceLayoutValue): LocalState {
   const parsedTabs = parseWorkspaceTabs(layout)
   const tabs = parsedTabs.length > 0 ? parsedTabs : defaultTabs()
   const activeTabId = resolveActiveTab(tabs, parseActiveTabId(layout)).id
-  return { tabs, activeTabId }
+  return { tabs, activeTabId, chatDrafts: parseChatDrafts(layout) }
 }
 
 /** Lift a transform onto the raw layout document; the pointer is re-stamped only when it moved. */
@@ -95,7 +101,14 @@ export function workspaceLayoutTransform(
 ): ConfigTransform {
   return (layout) => {
     const next = update(workspaceState(layout))
-    const withTabs = withWorkspaceTabs(layout, next.tabs)
+    const drafts = liveChatDrafts(next.chatDrafts ?? {}, next.tabs)
+    const kept = parseChatDrafts(layout)
+    const tabsOnly = withWorkspaceTabs(layout, next.tabs)
+    // Rewritten only when they changed: a layout that never had a draft keeps no empty key.
+    const withTabs =
+      JSON.stringify(drafts) === JSON.stringify(kept)
+        ? tabsOnly
+        : withChatDrafts(tabsOnly, drafts)
     if (parseActiveTabId(layout) === next.activeTabId) return withTabs
     return withActiveTabId(withTabs, next.activeTabId, 'browser', now())
   }
@@ -285,6 +298,10 @@ export function useWorkspaceTabs({
     refetchOnWindowFocus: true,
     retry: 1,
   })
+  // The drafts the layout keeps for its columns, for a chat column that has to bring one back.
+  useEffect(() => {
+    publishChatDraftSeeds(parseChatDrafts(data ?? {}))
+  }, [data])
 
   // Rung after every layout write, this tab's own included: an injected page
   // (learn-iii) opens a screen over the bus, not through `persist`. Invalidate,
@@ -645,6 +662,37 @@ export function useWorkspaceTabs({
       const newScreenTabId = newTabId()
       const stablePaneId = { current: null as string | null }
       const update: WorkspaceTransform = (state) => {
+        const sessionId = sessionIdForChatScreen(screen)
+        const chatDrafts =
+          placement.draft && sessionId
+            ? { ...(state.chatDrafts ?? {}), [sessionId]: placement.draft }
+            : state.chatDrafts
+        const placed = place(state)
+        return chatDrafts === state.chatDrafts
+          ? placed
+          : { ...placed, chatDrafts }
+      }
+      const place: WorkspaceTransform = (state) => {
+        // The chat directly beside the caller's page takes the screen (its side chat, from any browser).
+        if (placement.reuseBeside && placement.relativeTo) {
+          const active = state.tabs.find((tab) => tab.id === state.activeTabId)
+          const swapped = active
+            ? withAdjacentChatSwapped(
+                active,
+                placement.relativeTo,
+                placement.direction ?? 'right',
+                screen,
+              )
+            : null
+          if (active && swapped) {
+            return {
+              ...state,
+              tabs: state.tabs.map((tab) =>
+                tab.id === active.id ? swapped : tab,
+              ),
+            }
+          }
+        }
         // A screen taking the place of the caller's earlier one, where the tab on screen still shows it.
         if (placement.replaces) {
           const active = state.tabs.find((tab) => tab.id === state.activeTabId)

@@ -125,6 +125,15 @@ export interface ScreenOpenRequest {
    *  for the next, so columns never pile up). Absent there, or ignored by an
    *  older console, the screen is placed as usual. */
   replaces?: string
+  /** The column directly on `direction`'s side of `relativeTo` takes the
+   *  screen when it shows a session chat (`chat:<id>`): a page's side chat
+   *  found from the shared layout, whichever browser opened it. The
+   *  workspace's own chat column is never taken. */
+  reuseBeside?: boolean
+  /** `screen` is an unsent chat draft (`chat:<id>` from `chat.openDraft`):
+   *  its title and text are kept with the layout, so a reload or another
+   *  browser opens the same draft instead of a missing chat. */
+  draft?: { title?: string; text: string }
 }
 
 /** Props the host passes to every registered page render component. */

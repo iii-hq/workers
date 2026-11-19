@@ -269,9 +269,19 @@ function makeHost(
         requestPanelOpen(request)
       },
       openScreen(request) {
-        const { screen, relativeTo, direction, replaces } = request
+        const { screen, relativeTo, direction, replaces, draft } = request
         if (replaces !== undefined && !isValidScreen(replaces)) {
           throw new Error(`panels.openScreen: unknown replaces '${replaces}'`)
+        }
+        if (
+          draft !== undefined &&
+          (typeof draft?.text !== 'string' ||
+            !screen.startsWith('chat:') ||
+            (draft.title !== undefined && typeof draft.title !== 'string'))
+        ) {
+          throw new Error(
+            'panels.openScreen: draft needs a chat:<id> screen and { text, title? }',
+          )
         }
         if (!isValidScreen(screen)) {
           throw new Error(`panels.openScreen: unknown screen '${screen}'`)

@@ -1197,6 +1197,11 @@ export interface ConversationsApi {
   /** Exact session ids confirmed absent/deleted by session-manager. */
   missingConversationIds: ReadonlySet<string>
   createNew: (draft?: { text: string; title?: string }) => string
+  /**
+   * Bring back an unsent draft under its own id (a column of the shared layout shows it, but this browser never
+   * had it, or lost it in a reload): local only, materialised on its first send like any draft. Not selected.
+   */
+  restoreDraft: (id: string, draft: { text: string; title?: string }) => void
   select: (id: string) => void
   /** Keep one session hydrated and subscribed while a chat panel is mounted. */
   watchConversation: (id: string) => () => void
@@ -2692,6 +2697,30 @@ export function useConversations(
     [conversations, activeId, preferredModel, catalogSig, firstCatalogKey],
   )
 
+  const restoreDraft = useCallback(
+    (id: string, draft: { text: string; title?: string }) => {
+      if (conversationsRef.current.some((c) => c.id === id)) return
+      const restored: Conversation = {
+        ...emptyConversation(
+          startingModel(
+            loadLastModel(),
+            catalogSig ? new Set(catalogSig.split('\u0001')) : null,
+            preferredModel,
+            firstCatalogKey,
+          ),
+          loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+          draft,
+        ),
+        id,
+      }
+      setConversations((list) =>
+        list.some((c) => c.id === id) ? list : [restored, ...list],
+      )
+      clearConversationMissing(id)
+    },
+    [preferredModel, catalogSig, firstCatalogKey, clearConversationMissing],
+  )
+
   const select = useCallback((id: string) => {
     pendingSelectIdRef.current = id
     setActiveId(id)
@@ -3479,6 +3508,7 @@ export function useConversations(
     retryConversations,
     missingConversationIds,
     createNew,
+    restoreDraft,
     select,
     watchConversation,
     rename,

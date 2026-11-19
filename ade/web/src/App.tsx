@@ -397,12 +397,22 @@ export function App({
   useEffect(
     () =>
       subscribeScreenOpen(
-        ({ screen, relativeTo, direction, sizes, replaces }) => {
+        ({
+          screen,
+          relativeTo,
+          direction,
+          sizes,
+          replaces,
+          reuseBeside,
+          draft,
+        }) => {
           openWorkspaceScreen(screen, {
             relativeTo,
             direction,
             sizes,
             replaces,
+            reuseBeside,
+            draft,
           })
         },
       ),
