@@ -101,6 +101,8 @@ pub struct BootParams {
     /// every sandbox of the image. Only ever exposed to the guest as a
     /// read-only erofs lower built from it.
     pub base_rootfs: PathBuf,
+    /// H producer result; the launcher consumes, never rebuilds after handoff.
+    pub(crate) prepared: Option<crate::cli::rootfs_cache::PreparedCache>,
     pub workdir: PathBuf,
     pub shell_sock: PathBuf,
     pub cpus: u32,
@@ -211,49 +213,45 @@ async fn handle_create_in<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + '
     layout
         .prepare_parents(&context)
         .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+    rootfs_cache::prepare_cache_parent(&context, &planned.cache)
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
     let admission = layout
         .admit(&context)
         .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
-    let admission =
-        crate::cli::local_worker::admit_cache_paths(admission, &oci_ref, &planned.cache)
-            .map_err(SandboxError::BootFailed)?;
-    let rootfs = if cfg.auto_install {
-        let dest = rootfs_cache::ensure_rootfs_admitted_at_notify(
-            &admission,
-            &oci_ref,
-            &planned.cache,
-            || {
-                on_event(SandboxCreateEvent::PullingImage {
-                    image_ref: oci_ref.clone(),
-                    progress_bytes: 0,
-                    total_bytes: None,
-                });
-                on_event(SandboxCreateEvent::Unpacking);
-            },
-        )
+    let request = rootfs_cache::CacheRequest::new(admission.clone(), &oci_ref, &planned.cache)
+        .map_err(|e| SandboxError::BootFailed(format!("{e:#}")))?;
+    let pull_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let started = pull_started.clone();
+    let events = std::sync::Arc::new(std::sync::Mutex::new(on_event));
+    let pulling = events.clone();
+    let reference = oci_ref.clone();
+    let prepared = request
+        .resolve(cfg.auto_install, move || {
+            started.store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut emit = pulling.lock().unwrap();
+            emit(SandboxCreateEvent::PullingImage {
+                image_ref: reference,
+                progress_bytes: 0,
+                total_bytes: None,
+            });
+            emit(SandboxCreateEvent::Unpacking);
+        })
         .await
         .map_err(|e| {
-            SandboxError::auto_install_failed(
-                &req.image,
-                format!("pull_and_extract_rootfs failed: {e:#}"),
-            )
+            if pull_started.load(std::sync::atomic::Ordering::SeqCst) {
+                SandboxError::auto_install_failed(
+                    &req.image,
+                    format!("pull_and_extract_rootfs failed: {e:#}"),
+                )
+            } else {
+                SandboxError::BootFailed(format!("{e:#}"))
+            }
+        })?
+        .ok_or_else(|| SandboxError::RootfsMissing {
+            image: req.image.clone(),
         })?;
-        if !dest.join("bin").exists() {
-            return Err(SandboxError::auto_install_failed(
-                &req.image,
-                "rootfs is missing bin/ after pull",
-            ));
-        }
-        dest
-    } else {
-        let path = rootfs_cache::canonical_path_at(&planned.cache, &oci_ref);
-        if !rootfs_cache::is_populated(&path) {
-            return Err(SandboxError::RootfsMissing {
-                image: req.image.clone(),
-            });
-        }
-        path
-    };
+    let admission = prepared.lease.clone();
+    let rootfs = prepared.root.clone();
     if let Err(error) = layout.ensure_admitted(&admission) {
         // No launcher has been invoked; only the core can authorize rollback
         // of this operation's created-from-absence effects.
@@ -289,12 +287,13 @@ async fn handle_create_in<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + '
         })
         .await;
     registry.begin_start(id).await;
-    on_event(SandboxCreateEvent::BootingVm);
+    events.lock().unwrap()(SandboxCreateEvent::BootingVm);
     let boot = launcher
         .boot_admitted(
             &BootParams {
                 rootfs: layout.root.clone(),
                 base_rootfs: rootfs.clone(),
+                prepared: Some(prepared),
                 workdir: workdir.clone(),
                 shell_sock: shell_sock.clone(),
                 cpus,

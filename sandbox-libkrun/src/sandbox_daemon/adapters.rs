@@ -517,14 +517,18 @@ impl VmLauncher for VmBootLauncher {
         // the worker VMs' legacy opt-out would re-open the shared
         // writable root.
         let t_erofs = Instant::now();
-        let writer = admission.clone();
-        let base = params.base_rootfs.clone();
-        let rootfs_lower = tokio::task::spawn_blocking(move || {
-            crate::cli::local_worker::write_admitted_erofs(writer, &base)
-        })
-        .await
-        .map_err(|e| SandboxError::BootFailed(e.to_string()))?
-        .map_err(SandboxError::BootFailed)?;
+        let prepared = params.prepared.as_ref().ok_or_else(|| {
+            SandboxError::BootFailed("sandbox lower was not prepared before launch".into())
+        })?;
+        prepared
+            .validate(&prepared.reference)
+            .map_err(|e| SandboxError::BootFailed(format!("{e:#}")))?;
+        if prepared.root != params.base_rootfs {
+            return Err(SandboxError::BootFailed(
+                "prepared cache selection differs from boot params".into(),
+            ));
+        }
+        let rootfs_lower = prepared.lower.clone();
         tracing::info!(
             ms = t_erofs.elapsed().as_millis() as u64,
             lower = %rootfs_lower.display(),
@@ -1942,6 +1946,7 @@ mod sandbox_boot_shape_tests {
         BootParams {
             rootfs: PathBuf::from(TRAMPOLINE),
             base_rootfs: PathBuf::from(CACHE),
+            prepared: None,
             workdir: PathBuf::from("/tmp/iii-sandbox/sb/merged"),
             shell_sock: PathBuf::from("/tmp/iii-sandbox/sb/shell.sock"),
             cpus: 1,

@@ -36,6 +36,9 @@ pub(crate) fn clone_rootfs_admitted(
 ) -> Result<(), String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
+    // H keeps cache consumption Strict. This legacy clone remains supported for
+    // readable trees; source0000 requires an exclusive pre-handoff copy plan.
+    // Do not chmod the shared source or obtain a new writer after read handoff.
     let used = lease.use_path(base).map_err(|e| e.to_string())?;
     let mut mutation = lease
         .begin(crate::worker_admission::MutationPlan::Reclone {
