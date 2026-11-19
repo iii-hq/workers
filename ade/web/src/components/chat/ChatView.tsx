@@ -1089,8 +1089,14 @@ export function ChatView({
   // choice — `conversation.model` is null. Fall back to the model the latest
   // assistant reply actually used (transcript entries carry it), resolved
   // against the catalog's composite ids so the picker preselects when it can.
+  // An agent profile may name a plain router id (`claude-opus-5-5`) rather
+  // than a catalog key; it resolves the same way, or the picker shows
+  // "Choose model" for a model the session is running.
   const effectiveModel = useMemo(() => {
-    if (conversation.model) return conversation.model
+    const toCatalog = (model: string) =>
+      modelOptions.find((o) => o.id === model || o.id.endsWith(`::${model}`))
+        ?.id ?? model
+    if (conversation.model) return toCatalog(conversation.model)
     if (imported) return null
     const last = [...conversation.messages]
       .reverse()
@@ -1099,10 +1105,7 @@ export function ChatView({
           m.role === 'assistant' && Boolean(m.model),
       )
     if (!last?.model) return null
-    const catalog = modelOptions.find(
-      (o) => o.id === last.model || o.id.endsWith(`::${last.model}`),
-    )
-    return catalog?.id ?? last.model
+    return toCatalog(last.model)
   }, [conversation.model, conversation.messages, modelOptions, imported])
 
   const modelSwitch = useModelSwitch({
@@ -1508,14 +1511,19 @@ export function ChatView({
   // Temporary Harness projects can disappear between turns. Reconcile only
   // the conversation's current scope; per-turn filesystem metadata remains
   // bound to the original path for historical review.
+  // A sub-agent's folder is its spawn's (often a run worktree removed when
+  // the run ends): opening the chat only shows it, never moves it to the
+  // default project. A send still reconciles, like any chat.
   useEffect(() => {
     if (!workingDirEnabled || conversation.draft || streamingIndicator) return
+    if (conversation.parentId) return
     const dir = conversation.workingDir
     if (!dir) return
     void reconcileWorkingDir(dir)
   }, [
     workingDirEnabled,
     conversation.draft,
+    conversation.parentId,
     conversation.workingDir,
     streamingIndicator,
     reconcileWorkingDir,
