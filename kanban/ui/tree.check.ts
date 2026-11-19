@@ -204,7 +204,7 @@ assert.equal(toAgentSession({ ...row, metadata: null, title: '' }).name, 'kan12-
   const ids: string[] = []
   walk(tree.roots, (node, depth) => ids.push(`${depth}:${node.id}`))
   assert.ok(
-    ids.includes('3:session:orch-kan-22-code'),
+    ids.includes('3:session:id-KAN-22:orch-kan-22-code'),
     'project > run > subtask > lead > phase is depth 3 below the run',
   )
 }
@@ -255,5 +255,62 @@ assert.equal(formatSpan(3 * 86_400_000), '3d')
 assert.equal(modelName('claude-code::claude-code/claude-sonnet-5'), 'claude-sonnet-5')
 assert.equal(modelName('anthropic::claude-opus-5'), 'claude-opus-5')
 assert.equal(modelName(null), null)
+
+// ── exact links (kanban::sessions::links) win over names ────────────────
+{
+  const run = ticket('KAN-50', 'in_progress')
+  const a = ticket('KAN-51', 'in_progress', { parent_id: run.id })
+  const b = ticket('KAN-52', 'todo', { parent_id: run.id })
+  const sessions = [
+    // A planner that only filed the two subtasks: it sits where they meet, the run.
+    session('planner', 'Plan the work'),
+    // A plain chat named after nothing, that worked KAN-51 and KAN-52: under both, counted once.
+    session('console-abc', 'can you fix the flaky tests', { status: 'working' }),
+    // Named after KAN-52, but its calls say it worked KAN-51: the record wins over the name.
+    session('kan52-misnamed', 'KAN-52 · something', { status: 'done' }),
+    // A phase with no calls of its own follows its parent.
+    session('console-abc-verify', 'verify', { parentId: 'console-abc' }),
+    // History from before sessions were recorded: still placed by its name.
+    session('kan52-legacy', 'Backend · KAN-52'),
+  ]
+  const links = [
+    { ticket_id: a.id, session_id: 'planner', writes: 1, last_action: 'ticket.created' },
+    { ticket_id: b.id, session_id: 'planner', writes: 1, last_action: 'ticket.created' },
+    { ticket_id: a.id, session_id: 'console-abc', writes: 3, last_action: 'comment.created' },
+    { ticket_id: b.id, session_id: 'console-abc', writes: 1, last_action: 'ticket.moved' },
+    { ticket_id: a.id, session_id: 'kan52-misnamed', writes: 2, last_action: 'ticket.updated' },
+  ]
+  const tree = buildTree({
+    tickets: [run, a, b],
+    sessions,
+    links,
+    prefix: 'KAN',
+    columns,
+    doneStatus: 'done',
+    canceledStatus: 'canceled',
+  })
+  const root = tree.roots[0]
+  const under = (key: string) => {
+    const node = key === 'KAN-50' ? root : root.subtasks.find((n) => n.ticket.key === key)
+    return node?.sessions.map((s) => s.session.id).sort() ?? []
+  }
+  assert.deepEqual(under('KAN-50'), ['planner'], 'a planner sits where the tickets it filed meet')
+  assert.equal(root.sessions[0].inferred, true)
+  assert.deepEqual(under('KAN-51'), ['console-abc', 'kan52-misnamed'], 'any chat that worked it, whatever its name')
+  assert.deepEqual(
+    under('KAN-52'),
+    ['console-abc', 'kan52-legacy'],
+    'the record beats the name; old history keeps its name',
+  )
+  const abc = root.subtasks.find((n) => n.ticket.key === 'KAN-51')?.sessions.find((s) => s.session.id === 'console-abc')
+  assert.equal(abc?.exact, true)
+  assert.deepEqual(
+    abc?.children.map((c) => c.session.id),
+    ['console-abc-verify'],
+    'a phase follows its parent',
+  )
+  assert.equal(tree.stats.sessions, 5, 'a session under two tickets counts once')
+  assert.equal(tree.stats.running, 1)
+}
 
 console.log('tree.check: ok')

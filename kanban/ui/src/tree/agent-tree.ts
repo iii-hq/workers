@@ -73,8 +73,10 @@ export type SessionNode = {
   kind: 'session'
   id: string
   session: AgentSession
-  /** Not named after a ticket: attached because the sessions it spawned are. */
+  /** Placed by where its tickets meet (it only filed them, or only its children are known). */
   inferred: boolean
+  /** Placed by links kanban recorded from the session's own calls (not by its name). */
+  exact: boolean
   state: WorkState
   children: SessionNode[]
   /** Sessions it spawned that sit under other tickets (their tickets show them). */
@@ -165,9 +167,20 @@ export function ticketState(
   return firstStatuses.has(ticket.status) ? 'pending' : 'active'
 }
 
+/** `kanban::sessions::links`: an agent session that changed a ticket (recorded from the call's own session). */
+export type TreeLink = {
+  ticket_id: string
+  session_id: string
+  /** How many changes it made; with `last_action`, whether it worked the ticket or only filed it. */
+  writes: number
+  last_action: string
+}
+
 export type BuildInput = {
   tickets: readonly TreeTicket[]
   sessions: readonly AgentSession[]
+  /** Exact links from kanban. A session with any link is placed by them alone; names are only a fallback. */
+  links?: readonly TreeLink[]
   prefix: string
   columns: readonly { id: string }[]
   doneStatus: string
@@ -203,83 +216,113 @@ export function buildTree(input: BuildInput): ProjectTree {
     spawned.set(session.parentId, list)
   }
 
-  // 1. Sessions named after a ticket.
-  const owner = new Map<string, string>()
+  // 1. Exact: the tickets each session changed, as kanban recorded them. A session works every ticket it did more
+  //    than file; one that only filed tickets (a planner) sits where they meet — their shared parent, or the one
+  //    ticket. A session with any recorded link is placed by its links alone.
+  const homes = new Map<string, string[]>()
+  const inferred = new Set<string>()
+  const add = (map: Map<string, string[]>, session: string, ticket: string) => {
+    const list = map.get(session) ?? []
+    if (!list.includes(ticket)) list.push(ticket)
+    map.set(session, list)
+  }
+  const filedOnly = new Map<string, string[]>()
+  for (const link of input.links ?? []) {
+    if (!byId.has(link.ticket_id)) continue
+    const worked = link.writes > 1 || link.last_action !== 'ticket.created'
+    add(worked ? homes : filedOnly, link.session_id, link.ticket_id)
+  }
+  const meeting = (ids: readonly string[]): string | null => {
+    const distinct = new Set(ids)
+    if (distinct.size === 1) return ids[0]
+    const meet = new Set(ids.map((id) => byId.get(id)?.parent_id ?? id))
+    const target = meet.size === 1 ? [...meet][0] : null
+    return target && byId.has(target) ? target : null
+  }
+  for (const [session, ids] of filedOnly) {
+    if (homes.has(session)) continue
+    const target = meeting(ids)
+    if (target) {
+      homes.set(session, [target])
+      inferred.add(session)
+    }
+  }
+  const exact = new Set(homes.keys())
+
+  // 2. Fallback for history recorded before sessions were (no links): a ticket key in the session's name or id,
+  //    and an unnamed spawner where its named children's tickets meet.
   for (const session of sessions) {
+    if (homes.has(session.id)) continue
     const key = ticketKeyOf(session, prefix)
     const ticket = key ? byKey.get(key) : undefined
-    if (ticket) owner.set(session.id, ticket.id)
+    if (ticket) homes.set(session.id, [ticket.id])
   }
-
-  // 2. An unnamed session that spawned named ones: where their tickets meet. One ticket, that ticket; siblings
-  //    under one parent ticket (or that parent itself), the parent. Anything wider stays unattached.
-  const inferred = new Set<string>()
   for (const session of sessions) {
-    if (owner.has(session.id)) continue
-    const named = (spawned.get(session.id) ?? []).map((child) => owner.get(child.id)).filter((id): id is string => !!id)
+    if (homes.has(session.id)) continue
+    const named = (spawned.get(session.id) ?? []).flatMap((child) => homes.get(child.id) ?? [])
     if (named.length === 0) continue
-    const meet = new Set(named.map((id) => byId.get(id)?.parent_id ?? id))
-    const distinct = new Set(named)
-    const target = distinct.size === 1 ? named[0] : meet.size === 1 ? [...meet][0] : null
-    if (target && byId.has(target)) {
-      owner.set(session.id, target)
+    const target = meeting(named)
+    if (target) {
+      homes.set(session.id, [target])
       inferred.add(session.id)
     }
   }
 
-  // 3. Unnamed descendants (a lead's phases) belong where their nearest owned ancestor does.
-  const ownerOf = (session: AgentSession): string | null => {
+  // 3. A session with no ticket of its own (a lead's phases) belongs where its nearest placed ancestor does.
+  const ticketsOf = (session: AgentSession): readonly string[] => {
     const seen = new Set<string>()
     let current: AgentSession | undefined = session
     while (current && !seen.has(current.id)) {
       seen.add(current.id)
-      const own = owner.get(current.id)
+      const own = homes.get(current.id)
       if (own) return own
       current = current.parentId ? sessionById.get(current.parentId) : undefined
     }
-    return null
+    return []
   }
-  const ticketOfSession = new Map<string, string>()
+  const placed = new Map<string, readonly string[]>()
   for (const session of sessions) {
-    const own = ownerOf(session)
-    if (own) ticketOfSession.set(session.id, own)
+    const own = ticketsOf(session)
+    if (own.length) placed.set(session.id, own)
   }
+  const isUnder = (sessionId: string | null | undefined, ticketId: string) =>
+    !!sessionId && (placed.get(sessionId)?.includes(ticketId) ?? false)
 
-  const visited = new Set<string>()
-  const sessionNode = (session: AgentSession, ticketId: string): SessionNode => {
-    visited.add(session.id)
+  // A session may sit under several tickets (it worked each): a node per ticket, guarded against cycles per path.
+  const sessionNode = (session: AgentSession, ticketId: string, path: ReadonlySet<string>): SessionNode => {
+    const here = new Set(path).add(session.id)
     let elsewhere = 0
     const children: SessionNode[] = []
     for (const child of spawned.get(session.id) ?? []) {
-      if (visited.has(child.id)) continue
-      if (ticketOfSession.get(child.id) !== ticketId) {
+      if (here.has(child.id)) continue
+      if (!isUnder(child.id, ticketId)) {
         elsewhere += 1
         continue
       }
-      children.push(sessionNode(child, ticketId))
+      children.push(sessionNode(child, ticketId, here))
     }
     children.sort(bySession)
     return {
       kind: 'session',
-      id: `session:${session.id}`,
+      id: `session:${ticketId}:${session.id}`,
       session,
       inferred: inferred.has(session.id),
+      exact: exact.has(session.id),
       state: sessionState(session),
       children,
       elsewhere,
     }
   }
 
-  // A ticket's session roots: its sessions whose spawner is not also its own.
+  // A ticket's session roots: its sessions whose spawner does not sit under it too.
   const rootsByTicket = new Map<string, AgentSession[]>()
   for (const session of sessions) {
-    const ticketId = ticketOfSession.get(session.id)
-    if (!ticketId) continue
-    const parentTicket = session.parentId ? ticketOfSession.get(session.parentId) : undefined
-    if (parentTicket === ticketId) continue
-    const list = rootsByTicket.get(ticketId) ?? []
-    list.push(session)
-    rootsByTicket.set(ticketId, list)
+    for (const ticketId of placed.get(session.id) ?? []) {
+      if (isUnder(session.parentId, ticketId)) continue
+      const list = rootsByTicket.get(ticketId) ?? []
+      list.push(session)
+      rootsByTicket.set(ticketId, list)
+    }
   }
 
   const inScope = input.inScope ?? (() => true)
@@ -294,16 +337,23 @@ export function buildTree(input: BuildInput): ProjectTree {
   }
 
   const stats: TreeStats = { tickets: 0, sessions: 0, running: 0, failed: 0 }
+  // A session drawn under two tickets is still one session.
+  const counted = new Set<string>()
   const count = (node: SessionNode) => {
-    stats.sessions += 1
-    if (node.session.status === 'working') stats.running += 1
-    if (node.session.status === 'error') stats.failed += 1
+    if (!counted.has(node.session.id)) {
+      counted.add(node.session.id)
+      stats.sessions += 1
+      if (node.session.status === 'working') stats.running += 1
+      if (node.session.status === 'error') stats.failed += 1
+    }
     node.children.forEach(count)
   }
 
   const ticketNode = (ticket: TreeTicket): TicketNode => {
     stats.tickets += 1
-    const sessionsHere = (rootsByTicket.get(ticket.id) ?? []).map((session) => sessionNode(session, ticket.id))
+    const sessionsHere = (rootsByTicket.get(ticket.id) ?? []).map((session) =>
+      sessionNode(session, ticket.id, new Set()),
+    )
     sessionsHere.sort(bySession)
     sessionsHere.forEach(count)
     const subtasks = (childrenOf.get(ticket.id) ?? []).map(ticketNode)

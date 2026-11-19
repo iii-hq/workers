@@ -60,12 +60,14 @@ import { useBoardScroll } from './board/use-board-scroll'
 import {
   type AgentProfile,
   api,
+  BOARD_PAGE_ID,
   type BoardColumn,
   type BoardData,
   CONFIG_EVENT,
   noteOwnWrite,
   OWN_WRITES,
   PLAN_CHANGED_EVENT,
+  PROJECTS_PAGE_ID,
   RELEASES_PAGE_ID,
   statusLabel,
   subscribeChanges,
@@ -1066,6 +1068,7 @@ export function BoardPage({
               onOpenTicket={openDialog}
               paneKey={paneKey}
               project={scope}
+              screen={`ext:${entry === 'projects' ? PROJECTS_PAGE_ID : BOARD_PAGE_ID}`}
             />
           ) : loadError ? (
             <Notice actionLabel="Retry" detail={loadError} onAction={() => void load()} title="The board could not be read" />

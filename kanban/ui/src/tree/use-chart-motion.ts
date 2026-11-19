@@ -123,11 +123,14 @@ export function useChartMotion({
     const next = new Map<string, Box>()
     const nextCards = new Map<string, { el: HTMLElement; kids: Kind | null }>()
     const edges: { parent: string; child: string; kind: Kind }[] = []
+    /** Cards with an agent at work at or under them: the wire into each is drawn live. */
+    const liveIds = new Set<string>()
     for (const item of root.querySelectorAll<HTMLElement>('.kb-chart__item')) {
       const id = item.dataset.nodeId
       const card = item.firstElementChild as HTMLElement | null
       if (!id || !card) continue
       next.set(id, layoutOf(card, stage))
+      if (item.dataset.live === 'true') liveIds.add(id)
       nextCards.set(id, { el: card, kids: (item.dataset.kids as Kind | undefined) ?? null })
       const parent = item.parentElement?.closest<HTMLElement>('.kb-chart__item')
       const parentId = parent?.dataset.nodeId
@@ -200,7 +203,11 @@ export function useChartMotion({
       live.current.set(key, { path, ...edge, born: baseline || reduced ? 0 : performance.now() })
     }
     for (const [key, wire] of live.current) {
-      if (seen.has(key)) continue
+      if (seen.has(key)) {
+        // Live: the work at its end is in flight (tree.css draws it flowing; reduced motion, just the colour).
+        wire.path.toggleAttribute('data-live', liveIds.has(wire.child))
+        continue
+      }
       wire.path.remove()
       live.current.delete(key)
     }

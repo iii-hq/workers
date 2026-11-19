@@ -513,3 +513,88 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* --- live work: what agents are doing, visible without opening anything --------------------------------- */
+
+/* The line under a card's description: a beating dot and the phase ("Thinking · 12s", "2 agents working"). */
+[data-iii-ui="kanban"] .kb-node__live {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  color: var(--kb-status-running);
+  font-size: var(--kb-text-sm);
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__live > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-iii-ui="kanban"] .kb-node__pulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* A prompt just reached it: the pending cyan; a question waits on you: the review green, still. */
+[data-iii-ui="kanban"] .kb-node__live:has(> .kb-node__pulse[data-tone="prompt"]) {
+  color: var(--kb-status-pending);
+}
+
+[data-iii-ui="kanban"] .kb-node__live:has(> .kb-node__pulse[data-tone="waiting"]) {
+  color: var(--kb-status-review);
+}
+
+/* A card with an agent at work at or under it wears the running colour on its edge. */
+[data-iii-ui="kanban"] .kb-chart__item[data-live="true"] > .kb-chart__card > .kb-node {
+  border-color: color-mix(in srgb, var(--kb-status-running) 45%, transparent);
+}
+
+/* The wire into live work flows toward it. */
+[data-iii-ui="kanban"] .kb-chart__wire[data-live] {
+  stroke: var(--kb-status-running);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="kanban"] .kb-chart__wire[data-live] {
+    --kb-flow-ms: 900ms;
+    stroke-dasharray: 5 5;
+    animation: kanban-wire-flow var(--kb-flow-ms) linear infinite;
+  }
+}
+
+@keyframes kanban-wire-flow {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
+/* --- the card whose chat is open beside the tree ------------------------------------------------------ */
+
+[data-iii-ui="kanban"] .kb-chart__item[data-selected="true"] > .kb-chart__card > .kb-node {
+  border-color: color-mix(in srgb, var(--color-ink) 45%, transparent);
+  background: var(--color-surface-selected);
+}
+
+/* The details action stays quiet until the card is hovered or focused. */
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="kanban"] .kb-node .kb-node__action {
+    opacity: 0;
+    transition: opacity var(--motion-duration-fast) ease;
+  }
+
+  [data-iii-ui="kanban"] .kb-node:hover .kb-node__action,
+  [data-iii-ui="kanban"] .kb-chart__item:focus-visible > .kb-chart__card .kb-node__action,
+  [data-iii-ui="kanban"] .kb-node .kb-node__action:focus-visible {
+    opacity: 1;
+  }
+}

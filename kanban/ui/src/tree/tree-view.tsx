@@ -1,6 +1,6 @@
 import { type Host, ShadcnButton, ShadcnSkeleton, ShadcnSwitch } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
-import { usePaneState } from '@iii-dev/console-ui/hooks'
+import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
 import {
   Bot,
   Check,
@@ -15,6 +15,7 @@ import {
   FlaskConical,
   type LucideIcon,
   Maximize2,
+  MessagesSquare,
   Minus,
   Network,
   Palette,
@@ -32,6 +33,7 @@ import {
   memo,
   type ReactNode,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -43,6 +45,7 @@ import { Empty, Notice } from '../ui/feedback'
 import { ColumnStatusIcon } from '../ui/glyphs'
 import { IconAction } from '../ui/icon-action'
 import {
+  type AgentSession,
   buildTree,
   childrenOfNode,
   formatSpan,
@@ -55,6 +58,7 @@ import {
   walk,
   withoutDone,
 } from './agent-tree'
+import { draftChatBeside, openChatBeside } from './side-chat'
 import { useAgentSessions } from './use-agent-sessions'
 import { MAX_SCALE, MIN_SCALE, useCamera } from './use-camera'
 import { useChartMotion } from './use-chart-motion'
@@ -116,6 +120,8 @@ export type TreeViewProps = {
   onOpenTicket: (key: string) => void
   /** Pick a project from the "every project" chart. */
   onOpenProject: (id: string) => void
+  /** This page's own workspace screen (`ext:kanban-board`): the chat opens in a column to its right. */
+  screen: string
 }
 
 /**
@@ -123,14 +129,43 @@ export type TreeViewProps = {
  * that worked it, with the sessions those spawned. Live: the board's events redraw the tickets, session-manager's
  * the sessions.
  */
-export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, onOpenProject }: TreeViewProps) {
-  const { sessions, loading, error, reload } = useAgentSessions(host.iii, true)
+export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, onOpenProject, screen }: TreeViewProps) {
+  const { sessions, links, prompted, loading, error, reload } = useAgentSessions(host.iii, true, project?.id ?? null)
+  // The card whose chat is open beside the tree: it stays marked (and in view) while you read.
+  const [selectedId, setSelectedId] = usePaneState<string | null>(`kanban:tree-selected:${paneKey}`, null)
   const [hideDone, setHideDone] = usePaneState<boolean>(`kanban:tree-hide-done:${paneKey}`, false)
   // Nodes the user opened or closed; the rest follow `defaultOpen`.
   const [toggled, setToggled] = usePaneState<Record<string, boolean>>(`kanban:tree-open:${paneKey}`, {})
   const [activeId, setActiveId] = useState<string | null>(null)
   const chartRef = useRef<HTMLDivElement | null>(null)
+  // Beside a chat the tree's pane is narrow: the toolbar keeps its controls and drops their words.
+  const { ref: narrowRef, narrow } = useContainerNarrow({ below: 900 })
+  // Live lines ("Thinking · 12s") tick while agents run; nothing ticks when nothing runs.
+  const [, setTick] = useState(0)
+  const runningCount = useMemo(() => sessions.filter((s) => s.status === 'working').length, [sessions])
+  useEffect(() => {
+    if (runningCount === 0 && prompted.size === 0) return
+    const timer = window.setInterval(() => setTick((n) => n + 1), 2000)
+    return () => window.clearInterval(timer)
+  }, [runningCount, prompted])
   const now = Date.now()
+  // When each running session entered its current phase ("Thinking · 14s" counts from there). Read off the
+  // sessions as they arrive: a new phase restarts its clock; a session first seen mid-phase starts from its
+  // latest write.
+  const phaseClock = useRef(new Map<string, { reason: string; since: number }>())
+  const phaseSince = useMemo(() => {
+    const clocks = phaseClock.current
+    const seen = new Set<string>()
+    for (const s of sessions) {
+      if (s.status !== 'working') continue
+      seen.add(s.id)
+      const reason = s.statusReason ?? ''
+      const known = clocks.get(s.id)
+      if (!known || known.reason !== reason) clocks.set(s.id, { reason, since: known ? Date.now() : s.updatedAt })
+    }
+    for (const id of [...clocks.keys()]) if (!seen.has(id)) clocks.delete(id)
+    return new Map([...clocks].map(([id, clock]) => [id, clock.since]))
+  }, [sessions])
 
   const tickets = useMemo<TicketSummary[]>(() => data.columns.flatMap((column) => column.tickets), [data])
   const tree: ProjectTree = useMemo(
@@ -142,9 +177,10 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         columns: data.columns,
         doneStatus: data.done_status,
         canceledStatus: data.canceled_status,
+        links: links ?? undefined,
         inScope: project ? (ticket) => ticket.project_id === project.id : undefined,
       }),
-    [tickets, sessions, data, project],
+    [tickets, sessions, links, data, project],
   )
 
   /** One root: the project on screen, or "All projects" over one node per project. */
@@ -282,10 +318,52 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     camera.reveal(el?.querySelector('.kb-node') ?? null)
   }
 
+  /** Once the chat column has opened (the tree's pane narrows), bring the selected card back into view. */
+  const revealSoon = (id: string) => {
+    window.setTimeout(() => {
+      const el = chartRef.current?.querySelector(`[data-node-id="${CSS.escape(id)}"] > .kb-chart__card`)
+      camera.reveal(el ?? null)
+    }, 420)
+  }
+
+  /**
+   * A ticket's card opens its conversation beside the tree: the session working it now, else the one that worked
+   * it last. A ticket no agent has touched starts a chat about it (its mention in the composer, not sent). On a
+   * console without a workspace chat, the ticket's details open instead.
+   */
   const activate = (node: Node) => {
-    if (node.kind === 'ticket') onOpenTicket(node.ticket.key)
-    else if (node.kind === 'session') openSession(host, node.session.id)
-    else if (node.project && node.project.id !== project?.id) onOpenProject(node.project.id)
+    if (node.kind === 'ticket') {
+      setSelectedId(node.id)
+      const session = conversationOf(node)
+      const opened = session
+        ? openChatBeside(host, screen, session.id)
+        : draftChatBeside(host, screen, {
+            text: `@kanban(id="${node.ticket.key}") `,
+            title: `${node.ticket.key} · ${node.ticket.title}`,
+          })
+      if (opened) revealSoon(node.id)
+      else onOpenTicket(node.ticket.key)
+    } else if (node.kind === 'session') {
+      setSelectedId(node.id)
+      if (openChatBeside(host, screen, node.session.id)) revealSoon(node.id)
+    } else if (node.project && node.project.id !== project?.id) onOpenProject(node.project.id)
+  }
+
+  /** The project's own chat: the one this button opened before (by its title), else a new one about the project. */
+  const askAboutProject = () => {
+    const title = project ? `Project · ${project.name}` : 'Board · all projects'
+    const earlier = sessions.filter((s) => s.name === title).sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    if (earlier) {
+      openChatBeside(host, screen, earlier.id)
+      return
+    }
+    const tops = tree.roots.slice(0, 3).map((n) => `@kanban(id="${n.ticket.key}")`)
+    const scope = project ? `the kanban project “${project.name}”` : 'the kanban board'
+    const count = `${tree.stats.tickets} ${tree.stats.tickets === 1 ? 'ticket' : 'tickets'}`
+    draftChatBeside(host, screen, {
+      title,
+      text: `About ${scope} (${count}${tops.length ? `, starting from ${tops.join(' ')}` : ''}): `,
+    })
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -322,6 +400,12 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         break
       case 'Enter':
         activate(node)
+        break
+      case 'd':
+      case 'D':
+        // The ticket's details (description, properties, activity) in the dialog.
+        if (node.kind !== 'ticket' || event.metaKey || event.ctrlKey || event.altKey) return
+        onOpenTicket(node.ticket.key)
         break
       case '*': {
         // Open every sibling of the focused card (WAI-ARIA tree).
@@ -391,8 +475,12 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           now={now}
           onActivate={activate}
           onFocusRow={setActiveId}
+          onDetails={onOpenTicket}
           onToggle={setOpen}
           position={1}
+          phaseSince={phaseSince}
+          prompted={prompted}
+          selectedId={selectedId}
           setSize={1}
           spine
           stats={tree.stats}
@@ -402,10 +490,14 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   }
 
   return (
-    <div className="kb-tree-view tw:bg-neutral-100 tw:dark:bg-black">
+    <div
+      className="kb-tree-view tw:bg-neutral-100 tw:dark:bg-black"
+      data-narrow={narrow ? 'true' : undefined}
+      ref={narrowRef}
+    >
       <div aria-label="Tree controls" className={SUBBAR} role="toolbar">
         <span className={`tw:flex tw:min-w-0 tw:items-center tw:gap-3 tw:text-[13px] ${MUTED}`}>
-          <span className="tw:truncate">{summary.join(' · ')}</span>
+          {narrow ? null : <span className="tw:truncate">{summary.join(' · ')}</span>}
           {stats.running > 0 ? (
             <span className="tw:shrink-0 tw:font-medium tw:text-glyph-blue">{stats.running} running</span>
           ) : null}
@@ -414,10 +506,26 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           ) : null}
         </span>
         <span className="tw:flex-1" />
+        {host.chat?.openDraft || host.chat?.selectConversation ? (
+          narrow ? (
+            <IconAction label={project ? 'Ask about this project' : 'Ask about the board'} onClick={askAboutProject}>
+              <MessagesSquare size={16} />
+            </IconAction>
+          ) : (
+            <ShadcnButton className="tw:shrink-0" onClick={askAboutProject} size="sm" type="button" variant="outline">
+              <MessagesSquare size={16} />
+              {project ? 'Ask about this project' : 'Ask about the board'}
+            </ShadcnButton>
+          )
+        ) : null}
         {/* biome-ignore lint/a11y/noLabelWithoutControl: the switch inside is the control */}
         <label className={`tw:flex tw:shrink-0 tw:cursor-pointer tw:items-center tw:gap-2 tw:text-[13px] ${MUTED}`}>
-          <ShadcnSwitch checked={Boolean(hideDone)} onCheckedChange={(checked: boolean) => setHideDone(checked)} />
-          Hide done
+          <ShadcnSwitch
+            aria-label="Hide done"
+            checked={Boolean(hideDone)}
+            onCheckedChange={(checked: boolean) => setHideDone(checked)}
+          />
+          {narrow ? null : 'Hide done'}
         </label>
         {/* biome-ignore lint/a11y/useSemanticElements: a fieldset would bring its own border and legend into a toolbar */}
         <span aria-label="Zoom" className="kb-zoom" role="group">
@@ -474,9 +582,29 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   )
 }
 
-/** Open a session's chat beside the board (`chat:<id>` reuses its pane when it is already open). */
-function openSession(host: Host, sessionId: string) {
-  host.panels?.openScreen?.({ screen: `chat:${sessionId}` })
+/**
+ * The conversation a ticket's card opens: among the sessions that worked the ticket, the one at work now (or
+ * whose sub-agents are), else the one active last. Its sub-agents' own chats open from their cards.
+ */
+function conversationOf(node: TicketNode): AgentSession | null {
+  const live = (n: SessionNode): boolean => n.state === 'active' || n.children.some(live)
+  const ranked = [...node.sessions].sort(
+    (a, b) => Number(live(b)) - Number(live(a)) || b.session.updatedAt - a.session.updatedAt,
+  )
+  return ranked[0]?.session ?? null
+}
+
+/** The live phase the harness reports for a running session, in a person's words. */
+export function activityLabel(reason: string | null): string {
+  const phase = (reason ?? '').trim().toLowerCase()
+  if (!phase) return 'Working'
+  if (phase === 'preparing context') return 'Reading context'
+  if (phase === 'running tools') return 'Calling functions'
+  if (phase === 'waiting for pending calls') return 'Waiting on calls'
+  if (phase === 'queueing next step') return 'Next step'
+  if (phase === 'stopping') return 'Stopping'
+  if (phase.startsWith('waiting for ')) return 'Thinking'
+  return phase.charAt(0).toUpperCase() + phase.slice(1)
 }
 
 type ItemProps = {
@@ -495,6 +623,14 @@ type ItemProps = {
   onToggle: (node: Node, open: boolean) => void
   onActivate: (node: Node) => void
   onFocusRow: (id: string) => void
+  /** The card whose chat is open beside the tree. */
+  selectedId: string | null
+  /** When a prompt last reached each session (session id → ms). */
+  prompted: ReadonlyMap<string, number>
+  /** When each running session entered its current phase (session id → ms). */
+  phaseSince: ReadonlyMap<string, number>
+  /** A ticket's details, in the dialog. */
+  onDetails: (key: string) => void
   /** Its place among its siblings: the stagger of its entrance. */
   enterIndex?: number
 }
@@ -526,13 +662,15 @@ const ChartItem = memo(function ChartItem(props: ItemProps) {
       aria-label={`${name}, ${state}`}
       aria-level={level}
       aria-posinset={position}
-      aria-selected={false}
+      aria-selected={node.id === props.selectedId}
       aria-setsize={setSize}
       className="kb-chart__item"
       style={props.enterIndex ? ({ '--i': props.enterIndex } as CSSProperties) : undefined}
       data-kids={open ? layout : undefined}
       data-node-id={node.id}
       data-spine={spine ? 'true' : undefined}
+      data-live={agentsAtWork(node) ? 'true' : undefined}
+      data-selected={node.id === props.selectedId ? 'true' : undefined}
       data-state={node.kind === 'group' ? undefined : node.state}
       onFocus={(event) => {
         if (event.target === event.currentTarget) onFocusRow(node.id)
@@ -587,6 +725,8 @@ function NodeCard({
   description,
   note,
   facts,
+  live,
+  action,
   count,
   open,
   onToggle,
@@ -601,6 +741,10 @@ function NodeCard({
   /** A second line that matters more than the description (why a session failed). */
   note?: string | null
   facts: ReactNode
+  /** What an agent is doing right now (a live line under the description). */
+  live?: ReactNode
+  /** A quiet action at the end of the footer (a ticket's details). */
+  action?: ReactNode
   count: number
   open: boolean
   onToggle: () => void
@@ -620,8 +764,10 @@ function NodeCard({
       </div>
       {description ? <p className="kb-node__desc">{description}</p> : null}
       {note ? <p className="kb-node__note">{note}</p> : null}
+      {live ? <p className="kb-node__live">{live}</p> : null}
       <div className="kb-node__foot">
         <span className="kb-node__facts">{facts}</span>
+        {action}
         {count > 0 ? (
           <ShadcnButton
             aria-hidden="true"
@@ -736,12 +882,25 @@ function TicketCard({
   now,
   open,
   onToggle,
+  onDetails,
 }: ItemProps & { node: TicketNode; open: boolean; onToggle: () => void }) {
   const { ticket } = node
   const column = data.columns.find((c) => c.id === ticket.status)
   const subtasks = node.subtasks.length
   const doneSubs = node.subtasks.filter((sub) => sub.state === 'done').length
   const agentsHere = countSessions(node.sessions)
+  const working = workingUnder(node.sessions)
+  const live =
+    working.length > 0 ? (
+      <>
+        <span aria-hidden="true" className="kb-node__pulse iii-ui-pulse" />
+        <span>
+          {working.length === 1 ? '1 agent working' : `${working.length} agents working`}
+          {' · '}
+          {activityLabel(working[0].statusReason)}
+        </span>
+      </>
+    ) : null
   return (
     <NodeCard
       badge={
@@ -774,7 +933,21 @@ function TicketCard({
           <span>{formatRelative(ticket.updated_at, now)}</span>
         </>
       }
+      action={
+        <IconAction
+          className="kb-node__action"
+          label="Ticket details (D)"
+          onClick={(event) => {
+            event.stopPropagation()
+            onDetails(ticket.key)
+          }}
+          size="icon-xs"
+        >
+          <FileText size={16} />
+        </IconAction>
+      }
       kind="ticket"
+      live={live}
       name={ticket.key}
       onToggle={onToggle}
       open={open}
@@ -796,8 +969,34 @@ function SessionCard({
   now,
   open,
   onToggle,
+  prompted,
+  phaseSince,
 }: ItemProps & { node: SessionNode; open: boolean; onToggle: () => void }) {
   const { session } = node
+  // What it is doing now: a prompt that just reached it, its live phase, or a question waiting on you.
+  const promptedAt = prompted.get(session.id)
+  // Only while it has not finished: a quick agent that is already done says so instead.
+  const finished = session.status === 'done' || session.status === 'error'
+  const justPrompted = !finished && promptedAt !== undefined && now - promptedAt < PROMPT_FRESH_MS
+  const awaiting = session.status === 'done' && session.statusReason === 'awaiting answer'
+  const live = justPrompted ? (
+    <>
+      <span aria-hidden="true" className="kb-node__pulse iii-ui-pulse" data-tone="prompt" />
+      <span>Prompted {formatSpan(now - (promptedAt ?? now))} ago</span>
+    </>
+  ) : session.status === 'working' ? (
+    <>
+      <span aria-hidden="true" className="kb-node__pulse iii-ui-pulse" />
+      <span>
+        {activityLabel(session.statusReason)} · {formatSpan(now - (phaseSince.get(session.id) ?? session.updatedAt))}
+      </span>
+    </>
+  ) : awaiting ? (
+    <>
+      <span aria-hidden="true" className="kb-node__pulse" data-tone="waiting" />
+      <span>Waiting for your answer</span>
+    </>
+  ) : null
   const Icon = SESSION_ICONS[session.icon ?? ''] ?? Bot
   const model = modelName(session.model)
   // The reference card: the role on top, the model under it, the task as the line below.
@@ -831,6 +1030,7 @@ function SessionCard({
         </>
       }
       kind="session"
+      live={live}
       name={role}
       note={node.state === 'failed' ? session.statusReason : null}
       onToggle={onToggle}
@@ -840,6 +1040,28 @@ function SessionCard({
       tone={session.color}
     />
   )
+}
+
+/**
+ * Whether an agent is at work at or under a node: a running session, or a ticket (or project) with one somewhere
+ * beneath it. Not the ticket's column — "In progress" with nobody running is not live.
+ */
+function agentsAtWork(node: Node): boolean {
+  if (node.kind === 'session') return node.session.status === 'working' || node.children.some(agentsAtWork)
+  if (node.kind === 'ticket') return node.sessions.some(agentsAtWork) || node.subtasks.some(agentsAtWork)
+  return node.children.some(agentsAtWork)
+}
+
+/** How long a prompt counts as "just" reaching a session. */
+const PROMPT_FRESH_MS = 8000
+
+/** The sessions at work under a ticket (one each, however often drawn), the latest active first. */
+function workingUnder(nodes: readonly SessionNode[]): AgentSession[] {
+  const found = new Map<string, AgentSession>()
+  walk(nodes, (n) => {
+    if (n.kind === 'session' && n.session.status === 'working') found.set(n.session.id, n.session)
+  })
+  return [...found.values()].sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 function countSessions(nodes: readonly SessionNode[]): number {
