@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentEntry } from '@/lib/backend/directory-prompts'
+import { resetOnboardingKitsForTest } from '@/lib/onboarding/kits'
 import { AgentProfilePicker } from './AgentProfilePicker'
 import { DEFAULT_SYSTEM_PROMPT_STATE } from './system-prompt-selection'
 
@@ -13,6 +14,8 @@ const harness = vi.hoisted(() => ({
   handlers: new Map<string, (payload: unknown) => void>(),
   observed: [] as Array<{ source: unknown; target: string }>,
   listCalls: 0,
+  downloads: 0,
+  kitProfile: null as unknown as AgentEntry,
 }))
 
 vi.mock('@/lib/panel-context', () => ({ requestPanelOpen: vi.fn() }))
@@ -29,6 +32,12 @@ vi.mock('@/lib/iii-client', () => ({
         return { agents: harness.agents }
       }
       if (functionId === 'directory::kits::list') return { kits: [] }
+      if (functionId === 'directory::download-kit') {
+        harness.downloads += 1
+        harness.agents = [...harness.agents, harness.kitProfile]
+        for (const handler of harness.handlers.values()) handler({ op: 'kit' })
+        return { status: 'applied' }
+      }
       throw new Error(`unexpected call ${functionId}`)
     },
     on: (functionId: string, handler: (payload: unknown) => void) => {
@@ -62,6 +71,9 @@ beforeEach(() => {
   harness.handlers.clear()
   harness.observed = []
   harness.listCalls = 0
+  harness.downloads = 0
+  harness.kitProfile = profile('deepwork', 'Deepwork')
+  resetOnboardingKitsForTest()
 })
 
 afterEach(async () => {
@@ -73,18 +85,25 @@ afterEach(async () => {
 const flush = () => act(async () => {})
 
 async function mount() {
+  const onAgentProfileChange = vi.fn()
   root = createRoot(document.body.appendChild(document.createElement('div')))
   await act(async () =>
     root?.render(
       <AgentProfilePicker
         systemPrompt={DEFAULT_SYSTEM_PROMPT_STATE}
         onSystemPromptChange={vi.fn()}
-        onAgentProfileChange={vi.fn()}
+        onAgentProfileChange={onAgentProfileChange}
       />,
     ),
   )
   await flush()
+  return onAgentProfileChange
 }
+
+const kitRow = () =>
+  document.querySelector<HTMLButtonElement>(
+    '[aria-label="Install the Deepwork agent"], [aria-label="Deepwork agent is installing"]',
+  )
 
 const trigger = () =>
   document.querySelector<HTMLButtonElement>('.composer-agent-trigger')
@@ -153,9 +172,7 @@ describe('AgentProfilePicker catalog', () => {
 
     // The open's read succeeds; the failed doorbell read never blanked it.
     expect(profileNames()).toEqual(['Use Default agent profile'])
-    expect(document.body.textContent).not.toContain(
-      'Unable to load agents.',
-    )
+    expect(document.body.textContent).not.toContain('Unable to load agents.')
   })
 
   it('offers Retry when the first read fails, and recovers', async () => {
@@ -163,9 +180,7 @@ describe('AgentProfilePicker catalog', () => {
     harness.failures = 2
     await mount()
     await act(async () => trigger()?.click())
-    expect(document.body.textContent).toContain(
-      'Unable to load agents.',
-    )
+    expect(document.body.textContent).toContain('Unable to load agents.')
 
     const retry = [...document.querySelectorAll('button')].find(
       (button) => button.textContent === 'Retry',
@@ -173,9 +188,39 @@ describe('AgentProfilePicker catalog', () => {
     await act(async () => retry?.click())
     await flush()
 
-    expect(document.body.textContent).not.toContain(
-      'Unable to load agents.',
-    )
+    expect(document.body.textContent).not.toContain('Unable to load agents.')
     expect(profileNames()).toEqual(['Use Default agent profile'])
+  })
+
+  it('always offers Deepwork, and installs and selects it on click', async () => {
+    const onAgentProfileChange = await mount()
+    await act(async () => trigger()?.click())
+    expect(kitRow()?.textContent).toContain('Install')
+
+    await act(async () => kitRow()?.click())
+    await flush()
+    await flush()
+
+    expect(harness.downloads).toBe(1)
+    expect(kitRow()).toBeNull()
+    expect(profileNames()).toContain('Use Deepwork agent profile')
+    expect(onAgentProfileChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'deepwork' }),
+      undefined,
+    )
+  })
+
+  it('hides the install row once the Directory serves Deepwork', async () => {
+    harness.agents = [
+      profile('default', 'Default'),
+      profile('deepwork', 'Deepwork'),
+    ]
+    await mount()
+    await act(async () => trigger()?.click())
+    expect(kitRow()).toBeNull()
+    expect(profileNames()).toEqual([
+      'Use Default agent profile',
+      'Use Deepwork agent profile',
+    ])
   })
 })

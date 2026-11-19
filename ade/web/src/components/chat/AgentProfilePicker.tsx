@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleArrowUp,
+  Loader2,
   Lock,
   Plus,
   Settings2,
@@ -16,6 +17,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
 import {
   Popover,
@@ -31,6 +33,12 @@ import {
 } from '@/lib/backend/directory-prompts'
 import { serialRefresh } from '@/lib/backend/serial-refresh'
 import { getIiiClient } from '@/lib/iii-client'
+import {
+  type KitInstall,
+  onboardingKitsSnapshot,
+  retryOnboardingKit,
+  subscribeOnboardingKits,
+} from '@/lib/onboarding/kits'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
 import type {
@@ -232,6 +240,87 @@ function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
   return provided ?? loaded
 }
 
+/**
+ * Deepwork is always offered, whether or not its kit is installed yet: the
+ * setup wizard installs it in the background (it lands minutes after a new
+ * project opens) and an older project may never have had it. Until the
+ * Directory serves the profile, the picker shows this row with the kit's
+ * install state, and a click installs the kit.
+ */
+const ALWAYS_LISTED = {
+  id: 'deepwork',
+  kit: 'iii/deepwork',
+  name: 'Deepwork',
+  description:
+    'Use for big goals: plans tickets, runs agents in parallel, reviews the work.',
+} as const
+
+/** The kit's install, as the setup wizard or a click here started it. */
+function useKitInstall(kit: string): KitInstall | undefined {
+  const installs = useSyncExternalStore(
+    subscribeOnboardingKits,
+    onboardingKitsSnapshot,
+    onboardingKitsSnapshot,
+  )
+  return installs.find(
+    (entry) => entry.kit === kit || entry.kit.startsWith(`${kit}@`),
+  )
+}
+
+function KitAgentRow({
+  install,
+  disabled,
+  onInstall,
+  onReview,
+}: {
+  install: KitInstall | undefined
+  disabled: boolean
+  onInstall: () => void
+  onReview: () => void
+}) {
+  const state = install?.state
+  const installing = state === 'installing'
+  const action =
+    state === 'review' ? 'Review' : state === 'failed' ? 'Try again' : 'Install'
+  const label = installing
+    ? `${ALWAYS_LISTED.name} agent is installing`
+    : state === 'review'
+      ? `Review the ${ALWAYS_LISTED.name} kit install`
+      : `${action === 'Try again' ? 'Try installing' : 'Install'} the ${ALWAYS_LISTED.name} agent`
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={state === 'failed' ? install?.message : undefined}
+      disabled={disabled || installing}
+      className="group/kit flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent"
+      onClick={state === 'review' ? onReview : onInstall}
+    >
+      <AgentGlyph icon="agent" />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-sm leading-5 font-medium text-ink">
+          {ALWAYS_LISTED.name}
+        </span>
+        <span className="line-clamp-2 text-sm leading-5 text-pretty text-ink-faint">
+          {ALWAYS_LISTED.description}
+        </span>
+      </span>
+      <span className="flex h-5 shrink-0 items-center gap-1.5 text-sm text-ink-faint">
+        {installing ? (
+          <>
+            <Loader2 aria-hidden className="size-4 motion-safe:animate-spin" />
+            <span role="status">Installing…</span>
+          </>
+        ) : (
+          <span className="rounded-md px-1.5 text-ink transition-colors duration-100 group-hover/kit:bg-surface-hover">
+            {action}
+          </span>
+        )}
+      </span>
+    </button>
+  )
+}
+
 export function AgentProfilePicker({
   systemPrompt,
   onSystemPromptChange,
@@ -258,6 +347,21 @@ export function AgentProfilePicker({
     refresh: refreshCatalog,
   } = useAgentCatalog(agentEntries)
   const agents = (catalog ?? []).filter((entry) => !entry.hidden)
+  const kitInstall = useKitInstall(ALWAYS_LISTED.kit)
+  // A Directory without kit support answers the install with nothing.
+  const [kitUnsupported, setKitUnsupported] = useState(false)
+  // Clicked Install: select the profile once the Directory serves it.
+  const [selectWhenInstalled, setSelectWhenInstalled] = useState(false)
+  const showKitRow =
+    agentEntries === undefined &&
+    catalog !== null &&
+    !error &&
+    !kitUnsupported &&
+    !(catalog ?? []).some((entry) => entry.id === ALWAYS_LISTED.id)
+  const kitRowIndex = agents.findIndex(
+    (entry) =>
+      (entry.name.trim() || entry.id).localeCompare(ALWAYS_LISTED.name) > 0,
+  )
   const selectedId = agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
   const preselect =
     preselectDefaultAgent && !selectionLocked
@@ -274,6 +378,56 @@ export function AgentProfilePicker({
   useLayoutEffect(() => {
     if (preselect) selectRef.current(preselect, { keepThinkingLevel: true })
   }, [preselect])
+
+  useEffect(() => {
+    if (!selectWhenInstalled) return
+    const installed = agents.find((entry) => entry.id === ALWAYS_LISTED.id)
+    if (!installed) return
+    setSelectWhenInstalled(false)
+    if (!selectionLocked) selectRef.current(installed)
+  }, [agents, selectWhenInstalled, selectionLocked])
+
+  // An applied kit rings the agents doorbell; read once more in case the
+  // observer was not registered yet.
+  const kitInstalled = kitInstall?.state === 'installed'
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is stable per mount; only the state flip matters.
+  useEffect(() => {
+    if (kitInstalled) refreshCatalog()
+  }, [kitInstalled])
+
+  const installKitAgent = () => {
+    setSelectWhenInstalled(true)
+    void retryOnboardingKit(ALWAYS_LISTED.kit).then(() => {
+      if (
+        !onboardingKitsSnapshot().some(
+          (entry) => entry.kit === ALWAYS_LISTED.kit,
+        )
+      ) {
+        setKitUnsupported(true)
+        setSelectWhenInstalled(false)
+      }
+    })
+  }
+  const reviewKitAgent = () => {
+    setOpen(false)
+    requestPanelOpen({
+      pageId: 'directory',
+      context: {
+        collection: 'kits',
+        kit: ALWAYS_LISTED.kit,
+        ...(kitInstall?.planId ? { plan_id: kitInstall.planId } : {}),
+      },
+    })
+  }
+  const kitRow = showKitRow ? (
+    <KitAgentRow
+      key={`kit:${ALWAYS_LISTED.kit}`}
+      install={kitInstall}
+      disabled={selectionLocked}
+      onInstall={installKitAgent}
+      onReview={reviewKitAgent}
+    />
+  ) : null
 
   const activeId = selectedId ?? preselect?.id
   const selected = agents.find((entry) => entry.id === activeId)
@@ -384,12 +538,14 @@ export function AgentProfilePicker({
             className="flex min-w-0 flex-col gap-0.5"
             aria-label="Agent profiles"
           >
-            {agents.map((entry) => {
+            {kitRowIndex === 0 ? kitRow : null}
+            {agents.map((entry, index) => {
               const active = entry.id === activeId
               const update = active ? undefined : updateFor(entry)
               const markerId = `${markerBase}-${entry.id}`
               const description = entry.description.trim()
-              return (
+              return [
+                index > 0 && index === kitRowIndex ? kitRow : null,
                 <button
                   key={entry.id}
                   type="button"
@@ -449,9 +605,10 @@ export function AgentProfilePicker({
                       )}
                     />
                   </span>
-                </button>
-              )
+                </button>,
+              ]
             })}
+            {kitRowIndex === -1 ? kitRow : null}
           </fieldset>
           {selectedUpdate ? (
             <button
