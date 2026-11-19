@@ -1,6 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
-//! No VM or subprocess: every compatibility case must fail BEFORE such work.
+//! Compatibility refusals never start a VM. H1 lifecycle regressions below
+//! author real owned test children (not executed by the source-only task).
 use super::*;
 use crate::cli::local_worker::{test_binary_command, test_build_command, test_source_command};
 use std::os::unix::fs::PermissionsExt;
@@ -50,6 +51,403 @@ fn setup(compat: bool) -> Setup {
         source,
     }
 }
+const H1_A: &str = "docker.io/library/alpine:3.18";
+const H1_B: &str = "docker.io/library/alpine:3.19";
+
+fn h1_project(s: &Setup, reference: &str) -> WorkerProject {
+    WorkerProject::resolve(&s.source, None, None, None, Some(reference), true).unwrap()
+}
+fn h1_cache(s: &Setup) -> PathBuf {
+    let cache = s._root.path().join("cache");
+    crate::cli::rootfs_cache::prepare_cache_parent(context(s), &cache).unwrap();
+    cache
+}
+async fn h1_prepare(
+    s: &Setup,
+    reference: &str,
+    produce: bool,
+) -> Result<crate::cli::rootfs_cache::PreparedCache, String> {
+    let mut project = h1_project(s, reference);
+    let lease = s.vms.admission(Some("key")).unwrap();
+    s.vms
+        .prepare_project_at(
+            Some("key"),
+            &mut project,
+            lease,
+            &h1_cache(s),
+            |request| async move {
+                request
+                    .resolve_fixture(produce)
+                    .await
+                    .map_err(|e| format!("{e:#}"))?
+                    .ok_or_else(|| "fixture cache miss".to_string())
+            },
+        )
+        .await
+}
+async fn h1_seed_disjoint(s: &Setup, reference: &str) {
+    let owner = context(s)
+        .local(&s._root.path().join("seed-consumer"))
+        .unwrap();
+    let prepared = crate::cli::rootfs_cache::CacheRequest::new(owner, reference, &h1_cache(s))
+        .unwrap()
+        .resolve_fixture(true)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(prepared); // independent seed writer and consumer are genuinely closed
+}
+async fn h1_runtime(
+    s: &Setup,
+    lease: crate::worker_admission::Lease,
+    reads: Vec<PathBuf>,
+    endpoints: Vec<PathBuf>,
+    skip_bind: bool,
+) -> std::sync::Arc<crate::sandbox_daemon::adapters::RuntimeSession> {
+    crate::sandbox_daemon::adapters::runtime_test_session_resources(
+        lease,
+        &s._root.path().join("catalog"),
+        false,
+        crate::sandbox_daemon::adapters::RuntimeTestResources {
+            reads,
+            endpoints,
+            skip_bind,
+            exit_without_drop: true,
+            ..Default::default()
+        },
+    )
+    .await
+}
+async fn h1_retire(
+    s: &Setup,
+    prepared: &crate::cli::rootfs_cache::PreparedCache,
+) -> crate::worker_admission::WriterRetirement {
+    let session = h1_runtime(
+        s,
+        prepared.lease.clone(),
+        vec![prepared.root.clone(), prepared.lower.clone()],
+        Vec::new(),
+        false,
+    )
+    .await;
+    let (status, retirement) = session.wait().await;
+    assert!(status.unwrap().success());
+    let receipt = retirement.unwrap();
+    session.finish_resources(&receipt).await.unwrap();
+    s.vms
+        .retired_builds
+        .lock()
+        .unwrap()
+        .insert(vm_id("key"), receipt.clone());
+    receipt
+}
+fn h1_assert_current(s: &Setup, reference: &str) {
+    let stored = s
+        .vms
+        .prepared_caches
+        .lock()
+        .unwrap()
+        .get("key")
+        .unwrap()
+        .clone();
+    assert_eq!(stored.reference, reference);
+    assert_eq!(
+        stored.root,
+        crate::cli::rootfs_cache::cache_candidates(&h1_cache(s), reference)[0]
+    );
+}
+
+#[tokio::test]
+async fn h1_repeat_build_new_warm_or_cold_reference_keeps_original_operation_and_updates_receipt() {
+    for warm in [false, true] {
+        let s = setup(false);
+        valid_project(&s);
+        let original = s.vms.admission(Some("key")).unwrap();
+        let a = h1_prepare(&s, H1_A, true).await.unwrap();
+        let a_receipt = h1_retire(&s, &a).await;
+        if warm {
+            h1_seed_disjoint(&s, H1_B).await;
+        }
+        let scratch = s.vm.join(format!("{BUILD_SCRATCH_PREFIX}current"));
+        // Repeat the production declaration set before H1 issuance. These are
+        // exact original declarations, not a newly blessed mutable subtree.
+        crate::worker_admission::with_paths(
+            original.clone(),
+            &[
+                crate::worker_admission::PathRequest {
+                    path: &scratch,
+                    role: crate::worker_admission::PathRole::MutableTree,
+                },
+                crate::worker_admission::PathRequest {
+                    path: &scratch.join("root"),
+                    role: crate::worker_admission::PathRole::MutableTree,
+                },
+                crate::worker_admission::PathRequest {
+                    path: &scratch.join("root/runtime"),
+                    role: crate::worker_admission::PathRole::MutableTree,
+                },
+                crate::worker_admission::PathRequest {
+                    path: &scratch.join(crate::cli::upper::UPPER_NAME),
+                    role: crate::worker_admission::PathRole::MutableFile,
+                },
+            ],
+        )
+        .unwrap();
+        let b = h1_prepare(&s, H1_B, !warm).await.unwrap();
+        let mut reset = original
+            .begin(crate::worker_admission::MutationPlan::Reclone {
+                root: scratch.clone(),
+            })
+            .unwrap();
+        let stage = reset.stage_tree(&scratch).unwrap();
+        reset.publish_tree(stage).unwrap();
+        reset.commit().unwrap();
+        assert_ne!(a.root, b.root);
+        h1_assert_current(&s, H1_B);
+        // The original pre-handoff Arc sees B: a replacement lifecycle would
+        // neither possess this declaration nor validate the real receipt below.
+        original.use_path(&b.root).unwrap().revalidate().unwrap();
+        original.use_path(&a.root).unwrap().revalidate().unwrap();
+        let competitor = context(&s)
+            .local(&s._root.path().join("competitor"))
+            .unwrap();
+        assert!(
+            competitor
+                .prepare_cache(&[crate::worker_admission::CacheEntry { root: &a.root }])
+                .is_err()
+        );
+        assert!(
+            competitor
+                .prepare_cache(&[crate::worker_admission::CacheEntry { root: &b.root }])
+                .is_err()
+        );
+        let b_receipt = h1_retire(&s, &b).await;
+        let next = h1_cache(&s).join("next-reference");
+        assert!(
+            a_receipt
+                .probe_cache(
+                    &original,
+                    &[crate::worker_admission::CacheEntry { root: &next }]
+                )
+                .is_err()
+        );
+        b_receipt
+            .probe_cache(
+                &original,
+                &[crate::worker_admission::CacheEntry { root: &next }],
+            )
+            .unwrap()
+            .cancel()
+            .unwrap();
+        // Reuse the SAME reference without any new request factory or producer.
+        let mut same = h1_project(&s, H1_B);
+        s.vms
+            .prepare_project_at(Some("key"), &mut same, original, &h1_cache(&s), |_| async {
+                panic!("same-reference reuse must not probe or prepare")
+            })
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn h1_failure_preserves_prepared_a_for_missing_foreign_used_and_stale_receipts() {
+    for failure in [
+        "missing",
+        "foreign",
+        "used",
+        "stale",
+        "host-hold",
+        "no-pull",
+        "producer",
+        "changed-after-issuance",
+    ] {
+        let s = setup(false);
+        valid_project(&s);
+        let a = h1_prepare(&s, H1_A, true).await.unwrap();
+        let receipt = h1_retire(&s, &a).await;
+        match failure {
+            "missing" => {
+                s.vms.retired_builds.lock().unwrap().remove(&vm_id("key"));
+            }
+            "foreign" => {
+                let other = context(&s)
+                    .local(&s._root.path().join("foreign-owner"))
+                    .unwrap();
+                let session = h1_runtime(&s, other, Vec::new(), Vec::new(), false).await;
+                let foreign = session.wait().await.1.unwrap();
+                session.finish_resources(&foreign).await.unwrap();
+                s.vms
+                    .retired_builds
+                    .lock()
+                    .unwrap()
+                    .insert(vm_id("key"), foreign);
+            }
+            "used" => {
+                // Consume only an absent, originally declared scratch target;
+                // keep the rest of the operation valid so this tests the used
+                // receipt, not an unresolved dropped mutation.
+                let target = s.vm.join(format!("{BUILD_SCRATCH_PREFIX}current"));
+                let mut removal = receipt.begin_remove(&a.lease, &target, &[&target]).unwrap();
+                removal.remove_path(&target).unwrap();
+                removal.commit().unwrap();
+            }
+            "stale" => {
+                a.lease
+                    .prepare_runtime(&[])
+                    .unwrap()
+                    .cancel_before_spawn()
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let read = if failure == "host-hold" {
+            Some(a.lease.use_path(&a.root).unwrap())
+        } else {
+            None
+        };
+        let before = std::fs::read(&a.lower).unwrap();
+        let result = if matches!(failure, "no-pull" | "producer" | "changed-after-issuance") {
+            let mut project = h1_project(&s, H1_B);
+            s.vms
+                .prepare_project_at(
+                    Some("key"),
+                    &mut project,
+                    a.lease.clone(),
+                    &h1_cache(&s),
+                    |request| {
+                        if failure == "changed-after-issuance" {
+                            // A completed control-file publication revokes an
+                            // issued cache binding; the resolver cannot refresh.
+                            write_control_admitted(
+                                &a.lease,
+                                &s.vm,
+                                CONSOLE_LOG,
+                                b"new host journal",
+                            )
+                            .unwrap();
+                        }
+                        async move {
+                            let result = if failure == "producer" {
+                                request.resolve_fixture_failure().await
+                            } else {
+                                request.resolve_fixture(false).await
+                            };
+                            result
+                                .map_err(|e| format!("{e:#}"))?
+                                .ok_or_else(|| "deliberate no-pull miss".to_string())
+                        }
+                    },
+                )
+                .await
+        } else {
+            h1_prepare(&s, H1_B, true).await
+        };
+        assert!(result.is_err(), "{failure}");
+        assert_eq!(std::fs::read(&a.lower).unwrap(), before);
+        assert_eq!(s.vms.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(s.vms.build_seq.load(Ordering::SeqCst), 0);
+        assert!(!s.vm.join(BUILD_DIR_RECORD).exists());
+        assert!(s.vms.slots().is_empty());
+        h1_assert_current(&s, H1_A);
+        assert!(!crate::cli::rootfs_cache::cache_candidates(&h1_cache(&s), H1_B)[0].exists());
+        drop(read);
+    }
+}
+
+#[tokio::test]
+async fn h1_waited_process_cannot_bypass_host_drain_or_endpoint_failure() {
+    for endpoint_failure in [false, true] {
+        let s = setup(false);
+        valid_project(&s);
+        let control = s._root.path().join("control");
+        private(&control);
+        let socket = control.join("shell.sock");
+        let lease = s.vms.admission(Some("key")).unwrap();
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[crate::worker_admission::PathRequest {
+                path: &socket,
+                role: crate::worker_admission::PathRole::Endpoint,
+            }],
+        )
+        .unwrap();
+        let a = h1_prepare(&s, H1_A, true).await.unwrap();
+        let session = h1_runtime(
+            &s,
+            lease.clone(),
+            vec![a.root.clone()],
+            vec![socket],
+            endpoint_failure,
+        )
+        .await;
+        let (status, retirement) = session.wait().await;
+        assert!(status.unwrap().success());
+        let receipt = retirement.unwrap();
+        if !endpoint_failure {
+            session
+                .add_test_host_writer(tokio::spawn(async {
+                    Err(io::Error::other("drain failure"))
+                }))
+                .await;
+        }
+        assert!(session.finish_resources(&receipt).await.is_err());
+        // Mirrors the production waiter: never populate a successful caller
+        // receipt after host drain/G failure, despite the OS/core completion.
+        assert!(
+            !s.vms
+                .retired_builds
+                .lock()
+                .unwrap()
+                .contains_key(&vm_id("key"))
+        );
+        assert!(h1_prepare(&s, H1_B, true).await.is_err());
+        h1_assert_current(&s, H1_A);
+    }
+}
+
+#[tokio::test]
+async fn h1_vm_receipt_is_required_after_pumps_and_failed_receipt_does_not_replace_a() {
+    let s = setup(false);
+    valid_project(&s);
+    let a = h1_prepare(&s, H1_A, true).await.unwrap();
+    // This existing real-child fixture stores a receipt in Vm::retirement only
+    // after actual completion and G settlement, as the production waiter does.
+    write_control_admitted(&a.lease, &s.vm, CONSOLE_LOG, b"").unwrap();
+    install_retired_fixture(&s).await;
+    assert!(s.vms.retired_builds.lock().unwrap().is_empty());
+    let b = h1_prepare(&s, H1_B, true).await.unwrap();
+    assert_ne!(a.root, b.root);
+    let slot = s.vms.slots().get(&vm_id("key")).cloned().unwrap();
+    let Slot::Booted(vm) = slot else {
+        panic!("owned vm slot expected")
+    };
+    *vm.retirement.lock().unwrap() = Some(Err("host pump failed".into()));
+    let next = "docker.io/library/alpine:3.21";
+    assert!(h1_prepare(&s, next, true).await.is_err());
+    h1_assert_current(&s, H1_B);
+    assert!(!crate::cli::rootfs_cache::cache_candidates(&h1_cache(&s), next)[0].exists());
+}
+
+#[tokio::test]
+async fn h1_changed_pin_cannot_upgrade_an_old_shared_strict_root_to_a_writer() {
+    let s = setup(false);
+    valid_project(&s);
+    let a = h1_prepare(&s, H1_A, true).await.unwrap();
+    h1_retire(&s, &a).await;
+    let pin = format!("{H1_A}@sha256:{}", "c".repeat(64));
+    let before = std::fs::read(&a.lower).unwrap();
+    let result = h1_prepare(&s, &pin, true).await;
+    assert!(
+        result.is_err(),
+        "miss preparation must not upgrade old Strict candidates"
+    );
+    assert_eq!(std::fs::read(&a.lower).unwrap(), before);
+    h1_assert_current(&s, H1_A);
+    a.validate(H1_A).unwrap();
+    assert!(!crate::cli::rootfs_cache::cache_candidates(&h1_cache(&s), &pin)[1].exists());
+}
+
 fn source(s: &Setup) -> WorkerSource {
     WorkerSource::Local {
         host_path: s.source.display().to_string(),

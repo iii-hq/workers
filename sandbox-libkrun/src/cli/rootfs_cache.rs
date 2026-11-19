@@ -732,11 +732,58 @@ impl CacheRequest {
             roots,
         })
     }
+    /// Only the current, private retirement receipt can continue an existing
+    /// lifecycle. The core binds and rechecks the SAME consumer Arc at handoff.
+    pub(crate) fn from_retirement(
+        consumer: crate::worker_admission::Lease,
+        retirement: &crate::worker_admission::WriterRetirement,
+        reference: &str,
+        cache: &Path,
+    ) -> Result<Self> {
+        let roots = cache_candidates(cache, reference);
+        let entries: Vec<_> = roots
+            .iter()
+            .map(|root| crate::worker_admission::CacheEntry { root })
+            .collect();
+        let probe = retirement.probe_cache(&consumer, &entries)?;
+        Ok(Self {
+            consumer,
+            probe,
+            reference: reference.to_string(),
+            roots,
+        })
+    }
+
     pub(crate) async fn resolve(
         self,
         allow_pull: bool,
         on_pull: impl FnOnce() + Send + 'static,
     ) -> Result<Option<PreparedCache>> {
+        self.resolve_with(
+            allow_pull,
+            on_pull,
+            |reference, stage, checkpoint| async move {
+                crate::cli::worker_manager::oci::pull_into_stage_checked(
+                    &reference, &stage, checkpoint,
+                )
+                .await
+            },
+        )
+        .await
+    }
+
+    // The producer boundary is the only substituted work in source-authored
+    // cold fixtures. Admission, recheck, staging, EROFS and handoff stay real.
+    async fn resolve_with<F, Fut>(
+        self,
+        allow_pull: bool,
+        on_pull: impl FnOnce() + Send + 'static,
+        pull: F,
+    ) -> Result<Option<PreparedCache>>
+    where
+        F: FnOnce(String, PathBuf, Checkpoint) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Vec<String>>> + Send + 'static,
+    {
         // The task owns both capabilities through blocking/async work even if
         // the requesting future is dropped. No helper can issue a writer lease.
         tokio::spawn(async move {
@@ -775,9 +822,9 @@ impl CacheRequest {
                 // Exact candidate selection was rechecked under exclusive prep;
                 // raw external edits are caught by guard checkpoints after waits.
                 let stage = mutation.apply(|g| g.stage_tree(&state.root))?;
-                let digests = crate::cli::worker_manager::oci::pull_into_stage_checked(
-                    &self.reference,
-                    stage.path(),
+                let digests = pull(
+                    self.reference.clone(),
+                    stage.path().to_path_buf(),
                     mutation.checkpoint.clone(),
                 )
                 .await?;
@@ -817,6 +864,39 @@ impl CacheRequest {
         })
         .await
         .context("cache producer task failed")?
+    }
+    #[cfg(test)]
+    pub(crate) async fn resolve_fixture_failure(self) -> Result<Option<PreparedCache>> {
+        self.resolve_with(
+            true,
+            || {},
+            |_, stage, checkpoint| async move {
+                checkpoint.check()?;
+                std::fs::write(stage.join("producer-evidence"), b"partial")?;
+                anyhow::bail!("fixture producer failed after staging")
+            },
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn resolve_fixture(self, produce: bool) -> Result<Option<PreparedCache>> {
+        self.resolve_with(
+            produce,
+            || {},
+            |_, stage, checkpoint| async move {
+                checkpoint.check()?;
+                std::fs::create_dir(stage.join("bin"))?;
+                std::fs::write(stage.join("bin/sh"), b"not executed")?;
+                std::fs::write(
+                    stage.join(".oci-config.json"),
+                    br#"{"config":{"Env":["H1=fixture"]}}"#,
+                )?;
+                checkpoint.check()?;
+                Ok(vec![format!("sha256:{}", "b".repeat(64))])
+            },
+        )
+        .await
     }
 }
 

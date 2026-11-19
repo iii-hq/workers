@@ -246,12 +246,46 @@ impl WorkerVms {
         crate::worker_admission::AdmissionContext::system()
     }
 
-    async fn prepare_project(
+    /// Only completed caller receipts: Vm::receipt is filled after all pumps
+    /// and G settlement; retired_builds only after the full image job completes.
+    fn cache_retirement(
+        &self,
+        key: &str,
+    ) -> Result<crate::worker_admission::WriterRetirement, String> {
+        let id = vm_id(key);
+        let slot = self.slots().get(&id).cloned();
+        if matches!(&slot, Some(Slot::Preparing(..) | Slot::Destroying(..))) {
+            return Err("cache continuation is blocked by an active slot transition".into());
+        }
+        if let Some(receipt) = self
+            .retired_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .cloned()
+        {
+            return Ok(receipt);
+        }
+        match slot {
+            Some(Slot::Booted(vm)) => vm.receipt().map_err(|e| e.to_string()),
+            _ => Err(
+                "new cache reference requires the current completed runtime retirement receipt"
+                    .into(),
+            ),
+        }
+    }
+
+    fn project_cache_request(
         &self,
         key: Option<&str>,
-        project: &mut WorkerProject,
+        project: &WorkerProject,
         lease: crate::worker_admission::Lease,
-    ) -> Result<crate::cli::rootfs_cache::PreparedCache, String> {
+        cache: &Path,
+    ) -> Result<
+        Result<crate::cli::rootfs_cache::PreparedCache, crate::cli::rootfs_cache::CacheRequest>,
+        String,
+    > {
+        use crate::cli::rootfs_cache::CacheRequest;
         let reference = project.reference();
         let existing = key.and_then(|key| {
             self.prepared_caches
@@ -260,29 +294,109 @@ impl WorkerVms {
                 .get(key)
                 .cloned()
         });
-        if let Some(prepared) = existing {
-            // H1 is deliberately not guessed: a new reference requires the
-            // future retirement-issued continuation, not dropping this lease.
-            prepared
-                .validate(&reference)
-                .map_err(|e| format!("{e:#}"))?;
-            project.prepared = Some(prepared.clone());
-            return Ok(prepared);
+        if let Some(prepared) = &existing {
+            if prepared.reference == reference {
+                prepared
+                    .validate(&reference)
+                    .map_err(|e| format!("{e:#}"))?;
+                return Ok(Ok(prepared.clone()));
+            }
         }
-        let context = self.cache_context().map_err(|e| e.to_string())?;
-        crate::cli::rootfs_cache::prepare_cache_parent(
-            &context,
-            &crate::cli::rootfs_cache::cache_root(),
-        )
-        .map_err(|e| e.to_string())?;
-        let prepared = project.prepare(lease).await?;
+        let has_lifecycle = key.is_some_and(|key| {
+            self.slots().contains_key(&vm_id(key))
+                || self
+                    .retired_builds
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .contains_key(&vm_id(key))
+        });
+        let request = if existing.is_some() || has_lifecycle {
+            let key = key.ok_or("cache continuation requires a keyed lifecycle")?;
+            let receipt = self.cache_retirement(key)?;
+            // No fallback: stale/foreign/consumed/missing receipt leaves A and
+            // its original lease/claims untouched. Core validates identity.
+            CacheRequest::from_retirement(lease, &receipt, &reference, cache)
+        } else {
+            CacheRequest::new(lease, &reference, cache)
+        }
+        .map_err(|e| format!("{e:#}"))?;
+        Ok(Err(request))
+    }
+
+    fn remember_prepared(
+        &self,
+        key: Option<&str>,
+        project: &mut WorkerProject,
+        prepared: crate::cli::rootfs_cache::PreparedCache,
+    ) -> crate::cli::rootfs_cache::PreparedCache {
         if let Some(key) = key {
             self.prepared_caches
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(key.to_string(), prepared.clone());
         }
-        Ok(prepared)
+        project.prepared = Some(prepared.clone());
+        prepared
+    }
+
+    async fn prepare_project(
+        &self,
+        key: Option<&str>,
+        project: &mut WorkerProject,
+        lease: crate::worker_admission::Lease,
+    ) -> Result<crate::cli::rootfs_cache::PreparedCache, String> {
+        let cache = crate::cli::rootfs_cache::cache_root();
+        self.prepare_project_at(key, project, lease, &cache, |request| async move {
+            request
+                .resolve(true, || {})
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .ok_or_else(|| "required cache was not prepared".to_string())
+        })
+        .await
+    }
+
+    async fn prepare_project_at<F, Fut>(
+        &self,
+        key: Option<&str>,
+        project: &mut WorkerProject,
+        lease: crate::worker_admission::Lease,
+        cache: &Path,
+        resolve: F,
+    ) -> Result<crate::cli::rootfs_cache::PreparedCache, String>
+    where
+        F: FnOnce(crate::cli::rootfs_cache::CacheRequest) -> Fut,
+        Fut: std::future::Future<Output = Result<crate::cli::rootfs_cache::PreparedCache, String>>,
+    {
+        let context = self.cache_context().map_err(|e| e.to_string())?;
+        // A new continuation must not create a cache hierarchy before its
+        // receipt is checked. First-use short setup is the existing H path.
+        let previous = key.is_some_and(|key| {
+            self.prepared_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(key)
+                || self.slots().contains_key(&vm_id(key))
+                || self
+                    .retired_builds
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .contains_key(&vm_id(key))
+        });
+        if !previous {
+            crate::cli::rootfs_cache::prepare_cache_parent(&context, cache)
+                .map_err(|e| e.to_string())?;
+        }
+        match self.project_cache_request(key, project, lease, cache)? {
+            Ok(prepared) => {
+                project.prepared = Some(prepared.clone());
+                Ok(prepared)
+            }
+            Err(request) => {
+                let prepared = resolve(request).await?;
+                Ok(self.remember_prepared(key, project, prepared))
+            }
+        }
     }
 
     #[cfg(test)]
@@ -320,6 +434,11 @@ impl WorkerVms {
         let _admission = self
             .admission(req.state_key.as_deref())
             .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _cache_hold = req
+            .state_key
+            .as_ref()
+            .map(|key| self.hold_build(&vm_id(key)))
+            .transpose()?;
         let _admission = if let Some(key) = &req.state_key {
             let vm = self.base.join(vm_id(key));
             crate::worker_admission::with_paths(
@@ -404,6 +523,7 @@ impl WorkerVms {
         // canonicalization must not hide symlinks or traversal from admission.
         let mut inputs = vec![PathBuf::from(source.host_path), dir.clone()];
         let id = vm_id(&req.state_key);
+        let _cache_hold = self.hold_build(&id)?;
         let vm_dir = self.base.join(&id);
         inputs.push(vm_dir.join("root"));
         inputs.push(vm_dir.join("root").join(crate::cli::upper::UPPER_NAME));
@@ -661,6 +781,8 @@ impl WorkerVms {
         let _admission = self
             .admission(Some(&req.state_key))
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let id = vm_id(&req.state_key);
+        let _held = self.hold_build(&id)?;
         let source = Source::of(&req.source);
         let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
         let dir = self.admit(source.host_path)?;
@@ -719,12 +841,9 @@ impl WorkerVms {
         }
         let id = vm_id(&req.state_key);
         let vm_dir = self.base.join(&id);
-        let tag = format!(
-            "{}-{}",
-            std::process::id(),
-            self.build_seq.fetch_add(1, Ordering::SeqCst)
-        );
-        let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
+        // A stable declared slot supports repeat builds without adding mutable
+        // layout claims after A's retirement. Reclone preserves prior contents.
+        let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}current"));
         let _admission = crate::worker_admission::with_paths(
             _admission,
             &[
@@ -754,10 +873,14 @@ impl WorkerVms {
         self.prepare_project(Some(&req.state_key), &mut resolved, _admission.clone())
             .await
             .map_err(SandboxError::BuildFailed)?;
+        let tag = format!(
+            "{}-{}",
+            std::process::id(),
+            self.build_seq.fetch_add(1, Ordering::SeqCst)
+        );
         let output_admission = _admission.clone();
         // The key stays held through the writer. V2 scratch/journal evidence
         // is not deleted by an unowned Drop or a PID-based sweep.
-        let _held = self.hold_build(&id)?;
         // Under the hold, so no `destroy` removes the claim while this build
         // writes, and before the directory exists: a refused token creates nothing.
         self.claim_build_dir_on(
@@ -867,7 +990,7 @@ impl WorkerVms {
                 });
             }
         }
-        if let Some(Slot::Destroying(instance)) = slots.get(vm_id) {
+        if let Some(Slot::Preparing(instance, ..) | Slot::Destroying(instance)) = slots.get(vm_id) {
             return Err(SandboxError::StateBusy {
                 vm_id: vm_id.to_string(),
                 instance: *instance,
@@ -1230,6 +1353,12 @@ impl WorkerVms {
                 at_ms: now_ms(),
             }));
         });
+        // Any actual later writer invalidates a build receipt. The core also
+        // verifies this; never prefer an older successful build over this slot.
+        self.retired_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
         slots.insert(id.clone(), Slot::Booted(vm));
         if let Some(error) = startup_error {
             return Err(SandboxError::BootFailed(error));
@@ -1628,12 +1757,15 @@ impl BuildJob<'_> {
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let mut create = self
             .admission
-            .begin(crate::worker_admission::MutationPlan::Create {
+            .begin(crate::worker_admission::MutationPlan::Reclone {
                 root: self.scratch.to_path_buf(),
             })
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let stage = create
+            .stage_tree(self.scratch)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         create
-            .create_dir_all(self.scratch, 0o700)
+            .publish_tree(stage)
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         create
             .commit()
@@ -2933,6 +3065,50 @@ fn admit_control_files(
         path: &root,
         role: crate::worker_admission::PathRole::MutableTree,
     });
+    let runtime = root.join("runtime");
+    let legacy_runtime = root.join("opt/iii");
+    let root_upper = root.join(crate::cli::upper::UPPER_NAME);
+    let build_upper = dir.join(crate::cli::upper::UPPER_NAME);
+    requests.extend([
+        crate::worker_admission::PathRequest {
+            path: &runtime,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &legacy_runtime,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &root_upper,
+            role: crate::worker_admission::PathRole::MutableFile,
+        },
+        crate::worker_admission::PathRequest {
+            path: &build_upper,
+            role: crate::worker_admission::PathRole::MutableFile,
+        },
+    ]);
+    let scratch = dir.join(format!("{BUILD_SCRATCH_PREFIX}current"));
+    let scratch_root = scratch.join("root");
+    let scratch_runtime = scratch_root.join("runtime");
+    let scratch_upper = scratch.join(crate::cli::upper::UPPER_NAME);
+    requests.extend([
+        crate::worker_admission::PathRequest {
+            path: &scratch,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &scratch_root,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &scratch_runtime,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &scratch_upper,
+            role: crate::worker_admission::PathRole::MutableFile,
+        },
+    ]);
     crate::worker_admission::with_paths(lease, &requests)
 }
 
