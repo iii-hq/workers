@@ -647,7 +647,11 @@ pub(super) fn validate_archives(ns: &Namespace, catalog: &Catalog) -> io::Result
             return Err(limit());
         }
     }
-    if names.len() != allowed.len() || names.iter().any(|n| !allowed.contains(n)) {
+    // Same exact-set rule as before (directory names are unique, so any
+    // duplicate in `allowed` still fails the length check), but a set lookup
+    // keeps this per-transaction check O(n log n) instead of quadratic.
+    let known: std::collections::BTreeSet<&str> = allowed.iter().map(String::as_str).collect();
+    if names.len() != allowed.len() || names.iter().any(|n| !known.contains(n.as_str())) {
         return Err(invalid("unknown archive material"));
     }
     Ok(())

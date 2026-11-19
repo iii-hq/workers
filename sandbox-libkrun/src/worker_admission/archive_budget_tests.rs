@@ -17,6 +17,8 @@ fn context() -> (
     let context = testing::provision_context(&ns).unwrap();
     let root = temp.path().join("data");
     std::fs::create_dir(&root).unwrap();
+    // Exact private mode, never the process umask.
+    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     (temp, context, root)
 }
 /// A closed operation whose `count` prepared runtimes were cancelled before
