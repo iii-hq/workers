@@ -5,10 +5,20 @@
 mod catalog;
 mod endpoint;
 mod mutation;
+mod owner_read;
+mod recovery;
+mod runtime;
+pub(crate) use owner_read::{OwnerReadEntry, OwnerReadGuard};
+pub(crate) use recovery::{
+    RecoveryAction, RecoveryReport, RecoveryRequest, inspect_recovery_for_uid, recover_for_uid,
+};
+pub(crate) use runtime::{
+    RuntimeChild, RuntimeLaunch, RuntimePath, RuntimePathKind, RuntimeWriter, import_runtime_writer,
+};
 mod storage;
 use catalog::{Entry, Hold, HoldKind, Namespace, overlaps};
 pub(crate) use catalog::{bootstrap_for_uid, check_installation};
-pub(crate) use endpoint::{BoundEndpoint, EndpointGuard, EndpointLifetime};
+pub(crate) use endpoint::{BoundEndpoint, EndpointGuard, EndpointListener};
 pub(crate) use mutation::{DiagnosticLock, EffectReceipt, MutationGuard, StagedFile, StagedTree};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,18 +37,36 @@ pub(crate) enum PathRole {
     MutableTree,
     MutableFile,
     Endpoint,
+    ManagedCacheRead,
 }
 pub(crate) struct PathRequest<'a> {
     pub path: &'a Path,
     pub role: PathRole,
 }
 pub(crate) enum MutationPlan {
-    Create { root: PathBuf },
-    Adopt { root: PathBuf },
-    Reclone { root: PathBuf },
-    Cache { root: PathBuf },
-    Erofs { output: PathBuf },
-    ImagePair { directory: PathBuf },
+    Create {
+        root: PathBuf,
+    },
+    Adopt {
+        root: PathBuf,
+    },
+    Reclone {
+        root: PathBuf,
+    },
+    Cache {
+        root: PathBuf,
+    },
+    Erofs {
+        output: PathBuf,
+        spool: PathBuf,
+    },
+    ImagePair {
+        directory: PathBuf,
+    },
+    Remove {
+        root: PathBuf,
+        targets: Vec<PathBuf>,
+    },
 }
 #[derive(Clone)]
 pub(crate) struct AdmissionContext {
@@ -77,6 +105,15 @@ pub(crate) mod testing {
             namespace: Namespace::test(root)?,
         })
     }
+    pub(crate) fn inspect_recovery(context: &AdmissionContext) -> io::Result<RecoveryReport> {
+        recovery::inspect_test(context)
+    }
+    pub(crate) fn recover(
+        context: &AdmissionContext,
+        request: RecoveryRequest,
+    ) -> io::Result<RecoveryReport> {
+        recovery::recover_test(context, request)
+    }
     pub(crate) fn open_context(root: &Path) -> io::Result<AdmissionContext> {
         Ok(AdmissionContext {
             namespace: Namespace::open_test(root)?,
@@ -89,12 +126,13 @@ struct Held {
     namespace: Arc<Namespace>,
     id: String,
     sentinel: File,
+    holder: String,
 }
 impl Drop for Held {
     fn drop(&mut self) {
         // Failure leaves an open/uncertain persistent record; never infer
         // retirement from descriptor loss after a failed release transaction.
-        let _ = self.namespace.release(&self.id);
+        let _ = self.namespace.release(&self.id, &self.holder);
     }
 }
 pub(crate) struct WriterLease(Option<Vec<Lease>>);
@@ -127,11 +165,12 @@ pub(crate) fn import_child(fd: OwnedFd) -> io::Result<Lease> {
 }
 fn import_in(namespace: Arc<Namespace>, fd: OwnedFd) -> io::Result<Lease> {
     let sentinel = File::from(fd);
-    let id = namespace.import(&sentinel)?;
+    let (id, holder) = namespace.import(&sentinel)?;
     let lease = Lease(Arc::new(Held {
         namespace,
         id,
         sentinel,
+        holder,
     }));
     lease.revalidate()?;
     Ok(lease)
@@ -211,6 +250,12 @@ impl Lease {
     }
     pub(crate) fn begin(&self, plan: MutationPlan) -> io::Result<MutationGuard> {
         MutationGuard::begin(self.clone(), plan)
+    }
+    pub(crate) fn prepare_runtime(&self, paths: &[RuntimePath<'_>]) -> io::Result<RuntimeLaunch> {
+        RuntimeLaunch::prepare(self.clone(), paths)
+    }
+    pub(crate) fn owner_read_cache(&self, root: &Path) -> io::Result<OwnerReadGuard> {
+        OwnerReadGuard::begin(self.clone(), root)
     }
     pub(crate) fn endpoint(&self, path: &Path) -> io::Result<EndpointGuard> {
         EndpointGuard::new(self.clone(), path)
@@ -303,6 +348,34 @@ pub(crate) fn custody(base: &Path, id: &str) -> io::Result<PathBuf> {
 }
 fn pins(path: &Path, role: PathRole) -> io::Result<Vec<(HostPath, Identity)>> {
     let path = absolute(path)?;
+    if role == PathRole::ManagedCacheRead {
+        #[cfg(target_os = "linux")]
+        {
+            let mut here = PathBuf::from("/");
+            let mut file = Directory::open(&here)?.file;
+            let mut result = vec![(HostPath::new(&here)?, Identity::of(&file)?)];
+            for component in path.components() {
+                if let std::path::Component::Normal(name) = component {
+                    here.push(name);
+                    file = open_at(&file, name, libc::O_PATH, 0)?;
+                    let meta = file.metadata()?;
+                    if meta.file_type().is_symlink() || (!meta.is_dir() && here != path) {
+                        return Err(invalid("managed cache no-follow ancestor"));
+                    }
+                    result.push((HostPath::new(&here)?, Identity::metadata(&meta)));
+                }
+            }
+            if !file.metadata()?.is_dir() || file.metadata()?.uid() != uid() {
+                return Err(invalid("managed cache root must be owned directory"));
+            }
+            return Ok(result);
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "managed cache requires O_PATH",
+        ));
+    }
     let mut here = PathBuf::from("/");
     let mut dir = Directory::open(&here)?.file;
     let mut output = vec![(HostPath::new(&here)?, Identity::of(&dir)?)];
@@ -405,6 +478,15 @@ fn inspect_entries(entries: &[Entry], bases: &[HostPath], transition: bool) -> i
     if transition {
         return Ok(());
     }
+    for endpoint in entries.iter().filter(|e| e.role == PathRole::Endpoint) {
+        let path = endpoint.path.get()?;
+        let parent = path.parent().ok_or_else(|| invalid("endpoint parent"))?;
+        if entries.iter().any(|e| {
+            e.role != PathRole::Endpoint && e.path.get().is_ok_and(|p| overlaps(&p, parent))
+        }) {
+            return Err(invalid("endpoint parent overlaps same-operation payload"));
+        }
+    }
     for entry in entries {
         let path = entry.path.get()?;
         for ancestor in path.ancestors() {
@@ -460,6 +542,7 @@ fn start(
     let (id, sentinel) = namespace.start(entries, base, transition)?;
     Ok(Lease(Arc::new(Held {
         namespace,
+        holder: id.clone(),
         id,
         sentinel,
     })))

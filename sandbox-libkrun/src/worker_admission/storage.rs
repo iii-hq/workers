@@ -232,6 +232,7 @@ impl Directory {
             &self.file,
             n.as_ref(),
             libc::O_RDWR
+                | libc::O_NONBLOCK
                 | if create {
                     libc::O_CREAT | libc::O_EXCL
                 } else {
@@ -357,4 +358,36 @@ pub(super) fn id_valid(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub(super) fn mount_id(file: &File) -> io::Result<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let empty = CString::new("").map_err(|_| invalid("empty statx name"))?;
+        let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+        syscall(unsafe {
+            libc::statx(
+                file.as_raw_fd(),
+                empty.as_ptr(),
+                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                libc::STATX_MNT_ID,
+                &mut stat,
+            )
+        })?;
+        if stat.stx_mask & libc::STATX_MNT_ID == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "mount identity unavailable",
+            ));
+        }
+        Ok(stat.stx_mnt_id)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "mount identity requires statx",
+        ))
+    }
 }

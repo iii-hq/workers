@@ -31,6 +31,8 @@ pub(crate) struct MutationGuard {
     lease: Lease,
     id: String,
     root: PathBuf,
+    footprint: Vec<PathBuf>,
+    spool: Option<PathBuf>,
     plan: String,
     epoch: u64,
     expected: Vec<(HostPath, Identity)>,
@@ -128,83 +130,203 @@ fn no_replace(from: &Directory, source: &Path, to: &Directory, target: &Path) ->
 }
 impl MutationGuard {
     pub(super) fn begin(lease: Lease, plan: MutationPlan) -> io::Result<Self> {
-        let (root, label, role) = match plan {
-            MutationPlan::Create { root } => (root, "create", PathRole::MutableTree),
-            MutationPlan::Adopt { root } => (root, "adopt", PathRole::MutableTree),
-            MutationPlan::Reclone { root } => (root, "reclone", PathRole::MutableTree),
-            MutationPlan::Cache { root } => (root, "cache", PathRole::MutableTree),
-            MutationPlan::Erofs { output } => (output, "erofs", PathRole::MutableFile),
-            MutationPlan::ImagePair { directory } => {
-                (directory, "image-pair", PathRole::MutableTree)
+        let removing = matches!(&plan, MutationPlan::Remove { .. });
+        let (plan, remove_targets) = match plan {
+            MutationPlan::Remove { root, targets } => {
+                let root = absolute(&root)?;
+                if targets.is_empty() || targets.len() > 256 {
+                    return Err(limit());
+                }
+                let mut exact = targets
+                    .iter()
+                    .map(|p| absolute(p))
+                    .collect::<io::Result<Vec<_>>>()?;
+                exact.sort();
+                exact.dedup();
+                if exact.iter().any(|p| !p.starts_with(&root))
+                    || exact
+                        .iter()
+                        .enumerate()
+                        .any(|(i, a)| exact[i + 1..].iter().any(|b| overlaps(a, b)))
+                {
+                    return Err(invalid("removal targets overlap or exceed root"));
+                }
+                (MutationPlan::Create { root }, Some(exact))
             }
+            other => (other, None),
+        };
+        let (root, spool, mut label, role) = match plan {
+            MutationPlan::Create { root } => (root, None, "create", PathRole::MutableTree),
+            MutationPlan::Adopt { root } => (root, None, "adopt", PathRole::MutableTree),
+            MutationPlan::Reclone { root } => (root, None, "reclone", PathRole::MutableTree),
+            MutationPlan::Cache { root } => (root, None, "cache", PathRole::MutableTree),
+            MutationPlan::Erofs { output, spool } => {
+                if !output.is_absolute() || !spool.is_absolute() {
+                    return Err(invalid("EROFS requires absolute output and spool"));
+                }
+                (
+                    output,
+                    Some(absolute(&spool)?),
+                    "erofs",
+                    PathRole::MutableFile,
+                )
+            }
+            MutationPlan::ImagePair { directory } => {
+                (directory, None, "image-pair", PathRole::MutableTree)
+            }
+            MutationPlan::Remove { .. } => return Err(invalid("unresolved remove plan")),
         };
         let root = absolute(&root)?;
-        if let Some(identity) = fingerprint(&root)? {
-            if identity.uid != uid() || identity.mode & 0o022 != 0 {
-                return Err(invalid("mutable root is not owned/protected"));
-            }
+        let mut footprint = remove_targets.unwrap_or_else(|| vec![root.clone()]);
+        if removing {
+            label = "remove";
         }
-        let id = lease.hold(&root, HoldKind::Mutation, Some(role))?;
-        // From this point any failure preserves the hold as uncertain evidence.
-        let result = (|| {
-            let mut tx = lease.0.namespace.transaction()?;
-            let op = tx.operation_mut(&lease.0.id)?;
-            if op.journals.len() >= 256 {
-                return Err(limit());
+        if let Some(spool) = &spool {
+            if overlaps(&root, spool) {
+                return Err(invalid("EROFS output/spool overlap"));
             }
-            op.epoch = op.epoch.checked_add(1).ok_or_else(limit)?;
-            let epoch = op.epoch;
-            let mut expected = Vec::new();
+            footprint.push(spool.clone());
+        }
+        lease.revalidate()?;
+        let mut tx = lease.0.namespace.transaction()?;
+        let op = tx.operation_mut(&lease.0.id)?;
+        if op.uncertain
+            || op.closed
+            || op.holds.len() + footprint.len() > 256
+            || op.journals.len() >= 256
+        {
+            return Err(busy());
+        }
+        let identities = footprint
+            .iter()
+            .map(|p| fingerprint(p))
+            .collect::<io::Result<Vec<_>>>()?;
+        if identities
+            .iter()
+            .flatten()
+            .any(|id| id.uid != uid() || id.mode & 0o022 != 0)
+        {
+            return Err(invalid("mutable footprint is not owned/protected"));
+        }
+        if spool.is_some()
+            && identities
+                .iter()
+                .flatten()
+                .any(|id| id.mode & libc::S_IFMT != libc::S_IFREG)
+        {
+            return Err(invalid("EROFS requires regular file targets"));
+        }
+        if identities.len() == 2
+            && identities[0]
+                .as_ref()
+                .zip(identities[1].as_ref())
+                .is_some_and(|(a, b)| a.dev == b.dev && a.ino == b.ino)
+        {
+            return Err(invalid("EROFS output/spool inode alias"));
+        }
+        for path in &footprint {
+            if !op.entries.iter().any(|e| {
+                (e.role == role || (removing && e.role == PathRole::MutableFile))
+                    && e.path.get().is_ok_and(|p| {
+                        p == *path
+                            || (spool.is_none()
+                                && role == PathRole::MutableTree
+                                && path.starts_with(p))
+                    })
+            }) {
+                return Err(invalid("exact mutable footprint not admitted"));
+            }
             for e in &op.entries {
-                for pin in &e.pins {
-                    if overlaps(&pin.0.get()?, &root) && !expected.iter().any(|(p, _)| p == &pin.0)
-                    {
-                        expected.push(pin.clone());
-                    }
+                if e.role != PathRole::Strict {
+                    continue;
+                }
+                if overlaps(&e.path.get()?, path)
+                    || e.pins.iter().any(|(_, pin)| {
+                        identities
+                            .iter()
+                            .flatten()
+                            .any(|id| pin.dev == id.dev && pin.ino == id.ino)
+                    })
+                {
+                    return Err(invalid("Strict input aliases mutation"));
                 }
             }
-            op.journals.push(Journal {
-                id: id.clone(),
-                plan: label.into(),
-                root: HostPath::new(&root)?,
-                epoch,
-                committed: false,
-                changes: Vec::new(),
-                artifacts: Vec::new(),
-                disposals: Vec::new(),
-            });
-            tx.save()?;
-            Ok((epoch, expected))
-        })();
-        match result {
-            Ok((epoch, expected)) => Ok(Self {
-                lease,
-                id,
-                root,
-                plan: label.into(),
-                epoch,
-                expected,
-                changes: Vec::new(),
-                stages: Vec::new(),
-                committed: false,
-                diagnostics: Arc::new(DiagnosticState {
-                    handles: AtomicUsize::new(0),
-                    failed: AtomicBool::new(false),
-                }),
-                diagnostic_paths: Vec::new(),
-                artifacts_started: false,
-                #[cfg(test)]
-                discard_fault: None,
-            }),
-            Err(e) => {
-                let _ = lease.finish_hold(&id, true);
-                Err(e)
+            if op
+                .holds
+                .iter()
+                .any(|h| h.path.get().is_ok_and(|p| overlaps(&p, path)))
+            {
+                return Err(busy());
             }
         }
+        let id = new_id();
+        op.epoch = op.epoch.checked_add(1).ok_or_else(limit)?;
+        let epoch = op.epoch;
+        let mut expected = Vec::new();
+        for e in &op.entries {
+            for pin in &e.pins {
+                if footprint
+                    .iter()
+                    .any(|p| pin.0.get().is_ok_and(|q| overlaps(&q, p)))
+                    && !expected.iter().any(|(p, _)| p == &pin.0)
+                {
+                    expected.push(pin.clone());
+                }
+            }
+        }
+        for path in &footprint {
+            op.holds.push(super::catalog::Hold {
+                id: id.clone(),
+                path: HostPath::new(path)?,
+                kind: HoldKind::Mutation,
+                epoch,
+            });
+        }
+        op.journals.push(Journal {
+            id: id.clone(),
+            plan: label.into(),
+            root: HostPath::new(&root)?,
+            footprint: footprint
+                .iter()
+                .map(|p| HostPath::new(p))
+                .collect::<io::Result<_>>()?,
+            intents: Vec::new(),
+            permissions: Vec::new(),
+            epoch,
+            committed: false,
+            changes: Vec::new(),
+            artifacts: Vec::new(),
+            disposals: Vec::new(),
+        });
+        tx.save()?;
+        drop(tx);
+        Ok(Self {
+            lease,
+            id,
+            root,
+            footprint,
+            spool,
+            plan: label.into(),
+            epoch,
+            expected,
+            changes: Vec::new(),
+            stages: Vec::new(),
+            committed: false,
+            diagnostics: Arc::new(DiagnosticState {
+                handles: AtomicUsize::new(0),
+                failed: AtomicBool::new(false),
+            }),
+            diagnostic_paths: Vec::new(),
+            artifacts_started: false,
+            #[cfg(test)]
+            discard_fault: None,
+        })
     }
     fn target(&self, path: &Path) -> io::Result<PathBuf> {
         let path = absolute(path)?;
-        if !(path == self.root || (self.plan != "erofs" && path.starts_with(&self.root))) {
+        if !self.footprint.iter().any(|p| {
+            path == *p || (self.plan != "erofs" && self.plan != "remove" && path.starts_with(p))
+        }) {
             return Err(invalid("mutation exceeds declared footprint"));
         }
         Ok(path)
@@ -286,6 +408,68 @@ impl MutationGuard {
         tx.check_conflicts(Some(&self.lease.0.id), &entries, false)?;
         tx.save()
     }
+    fn intent(
+        &self,
+        kind: super::catalog::EffectKind,
+        from: Option<&Path>,
+        to: &Path,
+        old: Option<Identity>,
+        new: Option<Identity>,
+        prior: Option<&Path>,
+    ) -> io::Result<String> {
+        let to_parent = Directory::open(to.parent().ok_or_else(|| invalid("intent parent"))?)?;
+        let from_parent = from
+            .map(|p| Directory::open(p.parent().ok_or_else(|| invalid("intent source parent"))?))
+            .transpose()?;
+        let id = new_id();
+        let mut tx = self.lease.0.namespace.transaction()?;
+        let journal = tx
+            .operation_mut(&self.lease.0.id)?
+            .journals
+            .iter_mut()
+            .find(|j| j.id == self.id)
+            .ok_or_else(|| invalid("intent journal missing"))?;
+        if journal.intents.len() >= 512 {
+            return Err(limit());
+        }
+        journal.intents.push(super::catalog::EffectIntent {
+            id: id.clone(),
+            kind,
+            from: from.map(HostPath::new).transpose()?,
+            to: HostPath::new(to)?,
+            from_parent: from_parent
+                .as_ref()
+                .map(|p| Identity::of(&p.file))
+                .transpose()?,
+            to_parent: Identity::of(&to_parent.file)?,
+            old,
+            new,
+            prior: prior.map(HostPath::new).transpose()?,
+            completed: false,
+            cancelled: false,
+        });
+        tx.save()?;
+        Ok(id)
+    }
+    fn complete_intent(&self, id: &str, new: Option<Identity>) -> io::Result<()> {
+        let mut tx = self.lease.0.namespace.transaction()?;
+        let journal = tx
+            .operation_mut(&self.lease.0.id)?
+            .journals
+            .iter_mut()
+            .find(|j| j.id == self.id)
+            .ok_or_else(|| invalid("intent journal missing"))?;
+        let intent = journal
+            .intents
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| invalid("intent missing"))?;
+        if let Some(new) = new {
+            intent.new = Some(new);
+        }
+        intent.completed = true;
+        tx.save()
+    }
     fn changed(
         &mut self,
         path: &Path,
@@ -310,6 +494,9 @@ impl MutationGuard {
         Ok(())
     }
     fn create_dir_all_inner(&mut self, target: &Path, mode: u32) -> io::Result<()> {
+        if self.plan == "remove" {
+            return Err(invalid("Remove plan cannot create payload"));
+        }
         let target = self.target(target)?;
         self.artifacts_started = true;
         if mode & !0o777 != 0 || mode & 0o022 != 0 {
@@ -334,6 +521,14 @@ impl MutationGuard {
                 return Err(invalid("directory appeared before owned creation"));
             }
             self.journal(Some(&path), None)?;
+            let intent = self.intent(
+                super::catalog::EffectKind::Create,
+                None,
+                &path,
+                None,
+                None,
+                None,
+            )?;
             mkdir_at(
                 &parent.file,
                 path.file_name()
@@ -344,10 +539,14 @@ impl MutationGuard {
             created.file.sync_all()?;
             parent.file.sync_all()?;
             self.changed(&path, None, Some(Identity::of(&created.file)?))?;
+            self.complete_intent(&intent, Some(Identity::of(&created.file)?))?;
         }
         Ok(())
     }
     fn staging(&mut self, target: &Path) -> io::Result<(PathBuf, Directory, PathBuf, String)> {
+        if self.plan == "remove" {
+            return Err(invalid("Remove plan cannot stage payload"));
+        }
         let target = self.target(target)?;
         if self.diagnostic_paths.contains(&target) {
             return Err(invalid("diagnostic inode is never staged"));
@@ -371,6 +570,14 @@ impl MutationGuard {
             return Err(invalid("unsafe staged file mode"));
         }
         let (target, parent, path, token) = self.staging(target)?;
+        let intent = self.intent(
+            super::catalog::EffectKind::Stage,
+            None,
+            &path,
+            None,
+            None,
+            None,
+        )?;
         let file = open_at(
             &parent.file,
             path.file_name().ok_or_else(|| invalid("stage file"))?,
@@ -379,6 +586,7 @@ impl MutationGuard {
         )?;
         let identity = Identity::of(&file)?;
         parent.file.sync_all()?;
+        self.complete_intent(&intent, Some(identity.clone()))?;
         Ok(StagedFile {
             owner: self.id.clone(),
             operation: self.lease.0.id.clone(),
@@ -393,6 +601,14 @@ impl MutationGuard {
     }
     fn stage_tree_inner(&mut self, target: &Path) -> io::Result<StagedTree> {
         let (target, parent, path, token) = self.staging(target)?;
+        let intent = self.intent(
+            super::catalog::EffectKind::Stage,
+            None,
+            &path,
+            None,
+            None,
+            None,
+        )?;
         mkdir_at(
             &parent.file,
             path.file_name().ok_or_else(|| invalid("stage tree"))?,
@@ -401,6 +617,7 @@ impl MutationGuard {
         let directory = Directory::open(&path)?;
         let identity = Identity::of(&directory.file)?;
         parent.file.sync_all()?;
+        self.complete_intent(&intent, Some(identity.clone()))?;
         Ok(StagedTree {
             owner: self.id.clone(),
             operation: self.lease.0.id.clone(),
@@ -456,18 +673,29 @@ impl MutationGuard {
                 new: Some(identity.clone()),
             }),
         )?;
-        if old.is_some() {
-            let backup = parent
+        let backup = old.as_ref().map(|_| {
+            parent
                 .path
-                .join(format!(".iii-prior-{}-{}", self.id, new_id()));
-            self.journal(Some(&backup), None)?;
-            no_replace(parent, target, parent, &backup)?;
+                .join(format!(".iii-prior-{}-{}", self.id, new_id()))
+        });
+        if let Some(backup) = &backup {
+            self.journal(Some(backup), None)?;
+        }
+        let intent = self.intent(
+            super::catalog::EffectKind::Publish,
+            Some(stage),
+            target,
+            old.clone(),
+            Some(identity.clone()),
+            backup.as_deref(),
+        )?;
+        if let Some(backup) = &backup {
+            no_replace(parent, target, parent, backup)?;
             parent.file.sync_all()?;
-            if !same(&old, &fingerprint(&backup)?) {
+            if !same(&old, &fingerprint(backup)?) {
                 return Err(invalid("old generation changed during preservation"));
             }
-            self.changed(&backup, None, old.clone())?;
-            // No automatic deletion, rollback or OLD reimport, including errors.
+            self.changed(backup, None, old.clone())?;
         }
         no_replace(parent, stage, parent, target)?;
         parent.file.sync_all()?;
@@ -476,8 +704,131 @@ impl MutationGuard {
         }
         self.changed(stage, Some(identity.clone()), None)?;
         self.changed(target, old, Some(identity.clone()))?;
+        self.complete_intent(&intent, None)?;
         self.stages.retain(|t| t != token);
         Ok(())
+    }
+    fn remove_path_inner(&mut self, target: &Path) -> io::Result<()> {
+        if self.plan != "remove" {
+            return Err(invalid("remove_path requires Remove plan"));
+        }
+        let target = absolute(target)?;
+        if !self.footprint.contains(&target) {
+            return Err(invalid("removal requires an exact planned target"));
+        }
+        self.checkpoint()?;
+        for component in target.components() {
+            if let std::path::Component::Normal(n) = component {
+                if n.to_str().is_some_and(|n| {
+                    n.starts_with(".iii-stage-")
+                        || n.starts_with(".iii-prior-")
+                        || n.ends_with("-compat")
+                        || n.starts_with("generation-")
+                        || n.starts_with("backup")
+                }) {
+                    return Err(invalid("removal cannot target custody/evidence"));
+                }
+            }
+        }
+        let prior = fingerprint(&target)?;
+        if prior.is_none() {
+            if self
+                .expected
+                .iter()
+                .any(|(p, _)| p.get().is_ok_and(|p| p == target))
+            {
+                return Err(invalid("removal target disappeared without intent"));
+            }
+            let intent = self.intent(
+                super::catalog::EffectKind::Remove,
+                None,
+                &target,
+                None,
+                None,
+                None,
+            )?;
+            self.complete_intent(&intent, None)?;
+            return Ok(());
+        }
+        let mut inventory = Vec::new();
+        let root_parent = Directory::open(
+            target
+                .parent()
+                .ok_or_else(|| invalid("remove root parent"))?,
+        )?;
+        let expected_mount = mount_id(&root_parent.file)?;
+        scan_remove(
+            &target,
+            prior.as_ref().ok_or_else(|| invalid("target missing"))?.dev,
+            expected_mount,
+            0,
+            &mut inventory,
+        )?;
+        let mut links = std::collections::HashMap::new();
+        for (_, id) in &inventory {
+            if id.mode & libc::S_IFMT == libc::S_IFREG {
+                *links.entry((id.dev, id.ino)).or_insert(0u64) += 1;
+            }
+        }
+        if inventory.iter().any(|(_, id)| {
+            id.mode & libc::S_IFMT == libc::S_IFREG
+                && links.get(&(id.dev, id.ino)) != Some(&id.links)
+        }) {
+            return Err(invalid("removal has external hardlinks"));
+        }
+        self.artifacts_started = true;
+        let top = self.intent(
+            super::catalog::EffectKind::Remove,
+            None,
+            &target,
+            prior,
+            None,
+            None,
+        )?;
+        for (path, expected) in inventory.into_iter().rev() {
+            let parent = Directory::open(path.parent().ok_or_else(|| invalid("remove parent"))?)?;
+            parent.revalidate()?;
+            #[cfg(target_os = "linux")]
+            let pinned = open_at(
+                &parent.file,
+                path.file_name().ok_or_else(|| invalid("remove name"))?,
+                libc::O_PATH,
+                0,
+            )?;
+            #[cfg(not(target_os = "linux"))]
+            let pinned = open_at(
+                &parent.file,
+                path.file_name().ok_or_else(|| invalid("remove name"))?,
+                libc::O_RDONLY | libc::O_NONBLOCK,
+                0,
+            )?;
+            if mount_id(&pinned)? != expected_mount {
+                return Err(invalid("removal mount changed"));
+            }
+            let actual = Identity::of(&pinned)?;
+            if !actual.same_inode(&expected) {
+                return Err(invalid("remove entry changed"));
+            }
+            let step = self.intent(
+                super::catalog::EffectKind::Remove,
+                None,
+                &path,
+                Some(expected.clone()),
+                None,
+                None,
+            )?;
+            let component = name(path.file_name().ok_or_else(|| invalid("remove name"))?)?;
+            let flags = if expected.mode & libc::S_IFMT == libc::S_IFDIR {
+                libc::AT_REMOVEDIR
+            } else {
+                0
+            };
+            syscall(unsafe { libc::unlinkat(parent.file.as_raw_fd(), component.as_ptr(), flags) })?;
+            parent.file.sync_all()?;
+            self.changed(&path, Some(expected), None)?;
+            self.complete_intent(&step, None)?;
+        }
+        self.complete_intent(&top, None)
     }
     fn discard_file_inner(&mut self, stage: StagedFile) -> io::Result<()> {
         self.checkpoint()?;
@@ -492,6 +843,11 @@ impl MutationGuard {
             ));
         }
         self.target(&stage.target)?;
+        if self.spool.as_ref().is_some_and(|p| p != &stage.target) {
+            return Err(invalid(
+                "EROFS discard is restricted to its exact spool slot",
+            ));
+        }
         let mut tx = self.lease.0.namespace.transaction()?;
         let op = tx.operation_mut(&self.lease.0.id)?;
         if !op.entries.iter().any(|e| {
@@ -529,6 +885,7 @@ impl MutationGuard {
         }
         journal.disposals.push(super::catalog::Disposal {
             stage: stage.token.clone(),
+            slot: HostPath::new(&stage.target)?,
             path: HostPath::new(&stage.path)?,
             parent,
             file: file_identity,
@@ -586,6 +943,33 @@ impl MutationGuard {
         self.discard_fault = Some(boundary);
     }
     fn publish_file_inner(&mut self, stage: StagedFile) -> io::Result<()> {
+        if let Some(spool) = &self.spool {
+            if stage.target != self.root {
+                return Err(invalid("EROFS spool must be discarded, never published"));
+            }
+            let tx = self.lease.0.namespace.transaction()?;
+            let journal = tx
+                .operation(&self.lease.0.id)?
+                .journals
+                .iter()
+                .find(|j| j.id == self.id)
+                .ok_or_else(|| invalid("missing journal"))?;
+            if !journal
+                .disposals
+                .iter()
+                .any(|d| d.discarded && d.slot.get().is_ok_and(|p| &p == spool))
+            {
+                return Err(invalid(
+                    "EROFS output requires completed spool disposal first",
+                ));
+            }
+            if fingerprint(spool)?
+                .as_ref()
+                .is_some_and(|id| id.uid != uid())
+            {
+                return Err(invalid("spool target ownership changed"));
+            }
+        }
         if !Arc::ptr_eq(&stage.namespace, &self.lease.0.namespace)
             || stage.operation != self.lease.0.id
         {
@@ -702,6 +1086,14 @@ impl MutationGuard {
                 new: Some(old.clone()),
             }),
         )?;
+        let intent = self.intent(
+            super::catalog::EffectKind::Adopt,
+            Some(&from),
+            &to,
+            None,
+            Some(old.clone()),
+            None,
+        )?;
         no_replace(&source, &from, &target, &to)?;
         source.file.sync_all()?;
         target.file.sync_all()?;
@@ -725,6 +1117,7 @@ impl MutationGuard {
         }
         self.changed(&from, Some(old.clone()), None)?;
         self.changed(&to, None, Some(old))?;
+        self.complete_intent(&intent, None)?;
         Ok(())
     }
     pub(crate) fn commit(mut self) -> io::Result<EffectReceipt> {
@@ -761,6 +1154,9 @@ impl MutationGuard {
             .iter_mut()
             .find(|j| j.id == self.id)
             .ok_or_else(|| invalid("missing journal"))?;
+        if journal.intents.iter().any(|i| !i.completed && !i.cancelled) {
+            return Err(invalid("unresolved before-effect intent"));
+        }
         if journal.disposals.iter().any(|d| !d.discarded) {
             return Err(invalid("unresolved stage discard"));
         }
@@ -838,6 +1234,10 @@ impl MutationGuard {
         let result = self.stage_tree_inner(target);
         self.terminal(result)
     }
+    pub(crate) fn remove_path(&mut self, target: &Path) -> io::Result<()> {
+        let result = self.remove_path_inner(target);
+        self.terminal(result)
+    }
     pub(crate) fn discard_file(&mut self, stage: StagedFile) -> io::Result<()> {
         let result = self.discard_file_inner(stage);
         self.terminal(result)
@@ -882,8 +1282,17 @@ impl MutationGuard {
     fn diagnostic_lock_inner(&mut self, path: &Path) -> io::Result<DiagnosticLock> {
         self.checkpoint()?;
         let path = absolute(path)?;
+        if self.diagnostic_paths.contains(&path) {
+            return Err(busy());
+        }
         let mut sidecar = self.root.as_os_str().to_os_string();
         sidecar.push(".lock");
+        if self.plan == "erofs"
+            && (self.spool.as_ref().is_some_and(|p| overlaps(p, &path))
+                || overlaps(&self.root, &path))
+        {
+            return Err(invalid("diagnostic aliases an EROFS artifact"));
+        }
         let related = match self.plan.as_str() {
             "erofs" => path == PathBuf::from(sidecar),
             "cache" | "image-pair" => path.starts_with(&self.root) && path != self.root,
@@ -950,6 +1359,14 @@ impl MutationGuard {
             return Err(invalid("unsafe diagnostic parent"));
         }
         self.journal(Some(&path), None)?;
+        let intent = self.intent(
+            super::catalog::EffectKind::Diagnostic,
+            None,
+            &path,
+            expected_identity.clone(),
+            expected_identity.clone(),
+            None,
+        )?;
         let component = path.file_name().ok_or_else(|| invalid("diagnostic name"))?;
         let mut created = false;
         let file = match open_at(
@@ -992,6 +1409,7 @@ impl MutationGuard {
         if expected_identity.is_none() {
             self.changed(&path, None, Some(identity.clone()))?;
         }
+        self.complete_intent(&intent, Some(identity.clone()))?;
         self.diagnostic_paths.push(path.clone());
         self.diagnostics.handles.fetch_add(1, Ordering::AcqRel);
         Ok(DiagnosticLock {
@@ -1084,6 +1502,69 @@ impl Drop for DiagnosticLock {
     fn drop(&mut self) {
         self.state.handles.fetch_sub(1, Ordering::AcqRel);
     }
+}
+fn scan_remove(
+    path: &Path,
+    device: u64,
+    expected_mount: u64,
+    depth: usize,
+    result: &mut Vec<(PathBuf, Identity)>,
+) -> io::Result<()> {
+    if depth > 64 || result.len() >= 256 {
+        return Err(limit());
+    }
+    let parent = Directory::open(path.parent().ok_or_else(|| invalid("remove parent"))?)?;
+    #[cfg(target_os = "linux")]
+    let pinned = open_at(
+        &parent.file,
+        path.file_name().ok_or_else(|| invalid("remove name"))?,
+        libc::O_PATH,
+        0,
+    )?;
+    #[cfg(not(target_os = "linux"))]
+    let pinned = open_at(
+        &parent.file,
+        path.file_name().ok_or_else(|| invalid("remove name"))?,
+        libc::O_RDONLY | libc::O_NONBLOCK,
+        0,
+    )?;
+    if mount_id(&pinned)? != expected_mount {
+        return Err(invalid("removal crosses a mount"));
+    }
+    let metadata = pinned.metadata()?;
+    let identity = Identity::metadata(&metadata);
+    if identity.uid != uid()
+        || identity.dev != device
+        || (!metadata.is_file() && !metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
+        return Err(invalid("unsafe removal entry/mount"));
+    }
+    if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+        n.starts_with(".iii-stage-")
+            || n.starts_with(".iii-prior-")
+            || n.starts_with("generation-")
+            || n.starts_with("backup")
+            || n.ends_with("-compat")
+    }) {
+        return Err(invalid("removal protects migration evidence"));
+    }
+    result.push((path.to_path_buf(), identity));
+    if metadata.is_dir() {
+        let directory = Directory::open(path)?;
+        let mut children = Vec::new();
+        for child in std::fs::read_dir(path)? {
+            if children.len() >= 256 {
+                return Err(limit());
+            }
+            children.push(child?);
+        }
+        children.sort_by_key(|e| e.file_name());
+        for child in children {
+            directory.revalidate()?;
+            scan_remove(&child.path(), device, expected_mount, depth + 1, result)?;
+        }
+    }
+    Ok(())
 }
 fn sync_tree(directory: &Directory, count: &mut usize, depth: usize) -> io::Result<()> {
     if depth > 64 {

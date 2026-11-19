@@ -27,6 +27,8 @@ pub(super) enum HoldKind {
     Read,
     Mutation,
     Endpoint,
+    Runtime,
+    OwnerRead,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +43,9 @@ pub(super) struct Journal {
     pub id: String,
     pub plan: String,
     pub root: HostPath,
+    pub footprint: Vec<HostPath>,
+    pub intents: Vec<EffectIntent>,
+    pub permissions: Vec<PermissionIntent>,
     pub epoch: u64,
     pub committed: bool,
     pub changes: Vec<Change>,
@@ -49,8 +54,45 @@ pub(super) struct Journal {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct EffectIntent {
+    pub id: String,
+    pub kind: EffectKind,
+    pub from: Option<HostPath>,
+    pub to: HostPath,
+    pub from_parent: Option<Identity>,
+    pub to_parent: Identity,
+    pub old: Option<Identity>,
+    pub new: Option<Identity>,
+    pub prior: Option<HostPath>,
+    pub completed: bool,
+    pub cancelled: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum EffectKind {
+    Create,
+    Stage,
+    Publish,
+    Adopt,
+    Diagnostic,
+    Remove,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PermissionIntent {
+    pub path: HostPath,
+    pub parent: Identity,
+    pub original: Identity,
+    pub granted_mode: u32,
+    pub acl: Option<String>,
+    pub acl_captured: bool,
+    pub restored: bool,
+    pub ctime_changed: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Disposal {
     pub stage: String,
+    pub slot: HostPath,
     pub path: HostPath,
     pub parent: Identity,
     pub file: Identity,
@@ -63,12 +105,14 @@ pub(super) struct Operation {
     pub sentinel: Identity,
     pub transition: bool,
     pub holders: u32,
+    pub holder_ids: Vec<String>,
     pub closed: bool,
     pub uncertain: bool,
     pub epoch: u64,
     pub entries: Vec<Entry>,
     pub holds: Vec<Hold>,
     pub journals: Vec<Journal>,
+    pub recovery: Option<RecoveryIntent>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,14 +121,72 @@ pub(super) struct Catalog {
     pub bases: Vec<HostPath>,
     pub operations: Vec<Operation>,
     pub endpoints: Vec<EndpointRecord>,
+    pub archives: Vec<ArchiveRecord>,
+    pub runtimes: Vec<RuntimeRecord>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct EndpointRecord {
+    pub id: String,
     pub path: HostPath,
-    pub identity: Identity,
+    pub identity: Option<Identity>,
     pub operation: String,
     pub epoch: u64,
+    pub sentinel: Identity,
+    pub parent: Identity,
+    pub state: EndpointState,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum EndpointState {
+    BindIntent,
+    Bound,
+    CloseIntent,
+    Retired,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RuntimeRecord {
+    pub id: String,
+    pub operation: String,
+    pub sentinel: Identity,
+    pub epoch: u64,
+    pub state: RuntimeState,
+    pub paths: Vec<RuntimeEntry>,
+    pub writer_retired: bool,
+    pub guest_consistent: bool,
+    pub admission_holder: Option<String>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum RuntimeState {
+    Preparing,
+    Prepared,
+    Active,
+    Retired,
+    Cancelled,
+    Uncertain,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RuntimeEntry {
+    pub entry: Entry,
+    pub kind: super::runtime::RuntimePathKind,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecoveryIntent {
+    pub record_sha256: String,
+    pub completed: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ArchiveRecord {
+    pub operation: String,
+    pub digest: String,
+    pub metadata: Option<Identity>,
+    pub sentinel: Identity,
+    pub endpoints: Vec<EndpointRecord>,
+    pub runtimes: Vec<RuntimeRecord>,
+    pub complete: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +197,7 @@ struct Manifest {
     mutex: Identity,
     catalog: Identity,
     previous: Identity,
+    archive: Identity,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,11 +208,12 @@ struct Sentinel {
 }
 pub(super) struct Namespace {
     pub directory: Directory,
-    uid: u32,
+    pub(super) uid: u32,
     manifest: Identity,
     mutex: Identity,
     catalog: Identity,
     previous: Identity,
+    pub(super) archive: Directory,
     administrative: bool,
 }
 pub(super) struct Transaction<'a> {
@@ -120,6 +224,17 @@ pub(super) struct Transaction<'a> {
     pub catalog: Catalog,
 }
 impl Namespace {
+    pub(super) fn administrative(expected_uid: u32) -> io::Result<Arc<Self>> {
+        if uid() != 0 {
+            return Err(invalid("recovery requires effective administrative uid0"));
+        }
+        Self::open(
+            &Path::new(ROOT).join(expected_uid.to_string()),
+            expected_uid,
+            true,
+        )
+        .map(Arc::new)
+    }
     pub(super) fn production() -> io::Result<Arc<Self>> {
         Self::open(Path::new(ROOT).join(uid().to_string()).as_path(), uid(), true).map(Arc::new).map_err(|e| {
             if e.kind() == io::ErrorKind::NotFound { io::Error::new(io::ErrorKind::NotFound, "worker admission setup required: explicit administrative bootstrap_for_uid has not provisioned this euid") } else { e }
@@ -158,6 +273,11 @@ impl Namespace {
                 return Err(invalid("coordination inode replaced"));
             }
         }
+        let archive = Directory::open(&directory.path.join("archive"))?;
+        archive.private(expected_uid)?;
+        if !manifest.archive.same_inode(&Identity::of(&archive.file)?) {
+            return Err(invalid("archive namespace replaced"));
+        }
         let ns = Self {
             directory,
             uid: expected_uid,
@@ -165,6 +285,7 @@ impl Namespace {
             mutex: manifest.mutex,
             catalog: manifest.catalog,
             previous: manifest.previous,
+            archive,
             administrative,
         };
         ns.transaction()?;
@@ -173,6 +294,8 @@ impl Namespace {
     pub(super) fn validate(&self) -> io::Result<()> {
         self.directory.revalidate()?;
         self.directory.private(self.uid)?;
+        self.archive.revalidate()?;
+        self.archive.private(self.uid)?;
         let mf = self.directory.file("manifest.json", false)?;
         if Identity::of(&mf)? != self.manifest {
             return Err(invalid("manifest inode replaced"));
@@ -186,6 +309,9 @@ impl Namespace {
             || manifest.mutex != self.mutex
             || manifest.catalog != self.catalog
             || manifest.previous != self.previous
+            || !manifest
+                .archive
+                .same_inode(&Identity::of(&self.archive.file)?)
             || !manifest
                 .namespace
                 .same_inode(&Identity::of(&self.directory.file)?)
@@ -237,7 +363,7 @@ impl Namespace {
         transition: bool,
     ) -> io::Result<(String, File)> {
         let mut tx = self.transaction()?;
-        tx.collect_closed()?;
+        // Completed evidence is removed only by explicit administrative archival.
         if tx.catalog.operations.len() >= MAX_OPS {
             return Err(limit());
         }
@@ -280,18 +406,20 @@ impl Namespace {
             sentinel: identity,
             transition,
             holders: 1,
+            holder_ids: vec![id.clone()],
             closed: false,
             uncertain: false,
             epoch: 0,
             entries,
             holds: Vec::new(),
             journals: Vec::new(),
+            recovery: None,
         });
         tx.save()?;
         self.directory.file.sync_all()?;
         Ok((id, file))
     }
-    pub(super) fn import(self: &Arc<Self>, file: &File) -> io::Result<String> {
+    pub(super) fn import(self: &Arc<Self>, file: &File) -> io::Result<(String, String)> {
         let identity = Identity::of(file)?;
         identity.regular(self.uid)?;
         let record: Sentinel = read_json(file)?;
@@ -319,16 +447,21 @@ impl Namespace {
             .checked_add(1)
             .filter(|n| *n <= 256)
             .ok_or_else(limit)?;
+        let holder = new_id();
+        op.holder_ids.push(holder.clone());
         tx.save()?;
-        Ok(record.id)
+        Ok((record.id, holder))
     }
-    pub(super) fn release(&self, id: &str) -> io::Result<()> {
+    pub(super) fn release(&self, id: &str, holder: &str) -> io::Result<()> {
         let mut tx = self.transaction()?;
         let op = tx.operation_mut(id)?;
-        op.holders = op
-            .holders
-            .checked_sub(1)
-            .ok_or_else(|| invalid("holder underflow"))?;
+        let index = op
+            .holder_ids
+            .iter()
+            .position(|id| id == holder)
+            .ok_or_else(|| invalid("unknown holder release"))?;
+        op.holder_ids.remove(index);
+        op.holders = op.holder_ids.len() as u32;
         if op.holders == 0
             && !op.uncertain
             && op.holds.is_empty()
@@ -361,12 +494,57 @@ impl Transaction<'_> {
         if self.catalog.endpoints.len() > 256 {
             return Err(limit());
         }
+        if self.catalog.runtimes.len() > 256 {
+            return Err(limit());
+        }
+        let mut runtime_ids = std::collections::HashSet::new();
+        for runtime in &self.catalog.runtimes {
+            if runtime.writer_retired != (runtime.state == RuntimeState::Retired)
+                || runtime
+                    .admission_holder
+                    .as_ref()
+                    .is_some_and(|h| !id_valid(h))
+            {
+                return Err(invalid("invalid runtime retirement receipt"));
+            }
+            if !id_valid(&runtime.id)
+                || !runtime_ids.insert(&runtime.id)
+                || runtime.paths.len() > 64
+                || runtime.guest_consistent
+                || !self
+                    .catalog
+                    .operations
+                    .iter()
+                    .any(|op| op.id == runtime.operation && runtime.epoch <= op.epoch)
+            {
+                return Err(invalid("invalid runtime record"));
+            }
+            super::runtime::validate_sentinel(self.namespace, runtime)?;
+            for path in &runtime.paths {
+                path.entry.path.get()?;
+                let role = if path.kind == super::runtime::RuntimePathKind::GuestTree {
+                    PathRole::MutableTree
+                } else {
+                    PathRole::MutableFile
+                };
+                if path.entry.role != role {
+                    return Err(invalid("runtime role mismatch"));
+                }
+                if path.entry.pins.len() > 128 {
+                    return Err(limit());
+                }
+            }
+        }
         let mut endpoint_paths = std::collections::HashSet::new();
+        let mut endpoint_ids = std::collections::HashSet::new();
         for endpoint in &self.catalog.endpoints {
             let path = endpoint.path.get()?;
-            if !endpoint_paths.insert(path)
-                || endpoint.identity.mode & libc::S_IFMT != libc::S_IFSOCK
-                || endpoint.identity.uid != self.namespace.uid
+            if !id_valid(&endpoint.id)
+                || !endpoint_ids.insert(&endpoint.id)
+                || (endpoint.state != EndpointState::Retired && !endpoint_paths.insert(path))
+                || endpoint.identity.as_ref().is_some_and(|id| {
+                    id.mode & libc::S_IFMT != libc::S_IFSOCK || id.uid != self.namespace.uid
+                })
                 || !self
                     .catalog
                     .operations
@@ -375,13 +553,40 @@ impl Transaction<'_> {
             {
                 return Err(invalid("invalid endpoint receipt"));
             }
+            if endpoint.parent.mode & libc::S_IFMT != libc::S_IFDIR
+                || endpoint.parent.uid != self.namespace.uid
+                || endpoint.parent.mode & 0o7777 != 0o700
+                || (endpoint.state != EndpointState::BindIntent && endpoint.identity.is_none())
+            {
+                return Err(invalid("invalid endpoint parent/state"));
+            }
+            super::endpoint::validate_sentinel(self.namespace, endpoint)?;
         }
         let mut allowed = vec![
             "manifest.json".to_string(),
             "catalog.lock".to_string(),
             "catalog.json".to_string(),
             "catalog.previous".to_string(),
+            "archive".to_string(),
         ];
+        for endpoint in &self.catalog.endpoints {
+            if self
+                .namespace
+                .directory
+                .path
+                .join(format!("ep-{}", endpoint.id))
+                .try_exists()?
+            {
+                allowed.push(format!("ep-{}", endpoint.id));
+            }
+        }
+        for runtime in &self.catalog.runtimes {
+            let name = format!("rt-{}", runtime.id);
+            if self.namespace.directory.path.join(&name).try_exists()? {
+                allowed.push(name);
+            }
+        }
+        super::recovery::validate_archives(self.namespace, &self.catalog)?;
         let mut ids = std::collections::HashSet::new();
         let mut bases = std::collections::HashSet::new();
         for base in &self.catalog.bases {
@@ -396,12 +601,29 @@ impl Transaction<'_> {
                 || op.holds.len() > 256
                 || op.journals.len() > 256
                 || op.holders > 256
+                || op.holder_ids.len() != op.holders as usize
+                || op.holder_ids.iter().any(|id| !id_valid(id))
+                || op
+                    .holder_ids
+                    .iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != op.holder_ids.len()
             {
                 return Err(invalid("invalid catalog operation bounds"));
             }
+            if let Some(intent) = &op.recovery {
+                if intent.record_sha256.len() != 64
+                    || !intent.record_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    return Err(invalid("invalid recovery intent"));
+                }
+            }
             let n = format!("op-{}", op.id);
-            allowed.push(n.clone());
-            let sentinel_file = self.namespace.directory.file(&n, false)?;
+            if self.namespace.directory.path.join(&n).try_exists()? {
+                allowed.push(n.clone());
+            }
+            let sentinel_file = self.operation_sentinel(op)?;
             if Identity::of(&sentinel_file)? != op.sentinel {
                 return Err(invalid("sentinel replaced"));
             }
@@ -449,16 +671,86 @@ impl Transaction<'_> {
             let mut journals = std::collections::HashSet::new();
             for journal in &op.journals {
                 journal.root.get()?;
+                if journal.footprint.is_empty()
+                    || journal.footprint.len() > 256
+                    || journal.intents.len() > 512
+                {
+                    return Err(limit());
+                }
+                for path in &journal.footprint {
+                    path.get()?;
+                }
+                let mut intent_ids = std::collections::HashSet::new();
+                for intent in &journal.intents {
+                    intent.to.get()?;
+                    if let Some(p) = &intent.from {
+                        p.get()?;
+                    }
+                    if let Some(p) = &intent.prior {
+                        p.get()?;
+                    }
+                    if !id_valid(&intent.id)
+                        || !intent_ids.insert(&intent.id)
+                        || (intent.completed && intent.cancelled)
+                        || intent.to_parent.mode & libc::S_IFMT != libc::S_IFDIR
+                    {
+                        return Err(invalid("invalid before-effect intent"));
+                    }
+                }
                 if !journals.insert(&journal.id)
-                    || !["create", "adopt", "reclone", "cache", "erofs", "image-pair"]
-                        .contains(&journal.plan.as_str())
+                    || ![
+                        "create",
+                        "adopt",
+                        "reclone",
+                        "cache",
+                        "erofs",
+                        "image-pair",
+                        "remove",
+                        "owner-read",
+                    ]
+                    .contains(&journal.plan.as_str())
                     || journal.disposals.len() > 256
                 {
                     return Err(invalid("invalid mutation plan/id"));
                 }
+                if journal.plan == "erofs"
+                    && (journal.footprint.len() != 2
+                        || journal.footprint[0] == journal.footprint[1]
+                        || overlaps(&journal.footprint[0].get()?, &journal.footprint[1].get()?))
+                {
+                    return Err(invalid("invalid EROFS union"));
+                }
+                if journal.plan != "erofs"
+                    && journal.plan != "remove"
+                    && journal.footprint.len() != 1
+                {
+                    return Err(invalid("invalid tree footprint"));
+                }
+                if journal.committed
+                    && (journal.intents.iter().any(|i| !i.completed && !i.cancelled)
+                        || journal.disposals.iter().any(|d| !d.discarded))
+                {
+                    return Err(invalid("committed journal has unresolved effects"));
+                }
+                if journal.permissions.len() > 4096 {
+                    return Err(limit());
+                }
+                for intent in &journal.permissions {
+                    intent.path.get()?;
+                    if intent.original.uid != self.namespace.uid
+                        || intent.granted_mode & !0o7777 != 0
+                        || intent.acl.as_ref().is_some_and(|a| a.len() > 131072)
+                    {
+                        return Err(invalid("invalid permission intent"));
+                    }
+                }
+                if journal.committed && journal.permissions.iter().any(|p| !p.restored) {
+                    return Err(invalid("unrestored committed permission journal"));
+                }
                 let mut stages = std::collections::HashSet::new();
                 for disposal in &journal.disposals {
                     disposal.path.get()?;
+                    disposal.slot.get()?;
                     if !id_valid(&disposal.stage)
                         || !stages.insert(&disposal.stage)
                         || disposal.file.mode & libc::S_IFMT != libc::S_IFREG
@@ -490,6 +782,29 @@ impl Transaction<'_> {
         }
         Ok(())
     }
+    pub(super) fn operation_sentinel(&self, op: &Operation) -> io::Result<File> {
+        match self
+            .namespace
+            .directory
+            .file(&format!("op-{}", op.id), false)
+        {
+            Ok(file) => Ok(file),
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    && self
+                        .catalog
+                        .archives
+                        .iter()
+                        .any(|a| a.operation == op.id && a.sentinel == op.sentinel) =>
+            {
+                self.namespace.archive.file(&format!("op-{}", op.id), false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+    pub(super) fn namespace(&self) -> &Namespace {
+        self.namespace
+    }
     pub(super) fn operation(&self, id: &str) -> io::Result<&Operation> {
         self.catalog
             .operations
@@ -513,32 +828,6 @@ impl Transaction<'_> {
         write_json(&self.previous, &previous)?;
         write_json(&self.file, &self.catalog)
     }
-    fn collect_closed(&mut self) -> io::Result<()> {
-        let closed: Vec<_> = self
-            .catalog
-            .operations
-            .iter()
-            .filter(|op| {
-                op.closed
-                    && op.journals.is_empty()
-                    && !self.catalog.endpoints.iter().any(|e| e.operation == op.id)
-            })
-            .map(|op| op.id.clone())
-            .collect();
-        for id in closed {
-            let n = format!("op-{id}");
-            let file = self.namespace.directory.file(&n, false)?;
-            // A caller may still be dropping its final descriptor. Never wait.
-            if sentinel(&file).is_err() {
-                continue;
-            }
-            self.catalog.operations.retain(|op| op.id != id);
-            self.save()?;
-            unlink_at(&self.namespace.directory.file, n.as_ref())?;
-            self.namespace.directory.file.sync_all()?;
-        }
-        Ok(())
-    }
     pub(super) fn check_conflicts(
         &self,
         own: Option<&str>,
@@ -559,41 +848,34 @@ impl Transaction<'_> {
             if Some(op.id.as_str()) == own {
                 continue;
             }
-            let retained_sentinel = self
-                .namespace
-                .directory
-                .file(&format!("op-{}", op.id), false)?;
+            let retained_sentinel = self.operation_sentinel(op)?;
             let sentinel_released = ofd(&retained_sentinel, true)?;
             if op.closed && sentinel_released {
                 continue;
             }
-            let endpoint_restart = !transition
-                && !op.transition
-                && !op.uncertain
-                && op.journals.is_empty()
-                && !op.entries.is_empty()
-                && op.entries.iter().all(|e| e.role == PathRole::Endpoint)
-                && entries.iter().all(|a| {
-                    a.role == PathRole::Endpoint && op.entries.iter().any(|b| a.path == b.path)
-                })
-                && op.entries.iter().all(|e| {
-                    self.catalog
-                        .endpoints
-                        .iter()
-                        .any(|r| r.operation == op.id && r.path == e.path)
-                });
-            if endpoint_restart {
-                let sentinel_file = self
-                    .namespace
-                    .directory
-                    .file(&format!("op-{}", op.id), false)?;
-                if ofd(&sentinel_file, true)? {
-                    continue;
-                }
-            }
             for a in entries {
                 for b in &op.entries {
-                    if overlaps(&a.path.get()?, &b.path.get()?)
+                    if !transition
+                        && a.role == PathRole::Endpoint
+                        && b.role == PathRole::Endpoint
+                        && a.path == b.path
+                        && super::endpoint::replaceable(self, self.namespace, op, &a.path.get()?)?
+                    {
+                        continue;
+                    }
+                    let ap = a.path.get()?;
+                    let bp = b.path.get()?;
+                    let left = if a.role == PathRole::Endpoint && b.role != PathRole::Endpoint {
+                        ap.parent().ok_or_else(|| invalid("endpoint parent"))?
+                    } else {
+                        ap.as_path()
+                    };
+                    let right = if b.role == PathRole::Endpoint && a.role != PathRole::Endpoint {
+                        bp.parent().ok_or_else(|| invalid("endpoint parent"))?
+                    } else {
+                        bp.as_path()
+                    };
+                    if overlaps(left, right)
                         && (transition
                             || op.transition
                             || op.uncertain
@@ -604,24 +886,30 @@ impl Transaction<'_> {
                     }
                 }
             }
-            // Dead sentinel with a nonclosed record is unknown writer history,
-            // not evidence that migration is safe. Never reap that record here.
-            let file = self
-                .namespace
-                .directory
-                .file(&format!("op-{}", op.id), false)?;
-            if !op.closed
-                && ofd(&file, true)?
-                && entries.iter().any(|a| {
-                    op.entries
-                        .iter()
-                        .any(|b| match (a.path.get(), b.path.get()) {
-                            (Ok(a), Ok(b)) => overlaps(&a, &b),
-                            _ => true,
-                        })
-                })
-            {
-                return Err(invalid("orphaned operation requires verified recovery"));
+            // Unknown writer history remains fenced; only independently proven
+            // endpoint scope may bypass its own old endpoint entry.
+            if !op.closed && sentinel_released {
+                for a in entries {
+                    for b in &op.entries {
+                        if !overlaps(&a.path.get()?, &b.path.get()?) {
+                            continue;
+                        }
+                        if !transition
+                            && a.role == PathRole::Endpoint
+                            && b.role == PathRole::Endpoint
+                            && a.path == b.path
+                            && super::endpoint::replaceable(
+                                self,
+                                self.namespace,
+                                op,
+                                &a.path.get()?,
+                            )?
+                        {
+                            continue;
+                        }
+                        return Err(invalid("orphaned operation requires verified recovery"));
+                    }
+                }
             }
         }
         Ok(())
@@ -634,6 +922,12 @@ fn provision(directory: &Directory, expected_uid: u32) -> io::Result<()> {
     if !directory.names()?.is_empty() {
         return Err(invalid("bootstrap refuses incomplete existing namespace"));
     }
+    mkdir_at(&directory.file, "archive".as_ref(), 0o700)?;
+    let archive = Directory::open(&directory.path.join("archive"))?;
+    if uid() == 0 {
+        syscall(unsafe { libc::fchown(archive.file.as_raw_fd(), expected_uid, !0) })?;
+    }
+    archive.file.sync_all()?;
     let mutex = directory.file("catalog.lock", true)?;
     let catalog = directory.file("catalog.json", true)?;
     let previous = directory.file("catalog.previous", true)?;
@@ -649,6 +943,8 @@ fn provision(directory: &Directory, expected_uid: u32) -> io::Result<()> {
             bases: Vec::new(),
             operations: Vec::new(),
             endpoints: Vec::new(),
+            archives: Vec::new(),
+            runtimes: Vec::new(),
         },
     )?;
     let initial: Catalog = read_json(&catalog)?;
@@ -667,6 +963,7 @@ fn provision(directory: &Directory, expected_uid: u32) -> io::Result<()> {
             mutex: Identity::of(&mutex)?,
             catalog: Identity::of(&catalog)?,
             previous: Identity::of(&previous)?,
+            archive: Identity::of(&archive.file)?,
         },
     )?;
     directory.file.sync_all()

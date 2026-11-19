@@ -1,170 +1,210 @@
-# Admission v2 core — source candidate, NOT runtime acceptance
+# Admission v2 core: amendments C and D source candidate
 
-Base: `4dc1417456704f6fd2b42220f49c245710564876` (tree
-`78797f20a4aa98ad000301cb5e621a57bb47d368`). This replaces the old moving
-ancestor-directory flock scheme. It implements the approved v2 source seam and
-amendments A/B, but **the complete delivery remains blocked by the explicit
-integration/protocol gaps below**. No normal-mode PASS, typecheck, migration,
-bootstrap, socket, process, VM or power-loss test was executed.
+Incremental after `ec1a2fd785b35396f9366b6d22e81446f86cd8c0` (tree
+`3c479a715a240ce3691566daf84c4979feb7b6ee`), itself on consolidated `4dc14174`.
+Prior implementation/review results remain historical, not acceptance. This is
+SOURCE ONLY: no compiler, Rust test, process/socket/VM, mount, syncfs, bootstrap,
+network, cleanup or administrative recovery was executed. Formatting/static checks
+are not typecheck or runtime proof. The complete caller/core candidate still needs
+fan-in, admitted tests and ONE independent integrated review/Workers PR.
 
-## Implemented source
+## Stable catalog and original C1–C6
 
-- `AdmissionContext::{system,worker,local,reject_retained_path,import_child}`;
-  production free functions retain their signatures. Context is carried by every
-  lease. `testing::{provision_context,open_context}` exists only under cfg(test),
-  uses an explicit private own-temp root and does not modify env/HOME/cwd/globals.
-- `bootstrap_for_uid` requires effective uid0 and creates only the fixed
-  `/var/lib/iii/worker-admission/v1/<euid>` layout via no-follow retained directory
-  descriptors, EXCL creation, ownership checks and fsync. Existing incompatible or
-  partial material refuses. `system` and `check_installation` do not bootstrap.
-- Durable bounded catalog, registered bases, raw-byte absolute path encoding,
-  ancestor/descendant intervals in both directions. Unknown schema/versions,
-  namespace entries, symlinks, wrong modes/owners/links and replaced lock inodes
-  refuse. SHA envelopes detect torn/corrupt records; SHA is NOT authority.
-- Short nonblocking catalog flock; one exclusive operation sentinel flock plus
-  Linux OFD byte lock. Data/claim directories are never flocked. `with_paths`
-  extends the same union atomically, preserving clones and prior coverage on
-  failure; `with_inputs` means Strict. Missing tails do not choose lock domains.
-- Mutable intervals reserve writes against other operations. Strict intervals
-  share with Strict; transition conflicts with either direction of overlap.
-  Registered-base legacy discovery includes a whole `<base>/<id>` input, without
-  treating a generic hexadecimal application or generic receipt/compat name as
-  a VM. Custody entries still refuse, even valid-looking selectors.
-- `UseGuard` registers a read hold and validates its own exact snapshot;
-  overlapping mutations refuse, disjoint reads remain possible.
-- Nonclone `MutationGuard`: create directories, issue EXCL sibling file/tree
-  stages, publish by retained-parent NOREPLACE rename, preserve the prior version,
-  adopt by NOREPLACE, journal effects/epochs, and issue private EffectReceipt.
-  Commit updates only identities observed by those owned effects, never generic
-  current-inode refresh. Panic/drop after artifact effects retains uncertainty.
-- `DiagnosticLock` exposes borrowed AsFd, not a mutable File. It requires an exact
-  MutableFile sidecar and related declared artifact. Existing0644-compatible
-  nlink1 regular lock inodes are opened without truncation, created EXCL otherwise,
-  never staged/renamed/unlinked. Acquisition writes nothing; PID/clear require
-  this handle's flock and terminal validation. No catalog mutex survives a wait.
-  Handles retain the operation; commit refuses outstanding handles; Drop writes
-  nothing. Ordinary refused acquisition before artifact effects can abort cleanly.
-- `discard_file` consumes only this mutation/context/operation's unpublished
-  regular stage. Exact MutableFile semantic slot required. Durable DiscardIntent
-  binds stage ID, parent identity and file identity before unlinkat of ONLY the
-  generated staging name; fsync precedes durable Discarded. Target is untouched.
-  Disposal appears separately in EffectReceipt. Failure poisons and preserves
-  journal, never retries by filename or promotes a pending output. Drop does not
-  resolve an abandoned stage. Caller MUST join writers and close spool clones.
-- Child export duplicates the exact sentinel OFD CLOEXEC. Import validates record,
-  namespace and inode, observes an OFD conflict through an independent open and
-  no conflict through the inherited description, and increments the same operation
-  holder count. It never LOCK_UNs a shared description, never treats PID/string as
-  migration proof, and rejects wrong-context/independently opened descriptors.
-- Endpoint role, private parent outside payload intervals, durable socket receipt,
-  verified stale ownership, bind/close identity comparison and conservative unknown
-  lifetime retention. Unknown/live/foreign endpoints are not probed or deleted.
+Production remains fixed to `/var/lib/iii/worker-admission/v1/<euid>`. Explicit
+uid0 `bootstrap_for_uid` creates only this namespace through checked retained
+parents; `system`/`check_installation` never provision or fall back. Context travels
+with each Lease. Test context provisioning/open/recovery accepts an explicit
+private own-temp root only under cfg(test), never environment/HOME/cwd overrides.
+No issuer of OfflineGrant, BootAuthority or TransitionAuthority is added.
 
-## Safety and storage bounds
+The bounded catalog registers lexical component intervals independently of which
+payload paths exist. Both directions of containment conflict with transition;
+new base registration cannot evade an old interval. `with_paths` extends ONE
+operation atomically, `with_inputs` is Strict, clones retain the union. No data,
+project or claim-directory flock exists. Claims therefore remain independent
+(C1/C2), while missing mutable output/cache/state paths can be created through
+owned effects without moving exclusion (C3). Registered base context identifies
+whole-VM legacy markers, not arbitrary hex apps or generic receipt/compat files
+(C5). Declaring a role is operational scope, not migration authority.
 
-Per namespace: 256 operation records,256 registered bases,256 endpoint receipts.
-Per operation:256 intervals/holds/journals,8192 pins;128 components/path,4096 raw
-path bytes;512 journal changes,256 artifacts/disposals. Serialized record cap4MiB,
-payload cap2MiB; current and previous snapshots have fixed checked inodes. Tree
-sync is capped4096 entries/depth64. Catalog memory/work is bounded by these caps;
-exceeding them is an error, never omission. Metadata scans do not inventory guest
-contents. Same-UID/admin is the trust boundary, not hostile admin containment.
+Strict identity pins are unchanged by generic rereads. Core-owned stage/publication,
+NOREPLACE adoption, explicit discard and continuous runtime sessions have separate
+receipts. Unknown/corrupt state, aliases not inventoried, old binaries and host
+same-UID nonparticipants remain limitations. No hash, PID or successful OS wait
+alone authenticates disk provenance or retires arbitrary writers.
 
-Before current-catalog overwrite, the prior complete snapshot is fsynced to
-`catalog.previous`; corrupt current never silently falls back. Unknown sentinel
-or torn namespace remains fail-closed. Closed records WITHOUT journals can be
-reconciled only after obtaining the verified sentinel. Journal-bearing records
-and preserved prior copies remain; currently the256-operation bound can therefore
-require administrative recovery/archival (not implemented). No automatic prune.
-A lock/filesystem/platform without Linux OFD/NOREPLACE support refuses; this is
-not counted as a normal-mode or migration PASS.
+## Amendment C source seams
 
-Lexical scopes do not resolve bind aliases, alternate mounts, guest shares hidden
-from declarations, old binaries or uncooperative same-UID writers. Coordinator
-must inventory aliases and provenance and retire nonparticipants. Revalidate plus
-rename/unlink is not hostile-writer atomicity; private retained parents and the
-cooperative protocol are prerequisites. An inode pin does not hash input bytes.
-The offline Store/tree/fs, G1–G3, A4, auth/wire and actual consumers are unchanged.
+### Exact EROFS union
 
-## C1–C6 matrix (AUTHORED_NOTRUN)
+`MutationPlan::Erofs { output: PathBuf, spool: PathBuf }` requires two explicitly
+admitted MutableFile paths: absolute, distinct, no ancestor/descendant, no inode or
+Strict alias. Both holds and the journal footprint are acquired atomically. It
+cannot mutate a third sibling. Only output's explicitly admitted `.lock` sidecar
+is diagnostic; it cannot alias either artifact. Sequence:
 
-| Finding | Source behavior | Remaining integration condition |
-| --- | --- | --- |
-| C1 | Nested/whole-base intervals and new registration compare both containment directions; post-creation domain cannot move | Cross-process test, registry lifecycle admission |
-| C2 | Chained calls preserve one union and hold no data/claim flock | Same-operation propagation through all helpers; S505 tests |
-| C3 | Cold state/runtime and output/cache declared mutable trees can be created under a stable namespace interval; exact descendants use receipts | Root must cover all missing intermediate directories; callers must declare outputs, not Strict aliases |
-| C4 | File/tree replacement, adoption and epoch updates are core-owned; old copies retained, external substitution terminal | EROFS spool-plan amendment below; recovery/archival; actual writer lifetime |
-| C5 | Catalog bases identify whole VM legacy, including empty tail; generic names remain normal | Trusted registration before effects for every base/claim scope |
-| C6 | Dedicated endpoint operations restart only with matching receipt and released sentinel | Mixed operation crash recovery, listener close ownership and parent preparation below |
+1. Stage output and the exact spool slot; writer owns/joins its FD clones.
+2. `discard_file(spool)` durably records intent, unlinks only its own generated
+   staging name relative to retained parent, fsyncs, records Discarded.
+3. Publish output; preserve prior target under a recorded generated name.
+4. Explicit diagnostic finish/drop, then commit. Failure is terminal.
 
-Tests in `tests.rs` exercise the real catalog/context and syscalls, not bool
-migration authorities. They cover cold/warm creation, nested/chained intervals,
-claims, clone/child import, corruption/namespace substitution, strict pins,
-owned/external publication, diagnostics, stale/live/unrecorded endpoints and
-spool disposal. Five disposal boundary faults are authored. Socket fixtures are
-SOURCE ONLY; even those were not run. Existing outside-module tests still need
-context migration by their owner; no implicit production fallback is provided.
-Independent-process actual descendant lifetime, filesystem unsupported, uid-owner
-negative fixtures, power-loss and B1–B3 public-build integration remain unexecuted
-and not fully authored here. A test crash model is explicitly cfg(test), not a
-production retirement issuer.
+Amendments A/B remain: diagnostic inode is never staged/renamed; AsFd is borrowed,
+PID/clear require that handle's flock, waiting holds no catalog mutex. Commit
+refuses outstanding handles/stages. Discard is not a payload delete API and does
+not touch its semantic target. EffectReceipt keeps publication/disposal distinct.
 
-## Blocking gaps and minimal contract decisions
+### Owned endpoint, independently provable lifetime
 
-1. **EROFS temporary spool footprint:** `Erofs { output }` authorizes exactly
-   output plus its declared diagnostic sidecar, NOT a separate sibling spool slot.
-   `ImagePair { directory }` supports explicitly declared spool + image with
-   discard-before-publish, but may collide with Strict inputs in that directory.
-   Proposed minimum amendment (NOT implemented):
-   `MutationPlan::Erofs { output: PathBuf, spool: PathBuf }`, with exact distinct
-   MutableFile declarations, one guard holding both footprints, and discard only
-   for that slot. Do not accept arbitrary `.lock`/spool siblings.
-2. **Same-operation helpers:** two independent `local(state)`/`worker(base,key)`
-   calls overlapping a mutable tree correctly return Busy. Helpers must reuse
-   the caller Lease, not merely the same AdmissionContext. Child import provides
-   this across exec; caller flow still requires integration by Stream B.
-3. **Endpoint mixed-operation restart:** a dead receipt from an operation also
-   protecting VM/data/writer journals remains refused. Current stale restart only
-   proves a dedicated endpoint-only operation. Proposed minimum: endpoint-specific
-   sentinel owned by EndpointLifetime, retained/verified separately from operation
-   writer uncertainty, with exact retirement/recovery rules. Do not clear an
-   entire mixed operation to clean its socket. `into_parts` also relies on the
-   caller closing EVERY listener clone before `close`; core cannot prove this
-   from a raw UnixListener or PID. Parent must confirm that ownership seam or
-   amend it to an owned listener wrapper. New endpoint parent must already be
-   private/outside payload; prepare it with a separately admitted mutation.
-4. **Recovery/archival:** no production API resumes poisoned/discard-intent or
-   orphaned mixed-operation journals. Evidence stays fenced. Need a private
-   explicitly authorized recovery contract, verifying IDs/parent/file/current
-   absence and durability without reimporting OLD or deleting replacements.
-   A corrupt current catalog cannot be replaced by the previous snapshot without
-   reconciling later sentinels/intents. Completed journals also need bounded
-   archival before catalog exhaustion; no ad hoc cleanup was invented.
+`BoundEndpoint::{into_async,close}` and `EndpointListener::{accept,close}` replace
+raw into_parts. No Clone/AsFd/AsRawFd/into_std/try_clone or raw listener accessor.
+Owned close first closes the listener, then verifies/removes the exact receipt
+fingerprint. Drop/failed conversion closes OS listener but conservatively retains
+its endpoint sentinel. Relay must stop accepted streams/tasks and regain unique
+wrapper ownership before close; connected streams are not listener clones.
 
-These gaps mean the delivery is PARTIAL/BLOCKED, not completed C1–C6 or upgrade.
-They are not a return to the superseded OwnerScope proposal: real catalog and
-operations are implemented here and preserved for integration.
+Every endpoint has its own EX/OFD sentinel, epoch, durable BindIntent and Bound/
+CloseIntent/Retired receipt. Restart verifies that endpoint's free sentinel, not
+mixed-operation holders. Retirement removes ONLY its endpoint entry/hold/socket;
+never clears operation uncertainty, data holds, journals or data pins. Live,
+foreign, unrecorded, bind-gap or overlapping writer/control-parent states refuse.
+The private parent must be outside payload/export scopes; new payload declarations
+cannot invade it. D3 caller setup is a separate completed short operation BEFORE
+main writer admission, not dropping a live writer fence.
 
-## Installation checklist — documentation only
+### Explicit administrative recovery and bounded archival
 
-No command was run and no production directory was created. Coordinator owns the
-CLI spelling (none is invented here). After separate operator authorization:
+`RecoveryAction::{ReconcileVerified,ArchiveCompleted}`, RecoveryRequest and
+versioned bounded Serialize RecoveryReport implement the fixed inspection/recovery
+seam. Both production functions require effective uid0 and fixed numeric-euid
+namespace. Digest CAS is not authority. Inspection is read-only; recovery obtains
+nonblocking operation, endpoint AND runtime sentinel ownership and refuses live
+children, conflicting operations and unverified holders.
 
-1. Confirm Linux OFD flock and renameat2/NOREPLACE on the chosen filesystem,
-   available metadata capacity, uid and administrative ownership of `/var/lib`.
-2. The coordinator's explicit administrative CLI invokes
-   `bootstrap_for_uid(<numeric-euid>)`; this is never a worker endpoint or normal
-   prepare/start/build side effect. Do not chmod/chown incompatible existing data.
-3. The target user invokes the coordinator's read-only `check_installation` route.
-4. Keep the namespace outside payload/export/guest paths. Retire old processes;
-   do not infer quiescence from bootstrap success. Provisioning alone does not
-   authorize migration, secrets, credentials or a boot profile.
+Before-effect intents bind parents, old/new/stage/prior identities for creation,
+staging, publication, adoption, diagnostics and removal. Recovery intent is durable
+before reconciliation writes. Completely proven NEW placement or entirely retained
+OLD placement can settle without rollback/deleting stages; ambiguous half moves,
+unknown creation identities and unrecorded artifacts remain `unresolved`. A
+DiscardIntent with matching parent and absence can settle; a replacement is never
+deleted. Unrestored permissions require exact original inode/mode/ACL evidence;
+unknown runtime state never becomes retired through admin privilege.
 
-## Validation status
+ArchiveCompleted accepts only fully terminal operations and free sentinels. It
+writes EXCL immutable bundle + fsync + NOREPLACE promotion, persists index/receipt,
+moves verified sentinels, then removes the LIVE row. Bundles retain journals,
+endpoint/runtime receipts and references to payload artifacts; payload/prior data
+is never pruned. Recorded archive-boundary interruptions can resume idempotently;
+unknown/torn staging refuses. No automatic completed-record deletion remains.
+Corrupt current catalog is never reconstructed from `catalog.previous`. Current
+and previous are integrity-wrapped, fixed-inode records; both remain evidence.
 
-Only existing rustfmt and static/diff checks are permitted in this source round.
-No Cargo/rustc, Rust test, socket/process/VM fixture, mount/syncfs, networking,
-download/install, cleanup, publication or release. Source receipt records exact
-check exit codes, commit/tree and authored counts. Full admission, shared-target
-build/test matrix, combined review and authenticated historical8×2 campaign remain
-coordinator gates. One consolidated Workers PR; releases remain operator-owned.
+## Amendment D source seams
+
+### D1/D2 owned continuous writer session
+
+`RuntimePathKind::{GuestTree,UpperImage,ActivityStamp}`, RuntimePath,
+`Lease::prepare_runtime`, `RuntimeLaunch::spawn`, RuntimeChild pipe/id/wait,
+`import_runtime_writer`, RuntimeWriter clone/checkpoint/open_activity_file exist.
+Exact declared roles/types/owner/ancestry are checked; GuestTree roots and upper
+files must already exist. A missing exact ActivityStamp is EXCL-created only after
+Preparing record publication; a crash gap remains unresolved. Root and protected
+ancestor identity never refresh. GuestTree descendants and UpperImage bytes may
+change only within the active session. Strict/readonly overlap refuses.
+
+Spawn owns the actual Tokio Child and passes one selected CLOEXEC duplicate via
+`--runtime-write-fd`; only child pre_exec clears CLOEXEC. The separate admission FD
+continues the original operation. Import verifies the runtime OFD, exact namespace,
+operation and an independently named imported admission holder before activation.
+No raw Child/from_pid/from_status/bool reaped API exists. RuntimeChild.wait awaits
+the real child, closes the parent's runtime duplicate, then acquires an independent
+verified sentinel nonblocking: a descendant-held descriptor refuses retirement.
+It settles only that runtime hold and its exact imported holder (including `_exit`
+which runs no Drop), never other child holders. Unknown spawn/wait/cancel retains
+uncertainty. Receipt says writer-retired, explicitly NOT guest/application-consistent.
+Actual descendants must retain this same sentinel; no arbitrary signal permission.
+
+Activity file is exact, owned, regular nlink1, no-follow and nontruncating. The
+callback must retain a RuntimeWriter clone and fail terminally. **Residual seam:**
+`open_activity_file -> File` plus a BEFORE-write callback cannot notify core of a
+later FD write failure by itself. The consumer must retain that failure in a
+shared terminal checkpoint visible to finalization; if current caller API cannot,
+minimum amendment is a narrow `RuntimeWriter::record_activity_failure` or owned
+activity handle. No broad writer refresh is proposed or implemented. Until this
+seam is demonstrated, a clean beacon-retirement claim is not justified.
+
+### D4 managed cache owner read
+
+ManagedCacheRead is distinct from Strict/MutableTree and requires an exact explicit
+cache-selection declaration. OwnerReadGuard registers an exclusive hold, inventories
+owned no-follow objects, preserves ORIGINAL Metadata, counts internal hardlinks
+against nlink and refuses external links. Directory traversal may need temporary
+owner r/x before enumeration; no file mode grant occurs before link inventory.
+Only owner read/traverse bits change; POSIX ACL_USER_OBJ is mapped back to original
+mode, mask/group/other/named entries are preserved and compared on finish. Original
+ctime cannot be restored and is recorded as changed, never claimed byte-identical.
+
+**Residual ACL-intent gap:** for a mode0000 inode, the current implementation
+records original mode/identity before grant, then obtains ACL bytes through the
+newly readable verified FD and reconstructs ACL_USER_OBJ from original mode. If
+it fails in that gap, `acl_captured=false` keeps recovery unresolved. This is
+fail-closed but does not satisfy the stronger requirement to persist the complete
+original ACL BEFORE granting access. A retained-FD ACL-query primitive (for example
+an explicitly supported getxattrat/AT_EMPTY_PATH kernel contract) must be validated
+and approved, or this unreadable-ACL case remains blocked. No pathname/procfd
+fallback or assumed no-ACL mode is used.
+
+Linux O_PATH + fchmodat2(AT_EMPTY_PATH) is required for inode-bound mode changes,
+with no `/proc/self/fd`, pathname chmod or root escalation fallback. Kernel/filesystem
+support and ACL behavior require real unprivileged validation. read_dir/open_file/
+original_metadata are limited to inventoried entries. finish restores children
+before parents, verifies modes/ACLs and records completion; Drop/error leaves an
+unresolved fenced journal, not best-effort pathname cleanup. Returned readable FDs
+must be closed by the caller before finish/guard release; raw File escape makes
+this a caller lifetime obligation, not a core-observed FD-count proof.
+
+### D5 exact authenticated normal removal
+
+`MutationPlan::Remove { root, targets }` and remove_path admit only exact planned
+normal targets. Caller retains auth, busy, instance and prune policy; core does not
+infer prune. Retention/adoption must happen FIRST. Removal rejects custody,
+generation, backup, `.iii-stage-*`, `.iii-prior-*`, coordination namespace and
+external-hardlinked objects. A complete bounded scan precedes destruction;
+statx mount IDs plus no-follow retained dirfds reject mount crossings. Each unlink/
+rmdir has durable parent/identity intent and parent fsync before completion.
+Nested symlinks are removed as links, never followed. Unexplained disappearance,
+replacement or partial errors poison the operation. Recovery never invents prune
+permission. Large trees beyond256 entries/64 depth refuse before first deletion;
+this is a documented support limit, not successful destruction by omission.
+
+## Resource bounds and evidence
+
+256 LIVE operations/bases/endpoints/runtime sessions;256 intervals/holds/journals,
+8192 pins/op;128 components/4096 bytes per path;512 effects and256 artifact/disposal
+records per journal;4096 owner-read objects/permission intents;64 runtime paths.
+Staged-tree sync4096 entries/depth64; removal256 entries/depth64. Catalog envelope
+4MiB/payload2MiB. Archives512 operations and128MiB metadata, explicit full error,
+never silent prune. Archive scans/validation are bounded but cost grows to that
+limit; unsupported fchmodat2/statx/OFD/NOREPLACE fails closed, never counted as PASS.
+Owner-read retains one FD per object; deployment must admit that FD budget.
+
+Existing43 tests remain (API-migrated); total73 tests are authored. C/D add exact unions, mixed endpoint,
+recovery CAS/gaps, >256 explicit archives, runtime descriptor/activation controls,
+0000/internal-hardlink restoration and exact removal controls. Every fixture is
+AUTHORED_NOTRUN. Unprivileged0000 test explicitly refuses to masquerade under uid0.
+A real process negative fixture is authored but NOT RUN. Positive cross-exec `_exit`,
+parent crash/descendant retention, beacon failure propagation, ACL filesystem matrix
+and public B1–B3/normal cold-warm-rebuild-retain/prune remain integration gates.
+No partial source claim replaces the required full normal-mode validation.
+Executed source checks: rustfmt and rustfmt --check exit0, git diff --check exit0,
+Python static ownership/API/old-test-name checks exit0. These did not compile any
+Rust or execute a fixture. The complete C/D contract is still BLOCKED by the
+beacon error-propagation and pre-grant ACL-intent seams above; the code is delivered
+incrementally for fan-in and continuation, not a complete normal-mode approval.
+
+Coordinator owns CLI/admin/install wiring and caller operation reuse; no caller,
+Cargo/dependency, compat_generation, auth/wire or root-document edits here.
+G1/G2/G3 and A4 untouched. Actual migration still requires OS-peer provenance,
+old writer/credential retirement, sanitization/profile, authorized CURRENT handoff
+and8×2 guest campaigns. Source implementation does not authorize bootstrap on this
+host, release, Registry or remote Git actions.

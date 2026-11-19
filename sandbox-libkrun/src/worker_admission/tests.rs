@@ -198,11 +198,16 @@ fn c4_warm_file_publication_retains_old_copy_and_updates_only_owned_epoch() {
     let lease = f.context.local(&f.data.join("state")).unwrap();
     let lease = mutable(lease, &output, PathRole::MutableFile);
     let clone = lease.clone();
+    let spool = f.data.join("spool-slot");
+    let lease = mutable(lease, &spool, PathRole::MutableFile);
     let mut guard = lease
         .begin(MutationPlan::Erofs {
             output: output.clone(),
+            spool: spool.clone(),
         })
         .unwrap();
+    let temporary = guard.stage_file(&spool, 0o600).unwrap();
+    guard.discard_file(temporary).unwrap();
     let mut stage = guard.stage_file(&output, 0o600).unwrap();
     stage.file_mut().write_all(b"NEW").unwrap();
     guard.publish_file(stage).unwrap();
@@ -226,11 +231,16 @@ fn c4_external_replacement_poison_is_terminal_and_never_refreshes_strict_input()
         &output,
         PathRole::MutableFile,
     );
+    let spool = f.data.join("spool-slot");
+    let lease = mutable(lease, &spool, PathRole::MutableFile);
     let mut guard = lease
         .begin(MutationPlan::Erofs {
             output: output.clone(),
+            spool: spool.clone(),
         })
         .unwrap();
+    let temporary = guard.stage_file(&spool, 0o600).unwrap();
+    guard.discard_file(temporary).unwrap();
     let mut stage = guard.stage_file(&output, 0o600).unwrap();
     stage.file_mut().write_all(b"NEW").unwrap();
     std::fs::rename(&output, f.data.join("retained-old")).unwrap();
@@ -570,7 +580,9 @@ fn orphaned_nonclosed_record_is_not_reconciled_as_retired_writer() {
     let lease = f.context.local(&path).unwrap();
     {
         let mut tx = f.context.namespace.transaction().unwrap();
-        tx.operation_mut(&lease.0.id).unwrap().holders += 1;
+        let op = tx.operation_mut(&lease.0.id).unwrap();
+        op.holders += 1;
+        op.holder_ids.push(new_id());
         tx.save().unwrap();
     }
     drop(lease);
@@ -709,9 +721,7 @@ fn c6_live_endpoint_refuses_unknown_replacement_and_owned_close_cleans_exact_ino
         )
         .is_err()
     );
-    let (listener, lifetime) = bound.into_parts();
-    drop(listener);
-    lifetime.close().unwrap();
+    bound.close().unwrap();
     assert!(!path.exists());
     lease.revalidate().unwrap();
 }
@@ -740,22 +750,19 @@ fn c6_verified_receipt_and_released_previous_sentinel_allow_restart() {
     private(&parent);
     let path = parent.join("shell.sock");
     let lease = endpoint_lease(&f, &path);
-    let (listener, lifetime) = lease.endpoint(&path).unwrap().bind().unwrap().into_parts();
-    drop(listener);
-    // Explicit cfg(test) crash model: do not pretend Drop or a PID is proof.
-    // Consume the test lifetime without its conservative leak, then release
-    // every OFD. Production has no path for this operation.
-    super::endpoint::abandon_closed_test_listener(lifetime);
+    let bound = lease.endpoint(&path).unwrap().bind().unwrap();
+    // cfg(test) closes the only listener then releases endpoint OFD ownership;
+    // this models crash evidence, not a production retirement API.
+    super::endpoint::abandon_closed_test_listener(bound);
     drop(lease);
     let restarted = endpoint_lease(&f, &path);
-    let (listener, lifetime) = restarted
+    restarted
         .endpoint(&path)
         .unwrap()
         .bind()
         .unwrap()
-        .into_parts();
-    drop(listener);
-    lifetime.close().unwrap();
+        .close()
+        .unwrap();
 }
 #[test]
 fn c6_endpoint_parent_must_be_private_and_outside_payload_scopes() {
@@ -763,8 +770,16 @@ fn c6_endpoint_parent_must_be_private_and_outside_payload_scopes() {
     let root = f.data.join("guest");
     private(&root);
     let path = root.join("shell.sock");
-    let lease = mutable(f.context.local(&root).unwrap(), &path, PathRole::Endpoint);
-    assert!(lease.endpoint(&path).is_err());
+    assert!(
+        with_paths(
+            f.context.local(&root).unwrap(),
+            &[PathRequest {
+                path: &path,
+                role: PathRole::Endpoint
+            }]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -995,4 +1010,900 @@ fn mutex_contention_is_nonblocking_and_does_not_touch_payload() {
     assert!(!root.exists());
     drop(held);
     assert!(f.context.local(&root).is_ok());
+}
+
+fn recovery_request(f: &Fixture, operation: &str, action: RecoveryAction) -> RecoveryRequest {
+    let tx = f.context.namespace.transaction().unwrap();
+    RecoveryRequest {
+        operation_id: operation.into(),
+        expected_record_sha256: recovery::digest(tx.operation(operation).unwrap()).unwrap(),
+        action,
+    }
+}
+fn erofs_lease(f: &Fixture, output: &Path, spool: &Path) -> Lease {
+    with_paths(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &[
+            PathRequest {
+                path: output,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: spool,
+                role: PathRole::MutableFile,
+            },
+        ],
+    )
+    .unwrap()
+}
+#[test]
+fn amendment_c_erofs_exact_union_blocks_readers_of_either_then_resolves_both() {
+    let f = fixture();
+    let output = f.data.join("image.erofs");
+    let spool = f.data.join("spool");
+    std::fs::write(&output, b"OLD").unwrap();
+    std::fs::write(&spool, b"OLD SPOOL SLOT").unwrap();
+    let lease = erofs_lease(&f, &output, &spool);
+    for path in [&output, &spool] {
+        let read = lease.use_path(path).unwrap();
+        assert!(
+            lease
+                .begin(MutationPlan::Erofs {
+                    output: output.clone(),
+                    spool: spool.clone()
+                })
+                .is_err()
+        );
+        let tx = f.context.namespace.transaction().unwrap();
+        assert_eq!(tx.operation(&lease.0.id).unwrap().holds.len(), 1);
+        drop(tx);
+        drop(read);
+    }
+    let mut guard = lease
+        .begin(MutationPlan::Erofs {
+            output: output.clone(),
+            spool: spool.clone(),
+        })
+        .unwrap();
+    assert!(exclusive(&f.context, &output).is_err());
+    assert!(exclusive(&f.context, &spool).is_err());
+    let temporary = guard.stage_file(&spool, 0o600).unwrap();
+    let mut image = guard.stage_file(&output, 0o600).unwrap();
+    image.file_mut().write_all(b"NEW").unwrap();
+    guard.discard_file(temporary).unwrap();
+    guard.publish_file(image).unwrap();
+    guard.commit().unwrap();
+    lease.revalidate().unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), b"NEW");
+    assert_eq!(std::fs::read(&spool).unwrap(), b"OLD SPOOL SLOT");
+}
+#[test]
+fn amendment_c_erofs_missing_wrong_role_equal_alias_and_third_sibling_refuse() {
+    let f = fixture();
+    let output = f.data.join("image");
+    let spool = f.data.join("spool");
+    let lease = mutable(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &output,
+        PathRole::MutableFile,
+    );
+    assert!(
+        lease
+            .begin(MutationPlan::Erofs {
+                output: output.clone(),
+                spool: spool.clone()
+            })
+            .is_err()
+    );
+    let lease = mutable(lease, &spool, PathRole::MutableTree);
+    assert!(
+        lease
+            .begin(MutationPlan::Erofs {
+                output: output.clone(),
+                spool: spool.clone()
+            })
+            .is_err()
+    );
+    let f = fixture();
+    let output = f.data.join("image");
+    let spool = f.data.join("spool");
+    let lease = erofs_lease(&f, &output, &spool);
+    assert!(
+        lease
+            .begin(MutationPlan::Erofs {
+                output: output.clone(),
+                spool: output.clone()
+            })
+            .is_err()
+    );
+    let mut guard = lease
+        .begin(MutationPlan::Erofs {
+            output: output.clone(),
+            spool,
+        })
+        .unwrap();
+    assert!(guard.stage_file(&f.data.join("third"), 0o600).is_err());
+    assert!(guard.commit().is_err());
+    let f = fixture();
+    let output = f.data.join("image");
+    let spool = f.data.join("spool");
+    std::fs::write(&output, b"OLD").unwrap();
+    std::fs::hard_link(&output, &spool).unwrap();
+    assert!(
+        with_paths(
+            f.context.local(&f.data.join("state")).unwrap(),
+            &[
+                PathRequest {
+                    path: &output,
+                    role: PathRole::MutableFile
+                },
+                PathRequest {
+                    path: &spool,
+                    role: PathRole::MutableFile
+                }
+            ]
+        )
+        .is_err()
+    );
+}
+#[test]
+fn amendment_c_erofs_strict_alias_and_discard_failure_prevent_publication() {
+    let f = fixture();
+    let output = f.data.join("image");
+    let spool = f.data.join("spool");
+    let lease = erofs_lease(&f, &output, &spool);
+    let lease = with_inputs(lease, &[&f.data]).unwrap();
+    assert!(lease.begin(MutationPlan::Erofs { output, spool }).is_err());
+    let f = fixture();
+    let output = f.data.join("image");
+    let spool = f.data.join("spool");
+    let lease = erofs_lease(&f, &output, &spool);
+    let mut guard = lease
+        .begin(MutationPlan::Erofs {
+            output: output.clone(),
+            spool: spool.clone(),
+        })
+        .unwrap();
+    let temporary = guard.stage_file(&spool, 0o600).unwrap();
+    let image = guard.stage_file(&output, 0o600).unwrap();
+    guard.fault_discard_at("after-intent");
+    assert!(guard.discard_file(temporary).is_err());
+    assert!(guard.publish_file(image).is_err());
+    assert!(!output.exists());
+}
+#[test]
+fn amendment_c_erofs_diagnostic_finish_before_commit_and_never_spool_lock() {
+    let f = fixture();
+    let output = f.data.join("image.erofs");
+    let spool = f.data.join("spool");
+    let lock = f.data.join("image.erofs.lock");
+    let lease = mutable(
+        erofs_lease(&f, &output, &spool),
+        &lock,
+        PathRole::MutableFile,
+    );
+    let mut guard = lease
+        .begin(MutationPlan::Erofs {
+            output: output.clone(),
+            spool: spool.clone(),
+        })
+        .unwrap();
+    let mut diagnostic = guard.diagnostic_lock(&lock).unwrap();
+    diagnostic.lock_exclusive().unwrap();
+    diagnostic.write_pid(9).unwrap();
+    let temporary = guard.stage_file(&spool, 0o600).unwrap();
+    let image = guard.stage_file(&output, 0o600).unwrap();
+    guard.discard_file(temporary).unwrap();
+    guard.publish_file(image).unwrap();
+    diagnostic.clear().unwrap();
+    drop(diagnostic);
+    guard.commit().unwrap();
+    lease.revalidate().unwrap();
+}
+#[test]
+fn amendment_c_mixed_dead_endpoint_restart_never_retires_data_uncertainty() {
+    let f = fixture();
+    let data = f.data.join("vm-data");
+    let sockets = f.data.join("sockets");
+    private(&sockets);
+    let path = sockets.join("shell.sock");
+    let lease = mutable(f.context.local(&data).unwrap(), &path, PathRole::Endpoint);
+    let original = lease.0.id.clone();
+    let bound = lease.endpoint(&path).unwrap().bind().unwrap();
+    {
+        let mut tx = f.context.namespace.transaction().unwrap();
+        tx.operation_mut(&original).unwrap().uncertain = true;
+        tx.save().unwrap();
+    }
+    super::endpoint::abandon_closed_test_listener(bound);
+    drop(lease);
+    let restarted = endpoint_lease(&f, &path);
+    let bound = restarted.endpoint(&path).unwrap().bind().unwrap();
+    assert!(exclusive(&f.context, &data).is_err());
+    {
+        let tx = f.context.namespace.transaction().unwrap();
+        let old = tx.operation(&original).unwrap();
+        assert!(old.uncertain);
+        assert!(!old.closed);
+        assert!(old.entries.iter().any(|e| e.path.get().unwrap() == data));
+    }
+    bound.close().unwrap();
+    assert!(exclusive(&f.context, &data).is_err());
+}
+#[test]
+fn amendment_c_live_endpoint_sentinel_survives_mixed_parent_handle_drop() {
+    let f = fixture();
+    let data = f.data.join("vm");
+    let sockets = f.data.join("sockets");
+    private(&sockets);
+    let path = sockets.join("shell.sock");
+    let lease = mutable(f.context.local(&data).unwrap(), &path, PathRole::Endpoint);
+    let bound = lease.endpoint(&path).unwrap().bind().unwrap();
+    drop(lease);
+    assert!(
+        start(
+            f.context.namespace.clone(),
+            vec![entry(&path, PathRole::Endpoint).unwrap()],
+            None,
+            false
+        )
+        .is_err()
+    );
+    bound.close().unwrap();
+}
+#[test]
+fn amendment_c_failed_bind_receipt_gap_is_not_unrecorded_cleanup_permission() {
+    let f = fixture();
+    let parent = f.data.join("sockets");
+    private(&parent);
+    let path = parent.join("x".repeat(150));
+    let lease = endpoint_lease(&f, &path);
+    assert!(lease.endpoint(&path).unwrap().bind().is_err());
+    let tx = f.context.namespace.transaction().unwrap();
+    assert!(
+        tx.catalog
+            .endpoints
+            .iter()
+            .any(|e| e.operation == lease.0.id && e.state == catalog::EndpointState::BindIntent)
+    );
+    assert!(!tx.operation(&lease.0.id).unwrap().uncertain);
+}
+#[tokio::test]
+async fn amendment_c_owned_async_endpoint_closes_without_raw_listener_escape() {
+    let f = fixture();
+    let parent = f.data.join("sockets");
+    private(&parent);
+    let path = parent.join("shell.sock");
+    let lease = endpoint_lease(&f, &path);
+    let listener = lease
+        .endpoint(&path)
+        .unwrap()
+        .bind()
+        .unwrap()
+        .into_async()
+        .unwrap();
+    let client = tokio::net::UnixStream::connect(&path).await.unwrap();
+    let (stream, _) = listener.accept().await.unwrap();
+    drop((client, stream));
+    listener.close().unwrap();
+    assert!(!path.exists());
+}
+#[test]
+fn amendment_c_recovery_inspection_readonly_cas_and_active_child_refuse() {
+    let f = fixture();
+    let path = f.data.join("output");
+    let lease = f.context.local(&path).unwrap();
+    let operation = lease.0.id.clone();
+    let before = std::fs::read(f.catalog.join("catalog.json")).unwrap();
+    testing::inspect_recovery(&f.context).unwrap();
+    assert_eq!(
+        before,
+        std::fs::read(f.catalog.join("catalog.json")).unwrap()
+    );
+    let child = lease.export_child().unwrap();
+    let imported = f
+        .context
+        .import_child(child.duplicate_for_exec().unwrap())
+        .unwrap();
+    let request = recovery_request(&f, &operation, RecoveryAction::ReconcileVerified);
+    assert!(testing::recover(&f.context, request).is_err());
+    drop((imported, child));
+    drop(lease);
+    let mut request = recovery_request(&f, &operation, RecoveryAction::ArchiveCompleted);
+    request.expected_record_sha256 = "0".repeat(64);
+    assert!(testing::recover(&f.context, request).is_err());
+}
+#[test]
+fn amendment_c_recovery_reconciles_discard_after_unlink_without_deleting_replacement() {
+    for replacement in [false, true] {
+        let f = fixture();
+        let root = f.data.join("out");
+        private(&root);
+        let spool = root.join("spool");
+        let lease = mutable(
+            f.context.local(&root).unwrap(),
+            &spool,
+            PathRole::MutableFile,
+        );
+        let operation = lease.0.id.clone();
+        let mut guard = lease
+            .begin(MutationPlan::ImagePair { directory: root })
+            .unwrap();
+        let stage = guard.stage_file(&spool, 0o600).unwrap();
+        let stage_path = stage.path().to_path_buf();
+        guard.fault_discard_at("after-unlink");
+        assert!(guard.discard_file(stage).is_err());
+        drop(guard);
+        drop(lease);
+        if replacement {
+            std::fs::write(&stage_path, b"replacement").unwrap();
+        }
+        let request = recovery_request(&f, &operation, RecoveryAction::ReconcileVerified);
+        let report = testing::recover(&f.context, request).unwrap();
+        let value = serde_json::to_value(report).unwrap();
+        if replacement {
+            assert!(value["status"].as_str().unwrap().starts_with("unresolved"));
+            assert_eq!(std::fs::read(stage_path).unwrap(), b"replacement");
+        } else {
+            assert_eq!(value["status"], "completed");
+            assert!(
+                f.context
+                    .namespace
+                    .transaction()
+                    .unwrap()
+                    .operation(&operation)
+                    .unwrap()
+                    .closed
+            );
+        }
+    }
+}
+#[test]
+fn amendment_c_recovery_accepts_proven_new_publication_and_preserves_old_prior() {
+    let f = fixture();
+    let output = f.data.join("image");
+    let spool = f.data.join("spool");
+    std::fs::write(&output, b"OLD").unwrap();
+    let lease = erofs_lease(&f, &output, &spool);
+    let operation = lease.0.id.clone();
+    let mut guard = lease
+        .begin(MutationPlan::Erofs {
+            output: output.clone(),
+            spool: spool.clone(),
+        })
+        .unwrap();
+    let temporary = guard.stage_file(&spool, 0o600).unwrap();
+    guard.discard_file(temporary).unwrap();
+    let mut image = guard.stage_file(&output, 0o600).unwrap();
+    image.file_mut().write_all(b"NEW").unwrap();
+    guard.publish_file(image).unwrap();
+    drop(guard);
+    drop(lease);
+    let report = testing::recover(
+        &f.context,
+        recovery_request(&f, &operation, RecoveryAction::ReconcileVerified),
+    )
+    .unwrap();
+    assert_eq!(serde_json::to_value(report).unwrap()["status"], "completed");
+    assert_eq!(std::fs::read(&output).unwrap(), b"NEW");
+    assert!(
+        std::fs::read_dir(&f.data)
+            .unwrap()
+            .map(Result::unwrap)
+            .any(
+                |e| e.file_name().to_string_lossy().starts_with(".iii-prior-")
+                    && std::fs::read(e.path()).unwrap() == b"OLD"
+            )
+    );
+}
+#[test]
+fn amendment_c_archive_257_completed_operations_preserves_all_evidence() {
+    let f = fixture();
+    for n in 0..257 {
+        let lease = f.context.local(&f.data.join(format!("root-{n}"))).unwrap();
+        let operation = lease.0.id.clone();
+        drop(lease);
+        testing::recover(
+            &f.context,
+            recovery_request(&f, &operation, RecoveryAction::ArchiveCompleted),
+        )
+        .unwrap();
+        assert!(
+            f.catalog
+                .join("archive")
+                .join(format!("{operation}.json"))
+                .exists()
+        );
+        assert!(
+            f.catalog
+                .join("archive")
+                .join(format!("op-{operation}"))
+                .exists()
+        );
+    }
+    let tx = f.context.namespace.transaction().unwrap();
+    assert!(tx.catalog.operations.is_empty());
+    assert_eq!(tx.catalog.archives.len(), 257);
+}
+#[test]
+fn amendment_c_archive_boundaries_resume_without_unaccounted_live_removal() {
+    for boundary in [
+        "archive-intent",
+        "archive-stage",
+        "archive-promoted",
+        "archive-receipt",
+        "archive-sentinels",
+    ] {
+        let f = fixture();
+        let lease = f.context.local(&f.data.join("root")).unwrap();
+        let operation = lease.0.id.clone();
+        drop(lease);
+        let request = recovery_request(&f, &operation, RecoveryAction::ArchiveCompleted);
+        assert!(recovery::recover_fault_test(&f.context, request, boundary).is_err());
+        testing::open_context(&f.catalog).unwrap();
+        let tx = f.context.namespace.transaction().unwrap();
+        assert!(tx.catalog.operations.iter().any(|op| op.id == operation));
+        drop(tx);
+        testing::recover(
+            &f.context,
+            recovery_request(&f, &operation, RecoveryAction::ArchiveCompleted),
+        )
+        .unwrap();
+        assert!(
+            f.context
+                .namespace
+                .transaction()
+                .unwrap()
+                .catalog
+                .operations
+                .is_empty()
+        );
+    }
+}
+#[test]
+fn amendment_c_corrupt_current_catalog_recovery_never_uses_previous_snapshot() {
+    let f = fixture();
+    let lease = f.context.local(&f.data.join("root")).unwrap();
+    let operation = lease.0.id.clone();
+    drop(lease);
+    let request = recovery_request(&f, &operation, RecoveryAction::ArchiveCompleted);
+    let previous = std::fs::read(f.catalog.join("catalog.previous")).unwrap();
+    std::fs::write(f.catalog.join("catalog.json"), b"{torn").unwrap();
+    assert!(testing::inspect_recovery(&f.context).is_err());
+    assert!(testing::recover(&f.context, request).is_err());
+    assert_eq!(
+        std::fs::read(f.catalog.join("catalog.json")).unwrap(),
+        b"{torn"
+    );
+    assert_eq!(
+        std::fs::read(f.catalog.join("catalog.previous")).unwrap(),
+        previous
+    );
+}
+
+#[test]
+fn amendment_c_recovery_proves_publication_gap_but_refuses_external_new_replacement() {
+    for replace in [false, true] {
+        let f = fixture();
+        let output = f.data.join("image");
+        let spool = f.data.join("spool");
+        std::fs::write(&output, b"OLD").unwrap();
+        let lease = erofs_lease(&f, &output, &spool);
+        let operation = lease.0.id.clone();
+        let mut guard = lease
+            .begin(MutationPlan::Erofs {
+                output: output.clone(),
+                spool: spool.clone(),
+            })
+            .unwrap();
+        let temporary = guard.stage_file(&spool, 0o600).unwrap();
+        guard.discard_file(temporary).unwrap();
+        let mut image = guard.stage_file(&output, 0o600).unwrap();
+        image.file_mut().write_all(b"NEW").unwrap();
+        guard.publish_file(image).unwrap();
+        drop(guard);
+        drop(lease);
+        // Model only the completion-record crash boundary: before-effect intent
+        // and actual owned NEW placement remain. This is not a power-loss proof.
+        {
+            let mut tx = f.context.namespace.transaction().unwrap();
+            let op = tx.operation_mut(&operation).unwrap();
+            let journal = &mut op.journals[0];
+            let intent = journal
+                .intents
+                .iter_mut()
+                .find(|i| i.kind == catalog::EffectKind::Publish)
+                .unwrap();
+            intent.completed = false;
+            tx.save().unwrap();
+        }
+        if replace {
+            std::fs::rename(&output, f.data.join("retained-new")).unwrap();
+            std::fs::write(&output, b"FOREIGN").unwrap();
+        }
+        let result = testing::recover(
+            &f.context,
+            recovery_request(&f, &operation, RecoveryAction::ReconcileVerified),
+        )
+        .unwrap();
+        let status = serde_json::to_value(result).unwrap();
+        if replace {
+            assert!(status["status"].as_str().unwrap().starts_with("unresolved"));
+            assert_eq!(std::fs::read(&output).unwrap(), b"FOREIGN");
+        } else {
+            assert_eq!(status["status"], "completed");
+            assert_eq!(std::fs::read(&output).unwrap(), b"NEW");
+        }
+    }
+}
+#[test]
+fn amendment_c_drop_owned_listener_never_unlinks_or_claims_known_retirement() {
+    let f = fixture();
+    let parent = f.data.join("sockets");
+    private(&parent);
+    let path = parent.join("shell.sock");
+    let lease = endpoint_lease(&f, &path);
+    let bound = lease.endpoint(&path).unwrap().bind().unwrap();
+    drop(bound);
+    drop(lease);
+    assert!(path.exists());
+    assert!(
+        start(
+            f.context.namespace.clone(),
+            vec![entry(&path, PathRole::Endpoint).unwrap()],
+            None,
+            false
+        )
+        .is_err()
+    );
+}
+#[test]
+fn amendment_c_new_payload_cannot_overlap_live_endpoint_private_parent() {
+    let f = fixture();
+    let parent = f.data.join("sockets");
+    private(&parent);
+    let path = parent.join("shell.sock");
+    let lease = endpoint_lease(&f, &path);
+    let bound = lease.endpoint(&path).unwrap().bind().unwrap();
+    assert!(f.context.local(&parent.join("guest-data")).is_err());
+    assert!(with_inputs(lease.clone(), &[&parent.join("export")]).is_err());
+    bound.close().unwrap();
+}
+#[test]
+fn amendment_c_recovery_does_not_close_unknown_plain_orphan_or_unpublished_stage() {
+    let f = fixture();
+    let path = f.data.join("root");
+    let lease = f.context.local(&path).unwrap();
+    let operation = lease.0.id.clone();
+    {
+        let mut tx = f.context.namespace.transaction().unwrap();
+        let op = tx.operation_mut(&operation).unwrap();
+        op.holders += 1;
+        op.holder_ids.push(new_id());
+        tx.save().unwrap();
+    }
+    drop(lease);
+    let report = testing::recover(
+        &f.context,
+        recovery_request(&f, &operation, RecoveryAction::ReconcileVerified),
+    )
+    .unwrap();
+    assert!(
+        serde_json::to_value(report).unwrap()["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("unresolved")
+    );
+    assert!(exclusive(&f.context, &path).is_err());
+    let f = fixture();
+    let root = f.data.join("out");
+    private(&root);
+    let lease = f.context.local(&root).unwrap();
+    let operation = lease.0.id.clone();
+    let mut guard = lease
+        .begin(MutationPlan::ImagePair {
+            directory: root.clone(),
+        })
+        .unwrap();
+    let stage = guard.stage_file(&root.join("image"), 0o600).unwrap();
+    let path = stage.path().to_path_buf();
+    drop(stage);
+    drop(guard);
+    drop(lease);
+    let report = testing::recover(
+        &f.context,
+        recovery_request(&f, &operation, RecoveryAction::ReconcileVerified),
+    )
+    .unwrap();
+    assert!(
+        serde_json::to_value(report).unwrap()["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("unresolved")
+    );
+    assert!(path.exists());
+}
+
+#[test]
+fn amendment_d_runtime_prepare_cancel_and_exact_activity_file() {
+    let f = fixture();
+    let root = f.data.join("guest");
+    private(&root);
+    let upper = f.data.join("upper.ext4");
+    std::fs::write(&upper, b"disk").unwrap();
+    let activity = f.data.join("activity");
+    let lease = with_paths(
+        f.context.local(&root).unwrap(),
+        &[
+            PathRequest {
+                path: &upper,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &activity,
+                role: PathRole::MutableFile,
+            },
+        ],
+    )
+    .unwrap();
+    let launch = lease
+        .prepare_runtime(&[
+            RuntimePath {
+                path: &root,
+                kind: RuntimePathKind::GuestTree,
+            },
+            RuntimePath {
+                path: &upper,
+                kind: RuntimePathKind::UpperImage,
+            },
+            RuntimePath {
+                path: &activity,
+                kind: RuntimePathKind::ActivityStamp,
+            },
+        ])
+        .unwrap();
+    assert!(activity.is_file());
+    assert!(exclusive(&f.context, &root).is_err());
+    assert!(
+        lease
+            .begin(MutationPlan::Create { root: root.clone() })
+            .is_err()
+    );
+    drop(launch);
+    lease.revalidate().unwrap();
+    let tx = f.context.namespace.transaction().unwrap();
+    assert!(
+        tx.catalog
+            .runtimes
+            .iter()
+            .all(|r| r.state == catalog::RuntimeState::Cancelled
+                && !r.writer_retired
+                && !r.guest_consistent)
+    );
+}
+#[test]
+fn amendment_d_runtime_rejects_strict_subtree_and_unprepared_upper() {
+    let f = fixture();
+    let root = f.data.join("guest");
+    private(&root);
+    let readonly = root.join("source");
+    private(&readonly);
+    let lease = with_inputs(f.context.local(&root).unwrap(), &[&readonly]).unwrap();
+    assert!(
+        lease
+            .prepare_runtime(&[RuntimePath {
+                path: &root,
+                kind: RuntimePathKind::GuestTree
+            }])
+            .is_err()
+    );
+    let f = fixture();
+    let upper = f.data.join("upper.ext4");
+    let lease = mutable(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &upper,
+        PathRole::MutableFile,
+    );
+    assert!(
+        lease
+            .prepare_runtime(&[RuntimePath {
+                path: &upper,
+                kind: RuntimePathKind::UpperImage
+            }])
+            .is_err()
+    );
+}
+#[test]
+fn amendment_d_runtime_import_requires_dedicated_fd_not_operation_sentinel() {
+    let f = fixture();
+    let root = f.data.join("guest");
+    private(&root);
+    let lease = f.context.local(&root).unwrap();
+    let _launch = lease
+        .prepare_runtime(&[RuntimePath {
+            path: &root,
+            kind: RuntimePathKind::GuestTree,
+        }])
+        .unwrap();
+    let child = lease.export_child().unwrap();
+    assert!(import_runtime_writer(&lease, child.duplicate_for_exec().unwrap()).is_err());
+}
+#[test]
+fn amendment_d_owner_read_0000_internal_links_restore_original_guest_modes() {
+    use std::io::Read;
+    assert_ne!(
+        uid(),
+        0,
+        "run this fixture as an unprivileged owner; root would mask the permission contract"
+    );
+    let f = fixture();
+    let cache = f.data.join("cache");
+    private(&cache);
+    let dir = cache.join("sealed");
+    private(&dir);
+    let file = dir.join("file");
+    std::fs::write(&file, b"DATA").unwrap();
+    std::fs::hard_link(&file, dir.join("alias")).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0)).unwrap();
+    let lease = mutable(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &cache,
+        PathRole::ManagedCacheRead,
+    );
+    let mut read = lease.owner_read_cache(&cache).unwrap();
+    let entries = read.read_dir(&dir).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e.metadata.mode() & 0o777 == 0));
+    let mut opened = read.open_file(&file).unwrap();
+    let mut bytes = String::new();
+    opened.read_to_string(&mut bytes).unwrap();
+    assert_eq!(bytes, "DATA");
+    drop(opened);
+    assert_eq!(read.original_metadata(&file).unwrap().mode() & 0o777, 0);
+    read.finish().unwrap();
+    assert_eq!(std::fs::symlink_metadata(&dir).unwrap().mode() & 0o777, 0);
+    // Test-only retained access for inspecting restored children; no production
+    // recovery relies on this explicit fixture permission change.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o777, 0);
+    lease.revalidate().unwrap();
+}
+#[test]
+fn amendment_d_owner_read_external_links_and_strict_roles_refuse() {
+    let f = fixture();
+    let cache = f.data.join("cache");
+    private(&cache);
+    let file = cache.join("file");
+    std::fs::write(&file, b"data").unwrap();
+    std::fs::hard_link(&file, f.data.join("external")).unwrap();
+    let lease = mutable(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &cache,
+        PathRole::ManagedCacheRead,
+    );
+    assert!(lease.owner_read_cache(&cache).is_err());
+    let f = fixture();
+    let cache = f.data.join("cache");
+    private(&cache);
+    let lease = with_inputs(f.context.local(&f.data.join("state")).unwrap(), &[&cache]).unwrap();
+    assert!(lease.owner_read_cache(&cache).is_err());
+}
+#[test]
+fn amendment_d_owner_read_cancel_and_replacement_retain_fence() {
+    let f = fixture();
+    let cache = f.data.join("cache");
+    private(&cache);
+    let file = cache.join("file");
+    std::fs::write(&file, b"old").unwrap();
+    let lease = mutable(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &cache,
+        PathRole::ManagedCacheRead,
+    );
+    let mut read = lease.owner_read_cache(&cache).unwrap();
+    std::fs::rename(&file, cache.join("retained")).unwrap();
+    std::fs::write(&file, b"foreign").unwrap();
+    assert!(read.open_file(&file).is_err());
+    assert!(read.finish().is_err());
+    assert!(lease.revalidate().is_err());
+}
+#[test]
+fn amendment_d_remove_exact_runtime_targets_preserves_retained_upper() {
+    let f = fixture();
+    let vm = f.data.join("vm");
+    private(&vm);
+    let runtime = vm.join("runtime");
+    private(&runtime);
+    std::fs::write(runtime.join("console.log"), b"log").unwrap();
+    let upper = vm.join("upper.ext4");
+    std::fs::write(&upper, b"KEEP").unwrap();
+    let lease = f.context.local(&vm).unwrap();
+    let mut remove = lease
+        .begin(MutationPlan::Remove {
+            root: vm.clone(),
+            targets: vec![runtime.clone()],
+        })
+        .unwrap();
+    remove.remove_path(&runtime).unwrap();
+    remove.commit().unwrap();
+    lease.revalidate().unwrap();
+    assert!(!runtime.exists());
+    assert_eq!(std::fs::read(&upper).unwrap(), b"KEEP");
+    let mut repeat = lease
+        .begin(MutationPlan::Remove {
+            root: vm,
+            targets: vec![runtime.clone()],
+        })
+        .unwrap();
+    repeat.remove_path(&runtime).unwrap();
+    repeat.commit().unwrap();
+}
+#[test]
+fn amendment_d_remove_refuses_unlisted_protected_backup_and_external_hardlink() {
+    let f = fixture();
+    let root = f.data.join("vm");
+    private(&root);
+    let keep = root.join("upper.ext4");
+    std::fs::write(&keep, b"KEEP").unwrap();
+    let planned = root.join("runtime");
+    private(&planned);
+    let lease = f.context.local(&root).unwrap();
+    let mut remove = lease
+        .begin(MutationPlan::Remove {
+            root: root.clone(),
+            targets: vec![planned],
+        })
+        .unwrap();
+    assert!(remove.remove_path(&keep).is_err());
+    assert_eq!(std::fs::read(&keep).unwrap(), b"KEEP");
+    let f = fixture();
+    let root = f.data.join("vm");
+    private(&root);
+    let backup = root.join("backup-old");
+    private(&backup);
+    let lease = f.context.local(&root).unwrap();
+    let mut remove = lease
+        .begin(MutationPlan::Remove {
+            root: root.clone(),
+            targets: vec![root.clone()],
+        })
+        .unwrap();
+    assert!(remove.remove_path(&root).is_err());
+    assert!(backup.exists());
+    let f = fixture();
+    let root = f.data.join("vm");
+    private(&root);
+    let file = root.join("file");
+    std::fs::write(&file, b"KEEP").unwrap();
+    std::fs::hard_link(&file, f.data.join("external")).unwrap();
+    let lease = f.context.local(&root).unwrap();
+    let mut remove = lease
+        .begin(MutationPlan::Remove {
+            root: root.clone(),
+            targets: vec![root.clone()],
+        })
+        .unwrap();
+    assert!(remove.remove_path(&root).is_err());
+    assert!(file.exists());
+}
+#[test]
+fn amendment_d_remove_nested_symlink_never_follows_external_tree() {
+    let f = fixture();
+    let root = f.data.join("vm");
+    private(&root);
+    let foreign = f.data.join("foreign");
+    private(&foreign);
+    std::fs::write(foreign.join("data"), b"KEEP").unwrap();
+    symlink(&foreign, root.join("link")).unwrap();
+    let lease = f.context.local(&root).unwrap();
+    let mut remove = lease
+        .begin(MutationPlan::Remove {
+            root: root.clone(),
+            targets: vec![root.clone()],
+        })
+        .unwrap();
+    remove.remove_path(&root).unwrap();
+    remove.commit().unwrap();
+    assert_eq!(std::fs::read(foreign.join("data")).unwrap(), b"KEEP");
 }

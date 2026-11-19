@@ -2,245 +2,429 @@
 // contributor license agreements. Licensed under the Elastic License 2.0.
 use super::{
     Lease, PathRole,
-    catalog::{EndpointRecord, HoldKind, overlaps},
+    catalog::{EndpointRecord, EndpointState, HoldKind, overlaps},
     storage::*,
 };
+use serde::{Deserialize, Serialize};
 use std::{
+    fs::File,
     io,
     os::unix::{
         fs::{FileTypeExt, MetadataExt},
-        net::UnixListener,
+        net::{SocketAddr, UnixListener},
     },
     path::{Path, PathBuf},
 };
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SentinelRecord {
+    version: u32,
+    id: String,
+    operation: String,
+    epoch: u64,
+    namespace: Identity,
+}
 pub(crate) struct EndpointGuard {
-    lease: Option<Lease>,
+    lease: Lease,
     hold: String,
     path: PathBuf,
     parent: Directory,
+    active: bool,
 }
 pub(crate) struct BoundEndpoint {
-    listener: UnixListener,
-    lifetime: EndpointLifetime,
+    listener: Option<UnixListener>,
+    lifetime: Option<EndpointLifetime>,
 }
-pub(crate) struct EndpointLifetime {
-    lease: Option<Lease>,
-    hold: String,
+pub(crate) struct EndpointListener {
+    listener: Option<tokio::net::UnixListener>,
+    lifetime: Option<EndpointLifetime>,
+}
+struct EndpointLifetime {
+    lease: Lease,
+    id: String,
+    sentinel: Option<File>,
     path: PathBuf,
     parent: Directory,
     identity: Identity,
     closed: bool,
 }
-fn socket_identity(path: &Path) -> io::Result<Option<Identity>> {
+pub(super) fn socket_identity(path: &Path, expected_uid: u32) -> io::Result<Option<Identity>> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if !metadata.file_type().is_socket() || metadata.uid() != uid() || metadata.nlink() != 1
-            {
-                return Err(invalid("foreign or nonsocket endpoint"));
-            }
-            Ok(Some(Identity::metadata(&metadata)))
+        Ok(m) if m.file_type().is_socket() && m.uid() == expected_uid && m.nlink() == 1 => {
+            Ok(Some(Identity::metadata(&m)))
         }
+        Ok(_) => Err(invalid("foreign or nonsocket endpoint")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
+pub(super) fn validate_sentinel(
+    ns: &super::catalog::Namespace,
+    receipt: &EndpointRecord,
+) -> io::Result<File> {
+    let name = format!("ep-{}", receipt.id);
+    let file = match ns.directory.file(&name, false) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => ns.archive.file(&name, false)?,
+        Err(e) => return Err(e),
+    };
+    if Identity::of(&file)? != receipt.sentinel {
+        return Err(invalid("endpoint sentinel replaced"));
+    }
+    receipt.sentinel.regular(ns.uid)?;
+    if file.metadata()?.len() > 2048 {
+        return Err(limit());
+    }
+    let record: SentinelRecord = read_json(&file)?;
+    if record.version != 1
+        || record.id != receipt.id
+        || record.operation != receipt.operation
+        || record.epoch != receipt.epoch
+        || !record
+            .namespace
+            .same_inode(&Identity::of(&ns.directory.file)?)
+    {
+        return Err(invalid("endpoint sentinel binding mismatch"));
+    }
+    Ok(file)
+}
+// This is the only stale test: independent endpoint ownership, never op holders.
+pub(super) fn replaceable(
+    tx: &super::catalog::Transaction<'_>,
+    ns: &super::catalog::Namespace,
+    operation: &super::catalog::Operation,
+    path: &Path,
+) -> io::Result<bool> {
+    let Some(receipt) = tx.catalog.endpoints.iter().find(|e| {
+        e.operation == operation.id
+            && e.path.get().is_ok_and(|p| p == path)
+            && e.state == EndpointState::Bound
+    }) else {
+        return Ok(false);
+    };
+    let parent = path.parent().ok_or_else(|| invalid("endpoint parent"))?;
+    for e in &operation.entries {
+        if e.role != PathRole::Endpoint && overlaps(&e.path.get()?, parent) {
+            return Ok(false);
+        }
+    }
+    for h in &operation.holds {
+        if h.kind != HoldKind::Endpoint && overlaps(&h.path.get()?, parent) {
+            return Ok(false);
+        }
+    }
+    for j in &operation.journals {
+        if !j.committed
+            && j.footprint
+                .iter()
+                .any(|p| p.get().is_ok_and(|p| overlaps(&p, parent)))
+        {
+            return Ok(false);
+        }
+    }
+    let file = validate_sentinel(ns, receipt)?;
+    if !ofd(&file, true)? {
+        return Ok(false);
+    }
+    match sentinel(&file) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+fn retire_socket(
+    tx: &mut super::catalog::Transaction<'_>,
+    ns: &super::catalog::Namespace,
+    receipt: &EndpointRecord,
+    parent: &Directory,
+) -> io::Result<()> {
+    let path = receipt.path.get()?;
+    let identity = receipt
+        .identity
+        .as_ref()
+        .ok_or_else(|| invalid("endpoint bind gap unresolved"))?;
+    parent.revalidate()?;
+    parent.private(ns.uid)?;
+    if !receipt.parent.same_inode(&Identity::of(&parent.file)?)
+        || !socket_identity(&path, ns.uid)?.is_some_and(|id| identity.same_inode(&id))
+    {
+        return Err(invalid("endpoint fingerprint changed before retirement"));
+    }
+    let slot = tx
+        .catalog
+        .endpoints
+        .iter_mut()
+        .find(|e| e.id == receipt.id)
+        .ok_or_else(|| invalid("endpoint missing"))?;
+    slot.state = EndpointState::CloseIntent;
+    tx.save()?;
+    parent.revalidate()?;
+    if !socket_identity(&path, ns.uid)?.is_some_and(|id| identity.same_inode(&id)) {
+        return Err(invalid("endpoint replaced after close intent"));
+    }
+    unlink_at(
+        &parent.file,
+        path.file_name().ok_or_else(|| invalid("endpoint name"))?,
+    )?;
+    parent.file.sync_all()?;
+    settle_retired(tx, receipt)?;
+    tx.save()
+}
+pub(super) fn settle_retired(
+    tx: &mut super::catalog::Transaction<'_>,
+    receipt: &EndpointRecord,
+) -> io::Result<()> {
+    tx.catalog
+        .endpoints
+        .iter_mut()
+        .find(|e| e.id == receipt.id)
+        .ok_or_else(|| invalid("endpoint missing"))?
+        .state = EndpointState::Retired;
+    let op = tx.operation_mut(&receipt.operation)?;
+    op.holds
+        .retain(|h| !(h.kind == HoldKind::Endpoint && h.path == receipt.path));
+    op.entries
+        .retain(|e| !(e.role == PathRole::Endpoint && e.path == receipt.path));
+    // Never clear mixed writer uncertainty, mutation holds, journals or pins.
+    Ok(())
+}
 impl EndpointGuard {
     pub(super) fn new(lease: Lease, path: &Path) -> io::Result<Self> {
         let path = absolute(path)?;
-        let parent = Directory::open(
-            path.parent()
-                .ok_or_else(|| invalid("endpoint parent missing"))?,
-        )?;
+        let parent = Directory::open(path.parent().ok_or_else(|| invalid("endpoint parent"))?)?;
         parent.private(uid())?;
         let tx = lease.0.namespace.transaction()?;
-        let op = tx.operation(&lease.0.id)?;
-        // Endpoint parent must be isolated from payload/export scopes. Endpoint
-        // role alone is not permission to place a socket in a guest share.
-        for e in &op.entries {
-            if e.role != PathRole::Endpoint && overlaps(&e.path.get()?, &parent.path) {
-                return Err(invalid("endpoint parent overlaps admitted payload"));
+        for operation in &tx.catalog.operations {
+            for entry in &operation.entries {
+                if entry.role != PathRole::Endpoint
+                    && overlaps(&entry.path.get()?, &parent.path)
+                    && (operation.id == lease.0.id || !operation.closed)
+                {
+                    return Err(invalid(
+                        "endpoint private parent overlaps payload/writer scope",
+                    ));
+                }
             }
         }
         drop(tx);
         let hold = lease.hold(&path, HoldKind::Endpoint, Some(PathRole::Endpoint))?;
         Ok(Self {
-            lease: Some(lease),
+            lease,
             hold,
             path,
             parent,
+            active: true,
         })
     }
     pub(crate) fn bind(mut self) -> io::Result<BoundEndpoint> {
-        let lease = self
-            .lease
-            .as_ref()
-            .ok_or_else(|| invalid("endpoint already consumed"))?;
         self.parent.revalidate()?;
-        self.parent.private(uid())?;
-        let old = socket_identity(&self.path)?;
-        let mut tx = lease.0.namespace.transaction()?;
-        if let Some(old) = old {
+        let mut tx = self.lease.0.namespace.transaction()?;
+        if let Some(old) = socket_identity(&self.path, uid())? {
             let receipt = tx
                 .catalog
                 .endpoints
                 .iter()
-                .find(|e| e.path.get().is_ok_and(|p| p == self.path))
-                .ok_or_else(|| invalid("unrecorded endpoint cannot be removed"))?
+                .find(|e| {
+                    e.path.get().is_ok_and(|p| p == self.path) && e.state == EndpointState::Bound
+                })
+                .ok_or_else(|| invalid("unrecorded endpoint"))?
                 .clone();
-            if !receipt.identity.same_inode(&old) || receipt.operation == lease.0.id {
-                return Err(invalid("endpoint receipt mismatch"));
-            }
-            let prior = tx.operation(&receipt.operation)?;
-            if prior.uncertain
-                || prior.entries.iter().any(|e| e.role != PathRole::Endpoint)
-                || !prior.journals.is_empty()
+            if !receipt
+                .identity
+                .as_ref()
+                .is_some_and(|id| id.same_inode(&old))
+                || !replaceable(
+                    &tx,
+                    &self.lease.0.namespace,
+                    tx.operation(&receipt.operation)?,
+                    &self.path,
+                )?
             {
-                return Err(invalid(
-                    "previous endpoint operation has unresolved writer history",
-                ));
+                return Err(invalid("live or unresolved endpoint"));
             }
-            let sentinel_file = lease
-                .0
-                .namespace
-                .directory
-                .file(&format!("op-{}", receipt.operation), false)?;
-            // Fingerprint was checked first. Nonblocking ownership of the old
-            // sentinel is the only stale proof; never probe/connect to a socket.
-            sentinel(&sentinel_file)?;
-            self.parent.revalidate()?;
-            if !socket_identity(&self.path)?.is_some_and(|id| old.same_inode(&id)) {
-                return Err(invalid("endpoint changed before stale cleanup"));
-            }
-            unlink_at(
-                &self.parent.file,
-                self.path
-                    .file_name()
-                    .ok_or_else(|| invalid("endpoint name"))?,
-            )?;
-            self.parent.file.sync_all()?;
-            tx.operation_mut(&receipt.operation)?.closed = true;
-            tx.catalog.endpoints.retain(|e| e.path != receipt.path);
+            let prior = validate_sentinel(&self.lease.0.namespace, &receipt)?;
+            sentinel(&prior)?;
+            retire_socket(&mut tx, &self.lease.0.namespace, &receipt, &self.parent)?;
         }
-        let op = tx.operation_mut(&lease.0.id)?;
-        // Persist uncertainty BEFORE bind; receipt publication clears it. Any
-        // failure in the gap leaves the operation fenced, never auto-unlinked.
-        op.uncertain = true;
+        if tx.catalog.endpoints.len() >= 256 {
+            return Err(limit());
+        }
+        let op = tx.operation_mut(&self.lease.0.id)?;
+        if op.uncertain || op.closed {
+            return Err(invalid("operation cannot bind endpoint"));
+        }
         op.epoch = op.epoch.checked_add(1).ok_or_else(limit)?;
         let epoch = op.epoch;
+        let id = new_id();
+        let sentinel_file = self
+            .lease
+            .0
+            .namespace
+            .directory
+            .file(&format!("ep-{id}"), true)?;
+        sentinel(&sentinel_file)?;
+        write_json(
+            &sentinel_file,
+            &SentinelRecord {
+                version: 1,
+                id: id.clone(),
+                operation: self.lease.0.id.clone(),
+                epoch,
+                namespace: Identity::of(&self.lease.0.namespace.directory.file)?,
+            },
+        )?;
+        tx.catalog.endpoints.push(EndpointRecord {
+            id: id.clone(),
+            path: HostPath::new(&self.path)?,
+            identity: None,
+            operation: self.lease.0.id.clone(),
+            epoch,
+            sentinel: Identity::of(&sentinel_file)?,
+            parent: Identity::of(&self.parent.file)?,
+            state: EndpointState::BindIntent,
+        });
         tx.save()?;
+        self.lease.0.namespace.directory.file.sync_all()?;
         drop(tx);
         self.parent.revalidate()?;
         let listener = UnixListener::bind(&self.path)?;
         self.parent.revalidate()?;
         let identity =
-            socket_identity(&self.path)?.ok_or_else(|| invalid("bound endpoint missing"))?;
+            socket_identity(&self.path, uid())?.ok_or_else(|| invalid("bound socket missing"))?;
         self.parent.file.sync_all()?;
-        let mut tx = lease.0.namespace.transaction()?;
-        if tx.catalog.endpoints.len() >= 256 {
-            return Err(limit());
-        }
-        tx.catalog.endpoints.push(EndpointRecord {
-            path: HostPath::new(&self.path)?,
-            identity: identity.clone(),
-            operation: lease.0.id.clone(),
-            epoch,
-        });
-        let op = tx.operation_mut(&lease.0.id)?;
-        op.uncertain = false;
-        for e in &mut op.entries {
-            if e.path.get()? == self.path {
+        let mut tx = self.lease.0.namespace.transaction()?;
+        let receipt = tx
+            .catalog
+            .endpoints
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or_else(|| invalid("bind intent missing"))?;
+        receipt.identity = Some(identity.clone());
+        receipt.state = EndpointState::Bound;
+        for e in &mut tx.operation_mut(&self.lease.0.id)?.entries {
+            if e.role == PathRole::Endpoint && e.path.get()? == self.path {
                 e.pins = super::pins(&self.path, PathRole::Endpoint)?;
             }
         }
         tx.save()?;
         drop(tx);
-        let lease = self
-            .lease
-            .take()
-            .ok_or_else(|| invalid("endpoint consumed"))?;
-        let lifetime = EndpointLifetime {
-            lease: Some(lease),
-            hold: self.hold.clone(),
-            path: self.path.clone(),
-            parent: Directory::open(&self.parent.path)?,
-            identity,
-            closed: false,
-        };
-        Ok(BoundEndpoint { listener, lifetime })
+        self.active = false;
+        Ok(BoundEndpoint {
+            listener: Some(listener),
+            lifetime: Some(EndpointLifetime {
+                lease: self.lease.clone(),
+                id,
+                sentinel: Some(sentinel_file),
+                path: self.path.clone(),
+                parent: Directory::open(&self.parent.path)?,
+                identity,
+                closed: false,
+            }),
+        })
     }
 }
 impl Drop for EndpointGuard {
     fn drop(&mut self) {
-        if let Some(lease) = self.lease.take() {
-            let _ = lease.finish_hold(&self.hold, true);
+        if self.active {
+            // Preserve a durable bind/close gap, without poisoning unrelated mixed data.
+            if let Ok(mut tx) = self.lease.0.namespace.transaction() {
+                let unresolved = tx.catalog.endpoints.iter().any(|e| {
+                    e.operation == self.lease.0.id
+                        && e.path.get().is_ok_and(|p| p == self.path)
+                        && e.state != EndpointState::Retired
+                });
+                if !unresolved {
+                    if let Ok(op) = tx.operation_mut(&self.lease.0.id) {
+                        op.holds.retain(|h| h.id != self.hold);
+                        let _ = tx.save();
+                    }
+                }
+            }
         }
     }
 }
 impl BoundEndpoint {
-    pub(crate) fn into_parts(self) -> (UnixListener, EndpointLifetime) {
-        (self.listener, self.lifetime)
+    pub(crate) fn into_async(mut self) -> io::Result<EndpointListener> {
+        let listener = self
+            .listener
+            .take()
+            .ok_or_else(|| invalid("listener consumed"))?;
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::UnixListener::from_std(listener)?;
+        Ok(EndpointListener {
+            listener: Some(listener),
+            lifetime: self.lifetime.take(),
+        })
+    }
+    pub(crate) fn close(mut self) -> io::Result<()> {
+        drop(self.listener.take());
+        self.lifetime
+            .take()
+            .ok_or_else(|| invalid("endpoint lifetime missing"))?
+            .close()
+    }
+}
+impl EndpointListener {
+    pub(crate) async fn accept(&self) -> io::Result<(tokio::net::UnixStream, SocketAddr)> {
+        let (stream, address) = self
+            .listener
+            .as_ref()
+            .ok_or_else(|| invalid("listener consumed"))?
+            .accept()
+            .await?;
+        Ok((stream, address.into()))
+    }
+    pub(crate) fn close(mut self) -> io::Result<()> {
+        drop(self.listener.take());
+        self.lifetime
+            .take()
+            .ok_or_else(|| invalid("endpoint lifetime missing"))?
+            .close()
     }
 }
 impl EndpointLifetime {
-    /// Caller must have closed ALL listener clones/tasks before this call.
-    /// Keeping the returned lifetime alongside every listener owner is mandatory.
-    pub(crate) fn close(mut self) -> io::Result<()> {
-        let lease = self
-            .lease
-            .as_ref()
-            .ok_or_else(|| invalid("endpoint lifetime consumed"))?;
-        self.parent.revalidate()?;
-        self.parent.private(uid())?;
-        let mut tx = lease.0.namespace.transaction()?;
+    fn close(mut self) -> io::Result<()> {
+        let mut tx = self.lease.0.namespace.transaction()?;
         let receipt = tx
             .catalog
             .endpoints
             .iter()
-            .find(|e| e.operation == lease.0.id && e.path.get().is_ok_and(|p| p == self.path))
-            .ok_or_else(|| invalid("endpoint receipt missing"))?;
-        if receipt.identity != self.identity
-            || !socket_identity(&self.path)?.is_some_and(|id| self.identity.same_inode(&id))
+            .find(|e| e.id == self.id)
+            .ok_or_else(|| invalid("endpoint receipt missing"))?
+            .clone();
+        if receipt.state != EndpointState::Bound
+            || receipt.identity.as_ref() != Some(&self.identity)
+            || receipt.path.get()? != self.path
+            || self
+                .sentinel
+                .as_ref()
+                .map(Identity::of)
+                .transpose()?
+                .as_ref()
+                != Some(&receipt.sentinel)
         {
-            return Err(invalid("endpoint replaced before close"));
+            return Err(invalid("endpoint lifetime mismatch"));
         }
-        unlink_at(
-            &self.parent.file,
-            self.path
-                .file_name()
-                .ok_or_else(|| invalid("endpoint name"))?,
-        )?;
-        self.parent.file.sync_all()?;
-        tx.catalog
-            .endpoints
-            .retain(|e| !(e.operation == lease.0.id && e.path.get().is_ok_and(|p| p == self.path)));
-        let op = tx.operation_mut(&lease.0.id)?;
-        op.holds.retain(|h| h.id != self.hold);
-        for entry in &mut op.entries {
-            if entry.path.get()? == self.path {
-                entry
-                    .pins
-                    .retain(|(p, _)| p.get().is_ok_and(|p| p != self.path));
-            }
-        }
-        tx.save()?;
+        retire_socket(&mut tx, &self.lease.0.namespace, &receipt, &self.parent)?;
         self.closed = true;
         Ok(())
     }
 }
-#[cfg(test)]
-pub(super) fn abandon_closed_test_listener(mut lifetime: EndpointLifetime) {
-    // Test harness has already dropped its only listener. Do not expose this
-    // crash simulation in production or use it as a migration authority.
-    lifetime.closed = true;
-    drop(lifetime.lease.take());
-}
 impl Drop for EndpointLifetime {
     fn drop(&mut self) {
         if !self.closed {
-            if let Some(lease) = self.lease.take() {
-                // Unknown listener ownership retains the sentinel. No Drop unlink.
-                std::mem::forget(lease);
+            if let Some(file) = self.sentinel.take() {
+                std::mem::forget(file);
             }
         }
+    }
+}
+// Fields drop in listener-before-lifetime order. No unlink on unknown cancellation.
+#[cfg(test)]
+pub(super) fn abandon_closed_test_listener(mut bound: BoundEndpoint) {
+    drop(bound.listener.take());
+    if let Some(mut lifetime) = bound.lifetime.take() {
+        lifetime.closed = true;
+        drop(lifetime.sentinel.take());
     }
 }
