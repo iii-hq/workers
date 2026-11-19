@@ -1494,10 +1494,15 @@ mod tests {
         if std::env::var("III_TEST_RUNTIME_LIVE").unwrap() == "1" {
             std::thread::sleep(Duration::from_secs(30));
         }
+        // Test-only: the exit status of this owned runtime child after its
+        // activation, for a scenario that must tell its own exit apart.
+        let exit_code = std::env::var("III_TEST_RUNTIME_EXIT_CODE")
+            .ok()
+            .map(|code| code.parse::<i32>().unwrap());
         if resources.exit_without_drop {
             // Deliberately bypass every Rust Drop; only real wait + G settlement
             // may retire these imported runtime-owned reads/endpoints.
-            unsafe { libc::_exit(0) }
+            unsafe { libc::_exit(exit_code.unwrap_or(0)) }
         }
         for endpoint in endpoints {
             endpoint.close().unwrap();
@@ -1505,6 +1510,9 @@ mod tests {
         drop(reads);
         drop(writer);
         drop(lease);
+        if let Some(code) = exit_code {
+            unsafe { libc::_exit(code) }
+        }
     }
 
     #[tokio::test]

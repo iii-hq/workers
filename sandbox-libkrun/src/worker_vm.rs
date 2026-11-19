@@ -4548,17 +4548,30 @@ mod tests {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
-        let id = vms
-            .launch("k", sh("exit 7"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
+        // A genuine owned lifecycle that exits 7 and retires: the destroy holds
+        // its real receipt, so only the replaced base can make it fail.
+        let admission = vms.admission(Some("k")).unwrap();
+        let mut child =
+            owned_console_child(&admission, &t.join("admission-catalog"), 0, None, false);
+        child.env("III_TEST_RUNTIME_EXIT_CODE", "7");
+        let id = owned_launch(&vms, &admission, child).unwrap().vm_id;
         wait_ended(&vms, &id, 1).await;
         // A file where the base dir was: ENOTDIR, which root cannot bypass.
         let base = t.join("workers");
         std::fs::rename(&base, t.join("moved")).unwrap();
         std::fs::write(&base, "").unwrap();
 
-        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S216");
+        let refused = vms.destroy(destroy_req("t", "k")).unwrap_err();
+        assert_eq!(refused.code().as_str(), "S216", "{refused}");
+        // The intended path: the receipt-holding removal meets ENOTDIR, not a
+        // missing lifecycle proof.
+        let message = refused.to_string();
+        let expected = format!("cannot remove {}: ", base.join(&id).display());
+        assert!(message.contains(&expected), "{message}");
+        assert!(
+            message.contains(&std::io::Error::from_raw_os_error(libc::ENOTDIR).to_string()),
+            "{message}"
+        );
         let status = vms.status(status_req("t", &id, 1)).unwrap();
         assert_eq!(status.exit_code, Some(7), "{status:?}");
     }
@@ -4611,20 +4624,34 @@ mod tests {
         );
 
         let destroyed = vms.destroy(destroy_req("t", "k"));
-        if stuck.exists() {
+        let removed = !stuck.exists();
+        if removed {
+            assert!(destroyed.unwrap().destroyed);
+        } else {
             assert_eq!(code(destroyed), "S216");
             assert!(dir.exists(), "a partly failed removal retains the VM");
-        } else {
-            assert!(destroyed.unwrap().destroyed);
         }
         // Whatever the removal reached, the next instance follows instance 1.
         assert_eq!(vms.next_instance(&id).unwrap(), 2);
-        // A failed Remove spent its one receipt and leaves the lifecycle for
-        // explicit recovery; any boot admission still allows is the next one.
-        let child = owned_console_child(&admission, &namespace, 0, None, false);
-        if let Ok(again) = owned_launch(&vms, &admission, child) {
+        if removed {
+            // The removal completed (as root): the lifecycle's real local
+            // authority boots the next instance.
+            let child = owned_console_child(&admission, &namespace, 0, None, false);
+            let again = owned_launch(&vms, &admission, child).unwrap();
             assert_eq!(again.instance, 2);
             wait_ended(&vms, &id, 2).await;
+        } else {
+            // The failed core Remove step left its operation uncertain
+            // (MutationGuard::terminal -> Lease::finish_hold(.., true)). This
+            // lifecycle keeps no real local authority until explicit recovery,
+            // so not even a child admission can be exported from it.
+            let refused = admission.revalidate().unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .contains("real local authority and retirement are required"),
+                "{refused}"
+            );
         }
     }
 
@@ -6857,10 +6884,17 @@ mod tests {
         // The build directory is free.
         let dir = t.join("project/build/k").canonicalize().unwrap();
         claim(&vms, &scoped_auth_token("t", "other"), "other", &dir).unwrap();
-        // That lifecycle's one receipt is spent: a second destroy without a new
-        // lifecycle is refused fail-closed and leaves every kept entry as it is.
-        assert_eq!(code(vms.destroy(keep_req("t", "k"))), "S216");
-        assert_eq!(names_in(&vm).len(), 7);
+        // A second destroy finds data and retained evidence only: no declared
+        // runtime entry is left to remove, so it removes nothing, spends no
+        // receipt, writes no seal and no catalog record, and says what it kept.
+        let names = names_in(&vm);
+        let catalog = t.join("admission-catalog").join("catalog.json");
+        let recorded = std::fs::read(&catalog).unwrap();
+        let again = vms.destroy(keep_req("t", "k")).unwrap();
+        assert!(!again.destroyed, "{again:?}");
+        assert_eq!(again.kept, reply.kept);
+        assert_eq!(names_in(&vm), names);
+        assert_eq!(std::fs::read(&catalog).unwrap(), recorded);
         assert_eq!(
             std::fs::read_to_string(vm.join("upper.ext4")).unwrap(),
             "data"

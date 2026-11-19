@@ -1688,7 +1688,8 @@ mod tests {
     use super::*;
 
     fn test_context() -> (tempfile::TempDir, crate::worker_admission::AdmissionContext) {
-        let root = tempfile::tempdir().unwrap();
+        // The namespace must be exactly 0700, never the umask-derived default.
+        let root = crate::worker_admission::testing::private_tempdir().unwrap();
         let context = crate::worker_admission::testing::provision_context(root.path()).unwrap();
         (root, context)
     }
@@ -1764,22 +1765,35 @@ mod tests {
         .args
     }
 
-    fn enrolled_input(parent: &std::path::Path) -> std::path::PathBuf {
+    /// A retained VM under a worker base this namespace knows: the base is
+    /// registered by a worker operation (as a production base is) before the
+    /// VM and its custody are planted, and the custody registry is private
+    /// (exactly 0700), as core reads only such a registry.
+    fn enrolled_input(
+        parent: &std::path::Path,
+        context: &crate::worker_admission::AdmissionContext,
+    ) -> std::path::PathBuf {
+        use std::os::unix::fs::DirBuilderExt;
         let base = parent.join("workers");
         let id = "b".repeat(32);
+        drop(context.worker(&base, Some("registration")).unwrap());
         let root = base.join(&id).join("root");
         std::fs::create_dir_all(&root).unwrap();
         let custody = crate::worker_admission::custody(&base, &id).unwrap();
-        std::fs::create_dir_all(&custody).unwrap();
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&custody)
+            .unwrap();
         std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
         root
     }
 
     #[test]
     fn preflight_rejects_each_foreign_host_input_before_root_or_init_effects() {
-        let t = tempfile::tempdir().unwrap();
-        let retained = enrolled_input(t.path());
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (_namespace, context) = test_context();
+        let retained = enrolled_input(t.path(), &context);
         // Missing normal root would fail later, but no fallback/root creation
         // may run before retained inputs are inspected.
         let normal = t.path().join("normal-root");

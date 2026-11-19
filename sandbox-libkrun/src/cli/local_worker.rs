@@ -2228,6 +2228,13 @@ mod tests {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let base = t.path().join("workers");
         let id = "c".repeat(32);
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        // `base` is a worker base this namespace knows, as a production base is
+        // once a worker operation registered it. That operation ends before
+        // the retained VM and its custody below are planted.
+        drop(context.worker(&base, Some("registration")).unwrap());
         let foreign = base.join(&id).join("root");
         private_dir_all(&foreign);
         let custody = crate::worker_admission::custody(&base, &id).unwrap();
@@ -2236,9 +2243,6 @@ mod tests {
         let root = t.path().join("normal-root");
         let source = t.path().join("normal-source");
         private_dir_all(&source);
-        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
-        let context =
-            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let project = project_with("", "");
         for retained_lower in [false, true] {
             let over = VmOverride {
