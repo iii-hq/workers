@@ -135,10 +135,7 @@ impl ToSql for PgBind {
         // document. A string is JSON text, sent as its own bytes so key
         // order, number precision and depth survive; the server validates
         // it. Any other value is that JSON value. `null` is SQL NULL.
-        let mut base = ty;
-        while let postgres_types::Kind::Domain(inner) = base.kind() {
-            base = inner;
-        }
+        let base = base_type(ty);
         if matches!(*base, Type::JSON | Type::JSONB) {
             let doc = match self {
                 PgBind::Json(v) => return v.to_sql(base, out),
@@ -192,11 +189,45 @@ impl ToSql for PgBind {
         }
     }
 
+    /// A string bound to a type the driver does not encode from text itself
+    /// goes in text format: the server parses it with the type's own input
+    /// function (uuid, timestamps, numeric, enums, ...), and a bad string is
+    /// the server's own error.
+    fn encode_format(&self, ty: &Type) -> postgres_types::Format {
+        match self {
+            PgBind::Text(_) if !string_is_binary(base_type(ty)) => postgres_types::Format::Text,
+            _ => postgres_types::Format::Binary,
+        }
+    }
+
     fn accepts(_ty: &Type) -> bool {
         true
     }
 
     postgres_types::to_sql_checked!();
+}
+
+fn base_type(mut ty: &Type) -> &Type {
+    while let postgres_types::Kind::Domain(inner) = ty.kind() {
+        ty = inner;
+    }
+    ty
+}
+
+/// The types a string is written to in binary: exactly what the string
+/// encoder knows (text-like, citext, the ltree family, unknown), plus bytea
+/// and json/jsonb, which have their own rules. Any other type takes the
+/// string as text, and the server parses it.
+fn string_is_binary(base: &Type) -> bool {
+    <&str as ToSql>::accepts(base) || matches!(*base, Type::BYTEA | Type::JSON | Type::JSONB)
+}
+
+/// An array element is binary, so a string fits where its binary form is its
+/// own bytes: the above, enum labels, xml and "char".
+fn string_fits_array_element(base: &Type) -> bool {
+    string_is_binary(base)
+        || matches!(base.kind(), postgres_types::Kind::Enum(_))
+        || matches!(*base, Type::XML | Type::CHAR)
 }
 
 /// Decode one cell. Never fails the query: every type has a decoding (see
@@ -272,6 +303,15 @@ fn encode_pg_array(
                 |e| -> Box<dyn std::error::Error + Sync + Send> { e.to_string().into() },
             )?),
         };
+        // Array elements travel in binary, which a string can only fill for
+        // the types it already is the bytes of.
+        if matches!(bind, PgBind::Text(_)) && !string_fits_array_element(base_type(member)) {
+            return Err(format!(
+                "a string, or a number above 2^63, cannot bind as an element of {}[] (binary array encoding); send the array as one string, e.g. '{{a,b}}'",
+                member.name()
+            )
+            .into());
+        }
         let mut buf = bytes::BytesMut::new();
         bind.to_sql(member, &mut buf)?;
         out.put_i32(buf.len() as i32);
@@ -1836,6 +1876,218 @@ mod tests {
         assert!(matches!(&r.rows[0].0[1], RowValue::Int(7)));
         let _ = execute(&p, "DROP DOMAIN db_dja", &[], &[]).await;
         let _ = execute(&p, "DROP DOMAIN db_di", &[], &[]).await;
+    }
+
+    /// One cell of `sql` with `$1` bound to the string `v`, as text.
+    async fn text_param(p: &PostgresPool, sql: &str, v: &str) -> Result<RowValue, DbError> {
+        let r = query(p, sql, &[JsonParam::Text(v.into())], opts()).await?;
+        Ok(r.rows[0].0[0].clone())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_to_uuid() {
+        let Some(p) = fresh_pool().await else { return };
+        let id = "6ac4b4c0-5b0e-4f0e-9a52-0d6f3a1f2e77";
+        let got = text_param(&p, "SELECT $1::uuid::text", id).await.unwrap();
+        assert_eq!(got, RowValue::Text(id.into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_to_timestamptz() {
+        let Some(p) = fresh_pool().await else { return };
+        let got = text_param(
+            &p,
+            "SELECT ($1::timestamptz = '2026-11-18 12:30:00+00'::timestamptz)",
+            "2026-11-18T12:30:00Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, RowValue::Bool(true));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_to_numeric_exactly() {
+        let Some(p) = fresh_pool().await else { return };
+        let big = "12345678901234567890.123456789";
+        let got = text_param(&p, "SELECT $1::numeric::text", big)
+            .await
+            .unwrap();
+        assert_eq!(got, RowValue::Text(big.into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_to_date() {
+        let Some(p) = fresh_pool().await else { return };
+        let got = text_param(&p, "SELECT $1::date::text", "2026-11-18")
+            .await
+            .unwrap();
+        assert_eq!(got, RowValue::Text("2026-11-18".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_to_an_enum() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TYPE IF EXISTS db_tp_mood", &[], &[]).await;
+        execute(&p, "CREATE TYPE db_tp_mood AS ENUM ('sad', 'ok')", &[], &[])
+            .await
+            .unwrap();
+        let got = text_param(&p, "SELECT $1::db_tp_mood::text", "ok").await;
+        let _ = execute(&p, "DROP TYPE db_tp_mood", &[], &[]).await;
+        assert_eq!(got.unwrap(), RowValue::Text("ok".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_through_a_domain_over_uuid() {
+        let Some(p) = fresh_pool().await else { return };
+        let id = "6ac4b4c0-5b0e-4f0e-9a52-0d6f3a1f2e77";
+        let _ = execute(&p, "DROP DOMAIN IF EXISTS db_tp_id", &[], &[]).await;
+        execute(&p, "CREATE DOMAIN db_tp_id AS uuid", &[], &[])
+            .await
+            .unwrap();
+        let got = text_param(&p, "SELECT $1::db_tp_id::text", id).await;
+        let _ = execute(&p, "DROP DOMAIN db_tp_id", &[], &[]).await;
+        assert_eq!(got.unwrap(), RowValue::Text(id.into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_text_like_strings_keep_their_path() {
+        let Some(p) = fresh_pool().await else { return };
+        let got = text_param(&p, "SELECT $1::varchar", "x y").await.unwrap();
+        assert_eq!(got, RowValue::Text("x y".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_invalid_string_for_a_typed_parameter_is_the_servers_error() {
+        let Some(p) = fresh_pool().await else { return };
+        for (sql, v, state) in [
+            ("SELECT $1::uuid", "not-a-uuid", "22P02"),
+            ("SELECT $1::timestamptz", "yesterday-ish", "22007"),
+            ("SELECT $1::numeric", "12.x", "22P02"),
+        ] {
+            match text_param(&p, sql, v).await.unwrap_err() {
+                DbError::DriverError { code, .. } => {
+                    assert_eq!(code.as_deref(), Some(state), "{sql}")
+                }
+                other => panic!("expected DriverError, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_array_of_non_text_takes_a_literal_not_string_elements() {
+        let Some(p) = fresh_pool().await else { return };
+        let id = "6ac4b4c0-5b0e-4f0e-9a52-0d6f3a1f2e77";
+        // One string is the array literal, parsed by the server.
+        let got = text_param(&p, "SELECT $1::uuid[]::text", &format!("{{{id}}}"))
+            .await
+            .unwrap();
+        assert_eq!(got, RowValue::Text(format!("{{{id}}}")));
+        // A string element cannot be written in binary: a clear error.
+        let err = query(
+            &p,
+            "SELECT $1::uuid[]",
+            &[JsonParam::Json(serde_json::json!([id]))],
+            opts(),
+        )
+        .await
+        .unwrap_err();
+        assert!(driver_message(err).contains("uuid[]"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_to_ltree() {
+        let Some(p) = fresh_pool().await else { return };
+        if execute(&p, "CREATE EXTENSION IF NOT EXISTS ltree", &[], &[])
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let got = text_param(&p, "SELECT $1::ltree::text", "a.b.c")
+            .await
+            .unwrap();
+        assert_eq!(got, RowValue::Text("a.b.c".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_enum_labels_in_a_json_array_still_bind() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TYPE IF EXISTS db_tp_mood2", &[], &[]).await;
+        execute(
+            &p,
+            "CREATE TYPE db_tp_mood2 AS ENUM ('sad', 'ok')",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        let r = query(
+            &p,
+            "SELECT 'ok'::db_tp_mood2 = ANY($1::db_tp_mood2[])",
+            &[JsonParam::Json(serde_json::json!(["ok"]))],
+            opts(),
+        )
+        .await;
+        let _ = execute(&p, "DROP TYPE db_tp_mood2", &[], &[]).await;
+        assert_eq!(r.unwrap().rows[0].0[0], RowValue::Bool(true));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_text_and_binary_parameters_mix_in_one_statement() {
+        let Some(p) = fresh_pool().await else { return };
+        let id = "6ac4b4c0-5b0e-4f0e-9a52-0d6f3a1f2e77";
+        let r = query(
+            &p,
+            "SELECT $1::uuid::text, $2::int4, $3::text, $4::jsonb",
+            &[
+                JsonParam::Text(id.into()),
+                JsonParam::Int(7),
+                JsonParam::Text("x".into()),
+                JsonParam::Json(serde_json::json!({"a": 1})),
+            ],
+            opts(),
+        )
+        .await
+        .unwrap();
+        let row = &r.rows[0].0;
+        assert_eq!(row[0], RowValue::Text(id.into()));
+        assert!(matches!(row[1], RowValue::Int(7)));
+        assert_eq!(row[2], RowValue::Text("x".into()));
+        assert_eq!(row[3], RowValue::Json(serde_json::json!({"a": 1})));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_execute_inserts_a_uuid_string() {
+        let Some(p) = fresh_pool().await else { return };
+        let id = "6ac4b4c0-5b0e-4f0e-9a52-0d6f3a1f2e77";
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_tp_ins", &[], &[]).await;
+        execute(&p, "CREATE TABLE db_tp_ins (id uuid)", &[], &[])
+            .await
+            .unwrap();
+        let ins = execute(
+            &p,
+            "INSERT INTO db_tp_ins VALUES ($1)",
+            &[JsonParam::Text(id.into())],
+            &[],
+        )
+        .await;
+        let got = query(&p, "SELECT id::text FROM db_tp_ins", &[], opts())
+            .await
+            .map(|r| r.rows[0].0[0].clone());
+        let _ = execute(&p, "DROP TABLE db_tp_ins", &[], &[]).await;
+        ins.unwrap();
+        assert_eq!(got.unwrap(), RowValue::Text(id.into()));
+    }
+
+    /// On the old binary path a 4-byte string was read as an int4
+    /// ("1234" became 825373492) and "f" as a true boolean.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_short_strings_are_not_misread_as_binary() {
+        let Some(p) = fresh_pool().await else { return };
+        let got = text_param(&p, "SELECT $1::int4", "1234").await.unwrap();
+        assert!(matches!(got, RowValue::Int(1234)), "{got:?}");
+        let got = text_param(&p, "SELECT $1::bool", "f").await.unwrap();
+        assert_eq!(got, RowValue::Bool(false));
     }
 
     #[tokio::test(flavor = "multi_thread")]
