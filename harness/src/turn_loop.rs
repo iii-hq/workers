@@ -849,12 +849,14 @@ async fn generate_step(
         .as_ref()
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
-    let (decision_tools, _) = concrete_allowed_tools(
+    // Stored by the pre-generate turn write below, so a replayed reply resolves the same.
+    let (decision_tools, native_names) = concrete_allowed_tools(
         &policy,
         &functions.functions,
         &record.dispatch_only_functions,
         expose,
     );
+    record.native_names = native_names;
     if expose == ExposeMode::Native && decision_tools.is_empty() {
         tracing::warn!(
             session_id = %record.session_id,
@@ -1904,14 +1906,9 @@ async fn finish_step(
         .unwrap_or(ExposeMode::AgentCall);
     let mut planned = policy::plan_calls(&outcome.message, expose);
     if expose == ExposeMode::Native {
-        // Names are deterministic, so a resumed step rebuilds the same table.
-        let (_, names) = concrete_allowed_tools(
-            &CompiledPolicy::from(record.options.functions.as_ref()),
-            &deps.functions().await.functions,
-            &record.dispatch_only_functions,
-            expose,
-        );
-        policy::resolve_native_names(&mut planned, &names);
+        // The table the model was shown: a name depends on the other tools, so
+        // a newer registry can hand it to another namespace's copy.
+        policy::resolve_native_names(&mut planned, &record.native_names);
     }
     let dispatch_calls: Vec<_> = planned
         .iter()

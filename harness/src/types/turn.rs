@@ -500,6 +500,12 @@ pub struct TurnRecord {
     /// tools, so a narrowed child's toolset stays exactly its work functions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatch_only_functions: Vec<String>,
+    /// The native tool names of the step's last generate request. Its reply,
+    /// replayed too, is resolved through these, never through a newer registry.
+    /// shortcut: one row per tool not named by its bare id, written on every
+    /// turn write; keep only the names the reply used if that grows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_names: crate::policy::NativeNames,
     #[serde(default)]
     pub validation_retries: u32,
     #[serde(default)]
@@ -681,6 +687,7 @@ pub(crate) mod tests {
             stop_reason: None,
             failure: None,
             dispatch_only_functions: Vec::new(),
+            native_names: Default::default(),
             validation_retries: 0,
             transient_resumes: 0,
             ask_step: None,

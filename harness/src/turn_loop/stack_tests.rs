@@ -771,6 +771,99 @@ async fn a_call_runs_in_the_namespace_the_model_named() {
     assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
 }
 
+fn hold_in(namespace: &str) -> crate::clients::engine::FunctionDescriptor {
+    crate::clients::engine::FunctionDescriptor {
+        function_id: "test::hold".into(),
+        namespace: namespace.into(),
+        description: None,
+        parameters: None,
+    }
+}
+
+/// The stored turn switched to native exposure, with `native_names` set.
+async fn go_native(deps: &Deps, native_names: Value) -> Result<(), HarnessError> {
+    let record = crate::state::get_turn_unhydrated(&deps.iii, "s", 2_000).await?;
+    let mut record = serde_json::to_value(record.expect("the turn is stored")).unwrap();
+    record["options"]["functions"]["expose"] = json!("native");
+    record["native_names"] = native_names;
+    let record = serde_json::from_value(record).unwrap();
+    crate::state::put_turn(&deps.iii, &record, 2_000).await
+}
+
+/// The model's native call `zz-a::test::hold` named the `zz_a` copy, the only
+/// one when the request went out. `zz-a` registering meanwhile sorts first
+/// and takes that name in a newer table: the call must still run in `zz_a`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_call_runs_where_its_generation_named_it() {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["function_id"] = json!("zz-a::test::hold");
+    reply["content"][0]["arguments"] = json!({});
+    for joins in [false, true] {
+        let (_, calls, _) = run_on_fake_engine(
+            json!({}),
+            json!([]),
+            Some(reply.clone()),
+            json!({}),
+            |deps| async move {
+                go_native(&deps, json!({})).await?;
+                crate::discovery::apply(&deps.functions, vec![hold_in("zz_a")]).await;
+                let payload =
+                    serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 1}))
+                        .unwrap();
+                let PreparedStep::Generated(generated) =
+                    Box::pin(generate_step(&deps, payload)).await?
+                else {
+                    panic!("the step generates");
+                };
+                if joins {
+                    let both = vec![hold_in("zz-a"), hold_in("zz_a")];
+                    crate::discovery::apply(&deps.functions, both).await;
+                }
+                Box::pin(finish_step(&deps, generated)).await
+            },
+        )
+        .await;
+        assert_eq!(
+            sent_namespace(&calls, "test::hold"),
+            "zz_a",
+            "joins: {joins}"
+        );
+    }
+}
+
+/// A redelivered step replays its stored reply with the table its generation
+/// stored, whatever registered since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replayed_native_call_runs_where_its_generation_named_it() {
+    let mut stored = hold_reply();
+    let mut next = stored["message"]["content"][0].clone();
+    next["id"] = json!("call_next");
+    stored["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(next);
+    for call in stored["message"]["content"].as_array_mut().unwrap() {
+        call["function_id"] = json!("zz-a::test::hold");
+        call["arguments"] = json!({});
+    }
+    let dispatched = json!({"call_hold": {"state": "dispatched", "function_id": "test::hold",
+        "namespace": "zz_a"}});
+    let (_, calls, _) = run_on_fake_engine(
+        dispatched,
+        json!([stored]),
+        None,
+        json!({}),
+        |deps| async move {
+            go_native(&deps, json!({"zz-a::test::hold": ["zz_a", "test::hold"]})).await?;
+            let both = vec![hold_in("zz-a"), hold_in("zz_a")];
+            crate::discovery::apply(&deps.functions, both).await;
+            step_one(deps).await
+        },
+    )
+    .await;
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz_a");
+}
+
 /// A deny qualified with the namespace the model named stops the call there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_denied_in_the_namespace_it_named_is_not_dispatched() {
