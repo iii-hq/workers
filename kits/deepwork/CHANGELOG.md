@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+A run nobody watches in a chat can now ask a person. A session started from the CLI, the board or another worker has no chat: its `harness::ask` card was accepted and waited forever, unseen, while the run sat In progress.
+
+- **`ask=board` asks on the run ticket.** Every card the run would show in the chat (design, plan and finish with `approve=on`, a consequential ambiguity) becomes one `⛔ Needs you` comment on the run ticket, with the options as lines and the recommended one first, and the run ticket gets the `needs you` pill. The orchestrator waits on `kanban::on-comment` for that ticket, excluding its own comments, and goes on from the step that asked when a person replies: an option's label, a yes for the recommended one, or free text. A comment that answers nothing gets the question again. No answer within `ask_wait_min` (default three days) finishes the run `blocked` in Backlog. `ask=chat`, the default, is unchanged.
+- **Resume of a run that never planned.** A run that stopped before its plan (for example, on a design question nobody answered) has nothing to adopt: `resume=<R>` now starts it over from R, reading the comments after its last `⛔ Needs you` as the answer.
+- **A ticket goal keeps its project.** When the goal is a ticket key and that ticket is in a project, the run uses that project instead of creating `deepwork: <goal> · <id>` and moving the ticket out of the project its owner chose.
+- **Compatibility.** Only the orchestrator changed; the other profiles are as in 0.8.0.
+
 ## 0.8.0
 
 The board is for the people following the run. Before, a run ticket carried comments such as `r1: done 0 · retry 0 · parked 0 · new 0 · loose 0 · cost unknown`, and its evidence was a `state::get` reference nobody could open. A card that stayed In progress for three rounds while its validation was repaired looked the same as one being coded.

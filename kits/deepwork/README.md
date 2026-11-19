@@ -84,6 +84,8 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `project` | – | an existing kanban project (id or name) for the run. Without it, each run creates its own project, `deepwork: <goal> · <id>` |
 | `release` | – | an existing kanban release (id or name) for filing cards. Dev validation groups the current wave, not all cards in that release |
 | `resume` | – | the key of an earlier run ticket to pick up from the board instead of planning anew (see Resume a run) |
+| `ask` | `chat` | where a question for you goes. `board` asks on the run ticket instead of in the chat, for a run that nobody watches in a chat (started from the board, the CLI or another worker): see Questions on the board |
+| `ask_wait_min` | 4320 | with `ask=board`, how long a question waits for an answer before the run stops `blocked` (three days) |
 
 ### Hard cost cap
 
@@ -140,6 +142,8 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
   - comment on a ticket to steer its retry;
   - move a Backlog card to To do to run it again.
 - **Resume a run.** If the orchestrator's session is lost (the console closed it, the engine restarted), start Deepwork again with `args: resume=<R>`. It adopts the run ticket: the goal, args, branch and worktree come from the card, a batch still being validated is adopted and awaited, never stopped (a stop kills its suites with SIGKILL, so their restores would not run), a batch that was not verified is repaired first (its cards are already on the run branch, so their code is not redone), In progress tickets whose lead is gone and `unfinished` Backlog tickets go back to To do and build on what was already committed, and the rounds continue from where they stopped; `max_rounds` then counts the rounds this resume runs. A finished run resumes the same way, as long as its worktree still exists; only failed, blocked or stuck cards need you to move them to To do.
+- **Questions on the board** (`ask=board`). A question that would be a card in the chat (design, plan or finish with `approve=on`, or a consequential ambiguity) is a `⛔ Needs you` comment on the run ticket instead, with the options as lines and the recommended one first, and the run ticket shows the `needs you` pill. Reply to the comment (or comment on the run ticket) with an option or your own answer: the run wakes on your comment and goes on. Without an answer within `ask_wait_min`, the run stops `blocked` in Backlog; answer it, then start again with `resume=<R>`. A run started from the CLI or by another worker should use `ask=board`: its session has no chat, and a chat card there waits unseen.
+- **The run keeps your project.** When the goal is a ticket that is already in a project, the run files its cards there instead of creating `deepwork: <goal> · <id>`.
 - **Skip a ticket.** Move it from To do to Backlog. Don't drag In progress cards, because Deepwork's next write overrides your move. Deleting a card removes it from the run.
 - **Outcomes.**
   - Done tickets carry `verified` or `accepted`.
