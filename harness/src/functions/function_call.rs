@@ -125,6 +125,8 @@ pub async fn handle(
                 &req.call.id,
                 &req.call.function_id,
                 &arguments,
+                // A direct call has no `agent_call` wrapper to describe it.
+                None,
                 None,
             )
             .await

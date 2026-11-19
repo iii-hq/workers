@@ -195,6 +195,10 @@ pub struct CallInput {
     pub id: String,
     pub function_id: String,
     pub arguments: Value,
+    /// on-pre-call only: the `agent_call` wrapper's display-only
+    /// `description` of this call, when the model gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// `harness::hook::on-pre-call` input.
