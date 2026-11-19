@@ -22,6 +22,9 @@ use std::{ffi::CStr, io, time::Duration};
 /// Arguments for the `__vm-boot` hidden subcommand.
 #[derive(clap::Args, Debug)]
 pub struct VmBootArgs {
+    /// Host-only same-operation sentinel descriptor. Never forwarded to the guest.
+    #[arg(long, hide = true)]
+    pub admission_fd: Option<i32>,
     /// Path to the guest rootfs directory (the boot trampoline; in overlay
     /// mode this is a minimal dir serving only the injected /init.krun).
     #[arg(long)]
@@ -734,8 +737,31 @@ pub(crate) fn admit_boot_inputs(
     source_sync: Option<&std::path::Path>,
     source_readonly: Option<&std::path::Path>,
 ) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
-    let plan = build_virtiofs_mount_plan(mounts)?;
     let admission = crate::worker_admission::local(root).map_err(|e| e.to_string())?;
+    admit_boot_inputs_fresh(
+        admission,
+        root,
+        lower,
+        upper,
+        mounts,
+        source_sync,
+        source_readonly,
+    )
+}
+
+/// Existing-operation boot reads only already-declared paths. In particular,
+/// a just-published lower remains MutableFile in the ledger and is consumed
+/// under UseGuard; do not silently change it to Strict or create a new op.
+pub(crate) fn admit_boot_inputs_on(
+    admission: crate::worker_admission::Lease,
+    root: &std::path::Path,
+    lower: Option<&std::path::Path>,
+    upper: Option<&std::path::Path>,
+    mounts: &[String],
+    source_sync: Option<&std::path::Path>,
+    source_readonly: Option<&std::path::Path>,
+) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
+    let plan = build_virtiofs_mount_plan(mounts)?;
     let mut paths = vec![root];
     paths.extend(lower);
     paths.extend(upper);
@@ -746,8 +772,62 @@ pub(crate) fn admit_boot_inputs(
             .iter()
             .map(|entry| std::path::Path::new(&entry.host_path)),
     );
+    for path in paths {
+        let used = admission.use_path(path).map_err(|e| e.to_string())?;
+        used.revalidate().map_err(|e| e.to_string())?;
+    }
+    admission.revalidate().map_err(|e| e.to_string())?;
+    Ok((admission, plan))
+}
+
+fn admit_boot_inputs_fresh(
+    admission: crate::worker_admission::Lease,
+    root: &std::path::Path,
+    lower: Option<&std::path::Path>,
+    upper: Option<&std::path::Path>,
+    mounts: &[String],
+    source_sync: Option<&std::path::Path>,
+    source_readonly: Option<&std::path::Path>,
+) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
+    use crate::worker_admission::{PathRequest, PathRole};
+    let plan = build_virtiofs_mount_plan(mounts)?;
+    let mut paths = vec![PathRequest {
+        path: root,
+        role: PathRole::MutableTree,
+    }];
+    paths.extend(lower.map(|path| PathRequest {
+        path,
+        role: PathRole::Strict,
+    }));
+    paths.extend(upper.map(|path| PathRequest {
+        path,
+        role: PathRole::MutableFile,
+    }));
+    paths.extend(
+        source_sync
+            .into_iter()
+            .chain(source_readonly)
+            .map(|path| PathRequest {
+                path,
+                role: PathRole::Strict,
+            }),
+    );
+    for entry in &plan.entries {
+        let path = std::path::Path::new(&entry.host_path);
+        let role = if Some(path) == source_sync
+            || Some(path) == source_readonly
+            || !path.starts_with(root)
+        {
+            PathRole::Strict
+        } else {
+            // Only the caller-owned runtime share below its declared root is
+            // an output. A source/bundle mount is never promoted by spelling.
+            PathRole::MutableTree
+        };
+        paths.push(PathRequest { path, role });
+    }
     let admission =
-        crate::worker_admission::with_inputs(admission, &paths).map_err(|e| e.to_string())?;
+        crate::worker_admission::with_paths(admission, &paths).map_err(|e| e.to_string())?;
     Ok((admission, plan))
 }
 
@@ -756,8 +836,25 @@ pub(crate) fn admit_boot_inputs(
 fn preflight_boot(
     args: &VmBootArgs,
 ) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
+    let admission = crate::worker_admission::local(std::path::Path::new(&args.rootfs))
+        .map_err(|e| e.to_string())?;
+    preflight_boot_on(args, admission, false)
+}
+
+fn preflight_boot_on(
+    args: &VmBootArgs,
+    admission: crate::worker_admission::Lease,
+    inherited: bool,
+) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
+    use crate::worker_admission::{PathRequest, PathRole};
     use std::path::Path;
-    let (admission, plan) = admit_boot_inputs(
+    let admit = if inherited {
+        admit_boot_inputs_on
+    } else {
+        admit_boot_inputs_fresh
+    };
+    let (admission, plan) = admit(
+        admission,
         Path::new(&args.rootfs),
         args.rootfs_lower.as_deref().map(Path::new),
         args.rootfs_upper.as_deref().map(Path::new),
@@ -765,14 +862,40 @@ fn preflight_boot(
         args.source_sync.as_deref().map(Path::new),
         args.source_readonly.as_deref().map(Path::new),
     )?;
-    let outputs: Vec<&Path> = args
-        .shell_sock
-        .iter()
-        .chain(args.net_activity_file.iter())
-        .map(|path| Path::new(path))
-        .collect();
+    let mut outputs = Vec::new();
+    if let Some(path) = &args.shell_sock {
+        let parent = Path::new(path)
+            .parent()
+            .ok_or("endpoint has no private parent")?;
+        if parent.starts_with(Path::new(&args.rootfs))
+            || plan
+                .entries
+                .iter()
+                .any(|entry| parent.starts_with(Path::new(&entry.host_path)))
+        {
+            return Err(
+                "endpoint parent overlaps a guest export; declare a private control directory"
+                    .into(),
+            );
+        }
+        // Creating a missing parent needs a non-overlapping preparation lease;
+        // do not declare the socket's own operation as a MutableTree bypass.
+        if !parent.is_dir() {
+            return Err("endpoint private parent must be prepared by an admitted control-directory operation".into());
+        }
+        outputs.push(PathRequest {
+            path: Path::new(path),
+            role: PathRole::Endpoint,
+        });
+    }
+    if let Some(path) = &args.net_activity_file {
+        outputs.push(PathRequest {
+            path: Path::new(path),
+            role: PathRole::MutableFile,
+        });
+    }
     let admission =
-        crate::worker_admission::with_inputs(admission, &outputs).map_err(|e| e.to_string())?;
+        crate::worker_admission::with_paths(admission, &outputs).map_err(|e| e.to_string())?;
     if !Path::new(&args.rootfs).exists() {
         return Err(format!("rootfs path does not exist: {}", args.rootfs));
     }
@@ -814,7 +937,30 @@ pub fn run(args: &VmBootArgs) -> ! {
 
     // Drain stdin first as before, but perform no boot effects until ALL host
     // paths pass admission. The guard stays here until this process exits.
-    let (_admission, mount_plan) = match preflight_boot(args) {
+    let inherited = match args.admission_fd {
+        Some(fd) => {
+            use std::os::fd::{FromRawFd, OwnedFd};
+            if fd < 3 {
+                eprintln!("error: invalid admission descriptor");
+                std::process::exit(1);
+            }
+            // Main calls this once. Import owns/validates the inherited sentinel;
+            // a rejected supplied FD never falls back to a fresh operation.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
+            {
+                eprintln!("error: unusable admission descriptor");
+                std::process::exit(1);
+            }
+            let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+            crate::worker_admission::import_child(owned).map_err(|e| e.to_string())
+        }
+        None => crate::worker_admission::local(std::path::Path::new(&args.rootfs))
+            .map_err(|e| e.to_string()),
+    };
+    let (admission, mount_plan) = match inherited
+        .and_then(|lease| preflight_boot_on(args, lease, args.admission_fd.is_some()))
+    {
         Ok(preflight) => preflight,
         Err(e) => {
             eprintln!("error: {e}");
@@ -822,7 +968,7 @@ pub fn run(args: &VmBootArgs) -> ! {
         }
     };
 
-    match boot_vm(args, stdin_env, mount_plan) {
+    match boot_vm(args, stdin_env, mount_plan, admission) {
         Ok(infallible) => match infallible {},
         Err(e) => {
             eprintln!("error: VM execution failed: {}", e);
@@ -835,6 +981,7 @@ fn boot_vm(
     args: &VmBootArgs,
     stdin_env: Vec<(String, String)>,
     mount_plan: VirtiofsMountPlan,
+    admission: crate::worker_admission::Lease,
 ) -> Result<std::convert::Infallible, String> {
     use msb_krun::VmBuilder;
 
@@ -852,6 +999,31 @@ fn boot_vm(
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .chain(stdin_env);
 
+    // Strict inputs remain protected while the VMM/source export consumes them.
+    let mut input_uses = Vec::new();
+    for entry in &mount_plan.entries {
+        let path = std::path::Path::new(&entry.host_path);
+        if !path.starts_with(std::path::Path::new(&args.rootfs)) {
+            input_uses.push(admission.use_path(path).map_err(|e| e.to_string())?);
+        }
+    }
+    for path in args
+        .rootfs_lower
+        .iter()
+        .chain(args.source_sync.iter())
+        .chain(args.source_readonly.iter())
+    {
+        input_uses.push(
+            admission
+                .use_path(std::path::Path::new(path))
+                .map_err(|e| e.to_string())?,
+        );
+    }
+    let _input_uses = input_uses;
+    // INTEGRATION GAP: the VMM writes the existing upper/virtiofs tree in place.
+    // Mutable roles and the inherited sentinel provide exclusion, not an owned
+    // mutation receipt. The contract still needs a guest-writer lifetime/finish
+    // seam; do not claim staging the initial upper solves subsequent guest IO.
     let passthrough_fs = root_share(args)?;
 
     let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
@@ -1003,6 +1175,8 @@ fn boot_vm(
     // when the rewrite below ran with networking off (see `rewrite_localhost`).
     let (dns_nameserver, guest_ip, gateway_ip): (Option<String>, Option<String>, Option<String>) =
         if args.network {
+            // INTEGRATION GAP: beacon updates are owned by iii-network, outside
+            // this caller scope; MutableFile alone is not a mutation API.
             let net_cfg = iii_network::NetworkConfig {
                 activity_file: args.net_activity_file.clone().map(std::path::PathBuf::from),
                 ..Default::default()
@@ -1039,16 +1213,15 @@ fn boot_vm(
     // and drop the attached fd so the VM boots without the port.
     let mut shell_port_env = false;
     let mut guest_shell_fd: Option<i32> = None;
-    let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> = None;
+    let mut shell_relay: Option<crate::cli::shell_relay::AdmittedRelay> = None;
     if let Some(sock_path) = args.shell_sock.clone() {
         let (host_end, guest_fd) = setup_port_socketpair()?;
-        match crate::cli::shell_relay::spawn(
-            tokio_rt.handle(),
-            std::path::PathBuf::from(sock_path),
-            host_end,
-        ) {
-            Ok(fp) => {
-                shell_sock_fingerprint = Some(fp);
+        let endpoint = admission
+            .endpoint(std::path::Path::new(&sock_path))
+            .map_err(|e| e.to_string())?;
+        match crate::cli::shell_relay::spawn_admitted(tokio_rt.handle(), endpoint, host_end) {
+            Ok(relay) => {
+                shell_relay = Some(relay);
                 guest_shell_fd = Some(guest_fd);
                 shell_port_env = true;
             }
@@ -1228,14 +1401,11 @@ fn boot_vm(
         c
     });
 
-    // Register VM-exit cleanup for the shell socket.
-    if let Some(fp) = shell_sock_fingerprint {
+    // Request relay shutdown; only its joined task supervisor may close the
+    // core endpoint lifetime. No pathname unlink in a VMM exit callback.
+    if let Some(relay) = shell_relay {
         builder = builder.on_exit(move |exit_code| {
-            // Only unlink the shell socket if it's still the one we
-            // bound — a fast `stop → start` can let a new VM rebind
-            // the same path before this hook fires. The fingerprint
-            // check makes stale unlinks a no-op.
-            fp.remove_if_unchanged();
+            relay.shutdown();
             if exit_code != 0 {
                 eprintln!("  VM exited with code {}", exit_code);
             }

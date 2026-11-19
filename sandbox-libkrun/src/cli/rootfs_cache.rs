@@ -207,9 +207,8 @@ pub(crate) fn checked_cache_lock(
     Ok(held)
 }
 
-/// Diagnostic adapter for the v2 writer conversion. Not yet wired into the
-/// worker pipeline: those callsites must be converted as one operation, without
-/// using the legacy File route as a fallback after a refused mutation.
+/// Diagnostic adapter used by worker cache/EROFS mutations. The legacy File
+/// route is independent only; a refused mutation never falls back to it.
 pub(crate) struct MutationLock {
     lock: Option<crate::worker_admission::DiagnosticLock>,
     checkpoint: Checkpoint,
@@ -256,6 +255,62 @@ impl MutationLock {
     // Drop intentionally performs no diagnostic write or pathname cleanup.
 }
 
+/// One caller-owned core mutation. The callback checks THIS guard's original
+/// proofs during staging, not stale pre-publication inode pins on a fresh lease.
+pub(crate) struct MutationWriter {
+    guard: std::sync::Arc<std::sync::Mutex<crate::worker_admission::MutationGuard>>,
+    pub(crate) checkpoint: Checkpoint,
+}
+impl MutationWriter {
+    pub(crate) fn begin(
+        lease: &crate::worker_admission::Lease,
+        plan: crate::worker_admission::MutationPlan,
+    ) -> std::io::Result<Self> {
+        let guard = std::sync::Arc::new(std::sync::Mutex::new(lease.begin(plan)?));
+        let checked = guard.clone();
+        let checkpoint = Checkpoint::new(move || {
+            checked
+                .lock()
+                .map_err(|_| std::io::Error::other("mutation poisoned"))?
+                .checkpoint()
+        });
+        Ok(Self { guard, checkpoint })
+    }
+
+    pub(crate) fn apply<T>(
+        &self,
+        effect: impl FnOnce(&mut crate::worker_admission::MutationGuard) -> std::io::Result<T>,
+    ) -> Result<T> {
+        self.checkpoint
+            .with_io(|| {
+                let mut guard = self
+                    .guard
+                    .lock()
+                    .map_err(|_| std::io::Error::other("mutation poisoned"))?;
+                effect(&mut guard)
+            })
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn diagnostic(
+        &self,
+        path: &Path,
+    ) -> Result<crate::worker_admission::DiagnosticLock> {
+        self.apply(|guard| guard.diagnostic_lock(path))
+    }
+
+    pub(crate) fn commit(self) -> Result<()> {
+        self.checkpoint.check()?;
+        drop(self.checkpoint);
+        let guard = std::sync::Arc::try_unwrap(self.guard)
+            .map_err(|_| anyhow::anyhow!("mutation still has checkpoint/writer references"))?
+            .into_inner()
+            .map_err(|_| anyhow::anyhow!("mutation poisoned"))?;
+        guard.commit()?;
+        Ok(())
+    }
+}
+
 /// Canonical cache root. All new pulls land under here, keyed by
 /// `rootfs_slug_for_image(oci_ref)`.
 fn cache_root() -> PathBuf {
@@ -280,7 +335,7 @@ pub fn canonical_path(oci_ref: &str) -> PathBuf {
     canonical_path_at(&cache_root(), oci_ref)
 }
 
-fn canonical_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
+pub(crate) fn canonical_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
     let shared = cache.join(rootfs_slug_for_image(canonical_cache_key(oci_ref)));
     match pinned_digest(oci_ref) {
         Some(pin) if is_populated(&shared) && !pulled_from(&shared, pin) => {
@@ -292,7 +347,7 @@ fn canonical_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
 
 /// `<rootfs>.digest`, beside the rootfs: the manifest digests it was
 /// pulled from, one per line.
-fn digest_path(rootfs: &Path) -> PathBuf {
+pub(crate) fn digest_path(rootfs: &Path) -> PathBuf {
     let mut name = rootfs.file_name().unwrap_or_default().to_os_string();
     name.push(".digest");
     rootfs.with_file_name(name)
@@ -339,7 +394,7 @@ fn lock_path_for_image(oci_ref: &str) -> PathBuf {
     lock_path_at(&cache_root(), oci_ref)
 }
 
-fn lock_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
+pub(crate) fn lock_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
     let mut path = cache.join(rootfs_slug_for_image(canonical_cache_key(oci_ref)));
     let name = path
         .file_name()
@@ -443,6 +498,54 @@ where
     record_digest(&digest_file, &digests, &checkpoint)?;
     lock.finish()?;
     Ok(dest)
+}
+
+/// Owned worker cache transaction: no live-root removal before a successful
+/// replacement, and no raw diagnostic/stage cleanup. Selection cannot drift
+/// between the admitted mutation footprint and the actual pull.
+pub(crate) async fn ensure_rootfs_admitted(
+    lease: &crate::worker_admission::Lease,
+    reference: &str,
+) -> Result<PathBuf> {
+    use std::io::Write;
+    let cache = cache_root();
+    let selected = canonical_path_at(&cache, reference);
+    let mutation = MutationWriter::begin(
+        lease,
+        crate::worker_admission::MutationPlan::Cache {
+            root: cache.clone(),
+        },
+    )?;
+    mutation.apply(|guard| guard.create_dir_all(&cache, 0o700))?;
+    let diagnostic = mutation.diagnostic(&lock_path_at(&cache, reference))?;
+    let check = mutation.checkpoint.clone();
+    let lock = tokio::task::spawn_blocking(move || MutationLock::acquire(diagnostic, check, true))
+        .await
+        .context("cache lock task failed")??;
+    mutation.checkpoint.check()?;
+    anyhow::ensure!(
+        canonical_path_at(&cache, reference) == selected,
+        "cache selection changed while waiting; retry the complete admitted operation"
+    );
+    if !is_populated(&selected) {
+        let stage = mutation.apply(|guard| guard.stage_tree(&selected))?;
+        let digests = crate::cli::worker_manager::oci::pull_into_stage_checked(
+            reference,
+            stage.path(),
+            mutation.checkpoint.clone(),
+        )
+        .await?;
+        mutation.checkpoint.check()?;
+        let mut digest =
+            mutation.apply(|guard| guard.stage_file(&digest_path(&selected), 0o600))?;
+        digest.file_mut().write_all(digests.join("\n").as_bytes())?;
+        digest.file_mut().sync_all()?;
+        mutation.apply(|guard| guard.publish_tree(stage))?;
+        mutation.apply(|guard| guard.publish_file(digest))?;
+    }
+    lock.finish()?;
+    mutation.commit()?;
+    Ok(selected)
 }
 
 fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Result<()> {

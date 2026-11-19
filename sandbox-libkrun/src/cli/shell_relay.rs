@@ -244,6 +244,127 @@ impl ShellSocketFingerprint {
     }
 }
 
+/// A shutdown request is not endpoint retirement. The supervisor closes the
+/// lifetime only AFTER listener, sessions and both VM stream tasks are joined.
+pub(crate) struct AdmittedRelay {
+    shutdown: tokio::sync::watch::Sender<bool>,
+}
+impl AdmittedRelay {
+    pub(crate) fn shutdown(&self) {
+        self.shutdown.send_replace(true);
+    }
+}
+impl Drop for AdmittedRelay {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+pub(crate) fn spawn_admitted(
+    runtime: &tokio::runtime::Handle,
+    endpoint: crate::worker_admission::EndpointGuard,
+    vm_stream: StdUnixStream,
+) -> Result<AdmittedRelay, String> {
+    let _entered = runtime.enter();
+    let listener = endpoint
+        .bind()
+        .map_err(|e| e.to_string())?
+        .into_async()
+        .map_err(|e| e.to_string())?;
+    vm_stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let stream = tokio::net::UnixStream::from_std(vm_stream).map_err(|e| e.to_string())?;
+    let (read, write) = stream.into_split();
+    let (tx, rx) = mpsc::channel::<QueuedFrame>(VM_WRITE_CAPACITY);
+    let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
+    let clients = ClientTable::default();
+    let (shutdown, stopped) = tokio::sync::watch::channel(false);
+    let requested = shutdown.clone();
+    runtime.spawn(async move {
+        let mut reader = tokio::spawn(vm_reader_task(
+            tokio::io::BufReader::new(read),
+            routes.clone(),
+            clients.clone(),
+        ));
+        let writer = tokio::spawn(vm_writer_task(tokio::io::BufWriter::new(write), rx));
+        let listener = tokio::spawn(listener_task_admitted(
+            listener,
+            tx,
+            routes,
+            clients,
+            stopped.clone(),
+        ));
+        let mut stopped = stopped;
+        let already_stopped = *stopped.borrow();
+        let reader_ended = if already_stopped {
+            None
+        } else {
+            tokio::select! {
+                result = &mut reader => Some(result),
+                _ = stopped.wait_for(|stop| *stop) => None,
+            }
+        };
+        requested.send_replace(true);
+        let listener = listener.await.ok();
+        let reader_done = match reader_ended {
+            Some(result) => result.is_ok(),
+            None => {
+                reader.abort();
+                match reader.await {
+                    Ok(()) => true,
+                    Err(e) => e.is_cancelled(),
+                }
+            }
+        };
+        writer.abort();
+        let writer_done = match writer.await {
+            Ok(()) => true,
+            Err(e) => e.is_cancelled(),
+        };
+        // Cancellation joined above proves these tasks no longer own descriptors.
+        // Panic/unknown task outcome leaves the endpoint receipt conservative.
+        if reader_done && writer_done {
+            if let Some(listener) = listener {
+                if let Err(error) = listener.close() {
+                    tracing::warn!(%error, "endpoint close refused");
+                }
+            }
+        }
+    });
+    Ok(AdmittedRelay { shutdown })
+}
+
+async fn listener_task_admitted(
+    listener: crate::worker_admission::EndpointListener,
+    tx: mpsc::Sender<QueuedFrame>,
+    routes: Routes,
+    clients: ClientTable,
+    mut stopped: tokio::sync::watch::Receiver<bool>,
+) -> crate::worker_admission::EndpointListener {
+    let uid = unsafe { libc::geteuid() };
+    let mut sessions = tokio::task::JoinSet::new();
+    loop {
+        if *stopped.borrow() {
+            break;
+        }
+        tokio::select! {
+            _ = stopped.wait_for(|stop| *stop) => break,
+            _ = sessions.join_next(), if !sessions.is_empty() => {},
+            accepted = listener.accept() => {
+                let Ok((stream, _)) = accepted else { break; };
+                if !peer_uid_matches_tokio(&stream, uid) { continue; }
+                let (tx, routes, clients) = (tx.clone(), routes.clone(), clients.clone());
+                sessions.spawn(async move {
+                    let Some(offset) = wait_for_range(&clients).await else { return; };
+                    client_session(stream, offset, tx, routes, clients, CLIENT_STALL).await;
+                });
+            }
+        }
+    }
+    sessions.abort_all();
+    while sessions.join_next().await.is_some() {}
+    listener
+}
+
 /// Spawn the relay tasks on `runtime` and return the bound socket's
 /// fingerprint so the caller can clean it up on VM exit.
 ///
@@ -922,6 +1043,54 @@ fn peer_uid_matches_tokio(stream: &tokio::net::UnixStream, expected: u32) -> boo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admitted_endpoint_refuses_unknown_socket_and_closes_only_after_listener_drop() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let catalog = t.path().join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let parent = t.path().join("control");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = parent.join("shell.sock");
+        let lease = context.local(&t.path().join("separate-state")).unwrap();
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[PathRequest {
+                path: &path,
+                role: PathRole::Endpoint,
+            }],
+        )
+        .unwrap();
+        let listener = lease.endpoint(&path).unwrap().bind().unwrap();
+        assert!(path.exists());
+        assert!(
+            lease
+                .endpoint(&path)
+                .and_then(|guard| guard.bind())
+                .is_err()
+        );
+        listener.close().unwrap();
+        assert!(!path.exists());
+        let unknown = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        assert!(
+            lease
+                .endpoint(&path)
+                .and_then(|guard| guard.bind())
+                .is_err()
+        );
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::symlink_metadata(&path).unwrap().ino(),
+            metadata.ino()
+        );
+        drop(unknown);
+    }
+
     use super::*;
     use iii_supervisor::shell_protocol::{
         ShellMessage, encode_frame, flags::FLAG_TERMINAL, read_frame_blocking,

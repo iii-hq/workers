@@ -72,7 +72,7 @@ pub fn build_erofs(src: &Path, out: &Path) -> Result<(), String> {
 
     let mut hardlinks: HashMap<(u64, u64), (RegularFileId, FileData)> = HashMap::new();
 
-    let result = add_dir(&mut tree, &mut spool, &mut hardlinks, src, src).and_then(|()| {
+    let result = add_dir(&mut tree, &mut spool, &mut hardlinks, src, src, true).and_then(|()| {
         write_erofs(&tree, out).map_err(|e| format!("write erofs {}: {e}", out.display()))?;
         Ok(())
     });
@@ -89,7 +89,7 @@ pub(crate) fn build_erofs_to_files(src: &Path, output: File, spool: File) -> Res
     let mut tree = FileTree::new();
     tree.root.metadata = inode_metadata(&fs::symlink_metadata(src).map_err(|e| e.to_string())?);
     let mut hardlinks = HashMap::new();
-    add_dir(&mut tree, &mut spool, &mut hardlinks, src, src)?;
+    add_dir(&mut tree, &mut spool, &mut hardlinks, src, src, false)?;
     super::write_erofs_to_file_cancellable(&tree, output, &|| false).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -293,13 +293,21 @@ fn add_dir(
     hardlinks: &mut HashMap<(u64, u64), (RegularFileId, FileData)>,
     root: &Path,
     dir: &Path,
+    allow_owner_access: bool,
 ) -> Result<(), String> {
     // Propagate per-entry read errors rather than dropping them: a silently
     // skipped entry would produce a complete-looking but incomplete base image.
     let mut entries = Vec::new();
     // `_access` keeps owner r-x on `dir` for the walk of its whole subtree
     // when the image mode denies it; see `read_dir_as_owner`.
-    let (read_dir, _access) = read_dir_as_owner(dir)?;
+    let (read_dir, _access) = if allow_owner_access {
+        read_dir_as_owner(dir)?
+    } else {
+        (
+            fs::read_dir(dir).map_err(|e| format!("strict source {}: {e}", dir.display()))?,
+            None,
+        )
+    };
     for entry in read_dir {
         entries.push(entry.map_err(|e| format!("read_dir entry in {}: {e}", dir.display()))?);
     }
@@ -335,7 +343,7 @@ fn add_dir(
         } else if ft.is_dir() {
             tree.insert(rel_bytes, TreeNode::Directory(DirectoryNode::new(imeta)))
                 .map_err(|e| format!("insert dir {}: {e}", path.display()))?;
-            add_dir(tree, spool, hardlinks, root, &path)?;
+            add_dir(tree, spool, hardlinks, root, &path, allow_owner_access)?;
         } else if ft.is_file() {
             let key = (meta.dev(), meta.ino());
             let (id, data) = if meta.nlink() > 1 {
@@ -344,13 +352,16 @@ fn add_dir(
                     // and data extent so the writer emits one inode + one copy.
                     (*eid, edata.clone())
                 } else {
-                    let data = spool_file(spool, &path, imeta.mode)?;
+                    let data = spool_file(spool, &path, imeta.mode, allow_owner_access)?;
                     let id = RegularFileId::new();
                     hardlinks.insert(key, (id, data.clone()));
                     (id, data)
                 }
             } else {
-                (RegularFileId::new(), spool_file(spool, &path, imeta.mode)?)
+                (
+                    RegularFileId::new(),
+                    spool_file(spool, &path, imeta.mode, allow_owner_access)?,
+                )
             };
             let node = TreeNode::RegularFile(RegularFileNode {
                 id,
@@ -374,9 +385,21 @@ fn add_dir(
 /// lands in memory in full.
 /// `image_mode` is the mode recorded for the inode, restored if the open has
 /// to grant owner read (see [`open_as_owner`]).
-fn spool_file(spool: &mut DataSpool, path: &Path, image_mode: u16) -> Result<FileData, String> {
+fn spool_file(
+    spool: &mut DataSpool,
+    path: &Path,
+    image_mode: u16,
+    allow_owner_access: bool,
+) -> Result<FileData, String> {
     let start = spool.current_offset();
-    let mut f = open_as_owner(path, u32::from(image_mode))?;
+    // INTEGRATION GAP: unreadable strict OCI content needs a read-only core
+    // descriptor or a scoped permission-restoration operation. Never chmod a
+    // Strict source here just to preserve the legacy owner-access shortcut.
+    let mut f = if allow_owner_access {
+        open_as_owner(path, u32::from(image_mode))?
+    } else {
+        File::open(path).map_err(|e| format!("strict source {}: {e}", path.display()))?
+    };
     let mut buf = [0u8; SPOOL_CHUNK];
     loop {
         let n = f
@@ -569,6 +592,76 @@ pub(crate) fn ensure_base_erofs_checked(
     Ok(out)
 }
 
+/// Worker route using the already-declared EROFS output, diagnostic and spool
+/// slots. Serializer owns every cloned FD and closes its tree/spool before return.
+pub(crate) fn ensure_base_erofs_admitted(
+    lease: &crate::worker_admission::Lease,
+    base_dir: &Path,
+) -> Result<PathBuf, String> {
+    let used = lease.use_path(base_dir).map_err(|e| e.to_string())?;
+    let out = base_erofs_path(base_dir);
+    let spool_slot = PathBuf::from(format!("{}.spool", out.display()));
+    let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
+        lease,
+        crate::worker_admission::MutationPlan::Erofs {
+            output: out.clone(),
+            spool: spool_slot.clone(),
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let lock = crate::cli::rootfs_cache::MutationLock::acquire(
+        mutation
+            .diagnostic(&PathBuf::from(format!("{}.lock", out.display())))
+            .map_err(|e| format!("{e:#}"))?,
+        mutation.checkpoint.clone(),
+        false,
+    )
+    .map_err(|e| format!("{e:#}"))?;
+    let stale = match (fs::metadata(&out), fs::metadata(used.path())) {
+        (Ok(o), Ok(b)) => match (o.modified(), b.modified()) {
+            (Ok(om), Ok(bm)) => om < bm,
+            _ => false,
+        },
+        (Ok(_), Err(_)) => false,
+        _ => true,
+    };
+    if stale {
+        let mut image = mutation
+            .apply(|guard| guard.stage_file(&out, 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let mut spool = mutation
+            .apply(|guard| guard.stage_file(&spool_slot, 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        used.revalidate().map_err(|e| e.to_string())?;
+        build_erofs_to_files(
+            used.path(),
+            image.file_mut().try_clone().map_err(|e| e.to_string())?,
+            spool.file_mut().try_clone().map_err(|e| e.to_string())?,
+        )?;
+        mutation.checkpoint.check().map_err(|e| e.to_string())?;
+        image.file_mut().sync_all().map_err(|e| e.to_string())?;
+        // No successful disposal on writer failure; those stages retain evidence.
+        publish_after_spool(&mutation, image, spool)?;
+    }
+    lock.finish().map_err(|e| format!("{e:#}"))?;
+    mutation.commit().map_err(|e| format!("{e:#}"))?;
+    Ok(out)
+}
+
+fn publish_after_spool(
+    mutation: &crate::cli::rootfs_cache::MutationWriter,
+    image: crate::worker_admission::StagedFile,
+    spool: crate::worker_admission::StagedFile,
+) -> Result<(), String> {
+    mutation
+        .apply(|guard| guard.discard_file(spool))
+        .map_err(|e| format!("{e:#}"))?;
+    mutation
+        .apply(|guard| guard.publish_file(image))
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(())
+}
+
 /// Remove the cached erofs (and any leftover partial/spool) for a base rootfs
 /// dir. Call when the underlying image/rootfs cache is freed so the shared
 /// `.erofs` doesn't outlive its source. Best-effort; missing files are fine.
@@ -749,6 +842,187 @@ mod tests {
             5,
             "cleanup cannot recover the callback"
         );
+    }
+
+    #[test]
+    fn admitted_erofs_cold_then_hit_keeps_operation_and_source_identity() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        let t = tempfile::tempdir().unwrap();
+        let catalog = t.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let state = t.path().join("state");
+        let source = t.path().join("source");
+        fs::create_dir(&source).unwrap();
+        make_src(&source);
+        let output = base_erofs_path(&source);
+        let spool = PathBuf::from(format!("{}.spool", output.display()));
+        let diagnostic = PathBuf::from(format!("{}.lock", output.display()));
+        let lease = context.local(&state).unwrap();
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[
+                PathRequest {
+                    path: &source,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: &output,
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &spool,
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &diagnostic,
+                    role: PathRole::MutableFile,
+                },
+            ],
+        )
+        .unwrap();
+        let clone = lease.clone();
+        let before = fs::metadata(&source).unwrap().ino();
+        assert_eq!(ensure_base_erofs_admitted(&lease, &source).unwrap(), output);
+        let built = fs::metadata(&output).unwrap().ino();
+        assert_eq!(ensure_base_erofs_admitted(&clone, &source).unwrap(), output);
+        assert_eq!(fs::metadata(&output).unwrap().ino(), built);
+        assert_eq!(fs::metadata(&source).unwrap().ino(), before);
+        assert!(!spool.exists());
+        assert!(fs::read(&diagnostic).unwrap().is_empty());
+        clone.revalidate().unwrap();
+    }
+
+    fn staged_operation(t: &Path) -> (crate::worker_admission::Lease, PathBuf, PathBuf) {
+        use crate::worker_admission::{PathRequest, PathRole};
+        let catalog = t.join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let root = t.join("payload");
+        fs::create_dir(&root).unwrap();
+        let out = root.join("image.erofs");
+        let spool = root.join("image.erofs.spool");
+        let lock = root.join("image.erofs.lock");
+        fs::write(&out, b"old-image").unwrap();
+        fs::write(&spool, b"old-target").unwrap();
+        let lease = context.local(&root).unwrap();
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[
+                PathRequest {
+                    path: &root,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &out,
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &spool,
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &lock,
+                    role: PathRole::MutableFile,
+                },
+            ],
+        )
+        .unwrap();
+        (lease, out, spool)
+    }
+
+    #[test]
+    fn owned_spool_disposal_precedes_image_publication_and_preserves_spool_target() {
+        let t = tempfile::tempdir().unwrap();
+        let (lease, out, spool_target) = staged_operation(t.path());
+        let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
+            &lease,
+            crate::worker_admission::MutationPlan::Erofs {
+                output: out.clone(),
+                spool: spool_target.clone(),
+            },
+        )
+        .unwrap();
+        let mut image = mutation.apply(|g| g.stage_file(&out, 0o600)).unwrap();
+        let mut spool = mutation
+            .apply(|g| g.stage_file(&spool_target, 0o600))
+            .unwrap();
+        image.file_mut().write_all(b"new-image").unwrap();
+        spool.file_mut().write_all(b"temporary").unwrap();
+        let temporary = spool.path().to_path_buf();
+        publish_after_spool(&mutation, image, spool).unwrap();
+        mutation.commit().unwrap();
+        assert!(!temporary.exists());
+        assert_eq!(fs::read(&spool_target).unwrap(), b"old-target");
+        assert_eq!(fs::read(&out).unwrap(), b"new-image");
+        lease.clone().revalidate().unwrap();
+    }
+
+    #[test]
+    fn replaced_spool_stage_refuses_before_output_promotion() {
+        let t = tempfile::tempdir().unwrap();
+        let (lease, out, spool_target) = staged_operation(t.path());
+        let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
+            &lease,
+            crate::worker_admission::MutationPlan::Erofs {
+                output: out.clone(),
+                spool: spool_target.clone(),
+            },
+        )
+        .unwrap();
+        let mut image = mutation.apply(|g| g.stage_file(&out, 0o600)).unwrap();
+        let spool = mutation
+            .apply(|g| g.stage_file(&spool_target, 0o600))
+            .unwrap();
+        image.file_mut().write_all(b"new-image").unwrap();
+        let staged_path = spool.path().to_path_buf();
+        fs::rename(&staged_path, staged_path.with_extension("held")).unwrap();
+        fs::write(&staged_path, b"replacement").unwrap();
+        assert!(publish_after_spool(&mutation, image, spool).is_err());
+        assert!(mutation.commit().is_err());
+        assert_eq!(fs::read(out).unwrap(), b"old-image");
+        assert_eq!(fs::read(staged_path).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn cancelled_descriptor_writer_does_not_discard_or_promote_owned_stages() {
+        let t = tempfile::tempdir().unwrap();
+        let (lease, out, spool_target) = staged_operation(t.path());
+        let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
+            &lease,
+            crate::worker_admission::MutationPlan::Erofs {
+                output: out.clone(),
+                spool: spool_target.clone(),
+            },
+        )
+        .unwrap();
+        let mut image = mutation.apply(|g| g.stage_file(&out, 0o600)).unwrap();
+        let spool = mutation
+            .apply(|g| g.stage_file(&spool_target, 0o600))
+            .unwrap();
+        let image_stage = image.path().to_path_buf();
+        let spool_stage = spool.path().to_path_buf();
+        let tree = FileTree::new();
+        assert!(
+            super::super::write_erofs_to_file_cancellable(
+                &tree,
+                image.file_mut().try_clone().unwrap(),
+                &|| true
+            )
+            .is_err()
+        );
+        drop(tree);
+        drop(image);
+        drop(spool);
+        assert!(
+            mutation.commit().is_err(),
+            "unresolved stages must not commit"
+        );
+        assert!(image_stage.exists());
+        assert!(spool_stage.exists());
+        assert_eq!(fs::read(out).unwrap(), b"old-image");
     }
 
     fn make_src(dir: &Path) {

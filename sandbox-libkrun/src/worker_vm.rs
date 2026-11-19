@@ -106,6 +106,8 @@ const BUILD_COMMITTED: u8 = 2;
 
 /// The worker VMs of one project, behind its token and host roots.
 pub struct WorkerVms {
+    #[cfg(test)]
+    admission_context: Option<crate::worker_admission::AdmissionContext>,
     /// Per-VM state lives in `<base>/<vm_id>/`: the control files, and the VM's
     /// writable share `root/`, which a uid-0 guest controls.
     base: PathBuf,
@@ -180,6 +182,8 @@ struct StateFile {
 impl WorkerVms {
     pub fn new(base: PathBuf, token: Option<String>, roots: Vec<PathBuf>) -> Self {
         Self {
+            #[cfg(test)]
+            admission_context: None,
             base,
             token,
             roots,
@@ -192,6 +196,23 @@ impl WorkerVms {
             claims: Mutex::default(),
             lease_grace: LEASE_GRACE,
         }
+    }
+
+    fn admission(&self, key: Option<&str>) -> io::Result<crate::worker_admission::Lease> {
+        #[cfg(test)]
+        if let Some(context) = &self.admission_context {
+            return context.worker(&self.base, key);
+        }
+        crate::worker_admission::AdmissionContext::system()?.worker(&self.base, key)
+    }
+
+    #[cfg(test)]
+    fn with_admission_context(
+        mut self,
+        context: crate::worker_admission::AdmissionContext,
+    ) -> Self {
+        self.admission_context = Some(context);
+        self
     }
 
     /// Compose sets the token and the roots on this container only.
@@ -217,8 +238,22 @@ impl WorkerVms {
         req: WorkerPrepareRequest,
     ) -> Result<WorkerPrepareResponse, SandboxError> {
         self.authorize(&req.auth, req.state_key.as_deref())?;
-        let _admission = crate::worker_admission::worker(&self.base, req.state_key.as_deref())
+        let _admission = self
+            .admission(req.state_key.as_deref())
             .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _admission = if let Some(key) = &req.state_key {
+            let vm = self.base.join(vm_id(key));
+            crate::worker_admission::with_paths(
+                _admission,
+                &[crate::worker_admission::PathRequest {
+                    path: &vm,
+                    role: crate::worker_admission::PathRole::MutableTree,
+                }],
+            )
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
+        } else {
+            _admission
+        };
         let source = Source::of(&req.source);
         if source.executable.is_some() {
             return Err(SandboxError::SourceRejected(
@@ -229,8 +264,12 @@ impl WorkerVms {
         let _admission =
             crate::worker_admission::with_inputs(_admission, &[Path::new(source.host_path), &dir])
                 .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _source_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         let (project, kind) = validate_source(&dir, source.package, source.run_override)
             .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
         let _admission = crate::cli::local_worker::admit_base_image_inputs(
             _admission,
             &kind,
@@ -259,8 +298,7 @@ impl WorkerVms {
         // For a client reattaching to a live boot: its `start` writes nothing, it gets S502.
         if let Some(state_key) = &req.state_key {
             let vm_dir = self.base.join(vm_id(state_key));
-            std::fs::create_dir_all(&vm_dir)
-                .and_then(|()| store_state_key(&vm_dir, state_key))
+            write_control_admitted(&_admission, &vm_dir, STATE_KEY_FILE, state_key.as_bytes())
                 .map_err(|e| SandboxError::PrepareFailed(format!("{}: {e}", vm_dir.display())))?;
         }
         Ok(WorkerPrepareResponse {})
@@ -286,7 +324,8 @@ impl WorkerVms {
         ) -> Result<crate::worker_admission::Lease, String>,
     ) -> Result<WorkerStartResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        let admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+        let admission = self
+            .admission(Some(&req.state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         // Compose presents the project token and supervises its VMs itself.
         let leased = !self.is_project_token(&req.auth);
@@ -312,6 +351,8 @@ impl WorkerVms {
             },
         ));
         inputs.push(vm_dir.join(crate::cli::upper::UPPER_NAME));
+        inputs.push(vm_dir.clone());
+        let mutable_end = inputs.len();
         if let Some(build) = &req.build {
             let build_dir = self.admit(&build.build_dir)?;
             inputs.push(PathBuf::from(&build.build_dir));
@@ -320,11 +361,33 @@ impl WorkerVms {
             inputs.push(build_dir);
         }
         let inputs: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
-        let admission = crate::worker_admission::with_inputs(admission, &inputs)
+        let requests: Vec<_> = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, path)| crate::worker_admission::PathRequest {
+                path,
+                role: if index >= 2 && index < mutable_end {
+                    if path
+                        .file_name()
+                        .is_some_and(|name| name == crate::cli::upper::UPPER_NAME)
+                    {
+                        crate::worker_admission::PathRole::MutableFile
+                    } else {
+                        crate::worker_admission::PathRole::MutableTree
+                    }
+                } else {
+                    crate::worker_admission::PathRole::Strict
+                },
+            })
+            .collect();
+        let admission = crate::worker_admission::with_paths(admission, &requests)
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         if req.build.is_some() && !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
         }
+        let _source_use = admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let resolved = WorkerProject::resolve(
             &dir,
             source.package,
@@ -334,6 +397,7 @@ impl WorkerVms {
             req.build.is_none(),
         )
         .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
         let admission = if req.build.is_none() {
             admit_cache(&resolved, admission).map_err(SandboxError::BootFailed)?
         } else {
@@ -353,7 +417,9 @@ impl WorkerVms {
         // Under the reservation: no destroy runs while the claim writes the
         // VM's build-dir record, so none leaves it behind.
         let image = match &req.build {
-            Some(build) => Some(self.admit_build(&req.auth, &req.state_key, build)?),
+            Some(build) => {
+                Some(self.admit_build_on(&req.auth, &req.state_key, build, admission.clone())?)
+            }
             None => None,
         };
         // Use the project selected before reservation; do not re-read its manifest.
@@ -361,12 +427,15 @@ impl WorkerVms {
         let image = match image {
             Some(image) => {
                 let vm_dir = self.base.join(&id);
-                let (upper, kept) = adopt_build_mode(&vm_dir, &req.worker_name).map_err(|e| {
-                    SandboxError::BootFailed(format!(
-                        "cannot set up the data disk in {}: {e}",
-                        vm_dir.display()
-                    ))
-                })?;
+                let (upper, kept) =
+                    adopt_build_mode_admitted(&admission, &vm_dir, &req.worker_name).map_err(
+                        |e| {
+                            SandboxError::BootFailed(format!(
+                                "cannot set up the data disk in {}: {e}",
+                                vm_dir.display()
+                            ))
+                        },
+                    )?;
                 // Now: the seal is written, so no later start logs them again.
                 for note in &kept {
                     tracing::warn!(vm_id = %id, "{note}");
@@ -383,7 +452,13 @@ impl WorkerVms {
             image,
         };
         let built = resolved
-            .start(&req.worker_name, &dir, source.package, over)
+            .start(
+                &req.worker_name,
+                &dir,
+                source.package,
+                over,
+                admission.clone(),
+            )
             .await
             .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
         let started = self
@@ -430,11 +505,22 @@ impl WorkerVms {
         state_key: &str,
         build: &WorkerBuildRef,
     ) -> Result<PathBuf, SandboxError> {
-        let dir = self.admit(&build.build_dir)?;
-        // The start caller retains its composite through the waiter. Keep an
-        // independent guard here too, through the claim and image inspection.
-        let admission = crate::worker_admission::worker(&self.base, Some(state_key))
+        let admission = self
+            .admission(Some(state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        self.admit_build_on(auth, state_key, build, admission)
+    }
+
+    fn admit_build_on(
+        &self,
+        auth: &str,
+        state_key: &str,
+        build: &WorkerBuildRef,
+        admission: crate::worker_admission::Lease,
+    ) -> Result<PathBuf, SandboxError> {
+        let dir = self.admit(&build.build_dir)?;
+        // The start caller retains its operation through the waiter.
+        // independent guard here too, through the claim and image inspection.
         let _admission = crate::worker_admission::with_inputs(
             admission,
             &[
@@ -445,7 +531,10 @@ impl WorkerVms {
             ],
         )
         .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
-        self.claim_build_dir(auth, state_key, &dir, "build_dir")?;
+        self.claim_build_dir_on(auth, state_key, &dir, "build_dir", Some(&_admission))?;
+        let _directory_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let wanted = build.build_id.trim();
         match read_image_id(&dir) {
             Some(found) if found == wanted => {}
@@ -498,24 +587,51 @@ impl WorkerVms {
         ) -> Result<crate::worker_admission::Lease, String>,
     ) -> Result<WorkerBuildResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        let _admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+        let _admission = self
+            .admission(Some(&req.state_key))
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let source = Source::of(&req.source);
         let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
         let dir = self.admit(source.host_path)?;
         let planned = self.plan_output(&req.output_dir)?;
-        let _admission = crate::worker_admission::with_inputs(
+        use crate::worker_admission::{PathRequest, PathRole};
+        let _admission = crate::worker_admission::with_paths(
             _admission,
             &[
-                Path::new(source.host_path),
-                &dir,
-                Path::new(&req.output_dir),
-                &planned,
-                &planned.join(IMAGE_FILE),
-                &planned.join(IMAGE_ID_FILE),
+                PathRequest {
+                    path: Path::new(source.host_path),
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: &dir,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: Path::new(&req.output_dir),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &planned,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &planned.join(IMAGE_FILE),
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &planned.join(IMAGE_ID_FILE),
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &planned.join("image.spool"),
+                    role: PathRole::MutableFile,
+                },
             ],
         )
         .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let _source_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let resolved = WorkerProject::resolve(
             &dir,
             source.package,
@@ -525,6 +641,7 @@ impl WorkerVms {
             true,
         )
         .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
         let _admission = admit_cache(&resolved, _admission).map_err(SandboxError::BuildFailed)?;
         if !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
@@ -537,28 +654,59 @@ impl WorkerVms {
             self.build_seq.fetch_add(1, Ordering::SeqCst)
         );
         let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
-        let _admission = crate::worker_admission::with_inputs(
+        let _admission = crate::worker_admission::with_paths(
             _admission,
             &[
-                &scratch,
-                &scratch.join("root"),
-                &scratch.join("root/runtime"),
-                &scratch.join(crate::cli::upper::UPPER_NAME),
+                PathRequest {
+                    path: &vm_dir,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join("root"),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join("root/runtime"),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join(crate::cli::upper::UPPER_NAME),
+                    role: PathRole::MutableFile,
+                },
             ],
         )
         .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let output_admission = _admission.clone();
-        // Dropped last of the locals below: the key is free only once the
-        // writer stopped and the scratch dir is gone.
+        // The key stays held through the writer. V2 scratch/journal evidence
+        // is not deleted by an unowned Drop or a PID-based sweep.
         let _held = self.hold_build(&id)?;
         // Under the hold, so no `destroy` removes the claim while this build
         // writes, and before the directory exists: a refused token creates nothing.
-        self.claim_build_dir(&req.auth, &req.state_key, &planned, "output_dir")?;
-        let out = self.create_output(&planned, &req.output_dir)?;
-        // Project/cache selection was completed before claims and output creation.
-        sweep_build_scratch(&vm_dir);
-        sweep_image_partials(&out);
-        let _scratch = RemoveOnDrop(scratch.clone());
+        self.claim_build_dir_on(
+            &req.auth,
+            &req.state_key,
+            &planned,
+            "output_dir",
+            Some(&_admission),
+        )?;
+        let mut create = _admission
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: planned.clone(),
+            })
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .create_dir_all(&planned, 0o700)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .commit()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let out = planned.clone();
+        // V2 stage/scratch evidence is core-journaled, not swept by PID. Legacy
+        // sweep helpers remain for independent maintenance, not this transaction.
         let writer = ChannelWriter::new(iii.address(), &req.logs);
         let mut log = BuildLog::new(&writer);
         let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
@@ -586,8 +734,8 @@ impl WorkerVms {
             )),
         };
         if built.is_err() {
-            // The build VM died with the dropped run; a writer still in its
-            // blocking part stops, renames nothing and removes its files.
+            // Await the blocking writer. Its uncommitted stages remain under
+            // core recovery custody; cancellation never implies disposal.
             let written = cancel_writer(&image_writer, &state).await;
             // Unless the image was already in place: then the build is done.
             let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
@@ -728,6 +876,17 @@ impl WorkerVms {
         dir: &Path,
         field: &str,
     ) -> Result<(), SandboxError> {
+        self.claim_build_dir_on(auth, state_key, dir, field, None)
+    }
+
+    fn claim_build_dir_on(
+        &self,
+        auth: &str,
+        state_key: &str,
+        dir: &Path,
+        field: &str,
+        admission: Option<&crate::worker_admission::Lease>,
+    ) -> Result<(), SandboxError> {
         if self.is_project_token(auth) {
             return Ok(());
         }
@@ -735,6 +894,19 @@ impl WorkerVms {
         let token = self.token.as_deref().unwrap_or("");
         let id = vm_id(state_key);
         let _claims = self.claims.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(lease) = admission {
+            let mut create = lease
+                .begin(crate::worker_admission::MutationPlan::Create {
+                    root: self.base.join(&id),
+                })
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+            create
+                .create_dir_all(&self.base.join(&id), 0o700)
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+            create
+                .commit()
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+        }
         let _lock = lock_build_dirs(&self.base).map_err(SandboxError::FsIo)?;
         let here = dir_identity(dir);
         let mut own = None;
@@ -756,7 +928,21 @@ impl WorkerVms {
             return Ok(());
         }
         // A first claim, a move from another directory, or a new spelling.
-        store_build_dir(&self.base, &id, state_key, dir, token).map_err(|e| {
+        let stored = if let Some(lease) = admission {
+            let record = BuildDirRecord {
+                state_key: state_key.to_string(),
+                dir: dir.to_path_buf(),
+                mac: hex::encode(build_dir_mac(token, state_key, dir).finalize().into_bytes()),
+            };
+            serde_json::to_vec(&record)
+                .map_err(io::Error::other)
+                .and_then(|bytes| {
+                    write_control_admitted(lease, &self.base.join(&id), BUILD_DIR_RECORD, &bytes)
+                })
+        } else {
+            store_build_dir(&self.base, &id, state_key, dir, token)
+        };
+        stored.map_err(|e| {
             SandboxError::FsIo(format!("cannot record the build directory of VM {id}: {e}"))
         })
     }
@@ -771,7 +957,8 @@ impl WorkerVms {
         env_stdin: Vec<u8>,
         start: Option<u64>,
     ) -> Result<WorkerStartResponse, SandboxError> {
-        let admission = crate::worker_admission::worker(&self.base, Some(state_key))
+        let admission = self
+            .admission(Some(state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         self.launch_admitted(state_key, cmd, env_stdin, start, admission, Vec::new())
     }
@@ -785,6 +972,15 @@ impl WorkerVms {
         admission: crate::worker_admission::Lease,
         local_leases: Vec<crate::worker_admission::Lease>,
     ) -> Result<WorkerStartResponse, SandboxError> {
+        let control = self.base.join(vm_id(state_key));
+        let admission = crate::worker_admission::with_paths(
+            admission,
+            &[crate::worker_admission::PathRequest {
+                path: &control,
+                role: crate::worker_admission::PathRole::MutableTree,
+            }],
+        )
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         admission
             .revalidate()
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
@@ -809,10 +1005,11 @@ impl WorkerVms {
         }
         let instance = self.next_instance(&id)?;
         let (console, lifeline, mut child) =
-            spawn(&dir, state_key, instance, cmd).map_err(|e| {
+            spawn_admitted(&admission, &dir, state_key, instance, cmd).map_err(|e| {
                 SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
             })?;
         let console = Arc::new(Mutex::new(Console {
+            admission: Some(admission.clone()),
             dir,
             file: console,
             len: 0,
@@ -1035,7 +1232,8 @@ impl WorkerVms {
         req: WorkerDestroyRequest,
     ) -> Result<WorkerDestroyResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        let _admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+        let _admission = self
+            .admission(Some(&req.state_key))
             .map_err(|e| SandboxError::FsIo(e.to_string()))?;
         let id = vm_id(&req.state_key);
         let dir = self.base.join(&id);
@@ -1241,9 +1439,18 @@ impl BuildJob<'_> {
         self.admission
             .revalidate()
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
-        std::fs::create_dir_all(self.scratch).map_err(|e| {
-            SandboxError::BuildFailed(format!("cannot create {}: {e}", self.scratch.display()))
-        })?;
+        let mut create = self
+            .admission
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: self.scratch.to_path_buf(),
+            })
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .create_dir_all(self.scratch, 0o700)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .commit()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         log.note(format!(
             "iii: building {} from {}",
             self.worker_name,
@@ -1255,7 +1462,13 @@ impl BuildJob<'_> {
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let mut vm = self
             .resolved
-            .build(self.dir, self.package, self.scratch, self.env)
+            .build(
+                self.dir,
+                self.package,
+                self.scratch,
+                self.env,
+                self.admission.clone(),
+            )
             .await
             .map_err(SandboxError::BuildFailed)?;
         self.done
@@ -1299,7 +1512,7 @@ impl BuildJob<'_> {
             _admissions: image_admissions,
             export,
             out: self.out.to_path_buf(),
-            spool: self.scratch.join("image.spool"),
+            spool: self.out.join("image.spool"),
             base_rootfs: vm.base_rootfs,
             tag: self.tag.to_string(),
             state: self.state.clone(),
@@ -1561,6 +1774,105 @@ impl ImageWrite {
     /// last ([`swap_image`], [`commit_image_id`]). A build cancelled before that
     /// leaves the previous pair; returns the build id.
     fn write(self) -> Result<String, String> {
+        if !self._admissions.is_empty() {
+            return self.write_admitted();
+        }
+        #[cfg(test)]
+        {
+            return self.write_legacy();
+        }
+        #[cfg(not(test))]
+        Err("image writer requires an admitted operation".into())
+    }
+
+    fn write_admitted(self) -> Result<String, String> {
+        let admission = &self._admissions[0];
+        let base = admission
+            .use_path(&self.base_rootfs)
+            .map_err(|e| e.to_string())?;
+        let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
+            admission,
+            crate::worker_admission::MutationPlan::ImagePair {
+                directory: self.out.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let mut image = mutation
+            .apply(|g| g.stage_file(&self.out.join(IMAGE_FILE), 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let mut id = mutation
+            .apply(|g| g.stage_file(&self.out.join(IMAGE_ID_FILE), 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let mut spool = mutation
+            .apply(|g| g.stage_file(&self.spool, 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let config = oci::read_rootfs_file_no_follow(base.path(), Path::new(".oci-config.json"));
+        let extra: Vec<_> = config
+            .ok()
+            .map(|data| crate::cli::erofs::ImageFile {
+                path: ".oci-config.json",
+                data,
+                mode: 0o644,
+            })
+            .into_iter()
+            .collect();
+        let cancelled = || self.state.load(Ordering::SeqCst) == BUILD_CANCELLED;
+        crate::cli::erofs::build_erofs_from_tar_to_files(
+            self.export,
+            image.file_mut().try_clone().map_err(|e| e.to_string())?,
+            spool.file_mut().try_clone().map_err(|e| e.to_string())?,
+            &extra,
+            &cancelled,
+        )?;
+        mutation.checkpoint.check().map_err(|e| e.to_string())?;
+        image
+            .file_mut()
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| e.to_string())?;
+        let mut hash = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let read = image
+                .file_mut()
+                .read(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if read == 0 {
+                break;
+            }
+            hash.update(&bytes[..read]);
+        }
+        let build_id = format!("sha256:{}", hex::encode(hash.finalize()));
+        id.file_mut()
+            .write_all(format!("{build_id}\n").as_bytes())
+            .map_err(|e| e.to_string())?;
+        image.file_mut().sync_all().map_err(|e| e.to_string())?;
+        id.file_mut().sync_all().map_err(|e| e.to_string())?;
+        mutation
+            .apply(|g| g.discard_file(spool))
+            .map_err(|e| format!("{e:#}"))?;
+        self.state
+            .compare_exchange(
+                BUILD_RUNNING,
+                BUILD_COMMITTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| "cancelled".to_string())?;
+        mutation
+            .apply(|g| g.publish_file(image))
+            .map_err(|e| format!("{e:#}"))?;
+        mutation
+            .apply(|g| g.publish_file(id))
+            .map_err(|e| format!("{e:#}"))?;
+        mutation.commit().map_err(|e| format!("{e:#}"))?;
+        Ok(build_id)
+    }
+
+    #[cfg(test)]
+    fn write_legacy(self) -> Result<String, String> {
         for lease in &self._admissions {
             lease.revalidate().map_err(|e| e.to_string())?;
         }
@@ -1778,6 +2090,46 @@ fn sweep_build_scratch(vm_dir: &Path) {
 /// `root.pre-build/`, with a fresh `root/` in its place. The data disk is
 /// `<vm_id>/upper.ext4`, outside `root/` (the guest's share), and outlives
 /// every build; only `worker::destroy` removes it.
+fn adopt_build_mode_admitted(
+    lease: &crate::worker_admission::Lease,
+    vm_dir: &Path,
+    worker: &str,
+) -> io::Result<(PathBuf, Vec<String>)> {
+    let mut guard = lease.begin(crate::worker_admission::MutationPlan::Adopt {
+        root: vm_dir.to_path_buf(),
+    })?;
+    guard.create_dir_all(vm_dir, 0o700)?;
+    let mut notes = Vec::new();
+    let seal = vm_dir.join(BUILD_MODE_SEAL);
+    if std::fs::symlink_metadata(&seal).is_err() {
+        let root = vm_dir.join("root");
+        let old_upper = root.join(crate::cli::upper::UPPER_NAME);
+        if std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file()) {
+            let kept = unused_name(vm_dir, PRE_BUILD_DISK);
+            guard.rename_preserving(&old_upper, &kept)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        if is_rootfs_clone(&root) {
+            let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
+            guard.rename_preserving(&root, &kept)?;
+            guard.create_dir_all(&root, 0o700)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        let mut stage = guard.stage_file(&seal, 0o600)?;
+        stage.file_mut().write_all(b"1\n")?;
+        guard.publish_file(stage)?;
+    }
+    guard.commit()?;
+    let upper = crate::cli::upper::ensure_upper_admitted(lease, vm_dir)?;
+    Ok((upper, notes))
+}
+
 fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<String>)> {
     std::fs::create_dir_all(vm_dir)?;
     let mut notes = Vec::new();
@@ -2160,6 +2512,24 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
 /// Replace `<dir>/state.json` with one recording `instance`. Written to a
 /// temp file and renamed over it, so a crash or a full disk mid-write leaves
 /// the previous file whole: a truncated one failed every later start.
+fn write_control_admitted(
+    lease: &crate::worker_admission::Lease,
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let mut mutation = lease.begin(crate::worker_admission::MutationPlan::Create {
+        root: dir.to_path_buf(),
+    })?;
+    mutation.create_dir_all(dir, 0o700)?;
+    let mut stage = mutation.stage_file(&dir.join(name), 0o600)?;
+    stage.file_mut().write_all(bytes)?;
+    stage.file_mut().sync_all()?;
+    mutation.publish_file(stage)?;
+    mutation.commit()?;
+    Ok(())
+}
+
 fn store_instance(dir: &Path, instance: u64) -> io::Result<()> {
     let tmp = dir.join("state.json.tmp");
     // A crash between the create and the rename leaves it behind.
@@ -2340,6 +2710,32 @@ fn lock_unsupported(e: &io::Error) -> bool {
 
 /// Record `state_key` and `instance`, truncate `console.log` and spawn `cmd`
 /// with piped stdin (the env frame) and output, and a lifeline.
+fn spawn_admitted(
+    lease: &crate::worker_admission::Lease,
+    dir: &Path,
+    state_key: &str,
+    instance: u64,
+    mut cmd: Command,
+) -> io::Result<(File, Lifeline, Child)> {
+    write_control_admitted(lease, dir, STATE_KEY_FILE, state_key.as_bytes())?;
+    write_control_admitted(
+        lease,
+        dir,
+        STATE_FILE,
+        &serde_json::to_vec(&StateFile { instance })?,
+    )?;
+    write_control_admitted(lease, dir, CONSOLE_LOG, b"")?;
+    let console = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(CONSOLE_LOG))?;
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)?;
+    Ok((console, lifeline, cmd.spawn()?))
+}
+
 fn spawn(
     dir: &Path,
     state_key: &str,
@@ -2362,6 +2758,7 @@ fn spawn(
 /// A log offset counts every byte this instance logged, across rotations: the
 /// current file holds the offsets from `base` on, the rotated one those below.
 struct Console {
+    admission: Option<crate::worker_admission::Lease>,
     dir: PathBuf,
     file: File,
     len: u64,
@@ -2382,6 +2779,33 @@ impl Console {
             "ts_ms": now_ms(),
         }))?;
         record.push(b'\n');
+        if let Some(lease) = &self.admission {
+            let current = self.dir.join(CONSOLE_LOG);
+            let mut guard = lease.begin(crate::worker_admission::MutationPlan::Create {
+                root: self.dir.clone(),
+            })?;
+            let mut stage = guard.stage_file(&current, 0o600)?;
+            self.file.seek(SeekFrom::Start(0))?;
+            io::copy(&mut self.file, stage.file_mut())?;
+            stage.file_mut().write_all(&record)?;
+            stage.file_mut().sync_all()?;
+            self.len += record.len() as u64;
+            if self.len > CONSOLE_LOG_CAP {
+                let mut rotated = guard.stage_file(&self.dir.join(CONSOLE_LOG_OLD), 0o600)?;
+                stage.file_mut().seek(SeekFrom::Start(0))?;
+                io::copy(stage.file_mut(), rotated.file_mut())?;
+                rotated.file_mut().sync_all()?;
+                guard.discard_file(stage)?;
+                guard.publish_file(rotated)?;
+                stage = guard.stage_file(&current, 0o600)?;
+                self.base += self.len;
+                self.len = 0;
+            }
+            guard.publish_file(stage)?;
+            guard.commit()?;
+            self.file = open_private(&current, false)?;
+            return Ok(());
+        }
         self.file.write_all(&record)?;
         self.len += record.len() as u64;
         if self.len > CONSOLE_LOG_CAP {
@@ -2518,7 +2942,13 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message;
 
     fn vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("admission-catalog");
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
         WorkerVms::new(t.join("workers"), token.map(str::to_string), roots)
+            .with_admission_context(context)
     }
 
     fn local(host_path: &Path) -> WorkerSource {
@@ -3163,6 +3593,7 @@ mod tests {
         }
         std::fs::write(dir.join(CONSOLE_LOG), current).unwrap();
         Mutex::new(Console {
+            admission: None,
             dir: dir.to_path_buf(),
             file: File::open(dir.join(CONSOLE_LOG)).unwrap(),
             len: current.len() as u64,
@@ -3199,6 +3630,7 @@ mod tests {
     fn a_reader_behind_a_rotation_loses_no_record() {
         let t = tempfile::tempdir().unwrap();
         let console = Mutex::new(Console {
+            admission: None,
             dir: t.path().to_path_buf(),
             file: open_private(&t.path().join(CONSOLE_LOG), true).unwrap(),
             len: 0,

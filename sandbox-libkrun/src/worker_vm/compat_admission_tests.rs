@@ -33,7 +33,11 @@ fn setup(compat: bool) -> Setup {
         private(&custody);
         std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
     }
-    let vms = WorkerVms::new(base, Some("token".into()), vec![root.path().to_path_buf()]);
+    let catalog = root.path().join("catalog");
+    private(&catalog);
+    let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+    let vms = WorkerVms::new(base, Some("token".into()), vec![root.path().to_path_buf()])
+        .with_admission_context(context);
     Setup {
         _root: root,
         vms,
@@ -678,3 +682,41 @@ async fn symlink_image_id_refuses_external_start_and_internal_claim_before_effec
 // network/VM fixtures here, identity refresh, or an unadmitted convenience mkdir.
 // This source-only round tests the real checked lock/cache control flow with an
 // own-temp path and a deterministic pull future, not the full public build flow.
+
+#[tokio::test]
+async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_context() {
+    // This public build-start path requires the integration profile with overlay.
+    // Never turn an unsupported test profile into a passing normal-mode claim.
+    assert!(
+        crate::cli::overlay::overlay_active(),
+        "run with the admitted overlay test profile"
+    );
+    let s = setup(false);
+    valid_project(&s);
+    let dir = s._root.path().join("claimed-image");
+    private(&dir);
+    std::fs::write(dir.join(IMAGE_FILE), b"fixture-image-not-booted").unwrap();
+    std::fs::write(dir.join(IMAGE_ID_FILE), b"sha256:fixture\n").unwrap();
+    let other = crate::wire::scoped_auth_token("token", "other");
+    s.vms
+        .claim_build_dir(&other, "other", &dir, "output_dir")
+        .unwrap();
+    let mut req = start(&s);
+    req.auth = crate::wire::scoped_auth_token("token", "key");
+    req.build = Some(WorkerBuildRef {
+        build_dir: dir.display().to_string(),
+        build_id: "sha256:fixture".into(),
+    });
+    let error = s.vms.start(req).await.unwrap_err();
+    assert!(matches!(error, SandboxError::BuildDirRefused(_)), "{error}");
+    assert!(!s.vm.join(BUILD_DIR_RECORD).exists());
+    assert!(s.vms.slots().is_empty());
+    assert_eq!(
+        std::fs::read(dir.join(IMAGE_FILE)).unwrap(),
+        b"fixture-image-not-booted"
+    );
+    assert_eq!(
+        std::fs::read(s.vm.join("state.json")).unwrap(),
+        b"{\"instance\":7}"
+    );
+}

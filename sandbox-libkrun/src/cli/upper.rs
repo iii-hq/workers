@@ -102,12 +102,10 @@ pub(crate) fn ensure_upper_admitted(
     managed_dir: &Path,
 ) -> io::Result<PathBuf> {
     let dest = managed_dir.join(UPPER_NAME);
-    {
+    if std::fs::symlink_metadata(&dest).is_ok_and(|m| m.is_file()) {
         let used = lease.use_path(&dest)?;
-        if std::fs::symlink_metadata(used.path()).is_ok_and(|m| m.is_file()) {
-            used.revalidate()?;
-            return Ok(dest);
-        }
+        used.revalidate()?;
+        return Ok(dest);
     }
     let mut mutation = lease.begin(crate::worker_admission::MutationPlan::Create {
         root: managed_dir.to_path_buf(),

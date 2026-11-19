@@ -143,13 +143,59 @@ pub fn build_vm_command(
     source_sync: Option<&Path>,
     source_readonly: Option<&Path>,
 ) -> Result<VmCommand, String> {
+    let mount_args: Vec<_> = mounts
+        .iter()
+        .map(|(host, guest)| format!("{host}:{guest}"))
+        .collect();
+    let (admission, _) = crate::cli::vm_boot::admit_boot_inputs(
+        &rootfs,
+        rootfs_lower.as_deref(),
+        rootfs_upper.as_deref(),
+        &mount_args,
+        source_sync,
+        source_readonly,
+    )?;
+    build_vm_command_admitted(
+        admission,
+        exec_path,
+        args,
+        env,
+        vcpus,
+        ram_mib,
+        rootfs,
+        rootfs_lower,
+        rootfs_mode,
+        rootfs_upper,
+        mounts,
+        source_sync,
+        source_readonly,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_vm_command_admitted(
+    admission: crate::worker_admission::Lease,
+    exec_path: &str,
+    args: &[String],
+    env: HashMap<String, String>,
+    vcpus: u32,
+    ram_mib: u32,
+    rootfs: PathBuf,
+    rootfs_lower: Option<PathBuf>,
+    rootfs_mode: String,
+    rootfs_upper: Option<PathBuf>,
+    mounts: &[(String, String)],
+    source_sync: Option<&Path>,
+    source_readonly: Option<&Path>,
+) -> Result<VmCommand, String> {
     // Independent callers get the same parser and fences as __vm-boot,
     // before even platform provisioning (codesigning on macOS).
     let mount_args: Vec<String> = mounts
         .iter()
         .map(|(host, guest)| format!("{host}:{guest}"))
         .collect();
-    let (admission, _) = crate::cli::vm_boot::admit_boot_inputs(
+    let (admission, _) = crate::cli::vm_boot::admit_boot_inputs_on(
+        admission,
         &rootfs,
         rootfs_lower.as_deref(),
         rootfs_upper.as_deref(),
@@ -208,6 +254,7 @@ pub fn build_vm_command(
     }
 
     cmd.stdin(std::process::Stdio::piped());
+    attach_child_admission(&mut cmd, &admission)?;
 
     // Deliberately no `setsid` here: how the child is detached belongs to
     // whoever spawns it. A caller that supervises its own children puts them in
@@ -218,6 +265,35 @@ pub fn build_vm_command(
         env_stdin,
         lifecycle_leases: vec![admission],
     })
+}
+
+/// Select exactly one CLOEXEC duplicate; clear only its CHILD copy. The command
+/// closure owns ChildAdmission until spawn/command disposal; the waiter retains
+/// the same Lease through successful wait (or the existing uncertain-writer policy).
+fn attach_child_admission(
+    cmd: &mut tokio::process::Command,
+    lease: &crate::worker_admission::Lease,
+) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    let child = lease.export_child().map_err(|e| e.to_string())?;
+    let fd = child.duplicate_for_exec().map_err(|e| e.to_string())?;
+    if fd.as_raw_fd() < 3 {
+        return Err("admission duplicate overlaps standard IO descriptors".into());
+    }
+    cmd.arg("--admission-fd").arg(fd.as_raw_fd().to_string());
+    unsafe {
+        cmd.pre_exec(move || {
+            let _retained = &child;
+            let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+            if flags < 0
+                || libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 const VM_BOOT_NETWORK_FLAG: &str = "--network";
@@ -334,6 +410,43 @@ mod tests {
             assert!(error.contains("compatibility custody"), "{field}: {error}");
             assert!(!root.exists());
         }
+    }
+
+    #[test]
+    fn child_descriptor_is_cloexec_and_imports_the_same_operation() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let namespace = t.path().join("catalog");
+        std::fs::create_dir(&namespace).unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+        let root = t.path().join("root");
+        let lease = context.local(&root).unwrap();
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[crate::worker_admission::PathRequest {
+                path: &root,
+                role: crate::worker_admission::PathRole::MutableTree,
+            }],
+        )
+        .unwrap();
+        let export = lease.export_child().unwrap();
+        let fd = export.duplicate_for_exec().unwrap();
+        assert_ne!(
+            unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        let imported = context.import_child(fd).unwrap();
+        let mut mutation = imported
+            .begin(crate::worker_admission::MutationPlan::Create { root: root.clone() })
+            .unwrap();
+        mutation.create_dir_all(&root, 0o700).unwrap();
+        mutation.commit().unwrap();
+        lease.revalidate().unwrap();
+        imported.revalidate().unwrap();
+        drop(export);
+        assert!(root.is_dir());
     }
 
     #[test]
