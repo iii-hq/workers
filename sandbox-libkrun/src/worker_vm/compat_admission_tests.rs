@@ -472,6 +472,590 @@ async fn h1_changed_pin_cannot_upgrade_an_old_shared_strict_root_to_a_writer() {
     assert!(!crate::cli::rootfs_cache::cache_candidates(&h1_cache(&s), &pin)[1].exists());
 }
 
+/// The test child consumes the same private admission/runtime descriptors as
+/// a real boot; only guest execution/firmware is replaced, after public checks.
+fn r6_start_command(
+    lease: &crate::worker_admission::Lease,
+    base: &Path,
+) -> Result<crate::cli::worker_manager::libkrun::VmCommand, String> {
+    let namespace = base.parent().ok_or("fixture base parent")?.join("catalog");
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c").arg(r#"
+        binary=$1; shift
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --admission-fd) export III_TEST_ADMISSION_FD="$2"; shift 2;;
+              --runtime-write-fd) export III_TEST_RUNTIME_FD="$2"; shift 2;;
+              *) exit 91;;
+            esac
+        done
+        exec "$binary" --exact sandbox_daemon::adapters::tests::runtime_owned_child_fixture --nocapture
+    "#).arg("owned-start-fixture").arg(std::env::current_exe().map_err(|e| e.to_string())?);
+    command
+        .env("III_TEST_ADMISSION_NAMESPACE", namespace)
+        .env("III_TEST_RUNTIME_LIVE", "0")
+        .env(
+            "III_TEST_RUNTIME_RESOURCES",
+            serde_json::to_string(&crate::sandbox_daemon::adapters::RuntimeTestResources {
+                exit_without_drop: true,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+    crate::cli::worker_manager::libkrun::attach_child_admission(&mut command, lease)?;
+    Ok(crate::cli::worker_manager::libkrun::VmCommand {
+        command,
+        env_stdin: Vec::new(),
+        lifecycle_leases: vec![lease.clone()],
+        runtime_paths: Vec::new(),
+        runtime_endpoints: Vec::new(),
+    })
+}
+
+async fn r6_real_publication(
+    s: &Setup,
+) -> (WorkerBuildRef, crate::cli::rootfs_cache::PreparedCache) {
+    use crate::worker_admission::{PathRequest, PathRole};
+    let lease = s.vms.admission(Some("key")).unwrap();
+    let out = s._root.path().join("real-output");
+    let lease = crate::worker_admission::with_paths(
+        lease,
+        &[
+            PathRequest {
+                path: &out,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &out.join(IMAGE_FILE),
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &out.join(IMAGE_ID_FILE),
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &out.join("image.spool"),
+                role: PathRole::MutableFile,
+            },
+        ],
+    )
+    .unwrap();
+    let prepared = h1_prepare(s, H1_A, true).await.unwrap();
+    let mut create = lease
+        .begin(crate::worker_admission::MutationPlan::Create { root: out.clone() })
+        .unwrap();
+    create.create_dir_all(&out, 0o700).unwrap();
+    create.commit().unwrap();
+    // Real owned retirement precedes actual ImagePair publication: this is the
+    // order in BuildJob, not the planner-only cache continuation fixture.
+    let receipt = h1_retire(s, &prepared).await;
+    let mut export = tempfile::tempfile().unwrap();
+    {
+        let mut tar = tar::Builder::new(&mut export);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_size(b"real-owned-payload".len() as u64);
+        header.set_cksum();
+        tar.append_data(&mut header, "build-value", &b"real-owned-payload"[..])
+            .unwrap();
+        tar.finish().unwrap();
+    }
+    export.seek(SeekFrom::Start(0)).unwrap();
+    let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
+    let write = ImageWrite {
+        _admissions: vec![lease.clone()],
+        export,
+        out: out.clone(),
+        spool: out.join("image.spool"),
+        base_rootfs: prepared.root.clone(),
+        tag: "r6-r7".into(),
+        state: state.clone(),
+    };
+    let writer = WriterSlot::default();
+    let id = run_writer(&writer, write).await.unwrap();
+    assert_eq!(state.load(Ordering::SeqCst), BUILD_COMMITTED);
+    assert!(
+        writer.lock().await.is_none(),
+        "all writer FDs must have joined before publication is remembered"
+    );
+    assert_eq!(read_image_id(&out), Some(id.clone()));
+    let bytes = std::fs::read(out.join(IMAGE_FILE)).unwrap();
+    assert_eq!(
+        id,
+        format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))
+    );
+    assert_eq!(
+        crate::cli::erofs::reader::read_file_from_erofs(&out.join(IMAGE_FILE), "/build-value")
+            .unwrap(),
+        b"real-owned-payload"
+    );
+    assert!(!out.join("image.spool").exists());
+    s.vms.remember_publication("key", &lease, &out, &id);
+    s.vms
+        .retired_builds
+        .lock()
+        .unwrap()
+        .insert(vm_id("key"), receipt);
+    (
+        WorkerBuildRef {
+            build_dir: out.display().to_string(),
+            build_id: id,
+        },
+        prepared,
+    )
+}
+
+#[tokio::test]
+async fn r6_real_image_publication_then_public_scoped_start_keeps_mutable_ownership() {
+    assert!(
+        crate::cli::overlay::overlay_active(),
+        "requires the admitted overlay profile"
+    );
+    let mut s = setup(false);
+    valid_project(&s);
+    s.vms.start_fixture = Some(r6_start_command);
+    let (build, _) = r6_real_publication(&s).await;
+    let out = PathBuf::from(&build.build_dir);
+    let published = s
+        .vms
+        .published_builds
+        .lock()
+        .unwrap()
+        .get(&vm_id("key"))
+        .unwrap()
+        .clone();
+    let reader = published.read().unwrap();
+    assert!(
+        published
+            .lease
+            .begin(crate::worker_admission::MutationPlan::ImagePair {
+                directory: out.clone()
+            })
+            .is_err()
+    );
+    drop(reader);
+    let mut request = start(&s);
+    request.auth = crate::wire::scoped_auth_token("token", "key");
+    request.build = Some(build.clone());
+    let started = s.vms.start(request).await.unwrap();
+    let vm = match s.vms.slots().get(&started.vm_id).cloned().unwrap() {
+        Slot::Booted(vm) => vm,
+        _ => panic!("started VM"),
+    };
+    let mut ended = vm.ended.subscribe();
+    ended.wait_for(Option::is_some).await.unwrap();
+    assert_eq!(ended.borrow().unwrap().exit_code, Some(0));
+    assert_eq!(read_image_id(&out), Some(build.build_id));
+    assert_eq!(
+        std::fs::read(s.vm.join(PRE_BUILD_DISK)).unwrap(),
+        b"OLD-do-not-archive"
+    );
+    published
+        .lease
+        .use_path(&out.join(IMAGE_FILE))
+        .unwrap()
+        .revalidate()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn r7_actual_imagepair_after_retirement_then_h1_b_preserves_digest_and_old_cache_claims() {
+    let s = setup(false);
+    valid_project(&s);
+    let (build, a) = r6_real_publication(&s).await;
+    let before = std::fs::read(Path::new(&build.build_dir).join(IMAGE_FILE)).unwrap();
+    let b = h1_prepare(&s, H1_B, true).await.unwrap(); // expected baseline R7 FAIL
+    assert_ne!(a.root, b.root);
+    let original = s.vms.admission(Some("key")).unwrap();
+    original.use_path(&a.root).unwrap().revalidate().unwrap();
+    original.use_path(&b.root).unwrap().revalidate().unwrap();
+    assert_eq!(
+        std::fs::read(Path::new(&build.build_dir).join(IMAGE_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(
+        read_image_id(Path::new(&build.build_dir)),
+        Some(build.build_id.clone())
+    );
+    assert_eq!(
+        build.build_id,
+        format!("sha256:{}", hex::encode(Sha256::digest(&before)))
+    );
+    assert_eq!(
+        std::fs::read(s.vm.join("root/upper.ext4")).unwrap(),
+        b"OLD-do-not-archive"
+    );
+    let competitor = context(&s)
+        .local(&s._root.path().join("competitor"))
+        .unwrap();
+    assert!(
+        competitor
+            .prepare_cache(&[crate::worker_admission::CacheEntry { root: &a.root }])
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn r6_public_start_preserves_s508_for_wrong_completed_build_id() {
+    assert!(
+        crate::cli::overlay::overlay_active(),
+        "requires the admitted overlay profile"
+    );
+    let mut s = setup(false);
+    valid_project(&s);
+    s.vms.start_fixture = Some(|_, _| panic!("no firmware/spawn on mismatch"));
+    let (mut build, _) = r6_real_publication(&s).await;
+    build.build_id = "sha256:wrong".into();
+    let mut request = start(&s);
+    request.auth = crate::wire::scoped_auth_token("token", "key");
+    request.build = Some(build);
+    let error = s.vms.start(request).await.unwrap_err();
+    assert_eq!(error.code().as_str(), "S508");
+    assert!(s.vms.slots().is_empty());
+    assert_eq!(
+        std::fs::read(s.vm.join("root/upper.ext4")).unwrap(),
+        b"OLD-do-not-archive"
+    );
+}
+
+async fn r8_cold_fixture() -> (tempfile::TempDir, WorkerVms, PathBuf) {
+    let root = crate::worker_admission::testing::private_tempdir().unwrap();
+    let ns = root.path().join("catalog");
+    private(&ns);
+    let context = crate::worker_admission::testing::provision_context(&ns).unwrap();
+    let source = root.path().join("source");
+    private(&source);
+    write_private_fixture(
+        &source.join("iii.worker.yaml"),
+        format!("name: worker\nruntime:\n  base_image: {H1_A}\nscripts:\n  start: echo worker\n")
+            .as_bytes(),
+    );
+    let cache = root.path().join("cache");
+    crate::cli::rootfs_cache::prepare_cache_parent(&context, &cache).unwrap();
+    let seed = context.local(&root.path().join("seed")).unwrap();
+    let prepared = crate::cli::rootfs_cache::CacheRequest::new(seed, H1_A, &cache)
+        .unwrap()
+        .resolve_fixture(true)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(prepared);
+    let base = root.path().join("home/.iii/sandbox/workers");
+    assert!(!base.exists());
+    assert!(!base.join(vm_id("cold")).exists());
+    let mut vms = WorkerVms::new(base, Some("token".into()), vec![root.path().to_path_buf()])
+        .with_admission_context(context);
+    vms.cache_path = Some(cache);
+    (root, vms, source)
+}
+fn r8_prepare(source: &Path, key: &str, auth: String) -> WorkerPrepareRequest {
+    WorkerPrepareRequest {
+        auth,
+        state_key: Some(key.into()),
+        source: local_source(source),
+    }
+}
+
+#[tokio::test]
+async fn r8_first_public_prepare_creates_only_the_guarded_private_worker_hierarchy() {
+    let (root, vms, source) = r8_cold_fixture().await;
+    let cache = vms.cache_path.as_ref().unwrap();
+    // Use returned catalog names rather than treating a digest string as a grant.
+    let mut before: Vec<_> = std::fs::read_dir(cache)
+        .unwrap()
+        .map(|e| {
+            use std::os::unix::fs::MetadataExt;
+            let e = e.unwrap();
+            let m = e.metadata().unwrap();
+            (e.file_name(), m.ino(), m.len(), m.mtime(), m.mtime_nsec())
+        })
+        .collect();
+    before.sort();
+    vms.prepare(r8_prepare(
+        &source,
+        "cold",
+        crate::wire::scoped_auth_token("token", "cold"),
+    ))
+    .await
+    .unwrap();
+    let vm = vms.base.join(vm_id("cold"));
+    assert_eq!(std::fs::read(vm.join(STATE_KEY_FILE)).unwrap(), b"cold");
+    for path in [
+        root.path().join("home"),
+        root.path().join("home/.iii"),
+        root.path().join("home/.iii/sandbox"),
+        vms.base.clone(),
+        vm.clone(),
+    ] {
+        assert_eq!(
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
+    }
+    let mut after: Vec<_> = std::fs::read_dir(cache)
+        .unwrap()
+        .map(|e| {
+            use std::os::unix::fs::MetadataExt;
+            let e = e.unwrap();
+            let m = e.metadata().unwrap();
+            (e.file_name(), m.ino(), m.len(), m.mtime(), m.mtime_nsec())
+        })
+        .collect();
+    after.sort();
+    assert_eq!(
+        before, after,
+        "warm prepare must not rebuild the shared cache"
+    );
+    assert!(vms.slots().is_empty());
+    assert_eq!(vms.starts.load(Ordering::SeqCst), 0);
+    vms.admission(Some("cold")).unwrap().revalidate().unwrap();
+}
+
+#[tokio::test]
+async fn r8_parallel_keys_share_only_the_completed_base_setup_not_a_parent_hold() {
+    let (_root, vms, source) = r8_cold_fixture().await;
+    let (a, b) = tokio::join!(
+        vms.prepare(r8_prepare(
+            &source,
+            "one",
+            crate::wire::scoped_auth_token("token", "one")
+        )),
+        vms.prepare(r8_prepare(
+            &source,
+            "two",
+            crate::wire::scoped_auth_token("token", "two")
+        )),
+    );
+    a.unwrap();
+    b.unwrap();
+    for key in ["one", "two"] {
+        assert_eq!(
+            std::fs::read(vms.base.join(vm_id(key)).join(STATE_KEY_FILE)).unwrap(),
+            key.as_bytes()
+        );
+        vms.admission(Some(key)).unwrap().revalidate().unwrap();
+    }
+    assert_eq!(vms.operations.lock().unwrap().len(), 2);
+    assert!(vms.builds().is_empty());
+}
+
+#[tokio::test]
+async fn r8_auth_invalid_source_and_insecure_parent_do_not_create_or_repair_worker_base() {
+    for failure in ["auth", "source", "parent", "symlink"] {
+        let (root, vms, source) = r8_cold_fixture().await;
+        let home = root.path().join("home");
+        let auth = if failure == "auth" {
+            "foreign".into()
+        } else {
+            "token".into()
+        };
+        if failure == "source" {
+            std::fs::write(source.join("iii.worker.yaml"), b"invalid: [").unwrap();
+        }
+        if failure == "parent" {
+            std::fs::create_dir(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        if failure == "symlink" {
+            let target = root.path().join("target");
+            private(&target);
+            std::os::unix::fs::symlink(&target, &home).unwrap();
+        }
+        assert!(
+            vms.prepare(r8_prepare(&source, "cold", auth))
+                .await
+                .is_err(),
+            "{failure}"
+        );
+        assert!(!vms.base.exists());
+        assert!(vms.operations.lock().unwrap().is_empty());
+        if failure == "parent" {
+            assert_eq!(
+                std::fs::metadata(home).unwrap().permissions().mode() & 0o7777,
+                0o777
+            );
+        }
+        if failure == "auth" || failure == "source" {
+            assert!(!home.exists());
+        }
+    }
+}
+
+#[test]
+fn r8_same_adapter_threads_serialize_cold_base_setup_without_parent_claim_leak() {
+    let root = crate::worker_admission::testing::private_tempdir().unwrap();
+    let namespace = root.path().join("catalog");
+    private(&namespace);
+    let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+    let vms = WorkerVms::new(
+        root.path().join("new/nested/workers"),
+        Some("token".into()),
+        vec![root.path().into()],
+    )
+    .with_admission_context(context);
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| vms.admission(Some("a")));
+        let b = scope.spawn(|| vms.admission(Some("b")));
+        a.join().unwrap().unwrap().revalidate().unwrap();
+        b.join().unwrap().unwrap().revalidate().unwrap();
+    });
+    assert_eq!(vms.operations.lock().unwrap().len(), 2);
+    assert_eq!(
+        std::fs::metadata(&vms.base).unwrap().permissions().mode() & 0o7777,
+        0o700
+    );
+}
+
+#[tokio::test]
+async fn r6_public_scoped_build_refuses_foreign_claim_after_valid_warm_preflight() {
+    assert!(
+        crate::cli::overlay::overlay_active(),
+        "requires the admitted overlay profile"
+    );
+    let mut s = setup(false);
+    valid_project(&s);
+    let warm = h1_prepare(&s, H1_A, true).await.unwrap();
+    assert!(warm.lower.is_file());
+    let out = s._root.path().join("claimed-output");
+    private(&out);
+    let auth_b = crate::wire::scoped_auth_token("token", "other");
+    s.vms
+        .claim_build_dir(&auth_b, "other", &out, "output_dir")
+        .unwrap();
+    let sentinel = out.join("untouched");
+    write_private_fixture(&sentinel, b"B data");
+    let iii = IIIClient::new("ws://127.0.0.1:1/ws");
+    let error = s
+        .vms
+        .build(
+            &iii,
+            WorkerBuildRequest {
+                auth: crate::wire::scoped_auth_token("token", "key"),
+                state_key: "key".into(),
+                worker_name: "worker".into(),
+                source: source(&s),
+                output_dir: out.display().to_string(),
+                env: Default::default(),
+                base_image: Some(H1_A.into()),
+                logs: iii_sdk::channels::StreamChannelRef {
+                    channel_id: "never-open".into(),
+                    access_key: "unused".into(),
+                    direction: iii_sdk::channels::ChannelDirection::Write,
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "S505");
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"B data");
+    assert!(!s.vm.join(BUILD_DIR_RECORD).exists());
+    assert!(!s.vm.join(format!("{BUILD_SCRATCH_PREFIX}current")).exists());
+    assert!(s.vms.builds().is_empty());
+}
+
+#[tokio::test]
+async fn r6_owned_image_cannot_cross_state_keys_or_read_an_external_replacement() {
+    assert!(
+        crate::cli::overlay::overlay_active(),
+        "requires the admitted overlay profile"
+    );
+    for replace in [false, true] {
+        let mut s = setup(false);
+        valid_project(&s);
+        s.vms.start_fixture = Some(|_, _| panic!("refusal must precede firmware and spawn"));
+        let (build, _) = r6_real_publication(&s).await;
+        let path = PathBuf::from(&build.build_dir).join(IMAGE_FILE);
+        let bytes = std::fs::read(&path).unwrap();
+        let mut req = start(&s);
+        req.build = Some(build);
+        if replace {
+            std::fs::rename(&path, path.with_extension("held")).unwrap();
+            std::fs::write(&path, b"foreign bytes").unwrap();
+        } else {
+            req.state_key = "other".into();
+            req.auth = crate::wire::scoped_auth_token("token", "other");
+        }
+        assert!(s.vms.start(req).await.is_err());
+        assert!(s.vms.slots().is_empty());
+        if replace {
+            assert_eq!(std::fs::read(&path).unwrap(), b"foreign bytes");
+        } else {
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        assert!(
+            !s.vms
+                .base
+                .join(vm_id("other"))
+                .join(BUILD_DIR_RECORD)
+                .exists()
+        );
+    }
+}
+
+#[tokio::test]
+async fn r7_external_imagepair_replacement_is_not_blessed_by_the_old_retirement() {
+    let s = setup(false);
+    valid_project(&s);
+    let (build, a) = r6_real_publication(&s).await;
+    let image = PathBuf::from(&build.build_dir).join(IMAGE_FILE);
+    std::fs::rename(&image, image.with_extension("held-old")).unwrap();
+    std::fs::write(&image, b"external replacement").unwrap();
+    assert!(h1_prepare(&s, H1_B, true).await.is_err());
+    h1_assert_current(&s, H1_A);
+    assert_eq!(std::fs::read(image).unwrap(), b"external replacement");
+    assert!(a.root.exists());
+    assert!(!crate::cli::rootfs_cache::cache_candidates(&h1_cache(&s), H1_B)[0].exists());
+}
+
+#[test]
+fn r8_contending_setup_never_waits_or_creates_paths_while_another_interval_owns_the_chain() {
+    let root = crate::worker_admission::testing::private_tempdir().unwrap();
+    let namespace = root.path().join("catalog");
+    private(&namespace);
+    let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+    let chain = root.path().join("cold");
+    let held = context.local(&chain).unwrap();
+    let vms = WorkerVms::new(
+        chain.join("nested/workers"),
+        Some("token".into()),
+        vec![root.path().into()],
+    )
+    .with_admission_context(context);
+    assert_eq!(
+        vms.admission(Some("a")).err().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert!(!chain.exists());
+    assert!(vms.operations.lock().unwrap().is_empty());
+    drop(held);
+    vms.admission(Some("a")).unwrap().revalidate().unwrap();
+    assert!(vms.base.is_dir());
+}
+
+#[tokio::test]
+async fn r6_public_start_does_not_read_a_publication_while_its_build_hold_is_active() {
+    let mut s = setup(false);
+    valid_project(&s);
+    s.vms.start_fixture = Some(|_, _| panic!("active writer must refuse before firmware"));
+    let (build, _) = r6_real_publication(&s).await;
+    let held = s.vms.hold_build(&vm_id("key")).unwrap();
+    let mut request = start(&s);
+    request.build = Some(build);
+    let error = s.vms.start(request).await.unwrap_err();
+    assert_eq!(error.code().as_str(), "S509");
+    assert_eq!(s.vms.starts.load(Ordering::SeqCst), 0);
+    assert!(s.vms.slots().is_empty());
+    drop(held);
+}
+
 fn source(s: &Setup) -> WorkerSource {
     WorkerSource::Local {
         host_path: s.source.display().to_string(),

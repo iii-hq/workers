@@ -107,6 +107,15 @@ const BUILD_COMMITTED: u8 = 2;
 pub struct WorkerVms {
     #[cfg(test)]
     admission_context: Option<crate::worker_admission::AdmissionContext>,
+    #[cfg(test)]
+    cache_path: Option<PathBuf>,
+    #[cfg(test)]
+    start_fixture: Option<
+        fn(
+            &crate::worker_admission::Lease,
+            &Path,
+        ) -> Result<crate::cli::worker_manager::libkrun::VmCommand, String>,
+    >,
     /// Per-VM state lives in `<base>/<vm_id>/`: the control files, and the VM's
     /// writable share `root/`, which a uid-0 guest controls.
     base: PathBuf,
@@ -119,6 +128,8 @@ pub struct WorkerVms {
     operations: Mutex<HashMap<String, crate::worker_admission::Lease>>,
     prepared_caches: Mutex<HashMap<String, crate::cli::rootfs_cache::PreparedCache>>,
     retired_builds: Mutex<HashMap<String, crate::worker_admission::WriterRetirement>>,
+    /// Only populated after the actual joined ImageWrite committed its pair.
+    published_builds: Mutex<HashMap<String, PublishedBuild>>,
     /// Names each `start` call in its `Slot::Preparing` reservation.
     starts: AtomicU64,
     /// Notified as each `start` drops its reservation, for a `stop` that
@@ -140,6 +151,28 @@ pub struct WorkerVms {
     /// How long a VM a scoped `start` booted may go without a log follower before
     /// it is stopped. A field so tests can shorten it.
     pub lease_grace: Duration,
+}
+
+#[derive(Clone)]
+struct PublishedBuild {
+    lease: crate::worker_admission::Lease,
+    directory: PathBuf,
+    build_id: String,
+}
+struct BuildReads {
+    directory: crate::worker_admission::UseGuard,
+    image: crate::worker_admission::UseGuard,
+    id: crate::worker_admission::UseGuard,
+}
+impl PublishedBuild {
+    fn read(&self) -> io::Result<BuildReads> {
+        self.lease.revalidate()?;
+        Ok(BuildReads {
+            directory: self.lease.use_path(&self.directory)?,
+            image: self.lease.use_path(&self.directory.join(IMAGE_FILE))?,
+            id: self.lease.use_path(&self.directory.join(IMAGE_ID_FILE))?,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -193,6 +226,10 @@ impl WorkerVms {
         Self {
             #[cfg(test)]
             admission_context: None,
+            #[cfg(test)]
+            cache_path: None,
+            #[cfg(test)]
+            start_fixture: None,
             base,
             token,
             roots,
@@ -200,6 +237,7 @@ impl WorkerVms {
             operations: Mutex::default(),
             prepared_caches: Mutex::default(),
             retired_builds: Mutex::default(),
+            published_builds: Mutex::default(),
             starts: AtomicU64::new(0),
             unreserved: tokio::sync::Notify::new(),
             destroyed: Mutex::default(),
@@ -227,6 +265,7 @@ impl WorkerVms {
         };
         #[cfg(not(test))]
         let context = crate::worker_admission::AdmissionContext::system()?;
+        prepare_worker_base(&context, &self.base)?;
         let lease = context.worker(&self.base, key)?;
         let lease = match key {
             Some(key) => admit_control_files(lease, &self.base.join(vm_id(key)))?,
@@ -345,6 +384,12 @@ impl WorkerVms {
         project: &mut WorkerProject,
         lease: crate::worker_admission::Lease,
     ) -> Result<crate::cli::rootfs_cache::PreparedCache, String> {
+        #[cfg(test)]
+        let cache = self
+            .cache_path
+            .clone()
+            .unwrap_or_else(crate::cli::rootfs_cache::cache_root);
+        #[cfg(not(test))]
         let cache = crate::cli::rootfs_cache::cache_root();
         self.prepare_project_at(key, project, lease, &cache, |request| async move {
             request
@@ -431,6 +476,27 @@ impl WorkerVms {
         req: WorkerPrepareRequest,
     ) -> Result<WorkerPrepareResponse, SandboxError> {
         self.authorize(&req.auth, req.state_key.as_deref())?;
+        let source = Source::of(&req.source);
+        if source.executable.is_some() {
+            return Err(SandboxError::SourceRejected(
+                BINARY_NEEDS_A_BUILD.to_string(),
+            ));
+        }
+        let dir = self.admit(source.host_path)?;
+        self.cache_context()
+            .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        if std::fs::symlink_metadata(&self.base).is_err() {
+            WorkerProject::resolve(
+                &dir,
+                source.package,
+                source.run_override,
+                source.executable,
+                None,
+                true,
+            )
+            .map_err(SandboxError::SourceRejected)?;
+        }
         let _admission = self
             .admission(req.state_key.as_deref())
             .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
@@ -452,13 +518,7 @@ impl WorkerVms {
         } else {
             _admission
         };
-        let source = Source::of(&req.source);
-        if source.executable.is_some() {
-            return Err(SandboxError::SourceRejected(
-                BINARY_NEEDS_A_BUILD.to_string(),
-            ));
-        }
-        let dir = self.admit(source.host_path)?;
+
         let _admission =
             crate::worker_admission::with_inputs(_admission, &[Path::new(source.host_path), &dir])
                 .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
@@ -507,11 +567,6 @@ impl WorkerVms {
         ) -> Result<crate::worker_admission::Lease, String>,
     ) -> Result<WorkerStartResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        let admission = self
-            .admission(Some(&req.state_key))
-            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
-        // Compose presents the project token and supervises its VMs itself.
-        let leased = !self.is_project_token(&req.auth);
         let source = Source::of(&req.source);
         if source.executable.is_some() && req.build.is_none() {
             return Err(SandboxError::SourceRejected(
@@ -519,6 +574,41 @@ impl WorkerVms {
             ));
         }
         let dir = self.admit(source.host_path)?;
+        if let Some(build) = &req.build {
+            let build_dir = self.admit(&build.build_dir)?;
+            let context = self
+                .cache_context()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            for path in [
+                PathBuf::from(&build.build_dir),
+                build_dir.join(IMAGE_FILE),
+                build_dir.join(IMAGE_ID_FILE),
+            ] {
+                context
+                    .reject_retained_path(&path)
+                    .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            }
+        }
+        self.cache_context()
+            .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        if std::fs::symlink_metadata(&self.base).is_err() {
+            WorkerProject::resolve(
+                &dir,
+                source.package,
+                source.run_override,
+                source.executable,
+                None,
+                req.build.is_none(),
+            )
+            .map_err(SandboxError::SourceRejected)?;
+        }
+        let admission = self
+            .admission(Some(&req.state_key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        // Compose presents the project token and supervises its VMs itself.
+        let leased = !self.is_project_token(&req.auth);
+
         // Admit the supplied spellings as well as authorized canonical paths:
         // canonicalization must not hide symlinks or traversal from admission.
         let mut inputs = vec![PathBuf::from(source.host_path), dir.clone()];
@@ -537,12 +627,27 @@ impl WorkerVms {
         inputs.push(vm_dir.join(crate::cli::upper::UPPER_NAME));
         inputs.push(vm_dir.clone());
         let mutable_end = inputs.len();
+        let owned_build = req.build.as_ref().and_then(|build| {
+            self.published_builds
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&id)
+                .filter(|published| published.directory == Path::new(&build.build_dir))
+                .cloned()
+        });
+        let owned_reads = owned_build
+            .as_ref()
+            .map(PublishedBuild::read)
+            .transpose()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         if let Some(build) = &req.build {
-            let build_dir = self.admit(&build.build_dir)?;
-            inputs.push(PathBuf::from(&build.build_dir));
-            inputs.push(build_dir.join(IMAGE_FILE));
-            inputs.push(build_dir.join(IMAGE_ID_FILE));
-            inputs.push(build_dir);
+            if owned_build.is_none() {
+                let build_dir = self.admit(&build.build_dir)?;
+                inputs.push(PathBuf::from(&build.build_dir));
+                inputs.push(build_dir.join(IMAGE_FILE));
+                inputs.push(build_dir.join(IMAGE_ID_FILE));
+                inputs.push(build_dir);
+            }
         }
         let inputs: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
         let requests: Vec<_> = inputs
@@ -606,9 +711,14 @@ impl WorkerVms {
         // Under the reservation: no destroy runs while the claim writes the
         // VM's build-dir record, so none leaves it behind.
         let image = match &req.build {
-            Some(build) => {
-                Some(self.admit_build_on(&req.auth, &req.state_key, build, admission.clone())?)
-            }
+            Some(build) => Some(self.admit_build_read(
+                &req.auth,
+                &req.state_key,
+                build,
+                admission.clone(),
+                owned_build.as_ref(),
+                owned_reads.as_ref(),
+            )?),
             None => None,
         };
         // Use the project selected before reservation; do not re-read its manifest.
@@ -640,16 +750,45 @@ impl WorkerVms {
             extra_env: req.env.into_iter().collect(),
             image,
         };
-        let built = resolved
-            .start(
-                &req.worker_name,
-                &dir,
-                source.package,
-                over,
-                admission.clone(),
-            )
-            .await
-            .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
+        if let Some(reads) = &owned_reads {
+            reads
+                .directory
+                .revalidate()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            reads
+                .id
+                .revalidate()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        }
+        if let Some(reads) = &owned_reads {
+            let read = admission
+                .use_path(reads.image.path())
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            resolved = resolved.with_published_image(read);
+        }
+        #[cfg(test)]
+        let fixture = self
+            .start_fixture
+            .map(|fixture| fixture(&admission, &self.base));
+        #[cfg(not(test))]
+        let fixture: Option<
+            Result<crate::cli::worker_manager::libkrun::VmCommand, String>,
+        > = None;
+        let built = match fixture {
+            Some(command) => command,
+            None => {
+                resolved
+                    .start(
+                        &req.worker_name,
+                        &dir,
+                        source.package,
+                        over,
+                        admission.clone(),
+                    )
+                    .await
+            }
+        }
+        .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
         let started = self
             .launch_admitted(
                 &req.state_key,
@@ -660,6 +799,10 @@ impl WorkerVms {
                 built.lifecycle_leases,
                 Some(built.runtime_paths),
                 built.runtime_endpoints,
+                owned_reads
+                    .into_iter()
+                    .flat_map(|reads| [reads.directory, reads.image, reads.id])
+                    .collect(),
             )
             .map_err(|e| match e {
                 SandboxError::BootFailed(e) => SandboxError::BootFailed(with_notes(e, &notes)),
@@ -709,24 +852,56 @@ impl WorkerVms {
         build: &WorkerBuildRef,
         admission: crate::worker_admission::Lease,
     ) -> Result<PathBuf, SandboxError> {
+        self.admit_build_read(auth, state_key, build, admission, None, None)
+    }
+
+    fn admit_build_read(
+        &self,
+        auth: &str,
+        state_key: &str,
+        build: &WorkerBuildRef,
+        admission: crate::worker_admission::Lease,
+        published: Option<&PublishedBuild>,
+        reads: Option<&BuildReads>,
+    ) -> Result<PathBuf, SandboxError> {
         let dir = self.admit(&build.build_dir)?;
         // The start caller retains its operation through the waiter.
         // independent guard here too, through the claim and image inspection.
-        let _admission = crate::worker_admission::with_inputs(
-            admission,
-            &[
-                Path::new(&build.build_dir),
-                &dir,
-                &dir.join(IMAGE_FILE),
-                &dir.join(IMAGE_ID_FILE),
-            ],
-        )
-        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let _admission = if let (Some(published), Some(reads)) = (published, reads) {
+            if published.directory != dir || Path::new(&build.build_dir) != dir {
+                return Err(SandboxError::BuildMismatch(
+                    "published build path does not match exact output".into(),
+                ));
+            }
+            reads
+                .directory
+                .revalidate()
+                .and_then(|_| reads.image.revalidate())
+                .and_then(|_| reads.id.revalidate())
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            admission
+        } else {
+            crate::worker_admission::with_inputs(
+                admission,
+                &[
+                    Path::new(&build.build_dir),
+                    &dir,
+                    &dir.join(IMAGE_FILE),
+                    &dir.join(IMAGE_ID_FILE),
+                ],
+            )
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?
+        };
         self.claim_build_dir_on(auth, state_key, &dir, "build_dir", Some(&_admission))?;
         let _directory_use = _admission
             .use_path(&dir)
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let wanted = build.build_id.trim();
+        if published.is_some_and(|published| published.build_id != wanted) {
+            return Err(SandboxError::BuildMismatch(
+                "requested id does not name this completed publication".into(),
+            ));
+        }
         match read_image_id(&dir) {
             Some(found) if found == wanted => {}
             Some(found) => {
@@ -778,15 +953,41 @@ impl WorkerVms {
         ) -> Result<crate::worker_admission::Lease, String>,
     ) -> Result<WorkerBuildResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
+        let source = Source::of(&req.source);
+        let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
+        let dir = self.admit(source.host_path)?;
+        let planned = self.plan_output(&req.output_dir)?;
+        let context = self
+            .cache_context()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        for path in [
+            PathBuf::from(&req.output_dir),
+            planned.join(IMAGE_FILE),
+            planned.join(IMAGE_ID_FILE),
+        ] {
+            context
+                .reject_retained_path(&path)
+                .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        }
+        self.cache_context()
+            .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        if std::fs::symlink_metadata(&self.base).is_err() {
+            WorkerProject::resolve(
+                &dir,
+                source.package,
+                source.run_override,
+                source.executable,
+                base_image,
+                true,
+            )
+            .map_err(SandboxError::SourceRejected)?;
+        }
         let _admission = self
             .admission(Some(&req.state_key))
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let id = vm_id(&req.state_key);
         let _held = self.hold_build(&id)?;
-        let source = Source::of(&req.source);
-        let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
-        let dir = self.admit(source.host_path)?;
-        let planned = self.plan_output(&req.output_dir)?;
         use crate::worker_admission::{PathRequest, PathRole};
         let _admission = crate::worker_admission::with_paths(
             _admission,
@@ -928,6 +1129,10 @@ impl WorkerVms {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&id);
+        self.published_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
         let mut built = tokio::select! {
             built = job.run(&mut log) => built,
             gone = reader_gone(&writer, BUILD_KEEPALIVE) => Err(SandboxError::BuildFailed(
@@ -951,7 +1156,8 @@ impl WorkerVms {
                 });
             }
         }
-        if built.is_ok() {
+        if let Ok(response) = &built {
+            self.remember_publication(&req.state_key, &_admission, &out, &response.build_id);
             if let Some(receipt) = done
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -976,6 +1182,26 @@ impl WorkerVms {
         let _ = writer.write(&[]).await;
         let _ = writer.close().await;
         built
+    }
+
+    fn remember_publication(
+        &self,
+        key: &str,
+        lease: &crate::worker_admission::Lease,
+        out: &Path,
+        id: &str,
+    ) {
+        self.published_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                vm_id(key),
+                PublishedBuild {
+                    lease: lease.clone(),
+                    directory: out.to_path_buf(),
+                    build_id: id.to_string(),
+                },
+            );
     }
 
     /// Reserve `vm_id` for one build: S509 while another build holds it, S502
@@ -1192,6 +1418,7 @@ impl WorkerVms {
             Vec::new(),
             None,
             Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -1205,6 +1432,7 @@ impl WorkerVms {
         local_leases: Vec<crate::worker_admission::Lease>,
         runtime_paths: Option<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>>,
         runtime_endpoints: Vec<PathBuf>,
+        image_reads: Vec<crate::worker_admission::UseGuard>,
     ) -> Result<WorkerStartResponse, SandboxError> {
         let control = self.base.join(vm_id(state_key));
         let admission = crate::worker_admission::with_paths(
@@ -1284,6 +1512,7 @@ impl WorkerVms {
         held.push(admission);
         let writer_admission = crate::worker_admission::WriterLease::new(held);
         tokio::spawn(async move {
+            let _image_reads = image_reads;
             let (status, mut retirement) = match completion.await {
                 Ok(result) => result,
                 Err(error) => (None, Err(format!("worker completion task: {error}"))),
@@ -1347,6 +1576,7 @@ impl WorkerVms {
                 .unwrap_or_else(PoisonError::into_inner) = Some(retirement.and_then(|receipt| {
                 receipt.ok_or_else(|| "fixture has no production retirement receipt".into())
             }));
+            drop(_image_reads);
             waited.ended.send_replace(Some(Ended {
                 exit_code: status.and_then(|s| s.code()),
                 signal: status.and_then(|s| s.signal()),
@@ -3035,9 +3265,72 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
     read.map_err(|e| SandboxError::BootFailed(format!("{}: {e}", path.display())))
 }
 
-/// Replace `<dir>/state.json` with one recording `instance`. Written to a
-/// temp file and renamed over it, so a crash or a full disk mid-write leaves
-/// the previous file whole: a truncated one failed every later start.
+/// Cold base creation is a short, exact operation, never part of a VM's
+/// long-lived footprint. Existing ancestors are inspected, not repaired.
+fn prepare_worker_base(
+    context: &crate::worker_admission::AdmissionContext,
+    base: &Path,
+) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Component;
+    if !base.is_absolute()
+        || base
+            .components()
+            .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "worker base must be absolute without traversal",
+        ));
+    }
+    let uid = unsafe { libc::geteuid() };
+    match std::fs::symlink_metadata(base) {
+        Ok(meta) => {
+            if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o7777 != 0o700 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "worker base is not owned/private; refusing chmod",
+                ));
+            }
+            return Ok(());
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    // Existing base children belong to independent lifecycle intervals. Do not
+    // inspect/re-admit their union merely to use another state's existing base.
+    // Cold setup has no children and must pass the full retained-path check.
+    context.reject_retained_path(base)?;
+    let mut first = base;
+    for depth in 0..=64 {
+        let parent = first
+            .parent()
+            .ok_or_else(|| io::Error::other("worker base has no existing parent"))?;
+        match std::fs::symlink_metadata(parent) {
+            Ok(meta) => {
+                if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "worker base ancestor is not owned/protected",
+                    ));
+                }
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound && depth < 64 => first = parent,
+            Err(e) => return Err(e),
+        }
+    }
+    let setup = context.local(first)?;
+    let mut mutation = setup.begin(crate::worker_admission::MutationPlan::Create {
+        root: first.to_path_buf(),
+    })?;
+    mutation.create_dir_all(base, 0o700)?;
+    mutation.commit()?;
+    setup.revalidate()?;
+    drop(setup);
+    Ok(())
+}
+
 fn admit_control_files(
     lease: crate::worker_admission::Lease,
     dir: &Path,
