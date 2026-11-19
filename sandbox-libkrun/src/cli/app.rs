@@ -21,6 +21,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Explicit local host-admission administration (never runs automatically)
+    Admission(super::admission::AdmissionArgs),
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(Box<super::vm_boot::VmBootArgs>),

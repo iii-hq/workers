@@ -1,18 +1,14 @@
 //! Integration tests for the sandbox subsystem. Uses fake trait impls for
 //! VmLauncher/ShellRunner/VmStopper so no real libkrun boot is required.
 
-use sandbox_libkrun::cli::rootfs_cache;
-use sandbox_libkrun::sandbox_daemon::catalog;
-use sandbox_libkrun::sandbox_daemon::config::SandboxConfig;
-use sandbox_libkrun::sandbox_daemon::{
+use super::{TestRegistry as SandboxRegistry, handle_create, owned_boot};
+use crate::sandbox_daemon::config::SandboxConfig;
+use crate::sandbox_daemon::{
     SandboxError,
-    create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
+    create::{BootHandle, BootParams, CreateRequest, VmLauncher},
     exec::{EnvShape, ExecRequest, ExecResponse, ShellRunner, handle_exec},
-    overlay::OverlayLayout,
-    registry::SandboxRegistry,
     stop::{StopRequest, VmStopper, handle_stop},
 };
-use serial_test::serial;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -29,11 +25,17 @@ struct FakeLauncher {
 #[async_trait::async_trait]
 impl VmLauncher for FakeLauncher {
     async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
-        let n = self.boot_count.fetch_add(1, Ordering::SeqCst) + 1;
-        Ok(BootHandle {
-            vm_pid: 10_000 + n,
-            lifeline: None,
-        })
+        panic!("admitted fixture required")
+    }
+    async fn boot_admitted(
+        &self,
+        p: &BootParams,
+        lease: crate::worker_admission::Lease,
+        reg: &crate::sandbox_daemon::registry::SandboxRegistry,
+        id: uuid::Uuid,
+    ) -> Result<BootHandle, SandboxError> {
+        self.boot_count.fetch_add(1, Ordering::SeqCst);
+        owned_boot(p, lease, reg, id).await
     }
 }
 
@@ -97,10 +99,9 @@ fn cfg_all_presets_allowed() -> SandboxConfig {
 }
 
 #[tokio::test]
-#[serial]
 async fn end_to_end_create_exec_stop() {
-    let _guard = ensure_fake_rootfs("python");
     let h = harness("hi\n", 0);
+    h.registry.seed("python");
     let cfg = cfg_all_presets_allowed();
     let req = CreateRequest {
         image: "python".into(),
@@ -147,14 +148,19 @@ async fn end_to_end_create_exec_stop() {
     .await
     .unwrap();
     assert!(stop.stopped);
-    assert_eq!(h.stopper.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        h.stopper.stops.load(Ordering::SeqCst),
+        0,
+        "core control owns signalling"
+    );
+    assert_eq!(h.registry.count().await, 0);
+    h.registry.finish().await;
 }
 
 #[tokio::test]
-#[serial]
 async fn exec_beyond_the_concurrency_cap_returns_s003() {
-    let _guard = ensure_fake_rootfs("python");
     let h = harness("", 0);
+    h.registry.seed("python");
     let cfg = cfg_all_presets_allowed();
     let create = handle_create(
         CreateRequest {
@@ -173,14 +179,13 @@ async fn exec_beyond_the_concurrency_cap_returns_s003() {
     )
     .await
     .unwrap();
-    let _dirs = SandboxDirs(vec![create.sandbox_id.clone()]);
 
     // A second exec no longer bounces — both ends of the exec channel
     // multiplex by `corr_id`, and the registry now admits up to a cap.
     // Saturate that cap so the NEXT one is the rejected case this test is
     // about. `harness()` builds the registry with the default cap.
     let id = uuid::Uuid::parse_str(&create.sandbox_id).unwrap();
-    for _ in 0..sandbox_libkrun::sandbox_daemon::registry::DEFAULT_MAX_EXEC_IN_FLIGHT {
+    for _ in 0..crate::sandbox_daemon::registry::DEFAULT_MAX_EXEC_IN_FLIGHT {
         h.registry.begin_exec(id).await.unwrap();
     }
 
@@ -202,10 +207,10 @@ async fn exec_beyond_the_concurrency_cap_returns_s003() {
     .await
     .unwrap_err();
     assert_eq!(err.code().as_str(), "S003");
+    h.registry.finish().await;
 }
 
 #[tokio::test]
-#[serial]
 async fn image_not_allowlisted_returns_s100() {
     let h = harness("", 0);
     let mut cfg = cfg_all_presets_allowed();
@@ -226,14 +231,7 @@ async fn image_not_allowlisted_returns_s100() {
 }
 
 #[tokio::test]
-#[serial]
 async fn rootfs_missing_no_autoinstall_returns_s101() {
-    let td = tempfile::tempdir().unwrap();
-    let orig = std::env::var_os("HOME");
-    // SAFETY: test is annotated with #[serial]; no other threads mutate env.
-    unsafe {
-        std::env::set_var("HOME", td.path());
-    }
     let h = harness("", 0);
     let mut cfg = cfg_all_presets_allowed();
     cfg.auto_install = false;
@@ -255,24 +253,15 @@ async fn rootfs_missing_no_autoinstall_returns_s101() {
     .await
     .unwrap_err();
     assert_eq!(err.code().as_str(), "S101");
-    // SAFETY: test is annotated with #[serial]; no other threads mutate env.
-    unsafe {
-        match orig {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-    }
 }
 
 #[tokio::test]
-#[serial]
 async fn memory_cap_returns_s400() {
-    let _guard = ensure_fake_rootfs("python");
     let h = harness("", 0);
     let mut cfg = cfg_all_presets_allowed();
     cfg.per_image_caps.insert(
         "python".into(),
-        sandbox_libkrun::sandbox_daemon::config::PerImageCap {
+        crate::sandbox_daemon::config::PerImageCap {
             max_cpus: 4,
             max_memory_mb: 1024,
         },
@@ -298,12 +287,10 @@ async fn memory_cap_returns_s400() {
 }
 
 #[tokio::test]
-#[serial]
 async fn list_returns_every_sandbox() {
-    let _guard = ensure_fake_rootfs("python");
     let h = harness("", 0);
+    h.registry.seed("python");
     let cfg = cfg_all_presets_allowed();
-    let mut dirs = SandboxDirs(Vec::new());
     let create = handle_create(
         CreateRequest {
             image: "python".into(),
@@ -321,7 +308,12 @@ async fn list_returns_every_sandbox() {
     )
     .await
     .unwrap();
-    dirs.0.push(create.sandbox_id);
+    assert!(
+        h.registry
+            .get(uuid::Uuid::parse_str(&create.sandbox_id).unwrap())
+            .await
+            .is_ok()
+    );
     let create = handle_create(
         CreateRequest {
             image: "python".into(),
@@ -339,57 +331,15 @@ async fn list_returns_every_sandbox() {
     )
     .await
     .unwrap();
-    dirs.0.push(create.sandbox_id);
+    assert!(
+        h.registry
+            .get(uuid::Uuid::parse_str(&create.sandbox_id).unwrap())
+            .await
+            .is_ok()
+    );
 
-    use sandbox_libkrun::sandbox_daemon::list::{ListRequest, handle_list};
+    use crate::sandbox_daemon::list::{ListRequest, handle_list};
     let resp = handle_list(ListRequest::default(), &h.registry).await;
     assert_eq!(resp.sandboxes.len(), 2);
-}
-
-/// Removes the dirs `handle_create` makes under the sandbox root for the
-/// sandboxes a test never stops.
-struct SandboxDirs(Vec<String>);
-impl Drop for SandboxDirs {
-    fn drop(&mut self) {
-        for id in self
-            .0
-            .iter()
-            .filter_map(|id| uuid::Uuid::parse_str(id).ok())
-        {
-            let _ = OverlayLayout::for_sandbox(id).cleanup();
-        }
-    }
-}
-
-struct RootfsGuard(
-    #[allow(dead_code)] tempfile::TempDir,
-    Option<std::ffi::OsString>,
-);
-impl Drop for RootfsGuard {
-    fn drop(&mut self) {
-        // SAFETY: guard only exists inside #[serial] tests; no other threads
-        // mutate env while it is alive.
-        unsafe {
-            match &self.1 {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-    }
-}
-fn ensure_fake_rootfs(image: &str) -> RootfsGuard {
-    let td = tempfile::tempdir().unwrap();
-    let orig = std::env::var_os("HOME");
-    // SAFETY: callers wrap in #[serial] so no other threads mutate env.
-    unsafe {
-        std::env::set_var("HOME", td.path());
-    }
-    // Where create looks the image up, under the new HOME.
-    let oci_ref = catalog::resolve_image(image, &Default::default()).unwrap();
-    let rootfs = rootfs_cache::canonical_path(&oci_ref);
-    // `bin/` is required by rootfs_cache::is_populated to treat the
-    // rootfs as populated -- bare dir was previously accepted and masked
-    // a class of auto_install silent-no-op bugs.
-    std::fs::create_dir_all(rootfs.join("bin")).unwrap();
-    RootfsGuard(td, orig)
+    h.registry.finish().await;
 }

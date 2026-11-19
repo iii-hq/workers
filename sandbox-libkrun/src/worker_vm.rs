@@ -21,8 +21,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use hmac::{Hmac, KeyInit, Mac};
 use iii_sdk::IIIClient;
 use iii_sdk::channels::ChannelWriter;
-use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
@@ -30,9 +28,10 @@ use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
 use crate::cli::local_worker::{
-    BootImage, VmOverride, binary_vm_command, bundle_vm_command, image_build_command,
-    local_vm_command, open_build_export, validate_binary, validate_source, validate_source_with,
+    BootImage, VmOverride, WorkerProject, open_build_export, validate_source,
 };
+#[cfg(test)]
+use crate::cli::local_worker::{validate_binary, validate_source_with};
 use crate::cli::worker_manager::oci;
 use crate::daemon_exit::Lifeline;
 use crate::sandbox_daemon::SandboxError;
@@ -102,6 +101,17 @@ const BUILD_COMMITTED: u8 = 2;
 
 /// The worker VMs of one project, behind its token and host roots.
 pub struct WorkerVms {
+    #[cfg(test)]
+    admission_context: Option<crate::worker_admission::AdmissionContext>,
+    #[cfg(test)]
+    cache_path: Option<PathBuf>,
+    #[cfg(test)]
+    start_fixture: Option<
+        fn(
+            &crate::worker_admission::Lease,
+            &Path,
+        ) -> Result<crate::cli::worker_manager::libkrun::VmCommand, String>,
+    >,
     /// Per-VM state lives in `<base>/<vm_id>/`: the control files, and the VM's
     /// writable share `root/`, which a uid-0 guest controls.
     base: PathBuf,
@@ -109,6 +119,13 @@ pub struct WorkerVms {
     roots: Vec<PathBuf>,
     /// Keyed by `vm_id`. An exited VM stays, so `status` can report it.
     slots: Mutex<HashMap<String, Slot>>,
+    /// Keep the original Arc across prepare/build/start. Restart recovery is
+    /// separate; a same-process request never substitutes a fresh operation.
+    operations: Mutex<HashMap<String, crate::worker_admission::Lease>>,
+    prepared_caches: Mutex<HashMap<String, crate::cli::rootfs_cache::PreparedCache>>,
+    retired_builds: Mutex<HashMap<String, crate::worker_admission::WriterRetirement>>,
+    /// Only populated after the actual joined ImageWrite committed its pair.
+    published_builds: Mutex<HashMap<String, PublishedBuild>>,
     /// Names each `start` call in its `Slot::Preparing` reservation.
     starts: AtomicU64,
     /// Notified as each `start` drops its reservation, for a `stop` that
@@ -133,6 +150,28 @@ pub struct WorkerVms {
 }
 
 #[derive(Clone)]
+struct PublishedBuild {
+    lease: crate::worker_admission::Lease,
+    directory: PathBuf,
+    build_id: String,
+}
+struct BuildReads {
+    directory: crate::worker_admission::UseGuard,
+    image: crate::worker_admission::UseGuard,
+    id: crate::worker_admission::UseGuard,
+}
+impl PublishedBuild {
+    fn read(&self) -> io::Result<BuildReads> {
+        self.lease.revalidate()?;
+        Ok(BuildReads {
+            directory: self.lease.use_path(&self.directory)?,
+            image: self.lease.use_path(&self.directory.join(IMAGE_FILE))?,
+            id: self.lease.use_path(&self.directory.join(IMAGE_ID_FILE))?,
+        })
+    }
+}
+
+#[derive(Clone)]
 enum Slot {
     /// `start` call `.1` is building the VM that will boot as instance `.0`;
     /// `.2` once `worker::stop` cancelled it. It stays until that build
@@ -145,11 +184,18 @@ enum Slot {
 
 struct Vm {
     instance: u64,
-    pid: Pid,
+    /// Test fixtures only: the pidfd taken at spawn, before any waiter could
+    /// reap the child, so a stop can never signal a reused PID.
+    #[cfg(test)]
+    fixture_pidfd: Option<std::os::fd::OwnedFd>,
+    lifecycle: Option<Arc<crate::sandbox_daemon::adapters::RuntimeSession>>,
+    admission: crate::worker_admission::Lease,
+    retirement: Mutex<Option<Result<crate::worker_admission::WriterRetirement, String>>>,
     started_at_ms: u64,
     /// Set by `stop` before it signals, so the exit reads as `Stopped`.
     stopping: AtomicBool,
     /// Set once the waiter reaps the process: its pid may then be reused.
+    #[cfg(test)]
     reaped: AtomicBool,
     /// `None` until the waiter records the exit, after the pumps drain.
     ended: watch::Sender<Option<Ended>>,
@@ -176,10 +222,20 @@ struct StateFile {
 impl WorkerVms {
     pub fn new(base: PathBuf, token: Option<String>, roots: Vec<PathBuf>) -> Self {
         Self {
+            #[cfg(test)]
+            admission_context: None,
+            #[cfg(test)]
+            cache_path: None,
+            #[cfg(test)]
+            start_fixture: None,
             base,
             token,
             roots,
             slots: Mutex::default(),
+            operations: Mutex::default(),
+            prepared_caches: Mutex::default(),
+            retired_builds: Mutex::default(),
+            published_builds: Mutex::default(),
             starts: AtomicU64::new(0),
             unreserved: tokio::sync::Notify::new(),
             destroyed: Mutex::default(),
@@ -188,6 +244,228 @@ impl WorkerVms {
             claims: Mutex::default(),
             lease_grace: LEASE_GRACE,
         }
+    }
+
+    fn admission(&self, key: Option<&str>) -> io::Result<crate::worker_admission::Lease> {
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(key) = key {
+            if let Some(lease) = operations.get(key) {
+                return Ok(lease.clone());
+            }
+        }
+        #[cfg(test)]
+        let context = match &self.admission_context {
+            Some(context) => context.clone(),
+            None => crate::worker_admission::AdmissionContext::system()?,
+        };
+        #[cfg(not(test))]
+        let context = crate::worker_admission::AdmissionContext::system()?;
+        prepare_worker_base(&context, &self.base)?;
+        let lease = context.worker(&self.base, key)?;
+        let lease = match key {
+            Some(key) => admit_control_files(lease, &self.base.join(vm_id(key)))?,
+            None => lease,
+        };
+        if let Some(key) = key {
+            operations.insert(key.to_string(), lease.clone());
+        }
+        Ok(lease)
+    }
+
+    /// PRODUCTION FIX (never-admitted sweep regression): an existing worker
+    /// base makes [`Self::admission`] create nothing, so compatibility custody
+    /// and unknown writers are refused before a request's source or build
+    /// directory is canonicalized, inspected or claimed, as before the
+    /// cold-base change. Only a missing base, which admission would create,
+    /// yields `None`: its caller preflights the inputs first so a refused
+    /// request never creates the private worker hierarchy.
+    fn warm_admission(
+        &self,
+        key: Option<&str>,
+    ) -> io::Result<Option<crate::worker_admission::Lease>> {
+        if std::fs::symlink_metadata(&self.base).is_err() {
+            return Ok(None);
+        }
+        self.admission(key).map(Some)
+    }
+
+    fn cache_context(&self) -> io::Result<crate::worker_admission::AdmissionContext> {
+        #[cfg(test)]
+        if let Some(context) = &self.admission_context {
+            return Ok(context.clone());
+        }
+        crate::worker_admission::AdmissionContext::system()
+    }
+
+    /// Only completed caller receipts: Vm::receipt is filled after all pumps
+    /// and G settlement; retired_builds only after the full image job completes.
+    fn cache_retirement(
+        &self,
+        key: &str,
+    ) -> Result<crate::worker_admission::WriterRetirement, String> {
+        let id = vm_id(key);
+        let slot = self.slots().get(&id).cloned();
+        if matches!(&slot, Some(Slot::Preparing(..) | Slot::Destroying(..))) {
+            return Err("cache continuation is blocked by an active slot transition".into());
+        }
+        if let Some(receipt) = self
+            .retired_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .cloned()
+        {
+            return Ok(receipt);
+        }
+        match slot {
+            Some(Slot::Booted(vm)) => vm.receipt().map_err(|e| e.to_string()),
+            _ => Err(
+                "new cache reference requires the current completed runtime retirement receipt"
+                    .into(),
+            ),
+        }
+    }
+
+    fn project_cache_request(
+        &self,
+        key: Option<&str>,
+        project: &WorkerProject,
+        lease: crate::worker_admission::Lease,
+        cache: &Path,
+    ) -> Result<
+        Result<crate::cli::rootfs_cache::PreparedCache, crate::cli::rootfs_cache::CacheRequest>,
+        String,
+    > {
+        use crate::cli::rootfs_cache::CacheRequest;
+        let reference = project.reference();
+        let existing = key.and_then(|key| {
+            self.prepared_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(key)
+                .cloned()
+        });
+        if let Some(prepared) = &existing {
+            if prepared.reference == reference {
+                prepared
+                    .validate(&reference)
+                    .map_err(|e| format!("{e:#}"))?;
+                return Ok(Ok(prepared.clone()));
+            }
+        }
+        let has_lifecycle = key.is_some_and(|key| {
+            self.slots().contains_key(&vm_id(key))
+                || self
+                    .retired_builds
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .contains_key(&vm_id(key))
+        });
+        let request = if existing.is_some() || has_lifecycle {
+            let key = key.ok_or("cache continuation requires a keyed lifecycle")?;
+            let receipt = self.cache_retirement(key)?;
+            // No fallback: stale/foreign/consumed/missing receipt leaves A and
+            // its original lease/claims untouched. Core validates identity.
+            CacheRequest::from_retirement(lease, &receipt, &reference, cache)
+        } else {
+            CacheRequest::new(lease, &reference, cache)
+        }
+        .map_err(|e| format!("{e:#}"))?;
+        Ok(Err(request))
+    }
+
+    fn remember_prepared(
+        &self,
+        key: Option<&str>,
+        project: &mut WorkerProject,
+        prepared: crate::cli::rootfs_cache::PreparedCache,
+    ) -> crate::cli::rootfs_cache::PreparedCache {
+        if let Some(key) = key {
+            self.prepared_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key.to_string(), prepared.clone());
+        }
+        project.prepared = Some(prepared.clone());
+        prepared
+    }
+
+    async fn prepare_project(
+        &self,
+        key: Option<&str>,
+        project: &mut WorkerProject,
+        lease: crate::worker_admission::Lease,
+    ) -> Result<crate::cli::rootfs_cache::PreparedCache, String> {
+        #[cfg(test)]
+        let cache = self
+            .cache_path
+            .clone()
+            .unwrap_or_else(crate::cli::rootfs_cache::cache_root);
+        #[cfg(not(test))]
+        let cache = crate::cli::rootfs_cache::cache_root();
+        self.prepare_project_at(key, project, lease, &cache, |request| async move {
+            request
+                .resolve(true, || {})
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .ok_or_else(|| "required cache was not prepared".to_string())
+        })
+        .await
+    }
+
+    async fn prepare_project_at<F, Fut>(
+        &self,
+        key: Option<&str>,
+        project: &mut WorkerProject,
+        lease: crate::worker_admission::Lease,
+        cache: &Path,
+        resolve: F,
+    ) -> Result<crate::cli::rootfs_cache::PreparedCache, String>
+    where
+        F: FnOnce(crate::cli::rootfs_cache::CacheRequest) -> Fut,
+        Fut: std::future::Future<Output = Result<crate::cli::rootfs_cache::PreparedCache, String>>,
+    {
+        let context = self.cache_context().map_err(|e| e.to_string())?;
+        // A new continuation must not create a cache hierarchy before its
+        // receipt is checked. First-use short setup is the existing H path.
+        let previous = key.is_some_and(|key| {
+            self.prepared_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(key)
+                || self.slots().contains_key(&vm_id(key))
+                || self
+                    .retired_builds
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .contains_key(&vm_id(key))
+        });
+        if !previous {
+            crate::cli::rootfs_cache::prepare_cache_parent(&context, cache)
+                .map_err(|e| e.to_string())?;
+        }
+        match self.project_cache_request(key, project, lease, cache)? {
+            Ok(prepared) => {
+                project.prepared = Some(prepared.clone());
+                Ok(prepared)
+            }
+            Err(request) => {
+                let prepared = resolve(request).await?;
+                Ok(self.remember_prepared(key, project, prepared))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn with_admission_context(
+        mut self,
+        context: crate::worker_admission::AdmissionContext,
+    ) -> Self {
+        self.admission_context = Some(context);
+        self
     }
 
     /// Compose sets the token and the roots on this container only.
@@ -219,23 +497,73 @@ impl WorkerVms {
                 BINARY_NEEDS_A_BUILD.to_string(),
             ));
         }
+        // PRODUCTION FIX (sweep regression): refuse custody before even
+        // canonicalizing the source; see warm_admission.
+        let warm = self
+            .warm_admission(req.state_key.as_deref())
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         let dir = self.admit(source.host_path)?;
-        let (project, kind) = validate_source(&dir, source.package, source.run_override)
-            .map_err(SandboxError::SourceRejected)?;
-        let rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
+        self.cache_context()
+            .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _admission = match warm {
+            Some(admission) => admission,
+            None => {
+                WorkerProject::resolve(
+                    &dir,
+                    source.package,
+                    source.run_override,
+                    source.executable,
+                    None,
+                    true,
+                )
+                .map_err(SandboxError::SourceRejected)?;
+                self.admission(req.state_key.as_deref())
+                    .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
+            }
+        };
+        let _cache_hold = req
+            .state_key
+            .as_ref()
+            .map(|key| self.hold_build(&vm_id(key)))
+            .transpose()?;
+        let _admission = if let Some(key) = &req.state_key {
+            let vm = self.base.join(vm_id(key));
+            crate::worker_admission::with_paths(
+                _admission,
+                &[crate::worker_admission::PathRequest {
+                    path: &vm,
+                    role: crate::worker_admission::PathRole::MutableTree,
+                }],
+            )
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
+        } else {
+            _admission
+        };
+
+        let _admission =
+            crate::worker_admission::with_inputs(_admission, &[Path::new(source.host_path), &dir])
+                .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _source_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let mut project = WorkerProject::resolve(
+            &dir,
+            source.package,
+            source.run_override,
+            source.executable,
+            None,
+            true,
+        )
+        .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
+        self.prepare_project(req.state_key.as_deref(), &mut project, _admission.clone())
             .await
-            .map_err(|e| SandboxError::PrepareFailed(format!("{e:#}")))?;
-        if crate::cli::overlay::overlay_active() {
-            tokio::task::spawn_blocking(move || crate::cli::erofs::ensure_base_erofs(&rootfs))
-                .await
-                .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
-                .map_err(SandboxError::PrepareFailed)?;
-        }
+            .map_err(SandboxError::PrepareFailed)?;
         // For a client reattaching to a live boot: its `start` writes nothing, it gets S502.
         if let Some(state_key) = &req.state_key {
             let vm_dir = self.base.join(vm_id(state_key));
-            std::fs::create_dir_all(&vm_dir)
-                .and_then(|()| store_state_key(&vm_dir, state_key))
+            write_control_admitted(&_admission, &vm_dir, STATE_KEY_FILE, state_key.as_bytes())
                 .map_err(|e| SandboxError::PrepareFailed(format!("{}: {e}", vm_dir.display())))?;
         }
         Ok(WorkerPrepareResponse {})
@@ -248,20 +576,159 @@ impl WorkerVms {
         &self,
         req: WorkerStartRequest,
     ) -> Result<WorkerStartResponse, SandboxError> {
+        self.start_with_cache_admission(req, WorkerProject::admit_cache)
+            .await
+    }
+
+    async fn start_with_cache_admission(
+        &self,
+        req: WorkerStartRequest,
+        admit_cache: impl FnOnce(
+            &WorkerProject,
+            crate::worker_admission::Lease,
+        ) -> Result<crate::worker_admission::Lease, String>,
+    ) -> Result<WorkerStartResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        // Compose presents the project token and supervises its VMs itself.
-        let leased = !self.is_project_token(&req.auth);
         let source = Source::of(&req.source);
         if source.executable.is_some() && req.build.is_none() {
             return Err(SandboxError::SourceRejected(
                 BINARY_NEEDS_A_BUILD.to_string(),
             ));
         }
+        // PRODUCTION FIX (sweep regression): refuse custody before even
+        // canonicalizing the source or the build directory; see warm_admission.
+        let warm = self
+            .warm_admission(Some(&req.state_key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let dir = self.admit(source.host_path)?;
+        if let Some(build) = &req.build {
+            let build_dir = self.admit(&build.build_dir)?;
+            let context = self
+                .cache_context()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            for path in [
+                PathBuf::from(&build.build_dir),
+                build_dir.join(IMAGE_FILE),
+                build_dir.join(IMAGE_ID_FILE),
+            ] {
+                context
+                    .reject_retained_path(&path)
+                    .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            }
+        }
+        self.cache_context()
+            .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let admission = match warm {
+            Some(admission) => admission,
+            None => {
+                WorkerProject::resolve(
+                    &dir,
+                    source.package,
+                    source.run_override,
+                    source.executable,
+                    None,
+                    req.build.is_none(),
+                )
+                .map_err(SandboxError::SourceRejected)?;
+                self.admission(Some(&req.state_key))
+                    .map_err(|e| SandboxError::BootFailed(e.to_string()))?
+            }
+        };
+        // Compose presents the project token and supervises its VMs itself.
+        let leased = !self.is_project_token(&req.auth);
+
+        // Admit the supplied spellings as well as authorized canonical paths:
+        // canonicalization must not hide symlinks or traversal from admission.
+        let mut inputs = vec![PathBuf::from(source.host_path), dir.clone()];
+        let id = vm_id(&req.state_key);
+        let _cache_hold = self.hold_build(&id)?;
+        let vm_dir = self.base.join(&id);
+        inputs.push(vm_dir.join("root"));
+        inputs.push(vm_dir.join("root").join(crate::cli::upper::UPPER_NAME));
+        inputs.push(vm_dir.join(
+            if req.build.is_some() || crate::cli::overlay::overlay_active() {
+                "root/runtime"
+            } else {
+                "root/opt/iii"
+            },
+        ));
+        inputs.push(vm_dir.join(crate::cli::upper::UPPER_NAME));
+        inputs.push(vm_dir.clone());
+        let mutable_end = inputs.len();
+        let owned_build = req.build.as_ref().and_then(|build| {
+            self.published_builds
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&id)
+                .filter(|published| published.directory == Path::new(&build.build_dir))
+                .cloned()
+        });
+        let owned_reads = owned_build
+            .as_ref()
+            .map(PublishedBuild::read)
+            .transpose()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        if let Some(build) = &req.build {
+            if owned_build.is_none() {
+                let build_dir = self.admit(&build.build_dir)?;
+                inputs.push(PathBuf::from(&build.build_dir));
+                inputs.push(build_dir.join(IMAGE_FILE));
+                inputs.push(build_dir.join(IMAGE_ID_FILE));
+                inputs.push(build_dir);
+            }
+        }
+        let inputs: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
+        let requests: Vec<_> = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, path)| crate::worker_admission::PathRequest {
+                path,
+                role: if index >= 2 && index < mutable_end {
+                    if path
+                        .file_name()
+                        .is_some_and(|name| name == crate::cli::upper::UPPER_NAME)
+                    {
+                        crate::worker_admission::PathRole::MutableFile
+                    } else {
+                        crate::worker_admission::PathRole::MutableTree
+                    }
+                } else {
+                    crate::worker_admission::PathRole::Strict
+                },
+            })
+            .collect();
+        let admission = crate::worker_admission::with_paths(admission, &requests)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         if req.build.is_some() && !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
         }
-        let id = vm_id(&req.state_key);
+        let _source_use = admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let mut resolved = WorkerProject::resolve(
+            &dir,
+            source.package,
+            source.run_override,
+            source.executable,
+            None,
+            req.build.is_none(),
+        )
+        .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
+        let admission = if req.build.is_none() {
+            admit_cache(&resolved, admission).map_err(SandboxError::BootFailed)?
+        } else {
+            admission
+        };
+        if req.build.is_none() {
+            self.prepare_project(Some(&req.state_key), &mut resolved, admission.clone())
+                .await
+                .map_err(SandboxError::BootFailed)?;
+        }
+        admission
+            .revalidate()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let start = self.starts.fetch_add(1, Ordering::SeqCst);
         {
             let mut slots = self.slots();
@@ -273,21 +740,30 @@ impl WorkerVms {
         // Under the reservation: no destroy runs while the claim writes the
         // VM's build-dir record, so none leaves it behind.
         let image = match &req.build {
-            Some(build) => Some(self.admit_build(&req.auth, &req.state_key, build)?),
+            Some(build) => Some(self.admit_build_read(
+                &req.auth,
+                &req.state_key,
+                build,
+                admission.clone(),
+                owned_build.as_ref(),
+                owned_reads.as_ref(),
+            )?),
             None => None,
         };
-        // A build's image is made: its base image no longer matters.
-        source.validate(&dir, req.build.is_none())?;
+        // Use the project selected before reservation; do not re-read its manifest.
         let mut notes = Vec::new();
         let image = match image {
             Some(image) => {
                 let vm_dir = self.base.join(&id);
-                let (upper, kept) = adopt_build_mode(&vm_dir, &req.worker_name).map_err(|e| {
-                    SandboxError::BootFailed(format!(
-                        "cannot set up the data disk in {}: {e}",
-                        vm_dir.display()
-                    ))
-                })?;
+                let (upper, kept) =
+                    adopt_build_mode_admitted(&admission, &vm_dir, &req.worker_name).map_err(
+                        |e| {
+                            SandboxError::BootFailed(format!(
+                                "cannot set up the data disk in {}: {e}",
+                                vm_dir.display()
+                            ))
+                        },
+                    )?;
                 // Now: the seal is written, so no later start logs them again.
                 for note in &kept {
                     tracing::warn!(vm_id = %id, "{note}");
@@ -303,16 +779,60 @@ impl WorkerVms {
             extra_env: req.env.into_iter().collect(),
             image,
         };
-        let built = match (source.package, source.executable) {
-            (Some(package), Some(executable)) => {
-                binary_vm_command(package, executable, &req.worker_name, &dir, over).await
+        if let Some(reads) = &owned_reads {
+            reads
+                .directory
+                .revalidate()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            reads
+                .id
+                .revalidate()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        }
+        if let Some(reads) = &owned_reads {
+            let read = admission
+                .use_path(reads.image.path())
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            resolved = resolved.with_published_image(read);
+        }
+        #[cfg(test)]
+        let fixture = self
+            .start_fixture
+            .map(|fixture| fixture(&admission, &self.base));
+        #[cfg(not(test))]
+        let fixture: Option<
+            Result<crate::cli::worker_manager::libkrun::VmCommand, String>,
+        > = None;
+        let built = match fixture {
+            Some(command) => command,
+            None => {
+                resolved
+                    .start(
+                        &req.worker_name,
+                        &dir,
+                        source.package,
+                        over,
+                        admission.clone(),
+                    )
+                    .await
             }
-            (Some(package), None) => bundle_vm_command(package, &req.worker_name, &dir, over).await,
-            (None, _) => local_vm_command(&req.worker_name, &dir, source.run_override, over).await,
         }
         .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
         let started = self
-            .launch(&req.state_key, built.command, built.env_stdin, Some(start))
+            .launch_admitted(
+                &req.state_key,
+                built.command,
+                built.env_stdin,
+                Some(start),
+                admission,
+                built.lifecycle_leases,
+                Some(built.runtime_paths),
+                built.runtime_endpoints,
+                owned_reads
+                    .into_iter()
+                    .flat_map(|reads| [reads.directory, reads.image, reads.id])
+                    .collect(),
+            )
             .map_err(|e| match e {
                 SandboxError::BootFailed(e) => SandboxError::BootFailed(with_notes(e, &notes)),
                 e => e,
@@ -348,9 +868,69 @@ impl WorkerVms {
         state_key: &str,
         build: &WorkerBuildRef,
     ) -> Result<PathBuf, SandboxError> {
+        let admission = self
+            .admission(Some(state_key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        self.admit_build_on(auth, state_key, build, admission)
+    }
+
+    fn admit_build_on(
+        &self,
+        auth: &str,
+        state_key: &str,
+        build: &WorkerBuildRef,
+        admission: crate::worker_admission::Lease,
+    ) -> Result<PathBuf, SandboxError> {
+        self.admit_build_read(auth, state_key, build, admission, None, None)
+    }
+
+    fn admit_build_read(
+        &self,
+        auth: &str,
+        state_key: &str,
+        build: &WorkerBuildRef,
+        admission: crate::worker_admission::Lease,
+        published: Option<&PublishedBuild>,
+        reads: Option<&BuildReads>,
+    ) -> Result<PathBuf, SandboxError> {
         let dir = self.admit(&build.build_dir)?;
-        self.claim_build_dir(auth, state_key, &dir, "build_dir")?;
+        // The start caller retains its operation through the waiter.
+        // independent guard here too, through the claim and image inspection.
+        let _admission = if let (Some(published), Some(reads)) = (published, reads) {
+            if published.directory != dir || Path::new(&build.build_dir) != dir {
+                return Err(SandboxError::BuildMismatch(
+                    "published build path does not match exact output".into(),
+                ));
+            }
+            reads
+                .directory
+                .revalidate()
+                .and_then(|_| reads.image.revalidate())
+                .and_then(|_| reads.id.revalidate())
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+            admission
+        } else {
+            crate::worker_admission::with_inputs(
+                admission,
+                &[
+                    Path::new(&build.build_dir),
+                    &dir,
+                    &dir.join(IMAGE_FILE),
+                    &dir.join(IMAGE_ID_FILE),
+                ],
+            )
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?
+        };
+        self.claim_build_dir_on(auth, state_key, &dir, "build_dir", Some(&_admission))?;
+        let _directory_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let wanted = build.build_id.trim();
+        if published.is_some_and(|published| published.build_id != wanted) {
+            return Err(SandboxError::BuildMismatch(
+                "requested id does not name this completed publication".into(),
+            ));
+        }
         match read_image_id(&dir) {
             Some(found) if found == wanted => {}
             Some(found) => {
@@ -388,34 +968,172 @@ impl WorkerVms {
         iii: &IIIClient,
         req: WorkerBuildRequest,
     ) -> Result<WorkerBuildResponse, SandboxError> {
+        self.build_with_cache_admission(iii, req, WorkerProject::admit_cache)
+            .await
+    }
+
+    async fn build_with_cache_admission(
+        &self,
+        iii: &IIIClient,
+        req: WorkerBuildRequest,
+        admit_cache: impl FnOnce(
+            &WorkerProject,
+            crate::worker_admission::Lease,
+        ) -> Result<crate::worker_admission::Lease, String>,
+    ) -> Result<WorkerBuildResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        if !crate::cli::overlay::overlay_active() {
-            return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
-        }
         let source = Source::of(&req.source);
         let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
         let dir = self.admit(source.host_path)?;
         let planned = self.plan_output(&req.output_dir)?;
+        let context = self
+            .cache_context()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        for path in [
+            PathBuf::from(&req.output_dir),
+            planned.join(IMAGE_FILE),
+            planned.join(IMAGE_ID_FILE),
+        ] {
+            context
+                .reject_retained_path(&path)
+                .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        }
+        self.cache_context()
+            .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        if std::fs::symlink_metadata(&self.base).is_err() {
+            WorkerProject::resolve(
+                &dir,
+                source.package,
+                source.run_override,
+                source.executable,
+                base_image,
+                true,
+            )
+            .map_err(SandboxError::SourceRejected)?;
+        }
+        let _admission = self
+            .admission(Some(&req.state_key))
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let id = vm_id(&req.state_key);
-        // Dropped last of the locals below: the key is free only once the
-        // writer stopped and the scratch dir is gone.
         let _held = self.hold_build(&id)?;
-        // Under the hold, so no `destroy` removes the claim while this build
-        // writes, and before the directory exists: a refused token creates nothing.
-        self.claim_build_dir(&req.auth, &req.state_key, &planned, "output_dir")?;
-        let out = self.create_output(&planned, &req.output_dir)?;
-        // A base image in the request stands in for the manifest's.
-        source.validate(&dir, base_image.is_none())?;
+        use crate::worker_admission::{PathRequest, PathRole};
+        let _admission = crate::worker_admission::with_paths(
+            _admission,
+            &[
+                PathRequest {
+                    path: Path::new(source.host_path),
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: &dir,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: Path::new(&req.output_dir),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &planned,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &planned.join(IMAGE_FILE),
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &planned.join(IMAGE_ID_FILE),
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &planned.join("image.spool"),
+                    role: PathRole::MutableFile,
+                },
+            ],
+        )
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let _source_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let mut resolved = WorkerProject::resolve(
+            &dir,
+            source.package,
+            source.run_override,
+            source.executable,
+            base_image,
+            true,
+        )
+        .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
+        let _admission = admit_cache(&resolved, _admission).map_err(SandboxError::BuildFailed)?;
+        if !crate::cli::overlay::overlay_active() {
+            return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
+        }
+        let id = vm_id(&req.state_key);
         let vm_dir = self.base.join(&id);
-        sweep_build_scratch(&vm_dir);
-        sweep_image_partials(&out);
+        // A stable declared slot supports repeat builds without adding mutable
+        // layout claims after A's retirement. Reclone preserves prior contents.
+        let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}current"));
+        let _admission = crate::worker_admission::with_paths(
+            _admission,
+            &[
+                PathRequest {
+                    path: &vm_dir,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join("root"),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join("root/runtime"),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join(crate::cli::upper::UPPER_NAME),
+                    role: PathRole::MutableFile,
+                },
+            ],
+        )
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        self.prepare_project(Some(&req.state_key), &mut resolved, _admission.clone())
+            .await
+            .map_err(SandboxError::BuildFailed)?;
         let tag = format!(
             "{}-{}",
             std::process::id(),
             self.build_seq.fetch_add(1, Ordering::SeqCst)
         );
-        let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
-        let _scratch = RemoveOnDrop(scratch.clone());
+        let output_admission = _admission.clone();
+        // The key stays held through the writer. V2 scratch/journal evidence
+        // is not deleted by an unowned Drop or a PID-based sweep.
+        // Under the hold, so no `destroy` removes the claim while this build
+        // writes, and before the directory exists: a refused token creates nothing.
+        self.claim_build_dir_on(
+            &req.auth,
+            &req.state_key,
+            &planned,
+            "output_dir",
+            Some(&_admission),
+        )?;
+        let mut create = _admission
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: planned.clone(),
+            })
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .create_dir_all(&planned, 0o700)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .commit()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let out = planned.clone();
+        // V2 stage/scratch evidence is core-journaled, not swept by PID. Legacy
+        // sweep helpers remain for independent maintenance, not this transaction.
         let writer = ChannelWriter::new(iii.address(), &req.logs);
         let mut log = BuildLog::new(&writer);
         let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
@@ -423,9 +1141,11 @@ impl WorkerVms {
         let done = Mutex::new(BuildDone::default());
         let job = BuildJob {
             worker_name: &req.worker_name,
+            admission: _admission.clone(),
+            output_admission,
             dir: &dir,
-            source,
-            base_image,
+            resolved,
+            package: source.package,
             out: &out,
             scratch: &scratch,
             tag: &tag,
@@ -434,6 +1154,14 @@ impl WorkerVms {
             image_writer: &image_writer,
             done: &done,
         };
+        self.retired_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+        self.published_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
         let mut built = tokio::select! {
             built = job.run(&mut log) => built,
             gone = reader_gone(&writer, BUILD_KEEPALIVE) => Err(SandboxError::BuildFailed(
@@ -441,8 +1169,8 @@ impl WorkerVms {
             )),
         };
         if built.is_err() {
-            // The build VM died with the dropped run; a writer still in its
-            // blocking part stops, renames nothing and removes its files.
+            // Await the blocking writer. Its uncommitted stages remain under
+            // core recovery custody; cancellation never implies disposal.
             let written = cancel_writer(&image_writer, &state).await;
             // Unless the image was already in place: then the build is done.
             let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
@@ -455,6 +1183,20 @@ impl WorkerVms {
                     base_image,
                     built_at_ms: now_ms(),
                 });
+            }
+        }
+        if let Ok(response) = &built {
+            self.remember_publication(&req.state_key, &_admission, &out, &response.build_id);
+            if let Some(receipt) = done
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retirement
+                .clone()
+            {
+                self.retired_builds
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(id.clone(), receipt);
             }
         }
         match &built {
@@ -471,11 +1213,39 @@ impl WorkerVms {
         built
     }
 
+    fn remember_publication(
+        &self,
+        key: &str,
+        lease: &crate::worker_admission::Lease,
+        out: &Path,
+        id: &str,
+    ) {
+        self.published_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                vm_id(key),
+                PublishedBuild {
+                    lease: lease.clone(),
+                    directory: out.to_path_buf(),
+                    build_id: id.to_string(),
+                },
+            );
+    }
+
     /// Reserve `vm_id` for one build: S509 while another build holds it, S502
     /// while it is being destroyed.
     fn hold_build(&self, vm_id: &str) -> Result<BuildHold<'_>, SandboxError> {
         let slots = self.slots();
-        if let Some(Slot::Destroying(instance)) = slots.get(vm_id) {
+        if let Some(Slot::Booted(vm)) = slots.get(vm_id) {
+            if vm.lifecycle.is_some() && vm.receipt().is_err() {
+                return Err(SandboxError::StateBusy {
+                    vm_id: vm_id.to_string(),
+                    instance: vm.instance,
+                });
+            }
+        }
+        if let Some(Slot::Preparing(instance, ..) | Slot::Destroying(instance)) = slots.get(vm_id) {
             return Err(SandboxError::StateBusy {
                 vm_id: vm_id.to_string(),
                 instance: *instance,
@@ -583,6 +1353,17 @@ impl WorkerVms {
         dir: &Path,
         field: &str,
     ) -> Result<(), SandboxError> {
+        self.claim_build_dir_on(auth, state_key, dir, field, None)
+    }
+
+    fn claim_build_dir_on(
+        &self,
+        auth: &str,
+        state_key: &str,
+        dir: &Path,
+        field: &str,
+        admission: Option<&crate::worker_admission::Lease>,
+    ) -> Result<(), SandboxError> {
         if self.is_project_token(auth) {
             return Ok(());
         }
@@ -590,6 +1371,19 @@ impl WorkerVms {
         let token = self.token.as_deref().unwrap_or("");
         let id = vm_id(state_key);
         let _claims = self.claims.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(lease) = admission {
+            let mut create = lease
+                .begin(crate::worker_admission::MutationPlan::Create {
+                    root: self.base.join(&id),
+                })
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+            create
+                .create_dir_all(&self.base.join(&id), 0o700)
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+            create
+                .commit()
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+        }
         let _lock = lock_build_dirs(&self.base).map_err(SandboxError::FsIo)?;
         let here = dir_identity(dir);
         let mut own = None;
@@ -611,7 +1405,21 @@ impl WorkerVms {
             return Ok(());
         }
         // A first claim, a move from another directory, or a new spelling.
-        store_build_dir(&self.base, &id, state_key, dir, token).map_err(|e| {
+        let stored = if let Some(lease) = admission {
+            let record = BuildDirRecord {
+                state_key: state_key.to_string(),
+                dir: dir.to_path_buf(),
+                mac: hex::encode(build_dir_mac(token, state_key, dir).finalize().into_bytes()),
+            };
+            serde_json::to_vec(&record)
+                .map_err(io::Error::other)
+                .and_then(|bytes| {
+                    write_control_admitted(lease, &self.base.join(&id), BUILD_DIR_RECORD, &bytes)
+                })
+        } else {
+            store_build_dir(&self.base, &id, state_key, dir, token)
+        };
+        stored.map_err(|e| {
             SandboxError::FsIo(format!("cannot record the build directory of VM {id}: {e}"))
         })
     }
@@ -619,6 +1427,7 @@ impl WorkerVms {
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
     /// into `console.log`, and write `env_stdin` (the `--env-stdin` frame) to
     /// its stdin. `start` names the `start` call whose reservation this fills.
+    #[cfg(test)]
     pub(crate) fn launch(
         &self,
         state_key: &str,
@@ -626,6 +1435,51 @@ impl WorkerVms {
         env_stdin: Vec<u8>,
         start: Option<u64>,
     ) -> Result<WorkerStartResponse, SandboxError> {
+        let admission = self
+            .admission(Some(state_key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        self.launch_admitted(
+            state_key,
+            cmd,
+            env_stdin,
+            start,
+            admission,
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    fn launch_admitted(
+        &self,
+        state_key: &str,
+        cmd: Command,
+        env_stdin: Vec<u8>,
+        start: Option<u64>,
+        admission: crate::worker_admission::Lease,
+        local_leases: Vec<crate::worker_admission::Lease>,
+        runtime_paths: Option<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>>,
+        runtime_endpoints: Vec<PathBuf>,
+        image_reads: Vec<crate::worker_admission::UseGuard>,
+    ) -> Result<WorkerStartResponse, SandboxError> {
+        let control = self.base.join(vm_id(state_key));
+        let admission = crate::worker_admission::with_paths(
+            admission,
+            &[crate::worker_admission::PathRequest {
+                path: &control,
+                role: crate::worker_admission::PathRole::MutableTree,
+            }],
+        )
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        admission
+            .revalidate()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        for lease in &local_leases {
+            lease
+                .revalidate()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        }
         let id = vm_id(state_key);
         let dir = self.base.join(&id);
         // Held to the insert, so two launches of one key cannot both spawn.
@@ -641,63 +1495,131 @@ impl WorkerVms {
             }
         }
         let instance = self.next_instance(&id)?;
-        let (console, lifeline, mut child) =
-            spawn(&dir, state_key, instance, cmd).map_err(|e| {
-                SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
-            })?;
-        let console = Arc::new(Mutex::new(Console {
-            dir,
-            file: console,
-            len: 0,
-            base: 0,
-        }));
+        let (console, lifeline, mut child, startup_error) =
+            spawn_admitted(&admission, &dir, state_key, instance, cmd, runtime_paths).map_err(
+                |e| SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display())),
+            )?;
+        let console = Arc::new(Mutex::new(console));
+        #[cfg(test)]
+        let fixture_pidfd = child.take_fixture_pidfd();
+        let stdin = child.take_stdin();
+        let stdout = child.take_stdout().expect("stdout is piped");
+        let stderr = child.take_stderr().expect("stderr is piped");
+        let (lifecycle, completion) = child.supervise(admission.clone(), runtime_endpoints);
         let vm = Arc::new(Vm {
             instance,
-            pid: Pid::from_raw(child.id().expect("a just-spawned child has a pid") as i32),
+            #[cfg(test)]
+            fixture_pidfd,
+            lifecycle,
+            admission: admission.clone(),
+            retirement: Mutex::new(None),
             started_at_ms: now_ms(),
             stopping: AtomicBool::new(false),
+            #[cfg(test)]
             reaped: AtomicBool::new(false),
             ended: watch::Sender::new(None),
             console: console.clone(),
             followers: watch::Sender::new(0),
             leased: AtomicBool::new(false),
         });
-        let stdin = child.stdin.take();
-        tokio::spawn(async move {
-            // On failure the VM gets a truncated frame and exits by itself,
-            // with the reason in its console.log.
-            if let Err(e) =
-                crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
-            {
-                tracing::warn!(error = %e, "cannot send the worker environment to the VM");
-            }
+        let feed = tokio::spawn(async move {
+            crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
         });
         let pumps = [
-            tokio::spawn(pump(
-                child.stdout.take().expect("stdout is piped"),
-                LogStream::Stdout,
-                console.clone(),
-            )),
-            tokio::spawn(pump(
-                child.stderr.take().expect("stderr is piped"),
-                LogStream::Stderr,
-                console,
-            )),
+            tokio::spawn(pump(stdout, LogStream::Stdout, console.clone())),
+            tokio::spawn(pump(stderr, LogStream::Stderr, console)),
         ];
         let waited = vm.clone();
+        let mut held = local_leases;
+        held.push(admission);
+        let writer_admission = crate::worker_admission::WriterLease::new(held);
         tokio::spawn(async move {
-            let status = child.wait().await.ok();
-            waited.reaped.store(true, Ordering::SeqCst);
+            let _image_reads = image_reads;
+            let (status, mut retirement) = match completion.await {
+                Ok(result) => result,
+                Err(error) => (None, Err(format!("worker completion task: {error}"))),
+            };
+            #[cfg(test)]
+            waited.reaped.store(status.is_some(), Ordering::SeqCst);
             drop(lifeline);
-            // So an exited VM's log is complete.
-            let _ = tokio::time::timeout(DRAIN_GRACE, futures::future::join_all(pumps)).await;
+            let mut feed = feed;
+            match tokio::time::timeout(DRAIN_GRACE, &mut feed).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => {
+                    retirement = Err(format!("worker environment delivery failed: {error}"))
+                }
+                Ok(Err(error)) => {
+                    retirement = Err(format!("worker environment task failed: {error}"))
+                }
+                Err(_) => {
+                    feed.abort();
+                    if let Err(error) = feed.await {
+                        tracing::warn!(%error, "worker environment task joined after deadline");
+                    }
+                    retirement =
+                        Err("worker environment delivery deadline; preserving lifecycle".into());
+                }
+            }
+            for mut pump in pumps {
+                match tokio::time::timeout(DRAIN_GRACE, &mut pump).await {
+                    Ok(Ok(Ok(()))) => {}
+                    Ok(Ok(Err(error))) => {
+                        retirement = Err(format!("console pipe read failed: {error}"))
+                    }
+                    Ok(Err(error)) => retirement = Err(format!("console pump failed: {error}")),
+                    Err(_) => {
+                        pump.abort();
+                        if let Err(error) = pump.await {
+                            tracing::warn!(%error, "console pump joined after drain deadline");
+                        }
+                        retirement = Err("console pump did not drain; preserving lifecycle".into());
+                    }
+                }
+            }
+            // Every pump has joined (or was aborted and joined), so the console
+            // owns the last writer clone: finish it before any receipt can reach
+            // Remove or H1. A failed/unfinished log keeps the record uncertain.
+            let finished = waited
+                .console
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .finish();
+            if let Err(error) = finished {
+                retirement = Err(format!(
+                    "console log did not finish; cleanup retained: {error}"
+                ));
+            }
+            if let (Ok(Some(receipt)), Some(session)) = (&retirement, &waited.lifecycle) {
+                if let Err(error) = session.finish_resources(receipt).await {
+                    retirement = Err(format!("worker endpoint retirement failed: {error}"));
+                }
+            }
+            if retirement.is_ok() {
+                writer_admission.reaped();
+            }
+            *waited
+                .retirement
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(retirement.and_then(|receipt| {
+                receipt.ok_or_else(|| "fixture has no production retirement receipt".into())
+            }));
+            drop(_image_reads);
             waited.ended.send_replace(Some(Ended {
                 exit_code: status.and_then(|s| s.code()),
                 signal: status.and_then(|s| s.signal()),
                 at_ms: now_ms(),
             }));
         });
+        // Any actual later writer invalidates a build receipt. The core also
+        // verifies this; never prefer an older successful build over this slot.
+        self.retired_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
         slots.insert(id.clone(), Slot::Booted(vm));
+        if let Some(error) = startup_error {
+            return Err(SandboxError::BootFailed(error));
+        }
         Ok(WorkerStartResponse {
             vm_id: id,
             instance,
@@ -745,7 +1667,9 @@ impl WorkerVms {
             });
         }
         let vm = booted(&req.vm_id, self.lookup(&req.vm_id, req.instance)?)?;
-        vm.stop(Duration::from_millis(req.grace_ms)).await;
+        vm.stop(Duration::from_millis(req.grace_ms))
+            .await
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         Ok(Slot::Booted(vm).status(&req.vm_id))
     }
 
@@ -861,23 +1785,45 @@ impl WorkerVms {
         let dir = self.base.join(&id);
         // The marker, not the lock, keeps a `start` out of a half-removed dir:
         // a legacy rootfs clone takes seconds to remove.
-        let (prev, last) = {
+        let (prev, last, admission, receipt) = {
             let mut slots = self.slots();
             refuse_busy(&id, slots.get(&id))?;
             // The build writes in `<vm_id>/`, so it must end first.
             if self.builds().contains(&id) {
                 return Err(SandboxError::BuildInProgress(id));
             }
-            let instance = slots.get(&id).map_or(0, Slot::instance);
+            let (admission, receipt, instance) = match slots.get(&id) {
+                Some(Slot::Booted(vm)) => (
+                    vm.admission.clone(),
+                    vm.receipt()
+                        .map_err(|e| SandboxError::FsIo(e.to_string()))?,
+                    vm.instance,
+                ),
+                _ => {
+                    let receipt = self.retired_builds.lock().unwrap_or_else(PoisonError::into_inner).get(&id).cloned()
+                        .ok_or_else(|| SandboxError::FsIo("destroy has no original lifecycle retirement proof; retain for explicit recovery".into()))?;
+                    let admission = self
+                        .operations
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get(&req.state_key)
+                        .cloned()
+                        .ok_or_else(|| {
+                            SandboxError::FsIo("retired build lost its original operation".into())
+                        })?;
+                    (admission, receipt, 0)
+                }
+            };
             // A daemon restarted since the last boot knows it only from disk.
             let last = instance.max(stored_instance(&dir).unwrap_or(0));
-            (slots.insert(id.clone(), Slot::Destroying(instance)), last)
+            (
+                slots.insert(id.clone(), Slot::Destroying(instance)),
+                last,
+                admission,
+                receipt,
+            )
         };
-        let removed = if req.prune {
-            std::fs::remove_dir_all(&dir).map(|()| (true, Vec::new()))
-        } else {
-            remove_runtime_state(&dir, &id)
-        };
+        let removed = remove_runtime_state_admitted(&admission, &receipt, &dir, &id, req.prune);
         let mut slots = self.slots();
         slots.remove(&id);
         // Even on failure: the removal may have reached `state.json` already.
@@ -886,7 +1832,6 @@ impl WorkerVms {
         }
         let (destroyed, kept) = match removed {
             Ok((removed, kept)) => (removed, kept),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (false, Vec::new()),
             Err(e) => {
                 // Its state is still there, so keep reporting it.
                 if let Some(prev) = prev {
@@ -898,6 +1843,11 @@ impl WorkerVms {
                 )));
             }
         };
+        // Keep the same lifecycle proof for same-process idempotent cleanup;
+        // the core, not absence alone, decides if a consumed receipt permits it.
+        if let Some(previous) = prev {
+            slots.insert(id.clone(), previous);
+        }
         let kept: Vec<String> = kept.iter().map(|p| p.display().to_string()).collect();
         for path in &kept {
             tracing::info!(vm_id = %id, path = %path, "worker::destroy kept the VM's data");
@@ -1031,10 +1981,11 @@ impl Drop for BuildHold<'_> {
 /// One `worker::build`, from its build VM to the renamed image.
 struct BuildJob<'a> {
     worker_name: &'a str,
+    admission: crate::worker_admission::Lease,
+    output_admission: crate::worker_admission::Lease,
     dir: &'a Path,
-    source: Source<'a>,
-    /// The request's base image, over the manifest's; a binary package's.
-    base_image: Option<&'a str>,
+    resolved: WorkerProject,
+    package: Option<&'a str>,
     out: &'a Path,
     scratch: &'a Path,
     /// Names the temporary image files: `<pid>-<seq>`.
@@ -1053,30 +2004,49 @@ struct BuildJob<'a> {
 struct BuildDone {
     base_image: Option<BaseImageRef>,
     response: Option<WorkerBuildResponse>,
+    retirement: Option<crate::worker_admission::WriterRetirement>,
 }
 
 impl BuildJob<'_> {
     async fn run(self, log: &mut BuildLog<'_>) -> Result<WorkerBuildResponse, SandboxError> {
-        std::fs::create_dir_all(self.scratch).map_err(|e| {
-            SandboxError::BuildFailed(format!("cannot create {}: {e}", self.scratch.display()))
-        })?;
+        self.admission
+            .revalidate()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let mut create = self
+            .admission
+            .begin(crate::worker_admission::MutationPlan::Reclone {
+                root: self.scratch.to_path_buf(),
+            })
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let stage = create
+            .stage_tree(self.scratch)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .publish_tree(stage)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .commit()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         log.note(format!(
             "iii: building {} from {}",
             self.worker_name,
             self.dir.display()
         ))
         .await?;
-        let vm = image_build_command(
-            self.dir,
-            self.source.package,
-            self.source.run_override,
-            self.source.executable,
-            self.base_image,
-            self.scratch,
-            self.env,
-        )
-        .await
-        .map_err(SandboxError::BuildFailed)?;
+        self.admission
+            .revalidate()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let mut vm = self
+            .resolved
+            .build(
+                self.dir,
+                self.package,
+                self.scratch,
+                self.env,
+                self.admission.clone(),
+            )
+            .await
+            .map_err(SandboxError::BuildFailed)?;
         self.done
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1086,7 +2056,17 @@ impl BuildJob<'_> {
         });
         log.note(format!("iii: build VM on {}", vm.reference))
             .await?;
-        let status = run_build_vm(vm.command, log).await?;
+        // A dropped build future must not release source/output fences while
+        // its VM may still write. Transfer the outer composite to WriterLease.
+        vm.command
+            .lifecycle_leases
+            .extend([self.admission.clone(), self.output_admission.clone()]);
+        let image_admissions = vm.command.lifecycle_leases.clone();
+        let (status, receipt) = run_build_vm(vm.command, log).await?;
+        self.done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retirement = Some(receipt);
         if !status.success() {
             let how = match (status.code(), status.signal()) {
                 (Some(code), _) => format!("exited {code}"),
@@ -1100,13 +2080,19 @@ impl BuildJob<'_> {
             )));
         }
         log.note("iii: writing the image".to_string()).await?;
+        for lease in &image_admissions {
+            lease
+                .revalidate()
+                .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        }
         let export = open_build_export(&vm.root).map_err(|e| {
             SandboxError::BuildFailed(format!("the build VM left no image root: {e}"))
         })?;
         let image = ImageWrite {
+            _admissions: image_admissions,
             export,
             out: self.out.to_path_buf(),
-            spool: self.scratch.join("image.spool"),
+            spool: self.out.join("image.spool"),
             base_rootfs: vm.base_rootfs,
             tag: self.tag.to_string(),
             state: self.state.clone(),
@@ -1180,29 +2166,10 @@ async fn cancel_writer(slot: &WriterSlot, state: &AtomicU8) -> Option<Result<Str
     )
 }
 
-/// The temporary image files a build of an earlier adapter process left in
-/// `out` (it died while writing): `.image.erofs.<pid>-<n>.partial` and
-/// `.image.id.<pid>-<n>.partial` of another pid. This process's own may be a
-/// running build's.
+/// Preserve temporary image evidence left by another or this process. There
+/// is deliberately no PID-based removal authority in this compatibility hook.
 fn sweep_image_partials(out: &Path) {
-    let Ok(entries) = std::fs::read_dir(out) else {
-        return;
-    };
-    let mine = std::process::id().to_string();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(tag) = name.to_str().and_then(|name| {
-            [IMAGE_FILE, IMAGE_ID_FILE].iter().find_map(|file| {
-                name.strip_prefix(&format!(".{file}."))?
-                    .strip_suffix(".partial")
-            })
-        }) else {
-            continue;
-        };
-        if pid_seq(tag).is_some_and(|pid| pid != mine) {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
+    tracing::warn!(path=%out.display(), "partial images retained: PID/name is not disposal authority");
 }
 
 /// The pid of a `<pid>-<seq>` build tag.
@@ -1212,48 +2179,122 @@ fn pid_seq(tag: &str) -> Option<&str> {
     (digits(pid) && digits(seq)).then_some(pid)
 }
 
-/// Spawn a build VM and stream its output into `log` until it exits. Dropped
-/// early, it kills the VM.
+/// Spawn a build VM and stream its output. Cancellation retains the owned
+/// supervisor; lifeline policy and core control, never Tokio raw-PID Drop,
+/// determine process termination. No receipt is fabricated on cancellation.
 async fn run_build_vm(
     vm: crate::cli::worker_manager::libkrun::VmCommand,
     log: &mut BuildLog<'_>,
-) -> Result<std::process::ExitStatus, SandboxError> {
+) -> Result<
+    (
+        std::process::ExitStatus,
+        crate::worker_admission::WriterRetirement,
+    ),
+    SandboxError,
+> {
+    // These local preparation guards supplement the outer worker build guard.
+    // Cancellation may drop this future before Child::wait: retain their shared
+    // leases conservatively unless successful wait proves the writer is gone.
+    let runtime_endpoints = vm.runtime_endpoints;
+    let lifecycle_leases = vm.lifecycle_leases;
+    for lease in &lifecycle_leases {
+        lease
+            .revalidate()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+    }
     let mut cmd = vm.command;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let spawned = crate::daemon_exit::attach_lifeline(&mut cmd)
-        .and_then(|lifeline| Ok((lifeline, cmd.spawn()?)));
-    let (_lifeline, mut child) = spawned
-        .map_err(|e| SandboxError::BuildFailed(format!("cannot launch the build VM: {e}")))?;
-    let stdin = child.stdin.take();
-    let env_stdin = vm.env_stdin;
-    tokio::spawn(async move {
-        if let Err(e) = crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
-        {
-            tracing::warn!(error = %e, "cannot send the build environment to the VM");
-        }
-    });
-    let (lines, mut received) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(forward_lines(
-        child.stdout.take().expect("stdout is piped"),
-        LogStream::Stdout,
-        lines.clone(),
-    ));
-    tokio::spawn(forward_lines(
-        child.stderr.take().expect("stderr is piped"),
-        LogStream::Stderr,
-        lines,
-    ));
-    let status = loop {
-        tokio::select! {
-            Some((stream, line)) = received.recv() => log.record(stream, line).await?,
-            status = child.wait() => break status.map_err(|e| {
-                SandboxError::BuildFailed(format!("cannot wait for the build VM: {e}"))
-            })?,
+        .stderr(Stdio::piped());
+    let admission = lifecycle_leases
+        .first()
+        .ok_or_else(|| SandboxError::BuildFailed("build has no runtime admission".into()))?;
+    let paths: Vec<_> = vm
+        .runtime_paths
+        .iter()
+        .map(|(path, kind)| crate::worker_admission::RuntimePath { path, kind: *kind })
+        .collect();
+    let launch = admission
+        .prepare_runtime(&paths)
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+    let _lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+    let mut child = match launch.spawn(cmd) {
+        Ok(child) => child,
+        Err(error) => {
+            let (cause, child) = error.into_parts();
+            if let Some(mut child) = child {
+                drop(child.take_stdin());
+                let stdout = child.take_stdout();
+                let stderr = child.take_stderr();
+                let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+                    child,
+                    admission.clone(),
+                    runtime_endpoints.clone(),
+                );
+                tokio::spawn(async move {
+                    if let Some(mut stdout) = stdout {
+                        if let Err(error) =
+                            tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await
+                        {
+                            tracing::warn!(%error, "failed-spawn stdout drain");
+                        }
+                    }
+                });
+                tokio::spawn(async move {
+                    if let Some(mut stderr) = stderr {
+                        if let Err(error) =
+                            tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await
+                        {
+                            tracing::warn!(%error, "failed-spawn stderr drain");
+                        }
+                    }
+                });
+                tokio::spawn(async move {
+                    let (_, result) = session.wait().await;
+                    if let Err(error) = result {
+                        tracing::error!(%error, "failed build spawn retained writer");
+                    }
+                });
+            }
+            return Err(SandboxError::BuildFailed(format!(
+                "cannot launch build: {cause}"
+            )));
         }
     };
+    let stdin = child.take_stdin();
+    let stdout = child.take_stdout().expect("stdout piped");
+    let stderr = child.take_stderr().expect("stderr piped");
+    let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+        child,
+        admission.clone(),
+        runtime_endpoints,
+    );
+    let lifecycle_leases = crate::worker_admission::WriterLease::new(lifecycle_leases);
+    let env_stdin = vm.env_stdin;
+    let feed = tokio::spawn(async move {
+        crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
+    });
+    let (lines, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let pumps = [
+        tokio::spawn(forward_lines(stdout, LogStream::Stdout, lines.clone())),
+        tokio::spawn(forward_lines(stderr, LogStream::Stderr, lines)),
+    ];
+    let waited = session.wait();
+    tokio::pin!(waited);
+    let (status, receipt) = loop {
+        tokio::select! {
+            Some((stream, line)) = received.recv() => log.record(stream, line).await?,
+            completed = &mut waited => {
+                let (status, retirement) = completed;
+                let receipt = retirement.map_err(|e| SandboxError::BuildFailed(format!("build writer retirement: {e}")))?;
+                break (status.ok_or_else(|| SandboxError::BuildFailed("build has no OS exit status".into()))?, receipt);
+            },
+        }
+    };
+    feed.await
+        .map_err(|e| SandboxError::BuildFailed(format!("build env task: {e}")))?
+        .map_err(|e| SandboxError::BuildFailed(format!("build env: {e}")))?;
     // What the VM printed last, unless a grandchild holds the pipes open.
     tokio::time::timeout(DRAIN_GRACE, async {
         while let Some((stream, line)) = received.recv().await {
@@ -1262,8 +2303,20 @@ async fn run_build_vm(
         Ok::<_, SandboxError>(())
     })
     .await
-    .unwrap_or(Ok(()))?;
-    Ok(status)
+    .map_err(|_| {
+        SandboxError::BuildFailed("build output writers did not drain; retaining evidence".into())
+    })??;
+    for pump in pumps {
+        pump.await
+            .map_err(|e| SandboxError::BuildFailed(format!("build pipe task: {e}")))?
+            .map_err(|e| SandboxError::BuildFailed(format!("build pipe read: {e}")))?;
+    }
+    session
+        .finish_resources(&receipt)
+        .await
+        .map_err(|e| SandboxError::BuildFailed(format!("build endpoint retirement: {e}")))?;
+    lifecycle_leases.reaped();
+    Ok((status, receipt))
 }
 
 /// Send one record per line of `out` to `lines`, as `pump` does for a VM's console.
@@ -1271,20 +2324,24 @@ async fn forward_lines(
     out: impl AsyncRead + Unpin,
     stream: LogStream,
     lines: tokio::sync::mpsc::UnboundedSender<(LogStream, String)>,
-) {
+) -> io::Result<()> {
     let mut out = BufReader::new(out);
     let mut line = Vec::new();
     loop {
         line.clear();
         match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return Ok(()),
+            Err(error) => return Err(error),
             Ok(_) => {}
         }
         let text = line.strip_suffix(b"\n").unwrap_or(&line);
         let text = text.strip_suffix(b"\r").unwrap_or(text);
         let text = String::from_utf8_lossy(text).into_owned();
         if lines.send((stream.clone(), text)).is_err() {
-            return;
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "build log receiver closed",
+            ));
         }
     }
 }
@@ -1339,6 +2396,8 @@ impl<'a> BuildLog<'a> {
 
 /// The blocking part of a build: the exported root into an image in `out`.
 struct ImageWrite {
+    /// Survives a dropped async caller until the blocking writer has stopped.
+    _admissions: Vec<crate::worker_admission::Lease>,
     /// The tar the build VM exported.
     export: File,
     out: PathBuf,
@@ -1354,6 +2413,108 @@ impl ImageWrite {
     /// last ([`swap_image`], [`commit_image_id`]). A build cancelled before that
     /// leaves the previous pair; returns the build id.
     fn write(self) -> Result<String, String> {
+        if !self._admissions.is_empty() {
+            return self.write_admitted();
+        }
+        #[cfg(test)]
+        {
+            return self.write_legacy();
+        }
+        #[cfg(not(test))]
+        Err("image writer requires an admitted operation".into())
+    }
+
+    fn write_admitted(self) -> Result<String, String> {
+        let admission = &self._admissions[0];
+        let base = admission
+            .use_path(&self.base_rootfs)
+            .map_err(|e| e.to_string())?;
+        let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
+            admission,
+            crate::worker_admission::MutationPlan::ImagePair {
+                directory: self.out.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let mut image = mutation
+            .apply(|g| g.stage_file(&self.out.join(IMAGE_FILE), 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let mut id = mutation
+            .apply(|g| g.stage_file(&self.out.join(IMAGE_ID_FILE), 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let mut spool = mutation
+            .apply(|g| g.stage_file(&self.spool, 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let config = oci::read_rootfs_file_no_follow(base.path(), Path::new(".oci-config.json"));
+        let extra: Vec<_> = config
+            .ok()
+            .map(|data| crate::cli::erofs::ImageFile {
+                path: ".oci-config.json",
+                data,
+                mode: 0o644,
+            })
+            .into_iter()
+            .collect();
+        let cancelled = || self.state.load(Ordering::SeqCst) == BUILD_CANCELLED;
+        crate::cli::erofs::build_erofs_from_tar_to_files(
+            self.export,
+            image.file_mut().try_clone().map_err(|e| e.to_string())?,
+            spool.file_mut().try_clone().map_err(|e| e.to_string())?,
+            &extra,
+            &cancelled,
+        )?;
+        mutation.checkpoint.check().map_err(|e| e.to_string())?;
+        image
+            .file_mut()
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| e.to_string())?;
+        let mut hash = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let read = image
+                .file_mut()
+                .read(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if read == 0 {
+                break;
+            }
+            hash.update(&bytes[..read]);
+        }
+        let build_id = format!("sha256:{}", hex::encode(hash.finalize()));
+        id.file_mut()
+            .write_all(format!("{build_id}\n").as_bytes())
+            .map_err(|e| e.to_string())?;
+        image.file_mut().sync_all().map_err(|e| e.to_string())?;
+        id.file_mut().sync_all().map_err(|e| e.to_string())?;
+        mutation
+            .apply(|g| g.discard_file(spool))
+            .map_err(|e| format!("{e:#}"))?;
+        self.state
+            .compare_exchange(
+                BUILD_RUNNING,
+                BUILD_COMMITTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| "cancelled".to_string())?;
+        mutation
+            .apply(|g| g.publish_file(image))
+            .map_err(|e| format!("{e:#}"))?;
+        mutation
+            .apply(|g| g.publish_file(id))
+            .map_err(|e| format!("{e:#}"))?;
+        mutation.commit().map_err(|e| format!("{e:#}"))?;
+        Ok(build_id)
+    }
+
+    #[cfg(test)]
+    fn write_legacy(self) -> Result<String, String> {
+        for lease in &self._admissions {
+            lease.revalidate().map_err(|e| e.to_string())?;
+        }
         let tmp_image = self.out.join(format!(".{IMAGE_FILE}.{}.partial", self.tag));
         let tmp_id = self
             .out
@@ -1540,25 +2701,10 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-/// Remove the scratch dirs (`build-<pid>-<seq>`) that a build of an earlier
-/// adapter process left in `vm_dir`; this process's own builds remove theirs.
-/// Nothing else matches: not the `build-mode` seal.
+/// Preserve unresolved build scratch. Only stage disposal or a current exact
+/// cleanup receipt may remove it; a filename/PID is diagnostic evidence only.
 fn sweep_build_scratch(vm_dir: &Path) {
-    let mine = std::process::id().to_string();
-    let Ok(entries) = std::fs::read_dir(vm_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let stale = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(BUILD_SCRATCH_PREFIX))
-            .and_then(pid_seq)
-            .is_some_and(|pid| pid != mine);
-        if stale && entry.file_type().is_ok_and(|t| t.is_dir()) {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
+    tracing::warn!(path=%vm_dir.display(), "scratch retained: only owned stage discard or recovery may remove it");
 }
 
 /// Make `vm_dir` a VM that boots builds; returns its data disk and the lines to
@@ -1568,6 +2714,47 @@ fn sweep_build_scratch(vm_dir: &Path) {
 /// `root.pre-build/`, with a fresh `root/` in its place. The data disk is
 /// `<vm_id>/upper.ext4`, outside `root/` (the guest's share), and outlives
 /// every build; only `worker::destroy` removes it.
+fn adopt_build_mode_admitted(
+    lease: &crate::worker_admission::Lease,
+    vm_dir: &Path,
+    worker: &str,
+) -> io::Result<(PathBuf, Vec<String>)> {
+    let mut guard = lease.begin(crate::worker_admission::MutationPlan::Adopt {
+        root: vm_dir.to_path_buf(),
+    })?;
+    guard.create_dir_all(vm_dir, 0o700)?;
+    let mut notes = Vec::new();
+    let seal = vm_dir.join(BUILD_MODE_SEAL);
+    if std::fs::symlink_metadata(&seal).is_err() {
+        let root = vm_dir.join("root");
+        let old_upper = root.join(crate::cli::upper::UPPER_NAME);
+        if std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file()) {
+            let kept = unused_name(vm_dir, PRE_BUILD_DISK);
+            guard.rename_preserving(&old_upper, &kept)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        if is_rootfs_clone(&root) {
+            let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
+            guard.rename_preserving(&root, &kept)?;
+            guard.create_dir_all(&root, 0o700)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        let mut stage = guard.stage_file(&seal, 0o600)?;
+        stage.file_mut().write_all(b"1\n")?;
+        guard.publish_file(stage)?;
+    }
+    guard.commit()?;
+    let upper = crate::cli::upper::ensure_upper_admitted(lease, vm_dir)?;
+    Ok((upper, notes))
+}
+
+#[cfg(test)]
 fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<String>)> {
     std::fs::create_dir_all(vm_dir)?;
     let mut notes = Vec::new();
@@ -1588,6 +2775,7 @@ fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<Str
 /// overlay disk `root/upper.ext4` to `upper.ext4.pre-build`, a legacy rootfs
 /// clone `root/` to `root.pre-build/` (or the first free `.<n>` of each).
 /// Returns the lines to log, and whether `root/` itself moved.
+#[cfg(test)]
 fn keep_pre_build(vm_dir: &Path, worker: &str) -> io::Result<(Vec<String>, bool)> {
     let mut notes = Vec::new();
     let root = vm_dir.join("root");
@@ -1625,6 +2813,108 @@ fn keep_pre_build(vm_dir: &Path, worker: &str) -> io::Result<(Vec<String>, bool)
 /// `build` begins with a new disk. A VM without data goes whole. Returns
 /// whether runtime state went (`false` for a VM that is gone, or holds data
 /// only), and the data paths kept.
+fn remove_runtime_state_admitted(
+    lease: &crate::worker_admission::Lease,
+    receipt: &crate::worker_admission::WriterRetirement,
+    vm_dir: &Path,
+    worker: &str,
+    prune: bool,
+) -> io::Result<(bool, Vec<PathBuf>)> {
+    use crate::worker_admission::MutationPlan;
+    match std::fs::symlink_metadata(vm_dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let mut absent = receipt.begin_remove(lease, vm_dir, &[vm_dir])?;
+            absent.remove_path(vm_dir)?;
+            absent.commit()?;
+            return Ok((false, Vec::new()));
+        }
+        metadata => {
+            metadata?;
+        }
+    }
+    if prune {
+        // Only the original authenticated request selects this exact VM tree.
+        let mut removal = receipt.begin_remove(lease, vm_dir, &[vm_dir])?;
+        removal.remove_path(vm_dir)?;
+        removal.commit()?;
+        return Ok((true, Vec::new()));
+    }
+    let seal = vm_dir.join(BUILD_MODE_SEAL);
+    let root = vm_dir.join("root");
+    let old_upper = root.join(crate::cli::upper::UPPER_NAME);
+    let move_upper = std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file());
+    let move_root = is_rootfs_clone(&root);
+    if move_upper || move_root {
+        let mut retain = lease.begin(MutationPlan::Adopt {
+            root: vm_dir.to_path_buf(),
+        })?;
+        if move_upper {
+            let kept = unused_name(vm_dir, PRE_BUILD_DISK);
+            retain.rename_preserving(&old_upper, &kept)?;
+            tracing::info!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            );
+        }
+        if move_root {
+            let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
+            retain.rename_preserving(&root, &kept)?;
+            tracing::info!("{worker}: kept the pre-build root at {}", kept.display());
+        }
+        retain.commit()?;
+    }
+    let mut kept = Vec::new();
+    let mut targets = Vec::new();
+    for (index, entry) in std::fs::read_dir(vm_dir)?.enumerate() {
+        if index >= 4096 {
+            return Err(io::Error::other("VM control entries exceed removal bound"));
+        }
+        let entry = entry?;
+        if is_vm_data(entry.file_name().to_str().unwrap_or("")) {
+            kept.push(entry.path());
+        } else if entry.file_name() != BUILD_MODE_SEAL {
+            targets.push(entry.path());
+        }
+    }
+    // Roots and control files were declared before runtime. Unknown leftover
+    // evidence is retained; never broaden a receipt from an enumeration.
+    let permitted = [
+        "root",
+        STATE_FILE,
+        STATE_KEY_FILE,
+        BUILD_DIR_RECORD,
+        CONSOLE_LOG,
+        CONSOLE_LOG_OLD,
+    ];
+    let (mut allowed, unknown): (Vec<_>, Vec<_>) = targets.into_iter().partition(|path| {
+        path == vm_dir
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| permitted.contains(&n))
+    });
+    kept.extend(unknown);
+    if kept.is_empty() {
+        allowed = vec![vm_dir.to_path_buf()];
+    } else if std::fs::symlink_metadata(&seal).is_err() {
+        write_control_admitted(lease, vm_dir, BUILD_MODE_SEAL, b"1\n")?;
+    }
+    let removed = !allowed.is_empty();
+    if removed {
+        allowed.sort();
+        let targets = allowed;
+        let exact: Vec<&Path> = targets.iter().map(PathBuf::as_path).collect();
+        let mut removal = receipt.begin_remove(lease, vm_dir, &exact)?;
+        for target in targets {
+            removal.remove_path(&target)?;
+        }
+        removal.commit()?;
+    }
+    kept.sort();
+    Ok((removed, kept))
+}
+
+#[cfg(test)]
 fn remove_runtime_state(vm_dir: &Path, worker: &str) -> io::Result<(bool, Vec<PathBuf>)> {
     match std::fs::symlink_metadata(vm_dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((false, Vec::new())),
@@ -1749,20 +3039,6 @@ impl<'a> Source<'a> {
             },
         }
     }
-
-    /// The checks of the source in `dir`, its admitted `host_path`: S501 when
-    /// it fails them. `need_base_image: false` lets a local worker's manifest
-    /// leave its base image out (a build that names one, a start of a build).
-    fn validate(&self, dir: &Path, need_base_image: bool) -> Result<(), SandboxError> {
-        match (self.package, self.executable) {
-            (Some(package), Some(executable)) => {
-                validate_binary(dir, package, executable).map(drop)
-            }
-            _ => validate_source_with(dir, self.package, self.run_override, need_base_image)
-                .map(drop),
-        }
-        .map_err(SandboxError::SourceRejected)
-    }
 }
 
 /// The base image a build request names, trimmed: S001 when it is not a
@@ -1838,7 +3114,9 @@ async fn lease(vm: Arc<Vm>, vm_id: String, grace: Duration) {
         }
     }
     tracing::warn!(%vm_id, instance = vm.instance, ?grace, "no client follows this worker VM; stopping it");
-    vm.stop(LEASE_STOP_GRACE).await;
+    if let Err(error) = vm.stop(LEASE_STOP_GRACE).await {
+        tracing::error!(%error, %vm_id, "worker lease stop retained unresolved lifecycle");
+    }
 }
 
 /// Resolves once a frame cannot reach `channel`'s reader. The engine closes a writer's
@@ -1880,7 +3158,9 @@ impl Slot {
     fn busy(&self) -> bool {
         match self {
             Slot::Preparing(..) | Slot::Destroying(_) => true,
-            Slot::Booted(vm) => vm.ended.borrow().is_none(),
+            Slot::Booted(vm) => {
+                vm.ended.borrow().is_none() || (vm.lifecycle.is_some() && vm.receipt().is_err())
+            }
         }
     }
 
@@ -1889,10 +3169,28 @@ impl Slot {
             // Nothing has started yet. `lookup` never hands out `Destroying`.
             Slot::Preparing(..) | Slot::Destroying(_) => (State::Preparing, None, 0),
             Slot::Booted(vm) => {
-                let ended = *vm.ended.borrow();
+                let observed = vm.lifecycle.as_ref().map(|session| session.observation());
+                let ended = (*vm.ended.borrow()).or_else(|| {
+                    observed
+                        .as_ref()
+                        .and_then(|o| o.os_status())
+                        .map(|status| Ended {
+                            exit_code: status.code(),
+                            signal: status.signal(),
+                            at_ms: now_ms(),
+                        })
+                });
                 let state = match ended {
                     None => State::Running,
-                    Some(_) if vm.stopping.load(Ordering::SeqCst) => State::Stopped,
+                    Some(_)
+                        if vm.stopping.load(Ordering::SeqCst)
+                            && (vm.receipt().is_ok() || cfg!(test) && vm.lifecycle.is_none()) =>
+                    {
+                        State::Stopped
+                    }
+                    Some(_) if observed.as_ref().is_some_and(|o| o.os_status().is_none()) => {
+                        State::Running
+                    }
                     Some(_) => State::Exited,
                 };
                 (state, ended, vm.started_at_ms)
@@ -1911,31 +3209,72 @@ impl Slot {
 }
 
 impl Vm {
-    /// Signal the VM unless it was reaped already, since its pid may name another process by then.
-    fn signal(&self, signal: Signal) {
-        if !self.reaped.load(Ordering::SeqCst) {
-            let _ = kill(self.pid, signal);
+    fn receipt(&self) -> io::Result<crate::worker_admission::WriterRetirement> {
+        match self
+            .retirement
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            Some(Ok(receipt)) => Ok(receipt.clone()),
+            Some(Err(error)) => Err(io::Error::other(error.clone())),
+            None => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "runtime/host writers have not retired",
+            )),
         }
     }
-
-    /// SIGTERM, then SIGKILL after `grace`; a zero `grace` kills at once. Returns once
-    /// the exit is recorded. A VM that already exited is left as it is.
-    async fn stop(&self, grace: Duration) {
-        if self.ended.borrow().is_some() {
-            return;
+    /// Fixture-only stop signal through the spawn-time pidfd: after the child
+    /// exited it yields ESRCH from that pidfd, never another process.
+    #[cfg(test)]
+    fn signal_fixture(&self, signal: libc::c_int) {
+        if let Some(pidfd) = &self.fixture_pidfd {
+            let _ = crate::sandbox_daemon::adapters::test_pidfd_signal(pidfd, signal);
         }
+    }
+    async fn stop(&self, grace: Duration) -> io::Result<()> {
         self.stopping.store(true, Ordering::SeqCst);
-        let mut ended = self.ended.subscribe();
-        let gone = !grace.is_zero() && {
-            self.signal(Signal::SIGTERM);
-            tokio::time::timeout(grace, ended.wait_for(Option::is_some))
-                .await
-                .is_ok()
-        };
-        if !gone {
-            self.signal(Signal::SIGKILL);
-            let _ = ended.wait_for(Option::is_some).await;
+        if let Some(session) = &self.lifecycle {
+            session.stop(grace).await?;
+            let mut ended = self.ended.subscribe();
+            tokio::time::timeout(
+                DRAIN_GRACE + Duration::from_secs(5),
+                ended.wait_for(Option::is_some),
+            )
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "worker host-writer completion is unresolved",
+                )
+            })?
+            .map_err(|_| io::Error::other("worker completion observer closed"))?;
+            self.receipt()?;
+            return Ok(());
         }
+        #[cfg(test)]
+        {
+            if !self.reaped.load(Ordering::SeqCst) {
+                if !grace.is_zero() {
+                    self.signal_fixture(libc::SIGTERM);
+                    let mut ended = self.ended.subscribe();
+                    let _ = tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await;
+                }
+                if !self.reaped.load(Ordering::SeqCst) {
+                    self.signal_fixture(libc::SIGKILL);
+                }
+            }
+            let mut ended = self.ended.subscribe();
+            ended
+                .wait_for(Option::is_some)
+                .await
+                .map_err(|_| io::Error::other("fixture waiter closed"))?;
+            return Ok(());
+        }
+        #[cfg(not(test))]
+        Err(io::Error::other(
+            "worker instance lacks runtime control authority",
+        ))
     }
 }
 
@@ -1961,9 +3300,171 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
     read.map_err(|e| SandboxError::BootFailed(format!("{}: {e}", path.display())))
 }
 
-/// Replace `<dir>/state.json` with one recording `instance`. Written to a
-/// temp file and renamed over it, so a crash or a full disk mid-write leaves
-/// the previous file whole: a truncated one failed every later start.
+/// Cold base creation is a short, exact operation, never part of a VM's
+/// long-lived footprint. Existing ancestors are inspected, not repaired.
+fn prepare_worker_base(
+    context: &crate::worker_admission::AdmissionContext,
+    base: &Path,
+) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Component;
+    if !base.is_absolute()
+        || base
+            .components()
+            .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "worker base must be absolute without traversal",
+        ));
+    }
+    let uid = unsafe { libc::geteuid() };
+    match std::fs::symlink_metadata(base) {
+        Ok(meta) => {
+            if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o7777 != 0o700 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "worker base is not owned/private; refusing chmod",
+                ));
+            }
+            return Ok(());
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    // Existing base children belong to independent lifecycle intervals. Do not
+    // inspect/re-admit their union merely to use another state's existing base.
+    // Cold setup has no children and must pass the full retained-path check.
+    context.reject_retained_path(base)?;
+    let mut first = base;
+    for depth in 0..=64 {
+        let parent = first
+            .parent()
+            .ok_or_else(|| io::Error::other("worker base has no existing parent"))?;
+        match std::fs::symlink_metadata(parent) {
+            Ok(meta) => {
+                if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "worker base ancestor is not owned/protected",
+                    ));
+                }
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound && depth < 64 => first = parent,
+            Err(e) => return Err(e),
+        }
+    }
+    let setup = context.local(first)?;
+    let mut mutation = setup.begin(crate::worker_admission::MutationPlan::Create {
+        root: first.to_path_buf(),
+    })?;
+    mutation.create_dir_all(base, 0o700)?;
+    mutation.commit()?;
+    setup.revalidate()?;
+    drop(setup);
+    Ok(())
+}
+
+fn admit_control_files(
+    lease: crate::worker_admission::Lease,
+    dir: &Path,
+) -> io::Result<crate::worker_admission::Lease> {
+    let paths: Vec<_> = [
+        STATE_FILE,
+        STATE_KEY_FILE,
+        BUILD_DIR_RECORD,
+        BUILD_MODE_SEAL,
+        CONSOLE_LOG,
+        CONSOLE_LOG_OLD,
+    ]
+    .iter()
+    .map(|name| dir.join(name))
+    .collect();
+    let mut requests: Vec<_> = paths
+        .iter()
+        .map(|path| crate::worker_admission::PathRequest {
+            path,
+            role: crate::worker_admission::PathRole::MutableFile,
+        })
+        .collect();
+    let root = dir.join("root");
+    requests.push(crate::worker_admission::PathRequest {
+        path: &root,
+        role: crate::worker_admission::PathRole::MutableTree,
+    });
+    let runtime = root.join("runtime");
+    let legacy_runtime = root.join("opt/iii");
+    let root_upper = root.join(crate::cli::upper::UPPER_NAME);
+    let build_upper = dir.join(crate::cli::upper::UPPER_NAME);
+    requests.extend([
+        crate::worker_admission::PathRequest {
+            path: &runtime,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &legacy_runtime,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &root_upper,
+            role: crate::worker_admission::PathRole::MutableFile,
+        },
+        crate::worker_admission::PathRequest {
+            path: &build_upper,
+            role: crate::worker_admission::PathRole::MutableFile,
+        },
+    ]);
+    let scratch = dir.join(format!("{BUILD_SCRATCH_PREFIX}current"));
+    let scratch_root = scratch.join("root");
+    let scratch_runtime = scratch_root.join("runtime");
+    let scratch_upper = scratch.join(crate::cli::upper::UPPER_NAME);
+    requests.extend([
+        crate::worker_admission::PathRequest {
+            path: &scratch,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &scratch_root,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &scratch_runtime,
+            role: crate::worker_admission::PathRole::MutableTree,
+        },
+        crate::worker_admission::PathRequest {
+            path: &scratch_upper,
+            role: crate::worker_admission::PathRole::MutableFile,
+        },
+    ]);
+    crate::worker_admission::with_paths(lease, &requests)
+}
+
+fn write_control_admitted(
+    lease: &crate::worker_admission::Lease,
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    if !dir.exists() {
+        let mut create = lease.begin(crate::worker_admission::MutationPlan::Create {
+            root: dir.to_path_buf(),
+        })?;
+        create.create_dir_all(dir, 0o700)?;
+        create.commit()?;
+    }
+    let target = dir.join(name);
+    let mut mutation = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+        files: vec![target.clone()],
+    })?;
+    let mut stage = mutation.stage_file(&target, 0o600)?;
+    stage.file_mut().write_all(bytes)?;
+    stage.file_mut().sync_all()?;
+    mutation.publish_file(stage)?;
+    mutation.commit()?;
+    Ok(())
+}
+
 fn store_instance(dir: &Path, instance: u64) -> io::Result<()> {
     let tmp = dir.join("state.json.tmp");
     // A crash between the create and the rename leaves it behind.
@@ -2144,6 +3645,171 @@ fn lock_unsupported(e: &io::Error) -> bool {
 
 /// Record `state_key` and `instance`, truncate `console.log` and spawn `cmd`
 /// with piped stdin (the env frame) and output, and a lifeline.
+enum LaunchedChild {
+    Runtime(crate::worker_admission::RuntimeChild),
+    /// A test-only plain child and the pidfd taken right after its spawn.
+    #[cfg(test)]
+    Fixture(Child, Option<std::os::fd::OwnedFd>),
+}
+impl LaunchedChild {
+    fn id(&self) -> Option<u32> {
+        match self {
+            Self::Runtime(child) => child.id(),
+            #[cfg(test)]
+            Self::Fixture(child, _) => child.id(),
+        }
+    }
+    /// The fixture's spawn-time pidfd (an owned runtime child is signalled
+    /// only through the core's child-issued pidfd instead).
+    #[cfg(test)]
+    fn take_fixture_pidfd(&mut self) -> Option<std::os::fd::OwnedFd> {
+        match self {
+            Self::Runtime(_) => None,
+            Self::Fixture(_, pidfd) => pidfd.take(),
+        }
+    }
+    fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
+        match self {
+            Self::Runtime(child) => child.take_stdin(),
+            #[cfg(test)]
+            Self::Fixture(child, _) => child.stdin.take(),
+        }
+    }
+    fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        match self {
+            Self::Runtime(child) => child.take_stdout(),
+            #[cfg(test)]
+            Self::Fixture(child, _) => child.stdout.take(),
+        }
+    }
+    fn take_stderr(&mut self) -> Option<tokio::process::ChildStderr> {
+        match self {
+            Self::Runtime(child) => child.take_stderr(),
+            #[cfg(test)]
+            Self::Fixture(child, _) => child.stderr.take(),
+        }
+    }
+    fn supervise(
+        self,
+        lease: crate::worker_admission::Lease,
+        endpoints: Vec<PathBuf>,
+    ) -> (
+        Option<Arc<crate::sandbox_daemon::adapters::RuntimeSession>>,
+        tokio::task::JoinHandle<(
+            Option<std::process::ExitStatus>,
+            Result<Option<crate::worker_admission::WriterRetirement>, String>,
+        )>,
+    ) {
+        match self {
+            Self::Runtime(child) => {
+                let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+                    child, lease, endpoints,
+                );
+                let held = session.clone();
+                let task = tokio::spawn(async move {
+                    let (status, retirement) = held.wait().await;
+                    (status, retirement.map(Some).map_err(|e| e.to_string()))
+                });
+                (Some(session), task)
+            }
+            #[cfg(test)]
+            Self::Fixture(mut child, _pidfd) => (
+                None,
+                tokio::spawn(async move {
+                    match child.wait().await {
+                        Ok(status) => (Some(status), Ok(None)),
+                        Err(error) => (None, Err(error.to_string())),
+                    }
+                }),
+            ),
+        }
+    }
+}
+
+fn spawn_admitted(
+    lease: &crate::worker_admission::Lease,
+    dir: &Path,
+    state_key: &str,
+    instance: u64,
+    mut cmd: Command,
+    runtime_paths: Option<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>>,
+) -> io::Result<(Console, Lifeline, LaunchedChild, Option<String>)> {
+    write_control_admitted(lease, dir, STATE_KEY_FILE, state_key.as_bytes())?;
+    write_control_admitted(
+        lease,
+        dir,
+        STATE_FILE,
+        &serde_json::to_vec(&StateFile { instance })?,
+    )?;
+    // The exact console pair gets ONE core log writer before launch; each new
+    // instance explicitly resets its ordinary retention (offsets start at 0).
+    let mut console = open_console(lease, dir)?;
+    console.reset_instance()?;
+    let launched = (|| -> io::Result<(Lifeline, LaunchedChild, Option<String>)> {
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)?;
+        let mut startup_error = None;
+        let child = match runtime_paths {
+            Some(paths) => {
+                let paths: Vec<_> = paths
+                    .iter()
+                    .map(|(path, kind)| crate::worker_admission::RuntimePath { path, kind: *kind })
+                    .collect();
+                match lease.prepare_runtime(&paths)?.spawn(cmd) {
+                    Ok(child) => LaunchedChild::Runtime(child),
+                    Err(error) => {
+                        let (cause, child) = error.into_parts();
+                        match child {
+                            Some(child) => {
+                                startup_error = Some(cause.to_string());
+                                LaunchedChild::Runtime(child)
+                            }
+                            None => return Err(cause),
+                        }
+                    }
+                }
+            }
+            #[cfg(test)]
+            None => {
+                let mut child = cmd.spawn()?;
+                // Taken while this Child is still owned and unwaited: the pidfd
+                // can only name this process. Fixture stops never use a raw PID.
+                let pidfd = child
+                    .id()
+                    .ok_or_else(|| io::Error::other("fixture child has no pid"))
+                    .and_then(crate::sandbox_daemon::adapters::test_pidfd_open);
+                match pidfd {
+                    Ok(pidfd) => LaunchedChild::Fixture(child, Some(pidfd)),
+                    Err(error) => {
+                        // No signalable handle: reap it, never signal by PID.
+                        tokio::spawn(async move {
+                            let _ = child.wait().await;
+                        });
+                        return Err(error);
+                    }
+                }
+            }
+            #[cfg(not(test))]
+            None => return Err(io::Error::other("runtime launch footprint is required")),
+        };
+        Ok((lifeline, child, startup_error))
+    })();
+    match launched {
+        Ok((lifeline, child, startup_error)) => Ok((console, lifeline, child, startup_error)),
+        // Nothing was spawned, so no pump owns the writer: settle it now so a
+        // never-spawned rollback is not blocked by an unfinished log record.
+        Err(error) => match console.finish() {
+            Ok(()) => Err(error),
+            Err(finish) => Err(io::Error::other(format!(
+                "{error}; console log retained unfinished: {finish}"
+            ))),
+        },
+    }
+}
+
+#[cfg(test)]
 fn spawn(
     dir: &Path,
     state_key: &str,
@@ -2164,18 +3830,108 @@ fn spawn(
 /// A VM's `console.log`, rotated to `console.log.1` past `CONSOLE_LOG_CAP`.
 ///
 /// A log offset counts every byte this instance logged, across rotations: the
-/// current file holds the offsets from `base` on, the rotated one those below.
+/// current file holds the offsets from `base` on, the rotated one those from
+/// `oldest` up to `base`. While the instance lives, every append, in-place
+/// rotation and read goes through the ONE core-issued writer of the exact
+/// declared pair (stable descriptors, no per-record stage, prior or journal).
+/// Once that writer finished, the pair no longer changes and is read through
+/// the last completed cursor only.
 struct Console {
     dir: PathBuf,
-    file: File,
-    len: u64,
+    /// `None` once finished, or for a read-only view of a settled pair.
+    writer: Option<crate::worker_admission::LogWriter>,
+    /// Sticky once an append, read or finish outcome is not proven complete:
+    /// the core keeps the record uncertain, so nothing retries from old offsets.
+    failed: bool,
+    oldest: u64,
     base: u64,
+    len: u64,
+}
+
+/// The largest window one core log read returns (its record bound).
+const CONSOLE_READ_CHUNK: usize = 1024 * 1024;
+
+/// Create the exact console pair once and issue its one bounded log writer.
+/// Only MISSING members are created, through one owned ControlFiles mutation;
+/// an existing member is never replaced or truncated here, and the core proves
+/// its admitted identity (or the finished ledger of this same operation).
+fn open_console(lease: &crate::worker_admission::Lease, dir: &Path) -> io::Result<Console> {
+    let current = dir.join(CONSOLE_LOG);
+    let previous = dir.join(CONSOLE_LOG_OLD);
+    let mut missing = Vec::new();
+    for path in [&current, &previous] {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(path.clone()),
+            Err(error) => return Err(error),
+        }
+    }
+    if !missing.is_empty() {
+        let mut init = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+            files: missing.clone(),
+        })?;
+        for path in &missing {
+            let stage = init.stage_file(path, 0o600)?;
+            init.publish_file(stage)?;
+        }
+        init.commit()?;
+    }
+    let writer = lease.open_log(crate::worker_admission::LogSpec {
+        current: &current,
+        previous: Some(&previous),
+        cap_bytes: CONSOLE_LOG_CAP,
+    })?;
+    let cursor = writer.cursor()?;
+    let mut console = Console {
+        dir: dir.to_path_buf(),
+        writer: Some(writer),
+        failed: false,
+        oldest: 0,
+        base: 0,
+        len: 0,
+    };
+    console.track(&cursor);
+    Ok(console)
 }
 
 impl Console {
-    /// The log offset after the last record: `append` writes whole lines under this lock.
+    /// Cursors move only from a completed core outcome.
+    fn track(&mut self, cursor: &crate::worker_admission::LogCursor) {
+        self.oldest = cursor.previous_base;
+        self.base = cursor.base;
+        self.len = cursor.len;
+    }
+
+    fn settle<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn live(&self) -> io::Result<&crate::worker_admission::LogWriter> {
+        if self.failed {
+            return Err(io::Error::other(
+                "console log outcome is uncertain; retained for explicit recovery",
+            ));
+        }
+        self.writer
+            .as_ref()
+            .ok_or_else(|| io::Error::other("console log writer already finished"))
+    }
+
+    /// The log offset after the last record: whole records only, from the
+    /// last completed core outcome.
     fn end(&self) -> u64 {
         self.base + self.len
+    }
+
+    /// Explicit ordinary-retention reset of the exact pair for a new instance.
+    fn reset_instance(&mut self) -> io::Result<()> {
+        let result = self.live()?.reset_instance();
+        let cursor = self.settle(result)?;
+        self.track(&cursor);
+        Ok(())
     }
 
     /// Append one `{stream, line, ts_ms}` JSON line.
@@ -2186,29 +3942,106 @@ impl Console {
             "ts_ms": now_ms(),
         }))?;
         record.push(b'\n');
-        self.file.write_all(&record)?;
-        self.len += record.len() as u64;
-        if self.len > CONSOLE_LOG_CAP {
-            let path = self.dir.join(CONSOLE_LOG);
-            std::fs::rename(&path, self.dir.join(CONSOLE_LOG_OLD))?;
-            self.file = open_private(&path, true)?;
-            self.base += self.len;
-            self.len = 0;
-        }
+        let result = self.live()?.append(&record);
+        let cursor = self.settle(result)?;
+        self.track(&cursor);
         Ok(())
+    }
+
+    /// Finish the writer: only after every pump joined (this owner is the
+    /// last clone). A failed writer is dropped unfinished, so the core keeps
+    /// the record uncertain and Remove/H1 stay blocked; never reported as done.
+    fn finish(&mut self) -> io::Result<()> {
+        let Some(writer) = self.writer.take() else {
+            if self.failed {
+                return Err(io::Error::other("console log failed; record retained"));
+            }
+            return Ok(());
+        };
+        if self.failed {
+            drop(writer);
+            return Err(io::Error::other(
+                "console log failed; record retained as uncertain",
+            ));
+        }
+        let result = writer.finish();
+        let cursor = self.settle(result)?;
+        self.track(&cursor);
+        Ok(())
+    }
+
+    /// At most `max` bytes from log offset `offset` (clamped to the oldest
+    /// retained byte and the end): through the live writer, which serializes
+    /// with appends and in-place rotation, else from the settled pair.
+    fn read(&mut self, offset: u64, max: usize) -> io::Result<crate::worker_admission::LogRead> {
+        if self.failed {
+            return Err(io::Error::other(
+                "console log outcome is uncertain; retained for explicit recovery",
+            ));
+        }
+        if let Some(writer) = &self.writer {
+            let result = writer.read(offset, max);
+            return self.settle(result);
+        }
+        self.read_settled(offset, max)
+    }
+
+    /// A settled pair: no writer rotates it any more, so the last completed
+    /// cursor names exactly which bytes of which file are this instance's.
+    fn read_settled(
+        &self,
+        offset: u64,
+        max: usize,
+    ) -> io::Result<crate::worker_admission::LogRead> {
+        use std::os::unix::fs::FileExt;
+        let mut at = offset.max(self.oldest).min(self.end());
+        let mut bytes = Vec::new();
+        for (name, start, len) in [
+            (CONSOLE_LOG_OLD, self.oldest, self.base - self.oldest),
+            (CONSOLE_LOG, self.base, self.len),
+        ] {
+            if len == 0 || at >= start + len || bytes.len() >= max {
+                continue;
+            }
+            if at < start {
+                break;
+            }
+            let file = open_private(&self.dir.join(name), false)?;
+            let from = at - start;
+            let available = len.min(file.metadata()?.len()).saturating_sub(from);
+            let n = available.min((max - bytes.len()) as u64) as usize;
+            let old = bytes.len();
+            bytes.resize(old + n, 0);
+            file.read_exact_at(&mut bytes[old..], from)?;
+            at += n as u64;
+            if (n as u64) < len - from {
+                break;
+            }
+        }
+        Ok(crate::worker_admission::LogRead {
+            bytes,
+            next: at,
+            end: self.end(),
+            oldest: self.oldest,
+        })
     }
 }
 
 /// Copy one output stream into `console.log`, a record per line. It keeps
 /// reading after a write error, so a full disk cannot stall the VM on a full pipe.
-async fn pump(out: impl AsyncRead + Unpin, stream: LogStream, console: Arc<Mutex<Console>>) {
+async fn pump(
+    out: impl AsyncRead + Unpin,
+    stream: LogStream,
+    console: Arc<Mutex<Console>>,
+) -> io::Result<()> {
     let mut out = BufReader::new(out);
     let mut line = Vec::new();
     let mut warned = false;
     loop {
         line.clear();
         match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return Ok(()),
+            Err(error) => return Err(error),
             Ok(_) => {}
         }
         let text = line.strip_suffix(b"\n").unwrap_or(&line);
@@ -2238,68 +4071,57 @@ struct Entry {
 /// the last whole line read. Offsets survive a rotation: a cursor into the
 /// rotated file reads its rest, then the new file. A cursor past the end is
 /// another instance's, so it reads from the oldest record kept. A partial last
-/// line waits for its newline; a line that does not parse is skipped.
+/// line waits for its newline; a line that does not parse is skipped. Each
+/// bounded window is read under the console lock through the live core writer
+/// (never an independent path reader racing its in-place rotation).
 fn read_records(console: &Mutex<Console>, from: u64) -> io::Result<(Vec<LogRecord>, u64)> {
-    // Opened under the lock, so no rotation falls between the opens and `base`.
-    let (rotated, current, base) = {
-        let console = console.lock().unwrap_or_else(PoisonError::into_inner);
-        let rotated = (console.base > 0)
-            .then(|| open_private(&console.dir.join(CONSOLE_LOG_OLD), false))
-            .transpose()?;
-        let current = open_private(&console.dir.join(CONSOLE_LOG), false)?;
-        (rotated, current, console.base)
+    let read = |offset: u64| {
+        console
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .read(offset, CONSOLE_READ_CHUNK)
     };
-    let mut from = if from > base + current.metadata()?.len() {
-        0
-    } else {
-        from
-    };
+    let first = read(from)?;
+    let mut window = if from > first.end { read(0)? } else { first };
+    let mut at = window.next - window.bytes.len() as u64;
+    let mut end = at;
+    let mut pending = Vec::new();
     let mut records = Vec::new();
-    if let Some(rotated) = rotated
-        && from < base
-    {
-        let start = base.saturating_sub(rotated.metadata()?.len());
-        read_lines(rotated, start, from.max(start), &mut records)?;
-        // Nothing more is written to a rotated file: its rest is done.
-        from = base;
-    }
-    let end = read_lines(current, base, from.max(base), &mut records)?;
-    Ok((records, end))
-}
-
-/// Append to `records` the whole lines of `file`, which holds the log offsets
-/// from `start` on, from offset `from`; returns the offset after the last one.
-fn read_lines(
-    mut file: File,
-    start: u64,
-    from: u64,
-    records: &mut Vec<LogRecord>,
-) -> io::Result<u64> {
-    file.seek(SeekFrom::Start(from - start))?;
-    // Bounded: `Console` rotates the file past `CONSOLE_LOG_CAP`.
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let mut end = from;
-    for raw in bytes.split_inclusive(|&b| b == b'\n') {
-        if !raw.ends_with(b"\n") {
-            break;
+    loop {
+        let start = window.next - window.bytes.len() as u64;
+        if start != at {
+            // Retention moved past the unread bytes between two windows; the
+            // oldest kept byte is a record boundary (rotation is per record).
+            pending.clear();
+            end = start;
         }
-        end += raw.len() as u64;
-        if let Ok(Entry {
-            stream,
-            line,
-            ts_ms,
-        }) = serde_json::from_slice(raw)
-        {
-            records.push(LogRecord {
+        pending.extend_from_slice(&window.bytes);
+        at = window.next;
+        let mut consumed = 0;
+        while let Some(n) = pending[consumed..].iter().position(|&b| b == b'\n') {
+            let raw = &pending[consumed..consumed + n + 1];
+            consumed += n + 1;
+            end += raw.len() as u64;
+            if let Ok(Entry {
                 stream,
                 line,
                 ts_ms,
-                cursor: end,
-            });
+            }) = serde_json::from_slice(raw)
+            {
+                records.push(LogRecord {
+                    stream,
+                    line,
+                    ts_ms,
+                    cursor: end,
+                });
+            }
         }
+        pending.drain(..consumed);
+        if window.bytes.is_empty() || at >= window.end {
+            return Ok((records, end));
+        }
+        window = read(at)?;
     }
-    Ok(end)
 }
 
 fn now_ms() -> u64 {
@@ -2307,6 +4129,10 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
 }
+
+#[cfg(test)]
+#[path = "worker_vm/compat_admission_tests.rs"]
+mod compat_admission_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2317,8 +4143,53 @@ mod tests {
     use tokio::sync::{Notify, mpsc};
     use tokio_tungstenite::tungstenite::Message;
 
+    /// Umask-independent fixtures: every MISSING component of `path` is created
+    /// private (0700), as admitted worker bases and VM dirs are; an existing
+    /// ancestor is never chmodded or repaired.
+    fn private_dirs(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut missing = Vec::new();
+        let mut cursor = Some(path);
+        while let Some(dir) = cursor {
+            if dir.exists() {
+                break;
+            }
+            missing.push(dir.to_path_buf());
+            cursor = dir.parent();
+        }
+        for dir in missing.into_iter().rev() {
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    /// Restores owner access to fixture directories when dropped, so a failing
+    /// assertion never leaves an undeletable temporary tree behind.
+    struct RestoreModes(Vec<(PathBuf, u32)>);
+    impl Drop for RestoreModes {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in &self.0 {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode));
+            }
+        }
+    }
+
+    /// A private (0600) fixture file, independent of the host umask.
+    fn write_private(path: &Path, bytes: impl AsRef<[u8]>) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     fn vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("admission-catalog");
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
         WorkerVms::new(t.join("workers"), token.map(str::to_string), roots)
+            .with_admission_context(context)
     }
 
     fn local(host_path: &Path) -> WorkerSource {
@@ -2468,23 +4339,32 @@ mod tests {
 
     #[tokio::test]
     async fn worker_ops_answer_s505_without_the_token() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
         // An adapter started without a token (or with an empty one) must refuse
         // an empty `auth` too, which the length and byte checks alone would pass.
-        for (token, auth) in [(None, "u"), (Some("t"), "u"), (None, ""), (Some(""), "")] {
-            let vms = Arc::new(vms(t, token, vec![t.into()]));
+        let cases = [(None, "u"), (Some("t"), "u"), (None, ""), (Some(""), "")];
+        for (round, (token, auth)) in cases.into_iter().enumerate() {
+            // One namespace for every adapter process: the first provisions it,
+            // each later one reopens it. Each round's VM has its own key, so no
+            // admission waits on the operation of an earlier round's VM.
+            let vms = Arc::new(if round == 0 {
+                vms(t, token, vec![t.into()])
+            } else {
+                reopened_vms(t, token, vec![t.into()])
+            });
+            let key = format!("k{round}");
             let err = prepare_err(&vms, auth, local(t)).await;
             assert_eq!(err.code().as_str(), "S505", "{err}");
 
             // A known VM: without the token, a stale instance is S505, not S503.
             let known = vms
-                .launch("k", sh("exit 0"), Vec::new(), None)
+                .launch(&key, sh("exit 0"), Vec::new(), None)
                 .unwrap()
                 .vm_id;
             assert_eq!(
-                code(vms.start(start_req(auth, "k", local(t))).await),
+                code(vms.start(start_req(auth, &key, local(t))).await),
                 "S505"
             );
             for vm_id in ["unknown", known.as_str()] {
@@ -2495,18 +4375,20 @@ mod tests {
                     "S505"
                 );
             }
-            assert_eq!(code(vms.destroy(destroy_req(auth, "k"))), "S505");
+            assert_eq!(code(vms.destroy(destroy_req(auth, &key))), "S505");
         }
     }
 
     #[tokio::test]
     async fn start_status_stop_destroy_cycle() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
-        let started = vms
-            .launch("k", sh("echo hi; sleep 30"), Vec::new(), None)
-            .unwrap();
+        // A genuine owned runtime child: one stdout record, then it activates
+        // and holds, so stop and destroy go through its retirement receipt.
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 1, None, true);
+        let started = owned_launch(&vms, &admission, child).unwrap();
         let id = started.vm_id;
         assert_eq!((id.as_str(), started.instance), (vm_id("k").as_str(), 1));
 
@@ -2514,7 +4396,11 @@ mod tests {
         assert!(matches!(status.state, State::Running), "{status:?}");
         assert_eq!(status.instance, 1);
         let dir = t.join("workers").join(&id);
-        assert_eq!(wait_record(&dir, "hi").await["stream"], "stdout");
+        assert_eq!(
+            wait_record(&dir, "console-line-0").await["stream"],
+            "stdout"
+        );
+        wait_activated(&dir).await;
 
         let status = vms.stop(stop_req("t", &id, 1, 2000)).await.unwrap();
         assert!(matches!(status.state, State::Stopped), "{status:?}");
@@ -2524,53 +4410,66 @@ mod tests {
         assert!(!dir.exists());
     }
 
-    /// A stop delayed past a destroy and a new boot must not reach that boot,
-    /// even when the destroying daemon never booted the VM itself.
+    /// A stop delayed past a destroy and a new boot must not reach that boot.
+    /// A daemon that never booted the VM holds no original retirement proof:
+    /// its destroy is refused and the VM retained for explicit recovery, while
+    /// the booting daemon's destroy spends that proof and the next boot follows.
     #[tokio::test]
     async fn instance_survives_a_destroy() {
-        let t = tempfile::tempdir().unwrap();
-        let first = vms(t.path(), Some("t"), vec![]);
-        let id = first
-            .launch("k", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&first, &id, 1).await;
-        drop(first);
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![]);
+        let id = owned_retired(&vms, t, "k").await.vm_id;
+        let dir = t.join("workers").join(&id);
 
-        let vms = vms(t.path(), Some("t"), vec![]);
+        let restarted = reopened_vms(t, Some("t"), vec![]);
+        let refused = restarted.destroy(destroy_req("t", "k")).unwrap_err();
+        assert_eq!(refused.code().as_str(), "S216", "{refused}");
+        assert!(
+            refused.to_string().contains("retirement proof"),
+            "{refused}"
+        );
+        assert!(dir.exists());
+        drop(restarted);
+
         assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
-        assert!(!t.path().join("workers").join(&id).exists());
-        let again = vms.launch("k", sh("sleep 30"), Vec::new(), None).unwrap();
+        assert!(!dir.exists());
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 0, None, true);
+        let again = owned_launch(&vms, &admission, child).unwrap();
         assert_eq!(again.instance, 2);
         assert_eq!(code(vms.stop(stop_req("t", &id, 1, 0)).await), "S503");
+        wait_activated(&dir).await;
         vms.stop(stop_req("t", &id, 2, 0)).await.unwrap();
     }
 
+    /// A restarted adapter reopens the same admission namespace (never a second
+    /// bootstrap) and numbers the next boot after the stopped one.
     #[tokio::test]
     async fn instance_survives_an_adapter_restart() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
+        let namespace = t.join("admission-catalog");
         let first = vms(t, Some("t"), vec![]);
-        let id = first
-            .launch("k", sh("sleep 30"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
+        let admission = first.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 0, None, true);
+        let id = owned_launch(&first, &admission, child).unwrap().vm_id;
+        wait_activated(&t.join("workers").join(&id)).await;
         first.stop(stop_req("t", &id, 1, 0)).await.unwrap();
-        drop(first);
+        drop((admission, first));
 
-        let vms = vms(t, Some("t"), vec![]);
-        assert_eq!(
-            vms.launch("k", sh("exit 0"), Vec::new(), None)
-                .unwrap()
-                .instance,
-            2
-        );
+        let vms = reopened_vms(t, Some("t"), vec![]);
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 0, None, false);
+        let again = owned_launch(&vms, &admission, child).unwrap();
+        assert_eq!(again.instance, 2);
         assert_eq!(code(vms.status(status_req("t", &id, 1))), "S503");
+        wait_ended(&vms, &id, 2).await;
     }
 
     #[tokio::test]
     async fn stop_escalates_to_sigkill_after_grace() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
@@ -2594,15 +4493,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_running_vm_refuses_start_and_destroy() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let id = vms
-            .launch("k", sh("sleep 30"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
+        let namespace = t.join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 0, None, true);
+        let id = owned_launch(&vms, &admission, child).unwrap().vm_id;
 
-        let busy = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap_err();
+        // Refused before its command is ever spawned.
+        let second = owned_console_child(&admission, &namespace, 0, None, false);
+        let busy = owned_launch(&vms, &admission, second).unwrap_err();
         assert_eq!(busy.code().as_str(), "S502");
         assert_eq!(
             busy.to_payload()["fix"],
@@ -2611,6 +4512,7 @@ mod tests {
         assert_eq!(code(vms.start(start_req("t", "k", local(t))).await), "S502");
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
 
+        wait_activated(&t.join("workers").join(&id)).await;
         vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
     }
 
@@ -2619,7 +4521,7 @@ mod tests {
     /// has ended, so the retry never builds into the same state alongside it.
     #[tokio::test]
     async fn stop_cancels_a_start_still_preparing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vm_id("k");
         // Start call 7, still building.
@@ -2656,7 +4558,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_vm_being_destroyed_is_busy_to_start_and_gone_to_status() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let id = vm_id("k");
@@ -2674,55 +4576,119 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_destroy_keeps_the_exited_vm() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
-        let id = vms
-            .launch("k", sh("exit 7"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
+        // A genuine owned lifecycle that exits 7 and retires: the destroy holds
+        // its real receipt, so only the replaced base can make it fail.
+        let admission = vms.admission(Some("k")).unwrap();
+        let mut child =
+            owned_console_child(&admission, &t.join("admission-catalog"), 0, None, false);
+        child.env("III_TEST_RUNTIME_EXIT_CODE", "7");
+        let id = owned_launch(&vms, &admission, child).unwrap().vm_id;
         wait_ended(&vms, &id, 1).await;
         // A file where the base dir was: ENOTDIR, which root cannot bypass.
         let base = t.join("workers");
         std::fs::rename(&base, t.join("moved")).unwrap();
         std::fs::write(&base, "").unwrap();
 
-        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S216");
+        let refused = vms.destroy(destroy_req("t", "k")).unwrap_err();
+        assert_eq!(refused.code().as_str(), "S216", "{refused}");
+        // The intended path: the receipt-holding removal meets ENOTDIR, not a
+        // missing lifecycle proof.
+        let message = refused.to_string();
+        let expected = format!("cannot remove {}: ", base.join(&id).display());
+        assert!(message.contains(&expected), "{message}");
+        assert!(
+            message.contains(&std::io::Error::from_raw_os_error(libc::ENOTDIR).to_string()),
+            "{message}"
+        );
         let status = vms.status(status_req("t", &id, 1)).unwrap();
         assert_eq!(status.exit_code, Some(7), "{status:?}");
     }
 
-    /// `remove_dir_all` stops at the first entry it cannot remove, possibly
-    /// after `state.json`: the next boot must still follow the old one.
+    /// A core Remove stops at the first entry it cannot remove, possibly after
+    /// `state.json`: the next boot must still follow the old one. The guest
+    /// leaves that entry in its declared share from inside its owned runtime.
     #[tokio::test]
     async fn a_partly_failed_destroy_keeps_the_instance_order() {
-        use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms
-            .launch("k", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&vms, &id, 1).await;
-        // A non-empty read-only dir in the guest's share: unremovable unless root.
-        let stuck = t.path().join("workers").join(&id).join("root").join("ro");
-        std::fs::create_dir_all(&stuck).unwrap();
-        std::fs::write(stuck.join("f"), "").unwrap();
-        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let namespace = t.path().join("admission-catalog");
+        let id = vm_id("k");
+        let dir = t.path().join("workers").join(&id);
+        let guest = dir.join("root");
+        let admission = vms.admission(Some("k")).unwrap();
+        // The guest's share, prepared through the VM's own operation as the
+        // start path does before boot.
+        admitted_files(&admission, &dir, &["root"], &[]);
+        // A non-empty read-only dir the guest leaves in its share: unremovable
+        // unless root. Armed before the guest's chmod and dropped before the
+        // TempDir: a failing assertion never leaves this dir undeletable.
+        let stuck = guest.join("ro");
+        let _restore = RestoreModes(vec![(stuck.clone(), 0o755)]);
+        let script = format!(
+            "mkdir -m 700 '{s}' && (umask 077 && : > '{s}/f') && chmod 0555 '{s}'",
+            s = stuck.display()
+        );
+        let child = owned_runtime_child(&admission, &namespace, 0, None, false, Some(&script));
+        let started = vms
+            .launch_admitted(
+                "k",
+                child,
+                Vec::new(),
+                None,
+                admission.clone(),
+                Vec::new(),
+                Some(vec![(
+                    guest.clone(),
+                    crate::worker_admission::RuntimePathKind::GuestTree,
+                )]),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        wait_ended(&vms, &id, started.instance).await;
+        assert!(
+            stuck.join("f").exists(),
+            "the guest's write is in its share"
+        );
 
         let destroyed = vms.destroy(destroy_req("t", "k"));
-        if stuck.exists() {
+        let removed = !stuck.exists();
+        if removed {
+            assert!(destroyed.unwrap().destroyed);
+        } else {
             assert_eq!(code(destroyed), "S216");
-            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
-            std::fs::remove_dir_all(&stuck).unwrap();
+            assert!(dir.exists(), "a partly failed removal retains the VM");
         }
-        let again = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap();
-        assert_eq!(again.instance, 2);
+        // Whatever the removal reached, the next instance follows instance 1.
+        assert_eq!(vms.next_instance(&id).unwrap(), 2);
+        if removed {
+            // The removal completed (as root): the lifecycle's real local
+            // authority boots the next instance.
+            let child = owned_console_child(&admission, &namespace, 0, None, false);
+            let again = owned_launch(&vms, &admission, child).unwrap();
+            assert_eq!(again.instance, 2);
+            wait_ended(&vms, &id, 2).await;
+        } else {
+            // The failed core Remove step left its operation uncertain
+            // (MutationGuard::terminal -> Lease::finish_hold(.., true)). This
+            // lifecycle keeps no real local authority until explicit recovery,
+            // so not even a child admission can be exported from it.
+            let refused = admission.revalidate().unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .contains("real local authority and retirement are required"),
+                "{refused}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn unknown_vm_is_s504() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = Arc::new(vms(t.path(), Some("t"), vec![]));
         let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
         assert_eq!(code(vms.status(status_req("t", "nope", 1))), "S504");
@@ -2735,7 +4701,7 @@ mod tests {
 
     #[tokio::test]
     async fn exit_code_is_recorded() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("exit 7"), Vec::new(), None)
@@ -2748,7 +4714,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_source_is_s501_and_leaves_the_key_startable() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let empty = t.join("empty");
         std::fs::create_dir(&empty).unwrap();
@@ -2763,10 +4729,10 @@ mod tests {
 
     #[tokio::test]
     async fn launch_refuses_a_symlinked_console_log() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let dir = t.join("workers").join(vm_id("k"));
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dirs(&dir);
         std::fs::write(t.join("target"), "keep").unwrap();
         std::os::unix::fs::symlink(t.join("target"), dir.join("console.log")).unwrap();
 
@@ -2782,37 +4748,42 @@ mod tests {
     /// must leave the previous instance readable, not an empty file.
     #[tokio::test]
     async fn state_json_is_replaced_not_rewritten_in_place() {
-        let t = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms
-            .launch("k", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&vms, &id, 1).await;
+        // Genuine owned lifecycles of one key: each retires, then boots on.
+        let id = owned_retired(&vms, t.path(), "k").await.vm_id;
         let dir = t.path().join("workers").join(&id);
-        // Same inode as state.json: an in-place rewrite would show through it.
-        std::fs::hard_link(dir.join(STATE_FILE), dir.join("old")).unwrap();
-        // A temp file left by a crash mid-write must not block the next boot.
-        std::fs::write(dir.join("state.json.tmp"), r#"{"inst"#).unwrap();
+        // An open descriptor, never a second link: an admitted state file
+        // stays single-linked (a hard link is refused as hardlinked input),
+        // and an in-place rewrite shows through the descriptor as through a
+        // link. A crash's leftover is a core stage, not a raw `.tmp` here.
+        let mut old = std::fs::File::open(dir.join(STATE_FILE)).unwrap();
+        let old_inode = old.metadata().unwrap().ino();
 
-        let again = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap();
+        let again = owned_retired(&vms, t.path(), "k").await;
         assert_eq!(again.instance, 2);
         assert_eq!(stored_instance(&dir).unwrap(), 2);
-        let old: StateFile =
-            serde_json::from_slice(&std::fs::read(dir.join("old")).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        old.read_to_end(&mut bytes).unwrap();
+        let old: StateFile = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(old.instance, 1);
+        let current = std::fs::symlink_metadata(dir.join(STATE_FILE)).unwrap();
+        assert_ne!(current.ino(), old_inode);
+        assert_eq!(current.nlink(), 1);
         assert!(!dir.join("state.json.tmp").exists());
     }
 
     #[tokio::test]
     async fn console_log_rotates_past_the_cap() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
             .launch(
                 "k",
-                sh(r#"yes "$(printf %01000d 0)" | head -n 11000"#),
+                // ~12 MB in 200 whole lines: past the cap with every record durable.
+                sh(r#"yes "$(printf %060000d 0)" | head -n 200"#),
                 Vec::new(),
                 None,
             )
@@ -2828,7 +4799,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_paths_outside_the_roots_answer_s501() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         std::os::unix::fs::symlink("/etc", t.join("esc")).unwrap();
         let t_str = t.display().to_string();
@@ -2838,8 +4809,15 @@ mod tests {
             (vec![t.to_path_buf()], t.join("esc"), &t_str),
             (vec![], t.to_path_buf(), "no host roots are configured"),
         ];
-        for (roots, host_path, needle) in cases {
-            let err = prepare_err(&vms(t, Some("t"), roots), "t", local(&host_path)).await;
+        for (index, (roots, host_path, needle)) in cases.into_iter().enumerate() {
+            // One adapter per case over one namespace: the first provisions it,
+            // every later one reopens it.
+            let adapter = if index == 0 {
+                vms(t, Some("t"), roots)
+            } else {
+                reopened_vms(t, Some("t"), roots)
+            };
+            let err = prepare_err(&adapter, "t", local(&host_path)).await;
             let msg = err.to_string();
             assert_eq!(err.code().as_str(), "S501", "{msg}");
             assert!(msg.contains("III_SANDBOX_HOST_ROOTS"), "{msg}");
@@ -2849,7 +4827,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_host_path_says_so_not_outside_the_roots() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let err = prepare_err(
             &vms(t, Some("t"), vec![t.into()]),
@@ -2865,7 +4843,7 @@ mod tests {
 
     #[test]
     fn host_roots_accept_a_path_under_a_symlinked_root() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         std::fs::create_dir_all(t.join("real/w")).unwrap();
         std::os::unix::fs::symlink(t.join("real"), t.join("link")).unwrap();
@@ -2887,7 +4865,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bundle_naming_another_package_is_s501() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let bundle = t.join("bundle");
         std::fs::create_dir(&bundle).unwrap();
@@ -2908,7 +4886,7 @@ mod tests {
 
     #[test]
     fn records_resume_from_a_cursor() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let text = concat!(
             r#"{"stream":"stdout","line":"a","ts_ms":1}"#,
             "\n",
@@ -2940,7 +4918,7 @@ mod tests {
 
     #[test]
     fn a_partial_last_line_is_left_for_the_next_read() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let whole = r#"{"stream":"stdout","line":"a","ts_ms":1}"#;
         let console = console_over(t.path(), "", &format!("{whole}\n{{\"stream\":\"std"));
 
@@ -2955,8 +4933,8 @@ mod tests {
         format!("{record}\n")
     }
 
-    /// A `Console` over `dir` that rotated out `rotated` (never, when empty)
-    /// and holds `current` now.
+    /// A settled `Console` over `dir` that rotated out `rotated` (never, when
+    /// empty) and holds `current` now: no writer, the completed cursor only.
     fn console_over(dir: &Path, rotated: &str, current: &str) -> Mutex<Console> {
         if !rotated.is_empty() {
             std::fs::write(dir.join(CONSOLE_LOG_OLD), rotated).unwrap();
@@ -2964,17 +4942,79 @@ mod tests {
         std::fs::write(dir.join(CONSOLE_LOG), current).unwrap();
         Mutex::new(Console {
             dir: dir.to_path_buf(),
-            file: File::open(dir.join(CONSOLE_LOG)).unwrap(),
-            len: current.len() as u64,
+            writer: None,
+            failed: false,
+            oldest: 0,
             base: rotated.len() as u64,
+            len: current.len() as u64,
         })
+    }
+
+    #[tokio::test]
+    async fn retirement_survives_final_console_and_retention_without_deleting_data() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (lease, dir) = admitted_console_lease(t.path(), b"");
+        let control = t.path().join("endpoints");
+        std::fs::create_dir(&control).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let endpoint = control.join("worker.sock");
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[crate::worker_admission::PathRequest {
+                path: &endpoint,
+                role: crate::worker_admission::PathRole::Endpoint,
+            }],
+        )
+        .unwrap();
+        let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: dir.clone() })
+            .unwrap();
+        let mut image = create.stage_file(&upper, 0o600).unwrap();
+        image.file_mut().write_all(b"guest-data").unwrap();
+        create.publish_file(image).unwrap();
+        create.commit().unwrap();
+        // The launch path issues the console writer before the runtime starts.
+        let mut console = open_console(&lease, &dir).unwrap();
+        let session = crate::sandbox_daemon::adapters::runtime_test_session_resources(
+            lease.clone(),
+            &t.path().join("catalog"),
+            false,
+            crate::sandbox_daemon::adapters::RuntimeTestResources {
+                reads: vec![dir.join("root")],
+                endpoints: vec![endpoint.clone()],
+                exit_without_drop: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let receipt = session.wait().await.1.unwrap();
+        console
+            .append(&LogStream::Stdout, b"last line after OS wait")
+            .unwrap();
+        // As the waiter does once every pump joined: finish the last clone
+        // before endpoint retirement and the receipt's Remove.
+        console.finish().unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        assert!(!endpoint.exists());
+        let (removed, kept) =
+            remove_runtime_state_admitted(&lease, &receipt, &dir, "console", false).unwrap();
+        assert!(removed);
+        assert!(kept.contains(&dir.join(PRE_BUILD_DISK)));
+        assert_eq!(
+            std::fs::read(dir.join(PRE_BUILD_DISK)).unwrap(),
+            b"guest-data"
+        );
+        assert!(!dir.join(CONSOLE_LOG).exists());
+        assert!(dir.join(BUILD_MODE_SEAL).exists());
     }
 
     /// A cursor into the rotated file reads its rest, then the new file, even
     /// once the new file has grown past the cursor's position in the old one.
     #[test]
     fn a_cursor_survives_a_rotation() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let old = ["a", "b", "c"].map(record).concat();
         let new = ["d", "e", "f", "g", "h"].map(record).concat();
         let console = console_over(t.path(), &old, &new);
@@ -2993,26 +5033,710 @@ mod tests {
         assert_eq!(read_records(&console, end + 1).unwrap().0.len(), 8);
     }
 
+    /// The real per-key operation over `<base>/<vm_id>/` with its declared
+    /// control files; `initial` pre-exists as `console.log`, pinned at admission.
+    fn admitted_console_lease(
+        t: &Path,
+        initial: &[u8],
+    ) -> (crate::worker_admission::Lease, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let base = t.join("workers");
+        let dir = base.join(vm_id("console"));
+        private_dirs(&dir.join("root"));
+        // As `write_control_admitted` creates it: a private log parent.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(dir.join(CONSOLE_LOG), initial).unwrap();
+        std::fs::set_permissions(
+            dir.join(CONSOLE_LOG),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let lease =
+            admit_control_files(context.worker(&base, Some("console")).unwrap(), &dir).unwrap();
+        (lease, dir)
+    }
+
+    /// The exact pair the launch path opens, through the same `open_console`.
+    fn admitted_console_fixture(
+        t: &Path,
+        initial: &[u8],
+    ) -> (crate::worker_admission::Lease, Console) {
+        let (lease, dir) = admitted_console_lease(t, initial);
+        let console = open_console(&lease, &dir).unwrap();
+        (lease, console)
+    }
+
+    // Explicit regression budgets, not new production limits. A bounded log
+    // capability may use a small fixed ledger, never a journal/path per line.
+    fn r1_catalog_inventory(namespace: &Path) -> (usize, usize, u64) {
+        let bytes = std::fs::read(namespace.join("catalog.json")).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_str(envelope["payload"].as_str().unwrap()).unwrap();
+        let operations = catalog["operations"].as_array().unwrap();
+        let entries = operations
+            .iter()
+            .map(|op| op["entries"].as_array().unwrap().len())
+            .sum();
+        let journals = operations
+            .iter()
+            .map(|op| op["journals"].as_array().unwrap().len())
+            .sum();
+        (entries, journals, bytes.len() as u64)
+    }
+    fn r1_assert_bounded(initial: (usize, usize, u64), now: (usize, usize, u64)) {
+        assert!(
+            now.0 <= initial.0 + 32,
+            "live path cardinality grew per log record: {initial:?} -> {now:?}"
+        );
+        assert!(
+            now.1 <= initial.1 + 16,
+            "live journal count grew per log record: {initial:?} -> {now:?}"
+        );
+        assert!(
+            now.2 <= initial.2 + 64 * 1024,
+            "live catalog bytes grew per log record: {initial:?} -> {now:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn r1_three_hundred_console_records_rotate_and_retire_with_bounded_history() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (lease, dir) = admitted_console_lease(t.path(), b"");
+        let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: dir.clone() })
+            .unwrap();
+        let mut stage = create.stage_file(&upper, 0o600).unwrap();
+        stage
+            .file_mut()
+            .write_all(b"OLD guest data must survive")
+            .unwrap();
+        create.publish_file(stage).unwrap();
+        create.commit().unwrap();
+        // The launch path issues the console writer before the runtime starts.
+        let console = open_console(&lease, &dir).unwrap();
+        let evidence = t.path().join(".iii-prior-unrelated-evidence");
+        std::fs::write(&evidence, b"not log retention").unwrap();
+        let session = crate::sandbox_daemon::adapters::runtime_test_session(
+            lease.clone(),
+            &t.path().join("catalog"),
+            false,
+        )
+        .await;
+        let receipt = session.wait().await.1.unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        let console = Mutex::new(console);
+        let initial = r1_catalog_inventory(&t.path().join("catalog"));
+        let mut seen_cursor = 0;
+        for n in 0..320 {
+            console
+                .lock()
+                .unwrap()
+                .append(&LogStream::Stdout, format!("short-{n:04}").as_bytes())
+                .unwrap_or_else(|error| panic!("normal admitted line {n} failed: {error}"));
+            if n == 31 {
+                seen_cursor = read_records(&console, 0).unwrap().1;
+            }
+        }
+        let (rest, end) = read_records(&console, seen_cursor).unwrap();
+        assert_eq!(rest.len(), 288);
+        assert_eq!(rest.first().unwrap().line, "short-0032");
+        assert_eq!(rest.last().unwrap().line, "short-0319");
+        assert!(end > seen_cursor && rest.windows(2).all(|pair| pair[0].cursor < pair[1].cursor));
+        r1_assert_bounded(initial, r1_catalog_inventory(&t.path().join("catalog")));
+        let payload = vec![b'x'; MAX_LINE as usize - 1024];
+        for _ in 0..200 {
+            if console.lock().unwrap().base > 0 {
+                break;
+            }
+            console
+                .lock()
+                .unwrap()
+                .append(&LogStream::Stderr, &payload)
+                .unwrap();
+        }
+        assert!(
+            console.lock().unwrap().base > 0,
+            "normal bounded rotation never occurred"
+        );
+        console
+            .lock()
+            .unwrap()
+            .append(&LogStream::Stdout, b"after-rotation")
+            .unwrap();
+        let (after_rotation, final_cursor) = read_records(&console, end).unwrap();
+        assert_eq!(after_rotation.last().unwrap().line, "after-rotation");
+        assert!(
+            after_rotation
+                .windows(2)
+                .all(|pair| pair[0].cursor < pair[1].cursor)
+        );
+        assert!(final_cursor > end);
+        r1_assert_bounded(initial, r1_catalog_inventory(&t.path().join("catalog")));
+        let data_bytes: u64 = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let meta = entry.metadata().unwrap();
+                if meta.is_file() { meta.len() } else { 0 }
+            })
+            .sum();
+        assert!(
+            data_bytes <= 2 * CONSOLE_LOG_CAP + 4 * MAX_LINE,
+            "ordinary log history is not bounded on disk: {data_bytes}"
+        );
+        console.lock().unwrap().finish().unwrap(); // last writer finished before H1/cleanup
+        let cache = t.path().join("unrelated-cache");
+        private_dirs(&cache); // a cache parent must be owned/protected
+        receipt
+            .probe_cache(
+                &lease,
+                &[crate::worker_admission::CacheEntry {
+                    root: &cache.join("next"),
+                }],
+            )
+            .unwrap()
+            .cancel()
+            .unwrap();
+        drop(console); // all readable log handles closed before data cleanup
+        let (removed, kept) =
+            remove_runtime_state_admitted(&lease, &receipt, &dir, "console", false).unwrap();
+        assert!(removed);
+        assert!(kept.contains(&dir.join(PRE_BUILD_DISK)));
+        assert_eq!(
+            std::fs::read(dir.join(PRE_BUILD_DISK)).unwrap(),
+            b"OLD guest data must survive"
+        );
+        assert_eq!(std::fs::read(evidence).unwrap(), b"not log retention");
+        assert!(!dir.join(CONSOLE_LOG).exists());
+        assert!(!dir.join(CONSOLE_LOG_OLD).exists());
+    }
+
+    #[test]
+    fn r1_concurrent_valid_console_writers_preserve_all_records_and_bound_catalog() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (_lease, console) = admitted_console_fixture(t.path(), b"");
+        let console = Arc::new(Mutex::new(console));
+        let initial = r1_catalog_inventory(&t.path().join("catalog"));
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..4)
+                .map(|writer| {
+                    let console = console.clone();
+                    scope.spawn(move || {
+                        for n in 0..80 {
+                            console
+                                .lock()
+                                .unwrap()
+                                .append(&LogStream::Stdout, format!("{writer}:{n}").as_bytes())
+                                .unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.join().unwrap();
+            }
+        });
+        let (records, _) = read_records(&console, 0).unwrap();
+        let lines: HashSet<_> = records.iter().map(|record| record.line.clone()).collect();
+        assert_eq!(records.len(), 320);
+        assert_eq!(lines.len(), 320);
+        assert!(
+            records
+                .windows(2)
+                .all(|pair| pair[0].cursor < pair[1].cursor)
+        );
+        r1_assert_bounded(initial, r1_catalog_inventory(&t.path().join("catalog")));
+    }
+
+    /// A real owned runtime child for `launch_admitted`: after an optional
+    /// release file it prints `lines` stdout records (and every odd one on
+    /// stderr), then activates as the runtime fixture and exits or holds.
+    fn owned_console_child(
+        lease: &crate::worker_admission::Lease,
+        namespace: &Path,
+        lines: usize,
+        release: Option<&Path>,
+        live: bool,
+    ) -> tokio::process::Command {
+        owned_runtime_child(lease, namespace, lines, release, live, None)
+    }
+
+    /// `owned_console_child` whose runtime process first runs `guest`: a shell
+    /// script standing for the guest's own writes in its declared runtime
+    /// paths. It runs only inside the owned runtime child, never in the test.
+    fn owned_runtime_child(
+        lease: &crate::worker_admission::Lease,
+        namespace: &Path,
+        lines: usize,
+        release: Option<&Path>,
+        live: bool,
+        guest: Option<&str>,
+    ) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(
+                r#"
+            binary=$1; count=$2; release=$3; shift 3
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                  --admission-fd) export III_TEST_ADMISSION_FD="$2"; shift 2;;
+                  --runtime-write-fd) export III_TEST_RUNTIME_FD="$2"; shift 2;;
+                  *) exit 91;;
+                esac
+            done
+            if [ -n "${III_TEST_GUEST_SCRIPT:-}" ]; then
+                /bin/sh -c "$III_TEST_GUEST_SCRIPT" || exit 92
+            fi
+            if [ -n "$release" ]; then
+                while [ ! -e "$release" ]; do sleep 0.05; done
+                echo after-release
+            fi
+            i=0
+            while [ "$i" -lt "$count" ]; do
+                echo "console-line-$i"
+                [ $((i % 2)) -eq 0 ] || echo "console-err-$i" >&2
+                i=$((i + 1))
+            done
+            exec "$binary" --exact sandbox_daemon::adapters::tests::runtime_owned_child_fixture --nocapture
+        "#,
+            )
+            .arg("owned-console-fixture")
+            .arg(std::env::current_exe().unwrap())
+            .arg(lines.to_string())
+            .arg(release.map_or_else(String::new, |p| p.display().to_string()));
+        command
+            .env("III_TEST_ADMISSION_NAMESPACE", namespace)
+            .env("III_TEST_RUNTIME_LIVE", if live { "1" } else { "0" })
+            .env(
+                "III_TEST_RUNTIME_RESOURCES",
+                serde_json::to_string(&crate::sandbox_daemon::adapters::RuntimeTestResources {
+                    exit_without_drop: true,
+                    ..Default::default()
+                })
+                .unwrap(),
+            );
+        if let Some(guest) = guest {
+            command.env("III_TEST_GUEST_SCRIPT", guest);
+        }
+        crate::cli::worker_manager::libkrun::attach_child_admission(&mut command, lease).unwrap();
+        command
+    }
+
+    fn owned_launch(
+        vms: &WorkerVms,
+        admission: &crate::worker_admission::Lease,
+        command: tokio::process::Command,
+    ) -> Result<WorkerStartResponse, SandboxError> {
+        owned_launch_key(vms, "k", admission, command)
+    }
+
+    fn owned_launch_key(
+        vms: &WorkerVms,
+        key: &str,
+        admission: &crate::worker_admission::Lease,
+        command: tokio::process::Command,
+    ) -> Result<WorkerStartResponse, SandboxError> {
+        vms.launch_admitted(
+            key,
+            command,
+            Vec::new(),
+            None,
+            admission.clone(),
+            Vec::new(),
+            Some(Vec::new()),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// The owned runtime fixture acknowledges activation (its runtime writer
+    /// imported) with a `RUNTIME_READY` line, which libtest may prefix.
+    async fn wait_activated(dir: &Path) {
+        for _ in 0..200 {
+            let text = std::fs::read_to_string(dir.join(CONSOLE_LOG)).unwrap_or_default();
+            if text.lines().any(|line| {
+                serde_json::from_str::<serde_json::Value>(line).is_ok_and(|record| {
+                    record["line"]
+                        .as_str()
+                        .is_some_and(|line| line.contains("RUNTIME_READY"))
+                })
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "the owned runtime child in {} never activated",
+            dir.display()
+        );
+    }
+
+    /// One genuine owned lifecycle of `key` through the production launcher
+    /// and waiter: the runtime child activates, exits 0 and retires, so a later
+    /// stop, destroy or prune holds its original retirement receipt.
+    async fn owned_retired(vms: &WorkerVms, t: &Path, key: &str) -> WorkerStartResponse {
+        let admission = vms.admission(Some(key)).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 0, None, false);
+        let started = owned_launch_key(vms, key, &admission, child).unwrap();
+        wait_ended(vms, &started.vm_id, started.instance).await;
+        let retired = match vms.slots().get(&started.vm_id) {
+            Some(Slot::Booted(vm)) => vm.receipt().map(drop),
+            _ => Err(io::Error::other("no booted slot")),
+        };
+        if let Err(error) = retired {
+            panic!("owned lifecycle of {key} did not retire: {error}");
+        }
+        started
+    }
+
+    /// A restarted adapter over the SAME admission namespace: the documented
+    /// reopen path (`testing::open_context`). Bootstrap provisions an empty
+    /// namespace only and refuses an existing one.
+    fn reopened_vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
+        let context =
+            crate::worker_admission::testing::open_context(&t.join("admission-catalog")).unwrap();
+        WorkerVms::new(t.join("workers"), token.map(str::to_string), roots)
+            .with_admission_context(context)
+    }
+
+    /// Objects a lifecycle leaves in its VM dir, created through the VM's own
+    /// admitted operation as core-recorded Create effects; a raw write would be
+    /// a path appearing outside an owned mutation.
+    fn admitted_files(
+        admission: &crate::worker_admission::Lease,
+        vm: &Path,
+        dirs: &[&str],
+        files: &[(&str, &str)],
+    ) {
+        let mut create = admission
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: vm.to_path_buf(),
+            })
+            .unwrap();
+        create.create_dir_all(vm, 0o700).unwrap();
+        for dir in dirs {
+            create.create_dir_all(&vm.join(dir), 0o700).unwrap();
+        }
+        for (name, body) in files {
+            let mut stage = create.stage_file(&vm.join(name), 0o600).unwrap();
+            stage.file_mut().write_all(body.as_bytes()).unwrap();
+            create.publish_file(stage).unwrap();
+        }
+        create.commit().unwrap();
+    }
+
+    /// A build-dir claim as the start and build paths issue it: under the VM's
+    /// own admission, so its dir and record are core-recorded effects.
+    fn admitted_claim(
+        vms: &WorkerVms,
+        auth: &str,
+        key: &str,
+        dir: &Path,
+    ) -> Result<(), SandboxError> {
+        let admission = vms
+            .admission(Some(key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        vms.claim_build_dir_on(auth, key, dir, "output_dir", Some(&admission))
+    }
+
+    fn console_lines(records: &[LogRecord], prefix: &str) -> Vec<String> {
+        records
+            .iter()
+            .filter(|record| record.line.starts_with(prefix))
+            .map(|record| record.line.clone())
+            .collect()
+    }
+
+    /// R1 through the production launch/waiter/destroy path: more records
+    /// than the old 256-path/journal bound, read while live, then stop and
+    /// destroy succeed because the waiter finished the one writer.
+    #[tokio::test]
+    async fn r1_routed_launch_logs_beyond_256_lines_then_stop_and_destroy_succeed() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let namespace = t.path().join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let initial = r1_catalog_inventory(&namespace);
+        let child = owned_console_child(&admission, &namespace, 300, None, true);
+        let started = owned_launch(&vms, &admission, child).unwrap();
+        let id = started.vm_id.clone();
+        let dir = t.path().join("workers").join(&id);
+        let expected: Vec<_> = (0..300).map(|i| format!("console-line-{i}")).collect();
+        let mut seen = Vec::new();
+        for _ in 0..400 {
+            seen = pumped(&vms, &logs_req("t", &id, false)).await;
+            if console_lines(&seen, "console-line-").len() == 300 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(console_lines(&seen, "console-line-"), expected);
+        assert_eq!(console_lines(&seen, "console-err-").len(), 150);
+        assert!(seen.windows(2).all(|pair| pair[0].cursor < pair[1].cursor));
+        r1_assert_bounded(initial, r1_catalog_inventory(&namespace));
+
+        let status = vms
+            .stop(stop_req("t", &id, started.instance, 0))
+            .await
+            .unwrap();
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+        wait_ended(&vms, &id, started.instance).await;
+        // The settled pair still serves every record through its cursor.
+        let settled = pumped(&vms, &logs_req("t", &id, false)).await;
+        assert_eq!(console_lines(&settled, "console-line-"), expected);
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".iii-")
+        }));
+        r1_assert_bounded(initial, r1_catalog_inventory(&namespace));
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!dir.exists());
+    }
+
+    /// R1 fault: a foreign writer swaps the admitted console inode while the
+    /// VM runs. The append fails closed, the waiter cannot finish the log, no
+    /// successful receipt exists, and destroy keeps the tree and foreign bytes.
+    #[tokio::test]
+    async fn r1_routed_foreign_console_replacement_fails_closed_and_retains_cleanup() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let namespace = t.path().join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let release = t.path().join("release");
+        let child = owned_console_child(&admission, &namespace, 4, Some(&release), false);
+        let started = owned_launch(&vms, &admission, child).unwrap();
+        let dir = t.path().join("workers").join(&started.vm_id);
+        let current = dir.join(CONSOLE_LOG);
+        std::fs::rename(&current, dir.join("held-console")).unwrap();
+        write_private(&current, b"FOREIGN\n");
+        std::fs::write(&release, b"").unwrap();
+        wait_ended(&vms, &started.vm_id, started.instance).await;
+        assert_eq!(std::fs::read(&current).unwrap(), b"FOREIGN\n");
+        assert!(
+            std::fs::read(dir.join("held-console")).unwrap().is_empty(),
+            "no record may land in the displaced inode after the fault"
+        );
+        assert!(vms.destroy(destroy_req("t", "k")).is_err());
+        assert!(dir.exists());
+        assert_eq!(std::fs::read(&current).unwrap(), b"FOREIGN\n");
+    }
+
+    /// R1 gate (expected FAIL until the core gate in the routing report is
+    /// delivered): after destroy removed the exact pair, a relaunch on the SAME
+    /// operation must re-issue one writer for the re-created pair instead of
+    /// refusing on the finished ledger's old identities.
+    #[tokio::test]
+    async fn r1_gate_relaunch_after_destroy_reissues_the_console_writer() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let namespace = t.path().join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 3, None, false);
+        let first = owned_launch(&vms, &admission, child).unwrap();
+        wait_ended(&vms, &first.vm_id, first.instance).await;
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        let child = owned_console_child(&admission, &namespace, 3, None, false);
+        let again = owned_launch(&vms, &admission, child).unwrap();
+        wait_ended(&vms, &again.vm_id, again.instance).await;
+        let records = pumped(&vms, &logs_req("t", &again.vm_id, false)).await;
+        assert_eq!(
+            console_lines(&records, "console-line-"),
+            ["console-line-0", "console-line-1", "console-line-2"]
+        );
+    }
+
+    #[test]
+    fn admitted_console_exact_files_do_not_conflict_with_prepared_guest_tree() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (lease, mut console) = admitted_console_fixture(t.path(), b"");
+        let guest = console.dir.join("root");
+        let runtime = lease
+            .prepare_runtime(&[crate::worker_admission::RuntimePath {
+                path: &guest,
+                kind: crate::worker_admission::RuntimePathKind::GuestTree,
+            }])
+            .unwrap();
+        console.append(&LogStream::Stdout, b"first").unwrap();
+        assert_eq!(console.base, 0);
+        assert!(console.len > 0);
+        assert_eq!(
+            std::fs::metadata(console.dir.join(CONSOLE_LOG))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        // The live writer is the pair's only effect: no second mutation of the
+        // exact files is issued while it holds them.
+        assert!(
+            lease
+                .begin(crate::worker_admission::MutationPlan::ControlFiles {
+                    files: vec![
+                        console.dir.join(CONSOLE_LOG),
+                        console.dir.join(CONSOLE_LOG_OLD),
+                    ],
+                })
+                .is_err()
+        );
+        let third = console.dir.join("not-declared");
+        let mut exact = lease
+            .begin(crate::worker_admission::MutationPlan::ControlFiles {
+                files: vec![console.dir.join(STATE_FILE)],
+            })
+            .unwrap();
+        assert!(exact.stage_file(&third, 0o600).is_err());
+        assert!(!third.exists());
+        drop(exact);
+        drop(runtime);
+        // Prepared-runtime conflict coverage, not a claim of actual guest execution.
+    }
+
+    #[test]
+    fn admitted_console_rotation_publishes_private_files_before_advancing_cursor() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
+        let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
+        let inodes = [CONSOLE_LOG, CONSOLE_LOG_OLD]
+            .map(|name| std::fs::metadata(console.dir.join(name)).unwrap().ino());
+        console.append(&LogStream::Stderr, b"rotate").unwrap();
+        let old = std::fs::read(console.dir.join(CONSOLE_LOG_OLD)).unwrap();
+        assert!(old.starts_with(&initial));
+        assert!(old.ends_with(b"\n"));
+        assert_eq!(console.base, old.len() as u64);
+        assert_eq!(console.len, 0);
+        assert!(!console.failed);
+        assert!(
+            std::fs::read(console.dir.join(CONSOLE_LOG))
+                .unwrap()
+                .is_empty()
+        );
+        for (name, inode) in [CONSOLE_LOG, CONSOLE_LOG_OLD].into_iter().zip(inodes) {
+            let meta = std::fs::metadata(console.dir.join(name)).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            // In-place bounded rotation: the exact admitted inodes, no new
+            // publication and no `.iii-*` stage/prior evidence per record.
+            assert_eq!(meta.ino(), inode);
+        }
+        assert!(!std::fs::read_dir(&console.dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".iii-")
+        }));
+        console.finish().unwrap();
+    }
+
+    #[test]
+    fn admitted_console_failures_never_advance_cursor_or_swap_the_readable_handle() {
+        use std::os::unix::fs::MetadataExt;
+        // Real faults at the caller boundary: a foreign current inode, a
+        // foreign rotation target, and bytes written outside the owned writer.
+        for fault in ["current", "previous", "external-bytes"] {
+            let t = crate::worker_admission::testing::private_tempdir().unwrap();
+            let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
+            let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
+            let current = console.dir.join(CONSOLE_LOG);
+            let previous = console.dir.join(CONSOLE_LOG_OLD);
+            let held = console.dir.join("held");
+            let inode = std::fs::metadata(&current).unwrap().ino();
+            match fault {
+                "current" => {
+                    std::fs::rename(&current, &held).unwrap();
+                    write_private(&current, b"");
+                }
+                "previous" => {
+                    std::fs::rename(&previous, &held).unwrap();
+                    write_private(&previous, b"");
+                }
+                _ => {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&current)
+                        .unwrap()
+                        .write_all(b"foreign\n")
+                        .unwrap();
+                }
+            }
+            assert!(
+                console.append(&LogStream::Stderr, b"line").is_err(),
+                "{fault}"
+            );
+            assert_eq!(console.len, CONSOLE_LOG_CAP, "{fault}");
+            assert_eq!(console.base, 0, "{fault}");
+            assert!(console.failed, "{fault}");
+            // The admitted inode was neither written nor swapped for another.
+            let (kept, expected) = match fault {
+                "current" => (held.clone(), initial.clone()),
+                "previous" => (current.clone(), initial.clone()),
+                _ => (current.clone(), [&initial[..], &b"foreign\n"[..]].concat()),
+            };
+            assert_eq!(std::fs::metadata(&kept).unwrap().ino(), inode, "{fault}");
+            assert_eq!(std::fs::read(&kept).unwrap(), expected, "{fault}");
+            if fault == "previous" {
+                assert!(std::fs::read(&held).unwrap().is_empty());
+            }
+            assert!(
+                console
+                    .append(&LogStream::Stdout, b"must not retry")
+                    .is_err()
+            );
+            assert!(console.finish().is_err(), "{fault}");
+        }
+    }
+
+    #[test]
+    fn admitted_console_refuses_replacement_without_copying_into_it() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (_lease, mut console) = admitted_console_fixture(t.path(), b"old\n");
+        let path = console.dir.join(CONSOLE_LOG);
+        std::fs::rename(&path, console.dir.join("held-old")).unwrap();
+        write_private(&path, b"external\n");
+        assert!(console.append(&LogStream::Stdout, b"forbidden").is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"external\n");
+        assert_eq!(
+            std::fs::read(console.dir.join("held-old")).unwrap(),
+            b"old\n"
+        );
+        assert_eq!(console.len, 4);
+        assert_eq!(console.base, 0);
+        assert!(console.failed);
+        assert!(
+            console.finish().is_err(),
+            "a refused writer is never reported finished"
+        );
+    }
+
     /// Through `Console::append`: a reader a whole rotation behind still gets
     /// every record after its cursor, in order.
     #[test]
     fn a_reader_behind_a_rotation_loses_no_record() {
-        let t = tempfile::tempdir().unwrap();
-        let console = Mutex::new(Console {
-            dir: t.path().to_path_buf(),
-            file: open_private(&t.path().join(CONSOLE_LOG), true).unwrap(),
-            len: 0,
-            base: 0,
-        });
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (_lease, console) = admitted_console_fixture(t.path(), b"");
+        let console = Mutex::new(console);
         let append = |line: &str| {
             let mut console = console.lock().unwrap();
             console.append(&LogStream::Stdout, line.as_bytes()).unwrap();
         };
         append("first");
         let (_, cursor) = read_records(&console, 0).unwrap();
-        // About 11.5 MB: past CONSOLE_LOG_CAP once.
-        let filler = "x".repeat(1000);
-        let n = 11_000;
+        // About 12 MB of whole records: past CONSOLE_LOG_CAP once. Fewer,
+        // larger lines keep every record durable through the core writer.
+        let filler = "x".repeat(30_000);
+        let n = 400;
         for i in 0..n {
             append(&format!("{i} {filler}"));
         }
@@ -3022,11 +5746,12 @@ mod tests {
         assert_eq!(recs.len(), n);
         assert!(recs[0].line.starts_with("0 "));
         assert!(recs[n - 1].line.starts_with(&format!("{} ", n - 1)));
+        console.lock().unwrap().finish().unwrap();
     }
 
     #[tokio::test]
     async fn follow_streams_until_the_instance_ends() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a; sleep 0.3; echo b >&2"), Vec::new(), None)
@@ -3043,7 +5768,7 @@ mod tests {
 
     #[tokio::test]
     async fn follow_on_an_exited_instance_drains_and_returns() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a"), Vec::new(), None)
@@ -3062,7 +5787,7 @@ mod tests {
     /// The env reaches `__vm-boot` on stdin, never argv (MOT-5492).
     #[tokio::test]
     async fn launch_writes_the_env_frame_to_the_vm_stdin() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let env = vec![("API_KEY".to_string(), "sk-secret".to_string())];
         let frame = iii_supervisor::env_channel::encode_frame(&env).unwrap();
@@ -3078,7 +5803,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pump_resumes_after_the_cursor_and_ends_without_follow() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a; echo b; sleep 30"), Vec::new(), None)
@@ -3097,7 +5822,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sink_error_ends_the_pump() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a; sleep 30"), Vec::new(), None)
@@ -3117,12 +5842,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_scoped_token_controls_its_vm_and_no_other() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![t.into()]));
-        let iii = IIIClient::new("ws://127.0.0.1:9");
-        let mine = vms
-            .launch("mine", sh("sleep 30"), Vec::new(), None)
+        // The test's own in-process engine stand-in: no connection reaches a
+        // port the test does not own.
+        let (iii, _frames, _reader_left) = channel_engine().await;
+        // `mine` is a genuine owned runtime lifecycle: its stop and destroy go
+        // through its retirement receipt.
+        let admission = vms.admission(Some("mine")).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 0, None, true);
+        let mine = owned_launch_key(&vms, "mine", &admission, child)
             .unwrap()
             .vm_id;
         let other = vms
@@ -3154,6 +5884,7 @@ mod tests {
         vms.logs(&iii, logs_req(&token, &mine, false))
             .await
             .unwrap();
+        wait_activated(&t.join("workers").join(&mine)).await;
         let stopped = vms.stop(stop_req(&token, &mine, 1, 0)).await.unwrap();
         assert!(matches!(stopped.state, State::Stopped), "{stopped:?}");
         assert!(vms.destroy(destroy_req(&token, "mine")).unwrap().destroyed);
@@ -3167,23 +5898,31 @@ mod tests {
     /// An empty project token's MAC anyone can compute.
     #[tokio::test]
     async fn no_token_derives_from_an_absent_or_empty_project_token() {
-        let t = tempfile::tempdir().unwrap();
-        for token in [None, Some("")] {
-            let vms = vms(t.path(), token, vec![t.path().into()]);
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        for (round, token) in [None, Some("")].into_iter().enumerate() {
+            // One namespace: the first adapter provisions it and the next one
+            // reopens it. Each adapter's VM has its own key, so no admission
+            // waits on the operation of an earlier adapter's VM.
+            let vms = if round == 0 {
+                vms(t.path(), token, vec![t.path().into()])
+            } else {
+                reopened_vms(t.path(), token, vec![t.path().into()])
+            };
+            let key = format!("k{round}");
             let id = vms
-                .launch("k", sh("exit 0"), Vec::new(), None)
+                .launch(&key, sh("exit 0"), Vec::new(), None)
                 .unwrap()
                 .vm_id;
-            let forged = scoped_auth_token("", "k");
+            let forged = scoped_auth_token("", &key);
             assert_eq!(code(vms.status(status_req(&forged, &id, 1))), "S505");
-            assert_eq!(code(vms.destroy(destroy_req(&forged, "k"))), "S505");
+            assert_eq!(code(vms.destroy(destroy_req(&forged, &key))), "S505");
             assert_eq!(code(vms.status(status_req("", &id, 1))), "S505");
         }
     }
 
     #[tokio::test]
     async fn a_scoped_prepare_needs_its_own_state_key() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let empty = t.join("empty");
         std::fs::create_dir(&empty).unwrap();
@@ -3210,7 +5949,7 @@ mod tests {
     #[tokio::test]
     async fn a_scoped_token_without_the_vms_record_is_refused() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("exit 0"), Vec::new(), None)
@@ -3233,11 +5972,11 @@ mod tests {
     /// is the guest's: nothing planted there may open a call, or even be read.
     #[tokio::test]
     async fn a_scoped_token_reads_no_record_outside_a_vms_own_dir() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let share = t.path().join("workers").join(vm_id("k")).join("root");
-        std::fs::create_dir_all(&share).unwrap();
-        std::fs::write(share.join(STATE_KEY_FILE), "k").unwrap();
+        private_dirs(&share);
+        write_private(&share.join(STATE_KEY_FILE), "k");
         let token = scoped_auth_token("t", "k");
         let planted = format!("{}/root", vm_id("k"));
         assert_eq!(code(vms.status(status_req(&token, &planted, 1))), "S505");
@@ -3304,7 +6043,7 @@ mod tests {
     /// writer's stream when this adapter goes away, and a supervisor waits on that end.
     #[tokio::test]
     async fn a_quiet_vm_connects_its_followers_writer_at_once() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3326,7 +6065,7 @@ mod tests {
     /// the follower, not for the engine to answer the upgrade.
     #[tokio::test]
     async fn a_stalled_channel_handshake_does_not_hold_the_follower_back() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let mut vms = vms(t, Some("t"), vec![]);
         vms.lease_grace = Duration::from_millis(900);
@@ -3353,7 +6092,7 @@ mod tests {
 
     #[tokio::test]
     async fn from_end_starts_after_the_last_record_and_names_it() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let (iii, mut frames, _) = channel_engine().await;
@@ -3385,7 +6124,7 @@ mod tests {
     /// An empty log has no last record, and what comes next is the stream's first.
     #[tokio::test]
     async fn from_end_on_an_empty_log_names_nothing_and_loses_nothing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let (iii, mut frames, _) = channel_engine().await;
@@ -3407,7 +6146,7 @@ mod tests {
     /// record `read_records` does.
     #[test]
     fn the_end_of_a_rotated_log_is_a_read_cursor() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let console = console_over(t.path(), &record("a"), &record("b"));
         let (all, _) = read_records(&console, 0).unwrap();
         let end = console.lock().unwrap().end();
@@ -3417,7 +6156,7 @@ mod tests {
 
     #[tokio::test]
     async fn without_from_end_the_stream_honours_the_cursor_and_names_nothing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let (iii, mut frames, _) = channel_engine().await;
@@ -3451,7 +6190,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_lease_stops_a_vm_nothing_follows() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(200));
         let status = wait_ended(&vms, &id, 1).await;
         assert!(matches!(status.state, State::Stopped), "{status:?}");
@@ -3461,7 +6200,7 @@ mod tests {
     /// A guest that ignores SIGTERM cannot outlive its lease.
     #[tokio::test]
     async fn a_lease_kills_a_vm_that_ignores_its_stop() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(
             t.path(),
             "trap '' TERM; echo ready; sleep 60",
@@ -3474,7 +6213,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_follower_holds_a_lease_and_its_end_starts_the_grace() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(300));
         follow_for(&vms, &id, Duration::from_millis(1000)).await;
         let status = vms.status(status_req("t", &id, 1)).unwrap();
@@ -3487,7 +6226,7 @@ mod tests {
     /// The last of several followers ending is what starts the grace.
     #[tokio::test]
     async fn a_lease_waits_for_the_last_follower() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(300));
         tokio::join!(
             follow_for(&vms, &id, Duration::from_millis(100)),
@@ -3500,7 +6239,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_reattach_within_the_grace_keeps_the_vm() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(1000));
         follow_for(&vms, &id, Duration::from_millis(100)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -3513,7 +6252,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_sink_counts_as_a_gone_follower() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "echo a; sleep 30", Duration::from_millis(300));
         wait_record(&t.path().join("workers").join(&id), "a").await;
         let ended = vms
@@ -3531,7 +6270,7 @@ mod tests {
     /// writer's socket, and only a write can find out.
     #[tokio::test]
     async fn a_quiet_follower_whose_reader_left_counts_as_gone() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(900));
         let (iii, mut frames, reader_left) = channel_engine().await;
         vms.logs(&iii, logs_req("t", &id, true)).await.unwrap();
@@ -3550,7 +6289,7 @@ mod tests {
     /// Only records reach a stream of a VM without a lease, whatever it waits for.
     #[tokio::test]
     async fn a_vm_without_a_lease_is_left_alone() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let mut vms = vms(t.path(), Some("t"), vec![]);
         vms.lease_grace = Duration::from_millis(100);
         let vms = Arc::new(vms);
@@ -3573,7 +6312,7 @@ mod tests {
     /// An exit that needed no lease reads as the guest's own.
     #[tokio::test]
     async fn a_lease_leaves_an_exited_vm_alone() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "exit 3", Duration::from_millis(100));
         let status = wait_ended(&vms, &id, 1).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -3586,7 +6325,7 @@ mod tests {
     /// A 0.26 overlay VM dir: its disk in the trampoline `root/`.
     #[test]
     fn a_pre_build_overlay_disk_is_kept_beside_root() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vm_dir = t.path().join("vm");
         std::fs::create_dir_all(vm_dir.join("root/runtime")).unwrap();
         std::fs::write(vm_dir.join("root/upper.ext4"), "0.26 data").unwrap();
@@ -3622,7 +6361,7 @@ mod tests {
     /// A legacy VM dir: `root/` is the rootfs clone holding the guest's data.
     #[test]
     fn a_legacy_rootfs_clone_is_kept_as_root_pre_build() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vm_dir = t.path().join("vm");
         for dir in ["root/bin", "root/usr/lib", "root/var/lib/app"] {
             std::fs::create_dir_all(vm_dir.join(dir)).unwrap();
@@ -3651,7 +6390,7 @@ mod tests {
     /// A name already taken is never overwritten.
     #[test]
     fn a_kept_disk_never_replaces_another() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vm_dir = t.path().join("vm");
         std::fs::create_dir_all(vm_dir.join("root")).unwrap();
         std::fs::write(vm_dir.join(PRE_BUILD_DISK), "older").unwrap();
@@ -3675,32 +6414,32 @@ mod tests {
 
     #[test]
     fn a_start_of_a_build_checks_image_id_and_refuses_with_s508() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
-        let vms = vms(t, Some("t"), vec![t.into()]);
         let dir = t.join(".build/w");
         std::fs::create_dir_all(&dir).unwrap();
         let id = format!("sha256:{}", "a".repeat(64));
+        // Provision the namespace once; every step below is its own adapter
+        // process reopening it. A step's operation pins the build inputs it
+        // admitted, so the fixture edits them only between steps, while no
+        // operation holds them (an edit under a live pin is S300 instead).
+        drop(vms(t, Some("t"), vec![t.into()]));
+        let admit = |roots: Vec<PathBuf>| {
+            reopened_vms(t, Some("t"), roots).admit_build("t", "k", &build_ref(&dir, &id))
+        };
+        let inside = || admit(vec![t.into()]);
 
         // No image.id at all.
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
-        );
+        assert_eq!(code(inside()), "S508");
         std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
-        );
+        assert_eq!(code(inside()), "S508");
         // Another build's id.
         std::fs::write(
             dir.join(IMAGE_ID_FILE),
             format!("sha256:{}\n", "b".repeat(64)),
         )
         .unwrap();
-        let err = vms
-            .admit_build("t", "k", &build_ref(&dir, &id))
-            .unwrap_err();
+        let err = inside().unwrap_err();
         assert_eq!(err.code().as_str(), "S508");
         assert!(err.to_string().contains(&"b".repeat(64)), "{err}");
         // A planted symlink is no id.
@@ -3708,38 +6447,32 @@ mod tests {
         let elsewhere = t.join("id");
         std::fs::write(&elsewhere, &id).unwrap();
         std::os::unix::fs::symlink(&elsewhere, dir.join(IMAGE_ID_FILE)).unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
-        );
+        assert_eq!(code(inside()), "S300");
         std::fs::remove_file(dir.join(IMAGE_ID_FILE)).unwrap();
         // The matching id, but no image.
         std::fs::write(dir.join(IMAGE_ID_FILE), format!("{id}\n")).unwrap();
         std::fs::remove_file(dir.join(IMAGE_FILE)).unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
-        );
+        assert_eq!(code(inside()), "S508");
         std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
-        let image = vms.admit_build("t", "k", &build_ref(&dir, &id)).unwrap();
+        let image = inside().unwrap();
         assert_eq!(image, dir.canonicalize().unwrap().join(IMAGE_FILE));
-        // Outside the host roots it is S501, before any id is read.
-        let outside = vms_without_roots(t);
-        assert_eq!(
-            code(outside.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S501"
-        );
+        // Outside the host roots it is S501, before any id is read: another
+        // adapter process over the same namespace, once this one went away.
+        assert_eq!(code(admit(vec![t.join("elsewhere")])), "S501");
     }
 
     fn vms_without_roots(t: &Path) -> WorkerVms {
         vms(t, Some("t"), vec![t.join("elsewhere")])
     }
 
-    #[test]
-    fn one_build_per_state_key_and_no_destroy_under_it() {
-        let t = tempfile::tempdir().unwrap();
+    /// One build per state key, and no destroy under it. The key has one
+    /// genuine retired lifecycle: once the hold is gone, its destroy spends
+    /// that lifecycle's original receipt.
+    #[tokio::test]
+    async fn one_build_per_state_key_and_no_destroy_under_it() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vm_id("k");
+        let id = owned_retired(&vms, t.path(), "k").await.vm_id;
         let held = vms.hold_build(&id).unwrap();
         assert_eq!(code(vms.hold_build(&id).map(drop)), "S509");
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S509");
@@ -3748,7 +6481,8 @@ mod tests {
         drop(held);
         let again = vms.hold_build(&id).unwrap();
         drop((again, other));
-        assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!t.path().join("workers").join(&id).exists());
     }
 
     /// `plan_output` creates nothing and refuses what is not a directory under
@@ -3756,7 +6490,7 @@ mod tests {
     /// one a link redirected since.
     #[test]
     fn an_output_dir_is_planned_under_the_host_roots_and_created_after() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let project = t.join("project");
         std::fs::create_dir(&project).unwrap();
@@ -3796,7 +6530,7 @@ mod tests {
     fn build_dirs<const N: usize>(t: &Path, names: [&str; N]) -> [PathBuf; N] {
         names.map(|name| {
             let dir = t.join("project/build").join(name);
-            std::fs::create_dir_all(&dir).unwrap();
+            private_dirs(&dir);
             dir.canonicalize().unwrap()
         })
     }
@@ -3808,13 +6542,16 @@ mod tests {
     /// A scoped token never takes a directory another VM of the project
     /// recorded: S505, naming the record and the way out. The project token is
     /// never checked and records nothing.
-    #[test]
-    fn a_scoped_token_never_takes_a_dir_another_vm_recorded() {
+    #[tokio::test]
+    async fn a_scoped_token_never_takes_a_dir_another_vm_recorded() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b, dir_c] = build_dirs(t, ["a", "b", "c"]);
         let [a, b, c, d, f] = ["a", "b", "c", "d", "f"].map(|key| scoped_auth_token("t", key));
+        // B boots one genuine lifecycle below: its worker base and VM dir are
+        // private before the claim path would create them from the umask.
+        private_dirs(&t.join("workers").join(vm_id("b")));
         let first = vms(t, Some("t"), vec![t.into()]);
 
         claim(&first, &a, "a", &dir_a).unwrap();
@@ -3838,8 +6575,9 @@ mod tests {
         claim(&first, "t", "c", &dir_c).unwrap();
         assert!(!record_of(t, "c").exists());
 
-        // The records outlive the adapter process, private.
-        let again = vms(t, Some("t"), vec![t.into()]);
+        // The records outlive the adapter process, private. The next adapter
+        // process reopens the provisioned namespace.
+        let again = reopened_vms(t, Some("t"), vec![t.into()]);
         assert_eq!(code(claim(&again, &a, "a", &dir_b)), "S505");
         let mode = std::fs::metadata(record_of(t, "a"))
             .unwrap()
@@ -3847,13 +6585,15 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
 
-        // A destroyed VM's directory is free again.
+        // A destroyed VM's directory is free again. The destroy spends the
+        // receipt of B's one genuine lifecycle, booted by this adapter.
+        owned_retired(&again, t, "b").await;
         assert!(again.destroy(destroy_req("t", "b")).unwrap().destroyed);
         claim(&again, &d, "d", &dir_b).unwrap();
 
         // A record the project token did not sign counts for nothing: under a
         // new token nobody holds a directory, and a forged record holds none.
-        let rotated = vms(t, Some("u"), vec![t.into()]);
+        let rotated = reopened_vms(t, Some("u"), vec![t.into()]);
         claim(&rotated, &scoped_auth_token("u", "c"), "c", &dir_a).unwrap();
         store_build_dir(&t.join("workers"), &vm_id("e"), "e", &dir_c, "not-t").unwrap();
         claim(&again, &f, "f", &dir_c).unwrap();
@@ -3864,7 +6604,7 @@ mod tests {
     /// directory and kept the old one).
     #[test]
     fn a_vm_moves_to_another_dir_and_releases_the_old_one() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [old, new] = build_dirs(t, ["old", "new"]);
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
@@ -3886,7 +6626,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn another_spelling_of_a_recorded_dir_is_still_that_vms() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_b] = build_dirs(t, ["b"]);
         let alias = PathBuf::from(format!("/proc/self/root{}", dir_b.display()));
@@ -3907,7 +6647,7 @@ mod tests {
     /// symlink to one, holds nothing, and a claim replaces the link itself.
     #[test]
     fn a_transplanted_or_linked_record_counts_for_nothing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b, dir_c, dir_x] = build_dirs(t, ["a", "b", "c", "x"]);
         let [a, b, c, d] = ["a", "b", "c", "d"].map(|key| scoped_auth_token("t", key));
@@ -3915,7 +6655,7 @@ mod tests {
         let base = t.join("workers");
 
         claim(&vms, &b, "b", &dir_b).unwrap();
-        std::fs::create_dir_all(base.join(vm_id("a"))).unwrap();
+        private_dirs(&base.join(vm_id("a")));
         std::fs::copy(record_of(t, "b"), record_of(t, "a")).unwrap();
         assert_eq!(read_build_dir(&base, &vm_id("a"), "t"), None);
         // Read as VM a's, the copy would refuse B its own directory.
@@ -3939,20 +6679,27 @@ mod tests {
     }
 
     /// A scoped `worker::destroy` deletes its own VM's record only: another
-    /// VM's directory stays out of reach.
-    #[test]
-    fn a_scoped_destroy_frees_only_its_own_dir() {
-        let t = tempfile::tempdir().unwrap();
+    /// VM's directory stays out of reach. Each claim is issued under its VM's
+    /// admission, as the start path does, and each destroy spends one genuine
+    /// lifecycle's retirement receipt.
+    #[tokio::test]
+    async fn a_scoped_destroy_frees_only_its_own_dir() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b] = build_dirs(t, ["a", "b"]);
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
         let vms = vms(t, Some("t"), vec![t.into()]);
-        claim(&vms, &a, "a", &dir_a).unwrap();
-        claim(&vms, &b, "b", &dir_b).unwrap();
+        admitted_claim(&vms, &a, "a", &dir_a).unwrap();
+        admitted_claim(&vms, &b, "b", &dir_b).unwrap();
+        for key in ["a", "b"] {
+            owned_retired(&vms, t, key).await;
+        }
         assert!(vms.destroy(destroy_req(&a, "a")).unwrap().destroyed);
         assert!(!record_of(t, "a").exists());
-        assert_eq!(code(claim(&vms, &a, "a", &dir_b)), "S505");
-        claim(&vms, &a, "a", &dir_a).unwrap();
+        assert_eq!(code(admitted_claim(&vms, &a, "a", &dir_b)), "S505");
+        admitted_claim(&vms, &a, "a", &dir_a).unwrap();
+        // A's first receipt is spent; its next lifecycle holds the next one.
+        owned_retired(&vms, t, "a").await;
         // Nothing of the claims, lock included, outlives the last VM.
         for key in ["a", "b"] {
             assert!(vms.destroy(destroy_req("t", key)).unwrap().destroyed);
@@ -3965,10 +6712,11 @@ mod tests {
     /// other S505, every time.
     #[test]
     fn two_claims_of_one_dir_at_once_give_it_to_one_vm() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let first = vms(t, Some("t"), vec![t.into()]);
-        let second = vms(t, Some("t"), vec![t.into()]);
+        // The second adapter process reopens the provisioned namespace.
+        let second = reopened_vms(t, Some("t"), vec![t.into()]);
         for round in 0..25 {
             let [dir] = build_dirs(t, [&format!("race-{round}")]);
             let keys = [format!("x{round}"), format!("y{round}")];
@@ -3997,11 +6745,11 @@ mod tests {
     }
 
     /// `worker::start` takes `build_dir` through the same claim, before it
-    /// reads image.id: another VM's image is S505, whatever the id, and so is
-    /// any other path to it (a symlink, `..`).
+    /// reads image.id: another VM's image is S505, whatever the id. Aliases
+    /// (a symlink, `..`) are refused by input admission before the claim.
     #[test]
     fn a_scoped_start_boots_no_other_vms_build_dir() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let [dir_a, dir_b] = build_dirs(t, ["a", "b"]);
@@ -4014,10 +6762,16 @@ mod tests {
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
 
         vms.admit_build(&b, "b", &build_ref(&dir_b, &id)).unwrap();
-        for path in [&dir_b, &link, &dotdot] {
+        assert_eq!(
+            code(vms.admit_build(&a, "a", &build_ref(&dir_b, &id))),
+            "S505"
+        );
+        // Admission now rejects aliases/traversal before claims, without
+        // canonicalizing them into a spelling that evades the input fence.
+        for path in [&link, &dotdot] {
             assert_eq!(
                 code(vms.admit_build(&a, "a", &build_ref(path, &id))),
-                "S505"
+                "S300"
             );
         }
         assert_eq!(
@@ -4033,99 +6787,60 @@ mod tests {
         vms.admit_build("t", "a", &build_ref(&dir_b, &id)).unwrap();
     }
 
-    /// `worker::build` claims `output_dir` under its key's hold, before it
-    /// creates it or reads the source: a refused token creates nothing, by any
-    /// path to the other VM's directory, even one that is gone from disk.
-    #[tokio::test]
-    async fn a_scoped_build_writes_no_other_vms_build_dir() {
-        if !crate::cli::overlay::overlay_active() {
-            eprintln!("[skip] a build needs the overlay rootfs (an embedded iii-init)");
-            return;
-        }
-        let t = tempfile::tempdir().unwrap();
-        let t = t.path();
-        let empty = t.join("empty");
-        std::fs::create_dir(&empty).unwrap();
-        let vms = vms(t, Some("t"), vec![t.into()]);
-        let iii = IIIClient::new("ws://127.0.0.1:9");
-        let build = |auth: &str, state_key: &str, out: &Path| {
-            vms.build(
-                &iii,
-                WorkerBuildRequest {
-                    auth: auth.to_string(),
-                    state_key: state_key.to_string(),
-                    worker_name: "w".to_string(),
-                    source: local(&empty),
-                    output_dir: out.display().to_string(),
-                    env: Default::default(),
-                    logs: StreamChannelRef {
-                        channel_id: "c".to_string(),
-                        access_key: "k".to_string(),
-                        direction: ChannelDirection::Write,
-                    },
-                    base_image: None,
-                },
-            )
-        };
-        let (out_a, out_b) = (t.join("project/a"), t.join("project/b"));
-        let link = t.join("project/link-to-b");
+    /// Claims still reject another VM with S505 after complete preflight.
+    /// Use the claim helper directly: an empty source now refuses BEFORE a claim.
+    #[test]
+    fn a_scoped_build_claim_still_refuses_another_vms_directory() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![t.path().into()]);
+        let out = t.path().join("output");
+        std::fs::create_dir(&out).unwrap();
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
-        // S501, not S505: past the claim, to the empty source.
-        assert_eq!(code(build(&b, "b", &out_b).await), "S501");
-        std::os::unix::fs::symlink(&out_b, &link).unwrap();
-        assert_eq!(code(build(&a, "a", &out_b).await), "S505");
-        assert_eq!(code(build(&a, "a", &link).await), "S505");
-        // `..` is refused before any claim.
-        let dotdot = PathBuf::from(format!("{}/../b", out_a.display()));
-        assert_eq!(code(build(&a, "a", &dotdot).await), "S501");
-        assert!(!out_a.exists());
-        assert_eq!(std::fs::read_dir(&out_b).unwrap().count(), 0);
-        // B's directory, deleted, is still B's: A gets S505 and creates nothing.
-        std::fs::remove_dir(&out_b).unwrap();
-        assert_eq!(code(build(&a, "a", &out_b).await), "S505");
-        assert!(!out_b.exists());
-        assert_eq!(code(build(&a, "a", &out_a).await), "S501");
-        assert!(out_a.is_dir());
-        // Under a file it cannot be created: refused at the plan, A keeps its record.
-        std::fs::write(t.join("project/file"), "").unwrap();
+        let admission = vms.admission(Some("b")).unwrap();
+        let admission = crate::worker_admission::with_inputs(admission, &[&out]).unwrap();
+        claim(&vms, &b, "b", &out).unwrap();
+        assert_eq!(code(claim(&vms, &a, "a", &out)), "S505");
+        assert!(!vms.base.join(vm_id("a")).join(BUILD_DIR_RECORD).exists());
         assert_eq!(
-            code(build(&a, "a", &t.join("project/file/w")).await),
-            "S501"
+            read_build_dir(&vms.base, &vm_id("b"), "t"),
+            Some(out.clone())
         );
-        let own = read_build_dir(&t.join("workers"), &vm_id("a"), "t");
-        assert_eq!(own, Some(out_a.canonicalize().unwrap()));
-        assert_eq!(code(build("t", "a", &out_b).await), "S501");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+        drop(admission);
     }
 
     /// A VM dir as a VM that booted builds leaves it, the earlier adapter's
-    /// disks kept beside it, and its runtime state.
-    fn vm_with_data(t: &Path, vms: &WorkerVms, key: &str) -> PathBuf {
+    /// disks kept beside it, and its runtime state. Every object is created
+    /// through the VM's own admitted operation (the build-dir claim the start
+    /// path issues, then core Create effects); one genuine owned lifecycle then
+    /// boots, exits and retires and writes the runtime state itself, so a
+    /// destroy spends that lifecycle's original retirement receipt.
+    async fn vm_with_data(t: &Path, vms: &WorkerVms, key: &str) -> PathBuf {
         let vm = t.join("workers").join(vm_id(key));
-        std::fs::create_dir_all(vm.join("root/opt/iii")).unwrap();
-        std::fs::create_dir_all(vm.join("root.pre-build/bin")).unwrap();
-        std::fs::create_dir_all(vm.join("build-1-2/root")).unwrap();
-        for (name, body) in [
-            ("upper.ext4", "data"),
-            ("upper.ext4.pre-build", "0.26 disk"),
-            ("upper.ext4.pre-build.1", "older 0.26 disk"),
-            ("build-mode", "1\n"),
-            ("console.log", "log"),
-            ("console.log.1", "old log"),
-            ("state.json", r#"{"instance":3}"#),
-            ("state_key", key),
-            ("root/opt/iii/run.sh", "script"),
-        ] {
-            std::fs::write(vm.join(name), body).unwrap();
-        }
+        let admission = vms.admission(Some(key)).unwrap();
         let dir = t.join("project/build").join(key);
-        std::fs::create_dir_all(&dir).unwrap();
-        claim(
-            vms,
+        private_dirs(&dir);
+        vms.claim_build_dir_on(
             &scoped_auth_token("t", key),
             key,
             &dir.canonicalize().unwrap(),
+            "output_dir",
+            Some(&admission),
         )
         .unwrap();
+        admitted_files(
+            &admission,
+            &vm,
+            &["root/opt/iii", "root.pre-build/bin", "build-1-2/root"],
+            &[
+                ("upper.ext4", "data"),
+                ("upper.ext4.pre-build", "0.26 disk"),
+                ("upper.ext4.pre-build.1", "older 0.26 disk"),
+                ("build-mode", "1\n"),
+                ("root/opt/iii/run.sh", "script"),
+            ],
+        );
+        owned_retired(vms, t, key).await;
         vm
     }
 
@@ -4141,15 +6856,17 @@ mod tests {
     /// Without `prune`, destroy removes the runtime state and the build-dir
     /// record, and keeps the data: the data disk, the earlier adapter's disks
     /// and the seal. The next start of the key boots over the same disk, and
-    /// the build directory is free.
-    #[test]
-    fn a_destroy_without_prune_keeps_the_data_for_the_next_start() {
-        let t = tempfile::tempdir().unwrap();
+    /// the build directory is free. Unknown leftovers (an earlier adapter's
+    /// build scratch, a planted link) are retained evidence: a receipt never
+    /// broadens from an enumeration, and the planted link is never followed.
+    #[tokio::test]
+    async fn a_destroy_without_prune_keeps_the_data_for_the_next_start() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let vm = vm_with_data(t, &vms, "k");
+        let vm = vm_with_data(t, &vms, "k").await;
         let outside = t.join("outside");
-        std::fs::write(&outside, "keep me").unwrap();
+        write_private(&outside, "keep me");
         std::os::unix::fs::symlink(&outside, vm.join("planted")).unwrap();
 
         let reply = vms.destroy(keep_req("t", "k")).unwrap();
@@ -4157,6 +6874,8 @@ mod tests {
         assert_eq!(
             reply.kept,
             [
+                "build-1-2",
+                "planted",
                 "root.pre-build",
                 "upper.ext4",
                 "upper.ext4.pre-build",
@@ -4167,7 +6886,9 @@ mod tests {
         assert_eq!(
             names_in(&vm),
             [
+                "build-1-2",
                 "build-mode",
+                "planted",
                 "root.pre-build",
                 "upper.ext4",
                 "upper.ext4.pre-build",
@@ -4176,75 +6897,91 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me");
         assert!(vm.join("root.pre-build/bin").is_dir());
+        assert!(vm.join("build-1-2/root").is_dir());
 
         // The next start: the seal stands, nothing moves, the same disk.
-        let (upper, notes) = adopt_build_mode(&vm, "w").unwrap();
+        let admission = vms.admission(Some("k")).unwrap();
+        let (upper, notes) = adopt_build_mode_admitted(&admission, &vm, "w").unwrap();
         assert_eq!(upper, vm.join("upper.ext4"));
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(std::fs::read_to_string(&upper).unwrap(), "data");
         // The build directory is free.
         let dir = t.join("project/build/k").canonicalize().unwrap();
         claim(&vms, &scoped_auth_token("t", "other"), "other", &dir).unwrap();
-        // A second destroy finds data only: it keeps it, removes nothing, and
-        // says what it kept.
-        let reply = vms.destroy(keep_req("t", "k")).unwrap();
-        assert!(!reply.destroyed);
-        assert_eq!(reply.kept.len(), 4, "{:?}", reply.kept);
-        assert!(vm.join("upper.ext4").is_file());
+        // A second destroy finds data and retained evidence only: no declared
+        // runtime entry is left to remove, so it removes nothing, spends no
+        // receipt, writes no seal and no catalog record, and says what it kept.
+        let names = names_in(&vm);
+        let catalog = t.join("admission-catalog").join("catalog.json");
+        let recorded = std::fs::read(&catalog).unwrap();
+        let again = vms.destroy(keep_req("t", "k")).unwrap();
+        assert!(!again.destroyed, "{again:?}");
+        assert_eq!(again.kept, reply.kept);
+        assert_eq!(names_in(&vm), names);
+        assert_eq!(std::fs::read(&catalog).unwrap(), recorded);
+        assert_eq!(
+            std::fs::read_to_string(vm.join("upper.ext4")).unwrap(),
+            "data"
+        );
     }
 
     /// With `prune`, destroy leaves nothing, the data and the record included.
-    #[test]
-    fn a_destroy_with_prune_leaves_nothing() {
-        let t = tempfile::tempdir().unwrap();
+    /// It spends the lifecycle's one receipt: a repeated destroy is refused
+    /// fail-closed (no receipt is ever reused) and nothing reappears.
+    #[tokio::test]
+    async fn a_destroy_with_prune_leaves_nothing() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let vm = vm_with_data(t, &vms, "k");
+        let vm = vm_with_data(t, &vms, "k").await;
         let reply = vms.destroy(destroy_req("t", "k")).unwrap();
         assert!(reply.destroyed && reply.kept.is_empty(), "{reply:?}");
         assert!(!vm.exists());
         assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
-        assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
-        assert!(!vms.destroy(keep_req("t", "k")).unwrap().destroyed);
+        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S216");
+        assert_eq!(code(vms.destroy(keep_req("t", "k"))), "S216");
+        assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
     }
 
     /// A VM with no data goes whole without `prune` too, seal included; a VM an
     /// earlier adapter ran keeps its disk as a pre-build copy, as its first
-    /// build start would have.
+    /// build start would have. Every VM is a genuine lifecycle; its data, if
+    /// any, is created through its own operation before its runtime boots.
     #[tokio::test]
     async fn a_destroy_without_prune_keeps_only_what_holds_data() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let id = vms
-            .launch("empty", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&vms, &id, 1).await;
+        let id = owned_retired(&vms, t, "empty").await.vm_id;
         assert!(vms.destroy(keep_req("t", "empty")).unwrap().destroyed);
         assert!(!t.join("workers").join(&id).exists());
         // The same key boots on, as after a destroy with prune.
-        let again = vms.launch("empty", sh("exit 0"), Vec::new(), None).unwrap();
+        let again = owned_retired(&vms, t, "empty").await;
         assert_eq!(again.instance, 2);
-        wait_ended(&vms, &again.vm_id, 2).await;
 
         // A 0.26 overlay VM: its disk is `root/upper.ext4`, no seal yet.
         let old = t.join("workers").join(vm_id("old"));
-        std::fs::create_dir_all(old.join("root")).unwrap();
-        std::fs::write(old.join("root/upper.ext4"), "0.26 data").unwrap();
-        std::fs::write(old.join("console.log"), "log").unwrap();
+        let admission = vms.admission(Some("old")).unwrap();
+        admitted_files(
+            &admission,
+            &old,
+            &["root"],
+            &[("root/upper.ext4", "0.26 data")],
+        );
+        owned_retired(&vms, t, "old").await;
         assert!(vms.destroy(keep_req("t", "old")).unwrap().destroyed);
         assert_eq!(names_in(&old), ["build-mode", "upper.ext4.pre-build"]);
         assert_eq!(
             std::fs::read_to_string(old.join("upper.ext4.pre-build")).unwrap(),
             "0.26 data"
         );
-        // A legacy rootfs clone: `root/` is the data.
+        // A legacy rootfs clone: `root/` is the data. The clone moves aside and
+        // only the runtime state this lifecycle itself wrote goes.
         let legacy = t.join("workers").join(vm_id("legacy"));
-        std::fs::create_dir_all(legacy.join("root/bin")).unwrap();
-        std::fs::write(legacy.join("root/bin/x"), "x").unwrap();
-        // Nothing but data there: the clone moves aside, and no runtime state goes.
-        assert!(!vms.destroy(keep_req("t", "legacy")).unwrap().destroyed);
+        let admission = vms.admission(Some("legacy")).unwrap();
+        admitted_files(&admission, &legacy, &["root/bin"], &[("root/bin/x", "x")]);
+        owned_retired(&vms, t, "legacy").await;
+        assert!(vms.destroy(keep_req("t", "legacy")).unwrap().destroyed);
         assert_eq!(names_in(&legacy), ["build-mode", "root.pre-build"]);
         assert!(legacy.join("root.pre-build/bin/x").is_file());
     }
@@ -4269,7 +7006,7 @@ mod tests {
     #[test]
     fn a_binary_package_runs_its_executable_and_nothing_else() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let pkg = t.path().join("pkg");
         binary_package(&pkg);
         let project = validate_binary(&pkg, "pkg", "bin/worker").unwrap();
@@ -4353,7 +7090,7 @@ mod tests {
     /// `build`, are S501 before anything is read.
     #[tokio::test]
     async fn a_binary_package_is_neither_prepared_nor_started_without_a_build() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let source = binary_package(&t.join("pkg"));
@@ -4380,7 +7117,7 @@ mod tests {
             eprintln!("[skip] a build needs the overlay rootfs (an embedded iii-init)");
             return;
         }
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let iii = IIIClient::new("ws://127.0.0.1:9");
@@ -4424,7 +7161,7 @@ mod tests {
     /// worker's manifest leave `runtime.base_image` out; nothing else does.
     #[test]
     fn a_local_manifest_needs_no_base_image_when_the_request_names_one() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let dir = t.path().join("w");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -4440,24 +7177,48 @@ mod tests {
 
     /// A start without `build` boots on `root/upper.ext4`, a new disk once a
     /// destroy kept the previous one: a second destroy without `prune` moves it
-    /// to the next pre-build name and lists it, never deletes it.
+    /// to the next pre-build name and lists it, never deletes it. That second
+    /// start is a genuine lifecycle: its disk is prepared through the VM's own
+    /// operation, declared as the runtime's upper image, and the owned runtime
+    /// child (the guest) writes into that exact inode.
     #[tokio::test]
     async fn a_second_destroy_keeps_what_a_start_without_build_wrote() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let vm = vm_with_data(t, &vms, "k");
+        let vm = vm_with_data(t, &vms, "k").await;
         assert!(vms.destroy(keep_req("t", "k")).unwrap().destroyed);
 
+        let admission = vms.admission(Some("k")).unwrap();
         let disk = vm.join("root").join(crate::cli::upper::UPPER_NAME);
-        let script = format!(
-            "mkdir -p '{}' && echo guest-wrote > '{}'",
-            vm.join("root").display(),
-            disk.display()
+        admitted_files(&admission, &vm, &["root"], &[("root/upper.ext4", "")]);
+        let script = format!("printf 'guest-wrote\\n' > '{}'", disk.display());
+        let child = owned_runtime_child(
+            &admission,
+            &t.join("admission-catalog"),
+            0,
+            None,
+            false,
+            Some(&script),
         );
-        let started = vms.launch("k", sh(&script), Vec::new(), None).unwrap();
+        let started = vms
+            .launch_admitted(
+                "k",
+                child,
+                Vec::new(),
+                None,
+                admission.clone(),
+                Vec::new(),
+                Some(vec![(
+                    disk.clone(),
+                    crate::worker_admission::RuntimePathKind::UpperImage,
+                )]),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
         wait_ended(&vms, &started.vm_id, started.instance).await;
-        assert!(disk.is_file());
+        assert_eq!(std::fs::read_to_string(&disk).unwrap(), "guest-wrote\n");
 
         let reply = vms.destroy(keep_req("t", "k")).unwrap();
         assert!(reply.destroyed);
@@ -4478,25 +7239,29 @@ mod tests {
 
     /// In the legacy mode every start clones a rootfs into `root/`: each
     /// destroy without `prune` moves the clone it finds to the next pre-build
-    /// name, so no clone is ever deleted.
-    #[test]
-    fn a_destroy_without_prune_in_legacy_mode_keeps_every_clone() {
-        let t = tempfile::tempdir().unwrap();
+    /// name, so no clone is ever deleted. Each clone belongs to a genuine
+    /// lifecycle: written through the VM's own operation before its owned
+    /// runtime boots, and each destroy spends that lifecycle's one receipt.
+    #[tokio::test]
+    async fn a_destroy_without_prune_in_legacy_mode_keeps_every_clone() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = t.join("workers").join(vm_id("legacy"));
+        let admission = vms.admission(Some("legacy")).unwrap();
         let clone = |body: &str| {
-            std::fs::create_dir_all(vm.join("root/bin")).unwrap();
-            std::fs::write(vm.join("root/bin/data"), body).unwrap();
-            std::fs::write(vm.join("console.log"), "log").unwrap();
+            admitted_files(&admission, &vm, &["root/bin"], &[("root/bin/data", body)]);
         };
         clone("first");
+        owned_retired(&vms, t, "legacy").await;
         let reply = vms.destroy(keep_req("t", "legacy")).unwrap();
+        assert!(reply.destroyed);
         assert_eq!(
             reply.kept,
             [vm.join("root.pre-build").display().to_string()]
         );
         clone("second");
+        owned_retired(&vms, t, "legacy").await;
         let reply = vms.destroy(keep_req("t", "legacy")).unwrap();
         assert!(reply.destroyed);
         assert_eq!(
@@ -4517,7 +7282,7 @@ mod tests {
             eprintln!("[skip] a start of a build needs the overlay rootfs (an embedded iii-init)");
             return;
         }
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let [dir] = build_dirs(t, ["b"]);
@@ -4538,7 +7303,7 @@ mod tests {
     #[test]
     fn an_executable_through_a_linked_dir_or_under_iii_is_refused() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let pkg = t.path().join("pkg");
         binary_package(&pkg);
         let outside = t.path().join("outside");
@@ -4570,7 +7335,7 @@ mod tests {
     /// symlink, and never past 64 KiB.
     #[test]
     fn a_binary_manifest_is_a_small_regular_file() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let pkg = t.path().join("pkg");
         binary_package(&pkg);
         let elsewhere = t.path().join("manifest.yaml");
@@ -4593,7 +7358,7 @@ mod tests {
     /// read: missing, or outside the host roots, it still gets that S501.
     #[tokio::test]
     async fn a_binary_outside_a_build_is_refused_before_its_path_is_read() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms_without_roots(t);
         let real = t.join("pkg");
@@ -4656,6 +7421,7 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let state = Arc::new(AtomicU8::new(state));
         let write = ImageWrite {
+            _admissions: Vec::new(),
             export,
             out,
             spool: t.join("spool"),
@@ -4668,7 +7434,7 @@ mod tests {
 
     #[test]
     fn an_image_lands_with_its_id_and_a_cancelled_one_leaves_the_previous_pair() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, state) = image_write(t, "v1", BUILD_RUNNING);
         let id = write.write().unwrap();
@@ -4705,14 +7471,24 @@ mod tests {
     /// previous build or of the new one is S508, until a rebuild completes.
     #[test]
     fn a_crash_between_the_renames_leaves_no_id_and_a_start_gets_s508() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, _) = image_write(t, "v1", BUILD_RUNNING);
         let previous = write.write().unwrap();
         let out = t.join("out");
-        let vms = vms(t, Some("t"), vec![t.into()]);
-        vms.admit_build("t", "k", &build_ref(&out, &previous))
-            .unwrap();
+        // Provision the namespace once; every start check below is its own
+        // adapter process reopening it. A check's operation pins the pair it
+        // admitted, so the crash and the rebuild happen between checks, while
+        // no operation holds the output (under a live pin they are S300).
+        drop(vms(t, Some("t"), vec![t.into()]));
+        let admit = |build_id: &str| {
+            reopened_vms(t, Some("t"), vec![t.into()]).admit_build(
+                "t",
+                "k",
+                &build_ref(&out, build_id),
+            )
+        };
+        admit(&previous).unwrap();
 
         // The next build's two temporary files, its first step, and the crash.
         let image = out.join(format!(".{IMAGE_FILE}.v2.partial"));
@@ -4725,9 +7501,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join(IMAGE_FILE)).unwrap(), b"v2");
         assert_eq!(read_image_id(&out), None);
         for build_id in [&previous, &next] {
-            let err = vms
-                .admit_build("t", "k", &build_ref(&out, build_id))
-                .unwrap_err();
+            let err = admit(build_id).unwrap_err();
             assert_eq!(err.code().as_str(), "S508", "{err}");
             assert!(err.to_string().contains("is missing; build again"), "{err}");
         }
@@ -4735,12 +7509,8 @@ mod tests {
         // A rebuild puts a whole pair back.
         let (write, _) = image_write(t, "v3", BUILD_RUNNING);
         let rebuilt = write.write().unwrap();
-        vms.admit_build("t", "k", &build_ref(&out, &rebuilt))
-            .unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&out, &previous))),
-            "S508"
-        );
+        admit(&rebuilt).unwrap();
+        assert_eq!(code(admit(&previous)), "S508");
     }
 
     /// A filesystem that cannot flush a directory gets a warning, not a failed
@@ -4780,7 +7550,7 @@ mod tests {
     /// build reports the image it installed.
     #[tokio::test]
     async fn a_build_dropped_after_its_commit_still_has_its_build_id() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, state) = image_write(t, "v1", BUILD_RUNNING);
         let slot = WriterSlot::default();
@@ -4808,8 +7578,8 @@ mod tests {
     }
 
     #[test]
-    fn only_an_earlier_processs_build_scratch_is_swept() {
-        let t = tempfile::tempdir().unwrap();
+    fn build_scratch_is_preserved_without_owned_removal_authority() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let mine = t.path().join(format!("build-{}-0", std::process::id()));
         let stale = t.path().join("build-1-0");
         let root = t.path().join("root");
@@ -4821,16 +7591,16 @@ mod tests {
         std::fs::write(t.path().join(BUILD_MODE_SEAL), "1\n").unwrap();
         std::fs::write(t.path().join("build-2-0"), "a file").unwrap();
         sweep_build_scratch(t.path());
-        assert!(mine.is_dir() && root.is_dir() && other.is_dir() && !stale.exists());
+        assert!(mine.is_dir() && root.is_dir() && other.is_dir() && stale.exists());
         assert!(t.path().join(BUILD_MODE_SEAL).is_file());
         assert!(t.path().join("build-2-0").is_file());
     }
 
-    /// A build whose adapter died while writing left its temporary image in the
-    /// project; the next build removes it, and only it.
+    /// A prior adapter's partial image is unresolved evidence, not permission
+    /// for the next process to remove it by filename or diagnostic PID.
     #[test]
-    fn the_next_build_sweeps_an_earlier_processs_partial_image() {
-        let t = tempfile::tempdir().unwrap();
+    fn the_next_build_preserves_unrelated_partial_image_evidence() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let mine = format!("{}-3", std::process::id());
         let names = [
             ".image.erofs.1-0.partial".to_string(),
@@ -4847,8 +7617,10 @@ mod tests {
         }
         sweep_image_partials(t.path());
         for name in &names {
-            let gone = name.contains(".1-0.");
-            assert_eq!(!t.path().join(name).exists(), gone, "{name}");
+            assert!(
+                t.path().join(name).exists(),
+                "PID-only sweep must preserve {name}"
+            );
         }
     }
 
@@ -4876,7 +7648,7 @@ mod tests {
     /// previous pair stays.
     #[tokio::test]
     async fn a_build_cancelled_while_writing_its_image_waits_for_the_writer() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, _) = image_write(t, "v1", BUILD_RUNNING);
         let id = write.write().unwrap();

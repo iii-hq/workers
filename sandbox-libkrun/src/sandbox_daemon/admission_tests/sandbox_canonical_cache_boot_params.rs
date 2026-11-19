@@ -1,8 +1,7 @@
 //! Daemon-side checks on what a sandbox boots from, complementing
 //! `sandbox_shared_rootfs_boot_params`.
 //!
-//! - Both seed the cache, `~/.iii/cache/<slug>/`
-//!   (`rootfs_cache::canonical_path`).
+//! - Both seed one real prepared cache under a per-instance temporary root.
 //! - This one records the full `BootParams`: the cache must arrive only as
 //!   `base_rootfs` (the erofs lower source), never as the guest root, and the
 //!   guest root must be a per-sandbox trampoline holding nothing but the
@@ -10,18 +9,17 @@
 //! - A failed launcher `preflight` must stop `handle_create` before the image
 //!   is resolved or pulled.
 //!
-//! No VM: the launchers only record what they are handed.
+//! No VM: launchers record params and attach an owned test child with real
+//! inherited admission/runtime descriptors before any artificial delay.
 
-use sandbox_libkrun::cli::rootfs_cache;
-use sandbox_libkrun::sandbox_daemon::config::SandboxConfig;
-use sandbox_libkrun::sandbox_daemon::overlay::{TRAMPOLINE_STAGING_DIRS, sandbox_root};
-use sandbox_libkrun::sandbox_daemon::{
+use super::{TestRegistry as SandboxRegistry, handle_create, owned_boot};
+use crate::sandbox_daemon::config::SandboxConfig;
+use crate::sandbox_daemon::overlay::TRAMPOLINE_STAGING_DIRS;
+use crate::sandbox_daemon::{
     SandboxError, catalog,
-    create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
+    create::{BootHandle, BootParams, CreateRequest, VmLauncher},
     exec::EnvShape,
-    registry::SandboxRegistry,
 };
-use serial_test::serial;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -38,7 +36,16 @@ struct RecordingLauncher {
 }
 #[async_trait::async_trait]
 impl VmLauncher for RecordingLauncher {
-    async fn boot(&self, p: &BootParams) -> Result<BootHandle, SandboxError> {
+    async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
+        panic!("admitted fixture required")
+    }
+    async fn boot_admitted(
+        &self,
+        p: &BootParams,
+        lease: crate::worker_admission::Lease,
+        reg: &crate::sandbox_daemon::registry::SandboxRegistry,
+        id: uuid::Uuid,
+    ) -> Result<BootHandle, SandboxError> {
         let mut trampoline_entries: Vec<String> = std::fs::read_dir(&p.rootfs)
             .map(|rd| {
                 rd.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -51,10 +58,7 @@ impl VmLauncher for RecordingLauncher {
             base_rootfs: p.base_rootfs.clone(),
             trampoline_entries,
         });
-        Ok(BootHandle {
-            vm_pid: 999_999,
-            lifeline: None,
-        })
+        owned_boot(p, lease, reg, id).await
     }
 }
 
@@ -68,30 +72,6 @@ impl VmLauncher for RefusingLauncher {
     async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
         panic!("boot must not run after a failed preflight");
     }
-}
-
-struct HomeGuard(
-    #[allow(dead_code)] tempfile::TempDir,
-    Option<std::ffi::OsString>,
-);
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.1 {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-    }
-}
-
-/// Point HOME at a fresh temp dir for the duration of the test.
-fn isolated_home() -> HomeGuard {
-    let td = tempfile::tempdir().unwrap();
-    let orig = std::env::var_os("HOME");
-    // SAFETY: #[serial]; no other thread in this binary touches the env.
-    unsafe { std::env::set_var("HOME", td.path()) };
-    HomeGuard(td, orig)
 }
 
 fn cfg() -> SandboxConfig {
@@ -115,23 +95,38 @@ fn req() -> CreateRequest {
 }
 
 #[tokio::test]
-#[serial]
 async fn canonical_cache_is_only_the_lower_never_the_guest_root() {
-    let _home = isolated_home();
+    let reg = SandboxRegistry::new();
     let cfg = cfg();
     let oci_ref = catalog::resolve_image("python", &cfg.custom_images).unwrap();
-    let canonical = rootfs_cache::canonical_path(&oci_ref);
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
-    assert!(canonical.starts_with(&home), "isolated HOME not honoured");
-    std::fs::create_dir_all(canonical.join("bin")).unwrap();
-    std::fs::write(canonical.join("bin/marker"), b"original").unwrap();
-
-    let reg = SandboxRegistry::new();
+    let canonical = reg.seed("python");
+    assert!(canonical.starts_with(reg.cache()));
     let l = RecordingLauncher {
         seen: Mutex::new(vec![]),
     };
     let a = handle_create(req(), &cfg, &reg, &l, |_| {}).await.unwrap();
     let b = handle_create(req(), &cfg, &reg, &l, |_| {}).await.unwrap();
+    for created in [&a, &b] {
+        let session = reg
+            .lifecycle(uuid::Uuid::parse_str(&created.sandbox_id).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            session.observation().os_status().is_none(),
+            "both consumers must remain alive"
+        );
+    }
+    let third = reg
+        .admission_context()
+        .unwrap()
+        .local(&reg.data_path().join("third-writer"))
+        .unwrap();
+    assert!(
+        third
+            .prepare_cache(&[crate::worker_admission::CacheEntry { root: &canonical }])
+            .is_err(),
+        "the two real consumers must exclude a cache writer"
+    );
     let seen = std::mem::take(&mut *l.seen.lock().unwrap());
     eprintln!("oci_ref         = {oci_ref}");
     eprintln!("canonical cache = {}", canonical.display());
@@ -142,10 +137,6 @@ async fn canonical_cache_is_only_the_lower_never_the_guest_root() {
             s.base_rootfs.display(),
             s.trampoline_entries
         );
-    }
-
-    for s in [&a.sandbox_id, &b.sandbox_id] {
-        let _ = std::fs::remove_dir_all(sandbox_root().join(s));
     }
 
     let mut staging: Vec<String> = TRAMPOLINE_STAGING_DIRS
@@ -180,14 +171,14 @@ async fn canonical_cache_is_only_the_lower_never_the_guest_root() {
         b"original",
         "create must not write into the shared cache"
     );
+    assert_eq!(reg.count().await, 2);
+    reg.finish().await;
 }
 
 #[tokio::test]
-#[serial]
 async fn failed_preflight_stops_create_before_the_image_is_resolved() {
     // No cached image and no auto-install: resolving the image first would
     // fail with RootfsMissing (S101); the preflight must win with S300.
-    let _home = isolated_home();
     let reg = SandboxRegistry::new();
     let err = handle_create(req(), &cfg(), &reg, &RefusingLauncher, |_| {})
         .await
@@ -201,24 +192,27 @@ struct SlowLauncher;
 #[async_trait::async_trait]
 impl VmLauncher for SlowLauncher {
     async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
+        panic!("admitted fixture required")
+    }
+    async fn boot_admitted(
+        &self,
+        p: &BootParams,
+        lease: crate::worker_admission::Lease,
+        reg: &crate::sandbox_daemon::registry::SandboxRegistry,
+        id: uuid::Uuid,
+    ) -> Result<BootHandle, SandboxError> {
+        let boot = owned_boot(p, lease, reg, id).await?;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        Ok(BootHandle {
-            vm_pid: 999_999,
-            lifeline: None,
-        })
+        Ok(boot)
     }
 }
 
 #[tokio::test]
-#[serial]
 async fn parallel_creates_stop_at_max_concurrent_sandboxes() {
-    let _home = isolated_home();
+    let reg = SandboxRegistry::new();
     let mut cfg = cfg();
     cfg.max_concurrent_sandboxes = 2;
-    let oci_ref = catalog::resolve_image("python", &cfg.custom_images).unwrap();
-    std::fs::create_dir_all(rootfs_cache::canonical_path(&oci_ref).join("bin")).unwrap();
-
-    let reg = SandboxRegistry::new();
+    reg.seed("python");
     let results = futures::future::join_all(
         (0..4).map(|_| handle_create(req(), &cfg, &reg, &SlowLauncher, |_| {})),
     )
@@ -227,14 +221,19 @@ async fn parallel_creates_stop_at_max_concurrent_sandboxes() {
         .iter()
         .map(|r| r.as_ref().map_or_else(|e| e.code().as_str(), |_| "ok"))
         .collect();
-    for created in results.iter().flatten() {
-        let _ = std::fs::remove_dir_all(sandbox_root().join(&created.sandbox_id));
-    }
+    let count_after_create = reg.count().await;
+    // Join owned children before assertions can unwind the runtime. On a
+    // failed oracle the fixture keeps its remaining namespace and evidence.
+    let stopped =
+        crate::sandbox_daemon::stop::stop_all(&reg, &super::sandbox_fakes::FakeVmStopper::ok())
+            .await;
     assert_eq!(codes.iter().filter(|c| **c == "ok").count(), 2, "{codes:?}");
     assert_eq!(
         codes.iter().filter(|c| **c == "S400").count(),
         2,
         "{codes:?}"
     );
-    assert_eq!(reg.count().await, 2);
+    assert_eq!(count_after_create, 2);
+    stopped.unwrap();
+    reg.finish().await;
 }

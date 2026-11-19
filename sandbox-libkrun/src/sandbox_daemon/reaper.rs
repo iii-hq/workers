@@ -90,11 +90,10 @@ pub async fn run_reaper_loop<S: VmStopper>(
             } else {
                 tracing::info!(sandbox_id=%state.id, "reaping idle sandbox");
             }
-            if let Some(pid) = state.vm_pid {
-                let _ = stopper.stop(pid).await;
+            let _ = &stopper; // Policy wrapper retained; never signals a numeric PID.
+            if let Err(error) = super::stop::stop_owned(&registry, state.id).await {
+                tracing::error!(sandbox_id=%state.id, %error, "reaper retained unresolved sandbox layout and registry");
             }
-            let _ = OverlayLayout::for_sandbox(state.id).cleanup();
-            registry.remove(state.id).await;
         }
     }
 }
@@ -142,10 +141,21 @@ mod tests {
         }
     }
 
+    fn admitted_registry() -> (tempfile::TempDir, tempfile::TempDir, SandboxRegistry) {
+        let ns = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
+        let context = crate::worker_admission::testing::provision_context(ns.path()).unwrap();
+        let registry = SandboxRegistry::new()
+            .with_context(context)
+            .with_layout_root(data.path().join("sandboxes"));
+        (ns, data, registry)
+    }
+
     #[tokio::test]
     async fn reaps_idle_sandboxes() {
-        let reg = SandboxRegistry::new();
+        let (ns, _data, reg) = admitted_registry();
         let id = Uuid::new_v4();
+        super::super::stop::tests::admitted_state(&reg, ns.path(), id, false).await;
         reg.insert(state(id, 600, 300)).await; // 10 min idle, 5 min timeout
         let count = Arc::new(AtomicU32::new(0));
         let stopper = Arc::new(CountingStopper(count.clone()));
@@ -156,7 +166,40 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         task.abort();
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "core control replaces the PID fixture"
+        );
+        assert!(reg.get(id).await.is_err());
+        assert!(!reg.layout(id).base().exists());
+        assert!(!reg.layout(id).shell_sock().exists());
+    }
+
+    #[tokio::test]
+    async fn reaper_preserves_idle_pid_only_layout_without_cleanup_authority() {
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
+        let reg = SandboxRegistry::new().with_layout_root(data.path().join("sandboxes"));
+        let id = Uuid::new_v4();
+        std::fs::create_dir_all(reg.layout(id).base()).unwrap();
+        std::fs::write(reg.layout(id).base().join("keep"), b"retained").unwrap();
+        reg.insert(state(id, 600, 300)).await;
+        let count = Arc::new(AtomicU32::new(0));
+        let task = tokio::spawn(run_reaper_loop(
+            reg.clone(),
+            Arc::new(CountingStopper(count.clone())),
+            Duration::from_millis(10),
+            Duration::from_secs(3600),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        task.abort();
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(reg.get(id).await.is_ok());
+        assert!(reg.begin_exec(id).await.is_err());
+        assert_eq!(
+            std::fs::read(reg.layout(id).base().join("keep")).unwrap(),
+            b"retained"
+        );
     }
 
     /// The reaper must not kill a sandbox that is mid-exec. `last_exec_at` is
@@ -198,8 +241,9 @@ mod tests {
     /// ...and once it finishes, the same sandbox is reapable again.
     #[tokio::test]
     async fn reaps_once_the_exec_finishes() {
-        let reg = SandboxRegistry::new();
+        let (ns, _data, reg) = admitted_registry();
         let id = Uuid::new_v4();
+        super::super::stop::tests::admitted_state(&reg, ns.path(), id, true).await;
         let mut busy = state(id, 600, 300);
         busy.exec_in_flight = 1;
         reg.insert(busy).await;
@@ -228,7 +272,9 @@ mod tests {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
         task.abort();
-        assert_eq!(count.load(Ordering::SeqCst), 1, "reapable once idle again");
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(reg.get(id).await.is_err());
+        assert!(!reg.layout(id).base().exists());
     }
 
     /// The busy exemption must END. A leaked `exec_in_flight` — a panic that
@@ -236,8 +282,9 @@ mod tests {
     /// forever, and the reaper is the only thing that reclaims one.
     #[tokio::test]
     async fn reaps_a_sandbox_stuck_busy_past_the_grace_period() {
-        let reg = SandboxRegistry::new();
+        let (ns, _data, reg) = admitted_registry();
         let id = Uuid::new_v4();
+        super::super::stop::tests::admitted_state(&reg, ns.path(), id, false).await;
         // Idle 600s against a 300s timeout, and permanently "busy".
         let mut wedged = state(id, 600, 300);
         wedged.exec_in_flight = 1;
@@ -261,10 +308,11 @@ mod tests {
 
         assert_eq!(
             count.load(Ordering::SeqCst),
-            1,
-            "a leaked exec slot must not pin the VM forever"
+            0,
+            "the owned core control, not a fake PID stopper, handles the reap"
         );
-        assert!(reg.get(id).await.is_err(), "record must be removed");
+        assert!(reg.get(id).await.is_err());
+        assert!(!reg.layout(id).base().exists());
     }
 
     /// The gap this branch's PR originally shipped around, now closed: a
@@ -276,13 +324,14 @@ mod tests {
     /// timeout, the sandbox is genuinely idle and must be reclaimed.
     #[tokio::test]
     async fn network_activity_defers_reaping_until_the_beacon_goes_stale() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::worker_admission::testing::private_tempdir().unwrap();
         let shell_sock = dir.path().join("shell.sock");
         let beacon = crate::sandbox_daemon::registry::net_activity_path(&shell_sock);
         std::fs::write(&beacon, b"").unwrap(); // mtime = now: traffic is flowing
 
-        let reg = SandboxRegistry::new();
+        let (ns, _data, reg) = admitted_registry();
         let id = Uuid::new_v4();
+        super::super::stop::tests::admitted_state(&reg, ns.path(), id, false).await;
         // Exec-idle far past its timeout — only the beacon protects it.
         let mut s = state(id, 600, 300);
         s.shell_sock = shell_sock;
@@ -320,10 +369,11 @@ mod tests {
         task.abort();
         assert_eq!(
             count.load(Ordering::SeqCst),
-            1,
-            "a stale beacon must not pin the VM"
+            0,
+            "the core receipt, not a fake PID stopper, authorizes cleanup"
         );
-        assert!(reg.get(id).await.is_err(), "record must be removed");
+        assert!(reg.get(id).await.is_err());
+        assert!(!reg.layout(id).base().exists());
     }
 
     /// ...but a sandbox busy *within* the grace window is still protected.

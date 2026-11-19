@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod admission;
 pub(crate) mod app;
 pub mod bundle_download;
 pub(crate) mod erofs;

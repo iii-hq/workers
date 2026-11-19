@@ -7,6 +7,17 @@ sandbox call to it as `sandbox-libkrun::<operation>`, and Compose boots
 functions. You rarely call it directly: callers use `sandbox::*`, and Compose
 installs this adapter when a project needs it.
 
+## Migration-candidate admission prerequisite
+
+This branch requires explicitly provisioned persistent host admission before normal
+VM use. Compose's package installation does **not** provision it. See
+[host admission installation and recovery](HOST-ADMISSION.md) for the fixed namespace,
+local `admission` commands and authorization requirements. No automatic bootstrap,
+permission repair, recovery or publication occurs. The admission document records
+bounded local test evidence and unfinished release/migration gates; it does not claim
+full guest/runtime validation. Historical macOS support below does not establish
+support for the new Linux pidfd/OFD admission path.
+
 ## Install
 
 Compose adds it on its own when a project needs sandboxes or VM workers. To
@@ -191,6 +202,18 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
   moves to `upper.ext4.pre-build`, and a legacy rootfs clone (`root/`) to
   `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
   `worker::destroy` with `prune` removes them with the rest.
+  **This is archival, not a transparent 0.3-to-0.5 data migration.** Do not
+  equate a retained `.pre-build` file with data available in the new guest.
+  Private Linux offline-generation primitives now exist under
+  [`src/compat_generation`](src/compat_generation/README.md), but are not wired
+  to actual compatibility boot/rebuild or advertised as a migration feature.
+  Normal prepare/start/build/destroy now refuse recognized compatibility custody
+  before changing it; see the [lifecycle admission boundary](src/worker_admission/README.md).
+  Valid records alone do not authorize booting an old root. The offline primitives
+  require a future authenticated local-owner coordinator, exact old lower/profile,
+  retired old credentials/writers, independent offline backups and supported
+  metadata/filesystem capabilities. Preserve the old installation and backup;
+  no automated in-place upgrade or rollback is certified by this component.
 - **`worker::destroy` and `prune`.** From 0.5.0 (sandbox contract 1.4) a
   destroy without `prune` removes the VM's runtime state (its `root/` share,
   console log, instance and state-key records, build scratch) and its build-dir

@@ -17,6 +17,9 @@ pub mod registry;
 pub mod run;
 pub mod stop;
 
+#[cfg(test)]
+mod admission_tests;
+
 pub use errors::SandboxError;
 pub use registry::SandboxRegistry;
 
@@ -160,9 +163,12 @@ pub async fn serve() -> anyhow::Result<()> {
                     std::process::exit(2);
                 }
             };
+            crate::worker_admission::AdmissionContext::system()?;
             let registry = start(&iii, config, &config_name);
             let reason = exit.await;
-            stop::stop_all(&registry, &adapters::SignalStopper).await;
+            if let Err(error) = stop::stop_all(&registry, &adapters::SignalStopper).await {
+                tracing::error!(%error, "shutdown retained sandboxes without retirement/cleanup proof");
+            }
             reason
         }
     };
