@@ -64,26 +64,26 @@ export interface AgentProfilePickerProps {
 }
 
 /**
- * The profile's glyph on a tinted tile, in its identity colour: the same
- * tones sub-agent chips and spawn cards use, so a profile looks the same in
- * the picker and in the chat. A profile without a colour gets the neutral
- * tone; selection is shown by the row, never by the tile.
+ * The profile's glyph: a plain 16px icon on the first line of the row, ink
+ * when chosen and muted otherwise. No tile and no identity tint: the name
+ * and description carry the row, the check carries the choice.
  */
 function AgentGlyph({
   icon,
-  color,
+  active = false,
 }: {
   icon: string | null
-  color?: string | null
+  active?: boolean
 }) {
   const Icon = (icon && SUBAGENT_ICON_COMPONENTS[icon as SubagentIcon]) || Bot
   return (
-    <span
-      aria-hidden
-      data-color={color ?? 'neutral'}
-      className="active-subagent-chip pointer-events-none flex size-8 [--color-panel:var(--color-popover-surface)] shrink-0 items-center justify-center rounded-md"
-    >
-      <Icon className="size-4" />
+    <span aria-hidden className="flex h-5 shrink-0 items-center">
+      <Icon
+        className={cn(
+          'size-4 transition-colors duration-100',
+          active ? 'text-ink' : 'text-ink-faint',
+        )}
+      />
     </span>
   )
 }
@@ -350,15 +350,14 @@ export function AgentProfilePicker({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-1.5">
           {agentProfile && !selected ? (
-            <div className="flex items-center gap-3 rounded-lg bg-surface-hover px-2.5 py-2">
-              <AgentGlyph
-                icon={agentProfile.icon ?? null}
-                color={agentProfile.color}
-              />
-              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+            <div className="flex items-start gap-3 rounded-md bg-surface-hover px-2.5 py-2">
+              <AgentGlyph icon={agentProfile.icon ?? null} active />
+              <span className="min-w-0 flex-1 truncate text-sm leading-5 font-medium text-ink">
                 {agentProfile.name}
               </span>
-              <Check aria-hidden className="size-4 shrink-0 text-ink" />
+              <span className="flex h-5 shrink-0 items-center">
+                <Check aria-hidden className="size-4 text-ink" />
+              </span>
             </div>
           ) : null}
           {catalog === null ? (
@@ -399,7 +398,7 @@ export function AgentProfilePicker({
                   aria-describedby={update ? markerId : undefined}
                   disabled={selectionLocked}
                   className={cn(
-                    'flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-default',
+                    'flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-default',
                     active
                       ? 'bg-surface-hover'
                       : 'hover:bg-surface-hover/60 disabled:hover:bg-transparent',
@@ -409,8 +408,8 @@ export function AgentProfilePicker({
                     setOpen(false)
                   }}
                 >
-                  <AgentGlyph icon={entry.icon} color={entry.color} />
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-0.5">
+                  <AgentGlyph icon={entry.icon} active={active} />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-sm leading-5 font-medium text-ink">
                       {entry.name.trim() || entry.id}
                     </span>
@@ -441,7 +440,7 @@ export function AgentProfilePicker({
                       </span>
                     ) : null}
                   </span>
-                  <span className="flex h-8 shrink-0 items-center">
+                  <span className="flex h-5 shrink-0 items-center">
                     <Check
                       aria-hidden
                       className={cn(
@@ -458,7 +457,7 @@ export function AgentProfilePicker({
             <button
               type="button"
               title={`${selectedUpdate.kit} ${selectedUpdate.current} → ${selectedUpdate.available} · opens in Directory`}
-              className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-md px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
               onClick={() => {
                 setOpen(false)
                 requestPanelOpen({
@@ -491,7 +490,7 @@ export function AgentProfilePicker({
           ) : null}
           {details ? (
             <details className="group/details mt-0.5 shrink-0">
-              <summary className="flex h-9 cursor-pointer list-none items-center gap-3 rounded-lg px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none [&::-webkit-details-marker]:hidden">
+              <summary className="flex h-9 cursor-pointer list-none items-center gap-3 rounded-md px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none [&::-webkit-details-marker]:hidden">
                 <SlidersHorizontal
                   aria-hidden
                   className="size-4 shrink-0 text-ink-faint"
@@ -514,7 +513,7 @@ export function AgentProfilePicker({
         <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-t border-popover-edge px-1.5">
           <button
             type="button"
-            className="flex h-8 min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm text-ink-faint transition-colors duration-100 hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            className="flex h-8 min-w-0 items-center gap-2 rounded-md px-2.5 text-sm text-ink-faint transition-[background-color,color,scale] duration-150 ease-out hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none motion-safe:enabled:active:scale-[0.96]"
             onClick={() => {
               setOpen(false)
               requestPanelOpen({
@@ -529,7 +528,7 @@ export function AgentProfilePicker({
           <button
             type="button"
             title="Choose instructions, a model, and skills."
-            className="flex h-8 min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm text-ink-faint transition-colors duration-100 hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            className="flex h-8 min-w-0 items-center gap-2 rounded-md px-2.5 text-sm text-ink-faint transition-[background-color,color,scale] duration-150 ease-out hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none motion-safe:enabled:active:scale-[0.96]"
             onClick={() => {
               setOpen(false)
               requestPanelOpen({
