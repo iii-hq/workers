@@ -29,6 +29,7 @@ const MAX_WORKFLOW_DEPTH: usize = 8;
 const MIN_NODE_TIMEOUT_MS: u64 = 1000;
 const MAX_NODE_RETRIES: u32 = 10;
 const MAX_LABEL_CHARS: usize = 80;
+const MAX_TITLE_CHARS: usize = 80;
 // One digit in `#it<k>`, so every listing sorts passes in order.
 const MAX_LOOP_REPEATS: u32 = 9;
 
@@ -47,6 +48,8 @@ pub struct StartRequest {
     pub notify: Option<NotifySpec>,
     pub caller_session_id: Option<String>,
     pub caller_fs_root: Option<String>,
+    /// Trimmed, at most [`MAX_TITLE_CHARS`] characters, never empty.
+    pub title: Option<String>,
 }
 
 // No `deny_unknown_fields` on the wire structs: a closed published schema lets the
@@ -90,6 +93,10 @@ struct RequestWire {
     /// since both skip that hook. Every node session runs in it. Omit it to use
     /// the harness default folder.
     caller_fs_root: Option<String>,
+    /// Display title of the run, trimmed and cut to 80 characters. Omitted on a
+    /// call from an agent turn, the `workflow::stamp-reply` hook fills it from
+    /// the call's description.
+    title: Option<String>,
 }
 
 /// One sub-agent session. Its opening message is `task`, followed by its input
@@ -224,7 +231,7 @@ const SHAPE_HINT: &str = "Shape: {\"nodes\":{\"a\":{\"task\":\"<what a does>\"},
     Node keys: task (required), reads, fanout, schema, model, profile, provider, system_prompt, \
     functions, filesystem_root, loop, label, phase, timeout_ms, retries, read_only, on_error.\n\
     Top-level keys: nodes (required), input, output, max_concurrency, default_functions, \
-    idempotency_key, notify.\n\
+    idempotency_key, notify, title.\n\
     Omit `model` to run a node on your own model. Omit `output` to return every node no other \
     node reads.";
 
@@ -239,6 +246,7 @@ const TOP_KEYS: &[&str] = &[
     "notify",
     "caller_session_id",
     "caller_fs_root",
+    "title",
 ];
 const NODE_KEYS: &[&str] = &[
     "task",
@@ -297,9 +305,8 @@ fn key_type(key: &str) -> Option<(&'static [&'static str], &'static str)> {
     const BOOL: &[&str] = &["a boolean"];
     Some(match key {
         "task" | "model" | "provider" | "profile" | "system_prompt" | "filesystem_root"
-        | "label" | "phase" | "idempotency_key" | "caller_session_id" | "caller_fs_root" => {
-            (STRING, "a string")
-        }
+        | "label" | "phase" | "idempotency_key" | "caller_session_id" | "caller_fs_root"
+        | "title" => (STRING, "a string"),
         "reads" | "output" => (IDS, "a node id or an array of ids"),
         "fanout" => (IDS, "\"<id>.<path to an array>\" or an array of values"),
         "schema" => (OBJECT, "a JSON Schema object"),
@@ -817,6 +824,17 @@ fn lower(w: RequestWire) -> StartRequest {
         notify: w.notify,
         caller_session_id: w.caller_session_id,
         caller_fs_root: w.caller_fs_root,
+        title: w
+            .title
+            .map(|t| {
+                t.trim()
+                    .chars()
+                    .take(MAX_TITLE_CHARS)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .filter(|t| !t.is_empty()),
     }
 }
 
@@ -1949,6 +1967,7 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
         notify: req.notify,
         caller_session_id,
         caller_fs_root: req.caller_fs_root,
+        title: req.title,
         idem_key,
         created_at: now,
         updated_at: now,
@@ -3749,6 +3768,19 @@ mod tests {
     }
 
     #[test]
+    fn title_is_trimmed_cut_at_80_chars_and_dropped_when_blank() {
+        let title = |t: Value| parse(json!({"nodes": {"a": {"task": "t"}}, "title": t})).title;
+        assert_eq!(
+            title(json!("  Writing tests \n")).as_deref(),
+            Some("Writing tests")
+        );
+        let long = format!("{}  b", "é".repeat(79));
+        assert_eq!(title(json!(long)), Some("é".repeat(79)));
+        assert_eq!(title(json!("   ")), None);
+        assert_eq!(title(Value::Null), None);
+    }
+
+    #[test]
     fn null_means_omitted() {
         let req = parse(json!({
             "nodes": {"a": {
@@ -3760,7 +3792,7 @@ mod tests {
             }},
             "input": null, "output": null, "max_concurrency": null, "default_functions": null,
             "idempotency_key": null, "notify": null, "caller_session_id": null,
-            "caller_fs_root": null, "definition": null, "version": null
+            "caller_fs_root": null, "title": null, "definition": null, "version": null
         }));
         let a = &req.definition.nodes["a"];
         assert!(

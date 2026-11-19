@@ -289,6 +289,7 @@ export function ConversationsProvider({
         requestChatShown(id)
         conversationRequestedRef.current?.(id)
       },
+      openConversation: openConversationInPanel,
       openDraft(draft) {
         const id = createNewRef.current(draft)
         requestChatShown(id)

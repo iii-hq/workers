@@ -1,20 +1,14 @@
 import { formatDuration, formatRelative } from '@iii-dev/console-ui/format'
 import { z } from 'zod'
-import { formatTokenCount } from '@/lib/token-estimate'
-import type { Conversation, Message } from '@/types/chat'
+import { formatTokenCount } from './format'
 import {
-  consumedDeps,
   type DagCounts,
   type NodeState,
   nodeStateSchema,
   type RunStatus,
-  safeParseRequest,
   safeParseResponse,
-  startRequestSchema,
-  startResponseSchema,
   statusResponseSchema,
   tallyNodes,
-  type WorkflowDef,
 } from './parsers'
 
 /* ---------------- workflow::status {details:true} ---------------- */
@@ -35,6 +29,8 @@ const nodeDetailSchema = z
     last_generate_at: count,
     harness_status: z.string().nullish(),
     expects_wake: z.boolean().nullish(),
+    /** The longest `depends_on` path from a source: orders waiting nodes. */
+    depth: count,
     usage: z
       .object({
         complete: z.boolean().nullish(),
@@ -72,71 +68,49 @@ export type RunDetails = z.infer<typeof runDetailsSchema>
 type NodeDetail = z.infer<typeof nodeDetailSchema>
 
 /** A snapshot the panel can show: `null` for an unknown (collected) run. */
-export function parseRunDetails(
-  value: unknown,
-): (RunDetails & { status: RunStatus }) | null {
+export function parseRunDetails(value: unknown): (RunDetails & { status: RunStatus }) | null {
   const parsed = safeParseResponse(runDetailsSchema, value)
   return parsed?.status ? { ...parsed, status: parsed.status } : null
 }
 
-export const isLiveRun = (status: RunStatus) =>
-  status === 'running' || status === 'awaiting_nodes'
+export const isLiveRun = (status: RunStatus) => status === 'running' || status === 'awaiting_nodes'
 
 /* ---------------- which runs a chat started ---------------- */
 
 export interface WorkflowRunRef {
   runId: string
-  /** When it was started (the call, or its first node session). */
+  /** When it was started (`created_at`). */
   at: number
-  /** The agent's own words for the start call. */
+  /** The run's `title`: what the agent said the run is for. */
   title?: string
-  /** The definition, when the start call is loaded: orders waiting nodes. */
-  def?: WorkflowDef
 }
 
-const startRefs = new WeakMap<object, WorkflowRunRef | null>()
-
-function startRef(message: Message): WorkflowRunRef | null {
-  if (message.role !== 'function-call') return null
-  if (message.functionId !== 'workflow::start') return null
-  const cached = startRefs.get(message)
-  if (cached !== undefined) return cached
-  const runId = safeParseResponse(startResponseSchema, message.output)?.run_id
-  const ref = runId
-    ? {
-        runId,
-        at: message.createdAt,
-        title: message.description,
-        def: safeParseRequest(startRequestSchema, message.input)?.definition,
-      }
-    : null
-  startRefs.set(message, ref)
-  return ref
-}
+const runListSchema = z
+  .object({
+    runs: z.array(
+      z
+        .object({
+          run_id: z.string(),
+          status: z.string().nullish(),
+          title: z.string().nullish(),
+          created_at: count,
+          updated_at: count,
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough()
 
 /**
- * The runs of a chat, oldest first: every `workflow::start` result in its
- * transcript, plus the runs its node sessions name (`workflow_run_id`), which
- * also covers a start call a paged read left out and a sub-agent's runs.
+ * The runs `workflow::list` names for a chat, newest first as the worker
+ * lists them: the chat's own and its sub-agents'. `null` for a reply it
+ * cannot read, so a failed list keeps the runs already shown.
  */
-export function collectWorkflowRuns(
-  messages: readonly Message[],
-  sessions: readonly Conversation[],
-): WorkflowRunRef[] {
-  const runs = new Map<string, WorkflowRunRef>()
-  for (const message of messages) {
-    const ref = startRef(message)
-    if (ref && !runs.has(ref.runId)) runs.set(ref.runId, ref)
-  }
-  for (const session of sessions) {
-    const runId = session.sessionMetadata?.workflow_run_id
-    if (typeof runId !== 'string' || !runId) continue
-    const known = runs.get(runId)
-    if (!known) runs.set(runId, { runId, at: session.createdAt })
-    else if (!known.def && session.createdAt < known.at)
-      runs.set(runId, { ...known, at: session.createdAt })
-  }
-  return [...runs.values()].sort((a, b) => a.at - b.at)
+export function parseRunList(value: unknown): WorkflowRunRef[] | null {
+  const parsed = safeParseResponse(runListSchema, value)
+  return parsed
+    ? parsed.runs.map((run) => ({ runId: run.run_id, at: run.created_at ?? 0, title: run.title || undefined }))
+    : null
 }
 
 /* ---------------- one run, the way a person follows it ---------------- */
@@ -154,28 +128,6 @@ export function splitNodeUid(uid: string): {
     suffix: `#${match[2] ?? ''}${match[3]}`,
     index: Number(match[3]),
   }
-}
-
-/** How many nodes a node waits behind: 0 for a source. */
-export function nodeDepths(def: WorkflowDef): Record<string, number> {
-  const depths: Record<string, number> = {}
-  const depth = (id: string, seen: ReadonlySet<string>): number => {
-    if (id in depths) return depths[id]
-    const node = def.nodes[id]
-    if (!node || seen.has(id)) return 0
-    const deps = [
-      ...(node.depends_on ?? []),
-      ...consumedDeps(node.input?.from),
-      ...consumedDeps(node.fanout?.over),
-    ]
-    const next = new Set(seen).add(id)
-    depths[id] = deps.length
-      ? 1 + Math.max(...deps.map((dep) => depth(dep, next)))
-      : 0
-    return depths[id]
-  }
-  for (const id of Object.keys(def.nodes)) depth(id, new Set())
-  return depths
 }
 
 export interface WorkflowNodeView {
@@ -254,13 +206,10 @@ function usageTokens(usage: NodeDetail['usage']): number | null {
 }
 
 /**
- * A run's name from its node labels, for a run whose start call the transcript
- * page left out: the one label, the words the labels start with, or the first
- * label and how many others.
+ * A run's name from its node labels: the one label, the words the labels
+ * start with, or the first label and how many others.
  */
-export function labelTitle(
-  nodes: readonly { label: string }[],
-): string | undefined {
+export function labelTitle(nodes: readonly { label: string }[]): string | undefined {
   const labels = [...new Set(nodes.map((node) => node.label))]
   if (labels.length <= 1) return labels[0]
   let shared = labels[0]
@@ -275,11 +224,7 @@ export function labelTitle(
   return shared.length >= 3 ? shared : `${labels[0]} +${labels.length - 1}`
 }
 
-export function buildRunView(
-  ref: WorkflowRunRef,
-  status: RunDetails & { status: RunStatus },
-): WorkflowRunView {
-  const depths = ref.def ? nodeDepths(ref.def) : {}
+export function buildRunView(ref: WorkflowRunRef, status: RunDetails & { status: RunStatus }): WorkflowRunView {
   const details = Object.entries(status.node_details ?? {})
   const nodes = details
     .map(([uid, detail]) => {
@@ -293,10 +238,7 @@ export function buildRunView(
         model: detail.model ?? undefined,
         profile: detail.profile ?? undefined,
         // Only a send that reached the harness stamps `started_at`; a reserved node's session does not exist yet.
-        sessionId:
-          detail.started_at != null
-            ? (detail.session_id ?? undefined)
-            : undefined,
+        sessionId: detail.started_at != null ? (detail.session_id ?? undefined) : undefined,
         reserved: detail.session_id != null,
         startedAt: detail.started_at ?? undefined,
         finishedAt: detail.finished_at ?? undefined,
@@ -307,18 +249,15 @@ export function buildRunView(
         costUsd: detail.usage?.cost_usd ?? null,
         // A running node's in-flight generation has no usage until it lands:
         // its counts grow anyway, so only a settled node reads as a bound.
-        atLeast:
-          detail.state !== 'running' &&
-          (detail.usage?.unreported_generations ?? 0) > 0,
+        atLeast: detail.state !== 'running' && (detail.usage?.unreported_generations ?? 0) > 0,
         error: status.node_errors?.[uid],
       }
-      return { view, base, index, depth: depths[base] ?? 0 }
+      return { view, base, index, depth: detail.depth ?? 0 }
     })
     // Started nodes in start order; waiting ones behind them, sources first.
     .sort(
       (a, b) =>
-        (a.view.startedAt ?? Number.POSITIVE_INFINITY) -
-          (b.view.startedAt ?? Number.POSITIVE_INFINITY) ||
+        (a.view.startedAt ?? Number.POSITIVE_INFINITY) - (b.view.startedAt ?? Number.POSITIVE_INFINITY) ||
         a.depth - b.depth ||
         a.base.localeCompare(b.base, undefined, { numeric: true }) ||
         a.index - b.index,
@@ -359,9 +298,7 @@ export function buildRunView(
     const counted = listed
       ? // The status's `failed` includes its `cancelled`.
         { ...listed, failed: (listed.failed ?? 0) - (listed.cancelled ?? 0) }
-      : tallyNodes(
-          Object.fromEntries(group.nodes.map((node) => [node.uid, node.state])),
-        )
+      : tallyNodes(Object.fromEntries(group.nodes.map((node) => [node.uid, node.state])))
     group.total = counted.total
     group.done = counted.done
     group.running = counted.running ?? 0
@@ -414,11 +351,7 @@ export function nodeMark(node: WorkflowNodeView, now: number): WorkflowMark {
   if (node.state === 'cancelled') return { tone: 'warn', text: 'cancelled' }
   if (node.state === 'pending') return { tone: 'ghost', text: 'pending' }
   if (node.parked) return { tone: 'ink', text: 'parked' }
-  if (
-    !node.awaitingFunctions &&
-    node.lastGenerateAt !== undefined &&
-    now - node.lastGenerateAt >= IDLE_AFTER_MS
-  )
+  if (!node.awaitingFunctions && node.lastGenerateAt !== undefined && now - node.lastGenerateAt >= IDLE_AFTER_MS)
     return {
       tone: 'warn',
       text: `idle ${formatRelative(node.lastGenerateAt, now)}`,
@@ -426,10 +359,7 @@ export function nodeMark(node: WorkflowNodeView, now: number): WorkflowMark {
   return {
     tone: 'accent',
     pulse: true,
-    text:
-      node.startedAt !== undefined
-        ? formatRelative(node.startedAt, now)
-        : 'running',
+    text: node.startedAt !== undefined ? formatRelative(node.startedAt, now) : 'running',
   }
 }
 
@@ -446,8 +376,7 @@ export function runMark(run: WorkflowRunView, now: number): WorkflowMark {
 
 const formatUsd = (usd: number) => `$${usd.toFixed(usd < 1 ? 3 : 2)}`
 
-const facts = (parts: (string | null | undefined | false)[]) =>
-  parts.filter(Boolean).join(' · ')
+const facts = (parts: (string | null | undefined | false)[]) => parts.filter(Boolean).join(' · ')
 
 /** `codex/gpt-6-luna · 36k tokens · $0.42`; the profile goes in the row's tooltip. */
 export function nodeFacts(node: WorkflowNodeView): string {
@@ -455,9 +384,7 @@ export function nodeFacts(node: WorkflowNodeView): string {
   return facts([
     node.model,
     node.tokens !== null && `${atLeast}${formatTokenCount(node.tokens)} tokens`,
-    node.costUsd !== null &&
-      node.costUsd > 0 &&
-      `${atLeast}${formatUsd(node.costUsd)}`,
+    node.costUsd !== null && node.costUsd > 0 && `${atLeast}${formatUsd(node.costUsd)}`,
   ])
 }
 
@@ -465,16 +392,14 @@ export function nodeFacts(node: WorkflowNodeView): string {
  * A run lists its nodes under a header per phase once two phases name them. It
  * rests on the definition's phases alone, so a loop pass never flips the list.
  */
-export const groupsByPhase = (run: WorkflowRunView): boolean =>
-  run.phases.filter((phase) => phase.phase).length > 1
+export const groupsByPhase = (run: WorkflowRunView): boolean => run.phases.filter((phase) => phase.phase).length > 1
 
 /** The phase a live run is at: started, not all settled. Its name is in ink. */
 export const phaseCurrent = (run: WorkflowRunView, phase: WorkflowPhaseView) =>
   run.live &&
   phase.done + phase.failed + phase.cancelled < phase.total &&
   // A node a retry put back to pending keeps its session: its phase stays current.
-  (phase.done + phase.failed + phase.cancelled + phase.running > 0 ||
-    phase.nodes.some((node) => node.reserved))
+  (phase.done + phase.failed + phase.cancelled + phase.running > 0 || phase.nodes.some((node) => node.reserved))
 
 /** A phase opens by itself while current, or to show why a node of it failed. */
 export const phaseOpens = (run: WorkflowRunView, phase: WorkflowPhaseView) =>
@@ -492,9 +417,7 @@ export function phaseState(phase: WorkflowPhaseView) {
 export const phaseMark = (run: WorkflowRunView, phase: WorkflowPhaseView) => {
   const state = phaseState(phase)
   // Only a retry's wait holds a session; a loop's next pass or a DAG wait does not.
-  return state === 'pending' &&
-    run.live &&
-    phase.nodes.some((node) => node.state === 'pending' && node.reserved)
+  return state === 'pending' && run.live && phase.nodes.some((node) => node.state === 'pending' && node.reserved)
     ? 'running'
     : state
 }
@@ -510,8 +433,7 @@ export function phaseFacts(phase: WorkflowPhaseView): string {
 
 /** A label under its phase header, the phase left out: `explore:code` under `explore` reads `code`. */
 export function underPhase(label: string, phase: string): string {
-  if (!phase || !label.toLowerCase().startsWith(phase.toLowerCase()))
-    return label
+  if (!phase || !label.toLowerCase().startsWith(phase.toLowerCase())) return label
   const rest = label.slice(phase.length)
   const cut = rest.replace(/^[\s·:,;-]+/, '')
   // Only a separator ends the phase: `tests` under `test` keeps its name.
@@ -519,21 +441,13 @@ export function underPhase(label: string, phase: string): string {
 }
 
 /** The one node of a phase that has nothing else to show: its header and its row read as one line. */
-export const solePhaseNode = (
-  phase: WorkflowPhaseView,
-): WorkflowNodeView | null =>
+export const solePhaseNode = (phase: WorkflowPhaseView): WorkflowNodeView | null =>
   phase.total === 1 && phase.nodes.length === 1 ? phase.nodes[0] : null
 
 /** A one-node phase's line: the node's own name first when the phase does not already say it, then its facts. */
-export function phaseNodeLine(
-  run: WorkflowRunView,
-  node: WorkflowNodeView,
-): string {
+export function phaseNodeLine(run: WorkflowRunView, node: WorkflowNodeView): string {
   const own = underPhase(nodeLabel(run, node), node.phase)
-  return facts([
-    own.toLowerCase() !== node.phase.toLowerCase() && own,
-    nodeFacts(node),
-  ])
+  return facts([own.toLowerCase() !== node.phase.toLowerCase() && own, nodeFacts(node)])
 }
 
 /**
@@ -547,10 +461,7 @@ export function soleNode(run: WorkflowRunView): WorkflowNodeView | null {
 }
 
 /** A one-node run's line: the node's model, tokens and cost, then how long the run took. */
-export function soleFacts(
-  run: WorkflowRunView,
-  node: WorkflowNodeView,
-): string {
+export function soleFacts(run: WorkflowRunView, node: WorkflowNodeView): string {
   return facts([
     nodeFacts(node),
     !run.live &&
@@ -564,13 +475,8 @@ export function soleFacts(
  * A node's label under its run: the run's name left out when the label starts
  * with it (`KAN-9 batch r1w1 tests` under `KAN-9 batch r1w1` reads `tests`).
  */
-export function nodeLabel(
-  run: WorkflowRunView,
-  node: WorkflowNodeView,
-): string {
-  const rest = node.label.startsWith(run.title)
-    ? node.label.slice(run.title.length).replace(/^[\s·:,;-]+/, '')
-    : ''
+export function nodeLabel(run: WorkflowRunView, node: WorkflowNodeView): string {
+  const rest = node.label.startsWith(run.title) ? node.label.slice(run.title.length).replace(/^[\s·:,;-]+/, '') : ''
   return rest || node.label
 }
 
@@ -580,11 +486,7 @@ export function nodeLabel(
  */
 export function nodeLine(run: WorkflowRunView, node: WorkflowNodeView): string {
   const named = nodeLabel(run, node).toLowerCase()
-  const phase =
-    run.phases.length > 1 &&
-    node.phase &&
-    !named.startsWith(node.phase.toLowerCase()) &&
-    node.phase
+  const phase = run.phases.length > 1 && node.phase && !named.startsWith(node.phase.toLowerCase()) && node.phase
   return facts([phase, nodeFacts(node)])
 }
 
@@ -602,11 +504,7 @@ export function runFacts(run: WorkflowRunView): string {
   const atLeast =
     run.unlisted > 0 ||
     run.phases.some((phase) =>
-      phase.nodes.some(
-        (node) =>
-          node.atLeast ||
-          (node.startedAt !== undefined && node.tokens === null),
-      ),
+      phase.nodes.some((node) => node.atLeast || (node.startedAt !== undefined && node.tokens === null)),
     )
       ? '≥'
       : ''
@@ -624,9 +522,7 @@ export function runFacts(run: WorkflowRunView): string {
     counts.running > 0 && `${counts.running} running`,
     failed > 0 && `${failed} failed`,
     run.tokens !== null && `${atLeast}${formatTokenCount(run.tokens)} tokens`,
-    run.costUsd !== null &&
-      run.costUsd > 0 &&
-      `${atLeast}${formatUsd(run.costUsd)}`,
+    run.costUsd !== null && run.costUsd > 0 && `${atLeast}${formatUsd(run.costUsd)}`,
     !run.live &&
       run.createdAt !== undefined &&
       run.updatedAt !== undefined &&

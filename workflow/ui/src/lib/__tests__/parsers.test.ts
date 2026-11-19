@@ -1,9 +1,11 @@
+// @ts-expect-error worker UIs type-check without Node's types; vitest runs this under Node.
 import { readFileSync } from 'node:fs'
-import { createElement } from 'react'
+import type { FunctionCallMessage } from '@iii-dev/console-ui'
+import { createElement, type HTMLAttributes, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
-import type { FunctionCallMessage } from '@/types/chat'
-import { WorkflowToolView } from '../index'
+import { describe, expect, it, vi } from 'vitest'
+import { createWorkflowRenderer } from '../../function-call-message'
+import { DagSummary } from '../../function-call-message/shared'
 import {
   consumedDeps,
   inputSources,
@@ -18,12 +20,18 @@ import {
   WORKFLOW_FUNCTION_IDS,
   type WorkflowDef,
 } from '../parsers'
-import { DagSummary } from '../shared'
+
+// The console serves the shared components through its import map; the
+// package throws when loaded directly.
+vi.mock('@iii-dev/console-ui', () => {
+  const Span = (props: HTMLAttributes<HTMLSpanElement>) => createElement('span', props)
+  const Div = ({ children }: { children?: ReactNode }) => createElement('div', null, children)
+  return { Badge: Span, Chip: Span, Eyebrow: Span, MetaRow: Div, ActionLine: Div }
+})
 
 describe('isWorkflowFunction', () => {
   it('matches the known set and rejects others', () => {
-    for (const id of WORKFLOW_FUNCTION_IDS)
-      expect(isWorkflowFunction(id)).toBe(true)
+    for (const id of WORKFLOW_FUNCTION_IDS) expect(isWorkflowFunction(id)).toBe(true)
     expect(isWorkflowFunction('shell::exec')).toBe(false)
     expect(isWorkflowFunction('workflow::nope')).toBe(false)
   })
@@ -41,10 +49,7 @@ describe('inputSources / consumedDeps', () => {
   })
 
   it('extracts node dep ids and ignores run_input/fanout_item', () => {
-    expect(consumedDeps(['node:a', 'node:b.result.x', 'run_input'])).toEqual([
-      'a',
-      'b',
-    ])
+    expect(consumedDeps(['node:a', 'node:b.result.x', 'run_input'])).toEqual(['a', 'b'])
     expect(consumedDeps('fanout_item')).toEqual([])
   })
 })
@@ -72,9 +77,7 @@ describe('isJoinNode', () => {
   })
 
   it('does not throw on a source node that omits input', () => {
-    expect(isJoinNode(nodeDefSchema.parse({ agent: { model: 'm' } }))).toBe(
-      false,
-    )
+    expect(isJoinNode(nodeDefSchema.parse({ agent: { model: 'm' } }))).toBe(false)
   })
 })
 
@@ -106,13 +109,7 @@ interface FlatStartCase {
 
 // The worker's lower() test reads the same file, so the two lifts cannot drift.
 const { cases } = JSON.parse(
-  readFileSync(
-    new URL(
-      '../../../../../../../workflow/tests/fixtures/flat_start_cases.json',
-      import.meta.url,
-    ),
-    'utf8',
-  ),
+  readFileSync(new URL('../../../../tests/fixtures/flat_start_cases.json', import.meta.url), 'utf8'),
 ) as { cases: FlatStartCase[] }
 
 const definitionOf = (request: unknown) => {
@@ -122,26 +119,19 @@ const definitionOf = (request: unknown) => {
 }
 
 describe('startRequestSchema', () => {
-  it.each(cases)(
-    'lifts $name as the worker stores it',
-    ({ request, stored }) => {
-      const def = definitionOf(request)
-      expect(def.output?.from).toEqual(stored.output?.from)
-      expect(Object.keys(def.nodes).sort()).toEqual(
-        Object.keys(stored.nodes).sort(),
-      )
-      const wiring = (nodes: WorkflowDef['nodes']) =>
-        Object.entries(nodes).map(([id, node]) => ({
-          id,
-          input: node.input,
-          depends_on: node.depends_on,
-          fanout: node.fanout ?? undefined,
-        }))
-      expect(wiring(def.nodes)).toEqual(
-        expect.arrayContaining(wiring(stored.nodes)),
-      )
-    },
-  )
+  it.each(cases)('lifts $name as the worker stores it', ({ request, stored }) => {
+    const def = definitionOf(request)
+    expect(def.output?.from).toEqual(stored.output?.from)
+    expect(Object.keys(def.nodes).sort()).toEqual(Object.keys(stored.nodes).sort())
+    const wiring = (nodes: WorkflowDef['nodes']) =>
+      Object.entries(nodes).map(([id, node]) => ({
+        id,
+        input: node.input,
+        depends_on: node.depends_on,
+        fanout: node.fanout ?? undefined,
+      }))
+    expect(wiring(def.nodes)).toEqual(expect.arrayContaining(wiring(stored.nodes)))
+  })
 
   it('lifts a fanout array without reads, and a fanout path that reads another node', () => {
     const def = definitionOf({
@@ -182,16 +172,11 @@ describe('startRequestSchema', () => {
   })
 
   it('does not count a self-read as read, as lower() does', () => {
-    expect(
-      definitionOf({ nodes: { a: { task: 't', reads: 'a' } } }).output?.from,
-    ).toBe('node:a')
+    expect(definitionOf({ nodes: { a: { task: 't', reads: 'a' } } }).output?.from).toBe('node:a')
   })
 
   it('reads a blank model as omitted, as lower() does', () => {
-    expect(
-      definitionOf({ nodes: { a: { task: 't', model: '  ' } } }).nodes.a.agent
-        ?.model,
-    ).toBeUndefined()
+    expect(definitionOf({ nodes: { a: { task: 't', model: '  ' } } }).nodes.a.agent?.model).toBeUndefined()
   })
 
   it('parses a node without a task so the view never blanks', () => {
@@ -229,12 +214,7 @@ describe('startRequestSchema', () => {
         'verify#it1': 'pending',
       },
     })
-    expect(Object.keys(status.nodes)).toEqual([
-      'work',
-      'verify',
-      'work#it1',
-      'verify#it1',
-    ])
+    expect(Object.keys(status.nodes)).toEqual(['work', 'verify', 'work#it1', 'verify#it1'])
     expect(tallyNodes(status.nodes)).toMatchObject({
       total: 4,
       done: 2,
@@ -244,7 +224,8 @@ describe('startRequestSchema', () => {
   })
 })
 
-describe('WorkflowToolView.tryRender', () => {
+describe('the workflow renderer', () => {
+  const renderer = createWorkflowRenderer()
   const startCall = (input: unknown) =>
     ({
       id: 'm',
@@ -256,14 +237,8 @@ describe('WorkflowToolView.tryRender', () => {
     }) as FunctionCallMessage
 
   it('draws a flat start, and leaves an unparseable one to the default panes', () => {
-    expect(
-      WorkflowToolView.tryRender(startCall({ nodes: { a: { task: 't' } } })),
-    ).not.toBeNull()
-    expect(
-      WorkflowToolView.tryRender(
-        startCall({ definition: { nodes: { a: { agent: {} } } } }),
-      ),
-    ).toBeNull()
+    expect(renderer.tryRender(startCall({ nodes: { a: { task: 't' } } }))).not.toBeNull()
+    expect(renderer.tryRender(startCall({ definition: { nodes: { a: { agent: {} } } } }))).toBeNull()
   })
 })
 

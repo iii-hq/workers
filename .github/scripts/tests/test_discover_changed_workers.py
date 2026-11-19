@@ -214,7 +214,6 @@ def test_traces_ui_skips_other_changes(path: str) -> None:
         "packages/console-ui/format.mjs",
         "packages/editor-prefs/index.ts",
         "packages/terminal-font/src/index.ts",
-        "workflow/tests/fixtures/flat_start_cases.json",
         "crates/mention-contract/fixtures/tokens.json",
         "cursor/src/provider-icon.ts",
         "provider-openai/assets/icon.svg",
@@ -231,6 +230,7 @@ def test_ade_web_runs_for_its_inputs(path: str) -> None:
     [
         "ade/src/main.rs",
         "workflow/src/lib.rs",
+        "workflow/tests/fixtures/flat_start_cases.json",
         "harness/src/main.rs",
         "browser/native-ui/src/app.tsx",
         "README.md",

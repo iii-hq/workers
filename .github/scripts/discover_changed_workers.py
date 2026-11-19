@@ -179,7 +179,7 @@ ADE_WEB_PREFIXES = (
     "packages/terminal-font/",
     "crates/mention-contract/fixtures/",
 )
-ADE_WEB_PATHS = {"workflow/tests/fixtures/flat_start_cases.json", "cursor/src/provider-icon.ts"}
+ADE_WEB_PATHS = {"cursor/src/provider-icon.ts"}
 
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a

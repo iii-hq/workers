@@ -394,6 +394,10 @@ pub struct WorkflowRunRecord {
     /// harness default folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_fs_root: Option<String>,
+    /// Display title of the run: the request's `title`, else the description
+    /// the caller agent gave its `workflow::start` call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Scoped idempotency key that points at this run; the GC deletes it with the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idem_key: Option<String>,
@@ -526,6 +530,7 @@ mod tests {
             notify: None,
             caller_session_id: None,
             caller_fs_root: Some("/home/u/proj".to_string()),
+            title: None,
             idem_key: None,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_001,

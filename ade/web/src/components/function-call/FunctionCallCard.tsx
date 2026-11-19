@@ -10,6 +10,8 @@ import {
 } from 'react'
 import { DrawnCheck } from '@/components/chat/ChatGlyphs'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
+import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
+import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import { TimelineActivityTrail } from '@/components/chat/TimelineActivityTrail'
 import {
   firstNonNull,
@@ -97,6 +99,18 @@ interface FunctionCallCardProps {
   onManageFilesystemAccess?: () => void
   /** Conversation's session workspace — shown as "always allowed" context. */
   workingDir?: string | null
+}
+
+/**
+ * The error panel the first-party families draw for their own failures, for
+ * a settled call no renderer drew. Only an `{ error }` envelope (how a failed
+ * call settles) reaches the parser: a success value that merely looks like a
+ * denial, flat or inside `{ content, details }`, must not read as one.
+ */
+function unhandledErrorView(output: unknown): ReactNode | null {
+  if (!isErrorOutput(output)) return null
+  const display = parseSandboxErrorDisplay(output)
+  return display ? <SandboxErrorView display={display} /> : null
 }
 
 /**
@@ -635,7 +649,11 @@ export function FunctionCallCard({
             : null,
         )
       : null
-  const customTerminal = terminalRender?.node ?? null
+  // `rawOutput`: the panel shows the payload, so a claiming renderer's
+  // `redactRaw` covers it like the raw panes.
+  const customTerminal =
+    terminalRender?.node ??
+    (!pending && !running && !unloaded ? unhandledErrorView(rawOutput) : null)
   const hasCustomTerminal = customTerminal != null
   const displayCustomTerminal =
     !pending &&
