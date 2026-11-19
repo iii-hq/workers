@@ -558,15 +558,18 @@ export function NewProjectDialog({
   agents,
   onCreated,
   project = null,
+  moveCount = 0,
 }: {
   host: Host
   open: boolean
   onOpenChange: (open: boolean) => void
   agents: AgentProfile[]
-  /** The project as created, or as saved when editing. */
-  onCreated: (project: ProjectView) => void
+  /** The project as created, or as saved when editing; `move`: the offered tickets are to move into it. */
+  onCreated: (project: ProjectView, options?: { move: boolean }) => void
   /** Edit this project (its name, description, lead and color) instead of creating one. */
   project?: ProjectView | null
+  /** Creating from tickets with no project: offer to move these many into the new project (ticked by default). */
+  moveCount?: number
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -575,6 +578,7 @@ export function NewProjectDialog({
   const [color, setColor] = useState<GlyphTone | null>('blue')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [move, setMove] = useState(true)
   const colorLabel = useId()
 
   useEffect(() => {
@@ -586,6 +590,7 @@ export function NewProjectDialog({
     setColor(project ? project.color : 'blue')
     setBusy(false)
     setError(null)
+    setMove(true)
   }, [open])
 
   const canSubmit = name.trim().length > 0 && !busy
@@ -610,7 +615,7 @@ export function NewProjectDialog({
             ...(lead ? { lead } : {}),
           })
       announcePlanChange()
-      onCreated(saved)
+      onCreated(saved, { move: !project && moveCount > 0 && move })
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -678,6 +683,23 @@ export function NewProjectDialog({
               </div>
             </div>
           </div>
+          {!project && moveCount > 0 ? (
+            <label className="kb-plan-choice" data-on={move ? 'true' : undefined}>
+              <ShadcnCheckbox
+                checked={move}
+                className="kb-plan-choice__box"
+                onCheckedChange={(next) => setMove(next === true)}
+              />
+              <span className="kb-plan-choice__body">
+                <span className="kb-plan-choice__line">
+                  {moveCount === 1
+                    ? 'Move the ticket with no project into it'
+                    : `Move the ${moveCount} tickets with no project into it`}
+                </span>
+                <span className="kb-field__hint">Their subtasks, agents and history stay with them.</span>
+              </span>
+            </label>
+          ) : null}
           {error && !nameError ? <p className="kb-field__error">{error}</p> : null}
         </div>
         <ShadcnDialogFooter>

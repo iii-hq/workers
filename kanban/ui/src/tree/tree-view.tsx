@@ -1,5 +1,5 @@
 import { type Host, ShadcnButton, ShadcnSkeleton, ShadcnSwitch } from '@iii-dev/console-ui'
-import { formatRelative } from '@iii-dev/console-ui/format'
+import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
 import {
   Bot,
@@ -13,6 +13,7 @@ import {
   Database,
   FileText,
   FlaskConical,
+  FolderPlus,
   type LucideIcon,
   Maximize2,
   MessagesSquare,
@@ -40,7 +41,15 @@ import {
 } from 'react'
 import { type StatusStep, statusStep } from '../board-state'
 import { NewProjectDialog } from '../plan-dialogs'
-import type { AgentProfile, BoardData, GlyphTone, ProjectView, TicketSummary } from '../shared'
+import {
+  type AgentProfile,
+  api,
+  type BoardData,
+  type GlyphTone,
+  noteOwnWrite,
+  type ProjectView,
+  type TicketSummary,
+} from '../shared'
 import { assigneeName } from '../ui/avatar'
 import { Empty, Notice } from '../ui/feedback'
 import { ColumnStatusIcon } from '../ui/glyphs'
@@ -141,6 +150,9 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   const chartRef = useRef<HTMLDivElement | null>(null)
   /** The project being edited from its card (the project dialog). */
   const [editingProject, setEditingProject] = useState<ProjectView | null>(null)
+  /** "No project"'s Create a project: the dialog, then its tickets move into the new project. */
+  const [creatingProject, setCreatingProject] = useState(false)
+  const [moveError, setMoveError] = useState<string | null>(null)
   /** Where the last press on the canvas began: a click that did not move is not a pan. */
   const pressedAt = useRef<{ x: number; y: number } | null>(null)
   // Beside a chat the tree's pane is narrow: the toolbar keeps its controls and drops their words.
@@ -173,6 +185,24 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   }, [sessions])
 
   const tickets = useMemo<TicketSummary[]>(() => data.columns.flatMap((column) => column.tickets), [data])
+  /** The tickets in no project (or in one this board no longer has): what "No project" gathers. */
+  const loose = useMemo(
+    () => tickets.filter((t) => !t.project_id || !data.projects.some((p) => p.id === t.project_id)),
+    [tickets, data.projects],
+  )
+  /** Move every loose ticket into `target`, one write each; the board's change events redraw the chart. */
+  const moveInto = async (target: ProjectView) => {
+    setMoveError(null)
+    const failed: string[] = []
+    for (const ticket of loose) {
+      try {
+        noteOwnWrite(await api.update(host.iii, { id: ticket.key, project: target.id, actor: 'user' }))
+      } catch (caught) {
+        failed.push(`${ticket.key}: ${errorMessage(caught)}`)
+      }
+    }
+    if (failed.length) setMoveError(failed.join(' · '))
+  }
   const tree: ProjectTree = useMemo(
     () =>
       buildTree({
@@ -524,6 +554,7 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           onFocusRow={setActiveId}
           onDetails={onOpenTicket}
           onEditProject={setEditingProject}
+          onCreateProject={() => setCreatingProject(true)}
           onToggle={setOpen}
           position={1}
           phaseSince={phaseSince}
@@ -601,6 +632,14 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           <ChevronsDownUp size={16} />
         </IconAction>
       </div>
+      {moveError ? (
+        <Notice
+          actionLabel="Dismiss"
+          detail={moveError}
+          onAction={() => setMoveError(null)}
+          title="Some tickets could not be moved into the new project"
+        />
+      ) : null}
       {error ? (
         <Notice
           actionLabel="Retry"
@@ -633,6 +672,19 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
       ) : (
         <div className="kb-chart-empty">{body}</div>
       )}
+      <NewProjectDialog
+        agents={agents}
+        host={host}
+        moveCount={loose.length}
+        onCreated={(created, options) => {
+          setCreatingProject(false)
+          if (options?.move) void moveInto(created)
+        }}
+        onOpenChange={(open) => {
+          if (!open) setCreatingProject(false)
+        }}
+        open={creatingProject}
+      />
       <NewProjectDialog
         agents={agents}
         host={host}
@@ -698,6 +750,8 @@ type ItemProps = {
   onDetails: (key: string) => void
   /** Rename the project (or change its description, lead, color) in the project dialog. */
   onEditProject: (project: ProjectView) => void
+  /** Make a project for the tickets that have none (the "No project" card). */
+  onCreateProject: () => void
   /** Its place among its siblings: the stagger of its entrance. */
   enterIndex?: number
 }
@@ -905,6 +959,7 @@ function GroupCard({
   open,
   onToggle,
   onEditProject,
+  onCreateProject,
 }: ItemProps & { node: GroupNode; open: boolean; onToggle: () => void }) {
   const p = node.project
   const counts = tally(node)
@@ -946,6 +1001,18 @@ function GroupCard({
             size="icon-xs"
           >
             <Pencil size={16} />
+          </IconAction>
+        ) : node.id === 'project:none' ? (
+          <IconAction
+            className="kb-node__action"
+            label="Create a project for these tickets"
+            onClick={(event) => {
+              event.stopPropagation()
+              onCreateProject()
+            }}
+            size="icon-xs"
+          >
+            <FolderPlus size={16} />
           </IconAction>
         ) : null
       }
