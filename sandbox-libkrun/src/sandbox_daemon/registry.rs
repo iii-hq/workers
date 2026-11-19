@@ -253,6 +253,14 @@ impl SandboxRegistry {
         Some(CreateSlot(self.booting.clone()))
     }
 
+    /// Atomically replace the in-flight reservation with the published record.
+    /// Counting both until boot completes would reject a valid second create.
+    pub(crate) async fn insert_reserved(&self, state: SandboxState, reservation: CreateSlot) {
+        let mut map = self.inner.lock().await;
+        map.insert(state.id, state);
+        drop(reservation);
+    }
+
     pub async fn insert(&self, state: SandboxState) {
         let mut map = self.inner.lock().await;
         map.insert(state.id, state);

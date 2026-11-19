@@ -268,23 +268,26 @@ async fn handle_create_in<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + '
     // Publish an unresolved/closing registry entry BEFORE boot: cancellation or
     // a post-spawn startup error must retain both layout and discoverable owner.
     registry
-        .insert(SandboxState {
-            id,
-            name: req.name.clone(),
-            image: req.image.clone(),
-            rootfs: rootfs.clone(),
-            workdir: workdir.clone(),
-            shell_sock: shell_sock.clone(),
-            vm_pid: None,
-            lifeline: None,
-            created_at: Instant::now(),
-            last_exec_at: Instant::now(),
-            exec_in_flight: 0,
-            idle_timeout_secs: req
-                .idle_timeout_secs
-                .unwrap_or(cfg.default_idle_timeout_secs),
-            stopped: false,
-        })
+        .insert_reserved(
+            SandboxState {
+                id,
+                name: req.name.clone(),
+                image: req.image.clone(),
+                rootfs: rootfs.clone(),
+                workdir: workdir.clone(),
+                shell_sock: shell_sock.clone(),
+                vm_pid: None,
+                lifeline: None,
+                created_at: Instant::now(),
+                last_exec_at: Instant::now(),
+                exec_in_flight: 0,
+                idle_timeout_secs: req
+                    .idle_timeout_secs
+                    .unwrap_or(cfg.default_idle_timeout_secs),
+                stopped: false,
+            },
+            _slot,
+        )
         .await;
     registry.begin_start(id).await;
     events.lock().unwrap()(SandboxCreateEvent::BootingVm);
