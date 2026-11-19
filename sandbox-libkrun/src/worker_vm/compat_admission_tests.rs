@@ -1308,6 +1308,7 @@ async fn normal_destroy_retains_data_and_explicit_prune_still_removes_it() {
 async fn local_path_bundle_binary_and_build_helpers_refuse_before_runtime_work() {
     use crate::cli::local_worker::{BootImage, VmOverride};
     let s = setup(true);
+    register_base(&s);
     let over = || VmOverride {
         state_dir: s.vm.join("root"),
         engine_url: "ws://127.0.0.1:1/ws",
@@ -1344,6 +1345,18 @@ async fn local_path_bundle_binary_and_build_helpers_refuse_before_runtime_work()
             .contains("compatibility custody")
     );
     unchanged(&s);
+}
+
+/// A production worker base is known to the namespace once a worker operation
+/// registered it (`WorkerVms::admission` does so on first use). The outer
+/// builder helpers take only a context, so a real keyed worker operation over a
+/// VM id nothing else uses registers the base first and ends at once.
+fn register_base(s: &Setup) {
+    drop(
+        context(s)
+            .worker(&s.vms.base, Some("registration"))
+            .unwrap(),
+    );
 }
 
 // A is normal; B's original root is outside custody itself. Only the bound
@@ -1471,6 +1484,7 @@ async fn build_refuses_foreign_source_or_absent_foreign_output_before_claim_or_c
 #[tokio::test]
 async fn normal_root_and_source_refuse_foreign_image_or_upper_at_outer_builders() {
     let s = setup(false);
+    register_base(&s);
     let original = enrolled_other_root(&s);
     for retained_image in [false, true] {
         let over = || VmOverride {
@@ -1552,6 +1566,7 @@ async fn source_symlink_is_not_hidden_by_host_root_canonicalization() {
 #[tokio::test]
 async fn image_build_refuses_foreign_source_before_default_image_or_firmware() {
     let s = setup(false);
+    register_base(&s);
     let original = enrolled_other_root(&s);
     let scratch = s.vm.join("build-not-created");
     let error = test_build_command(context(&s), &original, &scratch)

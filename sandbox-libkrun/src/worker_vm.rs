@@ -4748,25 +4748,29 @@ mod tests {
     /// must leave the previous instance readable, not an empty file.
     #[tokio::test]
     async fn state_json_is_replaced_not_rewritten_in_place() {
+        use std::os::unix::fs::MetadataExt;
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms
-            .launch("k", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&vms, &id, 1).await;
+        // Genuine owned lifecycles of one key: each retires, then boots on.
+        let id = owned_retired(&vms, t.path(), "k").await.vm_id;
         let dir = t.path().join("workers").join(&id);
-        // Same inode as state.json: an in-place rewrite would show through it.
-        std::fs::hard_link(dir.join(STATE_FILE), dir.join("old")).unwrap();
-        // A temp file left by a crash mid-write must not block the next boot.
-        std::fs::write(dir.join("state.json.tmp"), r#"{"inst"#).unwrap();
+        // An open descriptor, never a second link: an admitted state file
+        // stays single-linked (a hard link is refused as hardlinked input),
+        // and an in-place rewrite shows through the descriptor as through a
+        // link. A crash's leftover is a core stage, not a raw `.tmp` here.
+        let mut old = std::fs::File::open(dir.join(STATE_FILE)).unwrap();
+        let old_inode = old.metadata().unwrap().ino();
 
-        let again = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap();
+        let again = owned_retired(&vms, t.path(), "k").await;
         assert_eq!(again.instance, 2);
         assert_eq!(stored_instance(&dir).unwrap(), 2);
-        let old: StateFile =
-            serde_json::from_slice(&std::fs::read(dir.join("old")).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        old.read_to_end(&mut bytes).unwrap();
+        let old: StateFile = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(old.instance, 1);
+        let current = std::fs::symlink_metadata(dir.join(STATE_FILE)).unwrap();
+        assert_ne!(current.ino(), old_inode);
+        assert_eq!(current.nlink(), 1);
         assert!(!dir.join("state.json.tmp").exists());
     }
 
@@ -6412,30 +6416,30 @@ mod tests {
     fn a_start_of_a_build_checks_image_id_and_refuses_with_s508() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
-        let vms = vms(t, Some("t"), vec![t.into()]);
         let dir = t.join(".build/w");
         std::fs::create_dir_all(&dir).unwrap();
         let id = format!("sha256:{}", "a".repeat(64));
+        // Provision the namespace once; every step below is its own adapter
+        // process reopening it. A step's operation pins the build inputs it
+        // admitted, so the fixture edits them only between steps, while no
+        // operation holds them (an edit under a live pin is S300 instead).
+        drop(vms(t, Some("t"), vec![t.into()]));
+        let admit = |roots: Vec<PathBuf>| {
+            reopened_vms(t, Some("t"), roots).admit_build("t", "k", &build_ref(&dir, &id))
+        };
+        let inside = || admit(vec![t.into()]);
 
         // No image.id at all.
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
-        );
+        assert_eq!(code(inside()), "S508");
         std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
-        );
+        assert_eq!(code(inside()), "S508");
         // Another build's id.
         std::fs::write(
             dir.join(IMAGE_ID_FILE),
             format!("sha256:{}\n", "b".repeat(64)),
         )
         .unwrap();
-        let err = vms
-            .admit_build("t", "k", &build_ref(&dir, &id))
-            .unwrap_err();
+        let err = inside().unwrap_err();
         assert_eq!(err.code().as_str(), "S508");
         assert!(err.to_string().contains(&"b".repeat(64)), "{err}");
         // A planted symlink is no id.
@@ -6443,29 +6447,18 @@ mod tests {
         let elsewhere = t.join("id");
         std::fs::write(&elsewhere, &id).unwrap();
         std::os::unix::fs::symlink(&elsewhere, dir.join(IMAGE_ID_FILE)).unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S300"
-        );
+        assert_eq!(code(inside()), "S300");
         std::fs::remove_file(dir.join(IMAGE_ID_FILE)).unwrap();
         // The matching id, but no image.
         std::fs::write(dir.join(IMAGE_ID_FILE), format!("{id}\n")).unwrap();
         std::fs::remove_file(dir.join(IMAGE_FILE)).unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
-        );
+        assert_eq!(code(inside()), "S508");
         std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
-        let image = vms.admit_build("t", "k", &build_ref(&dir, &id)).unwrap();
+        let image = inside().unwrap();
         assert_eq!(image, dir.canonicalize().unwrap().join(IMAGE_FILE));
         // Outside the host roots it is S501, before any id is read: another
         // adapter process over the same namespace, once this one went away.
-        drop(vms);
-        let outside = reopened_vms(t, Some("t"), vec![t.join("elsewhere")]);
-        assert_eq!(
-            code(outside.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S501"
-        );
+        assert_eq!(code(admit(vec![t.join("elsewhere")])), "S501");
     }
 
     fn vms_without_roots(t: &Path) -> WorkerVms {
@@ -7483,9 +7476,19 @@ mod tests {
         let (write, _) = image_write(t, "v1", BUILD_RUNNING);
         let previous = write.write().unwrap();
         let out = t.join("out");
-        let vms = vms(t, Some("t"), vec![t.into()]);
-        vms.admit_build("t", "k", &build_ref(&out, &previous))
-            .unwrap();
+        // Provision the namespace once; every start check below is its own
+        // adapter process reopening it. A check's operation pins the pair it
+        // admitted, so the crash and the rebuild happen between checks, while
+        // no operation holds the output (under a live pin they are S300).
+        drop(vms(t, Some("t"), vec![t.into()]));
+        let admit = |build_id: &str| {
+            reopened_vms(t, Some("t"), vec![t.into()]).admit_build(
+                "t",
+                "k",
+                &build_ref(&out, build_id),
+            )
+        };
+        admit(&previous).unwrap();
 
         // The next build's two temporary files, its first step, and the crash.
         let image = out.join(format!(".{IMAGE_FILE}.v2.partial"));
@@ -7498,9 +7501,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join(IMAGE_FILE)).unwrap(), b"v2");
         assert_eq!(read_image_id(&out), None);
         for build_id in [&previous, &next] {
-            let err = vms
-                .admit_build("t", "k", &build_ref(&out, build_id))
-                .unwrap_err();
+            let err = admit(build_id).unwrap_err();
             assert_eq!(err.code().as_str(), "S508", "{err}");
             assert!(err.to_string().contains("is missing; build again"), "{err}");
         }
@@ -7508,12 +7509,8 @@ mod tests {
         // A rebuild puts a whole pair back.
         let (write, _) = image_write(t, "v3", BUILD_RUNNING);
         let rebuilt = write.write().unwrap();
-        vms.admit_build("t", "k", &build_ref(&out, &rebuilt))
-            .unwrap();
-        assert_eq!(
-            code(vms.admit_build("t", "k", &build_ref(&out, &previous))),
-            "S508"
-        );
+        admit(&rebuilt).unwrap();
+        assert_eq!(code(admit(&previous)), "S508");
     }
 
     /// A filesystem that cannot flush a directory gets a warning, not a failed

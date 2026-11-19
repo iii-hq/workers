@@ -2099,9 +2099,21 @@ mod tests {
         assert_eq!(cause.kind(), std::io::ErrorKind::NotFound);
         assert!(child.is_none());
         assert!(data.path().exists());
+        // The reviewed invariant (worker_admission/runtime.rs spawn error
+        // path, retirement.rs RemovalAuthority::issue): the failed spawn's
+        // runtime stays Uncertain, so no later launch of the same operation
+        // can turn it into a NeverSpawned cleanup receipt. An empty footprint
+        // retains no hold, so the operation itself still admits a launch.
+        let fresh = lease
+            .prepare_runtime(&[])
+            .expect("an empty-footprint launch is still admitted");
+        let refused = match fresh.cancel_before_spawn() {
+            Ok(_) => panic!("failed spawn became a NeverSpawned cleanup receipt"),
+            Err(error) => error,
+        };
         assert!(
-            lease.prepare_runtime(&[]).is_err(),
-            "failed spawn retains uncertain state"
+            refused.to_string().contains("another writer is unresolved"),
+            "failed spawn retains uncertain state: {refused}"
         );
     }
 
