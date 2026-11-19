@@ -124,14 +124,22 @@ describe('agent profile picker', () => {
   it('keeps the manual editor reachable with an empty catalog', async () => {
     await mount({ agentEntries: [] })
     await open()
-    const configure = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Configure an agent'),
-    )
-    expect(configure).toBeDefined()
-    await act(async () => configure?.click())
+    const button = (label: string) =>
+      Array.from(document.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === label,
+      )
+    expect(button('New agent')).toBeDefined()
+    await act(async () => button('New agent')?.click())
     expect(requestPanelOpen).toHaveBeenCalledWith({
       pageId: 'directory',
       context: { collection: 'agents', action: 'create' },
+    })
+
+    await open()
+    await act(async () => button('Manage agents')?.click())
+    expect(requestPanelOpen).toHaveBeenLastCalledWith({
+      pageId: 'directory',
+      context: { collection: 'agents' },
     })
   })
 

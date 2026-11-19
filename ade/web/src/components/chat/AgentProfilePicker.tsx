@@ -1,11 +1,11 @@
 import {
-  ArrowUpRight,
   Bot,
   Check,
   ChevronDown,
   ChevronRight,
   CircleArrowUp,
   Lock,
+  Plus,
   Settings2,
   SlidersHorizontal,
 } from 'lucide-react'
@@ -63,24 +63,25 @@ export interface AgentProfilePickerProps {
   details?: ReactNode
 }
 
-/** The profile's glyph on a small tile; the chosen profile's tile fills with ink. */
+/**
+ * The profile's glyph on a tinted tile, in its identity colour: the same
+ * tones sub-agent chips and spawn cards use, so a profile looks the same in
+ * the picker and in the chat. A profile without a colour gets the neutral
+ * tone; selection is shown by the row, never by the tile.
+ */
 function AgentGlyph({
   icon,
-  active = false,
+  color,
 }: {
   icon: string | null
-  active?: boolean
+  color?: string | null
 }) {
   const Icon = (icon && SUBAGENT_ICON_COMPONENTS[icon as SubagentIcon]) || Bot
   return (
     <span
       aria-hidden
-      className={cn(
-        'flex size-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-100',
-        active
-          ? 'bg-ink text-panel'
-          : 'bg-panel text-ink-faint ring-1 ring-edge ring-inset',
-      )}
+      data-color={color ?? 'neutral'}
+      className="active-subagent-chip pointer-events-none flex size-8 [--color-panel:var(--color-popover-surface)] shrink-0 items-center justify-center rounded-md"
     >
       <Icon className="size-4" />
     </span>
@@ -334,190 +335,213 @@ export function AgentProfilePicker({
         align="start"
         side="top"
         sideOffset={8}
-        className="max-h-[min(30rem,var(--available-height))] w-80 max-w-[calc(100vw-2rem)] gap-0 overflow-y-auto overscroll-contain p-1.5"
+        className="max-h-[min(32rem,var(--available-height))] w-[22rem] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0"
       >
-        <PopoverTitle className="px-2.5 pt-1.5 pb-2 text-xs font-medium text-ink-faint">
-          Agent profile
-        </PopoverTitle>
-        {selectionLocked ? (
-          <p className="flex items-center gap-2 px-2.5 pb-2 text-sm text-ink-faint">
-            <Lock aria-hidden className="size-4 shrink-0" />
-            Fixed for this conversation
-          </p>
-        ) : null}
-        {agentProfile && !selected ? (
-          <div className="flex items-center gap-3 rounded-lg bg-surface-hover/60 px-2.5 py-2">
-            <AgentGlyph icon={null} active />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
-              {agentProfile.name}
+        <div className="flex h-10 shrink-0 items-center justify-between gap-3 px-4">
+          <PopoverTitle className="text-xs font-medium text-ink-faint">
+            Agent
+          </PopoverTitle>
+          {selectionLocked ? (
+            <span className="flex min-w-0 items-center gap-1.5 text-xs text-ink-faint">
+              <Lock aria-hidden className="size-4 shrink-0" />
+              <span className="truncate">Fixed for this chat</span>
             </span>
-            <Check aria-hidden className="size-4 shrink-0 text-ink" />
-          </div>
-        ) : null}
-        {catalog === null ? (
-          <p role="status" className="px-2.5 py-3 text-sm text-ink-faint">
-            Loading agent profiles…
-          </p>
-        ) : null}
-        {error ? (
-          <div
-            role="status"
-            className="flex items-center justify-between gap-2 px-2.5 py-2 text-sm text-ink-faint"
+          ) : null}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-1.5">
+          {agentProfile && !selected ? (
+            <div className="flex items-center gap-3 rounded-lg bg-surface-hover px-2.5 py-2">
+              <AgentGlyph
+                icon={agentProfile.icon ?? null}
+                color={agentProfile.color}
+              />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+                {agentProfile.name}
+              </span>
+              <Check aria-hidden className="size-4 shrink-0 text-ink" />
+            </div>
+          ) : null}
+          {catalog === null ? (
+            <p role="status" className="px-2.5 py-3 text-sm text-ink-faint">
+              Loading agents…
+            </p>
+          ) : null}
+          {error ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 px-2.5 py-2 text-sm text-ink-faint"
+            >
+              Unable to load agents.
+              <button
+                type="button"
+                onClick={retry}
+                className="rounded-md px-2 py-1 text-ink hover:bg-surface-hover focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
+          <fieldset
+            className="flex min-w-0 flex-col gap-0.5"
+            aria-label="Agent profiles"
           >
-            Could not load agent profiles.
+            {agents.map((entry) => {
+              const active = entry.id === activeId
+              const update = active ? undefined : updateFor(entry)
+              const markerId = `${markerBase}-${entry.id}`
+              const description = entry.description.trim()
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  aria-label={`Use ${entry.name.trim() || entry.id} agent profile`}
+                  aria-pressed={active}
+                  aria-describedby={update ? markerId : undefined}
+                  disabled={selectionLocked}
+                  className={cn(
+                    'flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-default',
+                    active
+                      ? 'bg-surface-hover'
+                      : 'hover:bg-surface-hover/60 disabled:hover:bg-transparent',
+                  )}
+                  onClick={() => {
+                    select(entry)
+                    setOpen(false)
+                  }}
+                >
+                  <AgentGlyph icon={entry.icon} color={entry.color} />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-0.5">
+                    <span className="truncate text-sm leading-5 font-medium text-ink">
+                      {entry.name.trim() || entry.id}
+                    </span>
+                    {description ? (
+                      <span className="line-clamp-2 text-sm leading-5 text-pretty text-ink-faint">
+                        {description}
+                      </span>
+                    ) : null}
+                    {update ? (
+                      <span
+                        id={markerId}
+                        className="flex items-center gap-1.5 text-xs text-ink-faint"
+                      >
+                        <CircleArrowUp
+                          aria-hidden
+                          className={cn(
+                            'size-4 shrink-0',
+                            update.major ? 'text-warn' : 'text-accent',
+                          )}
+                        />
+                        <span>
+                          {update.major ? 'Major update' : 'Update'}{' '}
+                          <span className="tabular-nums">
+                            {update.available}
+                          </span>
+                          <span className="sr-only"> available</span>
+                        </span>
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="flex h-8 shrink-0 items-center">
+                    <Check
+                      aria-hidden
+                      className={cn(
+                        'size-4 text-ink transition-opacity duration-100',
+                        active ? 'opacity-100' : 'opacity-0',
+                      )}
+                    />
+                  </span>
+                </button>
+              )
+            })}
+          </fieldset>
+          {selectedUpdate ? (
             <button
               type="button"
-              onClick={retry}
-              className="rounded-md px-2 py-1 text-ink hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
+              title={`${selectedUpdate.kit} ${selectedUpdate.current} → ${selectedUpdate.available} · opens in Directory`}
+              className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              onClick={() => {
+                setOpen(false)
+                requestPanelOpen({
+                  pageId: 'directory',
+                  context: { collection: 'kits', kit: selectedUpdate.kit },
+                })
+              }}
             >
-              Retry
-            </button>
-          </div>
-        ) : null}
-        <fieldset
-          className="flex min-w-0 flex-col gap-0.5"
-          aria-label="Agent profiles"
-        >
-          {agents.map((entry) => {
-            const active = entry.id === activeId
-            const update = active ? undefined : updateFor(entry)
-            const markerId = `${markerBase}-${entry.id}`
-            return (
-              <button
-                key={entry.id}
-                type="button"
-                aria-label={`Use ${entry.name.trim() || entry.id} agent profile`}
-                aria-pressed={active}
-                aria-describedby={update ? markerId : undefined}
-                disabled={selectionLocked}
+              <CircleArrowUp
+                aria-hidden
                 className={cn(
-                  'group/agent flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring disabled:cursor-default',
-                  active
-                    ? 'bg-surface-hover/60'
-                    : 'hover:bg-surface-hover/60 disabled:hover:bg-transparent',
+                  'size-4 shrink-0',
+                  selectedUpdate.major ? 'text-warn' : 'text-accent',
                 )}
-                onClick={() => {
-                  select(entry)
-                  setOpen(false)
-                }}
-              >
-                <AgentGlyph icon={entry.icon} active={active} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-ink">
-                    {entry.name.trim() || entry.id}
-                  </span>
-                  {entry.description.trim() ? (
-                    <span className="line-clamp-3 text-sm leading-snug text-ink-faint">
-                      {entry.description}
+              />
+              <span className="min-w-0 flex-1 truncate">
+                {selectedUpdate.major ? (
+                  'Review major update'
+                ) : (
+                  <>
+                    Review update{' '}
+                    <span className="tabular-nums">
+                      {selectedUpdate.available}
                     </span>
-                  ) : null}
-                  {update ? (
-                    <span
-                      id={markerId}
-                      className="mt-1 flex items-center gap-1.5 text-xs text-ink-faint"
-                    >
-                      <CircleArrowUp
-                        aria-hidden
-                        className={cn(
-                          'size-4 shrink-0',
-                          update.major ? 'text-warn' : 'text-accent',
-                        )}
-                      />
-                      <span>
-                        {update.major ? 'Major update' : 'Update'}{' '}
-                        <span className="tabular-nums">{update.available}</span>
-                        <span className="sr-only"> available</span>
-                      </span>
-                    </span>
-                  ) : null}
-                </span>
-                <Check
+                  </>
+                )}
+                <span className="sr-only">, {selectedUpdate.kit} kit</span>
+              </span>
+            </button>
+          ) : null}
+          {details ? (
+            <details className="group/details mt-0.5 shrink-0">
+              <summary className="flex h-9 cursor-pointer list-none items-center gap-3 rounded-lg px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none [&::-webkit-details-marker]:hidden">
+                <SlidersHorizontal
                   aria-hidden
-                  className={cn(
-                    'size-4 shrink-0 text-ink transition-opacity duration-100',
-                    active ? 'opacity-100' : 'opacity-0',
-                  )}
+                  className="size-4 shrink-0 text-ink-faint"
                 />
-              </button>
-            )
-          })}
-        </fieldset>
-        {selectedUpdate ? (
+                <span className="min-w-0 flex-1">Agent details</span>
+                <ChevronRight
+                  aria-hidden
+                  className="size-4 shrink-0 text-ink-faint transition-transform duration-150 group-open/details:rotate-90"
+                />
+              </summary>
+              <div
+                ref={detailsRef}
+                className="flex flex-wrap items-center gap-2 px-2.5 pt-1 pb-2"
+              >
+                {details}
+              </div>
+            </details>
+          ) : null}
+        </div>
+        <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-t border-popover-edge px-1.5">
           <button
             type="button"
-            title={`${selectedUpdate.kit} ${selectedUpdate.current} → ${selectedUpdate.available} · opens in Directory`}
-            className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
+            className="flex h-8 min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm text-ink-faint transition-colors duration-100 hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
             onClick={() => {
               setOpen(false)
               requestPanelOpen({
                 pageId: 'directory',
-                context: { collection: 'kits', kit: selectedUpdate.kit },
+                context: { collection: 'agents' },
               })
             }}
           >
-            <CircleArrowUp
-              aria-hidden
-              className={cn(
-                'size-4 shrink-0',
-                selectedUpdate.major ? 'text-warn' : 'text-accent',
-              )}
-            />
-            <span className="min-w-0 flex-1 truncate">
-              {selectedUpdate.major ? (
-                'Review major update'
-              ) : (
-                <>
-                  Review update{' '}
-                  <span className="tabular-nums">
-                    {selectedUpdate.available}
-                  </span>
-                </>
-              )}
-              <span className="sr-only">, {selectedUpdate.kit} kit</span>
-            </span>
+            <Settings2 aria-hidden className="size-4 shrink-0" />
+            <span className="truncate">Manage agents</span>
           </button>
-        ) : null}
-        <div aria-hidden className="mx-1 my-1.5 h-px shrink-0 bg-edge" />
-        <button
-          type="button"
-          title="Choose instructions, a model, and skills."
-          className="group/configure flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
-          onClick={() => {
-            setOpen(false)
-            requestPanelOpen({
-              pageId: 'directory',
-              context: { collection: 'agents', action: 'create' },
-            })
-          }}
-        >
-          <Settings2 aria-hidden className="size-4 shrink-0 text-ink-faint" />
-          <span className="min-w-0 flex-1 truncate">Configure an agent</span>
-          <ArrowUpRight
-            aria-hidden
-            className="size-4 shrink-0 text-ink-faint opacity-0 transition-opacity duration-100 group-hover/configure:opacity-100 group-focus-visible/configure:opacity-100"
-          />
-        </button>
-        {details ? (
-          <details className="group/details shrink-0">
-            <summary className="flex h-9 cursor-pointer list-none items-center gap-3 rounded-lg px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-              <SlidersHorizontal
-                aria-hidden
-                className="size-4 shrink-0 text-ink-faint"
-              />
-              <span className="min-w-0 flex-1">Agent details</span>
-              <ChevronRight
-                aria-hidden
-                className="size-4 shrink-0 text-ink-faint transition-transform duration-150 group-open/details:rotate-90"
-              />
-            </summary>
-            <div
-              ref={detailsRef}
-              className="flex flex-wrap items-center gap-2 px-2.5 pt-1 pb-2"
-            >
-              {details}
-            </div>
-          </details>
-        ) : null}
+          <button
+            type="button"
+            title="Choose instructions, a model, and skills."
+            className="flex h-8 min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm text-ink-faint transition-colors duration-100 hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            onClick={() => {
+              setOpen(false)
+              requestPanelOpen({
+                pageId: 'directory',
+                context: { collection: 'agents', action: 'create' },
+              })
+            }}
+          >
+            <Plus aria-hidden className="size-4 shrink-0" />
+            <span className="truncate">New agent</span>
+          </button>
+        </div>
       </PopoverContent>
     </Popover>
   )

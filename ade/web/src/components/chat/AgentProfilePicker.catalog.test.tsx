@@ -154,7 +154,7 @@ describe('AgentProfilePicker catalog', () => {
     // The open's read succeeds; the failed doorbell read never blanked it.
     expect(profileNames()).toEqual(['Use Default agent profile'])
     expect(document.body.textContent).not.toContain(
-      'Could not load agent profiles.',
+      'Unable to load agents.',
     )
   })
 
@@ -164,7 +164,7 @@ describe('AgentProfilePicker catalog', () => {
     await mount()
     await act(async () => trigger()?.click())
     expect(document.body.textContent).toContain(
-      'Could not load agent profiles.',
+      'Unable to load agents.',
     )
 
     const retry = [...document.querySelectorAll('button')].find(
@@ -174,7 +174,7 @@ describe('AgentProfilePicker catalog', () => {
     await flush()
 
     expect(document.body.textContent).not.toContain(
-      'Could not load agent profiles.',
+      'Unable to load agents.',
     )
     expect(profileNames()).toEqual(['Use Default agent profile'])
   })
