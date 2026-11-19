@@ -533,7 +533,8 @@ describe('ChatContextPanel', () => {
 
         act(() =>
           report({
-            count: 2,
+            // A count the brief does not spell, so only the badge can show it.
+            count: 9,
             brief: '2 new errors',
             tone: 'alert',
             live: '1 running',
@@ -544,7 +545,7 @@ describe('ChatContextPanel', () => {
         // Folded, the body stays mounted so its summary keeps up.
         expect(open).toBe(false)
         expect(header().textContent).toContain('2 new errors')
-        expect(header().textContent).toContain('2')
+        expect(header().textContent).toContain('9')
         expect(header().textContent).toContain('1 running')
         expect(header().querySelector('.pulse-dot')).not.toBeNull()
         expect(section().textContent).toContain('errors of main')

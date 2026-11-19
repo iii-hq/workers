@@ -831,8 +831,10 @@ export interface Host {
     /** Optional on consoles that predate worker-driven conversation switching. */
     selectConversation?(sessionId: string): void
     /**
-     * Open this session in a new pane beside the chat, the way a sub-agent
-     * row does. Feature-detect on older consoles.
+     * Open or reuse a pane pinned to this session, the way a sub-agent row
+     * does: a workspace tab already showing it is activated, otherwise a pane
+     * opens beside the chat. A host without workspace panes selects the
+     * session instead. Feature-detect on older consoles.
      */
     openConversation?(sessionId: string): void
     /**

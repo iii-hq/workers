@@ -11,7 +11,14 @@
 
 import type { FunctionCallMessage, FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
-import { isWorkflowFunction, safeParseRequest, startRequestSchema, unwrapEnvelope } from '../lib/parsers'
+import {
+  isWorkflowFunction,
+  nodeResultRequestSchema,
+  safeParseRequest,
+  startRequestSchema,
+  stopRequestSchema,
+  unwrapEnvelope,
+} from '../lib/parsers'
 import { NodeResultView } from './NodeResultView'
 import { StartView } from './StartView'
 import { StatusView } from './StatusView'
@@ -42,18 +49,22 @@ function tryRender(message: FunctionCallMessage): ReactNode | null {
   const output = message.output != null ? unwrapEnvelope(message.output) : undefined
 
   switch (message.functionId) {
+    // A request that does not parse (an old-shape call) gets the card's own
+    // request and response panes instead of an empty custom view.
     case 'workflow::start': {
-      // A request that does not parse (an old-shape start) gets the card's
-      // own request and response panes instead of an empty custom view.
       const req = safeParseRequest(startRequestSchema, input)
       return req ? <StartView req={req} output={output} running={running} /> : null
     }
     case 'workflow::status':
       return <StatusView input={input} output={output} running={running} />
     case 'workflow::node-result':
-      return <NodeResultView input={input} output={output} running={running} />
+      return safeParseRequest(nodeResultRequestSchema, input) ? (
+        <NodeResultView input={input} output={output} running={running} />
+      ) : null
     case 'workflow::stop':
-      return <StopView input={input} output={output} running={running} />
+      return safeParseRequest(stopRequestSchema, input) ? (
+        <StopView input={input} output={output} running={running} />
+      ) : null
     default:
       return null
   }

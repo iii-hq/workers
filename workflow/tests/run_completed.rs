@@ -795,8 +795,8 @@ async fn a_run_observer_added_again_after_a_reconnect_is_replayed() {
 }
 
 /// The registry's function list is taken from the worker booted alone, with no
-/// queue worker and no harness, so `workflow::start` must be registered there,
-/// refusing calls while boot has not settled its stamp hook.
+/// queue worker and no harness, so `workflow::start` and `workflow::list` must be
+/// registered there, refusing calls while boot has not settled its stamp hook.
 #[tokio::test]
 async fn start_is_registered_and_gated_when_the_worker_boots_alone() {
     let Some(engine) = engine_or_skip().await else {
@@ -810,21 +810,28 @@ async fn start_is_registered_and_gated_when_the_worker_boots_alone() {
         .expect("spawn the workflow binary");
     let caller = register_worker(&engine.url, named("workflow-test-caller"));
     let not_ready = |reply: &Result<Value, Error>| matches!(reply, Err(e) if e.to_string().contains("not ready"));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let reply = loop {
-        let reply = call(
-            &caller,
+    let mut replies = Vec::new();
+    for (function_id, payload) in [
+        (
             "workflow::start",
             json!({ "nodes": { "a": { "task": "t" } } }),
-        )
-        .await;
-        if not_ready(&reply) || Instant::now() > deadline {
-            break reply;
-        }
-        sleep(Duration::from_millis(100)).await;
-    };
+        ),
+        ("workflow::list", json!({ "caller_session_id": "s" })),
+    ] {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let reply = loop {
+            let reply = call(&caller, function_id, payload.clone()).await;
+            if not_ready(&reply) || Instant::now() > deadline {
+                break reply;
+            }
+            sleep(Duration::from_millis(100)).await;
+        };
+        replies.push((function_id, reply));
+    }
     let _ = worker.kill();
     let _ = worker.wait();
     caller.shutdown_async().await;
-    assert!(not_ready(&reply), "{reply:?}");
+    for (function_id, reply) in &replies {
+        assert!(not_ready(reply), "{function_id}: {reply:?}");
+    }
 }

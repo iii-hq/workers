@@ -103,18 +103,13 @@ interface FunctionCallCardProps {
 
 /**
  * The error panel the first-party families draw for their own failures, for
- * a settled call no renderer drew. A `{ content, details }` success envelope
- * carries arbitrary JSON, so it never reaches the parser: a stored value that
- * looks like a denial must not read as one (same guard as the state family).
+ * a settled call no renderer drew. Only an `{ error }` envelope (how a failed
+ * call settles) reaches the parser: a success value that merely looks like a
+ * denial, flat or inside `{ content, details }`, must not read as one.
  */
 function unhandledErrorView(output: unknown): ReactNode | null {
-  if (output == null) return null
-  const isSuccessEnvelope =
-    typeof output === 'object' &&
-    !Array.isArray(output) &&
-    Array.isArray((output as Record<string, unknown>).content) &&
-    'details' in (output as Record<string, unknown>)
-  const display = isSuccessEnvelope ? null : parseSandboxErrorDisplay(output)
+  if (!isErrorOutput(output)) return null
+  const display = parseSandboxErrorDisplay(output)
   return display ? <SandboxErrorView display={display} /> : null
 }
 

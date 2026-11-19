@@ -110,6 +110,13 @@ describe('workflow cards', () => {
     expect(container.textContent).toContain('run-42')
   })
 
+  it('leaves unparsable requests to the default card', () => {
+    for (const functionId of ['workflow::start', 'workflow::node-result', 'workflow::stop']) {
+      expect(renderer.tryRender(message({ functionId, input: { bogus: 1 } }))).toBeNull()
+      expect(renderer.tryRender(message({ functionId, input: { bogus: 1 }, running: true }))).toBeNull()
+    }
+  })
+
   it('leaves errors, pending approvals and lifecycle ids to the console', () => {
     expect(renderer.tryRender(message({ input: { run_id: 'r' }, output: { error: 'boom' } }))).toBeNull()
     expect(renderer.tryRender(message({ input: { run_id: 'r' }, pendingApproval: true }))).toBeNull()

@@ -111,9 +111,10 @@ export function revealGroup(id: string) {
   setSectionHidden(id, false)
 }
 
-/** Fold every section in `ids`, or unfold them all. */
+/** Fold every section in `ids`, or unfold them all; others keep their state. */
 export function foldAllGroups(fold: boolean, ids: readonly string[]) {
-  folded.write(fold ? [...ids] : [])
+  const others = folded.read().filter((id) => !ids.includes(id))
+  folded.write(fold ? [...others, ...ids] : others)
 }
 
 export function allGroupsFolded(

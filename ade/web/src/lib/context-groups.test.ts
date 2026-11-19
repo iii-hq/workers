@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
-import { mergeOrder, moveSection, resetFoldedGroups } from './context-groups'
+import {
+  foldAllGroups,
+  mergeOrder,
+  moveSection,
+  resetFoldedGroups,
+} from './context-groups'
 
 const kept = (): string[] =>
   JSON.parse(window.localStorage.getItem('iii-context-order') ?? '[]')
@@ -42,5 +47,23 @@ describe('context section order', () => {
   it('moves after a neighbour', () => {
     moveSection(['project', 'tickets', 'links'], 'project', { after: 'links' })
     expect(kept()).toEqual(['tickets', 'links', 'project'])
+  })
+})
+
+describe('fold all', () => {
+  const folded = (): string[] =>
+    JSON.parse(window.localStorage.getItem('iii-context-collapsed') ?? '[]')
+
+  it("keeps an absent worker section's fold state", () => {
+    window.localStorage.setItem(
+      'iii-context-collapsed',
+      JSON.stringify(['workflow-runs']),
+    )
+    resetFoldedGroups()
+    // The workflow worker is down: its section is not on screen.
+    foldAllGroups(true, ['project', 'links'])
+    expect(folded()).toEqual(['workflow-runs', 'project', 'links'])
+    foldAllGroups(false, ['project', 'links'])
+    expect(folded()).toEqual(['workflow-runs'])
   })
 })

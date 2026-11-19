@@ -552,6 +552,17 @@ describe('an error output no renderer draws', () => {
     expect(out).toContain('data-function-call-footer')
   })
 
+  it('leaves denial-shaped success data on the JSON fallback', () => {
+    for (const output of [
+      { status: 'denied', reason: 'stored value' },
+      { content: [], details: { status: 'denied', denied_by: 'user' } },
+    ]) {
+      const out = html({ functionId: 'workflow::start', output })
+      expect(out).not.toContain('data-error-card')
+      expect(out).toContain('data-function-call-footer')
+    }
+  })
+
   it('lets an injected renderer that draws the error win', () => {
     register({
       isMatch: (f) => f === 'workflow::start',

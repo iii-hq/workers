@@ -25,6 +25,10 @@ fn main() {
 
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let ui_dir = manifest_dir.join("ui");
+    let shared = shared_ui_files(&manifest_dir);
+    for f in &shared {
+        println!("cargo:rerun-if-changed={}", f.display());
+    }
     let dist_assets = [
         ui_dir.join("dist").join("page.js"),
         ui_dir.join("dist").join("styles.css"),
@@ -32,7 +36,7 @@ fn main() {
 
     if dist_assets
         .iter()
-        .all(|a| a.exists() && dist_is_fresh(a, &ui_dir))
+        .all(|a| a.exists() && dist_is_fresh(a, &ui_dir, &shared))
     {
         return;
     }
@@ -72,6 +76,11 @@ fn main() {
         .status()
         .unwrap_or_else(|e| panic!("failed to spawn `pnpm build` in {}: {e}", ui_dir.display()));
     if !status.success() {
+        // The shared builder checks the output after esbuild wrote it, so a
+        // failed check leaves fresh-looking assets a retry would accept.
+        for asset in &dist_assets {
+            let _ = std::fs::remove_file(asset);
+        }
         panic!("`pnpm build` exited with {status} — see logs above");
     }
 
@@ -88,7 +97,7 @@ fn main() {
 
 /// `true` when the built asset is at least as new as every source that
 /// contributes to it. Conservative: any I/O failure forces a rebuild.
-fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
+fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path, shared: &[PathBuf]) -> bool {
     let Ok(dist_mtime) = dist_asset.metadata().and_then(|m| m.modified()) else {
         return false;
     };
@@ -101,7 +110,7 @@ fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
         ui_dir.join("../../pnpm-lock.yaml"),
         ui_dir.join("tsconfig.json"),
     ];
-    for f in watched_files.iter() {
+    for f in watched_files.iter().chain(shared) {
         if !f.exists() {
             continue;
         }
@@ -120,6 +129,19 @@ fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
     }
 
     true
+}
+
+/// Top-level files of `packages/console-ui`: the shared builder and the
+/// subpaths (`/ui-classes`, `/format`, `/hooks`) bundled into `page.js`.
+/// Directories are skipped so its `node_modules` is never walked.
+fn shared_ui_files(manifest_dir: &Path) -> Vec<PathBuf> {
+    let Ok(read) = std::fs::read_dir(manifest_dir.join("../packages/console-ui")) else {
+        return Vec::new();
+    };
+    read.flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.path())
+        .collect()
 }
 
 fn subtree_older_than(root: &Path, ceiling: SystemTime) -> bool {

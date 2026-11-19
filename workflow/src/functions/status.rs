@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -162,34 +162,39 @@ fn node_def<'a>(def: Option<&'a WorkflowDef>, uid: &str) -> Option<&'a NodeDef> 
 
 /// The longest `depends_on` path from a source to each definition node (a source
 /// is 0). A dependency missing from the definition counts as a source, and a cycle
-/// (refused at start) ends the walk. Pure.
+/// (refused at start) ends the walk. Pure; an explicit stack, since a valid chain
+/// can be as deep as the node cap.
 fn node_depths(def: &WorkflowDef) -> BTreeMap<&str, u32> {
-    fn walk<'a>(
-        def: &'a WorkflowDef,
-        id: &'a str,
-        path: &mut Vec<&'a str>,
-        memo: &mut BTreeMap<&'a str, u32>,
-    ) -> u32 {
-        if let Some(&depth) = memo.get(id) {
-            return depth;
+    let mut memo: BTreeMap<&str, u32> = BTreeMap::new();
+    let mut on_path: BTreeSet<&str> = BTreeSet::new();
+    // (node, next dependency index, deepest dependency so far + 1)
+    let mut stack: Vec<(&str, usize, u32)> = Vec::new();
+    for root in def.nodes.keys() {
+        if memo.contains_key(root.as_str()) {
+            continue;
         }
-        let Some(node) = def.nodes.get(id).filter(|_| !path.contains(&id)) else {
-            return 0;
-        };
-        path.push(id);
-        let depth = node
-            .depends_on
-            .iter()
-            .map(|dep| 1 + walk(def, dep, path, memo))
-            .max()
-            .unwrap_or(0);
-        path.pop();
-        memo.insert(id, depth);
-        depth
-    }
-    let mut memo = BTreeMap::new();
-    for id in def.nodes.keys() {
-        walk(def, id, &mut Vec::new(), &mut memo);
+        on_path.insert(root);
+        stack.push((root, 0, 0));
+        while let Some(&(id, i, depth)) = stack.last() {
+            let Some(dep) = def.nodes[id].depends_on.get(i).map(String::as_str) else {
+                stack.pop();
+                on_path.remove(id);
+                memo.insert(id, depth);
+                if let Some(parent) = stack.last_mut() {
+                    parent.2 = parent.2.max(depth + 1);
+                }
+                continue;
+            };
+            let top = stack.last_mut().expect("non-empty");
+            top.1 += 1;
+            if let Some(&d) = memo.get(dep) {
+                top.2 = top.2.max(d + 1);
+            } else if def.nodes.contains_key(dep) && on_path.insert(dep) {
+                stack.push((dep, 0, 0));
+            } else {
+                top.2 = top.2.max(1);
+            }
+        }
     }
     memo
 }
@@ -821,6 +826,27 @@ mod tests {
         let depths = node_depths(&def);
         assert_eq!(depths.keys().copied().collect::<Vec<_>>(), ["a", "b", "c"]);
         assert_eq!(depths["c"], 1);
+    }
+
+    #[test]
+    fn node_depths_walk_a_chain_as_long_as_the_node_cap_on_a_small_stack() {
+        let n = 10_000; // the node cap `workflow::start` enforces
+        // n00000 → n00001 → … → n09999: the first key walked is the deep end.
+        let mut def = deps_def(&[(&format!("n{:05}", n - 1), &[])]);
+        for i in 0..n - 1 {
+            let node = NodeDef {
+                depends_on: vec![format!("n{:05}", i + 1)],
+                ..Default::default()
+            };
+            def.nodes.insert(format!("n{i:05}"), node);
+        }
+        let deepest = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || node_depths(&def)["n00000"])
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(deepest as usize, n - 1);
     }
 
     #[test]
