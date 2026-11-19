@@ -67,6 +67,8 @@ pub struct FakeModelResolver {
     pub counts: AtomicI64,
     /// The turn knobs each count carried, in order.
     pub knobs: Mutex<Vec<(Option<ThinkingLevel>, Option<serde_json::Value>)>>,
+    /// The system prompt each count carried, in order.
+    pub system_prompts: Mutex<Vec<String>>,
 }
 
 impl FakeModelResolver {
@@ -78,6 +80,7 @@ impl FakeModelResolver {
             billed_per_estimate: Mutex::new(None),
             counts: AtomicI64::new(0),
             knobs: Mutex::new(Vec::new()),
+            system_prompts: Mutex::new(Vec::new()),
         }
     }
 
@@ -140,6 +143,10 @@ impl ModelResolver for FakeModelResolver {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .push((knobs.thinking_level, knobs.response_format.cloned()));
+        self.system_prompts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(system_prompt.to_string());
         let ratio = (*self
             .billed_per_estimate
             .lock()

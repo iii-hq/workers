@@ -155,8 +155,18 @@ limited by `summarizer_timeout_ms` and the compaction lease lifetime. A failed c
 oversized anchor, deadline or call-count limit does not return a partial summary:
 assembly falls through to its existing emergency reduction and hard-limit check;
 explicit compaction returns `overflow`. No user/assistant text is discarded merely
-to fit a fragment. The estimator remains heuristic, so an upstream overflow can
-still require a larger-budget model, shorter input, or a new conversation.
+to fit a fragment.
+
+Fragments are cut by the heuristic estimate, which can undercount a provider's
+tokenizer well past any headroom. A fragment estimated at a third of the usable
+input or more is first counted by the provider (`router::count_tokens`) as it will
+be sent, and its history is shrunk while that count exceeds the usable input.
+When nothing can count it, or the count still misses, a `router/context_overflow`
+reply retries the same fragment with two thirds of its history, up to six times.
+Either way the shrink caps the history alone and carries over to later
+fragments, so each request still measures the anchor it actually sends. Every
+attempt, retries included, counts against the 32-call limit. Other summariser
+failures are not retried.
 
 
 ### Read-only model-switch preview
