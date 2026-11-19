@@ -285,10 +285,11 @@ export function useChartMotion({
       return busy
     }
     cancelAnimationFrame(loop.current)
-    lastFrame.current = performance.now()
+    // Timed from frame to frame (a frame's own time can trail performance.now()): the first frame only starts it.
+    lastFrame.current = -1
     if (frame(0)) {
       const tick = (now: number) => {
-        const dt = (now - lastFrame.current) / 1000
+        const dt = lastFrame.current < 0 ? 0 : Math.max(0, now - lastFrame.current) / 1000
         lastFrame.current = now
         loop.current = frame(dt) ? requestAnimationFrame(tick) : 0
       }

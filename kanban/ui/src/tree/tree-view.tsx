@@ -318,6 +318,13 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     camera.reveal(el?.querySelector('.kb-node') ?? null)
   }
 
+  // The selected card stays on screen when the pane narrows for the chat beside it.
+  camera.keepInView(
+    selectedId
+      ? () => chartRef.current?.querySelector(`[data-node-id="${CSS.escape(selectedId)}"] > .kb-chart__card`) ?? null
+      : null,
+  )
+
   /** Once the chat column has opened (the tree's pane narrows), bring the selected card back into view. */
   const revealSoon = (id: string) => {
     window.setTimeout(() => {

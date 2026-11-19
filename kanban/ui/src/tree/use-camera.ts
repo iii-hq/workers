@@ -25,6 +25,8 @@ const KEEP = 120
 /** Room around a fitted chart, and around a card brought into view. */
 const FIT_PAD = 32
 const REVEAL_PAD = 48
+/** A pane resize is over once it has been still this long (a column opening animates its width). */
+const RESIZE_SETTLE_MS = 160
 
 type Cam = { x: number; y: number; s: number }
 
@@ -167,9 +169,12 @@ export function useCamera(paneKey: string) {
         return
       }
       const from = { ...cam.current }
-      const start = performance.now()
+      // Timed from the first frame's own timestamp: a frame's time can trail performance.now(), and a glide timed
+      // from the call would start "before" its first frame and stand still.
+      let start = -1
       const step = (now: number) => {
-        const t = Math.min(1, (now - start) / GLIDE_MS)
+        if (start < 0) start = now
+        const t = Math.min(1, Math.max(0, (now - start) / GLIDE_MS))
         const k = easeOut(t)
         cam.current = {
           x: from.x + (to.x - from.x) * k,
@@ -279,10 +284,11 @@ export function useCamera(paneKey: string) {
     cancelAnimationFrame(glide.current)
     const state = { to, x: axis(c.x - to.x), y: axis(c.y - to.y), s: axis(c.s - to.s) }
     chase.current = state
-    let last = performance.now()
+    // Timed from frame to frame (a frame's own time can trail performance.now()): the first frame only starts it.
+    let last = -1
     const step = (now: number) => {
       if (chase.current !== state) return
-      const dt = (now - last) / 1000
+      const dt = last < 0 ? 0 : Math.max(0, now - last) / 1000
       last = now
       advance(state.x, dt)
       advance(state.y, dt)
@@ -320,6 +326,10 @@ export function useCamera(paneKey: string) {
     },
     [glideTo, setFollow, viewport],
   )
+  const revealRef = useRef(reveal)
+  revealRef.current = reveal
+  /** The card a resize of the pane must not hide (the selected one), when the camera is not following the chart. */
+  const keepInViewRef = useRef<(() => Element | null) | null>(null)
 
   // ── the stage: first placement, and what to do when the chart changes size ─
 
@@ -340,14 +350,26 @@ export function useCamera(paneKey: string) {
         const { x, y, s } = cam.current
         stage.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`
         stage.dataset.placed = 'true'
+        // A pane re-mounted narrower (a chat column opened beside it) keeps its selected card on screen.
+        if (!followRef.current) {
+          settle = window.setTimeout(() => revealRef.current(keepInViewRef.current?.() ?? null), RESIZE_SETTLE_MS)
+        }
       } else if (followRef.current && (vw !== lastView.vw || vh !== lastView.vh)) {
         refit()
+      } else if (lastView.vw && (vw !== lastView.vw || vh !== lastView.vh)) {
+        // The pane was resized (a chat column opened beside it): once it settles, bring the kept card back in.
+        window.clearTimeout(settle)
+        settle = window.setTimeout(() => revealRef.current(keepInViewRef.current?.() ?? null), RESIZE_SETTLE_MS)
       }
       lastView = { vw, vh }
     })
+    let settle: number | undefined
     observer.observe(stage)
     observer.observe(viewport)
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      window.clearTimeout(settle)
+    }
   }, [stage, viewport, size, stop, clamp, refit, fitTarget, homeTarget])
 
   // ── wheel: pan, or pinch / ⌘ / Ctrl to zoom about the cursor ──────────────
@@ -432,9 +454,9 @@ export function useCamera(paneKey: string) {
       let vx = d.vx
       let vy = d.vy
       if (Math.hypot(vx, vy) < 0.1) return
-      let prev = performance.now()
+      let prev = -1
       const step = (now: number) => {
-        const dt = Math.min(48, now - prev)
+        const dt = prev < 0 ? 16.7 : Math.min(48, Math.max(0, now - prev))
         prev = now
         const decay = 0.95 ** (dt / 16.7)
         vx *= decay
@@ -463,6 +485,10 @@ export function useCamera(paneKey: string) {
     refit,
     shiftNow,
     reveal,
+    /** Set the card a resize of the pane keeps on screen. */
+    keepInView: (get: (() => Element | null) | null) => {
+      keepInViewRef.current = get
+    },
     stage,
     /** The scale the camera is at this instant (the label lags a little). */
     scaleNow: () => cam.current.s,
