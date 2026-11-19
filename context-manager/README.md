@@ -160,10 +160,13 @@ to fit a fragment.
 Fragments are cut by the heuristic estimate, which can undercount a provider's
 tokenizer well past any headroom. A fragment estimated at a third of the usable
 input or more is first counted by the provider (`router::count_tokens`) as it will
-be sent, and shrunk while that count exceeds the usable input; the smaller budget
-carries over to later fragments. When nothing can count it, or the count still
-misses, a `router/context_overflow` reply retries the same fragment at two thirds
-its size, up to four times. Other summariser failures are not retried.
+be sent, and its history is shrunk while that count exceeds the usable input.
+When nothing can count it, or the count still misses, a `router/context_overflow`
+reply retries the same fragment with two thirds of its history, up to six times.
+Either way the shrink caps the history alone and carries over to later
+fragments, so each request still measures the anchor it actually sends. Every
+attempt, retries included, counts against the 32-call limit. Other summariser
+failures are not retried.
 
 
 ### Read-only model-switch preview

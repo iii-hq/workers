@@ -14,9 +14,10 @@ const REQUEST_OVERHEAD_TOKENS: u64 = 64;
 /// Tightenings of one fragment the provider still counts over the window;
 /// past them the fragment is sent and an overflow reply shrinks it.
 const MAX_RECOUNTS: usize = 3;
-/// Retries of one fragment, each two thirds the size of the last, after the
-/// provider rejected it as larger than the model's context window.
-const MAX_OVERFLOW_RETRIES: usize = 4;
+/// Retries of one fragment, each with two thirds the history of the last,
+/// after the provider rejected it as larger than the model's context window.
+/// Every attempt still counts against `MAX_CHUNKS`.
+const MAX_OVERFLOW_RETRIES: usize = 6;
 const FRAGMENT_NOTE: &str = "\nThe conversation is supplied in consecutive fragments. This fragment may \
      start or end within a message. Merge it into the anchored summary, preserving \
      relevant facts from earlier fragments; do not treat a fragment as a complete history.";
@@ -82,9 +83,13 @@ async fn summarize_prompt(
     // provider's tokenizer by far more than any headroom: a 1M-token Claude
     // window was sent a fragment it counted at 1.45M. A fragment large enough
     // to matter is checked against the provider's count of the exact request,
-    // and an overflow reply shrinks it. The budget only shrinks and carries
-    // over, since later fragments are cut from the same history.
-    let mut fragment_budget = input_budget;
+    // and an overflow reply shrinks it. What either teaches is how much
+    // history a request can carry, so the cap applies to the history alone:
+    // each request still measures the anchor it actually sends. The cap only
+    // shrinks and carries over, since later fragments come from the same
+    // history.
+    let mut history_cap = u64::MAX;
+    let mut calls = 0usize;
     let mut counter = ProviderCounter {
         deps,
         model,
@@ -101,37 +106,48 @@ async fn summarize_prompt(
         let (next, end) = loop {
             // The rendered transcript is split, not truncated. Even one oversized
             // user message can cross a boundary; every byte is consumed in order.
-            let system_prompt =
-                if chunk > 0 || request_tokens(estimator, &anchored, remaining) > fragment_budget {
-                    format!("{anchored}{FRAGMENT_NOTE}")
-                } else {
-                    anchored.clone()
-                };
-            let end = fitting_prefix(estimator, &system_prompt, remaining, fragment_budget);
+            let fragmented = chunk > 0
+                || request_tokens(estimator, &anchored, remaining)
+                    > request_budget(estimator, &anchored, input_budget, history_cap);
+            let system_prompt = if fragmented {
+                format!("{anchored}{FRAGMENT_NOTE}")
+            } else {
+                anchored.clone()
+            };
+            let budget = request_budget(estimator, &system_prompt, input_budget, history_cap);
+            let end = fitting_prefix(estimator, &system_prompt, remaining, budget);
             if end == 0 {
                 return Err(SummarizeError::Failed(format!(
-                    "summary instructions and anchor leave no room for history within {fragment_budget} tokens"
+                    "summary instructions and anchor leave no room for history within {input_budget} tokens"
                 )));
             }
             let user_prompt = &remaining[..end];
             let estimate = request_tokens(estimator, &system_prompt, user_prompt);
+            let history = estimate.saturating_sub(request_tokens(estimator, &system_prompt, ""));
             if recounts < MAX_RECOUNTS
                 && estimate.saturating_mul(PROVIDER_COUNT_SHARE) >= input_budget
                 && let Some(counted) = counter.count(&system_prompt, user_prompt).await
                 && counted > input_budget
             {
                 recounts += 1;
-                fragment_budget = tightened(estimate, input_budget, counted);
+                // The excess comes out of the history, at the rate this
+                // request was billed.
+                let fitting = tightened(estimate, input_budget, counted);
+                history_cap = shrunk(history, history.saturating_sub(estimate - fitting));
                 tracing::info!(
                     chunk = chunk + 1,
                     estimate,
                     counted,
                     input_budget,
-                    budget = fragment_budget,
-                    "summarize: the provider counts the fragment over the window; fragment shrunk"
+                    history_cap,
+                    "summarize: the provider counts the fragment over the window; history shrunk"
                 );
                 continue;
             }
+            if calls == MAX_CHUNKS {
+                break (Err(too_many_calls()), end);
+            }
+            calls += 1;
             tracing::debug!(
                 model = %model.id,
                 provider = ?model.provider,
@@ -154,18 +170,19 @@ async fn summarize_prompt(
                     if overflow_retries < MAX_OVERFLOW_RETRIES =>
                 {
                     overflow_retries += 1;
-                    fragment_budget = estimate.saturating_mul(2) / 3;
+                    history_cap = shrunk(history, history.saturating_mul(2) / 3);
                     tracing::warn!(
                         chunk = chunk + 1,
                         estimate,
-                        budget = fragment_budget,
+                        history_cap,
                         %detail,
-                        "summarize: the provider rejected the fragment as too large; retrying smaller"
+                        "summarize: the provider rejected the fragment as too large; retrying with less history"
                     );
                 }
-                result => break (result?, end),
+                result => break (result, end),
             }
         };
+        let next = next?;
         if next.trim().is_empty() {
             return Err(SummarizeError::Empty);
         }
@@ -177,9 +194,30 @@ async fn summarize_prompt(
     }
     // Do not return a partial anchor: the caller must not persist a summary
     // that silently drops the unprocessed suffix of the conversation.
-    Err(SummarizeError::Failed(format!(
+    Err(too_many_calls())
+}
+
+fn too_many_calls() -> SummarizeError {
+    SummarizeError::Failed(format!(
         "history requires more than {MAX_CHUNKS} bounded summary calls"
-    )))
+    ))
+}
+
+/// The estimate-unit budget for one request: its own instructions and
+/// anchor as sent, plus at most `history_cap` of history, within the window.
+fn request_budget(
+    estimator: &dyn Estimator,
+    system_prompt: &str,
+    input_budget: u64,
+    history_cap: u64,
+) -> u64 {
+    input_budget.min(request_tokens(estimator, system_prompt, "").saturating_add(history_cap))
+}
+
+/// A smaller history cap than the `history` just sent: `target`, but always
+/// below `history` so a retry makes progress, and never zero.
+fn shrunk(history: u64, target: u64) -> u64 {
+    target.min(history.saturating_sub(1)).max(1)
 }
 
 /// The provider's count of one summariser request. A failed count leaves
