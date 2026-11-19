@@ -1,9 +1,10 @@
 # Persistent host admission (0.5 migration candidate)
 
-This branch adds an explicit local administration surface. It is source-integrated,
-not a validated release: compile, kernel/filesystem, normal lifecycle, recovery and
-migration campaigns remain required. No package or Registry publication is implied.
-The commands below are operator instructions, not actions run by this change.
+This branch adds an explicit local administration surface. Its bounded local
+validation is recorded below; it is **not** a validated release or a completed
+0.3-to-0.5 migration. Full VM, recovery and migration campaigns remain required.
+No package or Registry publication is implied. The administrative commands below
+are operator instructions, not actions run by this change.
 
 ## Before enabling the adapter
 
@@ -102,10 +103,75 @@ run recovery automatically. With no subcommand, the adapter still serves normall
 
 ## Remaining validation and migration gates
 
-The source merge is not proof of normal cold/warm/stop/reaper behavior. Compile and
-run the admitted tests, including _exit/descendants, exact endpoint settlement,
-final log writes and retention. Test failures and refusals stay visible. Legacy
-restart/durable handoff, prune after consumed receipt, private endpoint-parent
-retention, guest-consistent snapshots and authenticated 8-origin x 2-campaign data
-migration are separate unfinished gates. Do not label the full migration ready or
-publish 0.5 to make missing Registry-dependent checks appear green.
+The following checks establish only the bounded local scope, not full libkrun VM
+boot, guest consistency, production deployment, or the entire authored test suite.
+
+### Recorded local validation
+
+Tested code commit: `283cf2f2defdb4f2ef83dbc56583a0e9ee631321`.
+The documentation-only delivery commit preserves those Rust/Cargo source bytes.
+Rust 1.97.1, Linux, existing dependencies, shared target; no downloads or host
+provisioning were performed. The build command was:
+
+```sh
+cargo +1.97.1 test --locked --offline -p sandbox-libkrun --lib \
+  --no-default-features --no-run -j16
+```
+
+The library test executable SHA-256 is
+`ef714fe1d1711bb5f82f89d65f2ce96bd66de394a7a92e3d7fbc10c0ffdf83bd`.
+Fourteen exact tests then passed sequentially, with zero failures or ignored tests:
+
+- Short catalog mutex contention waits, while lifetime sentinels still refuse
+  nonblocking conflicts.
+- Four concurrent sandbox creates produce two successes and two `S400` results
+  with a shared cache/context and real owned fixture children.
+- Shared warm-cache readers perform no diagnostic/inode writes; missing inputs
+  and pinned metadata do not become cache hits; surviving stage FDs block commit.
+- Actual child wait plus exact endpoint settlement handles normal close and
+  `_exit`; missing/replaced endpoints, host-drain failure and abandoned children
+  do not grant cleanup authority.
+- Repeated build planning with a new warm/cold base reference retains the original
+  lifecycle; missing/foreign/used/stale receipts preserve the earlier cache data.
+- Ordinary destroy retains guest data; an explicitly requested initial prune is
+  scoped; a consumed destroy receipt cannot authorize a later prune.
+- `stop_all` completes owned child shutdown, removes runtime state and leaves
+  private endpoint parents retained.
+
+These are filesystem/Unix-socket/owned-process fixtures, **not guest VM campaigns**.
+The cold-cache fixture supplies deterministic local bytes instead of pulling from
+a registry. An earlier exact nine-test CLI parser/validation/report run passed on
+`3bed9c55a2b685dcf66112ec5c848b28acfbda80`; the relevant CLI source bytes are unchanged.
+Those tests do not execute bootstrap, recovery or archive administration.
+
+Initial compile errors and fixture failures were preserved, corrected and retested.
+The concurrent-create test exposed a production defect: the short catalog mutex
+incorrectly used the nonblocking lifetime-lock helper. It now serializes catalog
+transactions; operation/runtime/endpoint sentinel semantics are unchanged. One
+failed fixture produced late stderr after its parent exited; both recorded hashes
+were retained and failure paths now wait for owned children and drain their output.
+All final-round log hashes were stable after exit. No test timeout, capacity oracle
+or safety check was relaxed. Compiler warnings remain recorded; no full Clippy or
+all-features pass is claimed.
+
+### Explicit unfinished scope
+
+- The protected non-overlay clone of unreadable (`0000`) source trees and faithful
+  sealed OCI tree publication remain incomplete and are not validated here. The
+  separate partial clone implementation is not included in this branch. No chmod
+  under shared Strict claims or lossy metadata fallback is permitted. A new clone
+  of an already-shared unreadable source without a retained readable capability
+  may explicitly refuse/defer; that limited behavior is not successful cloning.
+- Legacy/restart durable handoff, a later prune after a consumed destroy receipt,
+  private endpoint-parent reclamation, comprehensive ACL/xattr/platform validation,
+  performance, and full crash/descendant coverage remain pending.
+- Real guest boot/rebuild, authenticated old-state authority/provenance, writer
+  retirement, sanitization, guest-consistent snapshots and the eight-origin by
+  two-campaign migration matrix are separate unfinished gates. The Compose
+  integration and final coordinated smoke tests are not established by this PR.
+
+No `/var/lib` provisioning, mounts, `syncfs`, external network, production VM or
+signals to existing unrelated processes were authorized by these local checks.
+Test signals targeted only owned fixture children through stable pidfds. Do not
+label the full migration ready, auto-deploy this candidate or publish 0.5 to make
+missing Registry-dependent checks appear green.

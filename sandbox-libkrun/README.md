@@ -13,9 +13,10 @@ This branch requires explicitly provisioned persistent host admission before nor
 VM use. Compose's package installation does **not** provision it. See
 [host admission installation and recovery](HOST-ADMISSION.md) for the fixed namespace,
 local `admission` commands and authorization requirements. No automatic bootstrap,
-permission repair, recovery or publication occurs. The integrated source has not yet
-passed runtime validation; historical macOS support below does not establish support
-for the new Linux pidfd/OFD admission path.
+permission repair, recovery or publication occurs. The admission document records
+bounded local test evidence and unfinished release/migration gates; it does not claim
+full guest/runtime validation. Historical macOS support below does not establish
+support for the new Linux pidfd/OFD admission path.
 
 ## Install
 
