@@ -85,7 +85,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `project` | – | an existing kanban project (id or name) for the run. Without it, each run creates its own project, `deepwork: <goal> · <id>` |
 | `release` | – | an existing kanban release (id or name) for filing cards. Dev validation groups the current wave, not all cards in that release |
 | `resume` | – | the key of an earlier run ticket to pick up from the board instead of planning anew (see Resume a run) |
-| `finish` | `keep` | in the dev flow, how the branch ends. `pr` rebases the branch on the base, pushes it and opens a PR ready for review, watches its CI (a failing check gets a `Fix CI` card) and moves the run ticket to In review; `pr-merge` also squash-merges it once CI is green. Both are the Finish answer given up front: no Finish card is asked |
+| `finish` | `keep` | in the dev flow, how the branch ends. `pr` rebases the branch on the base, pushes it and opens a PR ready for review, watches its CI (a failing check gets a `Fix CI` card) and moves the run ticket to In review; `pr-merge` also squash-merges it once CI is green. Both are the Finish answer given up front: no Finish card is asked. They act only on a run that completes; any other run keeps its branch |
 | `ask` | `chat` | where a question for you goes. `board` asks on the run ticket instead of in the chat, for a run that nobody watches in a chat (started from the board, the CLI or another worker): see Questions on the board |
 | `ask_wait_min` | 4320 | with `ask=board`, how long a question waits for an answer before the run stops `blocked` (three days) |
 
