@@ -559,3 +559,95 @@ fn h1_serialized_continuation_metadata_does_not_authorize_issuance() {
     });
     assert!(issue(a, cache, None).is_err());
 }
+/// The caller's cold shape: entry root absent beside an existing private lower.
+fn stale_lower(f: &Fixture) -> (PathBuf, PathBuf) {
+    let root = f.cache.join("image");
+    let lower = sibling(&root, ".erofs").unwrap();
+    write_mode(&lower, b"old", 0o600);
+    (root, lower)
+}
+fn no_preparation(f: &Fixture) -> bool {
+    let tx = f.context.namespace.transaction().unwrap();
+    tx.catalog.operations.iter().all(|op| {
+        op.cache
+            .as_ref()
+            .is_none_or(|c| c.phase != CachePhase::Preparing)
+    })
+}
+#[test]
+fn h_probe_whose_reads_changed_outside_an_owned_mutation_never_prepares_a_writer() {
+    for change in ["replace-lower", "appear-digest", "replace-root"] {
+        let f = fixture();
+        let (root, lower) = stale_lower(&f);
+        if change == "replace-root" {
+            dir_mode(&root, 0o700);
+        }
+        let a = consumer(&f, "a");
+        let probe = a.probe_cache(&[CacheEntry { root: &root }]).unwrap();
+        // The probe's Strict reads exclude every owned writer: each change
+        // below is an unknown writer's, never a producer handoff.
+        let expected = match change {
+            "replace-lower" => {
+                let replacement = f.cache.join("replacement");
+                write_mode(&replacement, b"new", 0o600);
+                fs::rename(&replacement, &lower).unwrap();
+                "admitted identity changed outside an owned mutation"
+            }
+            "appear-digest" => {
+                write_mode(&sibling(&root, ".digest").unwrap(), b"sha256:alien", 0o600);
+                "path appeared outside an owned mutation"
+            }
+            _ => {
+                fs::rename(&root, f.cache.join("retained")).unwrap();
+                dir_mode(&root, 0o700);
+                "admitted identity changed outside an owned mutation"
+            }
+        };
+        assert!(probe.checkpoint().is_err(), "{change}");
+        let refused = probe
+            .prepare()
+            .err()
+            .unwrap_or_else(|| panic!("{change}: a stale probe authorized a writer"));
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{change}");
+        assert_eq!(refused.to_string(), expected, "{change}");
+        assert!(no_preparation(&f), "{change}");
+        if change == "replace-lower" {
+            assert_eq!(fs::read(&lower).unwrap(), b"new");
+        }
+    }
+}
+#[test]
+fn h_unchanged_cold_probe_beside_a_stale_lower_prepares_despite_a_new_sibling_directory() {
+    use std::os::unix::fs::MetadataExt;
+    let f = fixture();
+    let (root, lower) = stale_lower(&f);
+    let ino = fs::metadata(&lower).unwrap().ino();
+    let a = consumer(&f, "a");
+    let probe = a.probe_cache(&[CacheEntry { root: &root }]).unwrap();
+    assert!(!probe.exists(&root).unwrap());
+    // Another image directory appears in the cache parent: its link count
+    // moves, no recorded identity does (validate_entry/same_pin relation).
+    dir_mode(&f.cache.join("unrelated"), 0o700);
+    probe.checkpoint().expect("an unchanged probe stays valid");
+    let prep = probe
+        .prepare()
+        .expect("an unchanged miss may start one exclusive writer");
+    let tx = f.context.namespace.transaction().unwrap();
+    let op = tx.operation(&prep.lease.0.id).unwrap();
+    let entry = op
+        .entries
+        .iter()
+        .find(|e| e.path.get().unwrap() == lower)
+        .unwrap();
+    // The writer claims the SAME stale inode the probe read; it can only
+    // replace it through its own owned mutation.
+    assert_eq!(entry.role, PathRole::MutableFile);
+    assert!(
+        entry
+            .pins
+            .iter()
+            .any(|(p, id)| p.get().unwrap() == lower && id.ino == ino)
+    );
+    drop(tx);
+    assert_eq!(fs::read(&lower).unwrap(), b"old");
+}
