@@ -537,4 +537,44 @@ describe('OpenAiConfigForm credential source', () => {
     expect(iii.call).toHaveBeenCalledTimes(2)
     pending()
   })
+
+  it.each([
+    [{ api_key: 'fixture-only' }, { api_key: 'fixture-only', auth: 'codex' }],
+    [{ auth: 'codex' }, { auth: 'api_key' }],
+  ])('a save drops the old result and any listing in flight (%j → %j)', async (before, after) => {
+    vi.useFakeTimers()
+    try {
+      const handlers = new Map<string, (event: { id?: unknown }) => void>()
+      let answerOld: (reply: unknown) => void = () => {}
+      const iii = Object.assign(engine(), {
+        browserId: 'b1',
+        observe: vi.fn(() => vi.fn()),
+        on: (id: string, handler: (event: { id?: unknown }) => void) => {
+          handlers.set(id, handler)
+          return () => handlers.delete(id)
+        },
+      })
+      const { container } = await mount(before, iii)
+      const host: ReturnType<typeof engine> = iii
+      expect(container.querySelector('[data-chip="success"]')).not.toBeNull()
+      // A Refresh whose reply (for the old source) is still in flight at the save.
+      iii.call.mockImplementationOnce(() => new Promise((resolve) => (answerOld = resolve)))
+      const refresh = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Refresh')!
+      await act(async () => refresh.click())
+      await act(async () =>
+        root!.render(<OpenAiConfigForm id="judge-openai" schema={{}} value={after} onChange={vi.fn()} iii={host} />),
+      )
+      const [notify] = handlers.values()
+      await act(async () => notify({ id: 'judge-openai' }))
+      expect(container.querySelector('[data-chip="success"]')).toBeNull()
+      await act(async () => answerOld(catalog))
+      expect(container.querySelector('[data-chip="success"]')).toBeNull()
+      expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Checking the worker…')
+      await act(async () => vi.runAllTimersAsync())
+      expect(iii.call).toHaveBeenCalledTimes(3)
+      expect(container.querySelector('[data-chip="success"]')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

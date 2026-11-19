@@ -99,16 +99,26 @@ export function OpenAiConfigForm({
   const authNow = useRef(authOf(props.value))
   authNow.current = authOf(props.value)
   const [checkedAuth, setCheckedAuth] = useState(authNow.current)
-  const refresh = useCallback(() => {
+  // Only the latest listing may land: a save drops any reply still in flight.
+  const listing = useRef(0)
+  const invalidate = useCallback(() => {
+    listing.current++
     setCatalog(null)
     setCatalogError(null)
+  }, [])
+  const refresh = useCallback(() => {
+    invalidate()
+    const seq = listing.current
     listModels(iii)
-      .then(setCatalog)
+      .then((models) => {
+        if (seq === listing.current) setCatalog(models)
+      })
       .catch((error: unknown) => {
+        if (seq !== listing.current) return
         setCatalogError(error instanceof Error ? error.message : String(error))
         setCatalog([])
       })
-  }, [iii])
+  }, [iii, invalidate])
   useEffect(() => {
     refresh()
   }, [refresh])
@@ -125,6 +135,7 @@ export function OpenAiConfigForm({
     const offHandler = iii.on<{ id?: unknown }>(handler, (event) => {
       if (event?.id !== configurationId) return
       clearTimeout(timer)
+      invalidate()
       setCheckedAuth(authNow.current)
       timer = setTimeout(refresh, SAVE_SETTLE_MS)
     })
@@ -147,7 +158,7 @@ export function OpenAiConfigForm({
         }
       }
     }
-  }, [iii, configurationId, refresh])
+  }, [iii, configurationId, refresh, invalidate])
 
   const focusField = props.focusField?.[0]
   useEffect(() => {
