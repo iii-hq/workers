@@ -83,7 +83,7 @@ export function NewChatDialog({
 }: NewChatDialogProps) {
   const [text, setText] = useState('')
   const sendKey = useSendKey()
-  // The send key's modifier caps (⌘ or ⇧), shown ahead of the Enter cap.
+  // The send key's modifier caps (⌘, ⌥ or ⇧), shown ahead of the Enter cap.
   const sendModifiers = formatBinding(sendBinding(sendKey)).slice(0, -1)
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [model, setModel] = useState<ModelId | null>(null)
