@@ -372,6 +372,10 @@ impl MutationGuard {
                     .max()
                     != Some(epoch)
                 || !op.holds.is_empty()
+                || op
+                    .logs
+                    .iter()
+                    .any(|r| r.phase != super::log::LogPhase::Finished || r.pending.is_some())
                 || op.holder_ids.iter().any(|id| id != &lease.0.holder)
                 || op.journals.iter().any(|j| !j.committed)
             {
@@ -527,6 +531,7 @@ impl MutationGuard {
                 .collect::<io::Result<_>>()?,
             intents: Vec::new(),
             permissions: Vec::new(),
+            payload: None,
             epoch,
             committed: false,
             changes: Vec::new(),
@@ -1545,6 +1550,144 @@ impl MutationGuard {
     pub(crate) fn publish_file(&mut self, stage: StagedFile) -> io::Result<()> {
         let result = self.publish_file_inner(stage);
         self.terminal(result)
+    }
+    pub(crate) fn produce_payload(
+        self,
+        target: &Path,
+        inventory: super::PayloadInventory,
+    ) -> io::Result<super::PayloadBuilder> {
+        super::payload::PayloadBuilder::start(self, target, inventory)
+    }
+    pub(super) fn payload_source(&self, source: &Lease) -> io::Result<()> {
+        if !Arc::ptr_eq(&self.lease.0, &source.0) {
+            return Err(invalid("foreign payload source capability"));
+        }
+        Ok(())
+    }
+    pub(super) fn payload_scope(&self, target: &Path) -> io::Result<()> {
+        self.checkpoint()?;
+        if !matches!(self.plan.as_str(), "reclone" | "cache-entry") || target != self.root {
+            return Err(invalid(
+                "owned payload requires exact Reclone/cache-entry root",
+            ));
+        }
+        Ok(())
+    }
+    pub(super) fn payload_inventory(
+        &mut self,
+        digest: &str,
+        entries: usize,
+        bytes: u64,
+        metadata_bytes: usize,
+    ) -> io::Result<()> {
+        self.artifacts_started = true;
+        let mut tx = self.lease.0.namespace.transaction()?;
+        let journal = tx
+            .operation_mut(&self.lease.0.id)?
+            .journals
+            .iter_mut()
+            .find(|j| j.id == self.id)
+            .ok_or_else(|| invalid("payload journal missing"))?;
+        if journal.payload.is_some() {
+            return Err(invalid("payload inventory already issued"));
+        }
+        journal.payload = Some(super::catalog::PayloadRecord {
+            inventory: digest.into(),
+            entries,
+            bytes,
+            metadata_bytes,
+            seal: None,
+        });
+        tx.save()
+    }
+    pub(super) fn payload_stage(&mut self, target: &Path) -> io::Result<(PathBuf, String, File)> {
+        let stage = self.stage_tree_inner(target)?;
+        Ok((stage.path, stage.token, stage.directory.file))
+    }
+    pub(super) fn payload_seal(
+        &mut self,
+        path: &Path,
+        old: &Identity,
+        new: &Identity,
+        seal: &str,
+    ) -> io::Result<()> {
+        if old.dev != new.dev
+            || old.ino != new.ino
+            || old.uid != new.uid
+            || new.mode & libc::S_IFMT != libc::S_IFDIR
+        {
+            return Err(invalid("payload root identity changed"));
+        }
+        let mut tx = self.lease.0.namespace.transaction()?;
+        let journal = tx
+            .operation_mut(&self.lease.0.id)?
+            .journals
+            .iter_mut()
+            .find(|j| j.id == self.id)
+            .ok_or_else(|| invalid("payload journal missing"))?;
+        let record = journal
+            .payload
+            .as_mut()
+            .ok_or_else(|| invalid("payload inventory missing"))?;
+        if record.seal.is_some() {
+            return Err(invalid("payload already sealed"));
+        }
+        record.seal = Some(seal.into());
+        tx.save()?;
+        drop(tx);
+        self.changed(path, Some(old.clone()), Some(new.clone()))
+    }
+    pub(super) fn publish_payload(
+        &mut self,
+        token: &str,
+        path: &Path,
+        target: &Path,
+        parent: &Directory,
+        identity: &Identity,
+        seal: &str,
+        members: &[(PathBuf, Identity)],
+    ) -> io::Result<()> {
+        self.payload_scope(target)?;
+        let tx = self.lease.0.namespace.transaction()?;
+        let journal = tx
+            .operation(&self.lease.0.id)?
+            .journals
+            .iter()
+            .find(|j| j.id == self.id)
+            .ok_or_else(|| invalid("payload journal missing"))?;
+        if journal.payload.as_ref().and_then(|r| r.seal.as_deref()) != Some(seal) {
+            return Err(invalid("payload seal binding mismatch"));
+        }
+        let mut updates = Vec::new();
+        for entry in &tx.operation(&self.lease.0.id)?.entries {
+            if entry.role == PathRole::Strict {
+                continue;
+            }
+            for (encoded, old) in &entry.pins {
+                let p = encoded.get()?;
+                if p != target
+                    && p.starts_with(target)
+                    && !updates.iter().any(|(seen, _, _)| seen == &p)
+                {
+                    let tail = p.strip_prefix(target).map_err(io::Error::other)?;
+                    updates.push((
+                        p.clone(),
+                        old.clone(),
+                        members
+                            .iter()
+                            .find(|(member, _)| member == tail)
+                            .map(|(_, id)| id.clone()),
+                    ));
+                }
+            }
+        }
+        drop(tx);
+        let id = self.id.clone();
+        self.publish(&id, token, parent, path, target, identity)?;
+        for (path, old, new) in updates {
+            self.changed(&path, Some(old), new)?;
+        }
+        Ok(())
     }
     pub(crate) fn publish_tree(&mut self, stage: StagedTree) -> io::Result<()> {
         let result = self.publish_tree_inner(stage);

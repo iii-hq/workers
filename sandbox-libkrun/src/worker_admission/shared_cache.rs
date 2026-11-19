@@ -76,6 +76,10 @@ fn record(
         || op.closed
         || op.uncertain
         || op.holders != 1
+        || op
+            .logs
+            .iter()
+            .any(|r| r.phase != super::log::LogPhase::Finished)
         || !op.holds.is_empty()
         || (continuation.is_none()
             && (tx.catalog.runtimes.iter().any(|r| r.operation == op.id)
@@ -448,6 +452,10 @@ pub(super) fn validate_consumer(
         || op.sentinel != cache.consumer_sentinel
         || op.epoch != cache.consumer_epoch
         || super::recovery::digest(&op.entries)? != cache.consumer_entries_sha256
+        || op
+            .logs
+            .iter()
+            .any(|r| r.phase != super::log::LogPhase::Finished)
         || !op.holds.is_empty()
         || op.journals.iter().any(|j| !j.committed)
         || op.recovery.as_ref().is_some_and(|r| !r.completed)

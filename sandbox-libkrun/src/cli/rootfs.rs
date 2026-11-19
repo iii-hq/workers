@@ -89,6 +89,155 @@ pub(crate) fn clone_rootfs_admitted(
 mod tests {
     use super::*;
 
+    fn r4_admitted_clone_fixture(existing: bool) {
+        use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let namespace = t.path().join("catalog");
+        std::fs::create_dir(&namespace).unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir_all(source.join("bin")).unwrap();
+        std::fs::write(source.join("bin/hello"), b"readable source").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(source.join("bin"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::set_permissions(
+            source.join("bin/hello"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("bin/hello", source.join("hello")).unwrap();
+        let source_identity = std::fs::metadata(&source).unwrap();
+        let dest = t.path().join("managed");
+        let old_identity = if existing {
+            std::fs::create_dir(&dest).unwrap();
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(dest.join("OLD"), b"prior guest data").unwrap();
+            Some(std::fs::metadata(&dest).unwrap())
+        } else {
+            None
+        };
+        let lease = crate::worker_admission::with_paths(
+            context.local(&dest).unwrap(),
+            &[
+                PathRequest {
+                    path: &source,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: &dest,
+                    role: PathRole::MutableTree,
+                },
+            ],
+        )
+        .unwrap();
+        // Runs the actual joined cp -a source/. STAGE path, not a mock producer
+        // or direct chmod of the core's stage identity. SOURCEONLY: authored only.
+        clone_rootfs_admitted(&lease, &source, &dest).unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().mode() & 0o7777, 0o755);
+        assert_eq!(
+            std::fs::metadata(dest.join("bin")).unwrap().mode() & 0o7777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::metadata(dest.join("bin/hello")).unwrap().mode() & 0o7777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::read(dest.join("bin/hello")).unwrap(),
+            b"readable source"
+        );
+        assert_eq!(
+            std::fs::read_link(dest.join("hello")).unwrap(),
+            std::path::PathBuf::from("bin/hello")
+        );
+        let source_after = std::fs::metadata(&source).unwrap();
+        assert_eq!(
+            (
+                source_identity.dev(),
+                source_identity.ino(),
+                source_identity.mode()
+            ),
+            (source_after.dev(), source_after.ino(), source_after.mode())
+        );
+        assert_eq!(
+            std::fs::metadata(&namespace).unwrap().mode() & 0o7777,
+            0o700
+        );
+        if let Some(old) = old_identity {
+            let retained: Vec<_> = std::fs::read_dir(t.path())
+                .unwrap()
+                .filter_map(|entry| {
+                    let entry = entry.unwrap();
+                    let meta = entry.metadata().unwrap();
+                    (meta.dev() == old.dev() && meta.ino() == old.ino()).then_some(entry.path())
+                })
+                .collect();
+            assert_eq!(
+                retained.len(),
+                1,
+                "replacement must retain the original tree inode"
+            );
+            assert_eq!(
+                std::fs::read(retained[0].join("OLD")).unwrap(),
+                b"prior guest data"
+            );
+            assert!(!dest.join("OLD").exists());
+        }
+        lease.clone().revalidate().unwrap();
+    }
+
+    #[test]
+    fn r4_readable_0755_root_clones_through_the_actual_owned_producer() {
+        r4_admitted_clone_fixture(false);
+    }
+
+    #[test]
+    fn r4_readable_0755_reclone_preserves_the_prior_tree_and_final_metadata() {
+        r4_admitted_clone_fixture(true);
+    }
+
+    #[test]
+    fn r4_clone_refuses_a_substituted_strict_source_without_creating_destination() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::PermissionsExt;
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let namespace = t.path().join("catalog");
+        std::fs::create_dir(&namespace).unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("data"), b"original").unwrap();
+        let dest = t.path().join("destination");
+        let lease = crate::worker_admission::with_paths(
+            context.local(&dest).unwrap(),
+            &[
+                PathRequest {
+                    path: &source,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: &dest,
+                    role: PathRole::MutableTree,
+                },
+            ],
+        )
+        .unwrap();
+        std::fs::rename(&source, t.path().join("held-source")).unwrap();
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("data"), b"foreign").unwrap();
+        assert!(clone_rootfs_admitted(&lease, &source, &dest).is_err());
+        assert!(!dest.exists());
+        assert_eq!(
+            std::fs::read(t.path().join("held-source/data")).unwrap(),
+            b"original"
+        );
+        assert_eq!(std::fs::read(source.join("data")).unwrap(), b"foreign");
+    }
+
     #[test]
     fn clone_rootfs_copies_directory() {
         let src = tempfile::tempdir().unwrap();

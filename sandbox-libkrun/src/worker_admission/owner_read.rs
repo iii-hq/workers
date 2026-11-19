@@ -352,6 +352,7 @@ impl OwnerReadGuard {
             footprint: vec![HostPath::new(&root)?],
             intents: Vec::new(),
             permissions: Vec::new(),
+            payload: None,
             epoch,
             committed: false,
             changes: Vec::new(),

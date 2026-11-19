@@ -359,22 +359,164 @@ fn e_activity_actual_set_modified_error_not_only_checkpoint_refusal_is_terminal(
     assert!(!activity_ready(record));
 }
 
+/// The holder always runs outside the task invoking a blocking transaction.
+/// Drop releases on assertion unwinding too; no watchdog ever signals a PID.
+struct R5CatalogHolder {
+    release: Option<std::sync::mpsc::Sender<()>>,
+    joined: Option<std::thread::JoinHandle<()>>,
+}
+impl R5CatalogHolder {
+    fn new(file: File) -> Self {
+        let (held, ready) = std::sync::mpsc::channel();
+        let (release, requested) = std::sync::mpsc::channel();
+        let joined = std::thread::spawn(move || {
+            flock(&file).unwrap();
+            held.send(()).unwrap();
+            // Independent release, bounded even if the controlling assertion fails.
+            let _release = requested.recv_timeout(std::time::Duration::from_secs(5));
+            drop(file);
+        });
+        ready
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        Self {
+            release: Some(release),
+            joined: Some(joined),
+        }
+    }
+    fn finish(mut self) {
+        self.release_and_join();
+    }
+    fn release_and_join(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+        if let Some(joined) = self.joined.take() {
+            joined.join().unwrap();
+        }
+    }
+}
+impl Drop for R5CatalogHolder {
+    fn drop(&mut self) {
+        self.release_and_join();
+    }
+}
+
 #[test]
-fn e_activity_failure_marks_parent_shared_description_even_when_catalog_is_busy() {
+fn r5_catalog_contention_serializes_activity_without_poisoning_its_writer() {
     let (_temp, context, launch, writer, path) = activity_fixture();
     let activity = writer.activity(&path).unwrap();
-    let held = context
+    let lock = context
         .namespace
         .directory
         .file("catalog.lock", false)
         .unwrap();
-    flock(&held).unwrap();
-    assert!(activity.touch_at(SystemTime::now()).is_err());
+    let contender = context
+        .namespace
+        .directory
+        .file("catalog.lock", false)
+        .unwrap();
+    let holder = R5CatalogHolder::new(lock);
+    let (attempted, seen) = std::sync::mpsc::channel();
+    let (finished, result) = std::sync::mpsc::channel();
+    let work = std::thread::spawn(move || {
+        assert_eq!(
+            flock(&contender).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        attempted.send(()).unwrap();
+        let outcome =
+            activity.touch_at(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42));
+        finished.send(outcome).unwrap();
+    });
+    seen.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(
+        result.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    holder.finish();
+    result
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    work.join().unwrap();
+    assert!(!failed_ofd(launch.sentinel.as_ref().unwrap()).unwrap());
+    writer.checkpoint().unwrap();
+    let tx = context.namespace.transaction().unwrap();
+    let record = tx
+        .catalog
+        .runtimes
+        .iter()
+        .find(|r| r.id == writer.0.id)
+        .unwrap();
+    assert_eq!(record.activity.phase, ActivityPhase::Clean);
+    assert_eq!(record.activity.sequence, 1);
+}
+
+#[test]
+fn e_activity_failure_marks_parent_shared_description_even_when_catalog_is_busy() {
+    let (_temp, context, launch, writer, path) = activity_fixture();
+    let activity = writer.activity(&path).unwrap();
+    let retry = activity.clone();
+    // Busy itself is not the error. This existing hook fails actual activity
+    // I/O AND failure persistence after durable Pending was recorded.
+    writer.0.activity.lock().unwrap().fault = Some(ActivityFault::FailurePersistence);
+    let lock = context
+        .namespace
+        .directory
+        .file("catalog.lock", false)
+        .unwrap();
+    let contender = context
+        .namespace
+        .directory
+        .file("catalog.lock", false)
+        .unwrap();
+    let holder = R5CatalogHolder::new(lock);
+    let (attempted, seen) = std::sync::mpsc::channel();
+    let (finished, result) = std::sync::mpsc::channel();
+    let work = std::thread::spawn(move || {
+        assert_eq!(
+            flock(&contender).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        attempted.send(()).unwrap();
+        finished.send(activity.touch_at(SystemTime::now())).unwrap();
+    });
+    seen.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(
+        result.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    holder.finish();
+    let error = result
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap_err();
+    work.join().unwrap();
+    assert_eq!(error.raw_os_error(), Some(libc::EIO));
     assert!(failed_ofd(launch.sentinel.as_ref().unwrap()).unwrap());
-    drop(held);
+    let first_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    writer.0.activity.lock().unwrap().fault = None;
+    assert!(retry.touch_at(SystemTime::now()).is_err());
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        first_mtime
+    );
+    let tx = context.namespace.transaction().unwrap();
+    let record = tx
+        .catalog
+        .runtimes
+        .iter()
+        .find(|r| r.id == writer.0.id)
+        .unwrap();
+    assert_eq!(record.activity.phase, ActivityPhase::Pending);
+    assert!(!activity_ready(record));
+    drop(tx);
     assert!(writer.checkpoint().is_err());
-    // No active writer is retired here: this asserts the exact OFD gate that
-    // RuntimeChild::wait checks before releasing its parent duplicate.
+    // The parent-shared OFD independently forbids a clean RuntimeChild::wait,
+    // even though persisting a Failed phase was deliberately unsuccessful.
 }
 
 fn simple_command(script: &str) -> tokio::process::Command {
@@ -394,15 +536,65 @@ async fn f_reap_is_published_before_catalog_failure_and_signals_never_retarget_p
         .directory
         .file("catalog.lock", false)
         .unwrap();
-    flock(&lock).unwrap();
+    let catalog = context
+        .namespace
+        .directory
+        .file("catalog.json", false)
+        .unwrap();
+    let observed_control = control.clone();
+    let (held, ready) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        use std::os::unix::fs::FileExt;
+        flock(&lock).unwrap();
+        held.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // Observation/signal consult the core's in-memory reaped state and pidfd,
+        // never the blocked catalog. The current-thread Tokio waiter may block
+        // on flock; this independent thread can still prove reap and release it.
+        loop {
+            let observation = observed_control.observation();
+            if observation.os_status().is_some() {
+                assert_eq!(observation.phase(), RuntimePhase::Reaped);
+                assert_eq!(observation.os_status().unwrap().code(), Some(7));
+                assert!(
+                    observed_control
+                        .signal(super::super::RuntimeSignal::Kill)
+                        .is_err()
+                );
+                // Real distinct failure under our fixture-owned lock: invalid
+                // durable record, NOT ordinary lock contention treated as failure.
+                catalog.write_all_at(b"{", 0).unwrap();
+                catalog.set_len(1).unwrap();
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owned child did not publish reap"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drop(lock);
+    });
+    ready
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
     let completion = child.wait().await;
+    holder.join().unwrap();
     assert_eq!(completion.os_status().unwrap().code(), Some(7));
-    assert!(completion.retirement().is_err());
+    let failure = match completion.retirement() {
+        Ok(_) => panic!("corrupt catalog must not issue retirement authority"),
+        Err(failure) => failure.to_io_error(),
+    };
+    assert!(failure.to_string().contains("record envelope"), "{failure}");
     let observed = control.terminal().await;
     assert_eq!(observed.phase(), RuntimePhase::RetirementFailed);
     assert_eq!(observed.os_status().unwrap().code(), Some(7));
     assert!(control.signal(super::super::RuntimeSignal::Kill).is_err());
-    drop(lock);
+    // Keep corrupt catalog evidence for the test to inspect; no forged clean state.
+    assert_eq!(
+        std::fs::read(context.namespace.directory.path.join("catalog.json")).unwrap(),
+        b"{"
+    );
 }
 #[tokio::test]
 async fn f_signal_reap_race_uses_original_pidfd_only() {
