@@ -100,6 +100,20 @@ def test_shared_test_support_runs_the_workers_that_compile_it(
     assert payload["source_changed"] == ["judge-typesafe"]
 
 
+def test_the_shared_model_case_table_runs_memory_consolidate(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        discover, "changed_files", lambda base, head: ["memory/tests/fixtures/automatic-model-cases.json"]
+    )
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {"memory", "memory-consolidate"} <= set(payload["changed_workers"])
+    assert "memory-consolidate" not in payload["source_changed"]
+
+
 def test_package_dependents_find_workers_whose_sub_projects_depend_on_the_package(tmp_path: Path) -> None:
     files = {
         "packages/native-ui/package.json": '{"name": "@iii-dev/native-ui"}',

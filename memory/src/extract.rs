@@ -900,13 +900,11 @@ fn merge_learned(
     (lines.join("\n") + "\n", changed)
 }
 
-/// Run one extraction pass for a completed turn. Errors are logged, never
-/// propagated — extraction is a background enrichment, not a turn
-/// dependency.
+/// Run one extraction pass for a completed turn. [`try_run`] logs a
+/// failure; nothing is propagated, since extraction is a background
+/// enrichment, not a turn dependency.
 pub async fn run(deps: Arc<Deps>, job: ExtractJobInput) {
-    if let Err(e) = try_run(&deps, &job).await {
-        tracing::warn!(session_id = %job.session_id, error = %e, "extraction pass failed");
-    }
+    let _ = try_run(&deps, &job).await;
 }
 
 /// `.extraction` store IO, off the async worker thread.
@@ -1056,11 +1054,18 @@ pub fn pass_health() -> PassHealth {
 
 /// One pass over the job's span. Every error is returned, so the queue
 /// retries the same span: a failed session lookup included — skipping
-/// would lose the turn, guessing a bank would leak it.
+/// would lose the turn, guessing a bank would leak it. Every error but a
+/// backlog left for the retry is also logged here, on the queue path and
+/// the inline one.
 pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
     // A failed pass still counts what it spent.
     let mut tally = PassTally::default();
     let result = one_pass(deps, job, &mut tally).await;
+    if let Err(e) = &result
+        && e != PENDING
+    {
+        tracing::warn!(session_id = %job.session_id, error = %e, "extraction pass failed");
+    }
     PASS_HEALTH
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1919,7 +1924,7 @@ async fn execute_run(
         agents = plan.agents.into_iter().filter(|a| usable(a)).collect();
         plan.items
     } else {
-        let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
+        let (model, _) = resolve_model(&deps.iii, &cfg.extraction_model, 5_000).await?;
         // Only a cut text is longer: its middle is never read.
         if plan_capture
             .entries
@@ -1950,7 +1955,8 @@ async fn execute_run(
                 !instructions.is_empty(),
                 tally,
             )
-            .await?;
+            .await
+            .map_err(|e| format!("{e} (model {model})"))?;
             // One piece keeps its own share of memories, so a piece that
             // returns too many never crowds out the later ones. An item for
             // an unlisted agent is dropped below and takes no share.
@@ -3240,37 +3246,160 @@ fn checked_content_text(content: Option<&Value>) -> Result<String, String> {
     Ok(text)
 }
 
-/// The extraction model: the configured pin, else the first catalog entry
-/// (logged so operators notice the implicit choice).
-async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, String> {
-    if !configured.is_empty() {
-        return Ok(configured.to_string());
+/// Why the extraction model is the one it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelReason {
+    Pinned,
+    ProviderDefault,
+    FirstListedModel,
+}
+
+impl ModelReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pinned => "pinned",
+            Self::ProviderDefault => "provider_default",
+            Self::FirstListedModel => "first_listed_model",
+        }
     }
+}
+
+/// The automatic model last logged, so the INFO line marks a change only.
+static AUTOMATIC_LOGGED: Mutex<String> = Mutex::new(String::new());
+
+/// The extraction model: the configured pin verbatim (the router is not
+/// asked), else [`automatic_model`] over the router's providers and, only
+/// when no usable provider declares a chat default, its chat models.
+pub(crate) async fn resolve_model(
+    iii: &IIIClient,
+    configured: &str,
+    timeout_ms: u64,
+) -> Result<(String, ModelReason), String> {
+    if !configured.is_empty() {
+        return Ok((configured.to_string(), ModelReason::Pinned));
+    }
+    let providers = router_list(iii, "router::provider::list", "providers", timeout_ms).await?;
+    let picked = match automatic_model(&providers, &[]) {
+        Ok(picked) => picked,
+        Err(_) => automatic_model(
+            &providers,
+            &router_list(iii, "router::models::list", "models", timeout_ms).await?,
+        )?,
+    };
+    if changed(
+        &mut AUTOMATIC_LOGGED.lock().unwrap_or_else(|e| e.into_inner()),
+        &picked.0,
+    ) {
+        tracing::info!(
+            model = %picked.0,
+            reason = %picked.1.as_str(),
+            "automatic extraction model"
+        );
+    }
+    Ok(picked)
+}
+
+/// Remembers `id`; true when it differs from the one remembered.
+fn changed(last: &mut String, id: &str) -> bool {
+    if last == id {
+        return false;
+    }
+    id.clone_into(last);
+    true
+}
+
+/// One router listing: the array under `key`, empty when absent.
+async fn router_list(
+    iii: &IIIClient,
+    function_id: &str,
+    key: &str,
+    timeout_ms: u64,
+) -> Result<Vec<Value>, String> {
     let reply = iii
         .call(CallRequest {
-            function_id: "router::models::list".into(),
+            function_id: function_id.into(),
             payload: json!({}),
             action: None,
-            timeout_ms: Some(5_000),
+            timeout_ms: Some(timeout_ms),
         })
         .await
-        .map_err(|e| format!("router::models::list: {e}"))?;
-    let first = reply
-        .get("models")
+        .map_err(|e| format!("{function_id}: {e}"))?;
+    Ok(reply
+        .get(key)
         .and_then(Value::as_array)
-        .and_then(|m| m.first())
-        .and_then(|m| m.get("id"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    match first {
-        Some(id) => {
-            tracing::info!(
-                "extraction_model not configured; using first router model (catalog_first)"
-            );
-            Ok(id)
-        }
-        None => Err("router catalog is empty; set extraction_model or add a provider".into()),
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// The automatic model as `provider::id`. A provider is usable when it is
+/// available and signed in, or owns its sign-in (no env var). Tier 1: the
+/// default model of the first usable provider by id. Tier 2: the first
+/// listed chat model of a usable provider by (provider, id). An embedding
+/// or rerank id is never picked. Sorting is on the pair, never on the
+/// composite string: `a-b::c` sorts before `a::z` as a string.
+/// Twins with the same rule: memory-consolidate/src/llm.rs and
+/// ade/ui/src/configuration-forms/model-catalog.ts; all three run the cases
+/// in memory/tests/fixtures/automatic-model-cases.json.
+fn automatic_model(providers: &[Value], models: &[Value]) -> Result<(String, ModelReason), String> {
+    let usable = |p: &Value| {
+        p["available"] == true && (p["configured"] == true || p["credential_env_var"].is_null())
+    };
+    // shortcut: a name heuristic (an id like `bge-m3` passes), the pass then fails loudly naming the model; read a modality field once the router reports one.
+    let chat = |id: &str| {
+        let id = id.to_ascii_lowercase();
+        !id.contains("embed") && !id.contains("rerank")
+    };
+    let mut sorted: Vec<&Value> = providers.iter().collect();
+    sorted.sort_by_key(|p| p["id"].as_str().unwrap_or_default());
+    let default = sorted.iter().filter(|p| usable(p)).find_map(|p| {
+        let model = p["default_model"]
+            .as_str()
+            .filter(|m| !m.is_empty() && chat(m))?;
+        Some(format!("{}::{model}", p["id"].as_str()?))
+    });
+    if let Some(model) = default {
+        return Ok((model, ModelReason::ProviderDefault));
     }
+    let owners: HashSet<&str> = sorted
+        .iter()
+        .filter(|p| usable(p))
+        .filter_map(|p| p["id"].as_str())
+        .collect();
+    let listed = models
+        .iter()
+        .filter_map(|m| Some((m["provider"].as_str()?, m["id"].as_str()?)))
+        .filter(|(provider, id)| owners.contains(provider) && chat(id))
+        .min();
+    if let Some((provider, id)) = listed {
+        return Ok((format!("{provider}::{id}"), ModelReason::FirstListedModel));
+    }
+    let skips: Vec<String> = sorted
+        .iter()
+        .map(|p| {
+            let id = p["id"].as_str().unwrap_or_default();
+            if p["available"] != true {
+                format!("{id} is unavailable")
+            } else if !usable(p) {
+                format!(
+                    "{id} is not configured ({})",
+                    p["credential_env_var"].as_str().unwrap_or_default()
+                )
+            } else {
+                match p["default_model"].as_str().filter(|m| !m.is_empty()) {
+                    Some(m) => {
+                        format!("{id} defaults to {m}, not a chat model, and lists no chat model")
+                    }
+                    None => format!("{id} declares no default and lists no chat model"),
+                }
+            }
+        })
+        .collect();
+    let skips = if skips.is_empty() {
+        "no provider is registered".to_string()
+    } else {
+        skips.join("; ")
+    };
+    Err(format!("no usable model: {skips}; set extraction_model"))
 }
 
 /// The agent profiles of `session_id`'s sub-agents, newest first, each once,
@@ -3465,6 +3594,44 @@ fn parse_items(raw: &str) -> Result<Vec<ExtractedItem>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_automatic_model_follows_the_shared_case_table() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("../tests/fixtures/automatic-model-cases.json"))
+                .unwrap();
+        for case in &cases {
+            let name = case["name"].as_str().unwrap();
+            let got = automatic_model(
+                case["providers"].as_array().unwrap(),
+                case["models"].as_array().unwrap(),
+            );
+            let expect = &case["expect"];
+            match expect["error"].as_array() {
+                Some(parts) => {
+                    let e = got.expect_err(name);
+                    assert!(e.ends_with("; set extraction_model"), "{name}: {e}");
+                    for part in parts {
+                        assert!(e.contains(part.as_str().unwrap()), "{name}: {e}");
+                    }
+                }
+                None => {
+                    let (model, reason) = got.unwrap_or_else(|e| panic!("{name}: {e}"));
+                    assert_eq!(model, expect["model"], "{name}");
+                    assert_eq!(reason.as_str(), expect["reason"], "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_automatic_model_is_logged_only_when_it_changes() {
+        let mut last = String::new();
+        assert!(changed(&mut last, "a::x"), "the first pick");
+        assert!(!changed(&mut last, "a::x"), "the same pick again");
+        assert!(changed(&mut last, "b::y"), "a new pick");
+        assert!(changed(&mut last, "a::x"), "back to the first");
+    }
 
     #[test]
     fn parse_tolerates_fences_and_prose() {

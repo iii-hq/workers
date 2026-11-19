@@ -18,8 +18,12 @@ Default model: after each discovery the provider re-declares `default_models`
 as the served models ranked loaded first (router-mode servers report
 `status.value`; a classic single-model server is loaded), then by the
 parameter count in the id (`27B` beats `8B`), ties in the server's listing
-order. A `harness::send` that names only the provider, and a new ADE chat,
-start on the first of those the router finds in the catalog.
+order. An id that looks like an embedding or rerank model (`embed`, `rerank`,
+`bge-`, `minilm`, `e5-`, `gte-`) is never ranked, so a server that serves
+only such models declares no default. The catalog still lists every id, so
+any of them can be pinned. A `harness::send` that names only the provider,
+and a new ADE chat, start on the first of those the router finds in the
+catalog.
 
 ## Embeddings
 
