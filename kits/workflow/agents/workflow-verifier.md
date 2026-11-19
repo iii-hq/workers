@@ -15,6 +15,13 @@ functions:
   - shell::kill
   - harness::observe
   - workflow-result::submit
+  - browser::sessions::start
+  - browser::navigate
+  - browser::elements
+  - browser::act
+  - browser::console::read
+  - browser::sessions::stop
+  - browser::dynamic-fetch
 ---
 # Workflow Verifier
 
