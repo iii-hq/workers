@@ -195,7 +195,7 @@ impl ToSql for PgBind {
     /// the server's own error.
     fn encode_format(&self, ty: &Type) -> postgres_types::Format {
         match self {
-            PgBind::Text(_) if parsed_by_server(base_type(ty)) => postgres_types::Format::Text,
+            PgBind::Text(_) if !string_is_binary(base_type(ty)) => postgres_types::Format::Text,
             _ => postgres_types::Format::Binary,
         }
     }
@@ -214,20 +214,20 @@ fn base_type(mut ty: &Type) -> &Type {
     ty
 }
 
-/// False for the types whose binary form a string already is (text-like,
-/// bytea) or that have their own string rule (json, jsonb).
-fn parsed_by_server(base: &Type) -> bool {
-    !(matches!(
-        *base,
-        Type::TEXT
-            | Type::VARCHAR
-            | Type::BPCHAR
-            | Type::NAME
-            | Type::UNKNOWN
-            | Type::BYTEA
-            | Type::JSON
-            | Type::JSONB
-    ) || base.name() == "citext")
+/// The types a string is written to in binary: exactly what the string
+/// encoder knows (text-like, citext, the ltree family, unknown), plus bytea
+/// and json/jsonb, which have their own rules. Any other type takes the
+/// string as text, and the server parses it.
+fn string_is_binary(base: &Type) -> bool {
+    <&str as ToSql>::accepts(base) || matches!(*base, Type::BYTEA | Type::JSON | Type::JSONB)
+}
+
+/// An array element is binary, so a string fits where its binary form is its
+/// own bytes: the above, enum labels, xml and "char".
+fn string_fits_array_element(base: &Type) -> bool {
+    string_is_binary(base)
+        || matches!(base.kind(), postgres_types::Kind::Enum(_))
+        || matches!(*base, Type::XML | Type::CHAR)
 }
 
 /// Decode one cell. Never fails the query: every type has a decoding (see
@@ -305,9 +305,9 @@ fn encode_pg_array(
         };
         // Array elements travel in binary, which a string can only fill for
         // the types it already is the bytes of.
-        if matches!(bind, PgBind::Text(_)) && parsed_by_server(base_type(member)) {
+        if matches!(bind, PgBind::Text(_)) && !string_fits_array_element(base_type(member)) {
             return Err(format!(
-                "a string element cannot bind to {}[] (binary array encoding); send the array as one string, e.g. '{{a,b}}'",
+                "a string, or a number above 2^63, cannot bind as an element of {}[] (binary array encoding); send the array as one string, e.g. '{{a,b}}'",
                 member.name()
             )
             .into());
@@ -1992,6 +1992,102 @@ mod tests {
         .await
         .unwrap_err();
         assert!(driver_message(err).contains("uuid[]"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_string_binds_to_ltree() {
+        let Some(p) = fresh_pool().await else { return };
+        if execute(&p, "CREATE EXTENSION IF NOT EXISTS ltree", &[], &[])
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let got = text_param(&p, "SELECT $1::ltree::text", "a.b.c")
+            .await
+            .unwrap();
+        assert_eq!(got, RowValue::Text("a.b.c".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_enum_labels_in_a_json_array_still_bind() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TYPE IF EXISTS db_tp_mood2", &[], &[]).await;
+        execute(
+            &p,
+            "CREATE TYPE db_tp_mood2 AS ENUM ('sad', 'ok')",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        let r = query(
+            &p,
+            "SELECT 'ok'::db_tp_mood2 = ANY($1::db_tp_mood2[])",
+            &[JsonParam::Json(serde_json::json!(["ok"]))],
+            opts(),
+        )
+        .await;
+        let _ = execute(&p, "DROP TYPE db_tp_mood2", &[], &[]).await;
+        assert_eq!(r.unwrap().rows[0].0[0], RowValue::Bool(true));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_text_and_binary_parameters_mix_in_one_statement() {
+        let Some(p) = fresh_pool().await else { return };
+        let id = "6ac4b4c0-5b0e-4f0e-9a52-0d6f3a1f2e77";
+        let r = query(
+            &p,
+            "SELECT $1::uuid::text, $2::int4, $3::text, $4::jsonb",
+            &[
+                JsonParam::Text(id.into()),
+                JsonParam::Int(7),
+                JsonParam::Text("x".into()),
+                JsonParam::Json(serde_json::json!({"a": 1})),
+            ],
+            opts(),
+        )
+        .await
+        .unwrap();
+        let row = &r.rows[0].0;
+        assert_eq!(row[0], RowValue::Text(id.into()));
+        assert!(matches!(row[1], RowValue::Int(7)));
+        assert_eq!(row[2], RowValue::Text("x".into()));
+        assert_eq!(row[3], RowValue::Json(serde_json::json!({"a": 1})));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_execute_inserts_a_uuid_string() {
+        let Some(p) = fresh_pool().await else { return };
+        let id = "6ac4b4c0-5b0e-4f0e-9a52-0d6f3a1f2e77";
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_tp_ins", &[], &[]).await;
+        execute(&p, "CREATE TABLE db_tp_ins (id uuid)", &[], &[])
+            .await
+            .unwrap();
+        let ins = execute(
+            &p,
+            "INSERT INTO db_tp_ins VALUES ($1)",
+            &[JsonParam::Text(id.into())],
+            &[],
+        )
+        .await;
+        let got = query(&p, "SELECT id::text FROM db_tp_ins", &[], opts())
+            .await
+            .map(|r| r.rows[0].0[0].clone());
+        let _ = execute(&p, "DROP TABLE db_tp_ins", &[], &[]).await;
+        ins.unwrap();
+        assert_eq!(got.unwrap(), RowValue::Text(id.into()));
+    }
+
+    /// On the old binary path a 4-byte string was read as an int4
+    /// ("1234" became 825373492) and "f" as a true boolean.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_short_strings_are_not_misread_as_binary() {
+        let Some(p) = fresh_pool().await else { return };
+        let got = text_param(&p, "SELECT $1::int4", "1234").await.unwrap();
+        assert!(matches!(got, RowValue::Int(1234)), "{got:?}");
+        let got = text_param(&p, "SELECT $1::bool", "f").await.unwrap();
+        assert_eq!(got, RowValue::Bool(false));
     }
 
     #[tokio::test(flavor = "multi_thread")]
