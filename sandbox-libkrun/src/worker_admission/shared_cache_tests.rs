@@ -82,30 +82,51 @@ fn populated(root: &Path) {
     write_mode(&sibling(root, ".erofs").unwrap(), b"LOWER", 0o600);
     write_mode(&sibling(root, ".digest").unwrap(), b"sha256:fixture", 0o600);
 }
+/// The writer's refusal kind; `None` means it was admitted.
+fn prepare_refusal(writer: &Lease, root: &Path) -> Option<io::ErrorKind> {
+    writer
+        .prepare_cache(&[CacheEntry { root }])
+        .err()
+        .map(|e| e.kind())
+}
 #[test]
 fn h_cold_first_reader_then_warm_second_reader_share_and_exclude_writer() {
     let f = fixture();
     let root = f.cache.join("image");
-    let a = consumer(&f, "a");
-    let probe = a.probe_cache(&[CacheEntry { root: &root }]).unwrap();
+    let a_consumer = consumer(&f, "a");
+    let probe = a_consumer
+        .probe_cache(&[CacheEntry { root: &root }])
+        .unwrap();
     assert!(!probe.exists(&root).unwrap());
     let prep = probe.prepare().unwrap();
     prepare(&prep, &root);
     let stale = prep.clone();
-    let a = prep.handoff(&a, &root).unwrap();
+    let a = prep.handoff(&a_consumer, &root).unwrap();
+    // `handoff` returns the consumer's own lease: another handle on the same
+    // operation. The original handle must go too, or consumer a keeps its
+    // Strict cache reads (and excludes the writer) until the test ends.
+    assert_eq!(a.0.id, a_consumer.0.id);
+    drop(a_consumer);
     assert!(stale.checkpoint().is_err());
     assert!(stale.begin_entry(&root).is_err());
     let before = fs::metadata(&root).unwrap().modified().unwrap();
     let digest = fs::read(sibling(&root, ".digest").unwrap()).unwrap();
-    let b = consumer(&f, "b");
-    let probe = b.probe_cache(&[CacheEntry { root: &root }]).unwrap();
+    let b_consumer = consumer(&f, "b");
+    let probe = b_consumer
+        .probe_cache(&[CacheEntry { root: &root }])
+        .unwrap();
     let read = probe.use_path(&root).unwrap();
     read.revalidate().unwrap();
     assert_eq!(fs::read(read.path().join("content")).unwrap(), b"SOURCE");
     drop(read);
-    let b = probe.handoff(&b, &root).unwrap();
+    let b = probe.handoff(&b_consumer, &root).unwrap();
+    assert_eq!(b.0.id, b_consumer.0.id);
+    drop(b_consumer);
     let writer = consumer(&f, "writer");
-    assert!(writer.prepare_cache(&[CacheEntry { root: &root }]).is_err());
+    assert_eq!(
+        prepare_refusal(&writer, &root),
+        Some(io::ErrorKind::WouldBlock)
+    );
     assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), before);
     assert_eq!(
         fs::read(sibling(&root, ".digest").unwrap()).unwrap(),
@@ -117,10 +138,15 @@ fn h_cold_first_reader_then_warm_second_reader_share_and_exclude_writer() {
     drop(a);
     drop(prep);
     drop(stale);
-    assert!(writer.prepare_cache(&[CacheEntry { root: &root }]).is_err());
+    assert_eq!(
+        prepare_refusal(&writer, &root),
+        Some(io::ErrorKind::WouldBlock)
+    );
     drop(read_b);
     drop(b);
-    assert!(writer.prepare_cache(&[CacheEntry { root: &root }]).is_ok());
+    let _prep = writer
+        .prepare_cache(&[CacheEntry { root: &root }])
+        .expect("writer prepares once every reader handle is dropped");
 }
 #[test]
 fn h_populated_warm_probe_has_no_cache_locks_stages_or_permission_journal() {
@@ -141,7 +167,10 @@ fn h_populated_warm_probe_has_no_cache_locks_stages_or_permission_journal() {
     assert_eq!(fs::read_dir(&f.cache).unwrap().count(), before);
     assert!(!sibling(&root, ".lock").unwrap().exists());
     assert!(!sibling(&root, ".erofs.lock").unwrap().exists());
-    assert!(a.use_path(&root).is_ok());
+    drop(
+        a.use_path(&root)
+            .expect("handed-off consumer reads its cache root"),
+    );
 }
 #[test]
 fn h_unrelated_image_preparation_does_not_conflict_with_shared_consumers() {
@@ -456,7 +485,9 @@ fn h_provisional_cancel_releases_only_its_own_read_without_touching_lifecycle() 
     a.revalidate().unwrap();
     assert_eq!(a.0.id, original);
     let b = consumer(&f, "b");
-    assert!(b.prepare_cache(&[CacheEntry { root: &root }]).is_ok());
+    let _prep = b
+        .prepare_cache(&[CacheEntry { root: &root }])
+        .expect("a cancelled provisional read leaves no claim behind");
 }
 #[test]
 fn h_exact_cache_preparation_does_not_lock_existing_claim_directory() {
