@@ -22,7 +22,7 @@
       },
       "namespace": {
         "default": null,
-        "description": "Target namespace of the call; absent = the implicit namespace.",
+        "description": "Resolved target namespace of the call. Absent from an older harness: a namespaced grant or allow rule then does not match.",
         "type": [
           "string",
           "null"

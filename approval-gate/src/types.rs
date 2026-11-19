@@ -505,7 +505,8 @@ pub struct EvaluateRequest {
     pub session_id: String,
     /// The function id to evaluate.
     pub function_id: String,
-    /// Target namespace of the call; absent = the implicit namespace.
+    /// Resolved target namespace of the call. Absent from an older harness: a
+    /// namespaced grant or allow rule then does not match.
     #[serde(default)]
     pub namespace: Option<String>,
     /// Where a call to `function_id` without `namespace` runs.
