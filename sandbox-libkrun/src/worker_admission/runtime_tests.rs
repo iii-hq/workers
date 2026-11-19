@@ -926,3 +926,769 @@ async fn f_lineage_retained_destination_replacement_is_not_safe_absence() {
     assert!(receipt.begin_remove(&lease, &vm, &[&root]).is_err());
     assert!(vm.join("actual-data").exists());
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct GChildFrame {
+    namespace: PathBuf,
+    admission_fd: i32,
+    source: PathBuf,
+    endpoint: PathBuf,
+    explicit_close: bool,
+    generic: bool,
+    scenario: String,
+    descendant_fd: Option<i32>,
+}
+#[test]
+fn g_cross_exec_child_resource_fixture() {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let args: Vec<_> = std::env::args().collect();
+    if !args.windows(2).any(|a| {
+        a[0] == "--exact"
+            && a[1] == "worker_admission::runtime::tests::g_cross_exec_child_resource_fixture"
+    }) {
+        return;
+    }
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input).unwrap();
+    if input.is_empty() {
+        return;
+    } // ordinary suite invocation is not a subprocess run
+    let mut lines = input.lines();
+    let frame: GChildFrame = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let runtime_fd: i32 = lines.next().unwrap().parse().unwrap();
+    let context = testing::open_context(&frame.namespace).unwrap();
+    let admission = context
+        .import_child(unsafe { OwnedFd::from_raw_fd(frame.admission_fd) })
+        .unwrap();
+    let runtime =
+        import_runtime_writer(&admission, unsafe { OwnedFd::from_raw_fd(runtime_fd) }).unwrap();
+    if frame.generic {
+        assert!(admission.use_path(&frame.source).is_err());
+        assert!(admission.endpoint(&frame.endpoint).is_err());
+    }
+    let input = runtime.use_path(&frame.source).unwrap();
+    input.revalidate().unwrap();
+    let endpoint = runtime.endpoint(&frame.endpoint).unwrap().bind().unwrap();
+    let second = if frame.scenario == "two" {
+        Some(
+            runtime
+                .endpoint(&frame.endpoint.with_file_name("other.sock"))
+                .unwrap()
+                .bind()
+                .unwrap(),
+        )
+    } else {
+        None
+    };
+    if let Some(second) = second {
+        std::mem::forget(second);
+    }
+    if frame.explicit_close {
+        endpoint.close().unwrap();
+        drop(input);
+    } else {
+        std::mem::forget(endpoint);
+        std::mem::forget(input);
+    }
+    runtime.checkpoint().unwrap();
+    if frame.scenario == "pending" {
+        let mut tx = context.namespace.transaction().unwrap();
+        let record = tx
+            .catalog
+            .runtimes
+            .iter_mut()
+            .find(|r| r.id == runtime.0.id)
+            .unwrap();
+        record.activity = ActivityOutcome {
+            sequence: 1,
+            path: Some(HostPath::new(&frame.source.with_file_name("activity")).unwrap()),
+            phase: ActivityPhase::Pending,
+            failure: None,
+        };
+        tx.save().unwrap();
+    }
+    if let Some(fd) = frame.descendant_fd {
+        // This owned fixture descendant actually inherits the runtime/endpoint
+        // descriptions. Parent releases it through a private pipe, never a PID signal.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let mut byte = 0u8;
+            unsafe {
+                libc::read(fd, (&mut byte as *mut u8).cast(), 1);
+                libc::_exit(0)
+            };
+        }
+    }
+    // Actual process exit closes inherited OFDs but skips every Rust Drop and
+    // async relay close, exactly the production VMM boundary under test.
+    unsafe { libc::_exit(0) };
+}
+struct GFixture {
+    _temp: tempfile::TempDir,
+    context: crate::worker_admission::AdmissionContext,
+    lease: Lease,
+    child: RuntimeChild,
+    data: PathBuf,
+    source: PathBuf,
+    endpoint: PathBuf,
+    vm: PathBuf,
+    log: PathBuf,
+    root: PathBuf,
+    kept: PathBuf,
+    parent_read: Option<crate::worker_admission::UseGuard>,
+    sibling_read: Option<crate::worker_admission::UseGuard>,
+    sibling: Option<Lease>,
+    descendant_release: Option<std::fs::File>,
+}
+fn g_spawn(explicit_close: bool) -> GFixture {
+    g_spawn_scenario(explicit_close, "normal")
+}
+fn g_spawn_scenario(explicit_close: bool, scenario: &str) -> GFixture {
+    use std::os::fd::AsRawFd;
+    let (temp, context, data) = fixture();
+    let namespace = temp.path().join("catalog");
+    let vm = data.join("vm");
+    std::fs::create_dir(&vm).unwrap();
+    let root = vm.join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("data"), b"KEEP").unwrap();
+    let kept = vm.join("root.pre-build");
+    let log = vm.join("console.log");
+    std::fs::write(&log, b"before").unwrap();
+    let source = data.join("source");
+    std::fs::write(&source, b"LOWER").unwrap();
+    let control = data.join("private-control");
+    std::fs::create_dir(&control).unwrap();
+    std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let endpoint = control.join("shell.sock");
+    let lease = with_paths(
+        context.local(&vm).unwrap(),
+        &[
+            PathRequest {
+                path: &root,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &kept,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &log,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &source,
+                role: PathRole::Strict,
+            },
+            PathRequest {
+                path: &endpoint,
+                role: PathRole::Endpoint,
+            },
+        ],
+    )
+    .unwrap();
+    let second = endpoint.with_file_name("other.sock");
+    let lease = if scenario == "two" {
+        with_paths(
+            lease,
+            &[PathRequest {
+                path: &second,
+                role: PathRole::Endpoint,
+            }],
+        )
+        .unwrap()
+    } else {
+        lease
+    };
+    let (parent_read, sibling, sibling_read) = if scenario == "host-reads" {
+        let parent = lease.use_path(&source).unwrap();
+        let export = lease.export_child().unwrap();
+        let sibling = context
+            .import_child(export.duplicate_for_exec().unwrap())
+            .unwrap();
+        let read = sibling.use_path(&source).unwrap();
+        (Some(parent), Some(sibling), Some(read))
+    } else {
+        (None, None, None)
+    };
+    let activity = source.with_file_name("activity");
+    let lease = if scenario == "pending" {
+        with_paths(
+            lease,
+            &[PathRequest {
+                path: &activity,
+                role: PathRole::MutableFile,
+            }],
+        )
+        .unwrap()
+    } else {
+        lease
+    };
+    let runtime_paths = if scenario == "pending" {
+        vec![RuntimePath {
+            path: &activity,
+            kind: RuntimePathKind::ActivityStamp,
+        }]
+    } else {
+        Vec::new()
+    };
+    let launch = lease.prepare_runtime(&runtime_paths).unwrap();
+    let (descendant_read, descendant_release) = if scenario == "descendant" {
+        use std::os::fd::FromRawFd;
+        let mut pair = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(pair.as_mut_ptr()) }, 0);
+        for fd in pair {
+            assert_eq!(
+                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
+        }
+        (
+            Some(unsafe { std::fs::File::from_raw_fd(pair[0]) }),
+            Some(unsafe { std::fs::File::from_raw_fd(pair[1]) }),
+        )
+    } else {
+        (None, None)
+    };
+    let descendant_fd = descendant_read.as_ref().map(AsRawFd::as_raw_fd);
+    let exported = lease.export_child().unwrap();
+    let inherited = exported.duplicate_for_exec().unwrap();
+    let raw = inherited.as_raw_fd();
+    let frame = serde_json::to_string(&GChildFrame {
+        namespace: namespace.clone(),
+        admission_fd: raw,
+        source: source.clone(),
+        endpoint: endpoint.clone(),
+        explicit_close,
+        generic: true,
+        scenario: scenario.into(),
+        descendant_fd,
+    })
+    .unwrap();
+    // RuntimeLaunch appends $3=--runtime-write-fd,$4=FD. The shell only execs
+    // this test binary and supplies the explicit test frame on stdin, no env/HOME
+    // override, fixed FD slot, production bootstrap path or guessed receipt.
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.arg("-c").arg("exec \"$1\" --exact worker_admission::runtime::tests::g_cross_exec_child_resource_fixture --nocapture <<EOF\n$2\n$4\nEOF").arg("g-test").arg(std::env::current_exe().unwrap()).arg(frame);
+    unsafe {
+        command.pre_exec(move || {
+            let flags = libc::fcntl(raw, libc::F_GETFD);
+            if flags < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            syscall(libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC))?;
+            if let Some(fd) = descendant_fd {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                syscall(libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC))?;
+            }
+            Ok(())
+        });
+    }
+    let child = launch.spawn(command).unwrap();
+    drop(descendant_read);
+    drop(inherited);
+    drop(exported);
+    GFixture {
+        _temp: temp,
+        context,
+        lease,
+        child,
+        data,
+        source,
+        endpoint,
+        vm,
+        log,
+        root,
+        kept,
+        parent_read,
+        sibling_read,
+        sibling,
+        descendant_release,
+    }
+}
+#[tokio::test]
+async fn g_cross_exec_exit_retires_runtime_reads_then_endpoint_console_retention_remove() {
+    use std::io::Write;
+    for explicit_close in [false, true] {
+        let GFixture {
+            _temp,
+            context,
+            lease,
+            child,
+            data: _,
+            source: _,
+            endpoint,
+            vm,
+            log,
+            root,
+            kept,
+            ..
+        } = g_spawn(explicit_close);
+        let completion = child.wait().await;
+        assert!(completion.os_status().unwrap().success());
+        let receipt = completion.retirement().unwrap();
+        {
+            let tx = context.namespace.transaction().unwrap();
+            let op = tx.operation(&lease.0.id).unwrap();
+            assert!(!op.holds.iter().any(|h| h.kind == HoldKind::Read));
+            assert_eq!(op.holder_ids, vec![lease.0.holder.clone()]);
+        }
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .unwrap();
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .unwrap();
+        assert!(!endpoint.exists());
+        let mut console = lease
+            .begin(MutationPlan::ControlFiles {
+                files: vec![log.clone()],
+            })
+            .unwrap();
+        let mut stage = console.stage_file(&log, 0o600).unwrap();
+        stage.file_mut().write_all(b"final").unwrap();
+        console.publish_file(stage).unwrap();
+        console.commit().unwrap();
+        let mut retain = lease
+            .begin(MutationPlan::Adopt { root: vm.clone() })
+            .unwrap();
+        retain.rename_preserving(&root, &kept).unwrap();
+        retain.commit().unwrap();
+        let mut removal = receipt.begin_remove(&lease, &vm, &[&root, &log]).unwrap();
+        removal.remove_path(&root).unwrap();
+        removal.remove_path(&log).unwrap();
+        removal.commit().unwrap();
+        assert_eq!(std::fs::read(kept.join("data")).unwrap(), b"KEEP");
+        assert!(
+            receipt
+                .retire_runtime_endpoints(&lease, &[&endpoint])
+                .is_err()
+        );
+        drop(_temp);
+    }
+}
+#[tokio::test]
+async fn g_parent_and_unrelated_import_reads_survive_child_exit() {
+    let GFixture {
+        _temp,
+        context,
+        lease,
+        child,
+        endpoint,
+        parent_read,
+        sibling_read,
+        sibling,
+        ..
+    } = g_spawn_scenario(false, "host-reads");
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    receipt
+        .retire_runtime_endpoints(&lease, &[&endpoint])
+        .unwrap();
+    let tx = context.namespace.transaction().unwrap();
+    let op = tx.operation(&lease.0.id).unwrap();
+    assert_eq!(
+        op.holds.iter().filter(|h| h.kind == HoldKind::Read).count(),
+        2
+    );
+    assert!(op.holder_ids.contains(&sibling.as_ref().unwrap().0.holder));
+    drop(tx);
+    drop((parent_read, sibling_read, sibling));
+    drop(_temp);
+}
+
+#[tokio::test]
+async fn g_endpoint_close_faults_resume_only_matching_recorded_intent() {
+    for fault in ["after-intent", "after-unlink", "after-sync"] {
+        let GFixture {
+            _temp,
+            context,
+            lease,
+            child,
+            endpoint,
+            ..
+        } = g_spawn(false);
+        let completion = child.wait().await;
+        let receipt = completion.retirement().unwrap();
+        assert!(
+            receipt
+                .retire_endpoints_fault(&lease, &[&endpoint], fault)
+                .is_err()
+        );
+        {
+            let tx = context.namespace.transaction().unwrap();
+            assert!(
+                tx.catalog
+                    .endpoints
+                    .iter()
+                    .any(|e| e.path.get().unwrap() == endpoint
+                        && e.state == super::super::catalog::EndpointState::CloseIntent)
+            );
+        }
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .unwrap();
+        assert!(!endpoint.exists());
+        drop(_temp);
+    }
+}
+#[tokio::test]
+async fn g_foreign_receipt_replacement_and_new_runtime_refuse_endpoint_cleanup() {
+    let GFixture {
+        _temp,
+        context,
+        lease,
+        child,
+        endpoint,
+        data,
+        ..
+    } = g_spawn(false);
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    let other = context.local(&data.join("other")).unwrap();
+    assert!(
+        receipt
+            .retire_runtime_endpoints(&other, &[&endpoint])
+            .is_err()
+    );
+    std::fs::rename(&endpoint, endpoint.with_extension("retained")).unwrap();
+    let replacement = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+    assert!(
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .is_err()
+    );
+    assert!(endpoint.exists());
+    drop(replacement);
+    drop(_temp);
+    let GFixture {
+        _temp,
+        lease,
+        child,
+        endpoint,
+        ..
+    } = g_spawn(false);
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    drop(lease.prepare_runtime(&[]).unwrap());
+    assert!(
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .is_err()
+    );
+    assert!(endpoint.exists());
+    drop(_temp);
+}
+
+fn g_local_runtime(child: &RuntimeChild) -> RuntimeWriter {
+    let exported = child.lease.export_child().unwrap();
+    let context = crate::worker_admission::AdmissionContext {
+        namespace: child.lease.0.namespace.clone(),
+    };
+    let imported = context
+        .import_child(exported.duplicate_for_exec().unwrap())
+        .unwrap();
+    import_runtime_writer(
+        &imported,
+        duplicate(child.sentinel.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap()
+}
+#[tokio::test]
+async fn g_runtime_read_guard_retains_writer_sentinel_after_writer_drop() {
+    let (_temp, context, data) = fixture();
+    let source = data.join("source");
+    std::fs::write(&source, b"data").unwrap();
+    let lease = with_paths(
+        context.local(&data.join("state")).unwrap(),
+        &[PathRequest {
+            path: &source,
+            role: PathRole::Strict,
+        }],
+    )
+    .unwrap();
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    let runtime = g_local_runtime(&child);
+    let read = runtime.use_path(&source).unwrap();
+    drop(runtime);
+    let completion = child.wait().await;
+    assert!(completion.os_status().is_some());
+    assert!(completion.retirement().is_err());
+    drop(read);
+}
+#[tokio::test]
+async fn g_unbound_legacy_read_is_preserved_and_prevents_cleanup() {
+    let (_temp, context, data) = fixture();
+    let root = data.join("state");
+    std::fs::create_dir(&root).unwrap();
+    let source = data.join("source");
+    std::fs::write(&source, b"data").unwrap();
+    let lease = with_paths(
+        context.local(&root).unwrap(),
+        &[PathRequest {
+            path: &source,
+            role: PathRole::Strict,
+        }],
+    )
+    .unwrap();
+    let read = lease.use_path(&source).unwrap();
+    {
+        let mut tx = context.namespace.transaction().unwrap();
+        tx.operation_mut(&lease.0.id)
+            .unwrap()
+            .holds
+            .iter_mut()
+            .find(|h| h.id == read.id)
+            .unwrap()
+            .owner = None;
+        tx.save().unwrap();
+    }
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    activate_for_wait_fixture(&child);
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+    let tx = context.namespace.transaction().unwrap();
+    assert!(
+        tx.operation(&lease.0.id)
+            .unwrap()
+            .holds
+            .iter()
+            .any(|h| h.id == read.id && h.owner.is_none())
+    );
+}
+#[tokio::test]
+async fn g_mismatched_runtime_epoch_is_corrupt_not_retired_by_wait() {
+    let (_temp, context, data) = fixture();
+    let source = data.join("source");
+    std::fs::write(&source, b"data").unwrap();
+    let lease = with_paths(
+        context.local(&data.join("state")).unwrap(),
+        &[PathRequest {
+            path: &source,
+            role: PathRole::Strict,
+        }],
+    )
+    .unwrap();
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    let runtime = g_local_runtime(&child);
+    let read = runtime.use_path(&source).unwrap();
+    {
+        let mut tx = context.namespace.transaction().unwrap();
+        let hold = tx
+            .operation_mut(&lease.0.id)
+            .unwrap()
+            .holds
+            .iter_mut()
+            .find(|h| h.id == read.id)
+            .unwrap();
+        hold.owner.as_mut().unwrap().runtime.as_mut().unwrap().epoch += 1;
+        tx.save().unwrap();
+    }
+    assert!(context.namespace.transaction().is_err());
+    drop(read);
+    drop(runtime);
+    let completion = child.wait().await;
+    assert!(completion.os_status().is_some());
+    assert!(completion.retirement().is_err());
+}
+#[tokio::test]
+async fn g_endpoint_sentinel_still_held_blocks_parent_settlement() {
+    let GFixture {
+        _temp,
+        context,
+        lease,
+        child,
+        endpoint,
+        ..
+    } = g_spawn(false);
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    let held = {
+        let tx = context.namespace.transaction().unwrap();
+        let record = tx
+            .catalog
+            .endpoints
+            .iter()
+            .find(|e| e.path.get().unwrap() == endpoint)
+            .unwrap();
+        let fd = super::super::endpoint::validate_sentinel(&context.namespace, record).unwrap();
+        sentinel(&fd).unwrap();
+        fd
+    };
+    assert!(
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .is_err()
+    );
+    assert!(endpoint.exists());
+    drop(held);
+    receipt
+        .retire_runtime_endpoints(&lease, &[&endpoint])
+        .unwrap();
+    drop(_temp);
+}
+#[tokio::test]
+async fn g_missing_bound_socket_is_not_implicit_retirement() {
+    let GFixture {
+        _temp,
+        lease,
+        child,
+        endpoint,
+        ..
+    } = g_spawn(false);
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    std::fs::remove_file(&endpoint).unwrap();
+    assert!(
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .is_err()
+    );
+    drop(_temp);
+}
+#[tokio::test]
+async fn g_legacy_endpoint_without_owner_is_not_recovered_by_private_receipt() {
+    let GFixture {
+        _temp,
+        context,
+        lease,
+        child,
+        endpoint,
+        ..
+    } = g_spawn(false);
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    // Preserve the original sentinel binding; altered catalog ownership must fail
+    // rather than assigning old data to whichever runtime happens to match path.
+    {
+        let mut tx = context.namespace.transaction().unwrap();
+        let record = tx
+            .catalog
+            .endpoints
+            .iter_mut()
+            .find(|e| e.path.get().unwrap() == endpoint)
+            .unwrap();
+        record.owner = None;
+        record.hold_id = None;
+        tx.save().unwrap();
+    }
+    assert!(
+        receipt
+            .retire_runtime_endpoints(&lease, &[&endpoint])
+            .is_err()
+    );
+    assert!(endpoint.exists());
+    drop(_temp);
+}
+
+#[tokio::test]
+async fn g_endpoint_requested_set_is_prevalidated_and_partial_close_remains_visible() {
+    let GFixture {
+        _temp,
+        context,
+        lease,
+        child,
+        endpoint,
+        ..
+    } = g_spawn_scenario(false, "two");
+    let second = endpoint.with_file_name("other.sock");
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    assert!(
+        receipt
+            .retire_runtime_endpoints(
+                &lease,
+                &[&endpoint, &endpoint.with_file_name("not-declared")]
+            )
+            .is_err()
+    );
+    assert!(endpoint.exists() && second.exists());
+    assert!(
+        receipt
+            .retire_endpoints_fault(&lease, &[&endpoint, &second], "after-first")
+            .is_err()
+    );
+    {
+        let tx = context.namespace.transaction().unwrap();
+        let records = tx
+            .catalog
+            .endpoints
+            .iter()
+            .filter(|e| e.operation == lease.0.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|e| e.state == super::super::catalog::EndpointState::Retired)
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|e| e.state == super::super::catalog::EndpointState::Bound)
+                .count(),
+            1
+        );
+    }
+    receipt
+        .retire_runtime_endpoints(&lease, &[&endpoint, &second])
+        .unwrap();
+    assert!(!endpoint.exists() && !second.exists());
+    drop(_temp);
+}
+
+#[tokio::test]
+async fn g_cross_exec_descendant_retains_runtime_and_endpoint_after_original_reap() {
+    use std::io::Write;
+    let GFixture {
+        _temp,
+        lease,
+        child,
+        endpoint,
+        descendant_release,
+        ..
+    } = g_spawn_scenario(false, "descendant");
+    let mut release = descendant_release.unwrap();
+    let completion = child.wait().await;
+    assert!(completion.os_status().unwrap().success());
+    assert!(completion.retirement().is_err());
+    assert!(endpoint.exists());
+    release.write_all(b"x").unwrap();
+    drop(release);
+    assert!(completion.retirement().is_err());
+    drop(lease);
+    drop(_temp);
+}
+#[tokio::test]
+async fn g_cross_exec_pending_activity_never_gets_endpoint_retirement_authority() {
+    let GFixture {
+        _temp,
+        child,
+        endpoint,
+        ..
+    } = g_spawn_scenario(false, "pending");
+    let completion = child.wait().await;
+    assert!(completion.os_status().unwrap().success());
+    assert!(completion.retirement().is_err());
+    assert!(endpoint.exists());
+    drop(_temp);
+}

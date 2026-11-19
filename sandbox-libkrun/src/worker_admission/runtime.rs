@@ -291,6 +291,10 @@ impl RuntimeLaunch {
                 path: path.entry.path.clone(),
                 kind: HoldKind::Runtime,
                 epoch,
+                owner: Some(super::catalog::ResourceOwner {
+                    holder: lease.0.holder.clone(),
+                    runtime: None,
+                }),
             });
         }
         let sentinel_file = lease
@@ -662,8 +666,70 @@ impl RuntimeChild {
                 e.pins = super::pins(&e.path.get()?, e.role)?;
             }
         }
-        op.holds.retain(|h| h.id != self.id);
-        if let Some(holder) = &record.admission_holder {
+        let holder = record
+            .admission_holder
+            .as_ref()
+            .ok_or_else(|| invalid("runtime never established its imported holder"))?;
+        let owner = super::catalog::ResourceOwner {
+            holder: holder.clone(),
+            runtime: Some(super::catalog::RuntimeOwner {
+                id: record.id.clone(),
+                epoch: record.epoch,
+            }),
+        };
+        // Only exact issued Read rows are settled by real runtime retirement.
+        // Parent, sibling, legacy-unbound and every write/permission hold remain.
+        if op.holds.iter().any(|h| {
+            h.kind == HoldKind::Runtime
+                && h.id == self.id
+                && (h.epoch != record.epoch
+                    || h.owner
+                        .as_ref()
+                        .is_none_or(|o| o.holder != self.lease.0.holder || o.runtime.is_some()))
+        }) {
+            return Err(invalid("runtime hold issuer is missing or mismatched"));
+        }
+        op.holds.retain(|h| {
+            !(h.kind == HoldKind::Runtime
+                && h.id == self.id
+                && h.epoch == record.epoch
+                && h.owner
+                    .as_ref()
+                    .is_some_and(|o| o.holder == self.lease.0.holder && o.runtime.is_none()))
+                && !(h.kind == HoldKind::Read && h.owner.as_ref() == Some(&owner))
+        });
+        let obligations = op
+            .holds
+            .iter()
+            .any(|h| h.owner.as_ref().is_none_or(|o| o.holder == *holder));
+        // Endpoint rows can carry ownership independently of the exited holder.
+        // Verify their transfer against the immutable issued hold ids before
+        // removing that one holder. Any unrelated obligation keeps membership.
+        let remaining = op
+            .holds
+            .iter()
+            .filter(|h| h.owner.as_ref().is_some_and(|o| o.holder == *holder))
+            .cloned()
+            .collect::<Vec<_>>();
+        let _ = op;
+        let transferable = remaining.iter().all(|h| {
+            h.kind == HoldKind::Endpoint
+                && h.owner.as_ref() == Some(&owner)
+                && tx.catalog.endpoints.iter().any(|e| {
+                    e.operation == self.lease.0.id
+                        && e.hold_id.as_ref() == Some(&h.id)
+                        && e.owner.as_ref() == Some(&owner)
+                        && e.path == h.path
+                        && e.state != super::catalog::EndpointState::Retired
+                })
+        });
+        let legacy = tx
+            .operation(&self.lease.0.id)?
+            .holds
+            .iter()
+            .any(|h| h.owner.is_none());
+        if !obligations || (transferable && !legacy) {
+            let op = tx.operation_mut(&self.lease.0.id)?;
             op.holder_ids.retain(|id| id != holder);
             op.holders = op.holder_ids.len() as u32;
         }
@@ -701,8 +767,17 @@ impl Drop for RuntimeChild {
             std::mem::forget(self.lease.clone());
             if let Ok(mut tx) = self.lease.0.namespace.transaction() {
                 if let Some(record) = tx.catalog.runtimes.iter_mut().find(|r| r.id == self.id) {
-                    record.state = RuntimeState::Uncertain;
-                    record.writer_retired = false;
+                    // Once read settlement/endpoint transfer is durably Retired,
+                    // a later receipt-issuance error must not invalidate its owner
+                    // membership graph. Keep that evidence and poison the op.
+                    if record.state == RuntimeState::Retired {
+                        if let Ok(op) = tx.operation_mut(&self.lease.0.id) {
+                            op.uncertain = true;
+                        }
+                    } else {
+                        record.state = RuntimeState::Uncertain;
+                        record.writer_retired = false;
+                    }
                     let _ = tx.save();
                 }
             }
@@ -786,6 +861,50 @@ pub(crate) fn import_runtime_writer(admission: &Lease, fd: OwnedFd) -> io::Resul
     })))
 }
 impl RuntimeWriter {
+    pub(crate) fn use_path(&self, path: &Path) -> io::Result<super::UseGuard> {
+        self.checkpoint()?;
+        self.0.lease.use_path_owned(path, Some(self.clone()))
+    }
+    pub(crate) fn endpoint(&self, path: &Path) -> io::Result<super::EndpointGuard> {
+        self.checkpoint()?;
+        super::endpoint::EndpointGuard::new_owned(self.0.lease.clone(), path, Some(self.clone()))
+    }
+    pub(super) fn resource_owner(
+        &self,
+        lease: &Lease,
+        tx: &super::catalog::Transaction<'_>,
+    ) -> io::Result<super::catalog::ResourceOwner> {
+        if !Arc::ptr_eq(&self.0.lease.0, &lease.0)
+            || self.0.failed.load(Ordering::Acquire)
+            || failed_ofd(&self.0.sentinel)?
+        {
+            return Err(invalid("runtime resource issuer is foreign or terminal"));
+        }
+        let record = tx
+            .catalog
+            .runtimes
+            .iter()
+            .find(|r| r.id == self.0.id && r.operation == lease.0.id)
+            .ok_or_else(|| invalid("runtime issuer missing"))?;
+        if record.state != RuntimeState::Active
+            || !activity_ready(record)
+            || record.admission_holder.as_deref() != Some(lease.0.holder.as_str())
+            || record.sentinel != Identity::of(&self.0.sentinel)?
+            || !tx
+                .operation(&lease.0.id)?
+                .holder_ids
+                .contains(&lease.0.holder)
+        {
+            return Err(invalid("runtime resource issuer binding mismatch"));
+        }
+        Ok(super::catalog::ResourceOwner {
+            holder: lease.0.holder.clone(),
+            runtime: Some(super::catalog::RuntimeOwner {
+                id: record.id.clone(),
+                epoch: record.epoch,
+            }),
+        })
+    }
     fn activity_lock(&self) -> io::Result<std::sync::MutexGuard<'_, ActivityLatch>> {
         match self.0.activity.lock() {
             Ok(latch) => Ok(latch),

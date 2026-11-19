@@ -416,6 +416,10 @@ impl MutationGuard {
                 path: HostPath::new(path)?,
                 kind: HoldKind::Mutation,
                 epoch,
+                owner: Some(super::catalog::ResourceOwner {
+                    holder: lease.0.holder.clone(),
+                    runtime: None,
+                }),
             });
         }
         op.journals.push(Journal {
@@ -529,6 +533,10 @@ impl MutationGuard {
                     path: encoded,
                     kind: HoldKind::Mutation,
                     epoch: self.epoch,
+                    owner: Some(super::catalog::ResourceOwner {
+                        holder: self.lease.0.holder.clone(),
+                        runtime: None,
+                    }),
                 });
             }
         }
@@ -1507,6 +1515,10 @@ impl MutationGuard {
             path: HostPath::new(&path)?,
             kind: HoldKind::Mutation,
             epoch: self.epoch,
+            owner: Some(super::catalog::ResourceOwner {
+                holder: self.lease.0.holder.clone(),
+                runtime: None,
+            }),
         });
         tx.save()?;
         drop(tx);

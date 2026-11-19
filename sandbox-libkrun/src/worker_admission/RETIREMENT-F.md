@@ -1,5 +1,10 @@
 # F: process control, reap observation and exact cleanup receipts
 
+G extends this unchanged interface for child resources surviving `_exit`: use
+RuntimeWriter::use_path/endpoint in the child and receipt.retire_runtime_endpoints
+on the original parent Lease before Remove. See EXIT-RESOURCES-G.md. OS wait still
+does not prove guest consistency; only exactly bound resources are settled.
+
 SOURCE implementation incremental after `4202dc282f751cb8c85534f2b0dd9d332e057616`.
 This document is the concrete consumer seam. No syscall fixture, process, signal,
 VM, Rust compilation or test was executed in this delivery. E1/E2/E4 stay intact.

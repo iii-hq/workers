@@ -192,21 +192,33 @@ pub(crate) struct UseGuard {
     id: String,
     path: PathBuf,
     snapshot: Entry,
+    runtime: Option<RuntimeWriter>,
 }
 impl UseGuard {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
     pub(crate) fn revalidate(&self) -> io::Result<()> {
+        if let Some(runtime) = &self.runtime {
+            runtime.checkpoint()?;
+        }
         self.lease.revalidate()?;
         validate_entry(&self.snapshot)?;
         let tx = self.lease.0.namespace.transaction()?;
-        if !tx
-            .operation(&self.lease.0.id)?
-            .holds
-            .iter()
-            .any(|h| h.id == self.id && h.kind == HoldKind::Read)
-        {
+        let owner = if let Some(runtime) = &self.runtime {
+            runtime.resource_owner(&self.lease, &tx)?
+        } else {
+            catalog::ResourceOwner {
+                holder: self.lease.0.holder.clone(),
+                runtime: None,
+            }
+        };
+        if !tx.operation(&self.lease.0.id)?.holds.iter().any(|h| {
+            h.id == self.id
+                && h.kind == HoldKind::Read
+                && h.path.get().is_ok_and(|p| p == self.path)
+                && h.owner.as_ref() == Some(&owner)
+        }) {
             return Err(refused());
         }
         Ok(())
@@ -243,12 +255,15 @@ impl Lease {
         })
     }
     pub(crate) fn use_path(&self, path: &Path) -> io::Result<UseGuard> {
+        self.use_path_owned(path, None)
+    }
+    fn use_path_owned(&self, path: &Path, runtime: Option<RuntimeWriter>) -> io::Result<UseGuard> {
         let path = absolute(path)?;
         if !present(&path)? {
             return Err(invalid("read path does not exist"));
         }
         let snapshot = entry(&path, PathRole::Strict)?;
-        let id = self.hold(&path, HoldKind::Read, None)?;
+        let id = self.hold_owned(&path, HoldKind::Read, None, runtime.as_ref())?;
         if let Err(error) = validate_entry(&snapshot) {
             let _ = self.finish_hold(&id, false);
             return Err(error);
@@ -258,6 +273,7 @@ impl Lease {
             id,
             path,
             snapshot,
+            runtime,
         })
     }
     pub(crate) fn begin(&self, plan: MutationPlan) -> io::Result<MutationGuard> {
@@ -273,8 +289,36 @@ impl Lease {
         EndpointGuard::new(self.clone(), path)
     }
     fn hold(&self, path: &Path, kind: HoldKind, required: Option<PathRole>) -> io::Result<String> {
+        self.hold_owned(path, kind, required, None)
+    }
+    fn hold_owned(
+        &self,
+        path: &Path,
+        kind: HoldKind,
+        required: Option<PathRole>,
+        runtime: Option<&RuntimeWriter>,
+    ) -> io::Result<String> {
         self.revalidate()?;
         let mut tx = self.0.namespace.transaction()?;
+        let owner = if let Some(runtime) = runtime {
+            runtime.resource_owner(self, &tx)?
+        } else {
+            if matches!(kind, HoldKind::Read | HoldKind::Endpoint)
+                && tx.catalog.runtimes.iter().any(|r| {
+                    r.operation == self.0.id
+                        && r.admission_holder.as_deref() == Some(self.0.holder.as_str())
+                        && !matches!(r.state, catalog::RuntimeState::Cancelled)
+                })
+            {
+                return Err(invalid(
+                    "activated imported holder must issue resources through RuntimeWriter",
+                ));
+            }
+            catalog::ResourceOwner {
+                holder: self.0.holder.clone(),
+                runtime: None,
+            }
+        };
         let op = tx.operation_mut(&self.0.id)?;
         if op.uncertain || op.closed || op.holds.len() >= 256 {
             return Err(refused());
@@ -322,6 +366,7 @@ impl Lease {
             path: HostPath::new(path)?,
             kind,
             epoch: op.epoch,
+            owner: Some(owner),
         });
         tx.save()?;
         Ok(id)
@@ -332,7 +377,9 @@ impl Lease {
         if uncertain {
             op.uncertain = true;
         } else {
-            op.holds.retain(|h| h.id != id);
+            op.holds.retain(|h| {
+                !(h.id == id && h.owner.as_ref().is_some_and(|o| o.holder == self.0.holder))
+            });
         }
         tx.save()
     }

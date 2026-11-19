@@ -1,4 +1,12 @@
-# Admission v2 core: retirement F lineage source candidate
+# Admission v2 core: runtime exit resources G source candidate
+
+The G1/G2/G4 increment after `71e7d6660b746bf51ed6981f67185c36cba262f0`
+adds exact runtime-owned read/endpoint guards and parent-side endpoint settlement
+through the same private WriterRetirement. See [EXIT-RESOURCES-G.md](EXIT-RESOURCES-G.md)
+for the three exact APIs, persisted holder/runtime-epoch ownership, cross-exec
+fixture and integration sequence. F lineage is complete in source and unchanged;
+G does not consume or expand its one-shot Remove authority. Current127 authored
+test entries include126 scenarios and one cross-exec helper; compiled0/executed0.
 
 The concrete F1/F3 consumer seam and complete spawn/control/wait/cleanup examples
 are in [RETIREMENT-F.md](RETIREMENT-F.md). This increment is based on

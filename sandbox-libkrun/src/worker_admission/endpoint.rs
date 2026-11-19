@@ -23,6 +23,10 @@ struct SentinelRecord {
     operation: String,
     epoch: u64,
     namespace: Identity,
+    #[serde(default)]
+    hold_id: Option<String>,
+    #[serde(default)]
+    owner: Option<super::catalog::ResourceOwner>,
 }
 pub(crate) struct EndpointGuard {
     lease: Lease,
@@ -30,6 +34,7 @@ pub(crate) struct EndpointGuard {
     path: PathBuf,
     parent: Directory,
     active: bool,
+    runtime: Option<super::RuntimeWriter>,
 }
 pub(crate) struct BoundEndpoint {
     listener: Option<UnixListener>,
@@ -47,6 +52,7 @@ struct EndpointLifetime {
     parent: Directory,
     identity: Identity,
     closed: bool,
+    runtime: Option<super::RuntimeWriter>,
 }
 pub(super) fn socket_identity(path: &Path, expected_uid: u32) -> io::Result<Option<Identity>> {
     match std::fs::symlink_metadata(path) {
@@ -80,6 +86,8 @@ pub(super) fn validate_sentinel(
         || record.id != receipt.id
         || record.operation != receipt.operation
         || record.epoch != receipt.epoch
+        || record.hold_id != receipt.hold_id
+        || record.owner != receipt.owner
         || !record
             .namespace
             .same_inode(&Identity::of(&ns.directory.file)?)
@@ -102,6 +110,9 @@ pub(super) fn replaceable(
     }) else {
         return Ok(false);
     };
+    if receipt.owner.is_none() || receipt.hold_id.is_none() {
+        return Ok(false);
+    }
     let parent = path.parent().ok_or_else(|| invalid("endpoint parent"))?;
     for e in &operation.entries {
         if e.role != PathRole::Endpoint && overlaps(&e.path.get()?, parent) {
@@ -132,12 +143,15 @@ pub(super) fn replaceable(
         Err(e) => Err(e),
     }
 }
-fn retire_socket(
+pub(super) fn retire_socket(
     tx: &mut super::catalog::Transaction<'_>,
     ns: &super::catalog::Namespace,
     receipt: &EndpointRecord,
     parent: &Directory,
 ) -> io::Result<()> {
+    if receipt.hold_id.is_none() || receipt.owner.is_none() {
+        return Err(invalid("legacy endpoint has no exact resource owner"));
+    }
     let path = receipt.path.get()?;
     let identity = receipt
         .identity
@@ -180,16 +194,139 @@ pub(super) fn settle_retired(
         .find(|e| e.id == receipt.id)
         .ok_or_else(|| invalid("endpoint missing"))?
         .state = EndpointState::Retired;
+    let id = receipt
+        .hold_id
+        .as_ref()
+        .ok_or_else(|| invalid("endpoint hold owner missing"))?;
+    let owner = receipt
+        .owner
+        .as_ref()
+        .ok_or_else(|| invalid("endpoint holder missing"))?;
     let op = tx.operation_mut(&receipt.operation)?;
-    op.holds
-        .retain(|h| !(h.kind == HoldKind::Endpoint && h.path == receipt.path));
-    op.entries
-        .retain(|e| !(e.role == PathRole::Endpoint && e.path == receipt.path));
+    let exact = op
+        .holds
+        .iter()
+        .filter(|h| {
+            h.id == *id
+                && h.kind == HoldKind::Endpoint
+                && h.path == receipt.path
+                && h.owner.as_ref() == Some(owner)
+        })
+        .count();
+    if exact != 1 {
+        return Err(invalid("endpoint hold identity mismatch"));
+    }
+    op.holds.retain(|h| {
+        !(h.id == *id
+            && h.kind == HoldKind::Endpoint
+            && h.path == receipt.path
+            && h.owner.as_ref() == Some(owner))
+    });
+    if !op.holds.iter().any(|h| h.path == receipt.path) {
+        op.entries
+            .retain(|e| !(e.role == PathRole::Endpoint && e.path == receipt.path));
+    }
     // Never clear mixed writer uncertainty, mutation holds, journals or pins.
     Ok(())
 }
+pub(super) fn prevalidate_retirement(
+    receipt: &EndpointRecord,
+    parent: &Directory,
+    expected_uid: u32,
+) -> io::Result<()> {
+    if receipt.owner.is_none() || receipt.hold_id.is_none() {
+        return Err(invalid("endpoint lacks exact owner"));
+    }
+    parent.revalidate()?;
+    parent.private(expected_uid)?;
+    if !receipt.parent.same_inode(&Identity::of(&parent.file)?) {
+        return Err(invalid("endpoint parent replaced"));
+    }
+    let path = receipt.path.get()?;
+    match receipt.state {
+        EndpointState::Retired => Ok(()), // exact durable record, no inference from path absence
+        EndpointState::Bound | EndpointState::CloseIntent => {
+            let expected = receipt
+                .identity
+                .as_ref()
+                .ok_or_else(|| invalid("endpoint has no bound identity"))?;
+            match socket_identity(&path, expected_uid)? {
+                Some(actual) if expected.same_inode(&actual) && actual.links == expected.links => {
+                    Ok(())
+                }
+                None if receipt.state == EndpointState::CloseIntent => Ok(()),
+                _ => Err(invalid(
+                    "endpoint path missing/replaced without matching close intent",
+                )),
+            }
+        }
+        EndpointState::BindIntent => Err(invalid("unresolved endpoint bind intent")),
+    }
+}
+pub(super) fn finish_recorded_close(
+    tx: &mut super::catalog::Transaction<'_>,
+    ns: &super::catalog::Namespace,
+    receipt: &EndpointRecord,
+    parent: &Directory,
+    #[cfg(test)] fault: Option<&str>,
+) -> io::Result<()> {
+    prevalidate_retirement(receipt, parent, ns.uid)?;
+    if receipt.state == EndpointState::Retired {
+        return Ok(());
+    }
+    if receipt.state == EndpointState::Bound {
+        tx.catalog
+            .endpoints
+            .iter_mut()
+            .find(|e| e.id == receipt.id)
+            .ok_or_else(|| invalid("endpoint missing"))?
+            .state = EndpointState::CloseIntent;
+        tx.save()?;
+    }
+    #[cfg(test)]
+    if fault == Some("after-intent") {
+        return Err(io::Error::other("injected endpoint close intent fault"));
+    }
+    parent.revalidate()?;
+    let path = receipt.path.get()?;
+    match socket_identity(&path, ns.uid)? {
+        Some(current) => {
+            if !receipt
+                .identity
+                .as_ref()
+                .is_some_and(|id| id.same_inode(&current) && id.links == current.links)
+            {
+                return Err(invalid("endpoint changed after close intent"));
+            }
+            unlink_at(
+                &parent.file,
+                path.file_name().ok_or_else(|| invalid("endpoint name"))?,
+            )?;
+        }
+        None if receipt.state == EndpointState::CloseIntent => (),
+        None => return Err(invalid("endpoint disappeared before owned unlink")),
+    }
+    #[cfg(test)]
+    if fault == Some("after-unlink") {
+        return Err(io::Error::other("injected endpoint unlink fault"));
+    }
+    parent.file.sync_all()?;
+    #[cfg(test)]
+    if fault == Some("after-sync") {
+        return Err(io::Error::other("injected endpoint sync fault"));
+    }
+    settle_retired(tx, receipt)?;
+    tx.save()
+}
 impl EndpointGuard {
     pub(super) fn new(lease: Lease, path: &Path) -> io::Result<Self> {
+        Self::new_owned(lease, path, None)
+    }
+    pub(super) fn new_owned(
+        lease: Lease,
+        path: &Path,
+        runtime: Option<super::RuntimeWriter>,
+    ) -> io::Result<Self> {
         let path = absolute(path)?;
         let parent = Directory::open(path.parent().ok_or_else(|| invalid("endpoint parent"))?)?;
         parent.private(uid())?;
@@ -207,18 +344,38 @@ impl EndpointGuard {
             }
         }
         drop(tx);
-        let hold = lease.hold(&path, HoldKind::Endpoint, Some(PathRole::Endpoint))?;
+        let hold = lease.hold_owned(
+            &path,
+            HoldKind::Endpoint,
+            Some(PathRole::Endpoint),
+            runtime.as_ref(),
+        )?;
         Ok(Self {
             lease,
             hold,
             path,
             parent,
             active: true,
+            runtime,
         })
     }
     pub(crate) fn bind(mut self) -> io::Result<BoundEndpoint> {
+        if let Some(runtime) = &self.runtime {
+            runtime.checkpoint()?;
+        }
         self.parent.revalidate()?;
         let mut tx = self.lease.0.namespace.transaction()?;
+        if self.runtime.is_none()
+            && tx.catalog.runtimes.iter().any(|r| {
+                r.operation == self.lease.0.id
+                    && r.admission_holder.as_deref() == Some(self.lease.0.holder.as_str())
+                    && !matches!(r.state, super::catalog::RuntimeState::Cancelled)
+            })
+        {
+            return Err(invalid(
+                "activated imported holder cannot bind an unowned endpoint",
+            ));
+        }
         if let Some(old) = socket_identity(&self.path, uid())? {
             let receipt = tx
                 .catalog
@@ -249,7 +406,20 @@ impl EndpointGuard {
         if tx.catalog.endpoints.len() >= 256 {
             return Err(limit());
         }
+        if let Some(runtime) = &self.runtime {
+            runtime.resource_owner(&self.lease, &tx)?;
+        }
         let op = tx.operation_mut(&self.lease.0.id)?;
+        let owner = op
+            .holds
+            .iter()
+            .find(|h| {
+                h.id == self.hold
+                    && h.kind == HoldKind::Endpoint
+                    && h.path.get().is_ok_and(|p| p == self.path)
+            })
+            .and_then(|h| h.owner.clone())
+            .ok_or_else(|| invalid("endpoint issuer hold missing"))?;
         if op.uncertain || op.closed {
             return Err(invalid("operation cannot bind endpoint"));
         }
@@ -271,6 +441,8 @@ impl EndpointGuard {
                 operation: self.lease.0.id.clone(),
                 epoch,
                 namespace: Identity::of(&self.lease.0.namespace.directory.file)?,
+                hold_id: Some(self.hold.clone()),
+                owner: Some(owner.clone()),
             },
         )?;
         tx.catalog.endpoints.push(EndpointRecord {
@@ -282,6 +454,8 @@ impl EndpointGuard {
             sentinel: Identity::of(&sentinel_file)?,
             parent: Identity::of(&self.parent.file)?,
             state: EndpointState::BindIntent,
+            hold_id: Some(self.hold.clone()),
+            owner: Some(owner),
         });
         tx.save()?;
         self.lease.0.namespace.directory.file.sync_all()?;
@@ -319,6 +493,7 @@ impl EndpointGuard {
                 parent: Directory::open(&self.parent.path)?,
                 identity,
                 closed: false,
+                runtime: self.runtime.clone(),
             }),
         })
     }
@@ -330,12 +505,17 @@ impl Drop for EndpointGuard {
             if let Ok(mut tx) = self.lease.0.namespace.transaction() {
                 let unresolved = tx.catalog.endpoints.iter().any(|e| {
                     e.operation == self.lease.0.id
-                        && e.path.get().is_ok_and(|p| p == self.path)
+                        && e.hold_id.as_ref() == Some(&self.hold)
                         && e.state != EndpointState::Retired
                 });
                 if !unresolved {
                     if let Ok(op) = tx.operation_mut(&self.lease.0.id) {
-                        op.holds.retain(|h| h.id != self.hold);
+                        op.holds.retain(|h| {
+                            !(h.id == self.hold
+                                && h.owner
+                                    .as_ref()
+                                    .is_some_and(|o| o.holder == self.lease.0.holder))
+                        });
                         let _ = tx.save();
                     }
                 }
@@ -384,6 +564,9 @@ impl EndpointListener {
 }
 impl EndpointLifetime {
     fn close(mut self) -> io::Result<()> {
+        if let Some(runtime) = &self.runtime {
+            runtime.checkpoint()?;
+        }
         let mut tx = self.lease.0.namespace.transaction()?;
         let receipt = tx
             .catalog
@@ -415,6 +598,11 @@ impl Drop for EndpointLifetime {
         if !self.closed {
             if let Some(file) = self.sentinel.take() {
                 std::mem::forget(file);
+            }
+            // Unknown listener ownership must retain BOTH independent endpoint
+            // exclusion and the originating runtime writer, not only the op lease.
+            if let Some(runtime) = self.runtime.take() {
+                std::mem::forget(runtime);
             }
         }
     }

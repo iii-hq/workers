@@ -320,6 +320,10 @@ impl OwnerReadGuard {
             path: HostPath::new(&root)?,
             kind: HoldKind::OwnerRead,
             epoch,
+            owner: Some(super::catalog::ResourceOwner {
+                holder: lease.0.holder.clone(),
+                runtime: None,
+            }),
         });
         op.journals.push(Journal {
             id: id.clone(),

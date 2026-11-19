@@ -274,7 +274,9 @@ fn recover_inner(
                 directory.file.sync_all()?;
                 super::endpoint::settle_retired(&mut tx, endpoint)?;
                 resolved.holds.retain(|h| {
-                    !(h.kind == super::catalog::HoldKind::Endpoint && h.path == endpoint.path)
+                    !(h.kind == super::catalog::HoldKind::Endpoint
+                        && endpoint.hold_id.as_ref() == Some(&h.id)
+                        && h.owner == endpoint.owner)
                 });
                 resolved
                     .entries

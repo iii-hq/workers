@@ -21,6 +21,20 @@ pub(super) struct Hold {
     pub path: HostPath,
     pub kind: HoldKind,
     pub epoch: u64,
+    #[serde(default)]
+    pub owner: Option<ResourceOwner>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RuntimeOwner {
+    pub id: String,
+    pub epoch: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ResourceOwner {
+    pub holder: String,
+    pub runtime: Option<RuntimeOwner>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum HoldKind {
@@ -139,6 +153,10 @@ pub(super) struct EndpointRecord {
     pub sentinel: Identity,
     pub parent: Identity,
     pub state: EndpointState,
+    #[serde(default)]
+    pub hold_id: Option<String>,
+    #[serde(default)]
+    pub owner: Option<ResourceOwner>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum EndpointState {
@@ -488,6 +506,16 @@ impl Namespace {
             .iter()
             .position(|id| id == holder)
             .ok_or_else(|| invalid("unknown holder release"))?;
+        // A dropped imported lease is not evidence that its outstanding
+        // resources ended (_exit may skip every guard). Keep membership until
+        // exact resource completion or verified runtime finalization transfers it.
+        if op
+            .holds
+            .iter()
+            .any(|h| h.owner.as_ref().is_none_or(|o| o.holder == holder))
+        {
+            return Ok(());
+        }
         op.holder_ids.remove(index);
         op.holders = op.holder_ids.len() as u32;
         if op.holders == 0
@@ -606,6 +634,35 @@ impl Transaction<'_> {
             {
                 return Err(invalid("invalid endpoint parent/state"));
             }
+            let op = self.operation(&endpoint.operation)?;
+            match (&endpoint.hold_id, &endpoint.owner) {
+                (Some(id), Some(owner)) => {
+                    if !id_valid(id) {
+                        return Err(invalid("endpoint hold id invalid"));
+                    }
+                    self.validate_resource_owner(
+                        op,
+                        owner,
+                        endpoint.state == EndpointState::Retired,
+                        Some(endpoint),
+                    )?;
+                    let matching = op.holds.iter().filter(|h| h.id == *id).collect::<Vec<_>>();
+                    if endpoint.state == EndpointState::Retired {
+                        if !matching.is_empty() {
+                            return Err(invalid("retired endpoint still owns a hold"));
+                        }
+                    } else if matching.len() != 1
+                        || matching[0].kind != HoldKind::Endpoint
+                        || matching[0].path != endpoint.path
+                        || matching[0].owner.as_ref() != Some(owner)
+                        || matching[0].epoch > endpoint.epoch
+                    {
+                        return Err(invalid("endpoint record/hold owner mismatch"));
+                    }
+                }
+                (None, None) => (), // Parsed legacy evidence is never cleanup authority.
+                _ => return Err(invalid("partial endpoint ownership")),
+            }
             super::endpoint::validate_sentinel(self.namespace, endpoint)?;
         }
         let mut allowed = vec![
@@ -708,8 +765,42 @@ impl Transaction<'_> {
                     }
                 }
             }
+            let mut resource_ids = std::collections::HashSet::new();
             for hold in &op.holds {
                 hold.path.get()?;
+                if op
+                    .holds
+                    .iter()
+                    .any(|other| other.id == hold.id && other.kind != hold.kind)
+                {
+                    return Err(invalid("hold id reused across resource kinds"));
+                }
+                if matches!(hold.kind, HoldKind::Read | HoldKind::Endpoint)
+                    && !resource_ids.insert(&hold.id)
+                {
+                    return Err(invalid("duplicate resource hold id"));
+                }
+                if let Some(owner) = &hold.owner {
+                    self.validate_resource_owner(op, owner, false, None)?;
+                    if owner.runtime.as_ref().is_some_and(|r| r.epoch > hold.epoch) {
+                        return Err(invalid("resource hold predates runtime issuer"));
+                    }
+                    if owner.runtime.is_some()
+                        && !matches!(hold.kind, HoldKind::Read | HoldKind::Endpoint)
+                    {
+                        return Err(invalid("runtime resource owner on unsupported hold kind"));
+                    }
+                    if hold.kind == HoldKind::Read
+                        && owner.runtime.as_ref().is_some_and(|bound| {
+                            self.catalog
+                                .runtimes
+                                .iter()
+                                .any(|r| r.id == bound.id && r.state == RuntimeState::Retired)
+                        })
+                    {
+                        return Err(invalid("retired runtime retains a bound read hold"));
+                    }
+                }
                 if !id_valid(&hold.id) || hold.epoch > op.epoch {
                     return Err(invalid("invalid hold"));
                 }
@@ -845,6 +936,56 @@ impl Transaction<'_> {
         let names = self.namespace.directory.names()?;
         if names.len() != allowed.len() || names.iter().any(|n| !allowed.contains(n)) {
             return Err(invalid("unknown or incomplete admission namespace"));
+        }
+        Ok(())
+    }
+    fn validate_resource_owner(
+        &self,
+        op: &Operation,
+        owner: &ResourceOwner,
+        historical: bool,
+        endpoint: Option<&EndpointRecord>,
+    ) -> io::Result<()> {
+        if !id_valid(&owner.holder) {
+            return Err(invalid("invalid resource holder"));
+        }
+        let member = op.holder_ids.contains(&owner.holder);
+        if let Some(bound) = &owner.runtime {
+            let runtime = self
+                .catalog
+                .runtimes
+                .iter()
+                .find(|r| r.id == bound.id && r.operation == op.id)
+                .ok_or_else(|| invalid("resource runtime absent"))?;
+            if runtime.epoch != bound.epoch
+                || runtime.admission_holder.as_deref() != Some(owner.holder.as_str())
+                || !matches!(
+                    runtime.state,
+                    RuntimeState::Active | RuntimeState::Retired | RuntimeState::Uncertain
+                )
+            {
+                return Err(invalid("resource runtime/holder/epoch mismatch"));
+            }
+            let transferred = runtime.state == RuntimeState::Retired
+                && self.catalog.endpoints.iter().any(|e| {
+                    e.operation == op.id && e.owner.as_ref() == Some(owner) && e.hold_id.is_some()
+                });
+            if !member && !historical && !transferred {
+                return Err(invalid(
+                    "runtime resource holder no longer belongs to operation",
+                ));
+            }
+        } else if !member && !historical {
+            return Err(invalid("host resource holder absent"));
+        }
+        if let Some(endpoint) = endpoint {
+            if owner
+                .runtime
+                .as_ref()
+                .is_some_and(|r| r.epoch > endpoint.epoch)
+            {
+                return Err(invalid("endpoint predates its runtime"));
+            }
         }
         Ok(())
     }
