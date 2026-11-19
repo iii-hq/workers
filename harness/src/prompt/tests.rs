@@ -96,7 +96,7 @@ fn default_prompt_enforces_efficiency_discipline() {
     assert!(out.contains("After the required deliverable exists"));
     assert!(out.contains("do not replay successful work"));
     assert!(
-        out.len() <= 26_400,
+        out.len() <= 26_000,
         "default prompt grew to {} bytes",
         out.len()
     );
