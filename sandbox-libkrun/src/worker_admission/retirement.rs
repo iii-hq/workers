@@ -23,6 +23,7 @@ struct RemovalAuthority {
     runtime: String,
     epoch: u64,
     entries: Vec<Entry>,
+    lineage: super::lineage::Anchor,
     sentinel: Identity,
     used: AtomicBool,
     never_spawned: bool,
@@ -120,6 +121,7 @@ impl RemovalAuthority {
                 .max()
                 .ok_or_else(|| invalid("runtime epoch missing"))?,
             entries: op.entries.clone(),
+            lineage: super::lineage::Anchor::capture(op, &op.entries)?,
             sentinel: op.sentinel.clone(),
             used: AtomicBool::new(false),
             never_spawned,
@@ -142,62 +144,21 @@ impl RemovalAuthority {
             .iter()
             .map(|p| absolute(p))
             .collect::<io::Result<Vec<PathBuf>>>()?;
-        let mut bindings = Vec::new();
+        // Only scope/Arc checks occur before the one-shot claim. Frozen pins
+        // are not read against the current path here: owned effects may already
+        // have replaced them. Replay, path validation and hold acquisition happen
+        // atomically under the catalog transaction in begin_authorized.
         for path in &paths {
-            if !path.starts_with(&root) {
-                return Err(invalid("cleanup target outside root"));
-            }
-            let entry = self
-                .entries
-                .iter()
-                .find(|e| {
+            if !path.starts_with(&root)
+                || !self.entries.iter().any(|e| {
                     matches!(e.role, PathRole::MutableTree | PathRole::MutableFile)
                         && e.path.get().is_ok_and(|p| p == *path)
                 })
-                .ok_or_else(|| invalid("cleanup receipt does not cover target"))?;
-            super::validate_entry(entry)?;
-            if self.never_spawned {
-                let tx = lease.0.namespace.transaction()?;
-                let op = tx.operation(&lease.0.id)?;
-                let target_identity = entry
-                    .pins
-                    .iter()
-                    .find(|(p, _)| p.get().is_ok_and(|p| p == *path))
-                    .map(|(_, id)| id);
-                let created = op
-                    .journals
-                    .iter()
-                    .filter(|j| j.committed)
-                    .flat_map(|j| &j.intents)
-                    .any(|intent| {
-                        matches!(
-                            intent.kind,
-                            super::catalog::EffectKind::Create
-                                | super::catalog::EffectKind::Publish
-                        ) && intent.completed
-                            && !intent.cancelled
-                            && intent.old.is_none()
-                            && intent.to.get().is_ok_and(|p| p == *path)
-                            && intent.new.as_ref() == target_identity
-                    });
-                let already_removed = target_identity.is_none()
-                    && op
-                        .journals
-                        .iter()
-                        .filter(|j| j.committed)
-                        .flat_map(|j| &j.intents)
-                        .any(|i| {
-                            i.kind == super::catalog::EffectKind::Remove
-                                && i.completed
-                                && i.to.get().is_ok_and(|p| p == *path)
-                        });
-                if !created && !already_removed {
-                    return Err(invalid(
-                        "never-spawned receipt cannot delete preexisting or legacy data",
-                    ));
-                }
+            {
+                return Err(invalid(
+                    "cleanup receipt does not cover original exact target",
+                ));
             }
-            bindings.push(entry.clone());
         }
         if self
             .used
@@ -215,7 +176,8 @@ impl RemovalAuthority {
                 targets: paths,
             },
             self.epoch,
-            &bindings,
+            &self.entries,
+            &self.lineage,
             &self.runtime,
             &self.sentinel,
             self.never_spawned,

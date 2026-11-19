@@ -2164,3 +2164,124 @@ fn f_receipt_is_stale_after_owned_target_mutation_without_new_runtime() {
     assert!(proof.begin_remove(&lease, &root, &[&root]).is_err());
     assert_eq!(std::fs::read(root.join("data")).unwrap(), b"NEW");
 }
+
+#[test]
+fn f_lineage_never_spawned_follows_owned_publication_but_not_legacy_replacement() {
+    for legacy in [false, true] {
+        let f = fixture();
+        let file = f.data.join("control");
+        if legacy {
+            std::fs::write(&file, b"LEGACY").unwrap();
+        }
+        let lease = with_paths(
+            f.context.local(&f.data.join("state")).unwrap(),
+            &[PathRequest {
+                path: &file,
+                role: PathRole::MutableFile,
+            }],
+        )
+        .unwrap();
+        if !legacy {
+            let mut create = lease
+                .begin(MutationPlan::ControlFiles {
+                    files: vec![file.clone()],
+                })
+                .unwrap();
+            let mut stage = create.stage_file(&file, 0o600).unwrap();
+            stage.file_mut().write_all(b"OWNED").unwrap();
+            create.publish_file(stage).unwrap();
+            create.commit().unwrap();
+        }
+        let receipt = lease
+            .prepare_runtime(&[])
+            .unwrap()
+            .cancel_before_spawn()
+            .unwrap();
+        let mut final_write = lease
+            .begin(MutationPlan::ControlFiles {
+                files: vec![file.clone()],
+            })
+            .unwrap();
+        let mut stage = final_write.stage_file(&file, 0o600).unwrap();
+        stage.file_mut().write_all(b"FINAL").unwrap();
+        final_write.publish_file(stage).unwrap();
+        final_write.commit().unwrap();
+        if legacy {
+            assert!(receipt.begin_remove(&lease, &f.data, &[&file]).is_err());
+            assert_eq!(std::fs::read(&file).unwrap(), b"FINAL");
+        } else {
+            let mut remove = receipt.begin_remove(&lease, &f.data, &[&file]).unwrap();
+            remove.remove_path(&file).unwrap();
+            remove.commit().unwrap();
+            assert!(!file.exists());
+        }
+    }
+}
+#[test]
+fn f_lineage_receipt_cannot_accept_mutated_preexisting_journal_history() {
+    let f = fixture();
+    let root = f.data.join("new");
+    let lease = f.context.local(&root).unwrap();
+    let mut create = lease
+        .begin(MutationPlan::Create { root: root.clone() })
+        .unwrap();
+    create.create_dir_all(&root, 0o700).unwrap();
+    create.commit().unwrap();
+    let receipt = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    {
+        let mut tx = f.context.namespace.transaction().unwrap();
+        let op = tx.operation_mut(&lease.0.id).unwrap();
+        op.journals[0].intents[0].to_parent.ino += 1;
+        tx.save().unwrap();
+    }
+    assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+    assert!(root.exists());
+}
+#[test]
+fn f_lineage_never_spawned_after_adopt_tracks_only_owned_origins() {
+    let f = fixture();
+    let vm = f.data.join("vm");
+    private(&vm);
+    let source = vm.join("created");
+    let destination = vm.join("retained");
+    let lease = with_paths(
+        f.context.local(&vm).unwrap(),
+        &[
+            PathRequest {
+                path: &source,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &destination,
+                role: PathRole::MutableTree,
+            },
+        ],
+    )
+    .unwrap();
+    let mut create = lease
+        .begin(MutationPlan::Create {
+            root: source.clone(),
+        })
+        .unwrap();
+    create.create_dir_all(&source, 0o700).unwrap();
+    create.commit().unwrap();
+    let receipt = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    let mut retain = lease
+        .begin(MutationPlan::Adopt { root: vm.clone() })
+        .unwrap();
+    retain.rename_preserving(&source, &destination).unwrap();
+    retain.commit().unwrap();
+    let mut remove = receipt.begin_remove(&lease, &vm, &[&source]).unwrap();
+    remove.remove_path(&source).unwrap();
+    remove.commit().unwrap();
+    assert!(destination.exists());
+    assert!(!source.exists());
+}

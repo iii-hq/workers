@@ -187,13 +187,48 @@ The code does not claim OS reap equals writer retirement or guest consistency.
 
 ## Exact cleanup and safe rollback
 
-Receipts retain the same Lease Arc, namespace/operation sentinel, exact declared
-entry pins and last runtime epoch. begin_remove rejects another lease/context,
-new runtime epoch, changed target/root identity, unresolved holds/journals/endpoints,
-unlisted targets and already consumed receipt. Validation and Remove hold acquisition
-share the catalog transaction. Targets must be explicitly declared entries, not
-arbitrary descendants inferred from a broad root. Completed disjoint logs/endpoints
-can finish before cleanup; no generic pin refresh is introduced.
+Receipts retain the same Lease Arc, namespace/operation sentinel, original exact
+entry declarations, last runtime epoch and a private journal anchor. The lineage
+correction after `b0b7572993d8ba65e32d80ae48b9074e1592000c` keeps every public
+signature above unchanged. It removes the mistaken requirement that a final
+ControlFiles/Adopt effect leave frozen receipt pins byte-identical forever.
+
+`begin_remove` derives eligible current pins solely from the bounded, ordered
+old/new intent chain in this SAME operation. Original committed journal IDs,
+epochs and digests are anchored; changed/missing historical records refuse. A
+journal already active when the receipt was issued may complete later; its
+original ID/epoch must remain recognizable. Later epochs must be strictly ordered.
+Every applicable effect must be completed, noncancelled and have its corresponding
+observed old/new change plus parent identities. Digest equality is an integrity
+check within an already-private receipt, not a new issuer or migration authority.
+
+Replay supports exact file publication/rotation in ControlFiles, no-effect commits,
+owned directory creation and NOREPLACE Adopt retention (including known descendant
+pins). It follows stage provenance and preserved-prior identities, and carries
+NeverSpawned's creation-from-absence origin through replacement/move without
+converting legacy bytes into owned rollback data. Discarded stages cannot authorize
+target replacement. Diagnostic/removal/reclone-tree effects affecting receipt
+lineage are deliberately not inferred as supported transitions. Such cases refuse
+rather than refreshing arbitrary current subtrees. This increment is the narrow
+final-console/retention integration seam, not a general mutation rebase API.
+
+Only declarations present in the ORIGINAL receipt can become Remove targets.
+Newly declared paths, ancestor expansion, foreign Lease/context, a new runtime
+(including a subsequently cancelled one), incomplete/uncertain effects, outside
+replacement, altered parents, missing retention data and consumed receipts refuse.
+Backward dependency selection includes earlier effects needed by Adopt without
+making unrelated paths removable. Current filesystem/pin reads occur after deriving
+the expected chain, solely to validate its result. Retained destinations and prior
+copies are also verified; they are not automatically added to the Remove set.
+
+Replay validation and Remove hold acquisition occur in the SAME catalog transaction.
+The shared receipt remains one-shot even if validation fails. There is no new
+callback, public constructor, serialization authority, `refresh`, release/reopen
+or consumer API. Endpoint close is compatible when it only retires its own entry;
+all previous endpoint/data/holder gates remain. Runtime guest_consistent stays false.
+Memory is bounded by the catalog's256 journals/512 intents plus16,384 replay nodes;
+additional bounds return error, never omit effects. Historical absent-tail/unknown
+writer and cooperative alias limitations still apply.
 
 Pre-spawn rollback uses the actual unconsumed launch:
 
@@ -216,7 +251,7 @@ retain it for explicit recovery/authorized existing-data policy rather than gues
 
 ## Source tests and pending gates
 
-All89 prior E tests and their names remain; total100 tests are authored. New
+All100 prior F tests and their names remain; total113 tests are authored. New
 AUTHORED_NOTRUN tests cover actual owned wait
 with catalog lock failure, signal/reap pidfd race, wait-error versus reap, abandoned
 observer completion, post-spawn pidfd receive failure, missing executable, descendant
@@ -238,3 +273,27 @@ checks exit0. Compiled0/executed0. These do not establish libc/Tokio/pidfd kerne
 compatibility or lifecycle correctness; admitted compile/process tests are pending.
 One Workers PR; no release/Registry or remote actions. No compatibility grant,
 OLD reimport, guest flush or authenticated historical migration campaign is implied.
+
+### Receipt-lineage integration regressions (AUTHORED_NOTRUN)
+
+The13 additional tests cover real wait -> final console replacement/rotation ->
+exact Remove; an active console guard at reap completing multiple publications;
+wait -> upper/root Adopt retention -> only runtime targets removed; endpoint close;
+NeverSpawned following only owned creation origins; outside replacement, replaced
+retained destination, incomplete mutation, altered baseline, old/new corruption,
+reordered epochs, a new runtime and targets declared only after receipt issuance.
+Existing foreign/stale/one-shot/no-effect controls remain. Positive wait fixtures
+use the existing own-context runtime activation, not a claimed cross-exec campaign.
+No Rust/process/socket/signal/filesystem fixture ran in this source delivery.
+Caller B must still carry the ORIGINAL lifecycle Lease through stop/destroy and
+finish logs, retention and endpoints before invoking the unchanged receipt API.
+No caller source or production routing was changed here.
+
+Lineage source checks: rustfmt and rustfmt --check on the six edited Rust files
+exit0; git diff --check exit0. The first bounded Python check exited1 because it
+incorrectly prohibited validate_entry throughout retirement.rs (including valid
+receipt issuance); restricting that assertion to begin_remove passed exit0 with
+no functional-code change. Final static checks confirm eight owned files, all100
+previous test/helper names retained and unchanged public receipt signatures;
+runtime/process_control/catalog/owner_read/storage/endpoint are byte-identical to
+b0b75729. Compiled0/executed0; this is not a typecheck or normal lifecycle PASS.

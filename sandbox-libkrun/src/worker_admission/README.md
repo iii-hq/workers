@@ -1,4 +1,4 @@
-# Admission v2 core: retirement F source candidate
+# Admission v2 core: retirement F lineage source candidate
 
 The concrete F1/F3 consumer seam and complete spawn/control/wait/cleanup examples
 are in [RETIREMENT-F.md](RETIREMENT-F.md). This increment is based on
@@ -7,6 +7,15 @@ fallible-wait-as-reap inference with child-issued pidfd control, distinct OS-rea
 observation and an opaque writer-retirement receipt. Raw `Lease::begin(Remove)`
 now refuses; use the exact same-operation receipt methods. Caller routing F2 is
 not included in this core source delivery.
+
+The receipt-lineage increment after `b0b7572993d8ba65e32d80ae48b9074e1592000c`
+keeps F consumer signatures unchanged. Final committed SAME-operation ControlFiles
+and Adopt effects now advance the receipt's expected identities via anchored,
+ordered old/new journals in the Remove-acquisition transaction. No re-observation
+of current paths grants authority, no newly declared target is added, and all
+foreign/stale/runtime/uncertainty/one-shot gates remain. See RETIREMENT-F.md for
+exact support and bounds. Current total113 tests are AUTHORED_NOTRUN, including
+all100 previous names; no compile or runtime acceptance is implied.
 
 Incremental after `d556cda04ebb1885a35cb9b3840dfd52a26a33b3` (tree
 `a9bab8b238469c4f71810bb90db695ab07a30be8`). C/D and earlier commits are preserved.

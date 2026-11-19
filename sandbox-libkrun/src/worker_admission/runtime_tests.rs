@@ -570,3 +570,359 @@ async fn f_real_wait_descendant_description_blocks_receipt_after_os_reap() {
     drop(descendant);
     assert!(control.observation().retirement().is_none());
 }
+
+async fn lineage_retired(lease: &Lease) -> WriterRetirement {
+    // Real Child.wait and runtime-OFD checks; activation uses the existing explicit
+    // own-context import fixture, not a production authority constructor.
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    activate_for_wait_fixture(&child);
+    let completion = child.wait().await;
+    assert!(completion.os_status().unwrap().success());
+    completion.retirement().unwrap().clone()
+}
+fn publish_control(lease: &Lease, path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    let mut mutation = lease
+        .begin(MutationPlan::ControlFiles {
+            files: vec![path.to_path_buf()],
+        })
+        .unwrap();
+    let mut stage = mutation.stage_file(path, 0o600).unwrap();
+    stage.file_mut().write_all(bytes).unwrap();
+    mutation.publish_file(stage).unwrap();
+    mutation.commit().unwrap();
+}
+#[tokio::test]
+async fn f_lineage_real_wait_then_final_console_rotation_and_multi_step_remove() {
+    let (_temp, context, data) = fixture();
+    let vm = data.join("vm");
+    std::fs::create_dir(&vm).unwrap();
+    let log = vm.join("console.log");
+    let rotated = vm.join("console.log.1");
+    std::fs::write(&log, b"running").unwrap();
+    let lease = with_paths(
+        context.local(&vm).unwrap(),
+        &[
+            PathRequest {
+                path: &log,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &rotated,
+                role: PathRole::MutableFile,
+            },
+        ],
+    )
+    .unwrap();
+    let receipt = lineage_retired(&lease).await;
+    publish_control(&lease, &log, b"drained-1");
+    publish_control(&lease, &rotated, b"drained-1");
+    publish_control(&lease, &log, b"drained-2");
+    lease
+        .begin(MutationPlan::ControlFiles {
+            files: vec![log.clone()],
+        })
+        .unwrap()
+        .commit()
+        .unwrap(); // no-effect journal
+    let mut remove = receipt
+        .begin_remove(&lease, &vm, &[&log, &rotated])
+        .unwrap();
+    remove.remove_path(&log).unwrap();
+    remove.remove_path(&rotated).unwrap();
+    remove.commit().unwrap();
+    assert!(!log.exists() && !rotated.exists());
+    assert!(vm.exists());
+    // Preserved prior files remain; Remove never infers authority to delete them.
+    assert!(
+        std::fs::read_dir(&vm)
+            .unwrap()
+            .map(Result::unwrap)
+            .any(|e| e.file_name().to_string_lossy().starts_with(".iii-prior-"))
+    );
+    assert!(receipt.begin_remove(&lease, &vm, &[&log]).is_err());
+}
+#[tokio::test]
+async fn f_lineage_real_wait_then_retain_adopt_removes_runtime_only() {
+    let (_temp, context, data) = fixture();
+    let vm = data.join("vm");
+    std::fs::create_dir(&vm).unwrap();
+    let root = vm.join("root");
+    std::fs::create_dir(&root).unwrap();
+    let upper = root.join("upper.ext4");
+    std::fs::write(&upper, b"GUEST DATA").unwrap();
+    std::fs::write(root.join("guest-file"), b"KEEP").unwrap();
+    let kept_upper = vm.join("upper.pre-build.ext4");
+    let kept_root = vm.join("root.pre-build");
+    let log = vm.join("console.log");
+    std::fs::write(&log, b"log").unwrap();
+    let lease = with_paths(
+        context.local(&vm).unwrap(),
+        &[
+            PathRequest {
+                path: &root,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &upper,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &kept_upper,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &kept_root,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &log,
+                role: PathRole::MutableFile,
+            },
+        ],
+    )
+    .unwrap();
+    let receipt = lineage_retired(&lease).await;
+    let mut retain = lease
+        .begin(MutationPlan::Adopt { root: vm.clone() })
+        .unwrap();
+    retain.rename_preserving(&upper, &kept_upper).unwrap();
+    retain.rename_preserving(&root, &kept_root).unwrap();
+    retain.commit().unwrap();
+    publish_control(&lease, &log, b"final-control");
+    let mut remove = receipt.begin_remove(&lease, &vm, &[&root, &log]).unwrap();
+    remove.remove_path(&root).unwrap();
+    remove.remove_path(&log).unwrap();
+    remove.commit().unwrap();
+    assert_eq!(std::fs::read(&kept_upper).unwrap(), b"GUEST DATA");
+    assert_eq!(
+        std::fs::read(kept_root.join("guest-file")).unwrap(),
+        b"KEEP"
+    );
+    assert!(!log.exists());
+}
+#[tokio::test]
+async fn f_lineage_external_replacement_after_owned_control_is_not_blessed() {
+    let (_temp, context, data) = fixture();
+    let log = data.join("console.log");
+    std::fs::write(&log, b"OLD").unwrap();
+    let lease = with_paths(
+        context.local(&data.join("state")).unwrap(),
+        &[PathRequest {
+            path: &log,
+            role: PathRole::MutableFile,
+        }],
+    )
+    .unwrap();
+    let receipt = lineage_retired(&lease).await;
+    publish_control(&lease, &log, b"OWNED");
+    std::fs::rename(&log, data.join("retained-owned")).unwrap();
+    std::fs::write(&log, b"FOREIGN").unwrap();
+    assert!(receipt.begin_remove(&lease, &data, &[&log]).is_err());
+    assert_eq!(std::fs::read(&log).unwrap(), b"FOREIGN");
+}
+#[tokio::test]
+async fn f_lineage_incomplete_control_consumes_receipt_without_removal() {
+    let (_temp, context, data) = fixture();
+    let log = data.join("log");
+    std::fs::write(&log, b"OLD").unwrap();
+    let lease = with_paths(
+        context.local(&data.join("state")).unwrap(),
+        &[PathRequest {
+            path: &log,
+            role: PathRole::MutableFile,
+        }],
+    )
+    .unwrap();
+    let receipt = lineage_retired(&lease).await;
+    let mut control = lease
+        .begin(MutationPlan::ControlFiles {
+            files: vec![log.clone()],
+        })
+        .unwrap();
+    let stage = control.stage_file(&log, 0o600).unwrap();
+    control.publish_file(stage).unwrap();
+    assert!(receipt.begin_remove(&lease, &data, &[&log]).is_err());
+    control.commit().unwrap();
+    assert!(receipt.begin_remove(&lease, &data, &[&log]).is_err());
+    assert!(log.exists());
+}
+#[tokio::test]
+async fn f_lineage_newly_declared_target_cannot_extend_the_original_receipt() {
+    let (_temp, context, data) = fixture();
+    let vm = data.join("vm");
+    std::fs::create_dir(&vm).unwrap();
+    let lease = context.local(&vm).unwrap();
+    let receipt = lineage_retired(&lease).await;
+    let added = vm.join("later");
+    let _same = with_paths(
+        lease.clone(),
+        &[PathRequest {
+            path: &added,
+            role: PathRole::MutableFile,
+        }],
+    )
+    .unwrap();
+    publish_control(&lease, &added, b"KEEP");
+    assert!(receipt.begin_remove(&lease, &vm, &[&added]).is_err());
+    assert_eq!(std::fs::read(&added).unwrap(), b"KEEP");
+}
+#[tokio::test]
+async fn f_lineage_old_new_corruption_and_epoch_reordering_refuse() {
+    for reverse in [false, true] {
+        let (_temp, context, data) = fixture();
+        let log = data.join("log");
+        std::fs::write(&log, b"OLD").unwrap();
+        let lease = with_paths(
+            context.local(&data.join("state")).unwrap(),
+            &[PathRequest {
+                path: &log,
+                role: PathRole::MutableFile,
+            }],
+        )
+        .unwrap();
+        let receipt = lineage_retired(&lease).await;
+        publish_control(&lease, &log, b"ONE");
+        publish_control(&lease, &log, b"TWO");
+        {
+            let mut tx = context.namespace.transaction().unwrap();
+            let op = tx.operation_mut(&lease.0.id).unwrap();
+            if reverse {
+                op.journals.reverse();
+            } else {
+                let intent = op.journals[0]
+                    .intents
+                    .iter_mut()
+                    .find(|i| i.kind == super::super::catalog::EffectKind::Publish)
+                    .unwrap();
+                intent.old.as_mut().unwrap().ino += 1;
+            }
+            tx.save().unwrap();
+        }
+        assert!(receipt.begin_remove(&lease, &data, &[&log]).is_err());
+        assert_eq!(std::fs::read(&log).unwrap(), b"TWO");
+    }
+}
+
+#[tokio::test]
+async fn f_lineage_console_guard_open_at_wait_completes_multiple_owned_effects() {
+    use std::io::Write;
+    let (_temp, context, data) = fixture();
+    let log = data.join("console.log");
+    std::fs::write(&log, b"OLD").unwrap();
+    let lease = with_paths(
+        context.local(&data.join("state")).unwrap(),
+        &[PathRequest {
+            path: &log,
+            role: PathRole::MutableFile,
+        }],
+    )
+    .unwrap();
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    activate_for_wait_fixture(&child);
+    let mut control = lease
+        .begin(MutationPlan::ControlFiles {
+            files: vec![log.clone()],
+        })
+        .unwrap();
+    let mut first = control.stage_file(&log, 0o600).unwrap();
+    first.file_mut().write_all(b"ONE").unwrap();
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap().clone();
+    control.publish_file(first).unwrap();
+    let mut second = control.stage_file(&log, 0o600).unwrap();
+    second.file_mut().write_all(b"TWO").unwrap();
+    control.publish_file(second).unwrap();
+    control.commit().unwrap();
+    let mut remove = receipt.begin_remove(&lease, &data, &[&log]).unwrap();
+    remove.remove_path(&log).unwrap();
+    remove.commit().unwrap();
+    assert!(!log.exists());
+}
+
+#[tokio::test]
+async fn f_lineage_endpoint_close_does_not_invalidate_disjoint_cleanup_receipt() {
+    let (_temp, context, data) = fixture();
+    let root = data.join("state");
+    std::fs::create_dir(&root).unwrap();
+    let control_dir = data.join("private-control");
+    std::fs::create_dir(&control_dir).unwrap();
+    std::fs::set_permissions(&control_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = control_dir.join("shell.sock");
+    let lease = with_paths(
+        context.local(&root).unwrap(),
+        &[PathRequest {
+            path: &socket,
+            role: PathRole::Endpoint,
+        }],
+    )
+    .unwrap();
+    let bound = lease.endpoint(&socket).unwrap().bind().unwrap();
+    let receipt = lineage_retired(&lease).await;
+    bound.close().unwrap();
+    let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
+    remove.remove_path(&root).unwrap();
+    remove.commit().unwrap();
+    assert!(!root.exists());
+    assert!(!socket.exists());
+}
+#[tokio::test]
+async fn f_lineage_new_runtime_after_committed_console_still_invalidates_receipt() {
+    let (_temp, context, data) = fixture();
+    let log = data.join("log");
+    std::fs::write(&log, b"OLD").unwrap();
+    let lease = with_paths(
+        context.local(&data.join("state")).unwrap(),
+        &[PathRequest {
+            path: &log,
+            role: PathRole::MutableFile,
+        }],
+    )
+    .unwrap();
+    let receipt = lineage_retired(&lease).await;
+    publish_control(&lease, &log, b"FINAL");
+    drop(lease.prepare_runtime(&[]).unwrap());
+    assert!(receipt.begin_remove(&lease, &data, &[&log]).is_err());
+    assert_eq!(std::fs::read(log).unwrap(), b"FINAL");
+}
+#[tokio::test]
+async fn f_lineage_retained_destination_replacement_is_not_safe_absence() {
+    let (_temp, context, data) = fixture();
+    let vm = data.join("vm");
+    std::fs::create_dir(&vm).unwrap();
+    let root = vm.join("root");
+    std::fs::create_dir(&root).unwrap();
+    let kept = vm.join("retained");
+    let lease = with_paths(
+        context.local(&vm).unwrap(),
+        &[
+            PathRequest {
+                path: &root,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &kept,
+                role: PathRole::MutableTree,
+            },
+        ],
+    )
+    .unwrap();
+    let receipt = lineage_retired(&lease).await;
+    let mut retain = lease
+        .begin(MutationPlan::Adopt { root: vm.clone() })
+        .unwrap();
+    retain.rename_preserving(&root, &kept).unwrap();
+    retain.commit().unwrap();
+    std::fs::rename(&kept, vm.join("actual-data")).unwrap();
+    std::fs::create_dir(&kept).unwrap();
+    assert!(receipt.begin_remove(&lease, &vm, &[&root]).is_err());
+    assert!(vm.join("actual-data").exists());
+}

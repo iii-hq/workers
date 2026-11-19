@@ -4,6 +4,7 @@
 //! implicit bootstrap, environment override, or permission to boot custody.
 mod catalog;
 mod endpoint;
+mod lineage;
 mod mutation;
 mod owner_read;
 mod process_control;

@@ -146,6 +146,7 @@ impl MutationGuard {
         plan: MutationPlan,
         epoch: u64,
         bindings: &[super::catalog::Entry],
+        lineage: &super::lineage::Anchor,
         runtime: &str,
         sentinel: &Identity,
         never_spawned: bool,
@@ -153,13 +154,20 @@ impl MutationGuard {
         Self::begin_inner(
             lease,
             plan,
-            Some((epoch, bindings, runtime, sentinel, never_spawned)),
+            Some((epoch, bindings, lineage, runtime, sentinel, never_spawned)),
         )
     }
     fn begin_inner(
         lease: Lease,
         plan: MutationPlan,
-        authority: Option<(u64, &[super::catalog::Entry], &str, &Identity, bool)>,
+        authority: Option<(
+            u64,
+            &[super::catalog::Entry],
+            &super::lineage::Anchor,
+            &str,
+            &Identity,
+            bool,
+        )>,
     ) -> io::Result<Self> {
         let removing = matches!(&plan, MutationPlan::Remove { .. });
         let control = matches!(&plan, MutationPlan::ControlFiles { .. });
@@ -261,7 +269,7 @@ impl MutationGuard {
         lease.revalidate()?;
         let mut tx = lease.0.namespace.transaction()?;
         if removing {
-            let (epoch, bindings, runtime, sentinel, never_spawned) =
+            let (epoch, bindings, lineage, runtime, sentinel, never_spawned) =
                 authority.ok_or_else(|| invalid("missing cleanup receipt"))?;
             let op = tx.operation(&lease.0.id)?;
             if &op.sentinel != sentinel
@@ -281,14 +289,9 @@ impl MutationGuard {
                     "stale cleanup receipt/layout or unresolved effects",
                 ));
             }
-            for binding in bindings {
-                super::validate_entry(binding)?;
-                if !op.entries.iter().any(|e| {
-                    e.path == binding.path && e.role == binding.role && e.pins == binding.pins
-                }) {
-                    return Err(invalid("layout binding changed since retirement"));
-                }
-            }
+            // Frozen receipt identities evolve only through complete,
+            // ordered SAME-operation journals; never refresh from current paths.
+            super::lineage::validate(lineage, bindings, op, &footprint, never_spawned)?;
             let required = if never_spawned {
                 super::catalog::RuntimeState::Cancelled
             } else {
