@@ -270,6 +270,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn redirect_is_not_followed_so_the_key_stays_home() {
+        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = format!(
+            "http://localhost:{}/steal",
+            elsewhere.local_addr().unwrap().port()
+        );
+        let url = stub(&format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nlocation: {target}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        ))
+        .await;
+        let client = crate::register::http_client();
+        // Short deadline: without the policy the client hangs on the target.
+        let mut a = args(url);
+        a.first_token_timeout = Duration::from_secs(2);
+        let events = drain(spawn_upstream(client, a)).await;
+        let message = single_terminal_error(&events).error_message.clone();
+        assert!(
+            message.as_deref().unwrap_or("").contains("307"),
+            "{message:?}"
+        );
+        let followed = tokio::time::timeout(Duration::from_millis(200), elsewhere.accept()).await;
+        assert!(followed.is_err(), "redirect target was contacted");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn live_stream_ends_in_one_done() {
         let url = stub(&format!("{SSE_HEADERS}{}", fixture("sse/text.sse"))).await;
         let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;

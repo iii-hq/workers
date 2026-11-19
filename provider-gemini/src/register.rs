@@ -129,22 +129,29 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
     }
 }
 
+/// The one upstream client, shared by stream and discovery.
+pub(crate) fn http_client() -> reqwest::Client {
+    // Streaming uses no total timeout (the router owns stream budgets), but
+    // reads are silence-bounded: a stalled upstream otherwise pings the router
+    // past its idle guard until the engine kills the call at stream_timeout.
+    // Keepalive comments count as reads, so upstream.rs also enforces this
+    // budget until generation actually starts.
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(upstream_timeout())
+        // x-goog-api-key is not stripped on cross-host redirects, so never follow one.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest client")
+}
+
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
     // router::on-ready — a restarted router may carry new config and reissues
     // declare/refresh anyway — and on upstream auth errors (stream_fn).
     let cache = ScaffoldCache::new();
-    // Streaming uses no total timeout (the router owns stream budgets), but
-    // reads are silence-bounded: a stalled upstream otherwise pings the router
-    // past its idle guard until the engine kills the call at stream_timeout.
-    // Keepalive comments count as reads, so upstream.rs also enforces this
-    // budget until generation actually starts.
-    let http = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(upstream_timeout())
-        .build()
-        .expect("reqwest client");
+    let http = http_client();
 
     // request_id → live upstream cancel, shared by stream (registers) and
     // abort (signals) — see llm_router::provider_scaffold::aborts.

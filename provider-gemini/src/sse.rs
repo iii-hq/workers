@@ -868,11 +868,12 @@ mod tests {
         let (_, events) = run_sse(&fixture("completed_thought_only.sse"));
         let m = done(&events);
         assert_eq!(m.stop_reason, StopReason::End);
-        assert!(
-            m.content
-                .iter()
-                .all(|b| matches!(b, ContentBlock::Thinking { .. }))
-        );
+        // A signature-only thought must survive: replay needs the signature.
+        assert!(matches!(
+            &m.content[..],
+            [ContentBlock::Thinking { text, signature: Some(s) }]
+                if text.is_empty() && s.starts_with("EsYBCsMB")
+        ));
     }
 
     #[test]
