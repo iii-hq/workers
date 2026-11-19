@@ -87,6 +87,32 @@ impl Cursor {
     }
 }
 
+/// What `semantic_cursor:<bank>` holds: the cursor, plus when the tier
+/// first deferred for vectors still landing. Without a wait it is a plain
+/// `Cursor`, so an older consolidate still reads it.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Progress {
+    #[serde(flatten)]
+    cursor: Cursor,
+    /// When the tier first deferred for vectors still landing (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    waiting_since: Option<u64>,
+}
+
+/// How long the tier waits for vectors before it judges with what exists.
+const VECTOR_WAIT_MS: u64 = 30 * 60 * 1000;
+
+pub const NOTE_NO_COVERAGE: &str = "memory worker did not report vector coverage; \
+semantic tier judged without knowing it; upgrade memory";
+
+/// `(covered, live)` from a semantic recall reply: live memories with a
+/// vector the query can be compared with, of all live memories in the bank.
+/// `None` is an older memory worker that does not report it.
+pub fn coverage(reply: &Value) -> Option<(u64, u64)> {
+    let c = reply.get("vector_coverage")?;
+    Some((c.get("covered")?.as_u64()?, c.get("live")?.as_u64()?))
+}
+
 /// Records written after the cursor, oldest first, capped.
 pub fn pending<'a>(rows: &'a [MemoryRow], cursor: &Cursor, max: usize) -> Vec<&'a MemoryRow> {
     let mut out: Vec<&MemoryRow> = rows.iter().filter(|r| cursor.is_before(r)).collect();
@@ -553,14 +579,14 @@ async fn recall_arm<T: ConsolidationTransport + ?Sized>(
     text: &str,
     mode: &str,
     k: usize,
-) -> Result<Vec<MemoryRow>, String> {
+) -> Result<(Vec<MemoryRow>, Option<(u64, u64)>), String> {
     let reply = call(
         iii,
         "memory::recall",
         json!({ "bank": bank, "query": text, "limit": k + 1, "mode": mode }),
     )
     .await?;
-    read_arm(&reply, mode)
+    read_arm(&reply, mode).map(|rows| (rows, coverage(&reply)))
 }
 
 /// Re-read a record right before writing: the judge decided on the text it
@@ -594,6 +620,8 @@ enum Step {
     Stop,
     /// Input-shaped failure on a multi-record batch: judge halves instead.
     Split,
+    /// Vectors are still landing: no model call, the cursor stays put.
+    Wait,
 }
 
 /// The tier for one bank. Runs LAST (after the deterministic and reorder
@@ -614,10 +642,11 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
     };
     // A failed read must never pass for "no cursor": that would rescan the
     // bank from its oldest record and overwrite real progress.
-    let mut cursor: Cursor = match crate::functions::state_try_get(iii, &cursor_key(bank)).await {
-        Ok(None) => Cursor::default(),
+    let mut progress: Progress = match crate::functions::state_try_get(iii, &cursor_key(bank)).await
+    {
+        Ok(None) => Progress::default(),
         Ok(Some(v)) => match serde_json::from_value(v) {
-            Ok(c) => c,
+            Ok(p) => p,
             Err(e) => {
                 report
                     .notes
@@ -632,10 +661,21 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
             return;
         }
     };
-    let todo: Vec<MemoryRow> = pending(&rows, &cursor, opts.max_per_run)
+    let todo: Vec<MemoryRow> = pending(&rows, &progress.cursor, opts.max_per_run)
         .into_iter()
         .cloned()
         .collect();
+    // The wait as stored, so only a change is written after the loop.
+    let mut saved_wait = progress.waiting_since;
+    let now = crate::functions::now_ms();
+    // shortcut: a bank with a permanently rejected text runs the tier every
+    // other pass; remember the residue count if that matters.
+    let overdue = progress
+        .waiting_since
+        .is_some_and(|since| now.saturating_sub(since) >= VECTOR_WAIT_MS);
+    if todo.is_empty() {
+        progress.waiting_since = None;
+    }
     let mut retired: HashSet<String> = HashSet::new();
     // A reinforced survivor changes: later actions, in this batch or a later
     // one (a pending record can be an earlier batch's candidate), expect the
@@ -673,6 +713,7 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
                 &group,
                 &mut retired,
                 &mut written,
+                overdue,
             )
             .await
             {
@@ -680,6 +721,10 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
                 Step::Empty => {}
                 Step::Unparsed => unparsed.push(group[0].id.clone()),
                 Step::Stop => break 'tier,
+                Step::Wait => {
+                    progress.waiting_since.get_or_insert(now);
+                    break 'tier;
+                }
                 Step::Split => {
                     let (a, b) = group.split_at(group.len() / 2);
                     queue.push_front(b.to_vec());
@@ -692,17 +737,15 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
             }
             report.semantic_failed.append(&mut unparsed);
             if let Some(last) = group.last() {
-                cursor = Cursor::of(last);
-                if let Err(e) = crate::functions::state_set(
-                    iii,
-                    &cursor_key(bank),
-                    serde_json::to_value(&cursor).unwrap_or(Value::Null),
-                )
-                .await
-                {
+                // The tier judged, so any wait for vectors is over.
+                progress.cursor = Cursor::of(last);
+                progress.waiting_since = None;
+                if let Err(e) = save(iii, bank, &progress).await {
+                    // `unparsed` is empty here, so no other note is lost.
                     report.notes.push(format!("semantic cursor not saved: {e}"));
-                    break 'tier;
+                    return;
                 }
+                saved_wait = None;
             }
         }
         if held > 0 && unparsed.len() > held {
@@ -714,6 +757,20 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
             "semantic tier stopped: no judge reply parsed; cursor held before `{first}`"
         ));
     }
+    if progress.waiting_since != saved_wait
+        && let Err(e) = save(iii, bank, &progress).await
+    {
+        report.notes.push(format!("semantic cursor not saved: {e}"));
+    }
+}
+
+async fn save<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    bank: &str,
+    progress: &Progress,
+) -> Result<(), String> {
+    let value = serde_json::to_value(progress).unwrap_or(Value::Null);
+    crate::functions::state_set(iii, &cursor_key(bank), value).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -726,6 +783,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
     group: &[MemoryRow],
     retired: &mut HashSet<String>,
     written: &mut BTreeMap<String, Value>,
+    overdue: bool,
 ) -> Step {
     // Candidates are recalled per batch, after earlier batches wrote: a
     // record retired since then is no longer live and drops out.
@@ -733,13 +791,34 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
     for row in group.iter().filter(|r| !retired.contains(&r.id)) {
         let lexical = recall_arm(iii, bank, &row.text, "lexical", opts.candidates).await;
         let semantic = recall_arm(iii, bank, &row.text, "semantic", opts.candidates).await;
-        let (lexical, semantic) = match (lexical, semantic) {
-            (Ok(l), Ok(s)) => (l, s),
+        let (lexical, (semantic, coverage)) = match (lexical, semantic) {
+            (Ok((l, _)), Ok(s)) => (l, s),
             (Err(e), _) | (_, Err(e)) => {
                 report.notes.push(format!("semantic tier stopped: {e}"));
                 return Step::Stop;
             }
         };
+        // A memory without a vector in the query's space is missing from the
+        // semantic arm: its twin would be judged "no action" and passed.
+        match coverage {
+            None => note_once(report, NOTE_NO_COVERAGE, NOTE_NO_COVERAGE.into()),
+            Some((covered, live)) if covered < live && overdue && covered > 0 => note_once(
+                report,
+                "semantic tier judged without",
+                format!(
+                    "semantic tier judged without {} of {live} memories whose vectors have not landed",
+                    live - covered
+                ),
+            ),
+            Some((covered, live)) if covered < live => {
+                report.notes.push(format!(
+                    "semantic tier deferred: {} of {live} memories have no vector for the current embedding model yet; cursor held",
+                    live - covered
+                ));
+                return Step::Wait;
+            }
+            Some(_) => {}
+        }
         let candidates: Vec<MemoryRow> =
             interleave(&lexical, &semantic, &row.id, 2 * opts.candidates)
                 .into_iter()
@@ -852,6 +931,13 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
         return Step::Stop;
     }
     Step::Parsed
+}
+
+/// Push a note once per bank and pass; `key` is its fixed prefix.
+fn note_once(report: &mut BankReport, key: &str, note: String) {
+    if !report.notes.iter().any(|n| n.starts_with(key)) {
+        report.notes.push(note);
+    }
 }
 
 /// The snapshot a supersede is guarded with: what this batch read, unless an
@@ -994,6 +1080,36 @@ mod tests {
                 "lexical"
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn coverage_is_read_only_when_reported() {
+        let reply = json!({"retrieval": "semantic", "vector_coverage": {"covered": 3, "live": 5}});
+        assert_eq!(coverage(&reply), Some((3, 5)));
+        assert_eq!(coverage(&json!({"retrieval": "semantic"})), None);
+    }
+
+    #[test]
+    fn a_cursor_with_a_wait_still_reads_as_a_plain_cursor() {
+        let stored = json!({"updated_at": 2, "id": "b", "waiting_since": 7});
+        let old: Cursor = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(
+            old,
+            Cursor {
+                updated_at: 2,
+                id: "b".into()
+            }
+        );
+        let progress: Progress = serde_json::from_value(stored).unwrap();
+        assert_eq!(progress.waiting_since, Some(7));
+        let no_wait = Progress {
+            cursor: old,
+            waiting_since: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&no_wait).unwrap(),
+            json!({"updated_at": 2, "id": "b"})
         );
     }
 

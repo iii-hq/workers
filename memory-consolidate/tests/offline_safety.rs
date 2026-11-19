@@ -47,6 +47,15 @@ struct Snapshot {
     transcripts: HashMap<String, Value>,
     /// Every `memory::transcript` call fails with this error.
     transcript_error: Option<String>,
+    /// Live ids with a vector in the query's space. `None`: all of them, and
+    /// both recall arms return every live row. `Some`: the lexical arm is
+    /// empty and the semantic arm returns only these.
+    vectors: Option<HashSet<String>>,
+    /// Act as an older memory worker: recall reports no `vector_coverage`.
+    no_coverage: bool,
+    /// Written to `vectors` on the next `router::complete`: a save that
+    /// races in mid-pass.
+    judge_vectors: Option<HashSet<String>>,
 }
 
 #[derive(Default)]
@@ -144,13 +153,29 @@ impl ConsolidationTransport for Boundary {
                     Ok(json!({}))
                 }
                 "memory::recall" => {
-                    let hits: Vec<Value> = inner
+                    let semantic = payload["mode"] == "semantic";
+                    let live: Vec<&Value> = inner
                         .rows
                         .iter()
                         .filter(|r| r["invalid_at"].is_null())
+                        .collect();
+                    let vectored = |r: &&&Value| {
+                        inner
+                            .vectors
+                            .as_ref()
+                            .is_none_or(|ids| ids.contains(r["id"].as_str().unwrap()))
+                    };
+                    let hits: Vec<Value> = live
+                        .iter()
+                        .filter(|r| (semantic || inner.vectors.is_none()) && vectored(r))
                         .map(|r| json!({"memory":r}))
                         .collect();
-                    Ok(json!({"retrieval":payload["mode"],"memories":hits}))
+                    let mut reply = json!({"retrieval":payload["mode"],"memories":hits});
+                    if semantic && !inner.no_coverage {
+                        let covered = live.iter().filter(vectored).count();
+                        reply["vector_coverage"] = json!({"covered":covered,"live":live.len()});
+                    }
+                    Ok(reply)
                 }
                 "memory::get" => inner
                     .rows
@@ -304,6 +329,9 @@ impl ConsolidationTransport for Boundary {
             inner
                 .calls
                 .push(("router::complete".into(), json!({"prompt":prompt})));
+            if let Some(ids) = inner.judge_vectors.take() {
+                inner.vectors = Some(ids);
+            }
             inner
                 .replies
                 .pop_front()
@@ -1408,6 +1436,331 @@ async fn a_lone_record_is_poison_once_a_later_batch_parses() {
             .any(|n| n.contains("cursor held before `a`")),
         "{:?}",
         report.notes
+    );
+}
+
+fn ids(list: &[&str]) -> Option<HashSet<String>> {
+    Some(list.iter().map(|id| id.to_string()).collect())
+}
+
+fn stored_cursor(boundary: &Boundary) -> Value {
+    boundary.snapshot()["state"]["semantic_cursor:offline"].clone()
+}
+
+fn wait_since(boundary: &Boundary, ms: u64) {
+    boundary.0.lock().unwrap().state.insert(
+        "semantic_cursor:offline".into(),
+        json!({"updated_at":0,"id":"","waiting_since":ms}),
+    );
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn notes_with(report: &consolidate::BankReport, text: &str) -> usize {
+    report.notes.iter().filter(|n| n.contains(text)).count()
+}
+
+fn tea_rows(n: usize) -> Vec<Value> {
+    [
+        "User prefers tea",
+        "Tea is the user's preferred drink",
+        "Tea is what the user drinks",
+        "User drinks coffee at night",
+    ]
+    .iter()
+    .zip(["a", "b", "c", "d"])
+    .zip(1..)
+    .take(n)
+    .map(|((text, id), at)| row(id, text, at))
+    .collect()
+}
+
+fn pair_options(max_per_run: usize) -> SemanticOptions {
+    SemanticOptions {
+        batch: 2,
+        max_per_run,
+        ..options()
+    }
+}
+
+#[tokio::test]
+async fn a_pass_during_a_re_embed_window_finds_the_pair_once_vectors_land() {
+    let boundary = Boundary::with_rows(tea_rows(2));
+    boundary.0.lock().unwrap().vectors = ids(&[]);
+    let cfg = || WorkerConfig {
+        semantic_batch: 2,
+        semantic_max_per_run: 2,
+        ..semantic_only()
+    };
+    let first = run(&boundary, cfg(), false).await;
+    let bank = &first.banks[0];
+    assert_eq!(model_calls(&boundary), 0);
+    assert_eq!(bank.llm_calls, 0);
+    assert!(bank.errors.is_empty(), "{:?}", bank.errors);
+    assert_eq!(notes_with(bank, "semantic tier deferred: 2 of 2"), 1);
+    assert!(first.checkpointed);
+    let held = stored_cursor(&boundary);
+    assert_eq!((&held["updated_at"], &held["id"]), (&json!(0), &json!("")));
+    assert!(held["waiting_since"].as_u64().is_some(), "{held}");
+
+    boundary.0.lock().unwrap().vectors = ids(&["a", "b"]);
+    boundary.decision(json!({"actions":[{"type":"merge","survivor":"n1","retired":"n2","reason":"Synthetic supplied equivalence."}]}));
+    let second = run(&boundary, cfg(), false).await;
+    assert_eq!(second.superseded, 1);
+    assert_eq!(stored_cursor(&boundary), json!({"updated_at":2,"id":"b"}));
+}
+
+#[tokio::test]
+async fn a_thin_semantic_arm_defers_before_any_judge_call() {
+    let boundary = Boundary::with_rows(tea_rows(3));
+    boundary.0.lock().unwrap().vectors = ids(&["c"]);
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(3),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 0);
+    let held = stored_cursor(&boundary);
+    assert_eq!((&held["updated_at"], &held["id"]), (&json!(0), &json!("")));
+    assert_eq!(
+        notes_with(&report, "deferred: 2 of 3"),
+        1,
+        "{:?}",
+        report.notes
+    );
+}
+
+#[tokio::test]
+async fn vectors_that_never_land_are_judged_after_the_wait_then_waited_for_again() {
+    let boundary = Boundary::with_rows(tea_rows(2));
+    boundary.0.lock().unwrap().vectors = ids(&["b"]);
+    wait_since(&boundary, 1);
+    boundary.decision(json!({"actions":[]}));
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(2),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 1);
+    assert_eq!(
+        notes_with(&report, "judged without 1 of 2"),
+        1,
+        "{:?}",
+        report.notes
+    );
+    assert_eq!(stored_cursor(&boundary), json!({"updated_at":2,"id":"b"}));
+
+    boundary
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .push(row("c", "Tea is what the user drinks", 3));
+    let mut report = consolidate::BankReport::default();
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(2),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 1);
+    assert_eq!(
+        notes_with(&report, "deferred: 2 of 3"),
+        1,
+        "{:?}",
+        report.notes
+    );
+    let held = stored_cursor(&boundary);
+    assert_eq!((&held["updated_at"], &held["id"]), (&json!(2), &json!("b")));
+    assert!(held["waiting_since"].as_u64().unwrap() > 1, "{held}");
+}
+
+#[tokio::test]
+async fn a_run_soon_after_a_deferral_keeps_waiting() {
+    let boundary = Boundary::with_rows(tea_rows(2));
+    boundary.0.lock().unwrap().vectors = ids(&["b"]);
+    let since = now_ms();
+    wait_since(&boundary, since);
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(2),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 0);
+    assert_eq!(
+        notes_with(&report, "deferred: 1 of 2"),
+        1,
+        "{:?}",
+        report.notes
+    );
+    assert_eq!(
+        stored_cursor(&boundary),
+        json!({"updated_at":0,"id":"","waiting_since":since})
+    );
+    // An unchanged wait is not written again.
+    assert!(
+        boundary
+            .calls()
+            .iter()
+            .all(|(f, p)| !(f == "state::set" && p["key"] == "semantic_cursor:offline"))
+    );
+}
+
+#[tokio::test]
+async fn a_bank_with_no_vectors_is_never_judged_thin() {
+    let boundary = Boundary::with_rows(tea_rows(2));
+    boundary.0.lock().unwrap().vectors = ids(&[]);
+    wait_since(&boundary, 1);
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(2),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 0);
+    assert_eq!(
+        notes_with(&report, "deferred: 2 of 2"),
+        1,
+        "{:?}",
+        report.notes
+    );
+    assert_eq!(
+        stored_cursor(&boundary),
+        json!({"updated_at":0,"id":"","waiting_since":1})
+    );
+}
+
+#[tokio::test]
+async fn a_deferral_mid_pass_keeps_the_judged_batches() {
+    let boundary = Boundary::with_rows(tea_rows(4));
+    boundary.0.lock().unwrap().judge_vectors = ids(&["a", "b", "c"]);
+    boundary.decision(json!({"actions":[]}));
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(4),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 1);
+    assert_eq!(
+        notes_with(&report, "deferred: 1 of 4"),
+        1,
+        "{:?}",
+        report.notes
+    );
+    let held = stored_cursor(&boundary);
+    assert_eq!((&held["updated_at"], &held["id"]), (&json!(2), &json!("b")));
+    assert!(held["waiting_since"].as_u64().is_some(), "{held}");
+}
+
+#[tokio::test]
+async fn an_older_memory_worker_without_coverage_is_judged_as_before_with_a_note() {
+    let boundary = Boundary::with_rows(tea_rows(2));
+    boundary.0.lock().unwrap().no_coverage = true;
+    boundary.decision(json!({"actions":[{"type":"merge","survivor":"n1","retired":"n2","reason":"Synthetic supplied equivalence."}]}));
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(2),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(report.superseded, 1);
+    assert_eq!(stored_cursor(&boundary), json!({"updated_at":2,"id":"b"}));
+    assert_eq!(report.notes, [semantic::NOTE_NO_COVERAGE]);
+}
+
+#[tokio::test]
+async fn a_failed_save_of_the_wait_is_one_note() {
+    let boundary = Boundary::with_rows(tea_rows(2));
+    boundary.0.lock().unwrap().vectors = ids(&[]);
+    boundary.fail_once("state::set:semantic_cursor:offline");
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(2),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 0);
+    assert_eq!(notes_with(&report, "semantic tier deferred: 2 of 2"), 1);
+    assert_eq!(
+        notes_with(&report, "semantic cursor not saved"),
+        1,
+        "{:?}",
+        report.notes
+    );
+    // The failed write is the wait, not a cursor move.
+    let cursor_writes: Vec<Value> = boundary
+        .calls()
+        .into_iter()
+        .filter(|(f, p)| f == "state::set" && p["key"] == "semantic_cursor:offline")
+        .map(|(_, p)| p["value"].clone())
+        .collect();
+    assert_eq!(cursor_writes.len(), 1, "{cursor_writes:?}");
+    assert!(
+        cursor_writes[0]["waiting_since"].as_u64().is_some(),
+        "{cursor_writes:?}"
+    );
+    assert_eq!(stored_cursor(&boundary), json!({"updated_at":0,"id":""}));
+}
+
+#[tokio::test]
+async fn a_failed_cursor_save_after_judging_stops_the_tier_with_one_note() {
+    let boundary = Boundary::with_rows(tea_rows(2));
+    boundary.0.lock().unwrap().vectors = ids(&["b"]);
+    wait_since(&boundary, 1);
+    boundary.decision(json!({"actions":[]}));
+    boundary.fail_once("state::set:semantic_cursor:offline");
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(
+        &boundary,
+        "offline",
+        &pair_options(2),
+        &mut budget,
+        &mut report,
+    )
+    .await;
+    assert_eq!(model_calls(&boundary), 1);
+    assert_eq!(
+        notes_with(&report, "semantic cursor not saved"),
+        1,
+        "{:?}",
+        report.notes
+    );
+    // No second save after the loop: the stored wait and cursor stay as they were.
+    assert_eq!(
+        stored_cursor(&boundary),
+        json!({"updated_at":0,"id":"","waiting_since":1})
     );
 }
 

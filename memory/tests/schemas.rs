@@ -85,6 +85,22 @@ fn recall_response_reports_retrieval_mode() {
     assert!(props.contains_key("bank"));
 }
 
+#[test]
+fn recall_response_reports_vector_coverage_as_optional() {
+    // Older callers ignore it; a lexical recall never carries it.
+    let spec = catalog()
+        .into_iter()
+        .find(|s| s.function_id == "memory::recall")
+        .unwrap();
+    let resp = serde_json::to_value(&spec.response_schema).unwrap();
+    assert!(resp["properties"]["vector_coverage"].is_object());
+    let required = resp["required"].as_array().unwrap();
+    assert!(
+        !required.iter().any(|r| r == "vector_coverage"),
+        "{required:?}"
+    );
+}
+
 mod support;
 
 fn golden_file_name(function_id: &str) -> String {
