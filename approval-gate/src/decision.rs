@@ -196,6 +196,24 @@ mod tests {
     }
 
     #[test]
+    fn glob_grant_stays_in_its_namespace() {
+        let s = manual(vec![entry(Some("laptop"), "shell::*")]);
+        assert!(pre_policy_allow(
+            &s,
+            Some("laptop"),
+            Some("default"),
+            "shell::exec"
+        ));
+        assert!(!pre_policy_allow(
+            &s,
+            Some("default"),
+            Some("default"),
+            "shell::exec"
+        ));
+        assert!(!pre_policy_allow(&s, None, Some("default"), "shell::exec"));
+    }
+
+    #[test]
     fn human_only_covers_approval_prefix() {
         assert!(is_human_only("approval::set-mode"));
         assert!(is_human_only("approval::resolve"));

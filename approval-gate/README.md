@@ -98,9 +98,13 @@ Rule patterns may name an engine namespace: prefix `<namespace>/` to match
 one namespace (`laptop/shell::*`); a bare pattern matches every namespace.
 For a call that names no namespace (an older harness), a qualified `deny`
 still matches and a qualified `allow` does not, so it fails closed.
-"Approve always" grants are exact `(namespace, id)` pairs, never patterns. A
-grant stored before namespaces existed covers only the namespace a call
-without `namespace` runs in. Modes are unchanged.
+"Approve always" grants take no `<namespace>/` qualifier: the namespace is a
+separate field and is compared exactly, so a grant never covers another
+namespace. The grant's `function_id` is matched like a pattern, so a `*` in it
+is a glob (`shell::*` also allows `shell::exec` in that namespace); an approval
+prompt stores the held call's own id. A grant stored before namespaces existed
+covers only the namespace a call without `namespace` runs in. Modes are
+unchanged.
 
 ## Event functions
 
