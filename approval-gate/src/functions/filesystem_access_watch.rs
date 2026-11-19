@@ -51,7 +51,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
 /// fail-open) resolves to `Continue`; the caller never sees a held call it
 /// cannot explain.
 async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOutput {
-    let Some(call) = input.call.clone() else {
+    let Some(mut call) = input.call.clone() else {
         return HookOutput::Continue;
     };
     if validate_id("session_id", &input.session_id).is_err()
@@ -115,6 +115,12 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
             // The generic approval currently being resolved is allowed to
             // transition atomically into a filesystem approval for the same
             // call. Keeping it until put() avoids a blind gap in the inbox.
+            // Keep the namespace the user was shown if this post_call omits it.
+            call.namespace = call.namespace.take().or(existing.namespace);
+            call.implicit_namespace = call
+                .implicit_namespace
+                .take()
+                .or(existing.implicit_namespace);
         }
         Ok(Some(_stale)) => {
             // Clear the stale record so the write below (step 8) is a clean
@@ -546,34 +552,69 @@ mod tests {
         .await;
     }
 
+    /// Seeds the generic record the gate holds for `s_1/c_1` in `laptop`.
+    async fn seed_laptop_generic(stack: &TestStack) {
+        let generic = PendingApprovalRecord {
+            session_id: "s_1".into(),
+            turn_id: "t_1".into(),
+            function_call_id: "c_1".into(),
+            function_id: "shell::fs::read".into(),
+            namespace: Some("laptop".into()),
+            implicit_namespace: Some("default".into()),
+            arguments_excerpt: json!({ "path": "/a/b" }),
+            pending_at: 100,
+            session_title: None,
+            session_description: None,
+            session_metadata: None,
+            depth: 0,
+            assistant_excerpt: None,
+            kind: PendingKind::Function,
+            access_request: None,
+        };
+        state_set(
+            &stack.iii,
+            PENDING_SCOPE,
+            "s_1/c_1",
+            serde_json::to_value(generic).unwrap(),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn filesystem_approval_keeps_the_held_namespace_when_post_call_omits_it() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+            seed_laptop_generic(&stack).await;
+
+            let input = jail_input("s_1", "c_1", "/a/b");
+            assert_eq!(handle(&stack.deps, input).await.unwrap(), HookOutput::Hold);
+            let current = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(current["kind"], json!("filesystem_access"));
+            assert_eq!(current["namespace"], json!("laptop"));
+            assert_eq!(current["implicit_namespace"], json!("default"));
+
+            let always = crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: "c_1".into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: Some(crate::types::AccessDuration::Always),
+                namespace: None,
+            };
+            let out = crate::functions::resolve::handle(&stack.deps, always).await;
+            assert!(
+                matches!(out, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                "{out:?}"
+            );
+        })
+        .await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn filesystem_approval_for_a_call_in_another_namespace_needs_the_namespace_echo() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
-            let generic = PendingApprovalRecord {
-                session_id: "s_1".into(),
-                turn_id: "t_1".into(),
-                function_call_id: "c_1".into(),
-                function_id: "shell::fs::read".into(),
-                namespace: Some("laptop".into()),
-                implicit_namespace: Some("default".into()),
-                arguments_excerpt: json!({ "path": "/a/b" }),
-                pending_at: 100,
-                session_title: None,
-                session_description: None,
-                session_metadata: None,
-                depth: 0,
-                assistant_excerpt: None,
-                kind: PendingKind::Function,
-                access_request: None,
-            };
-            state_set(
-                &stack.iii,
-                PENDING_SCOPE,
-                "s_1/c_1",
-                serde_json::to_value(generic).unwrap(),
-            )
-            .await;
+            seed_laptop_generic(&stack).await;
 
             let mut input = jail_input("s_1", "c_1", "/a/b");
             let call = input.call.as_mut().unwrap();
