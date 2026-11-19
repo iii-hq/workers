@@ -886,10 +886,10 @@ impl CacheRequest {
             || {},
             |_, stage, checkpoint| async move {
                 checkpoint.check()?;
-                std::fs::create_dir(stage.join("bin"))?;
-                std::fs::write(stage.join("bin/sh"), b"not executed")?;
-                std::fs::write(
-                    stage.join(".oci-config.json"),
+                seed_private_cache_fixture(
+                    &stage,
+                    "sh",
+                    b"not executed",
                     br#"{"config":{"Env":["H1=fixture"]}}"#,
                 )?;
                 checkpoint.check()?;
@@ -904,6 +904,35 @@ fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Re
     // No clone may record a refusal between this check and publication.
     if let Err(e) = checkpoint.with_valid(|| std::fs::write(path, digests.join("\n")))? {
         tracing::warn!(path = %path.display(), error = %e, "failed to record the rootfs digest");
+    }
+    Ok(())
+}
+
+/// Seed only private test-owned staged payloads, independent of the host umask.
+/// This does not change permissions on extracted image data or relax admission.
+#[cfg(test)]
+pub(crate) fn seed_private_cache_fixture(
+    stage: &Path,
+    program_name: &str,
+    program: &[u8],
+    config: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(stage.join("bin"))?;
+    for (path, bytes) in [
+        (stage.join("bin").join(program_name), program),
+        (stage.join(".oci-config.json"), config),
+    ] {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.write_all(bytes)?;
     }
     Ok(())
 }
@@ -940,10 +969,10 @@ mod tests {
             .unwrap();
         let mut guard = prep.begin_entry(root).unwrap();
         let tree = guard.stage_tree(root).unwrap();
-        std::fs::create_dir(tree.path().join("bin")).unwrap();
-        std::fs::write(tree.path().join("bin/sh"), b"fixture").unwrap();
-        std::fs::write(
-            tree.path().join(".oci-config.json"),
+        seed_private_cache_fixture(
+            tree.path(),
+            "sh",
+            b"fixture",
             br#"{"config":{"Env":["H=1"]}}"#,
         )
         .unwrap();

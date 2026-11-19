@@ -100,10 +100,10 @@ impl TestRegistry {
             .unwrap();
         let mut entry = preparation.begin_entry(&root).unwrap();
         let tree = entry.stage_tree(&root).unwrap();
-        std::fs::create_dir(tree.path().join("bin")).unwrap();
-        std::fs::write(tree.path().join("bin/marker"), b"original").unwrap();
-        std::fs::write(
-            tree.path().join(".oci-config.json"),
+        crate::cli::rootfs_cache::seed_private_cache_fixture(
+            tree.path(),
+            "marker",
+            b"original",
             br#"{"config":{"Env":[]}}"#,
         )
         .unwrap();
