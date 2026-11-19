@@ -233,7 +233,7 @@ fn origin(turn_id: &str) -> Value {
 /// Cautions: mutations are silent; annotations record what ran).
 /// The `description` the model gave an `agent_call` call (dropped by
 /// `plan_calls`): the call's stated purpose, used as reconciliation intent.
-fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+pub(crate) fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
     content.iter().find_map(|block| match block {
         // Only the wrapper's field: in native exposure `description` would
         // be one of the target's own parameters.
@@ -2211,6 +2211,7 @@ async fn finish_step(
                     &call.function_id,
                     &namespace,
                     &trusted_call_args,
+                    call_description(&outcome.message.content, &call.id),
                     None,
                 )
                 .await

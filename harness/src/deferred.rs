@@ -196,6 +196,8 @@ pub async fn resolve(
                     .await
                     .unwrap_or(Value::Null),
             };
+            // The wrapper's description lives only in the transcript.
+            let description = find_call_description(deps, &record, &req.function_call_id).await;
             let (arguments, pre_annotations) = match deps
                 .hooks
                 .run_pre_call(
@@ -205,6 +207,7 @@ pub async fn resolve(
                     &function_id,
                     &namespace,
                     &arguments,
+                    description.as_deref(),
                     Some(&held_by),
                 )
                 .await
@@ -588,6 +591,26 @@ async fn find_call_arguments(
         }
     }
     None
+}
+
+/// Recover a held call's `agent_call` wrapper description from the
+/// transcript, for the hooks after the holder.
+async fn find_call_description(
+    deps: &Deps,
+    record: &crate::types::turn::TurnRecord,
+    call_id: &str,
+) -> Option<String> {
+    let session = deps.session().await;
+    let entries = session.messages(&record.session_id, false).await.ok()?;
+    entries
+        .into_iter()
+        .rev()
+        .find_map(|entry| match entry.message {
+            Some(AgentMessage::Assistant(a)) => {
+                crate::turn_loop::call_description(&a.content, call_id).map(str::to_string)
+            }
+            _ => None,
+        })
 }
 
 /// Resolve a parked parent call from a finishing child (harness.md §

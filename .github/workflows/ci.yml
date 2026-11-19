@@ -266,10 +266,11 @@ jobs:
             (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
 
-      # The rule editor's save merges and retries; installed by the pre-build.
-      - name: Memory UI tests
-        if: matrix.worker == 'memory'
-        working-directory: memory/ui
+      # memory: the rule editor's save merges and retries; workflow: the chat
+      # cards and the Context section. Installed by the pre-build.
+      - name: UI tests
+        if: matrix.worker == 'memory' || matrix.worker == 'workflow'
+        working-directory: ${{ matrix.worker }}/ui
         run: pnpm test
 
       # The worker's web/, ui/ and native-ui/ projects are members of the root

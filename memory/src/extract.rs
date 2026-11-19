@@ -666,13 +666,23 @@ pub(crate) fn same_fact(a: &str, b: &str) -> bool {
     wa.intersection(&wb).count() * 5 >= shorter * 3
 }
 
-/// `new` restates `old` as a change: a change word, other values, and at
-/// least half of `old`'s other words. The caller checks which is newer.
+/// `new` restates `old` as a change: a change word, other values, a shared
+/// other word, and either half of `old`'s other words or the value `new`
+/// left: its values between `from` and `to`, a whole value of `old`'s, under
+/// `old`'s [`lead`] word ("switched her code editor from VS Code to Neovim"
+/// over "code editor is VS Code, with the Vim keybindings extension enabled").
+/// The caller checks which is newer.
+// shortcut: only "from <values> to" after the first "from" is read as what was
+// left, so "replaced VS Code with Neovim", "from the VS Code editor to" and a
+// value written in lower case (not a weekday or month) still need half of
+// old's words, and another fact on the value left that shares a word
+// ("Postgres 14 backs the ledger service" under "moved the billing service
+// from Postgres 14 to 16") is hidden when the question names neither and their
+// tags do not differ; parse the change phrase if the eval or a case shows
+// either.
 pub(crate) fn supersedes(old: &str, new: &str) -> bool {
-    if !crate::index::tokenize(new)
-        .iter()
-        .any(|t| CHANGE_MARKERS.contains(&t.as_str()))
-    {
+    let tokens = crate::index::tokenize(new);
+    if !tokens.iter().any(|t| CHANGE_MARKERS.contains(&t.as_str())) {
         return false; // raw tokens: "now" is a stopword
     }
     let n = &names(old) | &names(new);
@@ -685,7 +695,39 @@ pub(crate) fn supersedes(old: &str, new: &str) -> bool {
         .map(|w| stem(w).into_owned())
         .collect();
     let old_words: BTreeSet<String> = words(old, &vo).difference(&marks).cloned().collect();
-    !old_words.is_empty() && old_words.intersection(&words(new, &vn)).count() * 2 >= old_words.len()
+    let shared = old_words.intersection(&words(new, &vn)).count();
+    // What `new` says it left: its values between "from" and "to" ("coffee from
+    // Onyx instead of…" and "teammate from Acme moved…" name no value left).
+    let after: Vec<&str> = tokens
+        .iter()
+        .skip_while(|t| *t != "from")
+        .skip(1)
+        .map(String::as_str)
+        .collect();
+    let left: Vec<String> = after
+        .iter()
+        .map(|t| stem(t).into_owned())
+        .take_while(|t| vn.contains(t))
+        .collect();
+    let old_tokens: Vec<String> = crate::index::tokenize(old)
+        .iter()
+        .map(|t| stem(t).into_owned())
+        .collect();
+    // A whole value of `old`'s: "from 10 to" is not the month of 2026-10-01.
+    let value_at = |i: Option<usize>| {
+        i.and_then(|i| old_tokens.get(i))
+            .is_some_and(|t| vo.contains(t))
+    };
+    let whole = |i: usize| {
+        old_tokens[i..].starts_with(&left)
+            && !value_at(i.checked_sub(1))
+            && !value_at(Some(i + left.len()))
+    };
+    let from_old = !left.is_empty()
+        && after.get(left.len()) == Some(&"to")
+        && (0..old_tokens.len()).any(whole)
+        && lead(old).is_some_and(|w| content_words(new).iter().any(|c| stem(c) == w));
+    shared >= 1 && (shared * 2 >= old_words.len() || from_old)
 }
 
 /// The first live memory among `candidates` that `text` restates.
@@ -5320,6 +5362,66 @@ mod tests {
             (
                 "User has a passport renewal appointment at 14:00 on 2026-10-27.",
                 "User moved her dentist appointment from 2026-10-15 to 9:30 on 2026-10-20.",
+            ),
+        ];
+        for (old, new) in not {
+            assert!(!supersedes(old, new), "{old} -/-> {new}");
+        }
+    }
+
+    #[test]
+    fn supersedes_reads_the_value_a_change_left() {
+        let editor =
+            "User switched her code editor from VS Code to Neovim, configured with lazy.nvim.";
+        // golden upd-editor: the old line's detail outweighs the shared words.
+        assert!(supersedes(
+            "User's code editor is VS Code, with the Vim keybindings extension enabled.",
+            editor
+        ));
+        let not = [
+            // Another subject on the value left: its lead word is not in the change.
+            (
+                "User's sister's code editor is VS Code, with the Vim keybindings extension enabled.",
+                editor,
+            ),
+            // No word shared but the value.
+            (
+                "User pays for a VS Code Copilot seat through her employer.",
+                editor,
+            ),
+            // The digits of the date left, but not that date.
+            (
+                "User has a passport renewal appointment at 15:00 on 2026-10-27.",
+                "User moved her dentist appointment from 2026-10-15 to 9:30 on 2026-10-20.",
+            ),
+            // The value left is not the old line's: another date.
+            (
+                "User has a passport renewal appointment at 14:00 on 2026-10-27.",
+                "User moved her dentist appointment from 2026-10-15 to 9:30 on 2026-10-20.",
+            ),
+            // The old value is named, but not as what was left.
+            (
+                "User's code editor is VS Code, with the Vim keybindings extension enabled.",
+                "User switched her code editor theme in VS Code to Gruvbox.",
+            ),
+            // "from" names the current source, not a value left.
+            (
+                "User's coffee subscription from Onyx ships every two weeks.",
+                "User now gets her coffee from Onyx instead of Blue Bottle.",
+            ),
+            // "from" belongs to a noun phrase.
+            (
+                "User's teammate at Acme leads the payments squad and pairs with her weekly.",
+                "User's teammate from Acme moved the sprint demo to Thursday.",
+            ),
+            // The value left is a piece of a longer value: a month, an hour.
+            (
+                "User's team has a release freeze from 2026-10-01 to 2026-10-15 covering payments.",
+                "User moved the team standup from 10 to 11.",
+            ),
+            (
+                "User's billing invoices go out at 14:00 every Monday from the Stripe account.",
+                "User migrated the billing database from 14 to 16.",
             ),
         ];
         for (old, new) in not {

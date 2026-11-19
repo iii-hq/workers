@@ -22,7 +22,7 @@
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
-          "stale_with_current": 6
+          "stale_with_current": 5
         }
       },
       "category:dated-event": {
@@ -94,7 +94,7 @@
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
-          "stale_with_current": 6
+          "stale_with_current": 5
         }
       },
       "kind:chatter": {
@@ -152,7 +152,7 @@
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
-          "stale_with_current": 1
+          "stale_with_current": 0
         }
       },
       "lang:pt": {
@@ -200,7 +200,7 @@
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
-          "stale_with_current": 2
+          "stale_with_current": 1
         }
       }
     },
@@ -224,7 +224,7 @@
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
-          "stale_with_current": 5
+          "stale_with_current": 4
         }
       },
       "category:dated-event": {
@@ -301,7 +301,7 @@
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
-          "stale_with_current": 5
+          "stale_with_current": 4
         }
       },
       "kind:chatter": {
@@ -363,7 +363,7 @@
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
-          "stale_with_current": 1
+          "stale_with_current": 0
         }
       },
       "lang:pt": {
@@ -415,7 +415,7 @@
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
-          "stale_with_current": 2
+          "stale_with_current": 1
         }
       }
     }

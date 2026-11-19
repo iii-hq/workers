@@ -103,6 +103,8 @@ interface UiLoaderOptions {
 
 export interface ConversationAdapter {
   selectConversation(sessionId: string): void
+  /** The session in a new pane beside the chat. */
+  openConversation(sessionId: string): void
   openDraft(draft: { text: string; title?: string }): void
   composerModel(conversationId?: string | null): string | null
   /**
@@ -487,6 +489,9 @@ function makeHost(
       },
       selectConversation(sessionId) {
         conversationAdapter.selectConversation(sessionId)
+      },
+      openConversation(sessionId) {
+        conversationAdapter.openConversation(sessionId)
       },
       requestWorkingDirectoryChange(request) {
         return requestWorkingDirectoryChange(request)

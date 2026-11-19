@@ -63,7 +63,11 @@ export const BATCH = {
 }
 
 export const T = 1794408000000
-/** The same run on the loop's second pass: one node failed, four waiting. */
+/**
+ * The same run on the loop's second pass: one node failed, four waiting.
+ * work ⇄ verify (a loop), then plan → map (a fanout) → critic → a_report;
+ * `depth` orders the waiting ones.
+ */
 export const LIVE = {
   run_id: 'r_live',
   status: 'running',
@@ -86,12 +90,13 @@ export const LIVE = {
     plan: { total: 1, done: 0, failed: 0, running: 0 },
   },
   node_details: {
-    a_report: { state: 'pending' },
-    critic: { state: 'pending', phase: 'critic' },
-    map: { state: 'pending', phase: 'map' },
-    plan: { state: 'pending', phase: 'plan', profile: 'planner' },
+    a_report: { state: 'pending', depth: 5 },
+    critic: { state: 'pending', phase: 'critic', depth: 4 },
+    map: { state: 'pending', phase: 'map', depth: 3 },
+    plan: { state: 'pending', phase: 'plan', profile: 'planner', depth: 2 },
     verify: {
       state: 'done',
+      depth: 1,
       phase: 'check',
       label: 'Check',
       started_at: T + 3000,
@@ -99,6 +104,7 @@ export const LIVE = {
     },
     'verify#it1': {
       state: 'running',
+      depth: 1,
       phase: 'check',
       label: 'Check',
       started_at: T + 6000,
@@ -114,6 +120,7 @@ export const LIVE = {
     },
     work: {
       state: 'done',
+      depth: 0,
       phase: 'work',
       label: 'Work',
       started_at: T + 1000,
@@ -122,6 +129,7 @@ export const LIVE = {
     },
     'work#it1': {
       state: 'failed',
+      depth: 0,
       phase: 'work',
       label: 'Work',
       started_at: T + 4000,
@@ -130,11 +138,12 @@ export const LIVE = {
   },
 }
 
-const kitNode = (
-  label: string,
-  state: string,
-  extra: Record<string, unknown> = {},
-) => ({ state, label, phase: label.split(':')[0], ...extra })
+const kitNode = (label: string, state: string, extra: Record<string, unknown> = {}) => ({
+  state,
+  label,
+  phase: label.split(':')[0],
+  ...extra,
+})
 
 /** A kit design run while it designs: explore done, one design failed, one going. */
 export const KIT = {

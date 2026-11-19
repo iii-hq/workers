@@ -1,16 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import type { Conversation, Message } from '@/types/chat'
 import {
   buildRunView,
-  collectWorkflowRuns,
   groupsByPhase,
   labelTitle,
-  nodeDepths,
   nodeFacts,
   nodeLabel,
   nodeLine,
   nodeMark,
   parseRunDetails,
+  parseRunList,
   phaseCurrent,
   phaseFacts,
   phaseMark,
@@ -27,38 +25,13 @@ import {
 } from '../run-view'
 import { BATCH, KIT, KIT_NEXT, LIVE, T } from './run-fixtures'
 
-const task = 't'
-/** work ⇄ verify (a loop), then plan → map (a fanout) → critic → a_report. */
-const START = {
-  nodes: {
-    work: { task },
-    verify: { task, reads: 'work', loop: { body: ['work'] } },
-    plan: { task, reads: 'verify' },
-    map: { task, fanout: 'plan.items' },
-    critic: { task, reads: ['map', 'verify'] },
-    a_report: { task, reads: 'critic' },
-  },
-}
-
 const parsed = (value: unknown) => {
   const status = parseRunDetails(value)
   if (!status) throw new Error('fixture does not parse')
   return status
 }
 const order = (view: ReturnType<typeof buildRunView>) =>
-  view.phases.map(
-    (phase) => `${phase.phase}: ${phase.nodes.map((node) => node.uid).join()}`,
-  )
-const start = (extra: Record<string, unknown>): Message =>
-  ({
-    id: 'm',
-    role: 'function-call',
-    functionId: 'workflow::start',
-    createdAt: 1,
-    ...extra,
-  }) as unknown as Message
-const session = (createdAt: number, sessionMetadata: object): Conversation =>
-  ({ id: `s${createdAt}`, createdAt, sessionMetadata }) as Conversation
+  view.phases.map((phase) => `${phase.phase}: ${phase.nodes.map((node) => node.uid).join()}`)
 
 describe('parseRunDetails', () => {
   it('reads a status with details', () => {
@@ -68,34 +41,25 @@ describe('parseRunDetails', () => {
   })
 
   it('unwraps a harness envelope', () => {
-    expect(parseRunDetails({ content: [], details: BATCH })?.run_id).toBe(
-      'r_3f03',
-    )
+    expect(parseRunDetails({ content: [], details: BATCH })?.run_id).toBe('r_3f03')
   })
 
   it('is null for a run the worker no longer has, or a reply it cannot read', () => {
     expect(parseRunDetails(null)).toBeNull()
     expect(parseRunDetails(undefined)).toBeNull()
     expect(parseRunDetails({})).toBeNull()
-    expect(
-      parseRunDetails({ status: 'running', nodes: { a: 'exploded' } }),
-    ).toBeNull()
+    expect(parseRunDetails({ status: 'running', nodes: { a: 'exploded' } })).toBeNull()
   })
 })
 
 describe('labelTitle', () => {
-  const of = (...labels: string[]) =>
-    labelTitle(labels.map((label) => ({ label })))
+  const of = (...labels: string[]) => labelTitle(labels.map((label) => ({ label })))
   it('names a run with no start call after its node labels', () => {
     expect(of()).toBeUndefined()
     expect(of('KAN-5 critic', 'KAN-5 critic')).toBe('KAN-5 critic')
-    expect(of('KAN-5 batch r1w1 tests', 'KAN-5 batch r1w1 check')).toBe(
-      'KAN-5 batch r1w1',
-    )
+    expect(of('KAN-5 batch r1w1 tests', 'KAN-5 batch r1w1 check')).toBe('KAN-5 batch r1w1')
     // A shared start that is not a whole word names nothing.
-    expect(
-      of('KAN-6 · Implement slugify', 'KAN-7 · Implement count_vowels'),
-    ).toBe('KAN-6 · Implement slugify +1')
+    expect(of('KAN-6 · Implement slugify', 'KAN-7 · Implement count_vowels')).toBe('KAN-6 · Implement slugify +1')
   })
 })
 
@@ -116,121 +80,49 @@ describe('splitNodeUid', () => {
   })
 })
 
-describe('nodeDepths', () => {
-  it('counts the nodes each node waits behind', () => {
-    expect(nodeDepths(parsedDef(START))).toEqual({
-      work: 0,
-      verify: 1,
-      plan: 2,
-      map: 3,
-      critic: 4,
-      a_report: 5,
+describe('parseRunList', () => {
+  it('reads the runs a chat started, in the order the worker lists them', () => {
+    const reply = {
+      runs: [
+        { run_id: 'r_new', status: 'running', created_at: 20, updated_at: 30 },
+        { run_id: 'r_old', status: 'completed', created_at: 10, updated_at: 12 },
+      ],
+    }
+    const refs = [
+      { runId: 'r_new', at: 20 },
+      { runId: 'r_old', at: 10 },
+    ]
+    expect(parseRunList(reply)).toEqual(refs)
+    expect(parseRunList({ content: [], details: reply })).toEqual(refs)
+    expect(parseRunList({ runs: [] })).toEqual([])
+  })
+
+  it('keeps the title a run has', () => {
+    const refs = parseRunList({
+      runs: [
+        { run_id: 'r_a', status: 'running', title: 'Writing and checking tests', created_at: 20, updated_at: 30 },
+        { run_id: 'r_b', status: 'running', title: null, created_at: 10, updated_at: 12 },
+      ],
     })
-  })
-
-  it('survives a cycle and a missing node', () => {
-    const depths = nodeDepths(
-      parsedDef({
-        nodes: {
-          a: { task, reads: 'b' },
-          b: { task, reads: 'a' },
-          c: { task, reads: 'gone' },
-        },
-      }),
-    )
-    expect(Object.keys(depths).sort()).toEqual(['a', 'b', 'c'])
-    expect(depths.c).toBe(1)
-  })
-})
-
-function parsedDef(request: unknown) {
-  const ref = collectWorkflowRuns(
-    [
-      start({
-        input: request,
-        output: { content: [], details: { run_id: 'r_def' } },
-      }),
-    ],
-    [],
-  )[0]
-  if (!ref.def) throw new Error('definition does not parse')
-  return ref.def
-}
-
-describe('collectWorkflowRuns', () => {
-  it('reads started runs from the transcript, oldest first', () => {
-    const refs = collectWorkflowRuns(
-      [
-        start({
-          createdAt: 50,
-          description: 'Second',
-          input: START,
-          output: { content: [], details: { run_id: 'r_b' } },
-        }),
-        start({
-          createdAt: 20,
-          description: 'First',
-          input: START,
-          output: { run_id: 'r_a' },
-        }),
-        { id: 'x', role: 'assistant', content: 'r_zzz', createdAt: 5 },
-      ] as Message[],
-      [],
-    )
-    expect(refs.map((ref) => [ref.runId, ref.at, ref.title])).toEqual([
-      ['r_a', 20, 'First'],
-      ['r_b', 50, 'Second'],
+    expect(refs?.map((ref) => [ref.runId, ref.title])).toEqual([
+      ['r_a', 'Writing and checking tests'],
+      ['r_b', undefined],
     ])
-    expect(Object.keys(refs[0].def?.nodes ?? {})).toHaveLength(6)
   })
 
-  it('skips a start that is running, failed, or left out of the page', () => {
-    expect(
-      collectWorkflowRuns(
-        [
-          start({ input: START, running: true }),
-          start({
-            input: {},
-            output: { error: { kind: 'function_error', message: 'bad' } },
-          }),
-          start({ input: undefined, unloaded: true }),
-        ],
-        [],
-      ),
-    ).toEqual([])
-  })
-
-  it('adds the runs node sessions name, once each, at their first session', () => {
-    const refs = collectWorkflowRuns(
-      [
-        start({
-          createdAt: 50,
-          description: 'Known',
-          output: { run_id: 'r_b' },
-        }),
-      ],
-      [
-        session(12, { workflow_run_id: 'r_a' }),
-        session(11, { workflow_run_id: 'r_a' }),
-        session(60, { workflow_run_id: 'r_b' }),
-        session(70, { parent_session_id: 'main' }),
-        session(80, { workflow_run_id: 7 }),
-      ],
-    )
-    expect(refs.map((ref) => [ref.runId, ref.at, ref.title])).toEqual([
-      ['r_a', 11, undefined],
-      ['r_b', 50, 'Known'],
-    ])
+  it('is null for a reply it cannot read', () => {
+    expect(parseRunList(null)).toBeNull()
+    expect(parseRunList({})).toBeNull()
+    expect(parseRunList({ runs: [{ status: 'running' }] })).toBeNull()
   })
 })
 
 describe('buildRunView', () => {
   it('groups a finished run by phase, in the order its nodes started', () => {
-    const view = buildRunView(
-      { runId: 'r_3f03', at: 1, title: 'Writing and checking tests' },
-      parsed(BATCH),
-    )
+    const view = buildRunView({ runId: 'r_3f03', at: 1, title: 'Writing and checking tests' }, parsed(BATCH))
     expect(view.title).toBe('Writing and checking tests')
+    // Without a title, named after what its node labels share.
+    expect(buildRunView({ runId: 'r_3f03', at: 1 }, parsed(BATCH)).title).toBe('KAN-5 batch r1w1')
     expect(view.live).toBe(false)
     expect(order(view)).toEqual(['test: batch-work', 'check: batch-check'])
     expect(view.phases.map((phase) => [phase.done, phase.total])).toEqual([
@@ -250,10 +142,7 @@ describe('buildRunView', () => {
   })
 
   it('keeps loop passes with their phase and waiting nodes in pipeline order', () => {
-    const view = buildRunView(
-      { runId: 'r_live', at: 1, def: parsedDef(START) },
-      parsed(LIVE),
-    )
+    const view = buildRunView({ runId: 'r_live', at: 1 }, parsed(LIVE))
     expect(order(view)).toEqual([
       'work: work,work#it1',
       'check: verify,verify#it1',
@@ -264,9 +153,7 @@ describe('buildRunView', () => {
     ])
     const [, pass] = view.phases[1].nodes
     expect([pass.label, pass.suffix]).toEqual(['Check', '#it1'])
-    expect(view.phases[0].nodes[1].error).toBe(
-      'no provider registered for model x',
-    )
+    expect(view.phases[0].nodes[1].error).toBe('no provider registered for model x')
     // `phases` counts every pass; a node without a phase is counted here.
     expect(view.phases[0]).toMatchObject({ done: 1, total: 2 })
     expect(view.phases.at(-1)).toMatchObject({ phase: '', done: 0, total: 1 })
@@ -282,26 +169,22 @@ describe('buildRunView', () => {
     })
   })
 
-  it('without the definition, lists waiting nodes by uid', () => {
-    const view = buildRunView({ runId: 'r_live', at: 1 }, parsed(LIVE))
-    expect(view.phases.map((phase) => phase.phase)).toEqual([
-      'work',
-      'check',
-      '',
-      'critic',
-      'map',
-      'plan',
-    ])
+  it('without depths, lists waiting nodes by uid', () => {
+    const view = buildRunView(
+      { runId: 'r_live', at: 1 },
+      parsed({
+        ...LIVE,
+        node_details: Object.fromEntries(
+          Object.entries(LIVE.node_details).map(([uid, { depth: _, ...detail }]) => [uid, detail]),
+        ),
+      }),
+    )
+    expect(view.phases.map((phase) => phase.phase)).toEqual(['work', 'check', '', 'critic', 'map', 'plan'])
   })
 
-  it('orders fanout items by number and names a lone node run after it', () => {
-    const nodes = Object.fromEntries(
-      [10, 2, 1].map((i) => [`map#${i}`, { state: 'pending', label: 'Map' }]),
-    )
-    const view = buildRunView(
-      { runId: 'r_fan', at: 1 },
-      parsed({ status: 'running', nodes: {}, node_details: nodes }),
-    )
+  it('orders fanout items by number and names a run after its node, else its id', () => {
+    const nodes = Object.fromEntries([10, 2, 1].map((i) => [`map#${i}`, { state: 'pending', label: 'Map' }]))
+    const view = buildRunView({ runId: 'r_fan', at: 1 }, parsed({ status: 'running', nodes: {}, node_details: nodes }))
     expect(order(view)).toEqual([': map#1,map#2,map#10'])
     const lone = buildRunView(
       { runId: 'r_one', at: 1 },
@@ -312,6 +195,12 @@ describe('buildRunView', () => {
       }),
     )
     expect(lone.title).toBe('KAN-5 baseline')
+    expect(view.title).toBe('Map')
+    const unnamed = buildRunView(
+      { runId: 'r_0123456789abcdef', at: 1 },
+      parsed({ status: 'running', nodes: { a: 'pending' } }),
+    )
+    expect(unnamed.title).toBe('Run r_01234567')
   })
 
   it('counts the nodes a status leaves without details', () => {
@@ -323,11 +212,7 @@ describe('buildRunView', () => {
         result_error: 'node b failed',
       }),
     )
-    expect([view.phases.length, view.unlisted, view.error]).toEqual([
-      0,
-      2,
-      'node b failed',
-    ])
+    expect([view.phases.length, view.unlisted, view.error]).toEqual([0, 2, 'node b failed'])
     expect(runMark(view, T)).toEqual({ tone: 'alert', text: 'failed' })
   })
 
@@ -494,9 +379,10 @@ describe('nodeMark', () => {
       tone: 'ink',
       text: 'parked',
     })
-    expect(
-      nodeMark({ ...pass, awaitingFunctions: true }, T + 7000 + 180_000),
-    ).toMatchObject({ tone: 'accent', pulse: true })
+    expect(nodeMark({ ...pass, awaitingFunctions: true }, T + 7000 + 180_000)).toMatchObject({
+      tone: 'accent',
+      pulse: true,
+    })
   })
 
   it('names the other states', () => {
@@ -524,11 +410,7 @@ describe('nodeMark', () => {
 })
 
 describe('compact rows', () => {
-  const batch = () =>
-    buildRunView(
-      { runId: 'r_3f03', at: 1, title: 'KAN-5 batch r1w1' },
-      parseRunDetails(BATCH) as NonNullable<ReturnType<typeof parseRunDetails>>,
-    )
+  const batch = () => buildRunView({ runId: 'r_3f03', at: 1 }, parsed(BATCH))
 
   it('names a node after what its run name leaves, and its phase only when the label does not', () => {
     const view = batch()
@@ -557,8 +439,7 @@ describe('compact rows', () => {
 })
 
 describe('phase rows', () => {
-  const view = (value: unknown) =>
-    buildRunView({ runId: 'r', at: 1 }, parsed(value))
+  const view = (value: unknown) => buildRunView({ runId: 'r', at: 1 }, parsed(value))
   const phaseOf = (run: ReturnType<typeof view>, name: string) => {
     const found = run.phases.find((phase) => phase.phase === name)
     if (!found) throw new Error(name)
@@ -567,12 +448,7 @@ describe('phase rows', () => {
   /** Each phase's mark, whether it is current, whether it opens, and its facts. */
   const read = (run: ReturnType<typeof view>, name: string) => {
     const phase = phaseOf(run, name)
-    return [
-      phaseState(phase),
-      phaseCurrent(run, phase),
-      phaseOpens(run, phase),
-      phaseFacts(phase),
-    ]
+    return [phaseState(phase), phaseCurrent(run, phase), phaseOpens(run, phase), phaseFacts(phase)]
   }
 
   it('counts failed and running nodes per phase, from the status or the nodes', () => {
@@ -612,40 +488,22 @@ describe('phase rows', () => {
 
   it('marks each phase, and only a live run has a current one', () => {
     const live = view(LIVE)
-    expect(read(live, 'work')).toEqual([
-      'failed',
-      false,
-      true,
-      '1 failed · 1/2',
-    ])
+    expect(read(live, 'work')).toEqual(['failed', false, true, '1 failed · 1/2'])
     expect(read(live, 'check')).toEqual(['running', true, true, '1/2'])
     expect(read(live, 'plan')).toEqual(['pending', false, false, '0/1'])
     expect(read(view(BATCH), 'test')).toEqual(['done', false, false, '1/1'])
     // Between two of its nodes, a phase stays current.
     const between = { ...phaseOf(live, 'plan'), done: 1, total: 3 }
-    expect([phaseState(between), phaseCurrent(live, between)]).toEqual([
-      'pending',
-      true,
-    ])
+    expect([phaseState(between), phaseCurrent(live, between)]).toEqual(['pending', true])
   })
 
   it('moves the current phase on, a failed one still open', () => {
     const kit = view(KIT)
     expect(read(kit, 'explore')).toEqual(['done', false, false, '2/2'])
-    expect(read(kit, 'design')).toEqual([
-      'running',
-      true,
-      true,
-      '1 failed · 0/2',
-    ])
+    expect(read(kit, 'design')).toEqual(['running', true, true, '1 failed · 0/2'])
     expect(read(kit, 'refute')).toEqual(['pending', false, false, '0/2'])
     const next = view(KIT_NEXT)
-    expect(read(next, 'design')).toEqual([
-      'failed',
-      false,
-      true,
-      '1 failed · 1/2',
-    ])
+    expect(read(next, 'design')).toEqual(['failed', false, true, '1 failed · 1/2'])
     expect(read(next, 'refute')).toEqual(['running', true, true, '0/2'])
   })
 
@@ -712,12 +570,7 @@ describe('phase rows', () => {
   it('leaves an ended run without a current phase', () => {
     // A tolerated failure in a finished run: open, not current.
     const done = view({ ...KIT_NEXT, status: 'completed' })
-    expect(read(done, 'design')).toEqual([
-      'failed',
-      false,
-      true,
-      '1 failed · 1/2',
-    ])
+    expect(read(done, 'design')).toEqual(['failed', false, true, '1 failed · 1/2'])
     // A failed run left a phase part done: folded, not current.
     const failed = view({
       ...KIT,
@@ -752,12 +605,7 @@ describe('phase rows', () => {
         },
       })
     for (const status of ['failed', 'cancelled'])
-      expect(read(design(status), 'design')).toEqual([
-        'failed',
-        false,
-        true,
-        '1 failed · 1 cancelled · 0/2',
-      ])
+      expect(read(design(status), 'design')).toEqual(['failed', false, true, '1 failed · 1 cancelled · 0/2'])
     // A failed run cancelled the nodes still going: their phase failed nothing.
     const failed = view({
       ...KIT_NEXT,
@@ -775,27 +623,13 @@ describe('phase rows', () => {
         },
       },
     })
-    expect(read(failed, 'refute')).toEqual([
-      'cancelled',
-      false,
-      false,
-      '1 cancelled · 0/2',
-    ])
+    expect(read(failed, 'refute')).toEqual(['cancelled', false, false, '1 cancelled · 0/2'])
   })
 
   it('keeps a header for a phase whose nodes the status left out', () => {
-    const {
-      'explore-code': _,
-      'explore-options': __,
-      ...listed
-    } = KIT_NEXT.node_details
+    const { 'explore-code': _, 'explore-options': __, ...listed } = KIT_NEXT.node_details
     const cut = view({ ...KIT_NEXT, node_details: listed })
-    expect(cut.phases.map((phase) => phase.phase)).toEqual([
-      'explore',
-      'design',
-      'refute',
-      'plan',
-    ])
+    expect(cut.phases.map((phase) => phase.phase)).toEqual(['explore', 'design', 'refute', 'plan'])
     expect(phaseOf(cut, 'explore').nodes).toEqual([])
     expect(read(cut, 'explore')).toEqual(['done', false, false, '2/2'])
     // The status tells a left-out node that failed from one the stop
@@ -810,18 +644,8 @@ describe('phase rows', () => {
         },
         node_details: listed,
       })
-    expect(read(stopped(1), 'explore')).toEqual([
-      'cancelled',
-      false,
-      false,
-      '1 cancelled · 1/2',
-    ])
-    expect(read(stopped(0), 'explore')).toEqual([
-      'failed',
-      false,
-      true,
-      '1 failed · 1/2',
-    ])
+    expect(read(stopped(1), 'explore')).toEqual(['cancelled', false, false, '1 cancelled · 1/2'])
+    expect(read(stopped(0), 'explore')).toEqual(['failed', false, true, '1 failed · 1/2'])
     // A read without details shows no phases yet.
     expect(view({ ...KIT_NEXT, node_details: null }).phases).toEqual([])
   })
@@ -834,21 +658,14 @@ describe('phase rows', () => {
     const run = (phases: Record<string, string | undefined>) =>
       view({
         status: 'running',
-        nodes: Object.fromEntries(
-          Object.keys(phases).map((uid) => [uid, 'pending']),
-        ),
+        nodes: Object.fromEntries(Object.keys(phases).map((uid) => [uid, 'pending'])),
         node_details: Object.fromEntries(
-          Object.entries(phases).map(([uid, phase]) => [
-            uid,
-            { state: 'pending', phase },
-          ]),
+          Object.entries(phases).map(([uid, phase]) => [uid, { state: 'pending', phase }]),
         ),
       })
     expect(groupsByPhase(run({ a: 'x', b: 'x', c: 'y' }))).toBe(true)
     expect(groupsByPhase(run({ a: 'x', b: 'x', c: undefined }))).toBe(false)
-    expect(
-      groupsByPhase(view({ status: 'running', nodes: { a: 'pending' } })),
-    ).toBe(false)
+    expect(groupsByPhase(view({ status: 'running', nodes: { a: 'pending' } }))).toBe(false)
   })
 
   it('reads a phase of one node as one line', () => {
@@ -863,9 +680,7 @@ describe('phase rows', () => {
     const batch = view(BATCH)
     const [test] = phaseOf(batch, 'test').nodes
     const [check] = phaseOf(batch, 'check').nodes
-    expect(phaseNodeLine(batch, test)).toBe(
-      'tests · codex/gpt-6-luna · 256k tokens',
-    )
+    expect(phaseNodeLine(batch, test)).toBe('tests · codex/gpt-6-luna · 256k tokens')
     expect(phaseNodeLine(batch, check)).not.toMatch(/^check ·/)
     expect(phaseNodeLine(batch, check)).toMatch(/^codex\/gpt-6-luna · /)
     // A waiting node named like its phase has nothing to add.

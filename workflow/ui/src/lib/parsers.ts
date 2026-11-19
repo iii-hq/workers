@@ -2,7 +2,7 @@
  * Zod schemas for the `workflow::*` namespace (durable multi-agent DAG
  * orchestrator).
  *
- * Wire source: `iii/workers/workflow/src/types.rs` + `src/functions/*.rs`
+ * Wire source: `workflow/src/types.rs` + `src/functions/*.rs`
  *   - WorkflowDef / NodeDef / InputSpec (One | Many) / FanoutSpec / OutputRef:
  *     the stored definition, used here as the view model
  *   - StartRequest (flat, lifted to a WorkflowDef) / StartResponse (start.rs)
@@ -13,8 +13,8 @@
  * extra/new fields still parses and renders rather than falling back to raw
  * JSON. Mirrors the worker:: / shell:: parser modules.
  */
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { z } from 'zod'
-import { unwrapEnvelope } from '@/components/chat/sandbox/parsers'
 
 export { unwrapEnvelope }
 
@@ -32,9 +32,7 @@ export const WORKFLOW_FUNCTION_IDS = [
 
 export type WorkflowFunctionId = (typeof WORKFLOW_FUNCTION_IDS)[number]
 
-const WORKFLOW_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(
-  WORKFLOW_FUNCTION_IDS,
-)
+const WORKFLOW_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(WORKFLOW_FUNCTION_IDS)
 
 export function isWorkflowFunction(id: string): id is WorkflowFunctionId {
   return WORKFLOW_FUNCTION_ID_SET.has(id)
@@ -109,55 +107,41 @@ const startNodeSchema = z
 const ref = (id: string) => `node:${id}`
 
 /** The worker's `lower()` for the fields the views read. parsers.test.ts checks
- *  it against `workflow/tests/fixtures/flat_start_cases.json`; CI runs only the
- *  worker's half, so run this suite when `lower()` changes. */
+ *  it against `workflow/tests/fixtures/flat_start_cases.json`, the cases the
+ *  worker's own `lower()` test reads. */
 function liftDefinition(
   nodes: Record<string, z.infer<typeof startNodeSchema>>,
   output: string | string[] | null | undefined,
 ): WorkflowDef {
   const lifted = Object.fromEntries(
-    Object.entries(nodes).map(
-      ([id, { task, reads, fanout, model, ...rest }]): [
-        string,
-        WorkflowNodeDef,
-      ] => {
-        const read = reads == null ? [] : [reads].flat()
-        const source = typeof fanout === 'string' ? [fanout.split('.')[0]] : []
-        return [
-          id,
-          {
-            ...rest,
-            // The worker reads a blank model as omitted (the node inherits the caller's).
-            agent: { model: model?.trim() ? model : undefined },
-            input: {
-              from:
-                reads == null
-                  ? fanout == null
-                    ? 'run_input'
-                    : 'fanout_item'
-                  : Array.isArray(reads)
-                    ? reads.map(ref)
-                    : ref(reads),
-              template: task,
-            },
-            depends_on: [...new Set([...read, ...source])],
-            fanout:
-              fanout == null
-                ? undefined
-                : typeof fanout === 'string'
-                  ? { over: ref(fanout) }
-                  : { items: fanout },
+    Object.entries(nodes).map(([id, { task, reads, fanout, model, ...rest }]): [string, WorkflowNodeDef] => {
+      const read = reads == null ? [] : [reads].flat()
+      const source = typeof fanout === 'string' ? [fanout.split('.')[0]] : []
+      return [
+        id,
+        {
+          ...rest,
+          // The worker reads a blank model as omitted (the node inherits the caller's).
+          agent: { model: model?.trim() ? model : undefined },
+          input: {
+            from:
+              reads == null
+                ? fanout == null
+                  ? 'run_input'
+                  : 'fanout_item'
+                : Array.isArray(reads)
+                  ? reads.map(ref)
+                  : ref(reads),
+            template: task,
           },
-        ]
-      },
-    ),
+          depends_on: [...new Set([...read, ...source])],
+          fanout: fanout == null ? undefined : typeof fanout === 'string' ? { over: ref(fanout) } : { items: fanout },
+        },
+      ]
+    }),
   )
   // Omitted `output` = every node no other node reads, in id order.
-  const readIds = new Set(
-    Object.entries(lifted).flatMap(([id, n]) =>
-      n.depends_on.filter((d) => d !== id),
-    ),
-  )
+  const readIds = new Set(Object.entries(lifted).flatMap(([id, n]) => n.depends_on.filter((d) => d !== id)))
   const unread = Object.keys(nodes)
     .sort()
     .filter((id) => !readIds.has(id))
@@ -192,36 +176,20 @@ export const startRequestSchema = z
   }))
 export type StartRequest = z.infer<typeof startRequestSchema>
 
-export const startResponseSchema = z
-  .object({ run_id: z.string() })
-  .passthrough()
+export const startResponseSchema = z.object({ run_id: z.string() }).passthrough()
 export type StartResponse = z.infer<typeof startResponseSchema>
 
 /* ---------------- run status enum ---------------- */
 
-export const runStatusSchema = z.enum([
-  'awaiting_nodes',
-  'running',
-  'completed',
-  'failed',
-  'cancelled',
-])
+export const runStatusSchema = z.enum(['awaiting_nodes', 'running', 'completed', 'failed', 'cancelled'])
 export type RunStatus = z.infer<typeof runStatusSchema>
 
 /* ---------------- workflow::status ---------------- */
 
-export const nodeStateSchema = z.enum([
-  'pending',
-  'running',
-  'done',
-  'failed',
-  'cancelled',
-])
+export const nodeStateSchema = z.enum(['pending', 'running', 'done', 'failed', 'cancelled'])
 export type NodeState = z.infer<typeof nodeStateSchema>
 
-export const statusRequestSchema = z
-  .object({ run_id: z.string() })
-  .passthrough()
+export const statusRequestSchema = z.object({ run_id: z.string() }).passthrough()
 export type StatusRequest = z.infer<typeof statusRequestSchema>
 
 export const statusResponseSchema = z
@@ -240,14 +208,10 @@ export type StatusResponse = z.infer<typeof statusResponseSchema>
 
 /* ---------------- workflow::node-result ---------------- */
 
-export const nodeResultRequestSchema = z
-  .object({ run_id: z.string(), node_uid: z.string() })
-  .passthrough()
+export const nodeResultRequestSchema = z.object({ run_id: z.string(), node_uid: z.string() }).passthrough()
 export type NodeResultRequest = z.infer<typeof nodeResultRequestSchema>
 
-export const nodeResultResponseSchema = z
-  .object({ result: z.unknown() })
-  .passthrough()
+export const nodeResultResponseSchema = z.object({ result: z.unknown() }).passthrough()
 export type NodeResultResponse = z.infer<typeof nodeResultResponseSchema>
 
 /* ---------------- workflow::stop ---------------- */
@@ -284,10 +248,7 @@ export function consumedDeps(from: InputFrom | undefined): string[] {
  *  depends on more than one node. The console highlights these because they
  *  are where the multi-input wiring matters most. */
 export function isJoinNode(node: WorkflowNodeDef): boolean {
-  return (
-    consumedDeps(node.input?.from).length > 1 ||
-    (node.depends_on?.length ?? 0) > 1
-  )
+  return consumedDeps(node.input?.from).length > 1 || (node.depends_on?.length ?? 0) > 1
 }
 
 export interface DagCounts {
@@ -319,18 +280,12 @@ export function tallyNodes(nodes: Record<string, NodeState>): DagCounts {
 
 /* ---------------- generic parse helpers ---------------- */
 
-export function safeParseRequest<T>(
-  schema: z.ZodType<T>,
-  value: unknown,
-): T | null {
+export function safeParseRequest<T>(schema: z.ZodType<T>, value: unknown): T | null {
   const parsed = schema.safeParse(value ?? {})
   return parsed.success ? parsed.data : null
 }
 
-export function safeParseResponse<T>(
-  schema: z.ZodType<T>,
-  value: unknown,
-): T | null {
+export function safeParseResponse<T>(schema: z.ZodType<T>, value: unknown): T | null {
   const parsed = schema.safeParse(unwrapEnvelope(value))
   return parsed.success ? parsed.data : null
 }

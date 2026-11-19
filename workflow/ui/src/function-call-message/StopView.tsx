@@ -1,10 +1,5 @@
-import { MetaRow, StatusPill } from '@/components/chat/sandbox/shared'
-import {
-  safeParseRequest,
-  safeParseResponse,
-  stopRequestSchema,
-  stopResponseSchema,
-} from './parsers'
+import { Badge, MetaRow } from '@iii-dev/console-ui'
+import { safeParseRequest, safeParseResponse, stopRequestSchema, stopResponseSchema } from '../lib/parsers'
 import { RunIdRow, RunStatusPill } from './shared'
 
 interface StopViewProps {
@@ -24,16 +19,18 @@ export function StopView({ input, output, running }: StopViewProps) {
   const resp = !running ? safeParseResponse(stopResponseSchema, output) : null
 
   return (
-    <div className="border-t border-border bg-bg">
+    <div className="wf-card">
       <MetaRow>
         {running ? (
-          <StatusPill label="stopping…" variant="default" />
+          <Badge className="wf-pill">stopping…</Badge>
         ) : resp?.status ? (
           <RunStatusPill status={resp.status} />
         ) : resp?.stopped ? (
-          <StatusPill label="stopped" variant="warn" />
+          <Badge className="wf-pill" variant="warn">
+            stopped
+          </Badge>
         ) : (
-          <StatusPill label="stop requested" variant="default" />
+          <Badge className="wf-pill">stop requested</Badge>
         )}
       </MetaRow>
       <RunIdRow runId={resp?.run_id ?? req.run_id} />
