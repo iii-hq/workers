@@ -51,6 +51,8 @@ pub const AUTH_STATUS_ID: &str = "provider::openai-codex::auth::status";
 pub const AUTH_STATUS_DESC: &str = "Read Codex session status, credential source, account id, and any pending login. Never returns tokens.";
 pub const AUTH_LOGOUT_ID: &str = "provider::openai-codex::auth::logout";
 pub const AUTH_LOGOUT_DESC: &str = "Disconnect this provider, cancel pending login, and persistently disable automatic use of legacy credentials. Does not sign out the Codex CLI.";
+pub const AUTH_TOKEN_ID: &str = "provider::openai-codex::auth::token";
+pub const AUTH_TOKEN_DESC: &str = "Return the current Codex OAuth access token (null when signed out) to judge-openai only; any other caller gets provider/forbidden. Pass rejected_token after an HTTP 401 to force one refresh of a ChatGPT sign-in session. Never returns the refresh or id token.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
@@ -117,5 +119,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
             AUTH_STATUS_DESC,
         ),
         spec::<crate::session::EmptyRequest, crate::session::Ack>(AUTH_LOGOUT_ID, AUTH_LOGOUT_DESC),
+        spec::<crate::token::TokenRequest, crate::token::TokenResponse>(
+            AUTH_TOKEN_ID,
+            AUTH_TOKEN_DESC,
+        ),
     ]
 }

@@ -20,6 +20,7 @@ pub mod sse;
 pub mod state;
 pub mod stream_fn;
 pub mod surface;
+pub mod token;
 #[cfg(feature = "console-ui")]
 pub mod ui;
 pub mod upstream;

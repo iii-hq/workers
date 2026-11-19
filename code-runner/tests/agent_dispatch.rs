@@ -13,6 +13,7 @@ const FORBIDDEN: &[&str] = &[
     "provider::openai-codex::login::cancel",
     "provider::openai-codex::auth::status",
     "provider::openai-codex::auth::logout",
+    "provider::openai-codex::auth::token",
     "provider::openai-codex::auth::future-operation",
     "provider-openai-codex::state::get",
     "provider-openai-codex::state::list",

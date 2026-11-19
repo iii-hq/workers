@@ -120,7 +120,7 @@ vi.mock('@iii-dev/console-ui', () => ({
 
 const catalog = {
   status: 'ok',
-  models: [{ name: 'gpt-6-luna', description: 'OpenAI Decisions (beta)', release_date: '2026-09-14' }],
+  models: [{ name: 'gpt-6-luna', description: 'OpenAI Decisions', release_date: '2026-09-14' }],
 }
 const emptyCatalog = { status: 'ok', models: [] }
 type Engine = Pick<ExtensionIii, 'call'>
@@ -314,7 +314,7 @@ describe('OpenAiConfigForm catalog', () => {
     expect(iii.call).toHaveBeenCalledWith('judge-openai::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
     expect([...select.options].map((option) => option.value)).toEqual(['', 'gpt-6-luna', 'gpt-6-luna-2026-10-01'])
-    expect(select.options[1].dataset.description).toBe('OpenAI Decisions (beta) · 2026-09-14')
+    expect(select.options[1].dataset.description).toBe('OpenAI Decisions · 2026-09-14')
     expect(select.options[2].dataset.description).toBe('Not in the current catalog')
     expect(select.value).toBe('gpt-6-luna-2026-10-01')
     expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Key accepted · 1 models')
@@ -476,5 +476,105 @@ describe('OpenAiConfigForm with the Console secret field', () => {
     }
     await mount({}, iii, { secretField: StubSecretField } as Partial<ConfigFormProps>)
     expect(seen[seen.length - 1].status).toEqual({ checking: false, connected: false, error, detail: undefined })
+  })
+})
+
+describe('OpenAiConfigForm credential source', () => {
+  it('writes auth and keeps the stored key when switching to the Codex sign-in', () => {
+    const value = Object.freeze({ api_key: 'fixture-only', future: true })
+    const { html, onChange } = render(value)
+    expect(html.match(/<select[^>]*name="auth"[^>]*>/)?.[0]).toBeDefined()
+    expect(html).toContain('ChatGPT sign-in via provider-openai-codex (experimental)')
+    changes.get('auth')?.('codex')
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...value, auth: 'codex' })
+  })
+
+  it('hides the key field in codex mode, for the masked input and the Console secret field', async () => {
+    const { html } = render({ auth: 'codex', api_key: 'fixture-only' })
+    expect(html).not.toContain('name="api_key"')
+    expect(html).not.toContain('fixture-only')
+    expect(html).toContain('The built-in catalog')
+    const seen: SecretKeyFieldProps[] = []
+    function StubSecretField(props: SecretKeyFieldProps) {
+      seen.push(props)
+      return <output data-name={props.name} />
+    }
+    const { container } = await mount({ auth: 'codex' }, engine(), {
+      secretField: StubSecretField,
+    } as Partial<ConfigFormProps>)
+    expect(seen).toHaveLength(0)
+    expect(container.querySelector('output')).toBeNull()
+  })
+
+  it('reports whether a Codex session reaches the worker', async () => {
+    const { container } = await mount({ auth: 'codex' })
+    expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Codex session active')
+    await act(async () => root!.unmount())
+    root = undefined
+    const { container: missing } = await mount({ auth: 'codex' }, engine({ status: 'error', code: 'missing_key' }))
+    expect(missing.querySelector('[data-chip="warning"]')?.textContent).toBe('No Codex session reaches the worker')
+    const alert = missing.querySelector('[role="alert"][data-variant="warn"]')!
+    expect(alert.textContent).toContain('sign in with ChatGPT')
+    expect(alert.textContent).toContain('provider-openai-codex')
+  })
+
+  it.each([
+    [{ api_key: 'fixture-only' }, { api_key: 'fixture-only', auth: 'codex' }],
+    [{ auth: 'codex' }, { auth: 'api_key' }],
+  ])('confirms only the saved credential source, also after Refresh (%j → %j)', async (saved, draft) => {
+    const { container, iii } = await mount(saved)
+    expect(container.querySelector('[data-chip="success"]')).not.toBeNull()
+    await act(async () =>
+      root!.render(<OpenAiConfigForm id="judge-openai" schema={{}} value={draft} onChange={vi.fn()} iii={iii} />),
+    )
+    const pending = () => {
+      expect(container.querySelector('[data-chip="success"]')).toBeNull()
+      expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Save to check this credential source')
+    }
+    pending()
+    const refresh = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Refresh')!
+    await act(async () => refresh.click())
+    expect(iii.call).toHaveBeenCalledTimes(2)
+    pending()
+  })
+
+  it.each([
+    [{ api_key: 'fixture-only' }, { api_key: 'fixture-only', auth: 'codex' }],
+    [{ auth: 'codex' }, { auth: 'api_key' }],
+  ])('a save drops the old result and any listing in flight (%j → %j)', async (before, after) => {
+    vi.useFakeTimers()
+    try {
+      const handlers = new Map<string, (event: { id?: unknown }) => void>()
+      let answerOld: (reply: unknown) => void = () => {}
+      const iii = Object.assign(engine(), {
+        browserId: 'b1',
+        observe: vi.fn(() => vi.fn()),
+        on: (id: string, handler: (event: { id?: unknown }) => void) => {
+          handlers.set(id, handler)
+          return () => handlers.delete(id)
+        },
+      })
+      const { container } = await mount(before, iii)
+      const host: ReturnType<typeof engine> = iii
+      expect(container.querySelector('[data-chip="success"]')).not.toBeNull()
+      // A Refresh whose reply (for the old source) is still in flight at the save.
+      iii.call.mockImplementationOnce(() => new Promise((resolve) => (answerOld = resolve)))
+      const refresh = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Refresh')!
+      await act(async () => refresh.click())
+      await act(async () =>
+        root!.render(<OpenAiConfigForm id="judge-openai" schema={{}} value={after} onChange={vi.fn()} iii={host} />),
+      )
+      const [notify] = handlers.values()
+      await act(async () => notify({ id: 'judge-openai' }))
+      expect(container.querySelector('[data-chip="success"]')).toBeNull()
+      await act(async () => answerOld(catalog))
+      expect(container.querySelector('[data-chip="success"]')).toBeNull()
+      expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Checking the worker…')
+      await act(async () => vi.runAllTimersAsync())
+      expect(iii.call).toHaveBeenCalledTimes(3)
+      expect(container.querySelector('[data-chip="success"]')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

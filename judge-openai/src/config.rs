@@ -6,6 +6,10 @@ use serde_json::Value;
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct OpenAiConfig {
+    /// Credential source: api_key (api_key or OPENAI_API_KEY), or codex (experimental:
+    /// the ChatGPT sign-in held by provider-openai-codex; api_key and OPENAI_API_KEY
+    /// are then ignored, with no fallback).
+    pub auth: Auth,
     /// Provider credential, or a secret://NAME reference (e.g. secret://OPENAI_API_KEY)
     /// resolved through the secrets worker at call time. A nonblank value overrides
     /// OPENAI_API_KEY captured at boot; a reference that does not resolve fails with
@@ -24,9 +28,17 @@ pub struct OpenAiConfig {
     #[schemars(range(min = 1))]
     pub max_timeout_ms: u64,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Auth {
+    #[default]
+    ApiKey,
+    Codex,
+}
 impl std::fmt::Debug for OpenAiConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenAiConfig")
+            .field("auth", &self.auth)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("model", &self.model)
             .field("max_request_bytes", &self.max_request_bytes)
@@ -38,6 +50,7 @@ impl std::fmt::Debug for OpenAiConfig {
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
+            auth: Auth::default(),
             api_key: None,
             model: crate::DEFAULT_MODEL.into(),
             max_request_bytes: judge_contract::DEFAULT_MAX_REQUEST_BYTES,
@@ -79,6 +92,17 @@ impl OpenAiConfig {
         schema["properties"]["api_key"]["format"] = "password".into();
         schema["properties"]["api_key"]["writeOnly"] = true.into();
         schema["properties"]["model"]["enum"] = crate::SUPPORTED_MODELS.into();
+        // Inline the Auth enum so form renderers need no $ref resolution.
+        let auth = schema["properties"]["auth"]
+            .as_object_mut()
+            .expect("auth is a property");
+        auth.remove("allOf");
+        auth.insert("type".into(), "string".into());
+        auth.insert("enum".into(), serde_json::json!(["api_key", "codex"]));
+        schema
+            .as_object_mut()
+            .expect("schema is an object")
+            .remove("definitions");
         schema
     }
 }
