@@ -25,6 +25,9 @@ pub struct VmBootArgs {
     /// Host-only same-operation sentinel descriptor. Never forwarded to the guest.
     #[arg(long, hide = true)]
     pub admission_fd: Option<i32>,
+    /// Dedicated runtime-writer sentinel, supplied only by RuntimeLaunch.
+    #[arg(long, hide = true)]
+    pub runtime_write_fd: Option<i32>,
     /// Path to the guest rootfs directory (the boot trampoline; in overlay
     /// mode this is a minimal dir serving only the injected /init.krun).
     #[arg(long)]
@@ -762,15 +765,18 @@ pub(crate) fn admit_boot_inputs_on(
     source_readonly: Option<&std::path::Path>,
 ) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
     let plan = build_virtiofs_mount_plan(mounts)?;
-    let mut paths = vec![root];
+    // Runtime roots/upper may already have an active writer hold in the child.
+    // The imported runtime descriptor, not a conflicting UseGuard, covers them.
+    let _ = (root, upper);
+    let mut paths = Vec::new();
     paths.extend(lower);
-    paths.extend(upper);
     paths.extend(source_sync);
     paths.extend(source_readonly);
     paths.extend(
         plan.entries
             .iter()
-            .map(|entry| std::path::Path::new(&entry.host_path)),
+            .map(|entry| std::path::Path::new(&entry.host_path))
+            .filter(|path| Some(*path) == source_sync || Some(*path) == source_readonly),
     );
     for path in paths {
         let used = admission.use_path(path).map_err(|e| e.to_string())?;
@@ -780,7 +786,7 @@ pub(crate) fn admit_boot_inputs_on(
     Ok((admission, plan))
 }
 
-fn admit_boot_inputs_fresh(
+pub(crate) fn admit_boot_inputs_fresh(
     admission: crate::worker_admission::Lease,
     root: &std::path::Path,
     lower: Option<&std::path::Path>,
@@ -836,9 +842,94 @@ fn admit_boot_inputs_fresh(
 fn preflight_boot(
     args: &VmBootArgs,
 ) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
-    let admission = crate::worker_admission::local(std::path::Path::new(&args.rootfs))
+    let context = crate::worker_admission::AdmissionContext::system().map_err(|e| e.to_string())?;
+    preflight_boot_in(args, &context)
+}
+
+fn preflight_boot_in(
+    args: &VmBootArgs,
+    context: &crate::worker_admission::AdmissionContext,
+) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
+    prepare_endpoint_parent(args, context)?;
+    let admission = context
+        .local(std::path::Path::new(&args.rootfs))
         .map_err(|e| e.to_string())?;
     preflight_boot_on(args, admission, false)
+}
+
+/// Caller must authorize and resolve the exact paths before this short setup.
+/// Its completed operation ends before acquiring the long-lived payload lease.
+pub(crate) fn prepare_endpoint_parent(
+    args: &VmBootArgs,
+    context: &crate::worker_admission::AdmissionContext,
+) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::{Component, Path};
+    let Some(socket) = &args.shell_sock else {
+        return Ok(());
+    };
+    let parent = Path::new(socket).parent().ok_or("endpoint has no parent")?;
+    if !parent.is_absolute()
+        || parent
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err("endpoint parent must be an absolute non-traversing path".into());
+    }
+    let mounts = build_virtiofs_mount_plan(&args.mount)?;
+    let overlaps = |path: &Path| parent.starts_with(path) || path.starts_with(parent);
+    if overlaps(Path::new(&args.rootfs))
+        || mounts
+            .entries
+            .iter()
+            .any(|entry| overlaps(Path::new(&entry.host_path)))
+    {
+        return Err("endpoint parent overlaps an export; host consumers require explicit control-path relocation".into());
+    }
+    // Admit only the necessary missing chain, never the entire existing parent.
+    let mut create_root = parent;
+    loop {
+        let Some(ancestor) = create_root.parent() else {
+            return Err("endpoint control root has no parent".into());
+        };
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => create_root = ancestor,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let overlaps_creation =
+        |path: &Path| create_root.starts_with(path) || path.starts_with(create_root);
+    if overlaps_creation(Path::new(&args.rootfs))
+        || mounts
+            .entries
+            .iter()
+            .any(|entry| overlaps_creation(Path::new(&entry.host_path)))
+    {
+        return Err("missing endpoint parent chain overlaps an export".into());
+    }
+    let setup = context.local(create_root).map_err(|e| e.to_string())?;
+    if let Ok(meta) = std::fs::symlink_metadata(parent) {
+        if !meta.is_dir()
+            || meta.uid() != unsafe { libc::geteuid() }
+            || meta.permissions().mode() & 0o777 != 0o700
+        {
+            return Err("existing endpoint parent is not owned/private; refusing chmod".into());
+        }
+    } else {
+        let mut create = setup
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: create_root.to_path_buf(),
+            })
+            .map_err(|e| e.to_string())?;
+        create
+            .create_dir_all(parent, 0o700)
+            .map_err(|e| e.to_string())?;
+        create.commit().map_err(|e| e.to_string())?;
+    }
+    setup.revalidate().map_err(|e| e.to_string())?;
+    drop(setup);
+    Ok(())
 }
 
 fn preflight_boot_on(
@@ -848,20 +939,21 @@ fn preflight_boot_on(
 ) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
     use crate::worker_admission::{PathRequest, PathRole};
     use std::path::Path;
-    let admit = if inherited {
-        admit_boot_inputs_on
+    let (admission, plan) = if inherited {
+        // RuntimeWriter validates the prepared writable footprint. Re-admitting
+        // here would create/refresh snapshots during a legitimate writer epoch.
+        (admission, build_virtiofs_mount_plan(&args.mount)?)
     } else {
-        admit_boot_inputs_fresh
+        admit_boot_inputs_fresh(
+            admission,
+            Path::new(&args.rootfs),
+            args.rootfs_lower.as_deref().map(Path::new),
+            args.rootfs_upper.as_deref().map(Path::new),
+            &args.mount,
+            args.source_sync.as_deref().map(Path::new),
+            args.source_readonly.as_deref().map(Path::new),
+        )?
     };
-    let (admission, plan) = admit(
-        admission,
-        Path::new(&args.rootfs),
-        args.rootfs_lower.as_deref().map(Path::new),
-        args.rootfs_upper.as_deref().map(Path::new),
-        &args.mount,
-        args.source_sync.as_deref().map(Path::new),
-        args.source_readonly.as_deref().map(Path::new),
-    )?;
     let mut outputs = Vec::new();
     if let Some(path) = &args.shell_sock {
         let parent = Path::new(path)
@@ -894,8 +986,11 @@ fn preflight_boot_on(
             role: PathRole::MutableFile,
         });
     }
-    let admission =
-        crate::worker_admission::with_paths(admission, &outputs).map_err(|e| e.to_string())?;
+    let admission = if inherited {
+        admission
+    } else {
+        crate::worker_admission::with_paths(admission, &outputs).map_err(|e| e.to_string())?
+    };
     if !Path::new(&args.rootfs).exists() {
         return Err(format!("rootfs path does not exist: {}", args.rootfs));
     }
@@ -914,7 +1009,9 @@ fn preflight_boot_on(
             u8::MAX
         ));
     }
-    admission.revalidate().map_err(|e| e.to_string())?;
+    if !inherited {
+        admission.revalidate().map_err(|e| e.to_string())?;
+    }
     Ok((admission, plan))
 }
 
@@ -935,6 +1032,15 @@ pub fn run(args: &VmBootArgs) -> ! {
         Vec::new()
     };
 
+    // The separate sandbox_daemon::VmBootLauncher still needs the same owned
+    // launch routing in its owner scope. It may not boot through an unchecked
+    // fallback when these required descriptors are absent.
+    if args.runtime_write_fd.is_none() || args.admission_fd.is_none() {
+        eprintln!(
+            "error: writable __vm-boot requires an owned RuntimeLaunch with admission and runtime descriptors"
+        );
+        std::process::exit(1);
+    }
     // Drain stdin first as before, but perform no boot effects until ALL host
     // paths pass admission. The guard stays here until this process exits.
     let inherited = match args.admission_fd {
@@ -958,17 +1064,49 @@ pub fn run(args: &VmBootArgs) -> ! {
         None => crate::worker_admission::local(std::path::Path::new(&args.rootfs))
             .map_err(|e| e.to_string()),
     };
-    let (admission, mount_plan) = match inherited
-        .and_then(|lease| preflight_boot_on(args, lease, args.admission_fd.is_some()))
-    {
-        Ok(preflight) => preflight,
-        Err(e) => {
-            eprintln!("error: {e}");
+    let admission = match inherited {
+        Ok(lease) => lease,
+        Err(error) => {
+            eprintln!("error: {error}");
             std::process::exit(1);
         }
     };
-
-    match boot_vm(args, stdin_env, mount_plan, admission) {
+    let runtime = match args.runtime_write_fd {
+        Some(fd) if fd >= 3 && Some(fd) != args.admission_fd => {
+            use std::os::fd::{FromRawFd, OwnedFd};
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
+            {
+                eprintln!("error: unusable runtime writer descriptor");
+                std::process::exit(1);
+            }
+            crate::worker_admission::import_runtime_writer(&admission, unsafe {
+                OwnedFd::from_raw_fd(fd)
+            })
+        }
+        _ => Err(io::Error::other(
+            "writable boot requires RuntimeLaunch and its dedicated writer descriptor",
+        )),
+    };
+    let runtime = match runtime {
+        Ok(writer) => writer,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = runtime.checkpoint() {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+    let (admission, mount_plan) = match preflight_boot_on(args, admission, true) {
+        Ok(ready) => ready,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    };
+    match boot_vm(args, stdin_env, mount_plan, admission, runtime) {
         Ok(infallible) => match infallible {},
         Err(e) => {
             eprintln!("error: VM execution failed: {}", e);
@@ -982,8 +1120,10 @@ fn boot_vm(
     stdin_env: Vec<(String, String)>,
     mount_plan: VirtiofsMountPlan,
     admission: crate::worker_admission::Lease,
+    runtime: crate::worker_admission::RuntimeWriter,
 ) -> Result<std::convert::Infallible, String> {
     use msb_krun::VmBuilder;
+    runtime.checkpoint().map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "linux")]
     check_kvm_available()?;
@@ -1020,10 +1160,7 @@ fn boot_vm(
         );
     }
     let _input_uses = input_uses;
-    // INTEGRATION GAP: the VMM writes the existing upper/virtiofs tree in place.
-    // Mutable roles and the inherited sentinel provide exclusion, not an owned
-    // mutation receipt. The contract still needs a guest-writer lifetime/finish
-    // seam; do not claim staging the initial upper solves subsequent guest IO.
+    runtime.checkpoint().map_err(|e| e.to_string())?;
     let passthrough_fs = root_share(args)?;
 
     let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
@@ -1175,13 +1312,29 @@ fn boot_vm(
     // when the rewrite below ran with networking off (see `rewrite_localhost`).
     let (dns_nameserver, guest_ip, gateway_ip): (Option<String>, Option<String>, Option<String>) =
         if args.network {
-            // INTEGRATION GAP: beacon updates are owned by iii-network, outside
-            // this caller scope; MutableFile alone is not a mutation API.
+            let activity = match &args.net_activity_file {
+                Some(path) => {
+                    let file = runtime
+                        .open_activity_file(std::path::Path::new(path))
+                        .map_err(|e| e.to_string())?;
+                    let writer = runtime.clone();
+                    Some(
+                        iii_network::ActivityStamp::from_file_checked(
+                            file,
+                            std::sync::Arc::new(move || writer.checkpoint()),
+                        )
+                        .map_err(|e| e.to_string())?,
+                    )
+                }
+                None => None,
+            };
             let net_cfg = iii_network::NetworkConfig {
-                activity_file: args.net_activity_file.clone().map(std::path::PathBuf::from),
+                activity_file: None,
                 ..Default::default()
             };
-            let mut network = iii_network::SmoltcpNetwork::new(net_cfg, args.slot);
+            let mut network =
+                iii_network::SmoltcpNetwork::new_with_activity(net_cfg, args.slot, activity)
+                    .map_err(|e| e.to_string())?;
             network.start(tokio_rt.handle().clone());
             builder =
                 builder.net(|net| net.mac(network.guest_mac()).custom(network.take_backend()));
@@ -1412,6 +1565,10 @@ fn boot_vm(
         });
     }
 
+    runtime.checkpoint().map_err(|e| e.to_string())?;
+    // The writer stays alive across vm.enter(), including network/virtiofs
+    // tasks; _exit closes its dedicated sentinel without claiming clean Drop.
+    let _runtime_writer = runtime;
     let vm = builder
         .build()
         .map_err(|e| format!("VM build failed: {}", e))?;
@@ -1526,6 +1683,66 @@ fn shut_down_vm(trigger: impl FnOnce(), why: &str) {
 mod tests {
     use super::*;
 
+    fn test_context() -> (tempfile::TempDir, crate::worker_admission::AdmissionContext) {
+        let root = tempfile::tempdir().unwrap();
+        let context = crate::worker_admission::testing::provision_context(root.path()).unwrap();
+        (root, context)
+    }
+
+    #[test]
+    fn cold_endpoint_setup_finishes_before_the_payload_operation() {
+        let t = tempfile::tempdir().unwrap();
+        let (_namespace, context) = test_context();
+        let root = t.path().join("payload");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("init.krun"), b"not-executed").unwrap();
+        let parent = t.path().join("control/private");
+        let mut args = admission_args(&root);
+        args.shell_sock = Some(parent.join("shell.sock").display().to_string());
+        let (lease, _) = preflight_boot_in(&args, &context).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(
+            !parent.join("shell.sock").exists(),
+            "admission must not bind"
+        );
+        let endpoint = lease.endpoint(&parent.join("shell.sock")).unwrap();
+        drop(endpoint);
+        lease.revalidate().unwrap();
+    }
+
+    #[test]
+    fn endpoint_setup_refuses_export_overlap_without_creating_control_directory() {
+        let t = tempfile::tempdir().unwrap();
+        let (_namespace, context) = test_context();
+        let root = t.path().join("payload");
+        let mut args = admission_args(&root);
+        args.shell_sock = Some(root.join("control/shell.sock").display().to_string());
+        assert!(prepare_endpoint_parent(&args, &context).is_err());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn endpoint_setup_does_not_chmod_an_existing_nonprivate_parent() {
+        let t = tempfile::tempdir().unwrap();
+        let (_namespace, context) = test_context();
+        let parent = t.path().join("control");
+        std::fs::create_dir(&parent).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut args = admission_args(&t.path().join("payload"));
+        args.shell_sock = Some(parent.join("shell.sock").display().to_string());
+        assert!(prepare_endpoint_parent(&args, &context).is_err());
+        assert_eq!(
+            std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(!parent.join("shell.sock").exists());
+    }
+
     fn admission_args(root: &std::path::Path) -> VmBootArgs {
         use clap::Parser;
         #[derive(clap::Parser)]
@@ -1558,6 +1775,7 @@ mod tests {
     fn preflight_rejects_each_foreign_host_input_before_root_or_init_effects() {
         let t = tempfile::tempdir().unwrap();
         let retained = enrolled_input(t.path());
+        let (_namespace, context) = test_context();
         // Missing normal root would fail later, but no fallback/root creation
         // may run before retained inputs are inspected.
         let normal = t.path().join("normal-root");
@@ -1572,7 +1790,7 @@ mod tests {
                 "readonly" => args.source_readonly = Some(path),
                 _ => unreachable!(),
             }
-            let error = preflight_boot(&args).err().unwrap();
+            let error = preflight_boot_in(&args, &context).err().unwrap();
             assert!(error.contains("compatibility custody"), "{field}: {error}");
             assert!(!normal.exists());
             assert!(!retained.join("absent").exists());
@@ -1583,11 +1801,12 @@ mod tests {
     fn preflight_uses_the_real_mount_parser_before_boot_setup() {
         let t = tempfile::tempdir().unwrap();
         let root = t.path().join("root");
+        let (_namespace, context) = test_context();
         for mount in ["missing-colon", ":/guest", "/host:"] {
             let mut args = admission_args(&root);
             args.mount.push(mount.into());
             let expected = build_virtiofs_mount_plan(&args.mount).unwrap_err();
-            assert_eq!(preflight_boot(&args).err().unwrap(), expected);
+            assert_eq!(preflight_boot_in(&args, &context).err().unwrap(), expected);
             assert!(!root.exists());
         }
     }
@@ -1606,7 +1825,8 @@ mod tests {
             .push(format!("{}:/mnt/host-src", source.display()));
         args.source_sync = Some(source.display().to_string());
         let expected = build_virtiofs_mount_plan(&args.mount).unwrap();
-        let (lease, plan) = preflight_boot(&args).unwrap();
+        let (_namespace, context) = test_context();
+        let (lease, plan) = preflight_boot_in(&args, &context).unwrap();
         assert_eq!(plan, expected);
         lease.revalidate().unwrap();
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
@@ -1622,7 +1842,9 @@ mod tests {
         std::os::unix::fs::symlink(&source, &alias).unwrap();
         let root = t.path().join("root");
         let args = [format!("{}:/workspace", alias.display())];
-        assert!(admit_boot_inputs(&root, None, None, &args, None, None).is_err());
+        let (_namespace, context) = test_context();
+        let lease = context.local(&root).unwrap();
+        assert!(admit_boot_inputs_fresh(lease, &root, None, None, &args, None, None).is_err());
         assert!(!root.exists());
     }
 

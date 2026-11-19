@@ -1477,7 +1477,10 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let owner = t.path().join("owner");
         std::fs::create_dir(&owner).unwrap();
-        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let lease = context.local(&owner.join("state")).unwrap();
         let dest = t.path().join("root");
         std::fs::create_dir(&dest).unwrap();
         std::fs::write(dest.join("sentinel"), b"keep").unwrap();

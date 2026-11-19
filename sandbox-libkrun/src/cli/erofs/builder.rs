@@ -107,6 +107,97 @@ pub(crate) fn build_erofs_from_tar_to_files(
     Ok(())
 }
 
+/// Walk a registered managed OCI tree through the permission-restoration guard.
+/// Every mode recorded in EROFS is the original one, never temporary host access.
+fn managed_tree(
+    read: &mut crate::worker_admission::OwnerReadGuard,
+    root: &Path,
+    dir: &Path,
+    tree: &mut FileTree,
+    spool: &mut DataSpool,
+    hardlinks: &mut HashMap<(u64, u64), (RegularFileId, FileData)>,
+) -> Result<(), String> {
+    let mut entries = read.read_dir(dir).map_err(|e| e.to_string())?;
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    for entry in entries {
+        let path = dir.join(&entry.name);
+        let rel = path.strip_prefix(root).map_err(|e| e.to_string())?;
+        let meta = read.original_metadata(&path).map_err(|e| e.to_string())?;
+        let imeta = inode_metadata(&meta);
+        if meta.is_dir() {
+            tree.insert(
+                rel.as_os_str().as_bytes(),
+                TreeNode::Directory(DirectoryNode::new(imeta)),
+            )
+            .map_err(|e| e.to_string())?;
+            managed_tree(read, root, &path, tree, spool, hardlinks)?;
+        } else if meta.is_file() {
+            let key = (meta.dev(), meta.ino());
+            let (id, data) = if let Some(known) = hardlinks.get(&key) {
+                known.clone()
+            } else {
+                let mut file = read.open_file(&path).map_err(|e| e.to_string())?;
+                let offset = spool.current_offset();
+                let mut bytes = [0u8; SPOOL_CHUNK];
+                loop {
+                    read.checkpoint().map_err(|e| e.to_string())?;
+                    let n = file.read(&mut bytes).map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    spool.write_chunk(&bytes[..n]).map_err(|e| e.to_string())?;
+                }
+                drop(file);
+                let value = (
+                    RegularFileId::new(),
+                    spool.data_ref(offset, spool.current_offset() - offset),
+                );
+                hardlinks.insert(key, value.clone());
+                value
+            };
+            tree.insert(
+                rel.as_os_str().as_bytes(),
+                TreeNode::RegularFile(RegularFileNode {
+                    id,
+                    metadata: imeta,
+                    xattrs: Vec::new(),
+                    data,
+                    nlink: 1,
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        } else if meta.file_type().is_symlink() {
+            read.checkpoint().map_err(|e| e.to_string())?;
+            let target = fs::read_link(&path).map_err(|e| e.to_string())?;
+            read.checkpoint().map_err(|e| e.to_string())?;
+            tree.insert(
+                rel.as_os_str().as_bytes(),
+                TreeNode::Symlink(SymlinkNode {
+                    metadata: imeta,
+                    target: target.as_os_str().as_bytes().to_vec(),
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn build_managed_erofs_to_files(
+    read: &mut crate::worker_admission::OwnerReadGuard,
+    root: &Path,
+    output: File,
+    spool: File,
+) -> Result<(), String> {
+    let mut spool = DataSpool::from_file(spool).map_err(|e| e.to_string())?;
+    let mut tree = FileTree::new();
+    tree.root.metadata = inode_metadata(&read.original_metadata(root).map_err(|e| e.to_string())?);
+    managed_tree(read, root, root, &mut tree, &mut spool, &mut HashMap::new())?;
+    read.checkpoint().map_err(|e| e.to_string())?;
+    super::write_erofs_to_file_cancellable(&tree, output, &|| false).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// A file the host lays over whatever the tar holds at `path`, e.g. the base
 /// image's `.oci-config.json`, so a build cannot change what the run reads there.
 pub struct ImageFile<'a> {
@@ -392,9 +483,9 @@ fn spool_file(
     allow_owner_access: bool,
 ) -> Result<FileData, String> {
     let start = spool.current_offset();
-    // INTEGRATION GAP: unreadable strict OCI content needs a read-only core
-    // descriptor or a scoped permission-restoration operation. Never chmod a
-    // Strict source here just to preserve the legacy owner-access shortcut.
+    // Arbitrary Strict inputs never gain permissions here. Managed OCI cache
+    // uses managed_tree/OwnerReadGuard instead; legacy independent calls retain
+    // their existing owner-access behavior.
     let mut f = if allow_owner_access {
         open_as_owner(path, u32::from(image_mode))?
     } else {
@@ -598,7 +689,9 @@ pub(crate) fn ensure_base_erofs_admitted(
     lease: &crate::worker_admission::Lease,
     base_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let used = lease.use_path(base_dir).map_err(|e| e.to_string())?;
+    let mut read = lease
+        .owner_read_cache(base_dir)
+        .map_err(|e| e.to_string())?;
     let out = base_erofs_path(base_dir);
     let spool_slot = PathBuf::from(format!("{}.spool", out.display()));
     let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
@@ -617,7 +710,7 @@ pub(crate) fn ensure_base_erofs_admitted(
         false,
     )
     .map_err(|e| format!("{e:#}"))?;
-    let stale = match (fs::metadata(&out), fs::metadata(used.path())) {
+    let stale = match (fs::metadata(&out), read.original_metadata(base_dir)) {
         (Ok(o), Ok(b)) => match (o.modified(), b.modified()) {
             (Ok(om), Ok(bm)) => om < bm,
             _ => false,
@@ -632,16 +725,21 @@ pub(crate) fn ensure_base_erofs_admitted(
         let mut spool = mutation
             .apply(|guard| guard.stage_file(&spool_slot, 0o600))
             .map_err(|e| format!("{e:#}"))?;
-        used.revalidate().map_err(|e| e.to_string())?;
-        build_erofs_to_files(
-            used.path(),
+        read.checkpoint().map_err(|e| e.to_string())?;
+        build_managed_erofs_to_files(
+            &mut read,
+            base_dir,
             image.file_mut().try_clone().map_err(|e| e.to_string())?,
             spool.file_mut().try_clone().map_err(|e| e.to_string())?,
         )?;
         mutation.checkpoint.check().map_err(|e| e.to_string())?;
         image.file_mut().sync_all().map_err(|e| e.to_string())?;
+        // Restore all original permissions BEFORE publishing image bytes.
+        read.finish().map_err(|e| e.to_string())?;
         // No successful disposal on writer failure; those stages retain evidence.
         publish_after_spool(&mutation, image, spool)?;
+    } else {
+        read.finish().map_err(|e| e.to_string())?;
     }
     lock.finish().map_err(|e| format!("{e:#}"))?;
     mutation.commit().map_err(|e| format!("{e:#}"))?;
@@ -719,7 +817,11 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let owner = t.path().join("owner");
         fs::create_dir(&owner).unwrap();
-        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        let catalog = t.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let lease = context.local(&owner.join("state")).unwrap();
         let base = t.path().join("root");
         fs::create_dir(&base).unwrap();
         fs::write(base.join("sentinel"), b"keep-root").unwrap();
@@ -743,7 +845,7 @@ mod tests {
         assert_eq!(fs::read(&lock_path).unwrap(), b"keep-lock");
         assert_eq!(fs::read(base.join("sentinel")).unwrap(), b"keep-root");
         assert!(!base_erofs_path(&base).exists());
-        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 4);
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 5);
         let old = File::open(t.path().join("old-owner")).unwrap();
         assert_eq!(
             unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
@@ -865,7 +967,7 @@ mod tests {
             &[
                 PathRequest {
                     path: &source,
-                    role: PathRole::Strict,
+                    role: PathRole::ManagedCacheRead,
                 },
                 PathRequest {
                     path: &output,
@@ -1023,6 +1125,146 @@ mod tests {
         assert!(image_stage.exists());
         assert!(spool_stage.exists());
         assert_eq!(fs::read(out).unwrap(), b"old-image");
+    }
+
+    #[test]
+    fn managed_owner_read_preserves_zero_modes_and_internal_hardlinks() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        let t = tempfile::tempdir().unwrap();
+        let catalog = t.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let root = t.path().join("managed");
+        let lease = context.local(&t.path().join("state")).unwrap();
+        let out = base_erofs_path(&root);
+        let spool = PathBuf::from(format!("{}.spool", out.display()));
+        let lock = PathBuf::from(format!("{}.lock", out.display()));
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[
+                PathRequest {
+                    path: &root,
+                    role: PathRole::ManagedCacheRead,
+                },
+                PathRequest {
+                    path: &out,
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &spool,
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &lock,
+                    role: PathRole::MutableFile,
+                },
+            ],
+        )
+        .unwrap();
+        let mut cache = lease
+            .begin(crate::worker_admission::MutationPlan::Cache { root: root.clone() })
+            .unwrap();
+        let staged = cache.stage_tree(&root).unwrap();
+        fs::create_dir(staged.path().join("private")).unwrap();
+        fs::write(staged.path().join("private/data"), b"original").unwrap();
+        fs::hard_link(
+            staged.path().join("private/data"),
+            staged.path().join("private/alias"),
+        )
+        .unwrap();
+        fs::set_permissions(
+            staged.path().join("private/data"),
+            fs::Permissions::from_mode(0),
+        )
+        .unwrap();
+        fs::set_permissions(
+            staged.path().join("private"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        cache.publish_tree(staged).unwrap();
+        cache.commit().unwrap();
+        ensure_base_erofs_admitted(&lease, &root).unwrap();
+        let mut reader = ErofsReader::new(File::open(&out).unwrap()).unwrap();
+        assert_eq!(reader.read_file("/private/data").unwrap(), b"original");
+        assert_eq!(reader.read_file("/private/alias").unwrap(), b"original");
+        assert_eq!(reader.owner_and_mode("/private").unwrap().2 & 0o777, 0o600);
+        assert_eq!(reader.owner_and_mode("/private/data").unwrap().2 & 0o777, 0);
+        assert_eq!(
+            fs::metadata(root.join("private")).unwrap().mode() & 0o777,
+            0o600
+        );
+        let mut inspect = lease.owner_read_cache(&root).unwrap();
+        assert_eq!(
+            inspect
+                .original_metadata(&root.join("private/data"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0
+        );
+        inspect.finish().unwrap();
+    }
+
+    #[test]
+    fn owner_read_requires_managed_provenance_and_refuses_external_hardlinks() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        let t = tempfile::tempdir().unwrap();
+        let catalog = t.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let project = t.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("private"), b"keep").unwrap();
+        fs::set_permissions(project.join("private"), fs::Permissions::from_mode(0)).unwrap();
+        let strict = crate::worker_admission::with_paths(
+            context.local(&t.path().join("state-a")).unwrap(),
+            &[PathRequest {
+                path: &project,
+                role: PathRole::Strict,
+            }],
+        )
+        .unwrap();
+        assert!(strict.owner_read_cache(&project).is_err());
+        assert_eq!(
+            fs::metadata(project.join("private")).unwrap().mode() & 0o777,
+            0
+        );
+        drop(strict);
+        let managed = t.path().join("managed");
+        let lease = crate::worker_admission::with_paths(
+            context.local(&t.path().join("state-b")).unwrap(),
+            &[PathRequest {
+                path: &managed,
+                role: PathRole::ManagedCacheRead,
+            }],
+        )
+        .unwrap();
+        let mut mutation = lease
+            .begin(crate::worker_admission::MutationPlan::Cache {
+                root: managed.clone(),
+            })
+            .unwrap();
+        let tree = mutation.stage_tree(&managed).unwrap();
+        fs::write(tree.path().join("private"), b"owned").unwrap();
+        fs::set_permissions(tree.path().join("private"), fs::Permissions::from_mode(0)).unwrap();
+        mutation.publish_tree(tree).unwrap();
+        mutation.commit().unwrap();
+        fs::hard_link(managed.join("private"), t.path().join("external-link")).unwrap();
+        let refused = match lease.owner_read_cache(&managed) {
+            Err(_) => true,
+            Ok(mut guard) => guard
+                .read_dir(&managed)
+                .and_then(|_| guard.open_file(&managed.join("private")))
+                .is_err(),
+        };
+        assert!(refused);
+        assert_eq!(
+            fs::metadata(t.path().join("external-link")).unwrap().mode() & 0o777,
+            0
+        );
     }
 
     fn make_src(dir: &Path) {

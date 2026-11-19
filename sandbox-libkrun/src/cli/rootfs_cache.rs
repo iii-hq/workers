@@ -843,7 +843,12 @@ mod tests {
     fn fence(t: &Path) -> (PathBuf, crate::worker_admission::Lease) {
         let owner = t.join("owner");
         std::fs::create_dir(&owner).unwrap();
-        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let lease = context.local(&owner.join("state")).unwrap();
         (owner, lease)
     }
 

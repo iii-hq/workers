@@ -2,7 +2,11 @@
 // contributor license agreements. Licensed under the Elastic License 2.0.
 //! No VM or subprocess: every compatibility case must fail BEFORE such work.
 use super::*;
+use crate::cli::local_worker::{test_binary_command, test_build_command, test_source_command};
 use std::os::unix::fs::PermissionsExt;
+fn context(s: &Setup) -> &crate::worker_admission::AdmissionContext {
+    s.vms.admission_context.as_ref().unwrap()
+}
 fn private(path: &Path) {
     std::fs::create_dir(path).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -241,12 +245,12 @@ async fn local_path_bundle_binary_and_build_helpers_refuse_before_runtime_work()
         extra_env: Default::default(),
         image: None,
     };
-    let local = crate::cli::local_worker::local_vm_command("w", &s.source, None, over())
+    let local = test_source_command(context(&s), "w", &s.source, None, over())
         .await
         .err()
         .unwrap();
     assert!(local.contains("compatibility custody"));
-    let bundle = crate::cli::local_worker::bundle_vm_command("pkg", "w", &s.source, over())
+    let bundle = test_source_command(context(&s), "w", &s.source, Some("pkg"), over())
         .await
         .err()
         .unwrap();
@@ -257,26 +261,18 @@ async fn local_path_bundle_binary_and_build_helpers_refuse_before_runtime_work()
         upper: s.vm.join("upper.ext4"),
     });
     assert!(
-        crate::cli::local_worker::binary_vm_command("pkg", "bin/w", "w", &s.source, binary)
+        test_binary_command(context(&s), "pkg", "bin/w", "w", &s.source, binary)
             .await
             .err()
             .unwrap()
             .contains("compatibility custody")
     );
     assert!(
-        crate::cli::local_worker::image_build_command(
-            &s.source,
-            None,
-            None,
-            None,
-            None,
-            &s.vm.join("build-1"),
-            Default::default()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("compatibility custody")
+        test_build_command(context(&s), &s.source, &s.vm.join("build-1"))
+            .await
+            .err()
+            .unwrap()
+            .contains("compatibility custody")
     );
     unchanged(&s);
 }
@@ -427,17 +423,17 @@ async fn normal_root_and_source_refuse_foreign_image_or_upper_at_outer_builders(
         };
         // An invalid manifest/executable is a second, effect-free sentinel if
         // the early guard regresses; these cases never need real firmware.
-        let local = local_vm_command("w", &s.source, None, over())
+        let local = test_source_command(context(&s), "w", &s.source, None, over())
             .await
             .err()
             .unwrap();
         assert!(local.contains("compatibility custody"), "{local}");
-        let bundle = bundle_vm_command("pkg", "w", &s.source, over())
+        let bundle = test_source_command(context(&s), "w", &s.source, Some("pkg"), over())
             .await
             .err()
             .unwrap();
         assert!(bundle.contains("compatibility custody"), "{bundle}");
-        let binary = binary_vm_command("pkg", "missing", "w", &s.source, over())
+        let binary = test_binary_command(context(&s), "pkg", "missing", "w", &s.source, over())
             .await
             .err()
             .unwrap();
@@ -489,18 +485,10 @@ async fn image_build_refuses_foreign_source_before_default_image_or_firmware() {
     let s = setup(false);
     let original = enrolled_other_root(&s);
     let scratch = s.vm.join("build-not-created");
-    let error = image_build_command(
-        &original,
-        None,
-        None,
-        None,
-        None,
-        &scratch,
-        Default::default(),
-    )
-    .await
-    .err()
-    .unwrap();
+    let error = test_build_command(context(&s), &original, &scratch)
+        .await
+        .err()
+        .unwrap();
     assert!(error.contains("compatibility custody"), "{error}");
     assert!(!scratch.exists());
     unchanged(&s);
@@ -719,4 +707,51 @@ async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_con
         std::fs::read(s.vm.join("state.json")).unwrap(),
         b"{\"instance\":7}"
     );
+}
+
+#[test]
+fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm_tree() {
+    let s = setup(false);
+    let backup = s._root.path().join("independent-backup");
+    private(&backup);
+    std::fs::write(backup.join("sentinel"), b"protected").unwrap();
+    let retained = s
+        .vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: false,
+        })
+        .unwrap();
+    assert!(retained.destroyed);
+    assert!(retained.kept.iter().any(|p| p.contains(PRE_BUILD_DISK)));
+    assert_eq!(
+        std::fs::read(s.vm.join(PRE_BUILD_DISK)).unwrap(),
+        b"OLD-do-not-archive"
+    );
+    assert!(!s.vm.join(STATE_FILE).exists());
+    assert!(s.vm.join(BUILD_MODE_SEAL).exists());
+    let pruned = s
+        .vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: true,
+        })
+        .unwrap();
+    assert!(pruned.destroyed);
+    assert!(!s.vm.exists());
+    assert_eq!(
+        std::fs::read(backup.join("sentinel")).unwrap(),
+        b"protected"
+    );
+    let repeated = s
+        .vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: true,
+        })
+        .unwrap();
+    assert!(!repeated.destroyed);
 }

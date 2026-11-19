@@ -923,8 +923,10 @@ fn admit_cache_paths(
         .iter()
         .map(|path| PathRequest {
             path,
-            role: if path == cache || path == &shared || path == &pinned {
+            role: if path == cache {
                 PathRole::MutableTree
+            } else if path == &shared || path == &pinned {
+                PathRole::ManagedCacheRead
             } else {
                 PathRole::MutableFile
             },
@@ -1575,6 +1577,26 @@ pub async fn binary_vm_command(
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
     let admission = admit_worker_inputs(package_dir, &over)?;
+    binary_vm_command_on(
+        package,
+        executable,
+        worker_name,
+        package_dir,
+        over,
+        admission,
+    )
+    .await
+}
+
+async fn binary_vm_command_on(
+    package: &str,
+    executable: &str,
+    worker_name: &str,
+    package_dir: &Path,
+    over: VmOverride<'_>,
+    admission: Lease,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let admission = admit_worker_inputs_on(admission, package_dir, &over)?;
     let _source_use = admission.use_path(package_dir).map_err(|e| e.to_string())?;
     let project = validate_binary(package_dir, package, executable)?;
     if over.image.is_none() {
@@ -1875,11 +1897,57 @@ async fn start_worker_resolved(
         rootfs_upper,
         &mounts,
         (!is_bundle).then_some(project_path),
-        None,
+        is_bundle.then_some(project_path),
     )?;
     admission.revalidate().map_err(|e| e.to_string())?;
     command.lifecycle_leases.push(admission);
     Ok(command)
+}
+
+#[cfg(test)]
+pub(crate) async fn test_source_command(
+    context: &crate::worker_admission::AdmissionContext,
+    name: &str,
+    source: &Path,
+    package: Option<&str>,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let lease = context.local(&over.state_dir).map_err(|e| e.to_string())?;
+    start_worker_resolved(name, source, package, over, None, None, Some(lease)).await
+}
+
+#[cfg(test)]
+pub(crate) async fn test_binary_command(
+    context: &crate::worker_admission::AdmissionContext,
+    package: &str,
+    executable: &str,
+    name: &str,
+    source: &Path,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let lease = context.local(&over.state_dir).map_err(|e| e.to_string())?;
+    binary_vm_command_on(package, executable, name, source, over, lease).await
+}
+
+#[cfg(test)]
+pub(crate) async fn test_build_command(
+    context: &crate::worker_admission::AdmissionContext,
+    source: &Path,
+    scratch: &Path,
+) -> Result<BuildVm, String> {
+    let lease = context.local(scratch).map_err(|e| e.to_string())?;
+    image_build_resolved(
+        source,
+        None,
+        None,
+        None,
+        None,
+        scratch,
+        HashMap::new(),
+        None,
+        Some(lease),
+    )
+    .await
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1901,7 +1969,12 @@ mod tests {
         std::fs::create_dir(&owner).unwrap();
         let input = owner.join("input");
         std::fs::create_dir(&input).unwrap();
-        let lease = crate::worker_admission::local(&input).unwrap();
+        let catalog = t.path().join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let lease = context.local(&input).unwrap();
         (t, owner, input, lease)
     }
 
@@ -1915,7 +1988,10 @@ mod tests {
     #[tokio::test]
     async fn cache_task_revalidates_at_entry_and_releases_pre_writer_failure() {
         let (_t, owner, input, lease) = writer_fixture();
-        assert!(!exclusive_available(&owner));
+        assert!(
+            exclusive_available(&owner),
+            "v2 never flocks payload directories"
+        );
         let sentinel = owner.join("cache-writer-ran");
         let written = sentinel.clone();
         let task = run_cache_writer(lease, move || async move {
@@ -1936,7 +2012,10 @@ mod tests {
     #[test]
     fn erofs_entry_revalidates_and_releases_before_any_writer_effect() {
         let (_t, owner, input, lease) = writer_fixture();
-        assert!(!exclusive_available(&owner));
+        assert!(
+            exclusive_available(&owner),
+            "v2 never flocks payload directories"
+        );
         std::fs::rename(&input, owner.join("moved")).unwrap();
         std::fs::create_dir(&input).unwrap();
         let sentinel = owner.join("erofs-writer-ran");
@@ -1951,18 +2030,23 @@ mod tests {
 
     #[tokio::test]
     async fn completed_writers_hold_the_domain_during_effects_then_release() {
-        let (_t, owner, _input, lease) = writer_fixture();
+        let (t, owner, _input, lease) = writer_fixture();
         let checked = owner.clone();
         run_cache_writer(lease, move || async move {
-            assert!(!exclusive_available(&checked));
+            assert!(exclusive_available(&checked));
             Ok(())
         })
         .await
         .unwrap();
         assert!(exclusive_available(&owner));
-        let lease = crate::worker_admission::local(&owner.join("input")).unwrap();
+        let context =
+            crate::worker_admission::testing::open_context(&t.path().join("catalog")).unwrap();
+        let lease = context.local(&owner.join("input")).unwrap();
         let result: Result<(), String> = run_erofs_writer(lease, || {
-            assert!(!exclusive_available(&owner));
+            assert!(
+                exclusive_available(&owner),
+                "v2 never flocks payload directories"
+            );
             Err("completed writer error".into())
         });
         assert!(result.is_err());
@@ -2021,10 +2105,12 @@ mod tests {
     }
 
     #[test]
-    fn cold_generic_cache_parent_refuses_without_creating_hierarchy() {
+    fn cold_generic_cache_admission_does_not_create_payload_hierarchy() {
         let (_t, owner, _input, lease) = writer_fixture();
         let cache = owner.join("missing/cache");
-        assert!(admit_cache_paths(lease, "docker.io/library/alpine:3.20", &cache).is_err());
+        let admitted = admit_cache_paths(lease, "docker.io/library/alpine:3.20", &cache).unwrap();
+        admitted.revalidate().unwrap();
+        drop(admitted);
         assert!(!owner.join("missing").exists());
         assert!(exclusive_available(&owner));
     }
@@ -2042,6 +2128,9 @@ mod tests {
         let root = t.path().join("normal-root");
         let source = t.path().join("normal-source");
         std::fs::create_dir(&source).unwrap();
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let project = project_with("", "");
         for retained_lower in [false, true] {
             let over = VmOverride {
@@ -2061,9 +2150,16 @@ mod tests {
                     },
                 }),
             };
-            let error = image_run_command("w", &source, &project, false, over)
-                .err()
-                .unwrap();
+            let error = image_run_admitted(
+                "w",
+                &source,
+                &project,
+                false,
+                over,
+                context.local(&root).unwrap(),
+            )
+            .err()
+            .unwrap();
             assert!(error.contains("compatibility custody"), "{error}");
             assert!(!root.exists());
             assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
@@ -3266,6 +3362,19 @@ resources:
         assert_eq!(memory, 2048);
     }
 
+    async fn start_worker_test(
+        name: &str,
+        path: &str,
+        package: Option<&str>,
+        over: VmOverride<'_>,
+        run: Option<&str>,
+    ) -> Result<super::super::worker_manager::libkrun::VmCommand, String> {
+        let catalog = tempfile::tempdir().unwrap();
+        let context = crate::worker_admission::testing::provision_context(catalog.path()).unwrap();
+        let lease = context.local(&over.state_dir).map_err(|e| e.to_string())?;
+        start_worker_resolved(name, Path::new(path), package, over, run, None, Some(lease)).await
+    }
+
     fn test_override(state: &Path) -> VmOverride<'static> {
         VmOverride {
             state_dir: state.to_path_buf(),
@@ -3282,7 +3391,7 @@ resources:
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
         let state = tempfile::tempdir().unwrap();
-        let err = start_worker_impl(
+        let err = start_worker_test(
             "iii-cov-test-start-unknown-key",
             dir.path().to_str().unwrap(),
             /*package=*/ None,
@@ -3306,7 +3415,7 @@ resources:
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
         let state = tempfile::tempdir().unwrap();
-        let err = start_worker_impl(
+        let err = start_worker_test(
             "iii-cov-test-start-oversize",
             dir.path().to_str().unwrap(),
             /*package=*/ None,
@@ -3325,7 +3434,7 @@ resources:
         let dir = tempfile::tempdir().unwrap();
 
         let state = tempfile::tempdir().unwrap();
-        let err = start_worker_impl(
+        let err = start_worker_test(
             "iii-cov-test-start-no-manifest",
             dir.path().to_str().unwrap(),
             /*package=*/ None,
@@ -3350,7 +3459,7 @@ resources:
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
         let state = tempfile::tempdir().unwrap();
-        let err = start_worker_impl(
+        let err = start_worker_test(
             "iii-cov-test-start-bad-kind",
             dir.path().to_str().unwrap(),
             /*package=*/ None,
@@ -3376,7 +3485,7 @@ resources:
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
         let state = tempfile::tempdir().unwrap();
-        let err = start_worker_impl(
+        let err = start_worker_test(
             "compose-key",
             dir.path().to_str().unwrap(),
             Some("iii-cov-test-bundle-kind"),

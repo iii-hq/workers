@@ -31,12 +31,76 @@ pub const DEFAULT_QUEUE_CAPACITY: usize = 1024;
 /// tens of seconds, and per-packet `futimens` would be pure overhead.
 pub struct ActivityStamp {
     file: std::fs::File,
+    checked: Option<CheckedActivity>,
     /// Unix-seconds of the last touch; CAS gate so concurrent relay tasks
     /// collapse to ~one syscall per second.
     last_touch_secs: AtomicU64,
 }
 
+struct CheckedActivity {
+    checkpoint: std::sync::Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+    failure: std::sync::Mutex<Option<std::sync::Arc<std::io::Error>>>,
+}
+
 impl ActivityStamp {
+    /// Adopt the exact runtime-owned descriptor; never reopen/truncate a path.
+    pub fn from_file_checked(
+        file: std::fs::File,
+        checkpoint: std::sync::Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+    ) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+        checkpoint()?;
+        let meta = file.metadata()?;
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if !meta.is_file()
+            || meta.nlink() != 1
+            || meta.uid() != unsafe { libc::geteuid() }
+            || flags & libc::O_ACCMODE != libc::O_RDWR
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "activity stamp requires an owned single-link read/write regular descriptor",
+            ));
+        }
+        let stamp = Self {
+            file,
+            last_touch_secs: AtomicU64::new(0),
+            checked: Some(CheckedActivity {
+                checkpoint,
+                failure: std::sync::Mutex::new(None),
+            }),
+        };
+        stamp.write_modified()?;
+        Ok(stamp)
+    }
+
+    fn write_modified(&self) -> std::io::Result<()> {
+        let Some(checked) = &self.checked else {
+            return self.file.set_modified(SystemTime::now());
+        };
+        let mut failure = checked
+            .failure
+            .lock()
+            .map_err(|_| std::io::Error::other("activity checkpoint poisoned"))?;
+        if let Some(error) = failure.as_ref() {
+            return Err(std::io::Error::new(error.kind(), error.to_string()));
+        }
+        // FD failures are terminal locally. The fixed callback is one-way:
+        // integration still needs an explicit RuntimeWriter failure sink before
+        // a set_modified error can participate in the parent's final receipt.
+        let result =
+            (checked.checkpoint)().and_then(|()| self.file.set_modified(SystemTime::now()));
+        if let Err(error) = result {
+            let error = std::sync::Arc::new(error);
+            *failure = Some(error.clone());
+            return Err(std::io::Error::new(error.kind(), error.to_string()));
+        }
+        Ok(())
+    }
     /// Create (or reuse) the beacon file and stamp "active now", so a
     /// sandbox that boots with networking but never sends a byte reads as
     /// idle-since-boot, exactly like `last_exec_at` at create time.
@@ -49,6 +113,7 @@ impl ActivityStamp {
         file.set_modified(SystemTime::now())?;
         Ok(Self {
             file,
+            checked: None,
             last_touch_secs: AtomicU64::new(0),
         })
     }
@@ -58,6 +123,10 @@ impl ActivityStamp {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        self.touch_at(now_secs);
+    }
+
+    fn touch_at(&self, now_secs: u64) {
         let prev = self.last_touch_secs.load(Ordering::Relaxed);
         if prev == now_secs {
             return; // already touched this second
@@ -69,7 +138,9 @@ impl ActivityStamp {
             .compare_exchange(prev, now_secs, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
         {
-            let _ = self.file.set_modified(SystemTime::now());
+            if let Err(error) = self.write_modified() {
+                tracing::warn!(%error, "activity stamp is terminally refused");
+            }
         }
     }
 }
@@ -180,6 +251,96 @@ impl Default for NetworkMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_beacon_preserves_payload_and_stops_after_first_refusal() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let path = temp_beacon("checked-terminal");
+        std::fs::write(&path, b"payload-preserved").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let stamp = ActivityStamp::from_file_checked(
+            file,
+            Arc::new(move || {
+                // Constructor performs validation and the initial admitted touch.
+                if count.fetch_add(1, Ordering::SeqCst) == 2 {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "one-shot refusal",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }),
+        )
+        .unwrap();
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        stamp.touch();
+        stamp.last_touch_secs.store(0, Ordering::Relaxed);
+        stamp.touch();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"payload-preserved");
+        drop(stamp);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn checked_beacon_is_payload_only_and_throttles_shared_callers() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let path = temp_beacon("checked-throttle");
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let stamp = ActivityStamp::from_file_checked(
+            file,
+            Arc::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        )
+        .unwrap();
+        let state = SharedState::with_activity(2, Some(stamp));
+        state.add_tx_bytes(42);
+        state.add_rx_bytes(42);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "frames are not payload");
+        let stamp = state.activity.as_ref().unwrap();
+        stamp.touch_at(42);
+        stamp.touch_at(42);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        stamp.touch_at(43);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        drop(state);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn checked_beacon_rejects_wrong_fd_without_truncating_contents() {
+        let path = temp_beacon("checked-readonly");
+        std::fs::write(&path, b"keep").unwrap();
+        assert!(
+            ActivityStamp::from_file_checked(
+                std::fs::File::open(&path).unwrap(),
+                std::sync::Arc::new(|| Ok(()))
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn shared_state_queue_push_pop() {
