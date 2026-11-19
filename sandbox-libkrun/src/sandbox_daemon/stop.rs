@@ -159,8 +159,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stop_all_stops_every_sandbox_and_removes_its_dir() {
-        let namespace = tempfile::tempdir().unwrap();
-        let payload = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let payload = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let reg = SandboxRegistry::new()
@@ -194,7 +194,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stop_all_preserves_pid_only_unresolved_layouts_and_registry() {
-        let payload = tempfile::tempdir().unwrap();
+        let payload = crate::worker_admission::testing::private_tempdir().unwrap();
         let reg = SandboxRegistry::new().with_layout_root(payload.path().join("sandboxes"));
         let ids = [Uuid::new_v4(), Uuid::new_v4()];
         for id in ids {
@@ -248,8 +248,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stop_keeps_registry_and_layout_when_exact_endpoint_settlement_fails() {
-        let namespace = tempfile::tempdir().unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let reg = SandboxRegistry::new()
@@ -285,8 +285,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stop_happy_path_marks_and_calls_stopper() {
-        let namespace = tempfile::tempdir().unwrap();
-        let payload = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let payload = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let reg = SandboxRegistry::new()
@@ -335,8 +335,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stop_error_preserves_state_and_retry_converges() {
-        let namespace = tempfile::tempdir().unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let reg = SandboxRegistry::new()

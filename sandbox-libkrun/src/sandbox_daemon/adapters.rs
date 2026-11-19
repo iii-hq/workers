@@ -1339,8 +1339,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_read_and_endpoints_settle_after_no_drop_exit_or_explicit_close() {
         for explicit_close in [false, true] {
-            let namespace = tempfile::tempdir().unwrap();
-            let data = tempfile::tempdir().unwrap();
+            let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+            let data = crate::worker_admission::testing::private_tempdir().unwrap();
             let context =
                 crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
             let (lease, root, paths) = resource_fixture(data.path(), &context, 2);
@@ -1383,8 +1383,8 @@ mod tests {
     #[tokio::test]
     async fn expected_endpoint_missing_or_replaced_never_becomes_an_empty_set() {
         for skip_bind in [false, true] {
-            let namespace = tempfile::tempdir().unwrap();
-            let data = tempfile::tempdir().unwrap();
+            let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+            let data = crate::worker_admission::testing::private_tempdir().unwrap();
             let context =
                 crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
             let (lease, root, paths) = resource_fixture(data.path(), &context, 2);
@@ -1424,8 +1424,8 @@ mod tests {
 
     #[tokio::test]
     async fn host_drain_failure_blocks_endpoint_settlement_and_removal() {
-        let namespace = tempfile::tempdir().unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let (lease, root, paths) = resource_fixture(data.path(), &context, 1);
@@ -1453,8 +1453,8 @@ mod tests {
 
     #[tokio::test]
     async fn completed_endpoint_subset_stays_visible_when_a_later_endpoint_refuses() {
-        let namespace = tempfile::tempdir().unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let (lease, root, paths) = resource_fixture(data.path(), &context, 2);
@@ -1487,8 +1487,8 @@ mod tests {
     #[tokio::test]
     async fn descendant_read_or_listener_keeps_runtime_retirement_uncertain() {
         for listener in [false, true] {
-            let namespace = tempfile::tempdir().unwrap();
-            let data = tempfile::tempdir().unwrap();
+            let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+            let data = crate::worker_admission::testing::private_tempdir().unwrap();
             let context =
                 crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
             let (lease, root, paths) =
@@ -1531,10 +1531,10 @@ mod tests {
 
     #[tokio::test]
     async fn os_exit_without_runtime_activation_is_not_cleanup_authority() {
-        let namespace = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let lease = context.local(data.path()).unwrap();
         let command = tokio::process::Command::new("/bin/true");
         let child = lease
@@ -1566,10 +1566,10 @@ mod tests {
     async fn retired_process_with_unclosed_endpoint_cannot_remove_payload() {
         use crate::worker_admission::{PathRequest, PathRole};
         use std::os::unix::fs::PermissionsExt;
-        let namespace = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let root = t.path().join("payload");
         let control = t.path().join("control");
         std::fs::create_dir(&control).unwrap();
@@ -1610,10 +1610,10 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_owned_child_publishes_abandoned_without_successful_cleanup() {
-        let namespace = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let lease = context.local(data.path()).unwrap();
         let mut command = tokio::process::Command::new("/bin/sh");
         command.args(["-c", "sleep 0.1"]);
@@ -1638,10 +1638,10 @@ mod tests {
 
     #[tokio::test]
     async fn failed_spawn_never_becomes_never_spawned_cleanup_receipt() {
-        let namespace = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let lease = context.local(data.path()).unwrap();
         let command = tokio::process::Command::new(data.path().join("absent-executable"));
         let error = match lease.prepare_runtime(&[]).unwrap().spawn(command) {
@@ -1660,7 +1660,7 @@ mod tests {
 
     #[tokio::test]
     async fn actual_runtime_completion_keeps_os_exit_separate_from_removal_authority() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let ns = t.path().join("catalog");
         std::fs::create_dir(&ns).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -1731,7 +1731,7 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::worker_admission::testing::private_tempdir().unwrap();
         let sock = dir.path().join("shell.sock");
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1812,7 +1812,7 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::worker_admission::testing::private_tempdir().unwrap();
         let sock = dir.path().join("shell.sock");
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1863,7 +1863,7 @@ mod tests {
     #[tokio::test]
     async fn a_closed_relay_fails_readiness_at_once() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::worker_admission::testing::private_tempdir().unwrap();
         let sock = dir.path().join("shell.sock");
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -2094,7 +2094,7 @@ mod sandbox_boot_shape_tests {
     #[cfg(not(feature = "embed-init"))]
     #[tokio::test]
     async fn non_embedded_build_refuses_before_touching_the_cache() {
-        let td = tempfile::tempdir().unwrap();
+        let td = crate::worker_admission::testing::private_tempdir().unwrap();
         let cache = fake_cache(td.path());
         assert!(prepare_overlay_lower(&cache).await.is_err());
         assert!(!cache.with_file_name("img.erofs").exists());
@@ -2108,7 +2108,7 @@ mod sandbox_boot_shape_tests {
             "embed-init build embedded only the 1-byte placeholder: build iii-init \
              for x86_64-unknown-linux-musl --release first"
         );
-        let td = tempfile::tempdir().unwrap();
+        let td = crate::worker_admission::testing::private_tempdir().unwrap();
         let cache = fake_cache(td.path());
         let lower = prepare_overlay_lower(&cache).await.unwrap();
         assert_eq!(lower, cache.with_file_name("img.erofs"));
@@ -2150,7 +2150,7 @@ mod sandbox_boot_shape_tests {
             args: crate::cli::vm_boot::VmBootArgs,
         }
 
-        let td = tempfile::tempdir().unwrap();
+        let td = crate::worker_admission::testing::private_tempdir().unwrap();
         let mut p = params(false);
         p.rootfs = td.path().to_path_buf();
         let mut argv = vec![OsString::from("test")];

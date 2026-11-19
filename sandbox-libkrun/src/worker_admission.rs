@@ -114,6 +114,15 @@ impl AdmissionContext {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    /// Create test-owned storage with the exact private mode admission requires.
+    /// Do not repair arbitrary existing paths or change the process-wide umask.
+    pub(crate) fn private_tempdir() -> io::Result<tempfile::TempDir> {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+    }
+
     pub(crate) fn provision_context(root: &Path) -> io::Result<AdmissionContext> {
         Ok(AdmissionContext {
             namespace: Namespace::test(root)?,

@@ -43,8 +43,8 @@ impl TestRegistry {
         Self::with_max_exec_in_flight(sandbox_daemon::registry::DEFAULT_MAX_EXEC_IN_FLIGHT)
     }
     pub fn with_max_exec_in_flight(cap: u32) -> Self {
-        let namespace = tempfile::tempdir().unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let cache = data.path().join("cache");

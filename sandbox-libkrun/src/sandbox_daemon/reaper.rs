@@ -142,8 +142,8 @@ mod tests {
     }
 
     fn admitted_registry() -> (tempfile::TempDir, tempfile::TempDir, SandboxRegistry) {
-        let ns = tempfile::tempdir().unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let ns = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let context = crate::worker_admission::testing::provision_context(ns.path()).unwrap();
         let registry = SandboxRegistry::new()
             .with_context(context)
@@ -178,7 +178,7 @@ mod tests {
 
     #[tokio::test]
     async fn reaper_preserves_idle_pid_only_layout_without_cleanup_authority() {
-        let data = tempfile::tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let reg = SandboxRegistry::new().with_layout_root(data.path().join("sandboxes"));
         let id = Uuid::new_v4();
         std::fs::create_dir_all(reg.layout(id).base()).unwrap();
@@ -324,7 +324,7 @@ mod tests {
     /// timeout, the sandbox is genuinely idle and must be reclaimed.
     #[tokio::test]
     async fn network_activity_defers_reaping_until_the_beacon_goes_stale() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::worker_admission::testing::private_tempdir().unwrap();
         let shell_sock = dir.path().join("shell.sock");
         let beacon = crate::sandbox_daemon::registry::net_activity_path(&shell_sock);
         std::fs::write(&beacon, b"").unwrap(); // mtime = now: traffic is flowing

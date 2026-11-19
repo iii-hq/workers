@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn same_operation_never_spawned_rollback_removes_only_owned_new_layout() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let ns = t.path().join("catalog");
         std::fs::create_dir(&ns).unwrap();
         std::fs::set_permissions(&ns, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -337,8 +337,8 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_dirs_and_cleanup_roundtrip() {
-        let namespace = tempfile::tempdir().unwrap();
-        let data = tempfile::tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let base = data.path().join("sandbox");
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn raw_cleanup_without_receipt_preserves_existing_layout() {
-        let data = tempfile::tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
         let base = data.path().join("sandbox");
         let layout = OverlayLayout {
             upper: base.join("upper"),
@@ -415,7 +415,7 @@ mod tests {
     fn sweep_preserves_dead_live_unowned_and_foreign_layouts() {
         let mut gone = std::process::Command::new("true").spawn().unwrap();
         gone.wait().unwrap();
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::worker_admission::testing::private_tempdir().unwrap();
         let dir = |name: &str, owner: Option<u32>| {
             let d = root.path().join(name);
             std::fs::create_dir_all(d.join("root")).unwrap();
@@ -475,7 +475,7 @@ mod tests {
     fn a_symlinked_root_is_refused() {
         let mut gone = std::process::Command::new("true").spawn().unwrap();
         gone.wait().unwrap();
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let real = t.path().join("real");
         let dead = real.join(Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dead).unwrap();
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn a_lax_root_of_this_user_is_refused_without_chmod() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let root = t.path().join("root");
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
