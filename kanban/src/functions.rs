@@ -691,7 +691,12 @@ pub(crate) async fn apply<T>(
     if let Some(event) = comment_event(&ctx.iii, &outcome, at) {
         emit_comment(&ctx.iii, &event).await;
     }
-    ctx.dispatch.poke();
+    if crate::dispatch::relevant(
+        &config_snapshot(&ctx.config).dispatch,
+        outcome.tickets.iter().map(|view| &view.ticket),
+    ) {
+        ctx.dispatch.poke();
+    }
     Ok(outcome)
 }
 

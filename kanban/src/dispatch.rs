@@ -351,6 +351,19 @@ pub fn plan(board: &Board, rules: &[DispatchRule]) -> Vec<Action> {
     actions
 }
 
+/// Whether a write that changed these tickets can change what the rules do:
+/// a top-level card of a rule's assignee, or a card waiting `queued`. Every
+/// other write (comments and subtasks of a run, cards of other assignees)
+/// skips the board read a reconcile costs.
+pub fn relevant<'a>(rules: &[DispatchRule], mut tickets: impl Iterator<Item = &'a Ticket>) -> bool {
+    !rules.is_empty()
+        && tickets.any(|ticket| {
+            ticket.pills.contains(&queued_pill())
+                || (ticket.parent_id.is_none()
+                    && rules.iter().any(|rule| assigned(ticket, &rule.assignee)))
+        })
+}
+
 /// The first message of a dispatched session. The ticket key first, then the
 /// `args:` line deepwork reads; `ask=board` because nobody watches this
 /// session in a chat.
@@ -973,6 +986,21 @@ mod tests {
         let mut waiting = ticket("KAN-2", 2, "todo", "deepwork", Some("p1"), "user");
         waiting.pills.push(queued_pill());
         assert!(plan(&board(vec![running, waiting]), &[rule(1)]).is_empty());
+    }
+
+    #[test]
+    fn only_writes_to_rule_cards_wake_the_dispatcher() {
+        let rules = [rule(1)];
+        let card = ticket("KAN-1", 1, "todo", "deepwork", Some("p1"), "user");
+        let mut sub = ticket("KAN-2", 2, "todo", "deepwork-impl", Some("p1"), "user");
+        sub.parent_id = Some("id-KAN-1".into());
+        let other = ticket("KAN-3", 3, "todo", "someone", Some("p1"), "user");
+        let mut queued = other.clone();
+        queued.pills.push(queued_pill());
+        assert!(relevant(&rules, [&card].into_iter()));
+        assert!(!relevant(&rules, [&sub, &other].into_iter()));
+        assert!(relevant(&rules, [&queued].into_iter()));
+        assert!(!relevant(&[], [&card].into_iter()));
     }
 
     #[test]
