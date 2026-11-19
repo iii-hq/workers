@@ -668,6 +668,92 @@ pub struct BootImage {
     pub upper: PathBuf,
 }
 
+/// Admit every caller-supplied boot input before validation or provisioning.
+/// image_run_command repeats this guard because it also has independent callers.
+fn admit_worker_inputs(
+    source: &Path,
+    over: &VmOverride<'_>,
+) -> Result<crate::worker_admission::Lease, String> {
+    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
+    let default_upper = over.state_dir.join(super::upper::UPPER_NAME);
+    let script_dir = over.state_dir.join(
+        if over.image.is_some() || super::overlay::overlay_active() {
+            "runtime"
+        } else {
+            "opt/iii"
+        },
+    );
+    let mut paths = vec![source, over.state_dir.as_path(), script_dir.as_path()];
+    if let Some(image) = &over.image {
+        paths.extend([image.image.as_path(), image.upper.as_path()]);
+    } else {
+        paths.push(&default_upper);
+    }
+    crate::worker_admission::with_inputs(admission, &paths).map_err(|e| e.to_string())
+}
+
+/// The cache may choose a different digest directory under its pull lock.
+/// Fence its parent as well as the currently selected root/lower before any
+/// pull, erofs writer or firmware provisioning. No cache entry is created here.
+pub(crate) fn admit_base_image_inputs(
+    admission: crate::worker_admission::Lease,
+    kind: &str,
+    base_image: Option<&str>,
+) -> Result<crate::worker_admission::Lease, String> {
+    let reference = super::worker_manager::oci::base_image_ref(kind, base_image);
+    // Match prepare_rootfs's spelling before canonical_cache_key strips pins.
+    let reference = base_image
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&reference);
+    let selected = super::rootfs_cache::canonical_path(reference);
+    let cache = selected
+        .parent()
+        .ok_or("the base image cache has no parent")?;
+    let shared = cache.join(super::worker_manager::oci::rootfs_slug_for_image(
+        super::oci_ref::canonical_cache_key(reference),
+    ));
+    let pinned = cache.join(super::worker_manager::oci::rootfs_slug_for_image(reference));
+    let mut paths = vec![cache.to_path_buf()];
+    // canonical_path can switch under the pull lock. Admit both possible
+    // selections, their lower files and sidecars, not just today's cache hit.
+    for root in [selected.as_path(), shared.as_path(), pinned.as_path()] {
+        paths.push(root.to_path_buf());
+        for suffix in [".erofs", ".erofs.lock", ".digest", ".lock"] {
+            let mut name = root
+                .file_name()
+                .ok_or("the cache root has no name")?
+                .to_os_string();
+            name.push(suffix);
+            paths.push(root.with_file_name(name));
+        }
+    }
+    let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    crate::worker_admission::with_inputs(admission, &paths).map_err(|e| e.to_string())
+}
+
+/// A cancelled caller must not drop the fences of the cache lock's blocking
+/// writer. The owned task finishes the pull; abort/panic retains conservatively.
+/// The cache lock task is joined inside prepare_rootfs before it returns.
+pub(crate) async fn prepare_admitted_rootfs(
+    admission: &crate::worker_admission::Lease,
+    kind: &str,
+    base_image: Option<&str>,
+) -> Result<PathBuf, String> {
+    let held = crate::worker_admission::WriterLease::new(vec![admission.clone()]);
+    let kind = kind.to_string();
+    let base_image = base_image.map(str::to_string);
+    tokio::spawn(async move {
+        let result = super::worker_manager::oci::prepare_rootfs(&kind, base_image.as_deref())
+            .await
+            .map_err(|e| format!("{e:#}"));
+        held.reaped();
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// iii-init's build-mode switch (`iii_init::export`). Only the host sets it, on
 /// a build VM: a caller's env never carries it into a VM.
 const BUILD_EXPORT_ENV: &str = "III_BUILD_EXPORT";
@@ -711,7 +797,17 @@ pub(crate) async fn image_build_command(
 ) -> Result<BuildVm, String> {
     use super::worker_manager::oci;
     let admission = crate::worker_admission::local(scratch).map_err(|e| e.to_string())?;
-    crate::worker_admission::reject_retained_path(worker_dir).map_err(|e| e.to_string())?;
+    let admission = crate::worker_admission::with_inputs(
+        admission,
+        &[
+            worker_dir,
+            scratch,
+            &scratch.join("root"),
+            &scratch.join("root/runtime"),
+            &scratch.join(super::upper::UPPER_NAME),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
 
     let (mut project, kind) = match (package, executable) {
         (Some(package), Some(executable)) => (
@@ -724,6 +820,7 @@ pub(crate) async fn image_build_command(
     if let Some(image) = base_image {
         project.base_image = Some(image.to_string());
     }
+    let admission = admit_base_image_inputs(admission, &kind, project.base_image.as_deref())?;
     // A binary package is copied whole, as a bundle is.
     let is_bundle = package.is_some();
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
@@ -735,7 +832,7 @@ pub(crate) async fn image_build_command(
             .to_string());
     }
     let reference = oci::base_image_ref(&kind, project.base_image.as_deref());
-    let base_rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
+    let base_rootfs = prepare_admitted_rootfs(&admission, &kind, project.base_image.as_deref())
         .await
         .map_err(|e| format!("cannot pull the base image {reference}: {e:#}"))?;
     let lower = {
@@ -826,11 +923,8 @@ fn image_run_command(
     is_bundle: bool,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
+    let admission = admit_worker_inputs(project_path, &over)?;
     let BootImage { image, upper } = over.image.expect("a build to boot");
-    for path in [project_path, &image, &upper] {
-        crate::worker_admission::reject_retained_path(path).map_err(|e| e.to_string())?;
-    }
     if !crate::cli::overlay::overlay_active() {
         return Err(
             "booting a build needs the overlay rootfs mode; this adapter runs in \
@@ -1175,8 +1269,7 @@ pub async fn binary_vm_command(
     package_dir: &Path,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
-    crate::worker_admission::reject_retained_path(package_dir).map_err(|e| e.to_string())?;
+    let admission = admit_worker_inputs(package_dir, &over)?;
     let project = validate_binary(package_dir, package, executable)?;
     if over.image.is_none() {
         return Err(format!(
@@ -1214,14 +1307,19 @@ pub(crate) async fn start_worker_impl(
     over: VmOverride<'_>,
     run_override: Option<&str>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
     let project_path = Path::new(worker_path);
-    crate::worker_admission::reject_retained_path(project_path).map_err(|e| e.to_string())?;
+    let admission = admit_worker_inputs(project_path, &over)?;
     // A build's image is made: the manifest need not name its base image.
     let (project, kind) =
         validate_source_with(project_path, package, run_override, over.image.is_none())?;
     let kind = kind.as_str();
     let is_bundle = package.is_some();
+
+    let admission = if over.image.is_none() {
+        admit_base_image_inputs(admission, kind, project.base_image.as_deref())?
+    } else {
+        admission
+    };
 
     // 3. Ensure libkrunfw available
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
@@ -1293,9 +1391,7 @@ pub(crate) async fn start_worker_impl(
             ));
         }
         let base_rootfs =
-            match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref())
-                .await
-            {
+            match prepare_admitted_rootfs(&admission, kind, project.base_image.as_deref()).await {
                 Ok(p) => p,
                 Err(e) => {
                     return Err(e.to_string());
@@ -1331,8 +1427,7 @@ pub(crate) async fn start_worker_impl(
     let mut env = build_local_env(over.engine_url, worker_name, &combined_project_env);
 
     let base_rootfs =
-        match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref()).await
-        {
+        match prepare_admitted_rootfs(&admission, kind, project.base_image.as_deref()).await {
             Ok(p) => p,
             Err(e) => {
                 return Err(e.to_string());
@@ -1468,6 +1563,47 @@ pub(crate) async fn start_worker_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independent_image_run_refuses_before_creating_root_or_reading_image_env() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().join("workers");
+        let id = "c".repeat(32);
+        let foreign = base.join(&id).join("root");
+        std::fs::create_dir_all(&foreign).unwrap();
+        let custody = crate::worker_admission::custody(&base, &id).unwrap();
+        std::fs::create_dir_all(&custody).unwrap();
+        std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+        let root = t.path().join("normal-root");
+        let source = t.path().join("normal-source");
+        std::fs::create_dir(&source).unwrap();
+        let project = project_with("", "");
+        for retained_lower in [false, true] {
+            let over = VmOverride {
+                state_dir: root.clone(),
+                engine_url: "ws://127.0.0.1:1/ws",
+                extra_env: Default::default(),
+                image: Some(BootImage {
+                    image: if retained_lower {
+                        foreign.join("image.erofs")
+                    } else {
+                        source.join("image.erofs")
+                    },
+                    upper: if retained_lower {
+                        root.join("upper.ext4")
+                    } else {
+                        foreign.join("upper.ext4")
+                    },
+                }),
+            };
+            let error = image_run_command("w", &source, &project, false, over)
+                .err()
+                .unwrap();
+            assert!(error.contains("compatibility custody"), "{error}");
+            assert!(!root.exists());
+            assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+        }
+    }
 
     /// A guest that ran `ln -sf ~/.bashrc /opt/iii/dev-run.sh` (or symlinked
     /// `opt` itself) must not get the host file overwritten on the next start.

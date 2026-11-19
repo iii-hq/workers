@@ -276,3 +276,228 @@ async fn local_path_bundle_binary_and_build_helpers_refuse_before_runtime_work()
     );
     unchanged(&s);
 }
+
+// A is normal; B's original root is outside custody itself. Only the bound
+// sibling namespace establishes refusal. This fixture grants no authority.
+fn enrolled_other_root(s: &Setup) -> PathBuf {
+    let id = vm_id("other-key");
+    let vm = s.vms.base.join(&id);
+    private(&vm);
+    let root = vm.join("root");
+    private(&root);
+    std::fs::write(root.join("original"), b"B-original").unwrap();
+    let custody = crate::worker_admission::custody(&s.vms.base, &id).unwrap();
+    private(custody.parent().unwrap());
+    private(&custody);
+    std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+    root
+}
+
+fn local_source(path: &Path) -> WorkerSource {
+    WorkerSource::Local {
+        host_path: path.display().to_string(),
+        run_override: None,
+    }
+}
+
+#[tokio::test]
+async fn normal_a_refuses_b_original_source_before_instance_or_source_fallback() {
+    let s = setup(false);
+    let original = enrolled_other_root(&s);
+    let mut req = start(&s);
+    req.auth = crate::wire::scoped_auth_token("token", "key");
+    req.source = local_source(&original);
+    let error = s.vms.start(req).await.unwrap_err();
+    assert!(
+        error.to_string().contains("compatibility custody"),
+        "{error}"
+    );
+    unchanged(&s);
+    assert_eq!(
+        std::fs::read(original.join("original")).unwrap(),
+        b"B-original"
+    );
+}
+
+#[tokio::test]
+async fn keyed_prepare_refuses_b_original_before_manifest_defaults_or_download() {
+    let s = setup(false);
+    let original = enrolled_other_root(&s);
+    let error = s
+        .vms
+        .prepare(WorkerPrepareRequest {
+            auth: "token".into(),
+            state_key: Some("key".into()),
+            source: local_source(&original),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("compatibility custody"),
+        "{error}"
+    );
+    unchanged(&s);
+    assert_eq!(std::fs::read_dir(&original).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn normal_source_with_b_build_dir_refuses_before_claim_instance_or_archive() {
+    let s = setup(false);
+    let original = enrolled_other_root(&s);
+    let mut req = start(&s);
+    req.auth = crate::wire::scoped_auth_token("token", "key");
+    req.build = Some(WorkerBuildRef {
+        build_dir: original.display().to_string(),
+        build_id: "never-read".into(),
+    });
+    let error = s.vms.start(req).await.unwrap_err();
+    assert!(
+        error.to_string().contains("compatibility custody"),
+        "{error}"
+    );
+    unchanged(&s);
+    assert_eq!(std::fs::read_dir(&original).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn build_refuses_foreign_source_or_absent_foreign_output_before_claim_or_channel() {
+    for retained_source in [false, true] {
+        let s = setup(false);
+        let original = enrolled_other_root(&s);
+        let output = if retained_source {
+            s._root.path().join("new-output")
+        } else {
+            original.join("absent/output")
+        };
+        let iii = IIIClient::new("ws://127.0.0.1:1/ws");
+        let req = WorkerBuildRequest {
+            auth: crate::wire::scoped_auth_token("token", "key"),
+            state_key: "key".into(),
+            worker_name: "worker".into(),
+            source: local_source(if retained_source {
+                &original
+            } else {
+                &s.source
+            }),
+            output_dir: output.display().to_string(),
+            env: Default::default(),
+            logs: iii_sdk::channels::StreamChannelRef {
+                channel_id: "never-open".into(),
+                access_key: "unused".into(),
+                direction: iii_sdk::channels::ChannelDirection::Write,
+            },
+            base_image: None,
+        };
+        let error = s.vms.build(&iii, req).await.unwrap_err();
+        assert!(
+            error.to_string().contains("compatibility custody"),
+            "{error}"
+        );
+        assert!(!output.exists());
+        assert!(!original.join("absent").exists());
+        unchanged(&s);
+    }
+}
+
+#[tokio::test]
+async fn normal_root_and_source_refuse_foreign_image_or_upper_at_outer_builders() {
+    let s = setup(false);
+    let original = enrolled_other_root(&s);
+    for retained_image in [false, true] {
+        let over = || VmOverride {
+            state_dir: s.vm.join("root"),
+            engine_url: "ws://127.0.0.1:1/ws",
+            extra_env: Default::default(),
+            image: Some(BootImage {
+                image: if retained_image {
+                    original.join("image.erofs")
+                } else {
+                    s.source.join("image.erofs")
+                },
+                upper: if retained_image {
+                    s.vm.join("upper.ext4")
+                } else {
+                    original.join("upper.ext4")
+                },
+            }),
+        };
+        // An invalid manifest/executable is a second, effect-free sentinel if
+        // the early guard regresses; these cases never need real firmware.
+        let local = local_vm_command("w", &s.source, None, over())
+            .await
+            .err()
+            .unwrap();
+        assert!(local.contains("compatibility custody"), "{local}");
+        let bundle = bundle_vm_command("pkg", "w", &s.source, over())
+            .await
+            .err()
+            .unwrap();
+        assert!(bundle.contains("compatibility custody"), "{bundle}");
+        let binary = binary_vm_command("pkg", "missing", "w", &s.source, over())
+            .await
+            .err()
+            .unwrap();
+        assert!(binary.contains("compatibility custody"), "{binary}");
+        unchanged(&s);
+    }
+}
+
+#[tokio::test]
+async fn foreign_inputs_do_not_precede_authentication() {
+    let s = setup(false);
+    let original = enrolled_other_root(&s);
+    let mut req = start(&s);
+    req.auth = "foreign".into();
+    req.source = local_source(&original);
+    assert!(matches!(
+        s.vms.start(req).await,
+        Err(SandboxError::Unauthorized)
+    ));
+    let error = s
+        .vms
+        .prepare(WorkerPrepareRequest {
+            auth: "foreign".into(),
+            state_key: Some("key".into()),
+            source: local_source(&original),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, SandboxError::Unauthorized));
+    unchanged(&s);
+}
+
+#[tokio::test]
+async fn source_symlink_is_not_hidden_by_host_root_canonicalization() {
+    let s = setup(false);
+    let link = s._root.path().join("source-link");
+    std::os::unix::fs::symlink(&s.source, &link).unwrap();
+    let mut req = start(&s);
+    req.source = local_source(&link);
+    assert!(matches!(
+        s.vms.start(req).await,
+        Err(SandboxError::BootFailed(_))
+    ));
+    unchanged(&s);
+}
+
+#[tokio::test]
+async fn image_build_refuses_foreign_source_before_default_image_or_firmware() {
+    let s = setup(false);
+    let original = enrolled_other_root(&s);
+    let scratch = s.vm.join("build-not-created");
+    let error = image_build_command(
+        &original,
+        None,
+        None,
+        None,
+        None,
+        &scratch,
+        Default::default(),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(error.contains("compatibility custody"), "{error}");
+    assert!(!scratch.exists());
+    unchanged(&s);
+}
