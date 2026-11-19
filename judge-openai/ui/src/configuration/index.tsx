@@ -60,6 +60,9 @@ const authOptions: SelectOption[] = [
 /** Lets the worker reload a saved entry before the status asks it again. */
 const SAVE_SETTLE_MS = 300
 let liveSeq = 0
+const SAVE_TO_CHECK = 'Save to check this credential source'
+const authOf = (value: unknown) =>
+  value !== null && typeof value === 'object' && (value as { auth?: unknown }).auth === 'codex' ? 'codex' : 'api_key'
 
 /** The supported models the running worker sees with its saved credentials. */
 export async function listModels(iii: Engine): Promise<ModelCard[]> {
@@ -91,9 +94,14 @@ export function OpenAiConfigForm({
   // null = a listing is in flight, so an empty catalog always comes from a reply.
   const [catalog, setCatalog] = useState<ModelCard[] | null>(null)
   const [catalogError, setCatalogError] = useState<string | null>(null)
+  // The listing reads the saved entry: remember which credential source it checked.
+  const authNow = useRef(authOf(props.value))
+  authNow.current = authOf(props.value)
+  const [checkedAuth, setCheckedAuth] = useState(authNow.current)
   const refresh = useCallback(() => {
     setCatalog(null)
     setCatalogError(null)
+    setCheckedAuth(authNow.current)
     listModels(iii)
       .then(setCatalog)
       .catch((error: unknown) => {
@@ -210,16 +218,18 @@ export function OpenAiConfigForm({
     modelOptions.push({ value: storedModel, label: storedModel, description: 'Not in the current catalog' })
   }
   const codex = value.auth === 'codex'
-  const codexStatus =
-    catalog === null ? (
+  const sourceChanged = checkedAuth !== authOf(value)
+  const codexStatus = sourceChanged ? (
+    <Chip tone="neutral">{SAVE_TO_CHECK}</Chip>
+  ) : catalog === null ? (
       <Chip tone="neutral">Checking the worker…</Chip>
     ) : catalogError === 'missing_key' ? (
       <Chip tone="warning">No Codex session reaches the worker</Chip>
     ) : catalogError ? (
       <Chip tone="warning">Listing failed · {catalogError}</Chip>
     ) : (
-      <Chip tone="success">Codex session active</Chip>
-    )
+    <Chip tone="success">Codex session active</Chip>
+  )
   // api_key stays stored while codex is selected, so switching back restores it.
   const authField = (
     <SettingsField
@@ -244,8 +254,9 @@ export function OpenAiConfigForm({
       )}
     />
   )
-  const keyStatus =
-    catalog === null ? (
+  const keyStatus = sourceChanged ? (
+    <Chip tone="neutral">{SAVE_TO_CHECK}</Chip>
+  ) : catalog === null ? (
       <Chip tone="neutral">Checking the worker…</Chip>
     ) : catalogError === 'missing_key' ? (
       <Chip tone="warning">No key reaches the worker</Chip>
@@ -314,16 +325,17 @@ export function OpenAiConfigForm({
               keysUrl="https://platform.openai.com/api-keys"
               status={{
                 checking: catalog === null,
-                connected: catalog !== null && !catalogError && !notVisible,
-                error:
-                  catalogError === 'missing_key'
+                connected: !sourceChanged && catalog !== null && !catalogError && !notVisible,
+                error: sourceChanged
+                  ? `${SAVE_TO_CHECK}.`
+                  : catalogError === 'missing_key'
                     ? 'No key reaches the worker.'
                     : catalogError
                       ? `Listing failed · ${catalogError}`
                       : notVisible
                         ? NOT_VISIBLE
                         : undefined,
-                detail: catalog && !catalogError && !notVisible ? `${catalog.length} models` : undefined,
+                detail: !sourceChanged && catalog && !catalogError && !notVisible ? `${catalog.length} models` : undefined,
               }}
             />
           </div>

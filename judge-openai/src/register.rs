@@ -157,6 +157,16 @@ pub fn register(
                     configured: false,
                     reason: Some(reason),
                 },
+                Ok(_) if snapshot.auth == Auth::Codex => match codex.current().await {
+                    Ok(()) => StatusResponse {
+                        configured: true,
+                        reason: None,
+                    },
+                    Err(reason) => StatusResponse {
+                        configured: false,
+                        reason: Some(reason),
+                    },
+                },
                 Ok(client) if client.has_key() => StatusResponse {
                     configured: true,
                     reason: None,
@@ -177,8 +187,8 @@ pub fn register(
 const MISSING_KEY: &str = "no API key: save one in the judge-openai settings, or export OPENAI_API_KEY in its process and restart it";
 
 /// Bind this call's credential: the configured key (or the boot key), or with
-/// `auth: codex` the current Codex token. `Err` is the actionable reason a
-/// `secret://` reference or the Codex session cannot be used.
+/// `auth: codex` the Codex source, asked inside the call. `Err` is the
+/// actionable reason a `secret://` reference cannot be used.
 async fn bind(
     client: &DecisionsClient,
     snapshot: &OpenAiConfig,
@@ -190,10 +200,7 @@ async fn bind(
             let api_key = secrets.configured_key(snapshot.api_key.as_deref()).await?;
             Ok(client.with_api_key(api_key.as_deref()))
         }
-        Auth::Codex => {
-            codex.current().await?;
-            Ok(client.with_codex(codex.clone()))
-        }
+        Auth::Codex => Ok(client.with_codex(codex.clone())),
     }
 }
 

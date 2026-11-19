@@ -517,4 +517,14 @@ describe('OpenAiConfigForm credential source', () => {
     expect(alert.textContent).toContain('sign in with ChatGPT')
     expect(alert.textContent).toContain('provider-openai-codex')
   })
+
+  it('confirms only the saved credential source: an unsaved switch asks to save first', async () => {
+    const { container, iii } = await mount({ api_key: 'fixture-only' })
+    expect(container.querySelector('[data-chip="success"]')?.textContent).toContain('Key accepted')
+    await act(async () =>
+      root!.render(<OpenAiConfigForm id="judge-openai" schema={{}} value={{ api_key: 'fixture-only', auth: 'codex' }} onChange={vi.fn()} iii={iii} />),
+    )
+    expect(container.querySelector('[data-chip="success"]')).toBeNull()
+    expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Save to check this credential source')
+  })
 })

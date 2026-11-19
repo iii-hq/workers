@@ -306,7 +306,7 @@ impl DecisionsClient {
             tokio::task::yield_now().await;
         }
         // Also before local answers: a keyless worker fails every request alike.
-        self.key().ok_or(ErrorCode::MissingKey)?;
+        self.require_key().await?;
         let (remote, local): (Vec<_>, Vec<_>) =
             request.evaluations.into_iter().partition(decisions::remote);
         for evaluation in local {
@@ -434,7 +434,7 @@ impl DecisionsClient {
                 transport::validate_options(&call.options, self.limits)?;
                 // The Codex token lacks the scope GET /v1/models needs.
                 let models = if self.codex.is_some() {
-                    self.key().ok_or(ErrorCode::MissingKey)?;
+                    self.require_key().await?;
                     decisions::supported_cards()
                 } else {
                     let bytes = self.send_http(&call, || Ok(self.http.get(self.models_endpoint.as_ref()))).await?;
@@ -467,6 +467,20 @@ impl DecisionsClient {
                 stats,
             },
         }
+    }
+
+    /// With `auth: codex`, ask for the current token here, inside the call's
+    /// deadline and cancellation.
+    async fn require_key(&self) -> Result<(), Failure> {
+        if let Some(codex) = &self.codex {
+            codex.current().await.map_err(|reason| Failure {
+                provider_error: Some(credential_error(reason)),
+                ..ErrorCode::MissingKey.into()
+            })?;
+        }
+        self.key()
+            .map(drop)
+            .ok_or_else(|| ErrorCode::MissingKey.into())
     }
 
     async fn send_http(

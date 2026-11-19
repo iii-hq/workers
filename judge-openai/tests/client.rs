@@ -723,7 +723,6 @@ async fn codex_sends_the_codex_token_and_ignores_configured_and_boot_keys() {
     let server = MockServer::start().await;
     mount_bearer(&server, "tok-1", 200).await;
     let (source, log) = codex_source(&[Ok("tok-1")]);
-    source.current().await.unwrap();
     let client = client(&server)
         .with_api_key(Some("configured-key"))
         .with_codex(source);
@@ -739,7 +738,6 @@ async fn codex_401_renews_once_and_concurrent_siblings_reuse_the_new_token() {
     mount_bearer(&server, "tok-1", 401).await;
     mount_bearer(&server, "tok-2", 200).await;
     let (source, log) = codex_source(&[Ok("tok-1"), Ok("tok-2")]);
-    source.current().await.unwrap();
     let (_, results, stats) = ok(client(&server)
         .with_codex(source)
         .evaluate(tickets(2), DEFAULT_MODEL)
@@ -757,13 +755,11 @@ async fn codex_second_401_is_http_401_and_a_later_401_forces_nothing_for_five_mi
     mount_bearer(&server, "tok-2", 401).await;
     let (source, log) = codex_source(&[Ok("tok-1"), Ok("tok-2")]);
     let client = client(&server).with_codex(source.clone());
-    source.current().await.unwrap();
     let (wire, stats) = error(client.evaluate(ticket(), DEFAULT_MODEL).await, "http");
     assert_eq!(wire["http_status"], 401);
     assert!(!wire.to_string().contains("tok-1"), "{wire}");
     assert_eq!(stats.attempts, 2);
     assert_eq!(*log.lock().unwrap(), vec![None, Some("tok-1".into())]);
-    source.current().await.unwrap();
     let (wire, stats) = error(client.evaluate(ticket(), DEFAULT_MODEL).await, "http");
     assert_eq!(wire["http_status"], 401);
     assert_eq!(stats.attempts, 1);
@@ -775,7 +771,6 @@ async fn codex_403_is_not_retried_and_a_failed_renewal_is_missing_key() {
     let server = MockServer::start().await;
     mount_bearer(&server, "tok-1", 403).await;
     let (source, log) = codex_source(&[Ok("tok-1")]);
-    source.current().await.unwrap();
     let (wire, stats) = error(
         client(&server)
             .with_codex(source)
@@ -792,7 +787,6 @@ async fn codex_403_is_not_retried_and_a_failed_renewal_is_missing_key() {
     let server = MockServer::start().await;
     mount_bearer(&server, "tok-1", 401).await;
     let (source, _) = codex_source(&[Ok("tok-1"), Err("the Codex session expired")]);
-    source.current().await.unwrap();
     let (wire, _) = error(
         client(&server)
             .with_codex(source)
@@ -823,6 +817,41 @@ async fn codex_renew_reuses_a_token_a_sibling_already_renewed() {
 }
 
 #[tokio::test]
+async fn codex_lookup_that_started_before_a_renewal_does_not_restore_the_old_token() {
+    use std::sync::{Arc, Mutex};
+    let (release, gate) = tokio::sync::oneshot::channel::<()>();
+    let gate = Arc::new(Mutex::new(Some(gate)));
+    let fetch: judge_openai::codex::Fetch = Arc::new(move |rejected: Option<String>| {
+        let gate = gate.lock().unwrap().take();
+        Box::pin(async move {
+            match rejected {
+                Some(_) => Ok(Some("tok-2".to_owned())),
+                // The first ordinary lookup reads tok-1, then stalls until the renewal is done.
+                None => {
+                    if let Some(gate) = gate {
+                        gate.await.unwrap();
+                    }
+                    Ok(Some("tok-1".to_owned()))
+                }
+            }
+        })
+    });
+    let source = Arc::new(judge_openai::CodexSource::new(fetch));
+    let slow = tokio::spawn({
+        let source = source.clone();
+        async move { source.current().await }
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(
+        source.renew("tok-1").await.unwrap().as_deref(),
+        Some("tok-2")
+    );
+    release.send(()).unwrap();
+    slow.await.unwrap().unwrap();
+    assert_eq!(source.latest().as_deref(), Some("tok-2"));
+}
+
+#[tokio::test]
 async fn codex_models_list_is_the_built_in_card_without_http() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -831,7 +860,6 @@ async fn codex_models_list_is_the_built_in_card_without_http() {
         .mount(&server)
         .await;
     let (source, _) = codex_source(&[Ok("tok-1")]);
-    source.current().await.unwrap();
     match client(&server)
         .with_codex(source)
         .list_models(models(1000))

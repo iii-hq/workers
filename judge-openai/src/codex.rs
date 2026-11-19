@@ -1,6 +1,6 @@
 //! `auth: codex`: the bearer is the ChatGPT-login access token that
 //! provider-openai-codex hands out through `provider::openai-codex::auth::token`.
-//! This worker stores no token: each handler invocation asks for the current one,
+//! This worker stores no token: each call asks for the current one,
 //! and a 401 forces one refresh at most every five minutes, worker-wide.
 use iii_sdk::{CallRequest, IIIClient, errors::Error};
 use serde_json::{Value, json};
@@ -66,12 +66,19 @@ fn unreadable(code: &str) -> String {
     format!("could not read the Codex session ({code}); retry")
 }
 
-/// Worker-wide Codex credential: `latest` is the bearer every HTTP attempt sends.
+/// Worker-wide Codex credential: `latest.token` is the bearer every HTTP attempt sends.
 pub struct CodexSource {
     fetch: Fetch,
-    latest: std::sync::Mutex<Option<Arc<str>>>,
+    latest: std::sync::Mutex<Latest>,
     /// Held across a forced fetch so concurrent 401s wait and reuse its result.
     forced_at: Mutex<Option<Instant>>,
+}
+#[derive(Default)]
+struct Latest {
+    token: Option<Arc<str>>,
+    /// Bumped by each forced refresh, so a lookup that started earlier cannot
+    /// put back the token that refresh replaced.
+    renewals: u64,
 }
 impl std::fmt::Debug for CodexSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -87,16 +94,23 @@ impl CodexSource {
         }
     }
 
-    /// Ask for the current token; once per handler invocation, nothing cached across calls.
-    pub async fn current(&self) -> Result<Arc<str>, String> {
-        self.get(None).await
+    /// Ask for the current token; once per call, nothing cached across calls.
+    pub async fn current(&self) -> Result<(), String> {
+        let renewals = self.lock().renewals;
+        let token = self.get(None).await?;
+        let mut latest = self.lock();
+        if latest.renewals == renewals {
+            latest.token = Some(token);
+        }
+        Ok(())
     }
 
     pub fn latest(&self) -> Option<Arc<str>> {
-        self.latest
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.lock().token.clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Latest> {
+        self.latest.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// A token to retry with after OpenAI rejected `rejected`: one a sibling call
@@ -112,6 +126,9 @@ impl CodexSource {
         }
         *forced_at = Some(Instant::now());
         let token = self.get(Some(rejected.to_owned())).await?;
+        let mut latest = self.lock();
+        latest.token = Some(token.clone());
+        latest.renewals += 1;
         Ok((*token != *rejected).then_some(token))
     }
 
@@ -121,7 +138,6 @@ impl CodexSource {
             .filter(|token| !token.trim().is_empty())
             .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
             .into();
-        *self.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(token.clone());
         Ok(token)
     }
 }
