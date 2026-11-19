@@ -482,6 +482,7 @@ mod tests {
             result: None,
             result_error: None,
             stop_reason: None,
+            failure: None,
             context: None,
         }
     }

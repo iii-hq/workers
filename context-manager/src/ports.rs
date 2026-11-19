@@ -88,6 +88,12 @@ pub enum SummarizeError {
     #[error("summariser failed: {0}")]
     Failed(String),
 
+    /// The provider rejected the request as larger than the model's
+    /// context window (`router/context_overflow`); a smaller fragment
+    /// may still fit.
+    #[error("summariser failed: the request exceeds the model's context window: {0}")]
+    ContextOverflow(String),
+
     /// The summariser returned an empty summary.
     #[error("summariser returned an empty summary")]
     Empty,

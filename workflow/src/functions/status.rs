@@ -59,8 +59,8 @@ pub struct StatusResponse {
     pub result_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// Node uid counts per definition `phase` (`failed` includes cancelled); nodes
-    /// without a phase are left out. Omitted when empty.
+    /// Node uid counts per definition `phase` (`failed` includes `cancelled`);
+    /// nodes without a phase are left out. Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub phases: BTreeMap<String, PhaseCounts>,
     /// Only with `details: true`: per-node detail keyed by node uid.
@@ -75,7 +75,10 @@ pub struct StatusResponse {
 pub struct PhaseCounts {
     pub total: u32,
     pub done: u32,
+    /// Failed and cancelled nodes.
     pub failed: u32,
+    /// The cancelled ones among `failed`.
+    pub cancelled: u32,
     pub running: u32,
 }
 
@@ -114,6 +117,10 @@ pub struct NodeDetail {
     /// `harness::status` turn status; running nodes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_status: Option<String>,
+    /// Epoch ms the continue of the node's transient provider failure is due;
+    /// while set, `harness_status` reads the failed turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<i64>,
     /// The session waits on an armed wake; running nodes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expects_wake: Option<bool>,
@@ -179,7 +186,11 @@ fn phase_counts(
         c.total += 1;
         match state {
             NodeState::Done => c.done += 1,
-            NodeState::Failed | NodeState::Cancelled => c.failed += 1,
+            NodeState::Failed => c.failed += 1,
+            NodeState::Cancelled => {
+                c.failed += 1;
+                c.cancelled += 1;
+            }
             NodeState::Running => c.running += 1,
             NodeState::Pending => {}
         }
@@ -235,6 +246,9 @@ fn node_detail(
             .filter(|_| state != NodeState::Pending)
             .and_then(|cp| Some((cp.finished_at.unwrap_or(now) - cp.pending_at?).max(0))),
         harness_status: live.harness_status,
+        retry_at: cp
+            .filter(|_| state == NodeState::Running)
+            .and_then(|cp| cp.retry_at),
         expects_wake: live.expects_wake,
         last_generate_at: live.last_generate_at,
         usage: live.usage,
@@ -482,6 +496,7 @@ mod tests {
                 total: 2,
                 done: 1,
                 failed: 0,
+                cancelled: 0,
                 running: 1,
             },
         );
@@ -613,6 +628,7 @@ mod tests {
                 total: 4,
                 done: 1,
                 failed: 1,
+                cancelled: 1,
                 running: 1
             }
         );
@@ -642,6 +658,7 @@ mod tests {
                 total: 3,
                 done: 1,
                 failed: 1,
+                cancelled: 0,
                 running: 1
             }
         );
@@ -699,6 +716,28 @@ mod tests {
         assert_eq!(sum.state, NodeState::Pending);
         assert_eq!((sum.session_id.as_ref(), sum.attempt), (None, None));
         assert!(!resp.details_truncated);
+    }
+
+    #[test]
+    fn a_node_waiting_for_its_transient_retry_runs_without_an_error() {
+        let rec = record(json!({
+            "plan": {"state": "running", "session_id": "wf_r_1_plan@r0", "pending_at": 5,
+                     "transient_retries": 1, "retry_at": 60_005}
+        }));
+        let live = BTreeMap::from([(
+            "plan".to_string(),
+            LiveNode {
+                harness_status: Some("failed".into()),
+                ..Default::default()
+            },
+        )]);
+        let resp = build_status(rec, Some(&def()), &live, true, 100);
+        assert_eq!(resp.nodes["plan"], NodeState::Running);
+        assert_eq!(resp.phases["code"].running, 1);
+        assert!(resp.node_errors.is_empty(), "{:?}", resp.node_errors);
+        let plan = &resp.node_details["plan"];
+        assert_eq!(plan.retry_at, Some(60_005));
+        assert_eq!(plan.harness_status.as_deref(), Some("failed"));
     }
 
     #[test]

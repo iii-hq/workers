@@ -141,7 +141,8 @@ for each moved key.
 | `functions` | `default_functions` | The node session's dispatch policy: an allow-list array or `{ "allow", "deny" }`. List a denied id to give it back; a node that starts a sub-run lists both `workflow::start` and `workflow::on-run-completed`. |
 | `filesystem_root` | the caller's folder | Absolute folder the node's session runs in. It must lie inside the caller's folder with symlinks resolved, checked once at start on the worker's host; a run without a caller folder cannot set it. Fanout copies and loop passes share it. |
 | `timeout_ms` | `default_pending_timeout_ms` (30 min) | Wall clock an attempt may run, from its send. At least 1000. |
-| `retries` | `max_node_retries` (1) | Refires after a timeout, each in a new `@r<n>` session. At most 10. A failed turn is never retried. |
+| `retries` | `max_node_retries` (1) | Refires after a timeout, each in a new `@r<n>` session. At most 10. A failed turn is not refired; see `read_only`. |
+| `read_only` | `false` | `true` states that the node has no side effects, so a turn that fails on a transient provider failure is continued once in its own session; see [Transient provider failures](#transient-provider-failures). The worker does not check it. |
 | `on_error` | `"fail"` | `"continue"`: a failed or cancelled node counts as finished with a `null` result, so its readers run and the run can complete. The error stays in `node_errors`. |
 | `label` | none | Session title (fanout copies get ` #<i>`, loop passes ` #it<k>`) and `node_details.label`. 1 to 80 characters. |
 | `phase` | none | Group counted in `workflow::status` `phases`. 1 to 80 characters. |
@@ -231,6 +232,39 @@ schema with `required` fields a status line cannot satisfy. Under
 such as `{"status": "waiting on build"}` sent after a refused
 `harness::observe` becomes the node's result.
 
+### Transient provider failures
+
+The harness resumes a turn whose provider fails temporarily (an outage, a rate
+limit, a cut stream) up to `max_transient_resumes` times, at once, and then
+fails the turn with `failure.retryable: true` on `harness::status`. A node with
+`read_only: true` whose turn fails that way is not failed: it stays running,
+and at least 60 s later the worker sends one continue message into the same
+session, so the transcript and the provider's prompt cache carry over and the
+work already done is not paid again. The continue asks the node to resume where it stopped,
+without repeating calls that already returned, and to deliver its result.
+
+- Once per node uid, over all its attempts: each fanout copy and loop pass has
+  its own, and a timeout refire does not give a new one. A second transient
+  failure fails the node, and so does any failure of a node without
+  `read_only`.
+- The continue runs in what is left of `timeout_ms`, which still counts from
+  the attempt's send, and needs at least 5 minutes of it when sent: it reloads
+  the whole transcript, so a continue the timeout stops at once would be paid
+  for nothing. With less than 7 minutes left at the failure (the wait, one
+  default sweep period and those 5 minutes), the node fails at once instead.
+  A pass that reaches the due continue with less than 5 minutes left (a slower
+  `sweep_expression`, say) fails the node with the transient error instead of
+  sending it.
+- Before sending, the worker reads the session again: a session that moved on
+  (a person typed into it, say) is settled as usual instead. With a caller
+  session, every pass reads the caller while a node waits: a stopped caller
+  turn stops the run, and an unreadable caller holds the continue for the next
+  pass.
+- The transient error never reaches `node_errors` unless the continue fails
+  too; with `on_error: "continue"` only that final failure reads as `null`.
+- An older harness, which reports no `failure` on `harness::status`, makes
+  every failed turn fail the node.
+
 ## Loops
 
 A `loop` on a node (the loop node) runs it and its `body` nodes again while a
@@ -305,7 +339,8 @@ field of its JSON result equals a string, as a do-while:
   array lists nothing. Each loop pass is listed under its own `<id>#it<k>` uid,
   in `nodes`, `node_errors`, `node_results` and `node_details`.
 - `phases` counts node uids per `phase`: `{"code": {"total": 2, "done": 0,
-  "failed": 0, "running": 1}}`. `failed` includes cancelled. Nodes without a
+  "failed": 0, "cancelled": 0, "running": 1}}`. `failed` includes the
+  `cancelled` ones. Nodes without a
   phase are left out, and the map is omitted when empty. Each loop pass counts
   once, so `total` grows with every repeat.
 
@@ -327,7 +362,10 @@ when it cut the list:
 
 `usage` comes from `harness::metrics` over the node session's tree, and `model`
 and `last_generate_at` from its context snapshots. `harness_status` and
-`expects_wake` come from `harness::status`, for running nodes only. A node whose
+`expects_wake` come from `harness::status`, for running nodes only. A running
+node waiting for its [transient retry](#transient-provider-failures) also has
+`retry_at`, the epoch ms its continue is due; until then its `harness_status`
+reads `failed`. A node whose
 send never reached the harness gets no live fields. These live
 reads run without the run lock, 16 at a time, with a 5 s timeout each. A failed
 read leaves its fields out, and nothing live is stored. `model` of a node with
@@ -375,6 +413,14 @@ included. It covers the current attempt: a timeout refire starts it again, and
   minute.
 - **`retries` defaults to 1.** A node that times out is refired once unless it
   sets `retries: 0`, and a refire repeats the node's side effects.
+- **A transient retry waits 1 to 2 minutes.** The continue goes out with the
+  first tick or sweep pass at or after `retry_at`, and the default sweep runs
+  once a minute. A stop of an idle caller does not cancel a node waiting for its
+  continue; `workflow::stop` does. A stop of a busy caller is seen only while
+  it is the caller's current turn: one followed by a new caller turn before the
+  next pass (up to one sweep period) is missed. `read_only` is a promise the worker does not
+  check: a node with side effects that sets it gets continued too, though the
+  continue asks it not to repeat calls that already returned.
 - **No ordering-only dependency.** A node runs after the nodes it names in
   `reads` or `fanout`, and receives their results, so in "do X, then
   validate" over shared state the validator reads X's result, which may be

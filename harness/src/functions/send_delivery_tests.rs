@@ -650,3 +650,101 @@ async fn a_keyed_resend_with_changed_text_lands_on_the_stored_entry_unless_it_co
         assert_eq!(stack.context(session).await["source"], source);
     }
 }
+
+/// A send with no options into a session whose turn failed on a transient
+/// provider error (what the workflow worker sends to continue a read-only node)
+/// seeds a new turn in the same session: same identity, a clean failure state,
+/// and the transcript the failed turn left, with the continue appended after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_send_into_a_failed_session_continues_it_with_the_same_identity() {
+    let stack = Stack::new().await;
+    let mut failed = crate::types::turn::tests::record();
+    failed.session_id = "failed".into();
+    failed.turn_id = "t-failed".into();
+    failed.status = TurnStatus::Failed;
+    failed.result_error = Some("The provider temporarily failed.".into());
+    failed.failure = Some(crate::types::turn::TurnFailure {
+        code: "router/provider_transient".into(),
+        retryable: true,
+    });
+    failed.transient_resumes = 3;
+    failed.options.provider = Some("anthropic".into());
+    failed.options.system_prompt = Some("Workflow verifier profile".into());
+    failed.options.agent = Some(crate::types::turn::AgentIdentity {
+        id: "workflow-verifier".into(),
+        name: None,
+        icon: None,
+        color: None,
+    });
+    failed.options.functions = Some(FunctionPolicy {
+        allow: vec!["shell::exec".into(), "workflow-result::submit".into()],
+        ..Default::default()
+    });
+    failed.options.metadata = Some(crate::types::turn::fs_scope_metadata("/work/tree"));
+    crate::state::put_turn(&stack.deps.iii, &failed, 1000)
+        .await
+        .unwrap();
+    // The failed turn ended on the harness's own resume nudge, so the continue
+    // makes two user messages in a row.
+    let earlier: Vec<Value> = ["Refute the design.", "Resume from the transcript."]
+        .iter()
+        .enumerate()
+        .map(|(i, text)| json!({"entry_id": format!("e_{i}"), "message": AgentMessage::user_text(*text)}))
+        .collect();
+    stack
+        .data
+        .lock()
+        .unwrap()
+        .messages
+        .insert("failed".into(), earlier.clone());
+
+    let out = handle(
+        &stack.deps,
+        serde_json::from_value(json!({
+            "session_id": "failed",
+            "idempotency_key": "failed#transient-retry",
+            "message": "Continue from where you stopped."
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_ne!(out.turn_id, "t-failed");
+    assert!(
+        out.merged != Some(true) && out.queued != Some(true),
+        "{out:?}"
+    );
+
+    let next = crate::state::get_turn(&stack.deps.iii, "failed", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.turn_id, out.turn_id);
+    assert_eq!(next.status, TurnStatus::Running);
+    assert_eq!(next.failure, None);
+    assert_eq!(next.result_error, None);
+    assert_eq!(next.transient_resumes, 0);
+    assert_eq!(next.options.model, failed.options.model);
+    assert_eq!(next.options.provider, failed.options.provider);
+    assert_eq!(next.options.system_prompt, failed.options.system_prompt);
+    assert_eq!(next.options.agent, failed.options.agent);
+    assert_eq!(next.options.functions, failed.options.functions);
+    assert_eq!(next.options.filesystem_root(), Some("/work/tree"));
+
+    let transcript = stack
+        .deps
+        .session()
+        .await
+        .messages_strict("failed")
+        .await
+        .unwrap();
+    assert_eq!(transcript.len(), 3);
+    let messages = stack.data.lock().unwrap().messages["failed"].clone();
+    assert_eq!(messages[..2], earlier[..]);
+    assert!(
+        messages[2]["message"]
+            .to_string()
+            .contains("Continue from where you stopped."),
+        "{messages:?}"
+    );
+}

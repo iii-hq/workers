@@ -251,11 +251,10 @@ fn scenario_metrics(subject_id: &str, report: &E2eReport) -> Vec<Value> {
         .map(|scenario| {
             let metric = |run: &E2eRunReport, name: &str| -> Option<f64> {
                 match name {
-                    "tokens" => run.metrics.as_ref().and_then(|value| {
-                        value
-                            .totals
+                    "tokens" => run.measured_usage().and_then(|totals| {
+                        totals
                             .input_tokens
-                            .zip(value.totals.output_tokens)
+                            .zip(totals.output_tokens)
                             .map(|(input, output)| (input + output) as f64)
                     }),
                     "duration_seconds" => Some(run.wall_time_ms as f64 / 1000.0),
@@ -325,14 +324,13 @@ fn efficiency_totals(report: &E2eReport) -> (Option<f64>, Option<f64>) {
     let mut tokens = Vec::new();
     let mut calls = Vec::new();
     for run in report.scenarios.iter().flat_map(|scenario| &scenario.runs) {
+        if let Some((input, output)) = run
+            .measured_usage()
+            .and_then(|totals| totals.input_tokens.zip(totals.output_tokens))
+        {
+            tokens.push((input + output) as f64);
+        }
         if let Some(metrics) = &run.metrics {
-            if let Some((input, output)) = metrics
-                .totals
-                .input_tokens
-                .zip(metrics.totals.output_tokens)
-            {
-                tokens.push((input + output) as f64);
-            }
             calls.push(metrics.totals.function_calls as f64);
         }
     }

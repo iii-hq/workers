@@ -185,10 +185,19 @@ async fn the_provider_counts_the_turns_thinking_level_and_response_format() {
     assemble_with_options(resolver.clone(), summarizer, single_long_turn(48), options).await;
 
     let knobs = resolver.knobs.lock().unwrap().clone();
-    assert!(!knobs.is_empty());
-    for (level, format) in knobs {
+    let system_prompts = resolver.system_prompts.lock().unwrap().clone();
+    let (summariser, turn): (Vec<_>, Vec<_>) = knobs
+        .into_iter()
+        .zip(system_prompts)
+        .partition(|(_, system)| system.contains("anchored summary"));
+    assert!(!turn.is_empty());
+    for ((level, format), _) in turn {
         assert_eq!(level, Some(context_manager::types::ThinkingLevel::Off));
         assert_eq!(format, Some(json!({ "type": "json" })));
+    }
+    // A summariser fragment is counted as it is sent: without the turn's knobs.
+    for ((level, format), _) in summariser {
+        assert_eq!((level, format), (None, None));
     }
 }
 

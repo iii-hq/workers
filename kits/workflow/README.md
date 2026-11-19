@@ -22,6 +22,7 @@ The kit needs the `workflow`, `harness`, `state`, `kanban`, `ide` and `fp` worke
 | Results | state documents | node outputs (`workflow::status`, `workflow::node-result`) |
 | Per-phase model | lead and verify model args | every node: tier pin, `work_model` / `check_model`, or picked by the kit (`models=auto`) |
 | Stuck agent | wave deadline, null procedure | node `timeout_ms`, then the run goes on |
+| Provider hiccup | the turn fails | a planner or verifier node is continued once, in its own session, a minute later |
 | Progress | session tree | session tree, plus `workflow::status` phases and per-node usage |
 
 Not in the workflow kit 0.1: judges, a second critic pass, `isolation=shared`, `plan_only`, a release field, `notify`, and watching CI or merging the pull request it opens. Use deepwork for those.

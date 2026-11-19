@@ -1,32 +1,30 @@
 # Changelog
 
-## 0.11.0
-
-The machine is no longer mistaken for the code, and a budget works with subscription models.
-
-- **`env:` failures.** A check that could not judge the code because of the machine (no space left, a port in use, a server or database that did not start before any test ran, a tool timeout while the tests passed) is `unsure` with an `env:` reason. The batch lead runs it once more on the same commit with no repair and without spending a phase. A second `env:` result stops the run `blocked: environment: …` with a `⛔ Needs you` on the run ticket; a resume re-runs only the checks. Before, KAN-592 spent two of its three rounds "repairing" a batch whose code was already right (a 90 s tool timeout, then a 60 s server start).
-- **Repository rules first.** In the dev flow the orchestrator reads the repository's `AGENTS.md` or `CLAUDE.md` and copies its build, test and environment rules into every phase's `Functions:`. An environment rule a person gives during a run becomes a Follow-ups line to add it to that file (KAN-29's cargo and Postgres rules lived only in comments).
-- **`budget_tokens`.** A soft cap on the run's input plus output tokens, checked before each wave. Subscription models have no price, so `budget_usd` never tripped for them; tokens are now reported next to the cost (`cost unknown, 412k tokens`).
-- **Compatibility.** The orchestrator, `deepwork-lead` and `deepwork-verifier` changed. Older orchestrators ignore `env:` (they repair as before). Install between runs.
-
-## 0.10.0
-
-A run can end at a pull request without a person carrying it there. Before, `approve=auto` kept the branch, and people opened the PR, squashed, rebased and fixed the title themselves (KAN-29).
-
-- **`finish=pr` and `finish=pr-merge`.** They are the Finish answers "Push and open a PR" and "Open a PR and merge when CI is green", given when the run starts, so no Finish card is asked. The run rebases its branch on the current base first; a conflict stops it `blocked`, with nothing pushed. The PR opens ready for review, the existing CI watch and `Fix CI` round follow, and `pr-merge` removes the worktree once the PR is merged. `finish=keep`, the default, is unchanged.
-- **In review.** A run whose PR waits for review moves its run ticket to In review (when the board has that column) with a `PR #<n>` pill, instead of Done.
-- **Commits that read like the repository's.** The PR title is the commit a squash merge keeps: `<type>(<scope>): <what changed>`, in the repository's style, never `deepwork: …`. Batch test commits use the cards' scope, `test(<scope>): cover …`, instead of `test(deepwork)`.
-- **No renames to satisfy a grep.** Cards' grep checks match whole words, and review fails a rename that no card asks for whose only effect is that a grep stops matching (KAN-29 renamed `TierNotSupported` because `NotSupported\b` matched it).
-- **Compatibility.** The orchestrator and `deepwork-verifier` changed. Install between runs: a running run's checkers load the new verifier at their next spawn.
-
 ## 0.9.0
 
-A run nobody watches in a chat can now ask a person. A session started from the CLI, the board or another worker has no chat: its `harness::ask` card was accepted and waited forever, unseen, while the run sat In progress.
+Deepwork can run from the board from start to finish: started by the kanban dispatcher with no chat, asking its questions on the run ticket, ending at a pull request ready for review, telling a failing machine from failing code, and keeping to a token budget with subscription models. Each part is opt-in through an argument; a run without them behaves as in 0.8.1.
 
-- **`ask=board` asks on the run ticket.** Every card the run would show in the chat (design, plan and finish with `approve=on`, a consequential ambiguity) becomes one `⛔ Needs you` comment on the run ticket, with the options as lines and the recommended one first, and the run ticket gets the `needs you` pill. The orchestrator waits on `kanban::on-comment` for that ticket, excluding its own comments, and goes on from the step that asked when a person replies: an option's label, a yes for the recommended one, or free text. A comment that answers nothing gets the question again. No answer within `ask_wait_min` (default three days) finishes the run `blocked` in Backlog. `ask=chat`, the default, is unchanged.
-- **Resume of a run that never planned.** A run that stopped before its plan (for example, on a design question nobody answered) has nothing to adopt: `resume=<R>` now starts it over from R, reading the comments after its last `⛔ Needs you` as the answer.
-- **A ticket goal keeps its project.** When the goal is a ticket key and that ticket is in a project, the run uses that project instead of creating `deepwork: <goal> · <id>` and moving the ticket out of the project its owner chose.
-- **Compatibility.** Only the orchestrator changed; the other profiles are as in 0.8.0.
+- **Questions on the board (`ask=board`).** A session started from the CLI, the board or another worker has no chat: its `harness::ask` card was accepted and waited forever, unseen. With `ask=board` every card the run would show in the chat (design, plan and finish with `approve=on`, a consequential ambiguity) becomes one `⛔ Needs you` comment on the run ticket, with the options as lines and the recommended one first, and the run ticket gets the `needs you` pill. The orchestrator waits on `kanban::on-comment` for that ticket, excluding its own comments, and goes on from the step that asked when a person replies: an option's label, a yes for the recommended one, or free text. No answer within `ask_wait_min` (default three days) finishes the run `blocked`.
+- **A pull request at the end (`finish=pr`, `finish=pr-merge`).** They are the Finish answers "Push and open a PR" and "Open a PR and merge when CI is green", given when the run starts, so no Finish card is asked. The run rebases its branch on the current base first; a conflict stops it `blocked`, with nothing pushed. The PR opens ready for review, and the CI watch first waits up to five minutes for a new PR's checks to appear (right after `gh pr create`, GitHub still reports none). `pr-merge` removes the worktree once the PR is merged.
+- **In review.** A run whose PR waits for review moves its run ticket to In review, when the board has that column, with a `PR #<n>` pill.
+- **Commits that read like the repository's.** The PR title is the commit a squash merge keeps: `<type>(<scope>): <what changed>`, in the repository's style, never `deepwork: …`. Batch test commits use the cards' scope (`test(<scope>): cover …`) instead of `test(deepwork)`.
+- **No renames to satisfy a grep.** Cards' grep checks match whole words, and review fails a rename no card asks for whose only effect is that a grep stops matching (KAN-29 renamed `TierNotSupported` because `NotSupported\b` matched it).
+- **`env:` failures.** A check that could not judge the code because of the machine (no space left, a port in use, a server or database that did not start before any test ran, a tool timeout while the tests passed) is `unsure` with an `env:` reason. The batch lead runs it once more, on the same commit, in a scope of its own, with no repair and without spending a phase. A second `env:` result stops the run `blocked: environment: …` with a `⛔ Needs you`; a resume re-runs only the checks. Before, KAN-592 spent two of its three rounds repairing a batch whose code was already right.
+- **Repository rules first.** In the dev flow the orchestrator reads the repository's `AGENTS.md` or `CLAUDE.md` and copies its build, test and environment rules into every phase's `Functions:`. An environment rule a person gives during a run becomes a Follow-ups line to add it to that file.
+- **`budget_tokens`.** A soft cap on the run's input plus output tokens, checked before each wave. Subscription models have no price, so `budget_usd` never tripped for them; reports show tokens beside the cost (`cost unknown, 412k tokens`).
+- **Resume.** A run that stopped before its plan (a design question nobody answered) starts over from its run ticket, reading the comments after its last `⛔ Needs you` as the answer. A resume clears the run ticket's last outcome label even when the ticket is already In progress, as it is when the board dispatcher resumes it.
+- **A ticket goal keeps its project.** When the goal is a ticket key and that ticket is in a project, the run files its cards there instead of creating `deepwork: <goal> · <id>`.
+- **Compatibility.** The orchestrator, `deepwork-lead` and `deepwork-verifier` changed. Install between runs: a running run's leads and checkers load the new profiles at their next spawn. Older orchestrators ignore `env:` reasons and repair as before.
+
+## 0.8.1
+
+- **A dev run starts from the remote's default branch, not from the branch you are on.** Before, the base was the branch `git status` named. A run started on a branch already merged five days earlier built on code 30 commits behind `main`: its research read an email path `main` had already replaced, and its commits conflicted when moved onto `main` for the PR.
+  - The base is `git symbolic-ref refs/remotes/origin/HEAD` (e.g. `origin/main`), else `origin/main` when it exists, else (no `origin`) the branch `git status` names.
+  - It is fetched to `refs/remotes/<base>` with an explicit refspec right before the worktree is created, so a narrow `remote.origin.fetch` can't leave it stale; the run branch doesn't track it (`--no-track`).
+  - The PR targets, and the merge option merges into, the base without its `origin/` prefix (`main`).
+  - The Plan card, or the run ticket, says when your uncommitted changes are left out; the run ticket says when commits of your checkout (unpushed, or on an unmerged branch) are.
+  - The merge option says it merges into your `main` checkout, and asks you to check it out when root is on another branch.
+  - A run from before 0.8.1 resumes on the `Base:` its ticket names.
 
 ## 0.8.0
 

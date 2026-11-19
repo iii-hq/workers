@@ -3,6 +3,7 @@ import {
   cacheHitPct,
   conversationTree,
   filterGroups,
+  lowerBound,
   type MetricsResponse,
   modelLabel,
   modelTotals,
@@ -167,6 +168,30 @@ describe('sumUsage', () => {
   })
 })
 
+/** A transient retry: a cut stream and three refusals stored with no usage,
+    then the reply that reported it. */
+const RETRIED = usage('s_retry', undefined, 0, {
+  turns: 5,
+  input_tokens: 16_464,
+  output_tokens: 900,
+  cache_read_tokens: 3_000,
+  cache_write_tokens: undefined,
+  cost_usd: undefined,
+  unreported_generations: 4,
+  by_model: [
+    {
+      provider: 'codex',
+      model: 'codex/gpt-6.1-terra',
+      turns: 5,
+      function_calls: 0,
+      input_tokens: 16_464,
+      output_tokens: 900,
+      cache_read_tokens: 3_000,
+      unreported_generations: 4,
+    },
+  ],
+})
+
 /** s_4c0733…: 37 steps on a model that reported nothing, then 53 on one
     that reports tokens and no cost. More than one step left every counter
     out, so the server sends them all `null`. */
@@ -233,6 +258,25 @@ describe('modelTotals', () => {
     const odd = usage('s', undefined, 0, { by_model: [null, { model: 'x' }, 'y'] as never })
     expect(modelTotals([odd])).toEqual([])
   })
+
+  it('reads every counter of a session with generations that reported no usage as a lower bound', () => {
+    const own = ownUsage(RETRIED)
+    expect(own.output_tokens).toBe(900)
+    expect(own.partial).toEqual([
+      'input_tokens',
+      'output_tokens',
+      'cache_read_tokens',
+    ])
+    expect(own.unreported).toEqual(['gpt-6.1-terra'])
+  })
+})
+
+describe('lowerBound', () => {
+  it('marks a counter only while a generation reported no usage', () => {
+    expect(lowerBound(RETRIED)).toBe('≥')
+    expect(lowerBound({ unreported_generations: 0 })).toBe('')
+    expect(lowerBound({})).toBe('')
+  })
 })
 
 describe('treeTotals', () => {
@@ -247,6 +291,14 @@ describe('treeTotals', () => {
     const tree = conversationTree({ ...TREE, by_session: [SWITCHED] }, 's_switched')
     // The snapshot's running cost is 0 when no step reported one.
     expect(tree && treeTotals(tree, 0).self.cost_usd).toBeUndefined()
+  })
+
+  it('marks a sum over a session with generations that reported no usage', () => {
+    const total = sumUsage([usage('root', undefined, 0), RETRIED])
+    expect(total.output_tokens).toBe(20 + 900)
+    expect(total.partial).toContain('output_tokens')
+    expect(total.unreported).toEqual(['s_retry'])
+    expect(modelTotals([RETRIED])[0].totals.partial).toContain('output_tokens')
   })
 })
 

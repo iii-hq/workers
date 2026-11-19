@@ -129,3 +129,85 @@ export const LIVE = {
     },
   },
 }
+
+const kitNode = (
+  label: string,
+  state: string,
+  extra: Record<string, unknown> = {},
+) => ({ state, label, phase: label.split(':')[0], ...extra })
+
+/** A kit design run while it designs: explore done, one design failed, one going. */
+export const KIT = {
+  run_id: 'r_kit',
+  status: 'running',
+  created_at: T + 1000,
+  updated_at: T + 5000,
+  nodes: {
+    'explore-code': 'done',
+    'explore-options': 'done',
+    'design-minimal': 'running',
+    'design-robust': 'failed',
+    'refute-minimal': 'pending',
+    'refute-robust': 'pending',
+    plan: 'pending',
+  },
+  node_errors: { 'design-robust': 'node timed out' },
+  phases: {
+    explore: { total: 2, done: 2, failed: 0, running: 0 },
+    design: { total: 2, done: 0, failed: 1, running: 1 },
+    refute: { total: 2, done: 0, failed: 0, running: 0 },
+    plan: { total: 1, done: 0, failed: 0, running: 0 },
+  },
+  node_details: {
+    'explore-code': kitNode('explore:code', 'done', {
+      started_at: T + 1000,
+      finished_at: T + 2000,
+      session_id: 'wf_r_kit_explore-code@r0',
+    }),
+    'explore-options': kitNode('explore:options', 'done', {
+      started_at: T + 1001,
+      finished_at: T + 2500,
+      session_id: 'wf_r_kit_explore-options@r0',
+    }),
+    'design-minimal': kitNode('design:minimal', 'running', {
+      started_at: T + 3000,
+      session_id: 'wf_r_kit_design-minimal@r0',
+    }),
+    'design-robust': kitNode('design:robust', 'failed', {
+      started_at: T + 3001,
+      finished_at: T + 4000,
+      session_id: 'wf_r_kit_design-robust@r0',
+    }),
+    'refute-minimal': kitNode('refute:minimal', 'pending'),
+    'refute-robust': kitNode('refute:robust', 'pending'),
+    plan: kitNode('plan', 'pending'),
+  },
+}
+
+/** The same run once design settled and refute started. */
+export const KIT_NEXT = {
+  ...KIT,
+  updated_at: T + 7000,
+  nodes: {
+    ...KIT.nodes,
+    'design-minimal': 'done',
+    'refute-minimal': 'running',
+  },
+  phases: {
+    ...KIT.phases,
+    design: { total: 2, done: 1, failed: 1, running: 0 },
+    refute: { total: 2, done: 0, failed: 0, running: 1 },
+  },
+  node_details: {
+    ...KIT.node_details,
+    'design-minimal': {
+      ...KIT.node_details['design-minimal'],
+      state: 'done',
+      finished_at: T + 5000,
+    },
+    'refute-minimal': kitNode('refute:minimal', 'running', {
+      started_at: T + 6000,
+      session_id: 'wf_r_kit_refute-minimal@r0',
+    }),
+  },
+}
