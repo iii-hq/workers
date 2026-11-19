@@ -1588,15 +1588,9 @@ mod tests {
         assert!(!digest_path(candidate).exists());
     }
 
-    /// Produce and publish a private cache payload holding a sticky
-    /// world-writable `tmp` (outside the generic owner-read profile) in the
-    /// SAME cache-entry guard as its digest, and return the sealed reader.
-    fn r3_publish_sealed_fixture(
-        prep: &crate::worker_admission::CachePreparation,
-        root: &Path,
-        digest: &str,
-    ) -> crate::worker_admission::SealedPayloadRead {
-        use std::io::Write;
+    /// The private cache fixture payload plus a sticky world-writable `tmp`,
+    /// which is outside the generic owner-read profile.
+    fn r3_out_of_profile_payload(digest: &str) -> CachePayload {
         let mut payload = private_cache_fixture_payload(
             "sh",
             b"fixture",
@@ -1608,6 +1602,19 @@ mod tests {
             0o1777,
             crate::worker_admission::PayloadKind::Directory,
         ));
+        payload
+    }
+
+    /// Produce and publish a private cache payload holding a sticky
+    /// world-writable `tmp` (outside the generic owner-read profile) in the
+    /// SAME cache-entry guard as its digest, and return the sealed reader.
+    fn r3_publish_sealed_fixture(
+        prep: &crate::worker_admission::CachePreparation,
+        root: &Path,
+        digest: &str,
+    ) -> crate::worker_admission::SealedPayloadRead {
+        use std::io::Write;
+        let payload = r3_out_of_profile_payload(digest);
         let inventory = crate::worker_admission::PayloadInventory::new(payload.entries).unwrap();
         let mut builder = prep
             .begin_entry(root)
@@ -1665,6 +1672,13 @@ mod tests {
     /// EROFS lower was never built carries no retained capability. The generic
     /// owner-read profile applies unchanged and refuses the 1777 member: no
     /// image is published and the sealed tree is neither chmodded nor repaired.
+    ///
+    /// The earlier run is an ordinary admitted producer over the exact root
+    /// and its digest sidecar (core payload production, seal and publication,
+    /// then a ControlFiles digest), so its lifecycle ends committed and
+    /// released without any handoff: a cache-preparation handoff needs the
+    /// `.erofs` lower this scenario never builds, and a dropped preparation
+    /// would leave an uncertain operation that refuses for another reason.
     #[tokio::test]
     async fn r3_restart_without_retained_seal_refuses_an_out_of_profile_entry_without_repair() {
         use std::os::unix::fs::MetadataExt;
@@ -1672,14 +1686,45 @@ mod tests {
         let reference = "example.invalid/review/restart:v1";
         let root = cache_candidates(&cache, reference).remove(0);
         {
-            let lease = context.local(&temp.path().join("seed")).unwrap();
-            let prep = lease
-                .prepare_cache(&[crate::worker_admission::CacheEntry { root: &root }])
+            use crate::worker_admission::{MutationPlan, PathRequest, PathRole};
+            use std::io::Write;
+            let digest = digest_path(&root);
+            let seed = crate::worker_admission::with_paths(
+                context.local(&root).unwrap(),
+                &[PathRequest {
+                    path: &digest,
+                    role: PathRole::MutableFile,
+                }],
+            )
+            .unwrap();
+            let payload = r3_out_of_profile_payload("sha256:fixture");
+            let inventory =
+                crate::worker_admission::PayloadInventory::new(payload.entries).unwrap();
+            let mut builder = seed
+                .begin(MutationPlan::Reclone { root: root.clone() })
+                .unwrap()
+                .produce_payload(&root, inventory)
                 .unwrap();
-            let reader = r3_publish_sealed_fixture(&prep, &root, "sha256:fixture");
-            // The crash/restart boundary: the retained capability never survives.
+            (payload.write)(&mut builder).unwrap();
+            let (guard, reader) = builder
+                .seal()
+                .unwrap()
+                .publish_into_guard_with_reader()
+                .unwrap();
+            guard.commit().unwrap();
+            let mut control = seed
+                .begin(MutationPlan::ControlFiles {
+                    files: vec![digest.clone()],
+                })
+                .unwrap();
+            let mut sidecar = control.stage_file(&digest, 0o600).unwrap();
+            sidecar.file_mut().write_all(b"sha256:fixture").unwrap();
+            control.publish_file(sidecar).unwrap();
+            control.commit().unwrap();
+            // The crash/restart boundary: the retained capability never survives,
+            // and the committed seed operation is released (no handoff, no EROFS).
             drop(reader);
-            prep.handoff(&lease, &root).unwrap();
+            drop(seed);
         }
         assert!(!lower_path(&root).exists());
         let stamp = |path: &Path| {
@@ -1695,9 +1740,15 @@ mod tests {
         .unwrap()
         .resolve(false, || panic!("a populated entry must not pull"))
         .await;
+        let error = match result {
+            Ok(_) => panic!("an out-of-profile tree without a retained seal must be refused"),
+            Err(error) => format!("{error:#}"),
+        };
+        // The generic owner-read scan's own refusal of the 0o022 member, not a
+        // lifecycle, provenance, conflict or uncertainty refusal.
         assert!(
-            result.is_err(),
-            "an out-of-profile tree without a retained seal must be refused"
+            error.contains("unowned or unsafe managed cache object"),
+            "{error}"
         );
         assert!(!lower_path(&root).exists());
         assert_eq!(before.1.0 & 0o7777, 0o1777);
