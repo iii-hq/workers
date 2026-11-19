@@ -749,6 +749,15 @@ fn admit_worker_inputs_on(
     source: &Path,
     over: &VmOverride<'_>,
 ) -> Result<Lease, String> {
+    admit_worker_inputs_read(admission, source, over, None)
+}
+
+fn admit_worker_inputs_read(
+    admission: Lease,
+    source: &Path,
+    over: &VmOverride<'_>,
+    published: Option<&crate::worker_admission::UseGuard>,
+) -> Result<Lease, String> {
     let default_upper = over.state_dir.join(super::upper::UPPER_NAME);
     let script_dir = over.state_dir.join(
         if over.image.is_some() || super::overlay::overlay_active() {
@@ -763,10 +772,15 @@ fn admit_worker_inputs_on(
         (script_dir.as_path(), PathRole::MutableTree),
     ];
     if let Some(image) = &over.image {
-        paths.extend([
-            (image.image.as_path(), PathRole::Strict),
-            (image.upper.as_path(), PathRole::MutableFile),
-        ]);
+        if let Some(read) = published {
+            if read.path() != image.image {
+                return Err("published image guard names another path".into());
+            }
+            read.revalidate().map_err(|e| e.to_string())?;
+        } else {
+            paths.push((image.image.as_path(), PathRole::Strict));
+        }
+        paths.push((image.upper.as_path(), PathRole::MutableFile));
     } else {
         paths.push((&default_upper, PathRole::MutableFile));
     }
@@ -779,6 +793,7 @@ pub(crate) struct WorkerProject {
     project: ProjectInfo,
     kind: String,
     pub(crate) prepared: Option<super::rootfs_cache::PreparedCache>,
+    published_image: Option<crate::worker_admission::UseGuard>,
 }
 impl WorkerProject {
     pub(crate) fn resolve(
@@ -813,7 +828,13 @@ impl WorkerProject {
             project,
             kind,
             prepared: None,
+            published_image: None,
         })
+    }
+
+    pub(crate) fn with_published_image(mut self, read: crate::worker_admission::UseGuard) -> Self {
+        self.published_image = Some(read);
+        self
     }
 
     pub(crate) fn admit_cache(
@@ -1212,6 +1233,7 @@ fn image_run_command(
         is_bundle,
         over,
         admission,
+        None,
     )
 }
 
@@ -1222,8 +1244,9 @@ fn image_run_admitted(
     is_bundle: bool,
     over: VmOverride<'_>,
     admission: Lease,
+    published: Option<&crate::worker_admission::UseGuard>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    let admission = admit_worker_inputs_on(admission, project_path, &over)?;
+    let admission = admit_worker_inputs_read(admission, project_path, &over, published)?;
     let BootImage { image, upper } = over.image.expect("a build to boot");
     if !crate::cli::overlay::overlay_active() {
         return Err(
@@ -1617,6 +1640,7 @@ async fn binary_vm_command_on(
         true,
         over,
         admission.clone(),
+        None,
     )?;
     admission.revalidate().map_err(|e| e.to_string())?;
     command.lifecycle_leases.push(admission);
@@ -1660,8 +1684,11 @@ async fn start_worker_resolved(
     resolved: Option<WorkerProject>,
     admission: Option<Lease>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let published = resolved
+        .as_ref()
+        .and_then(|project| project.published_image.as_ref());
     let admission = match admission {
-        Some(lease) => admit_worker_inputs_on(lease, project_path, &over)?,
+        Some(lease) => admit_worker_inputs_read(lease, project_path, &over, published)?,
         None => admit_worker_inputs(project_path, &over)?,
     };
     let _source_use = admission
@@ -1690,7 +1717,12 @@ async fn start_worker_resolved(
     } else {
         None
     };
-    let WorkerProject { project, kind, .. } = resolved;
+    let WorkerProject {
+        project,
+        kind,
+        published_image,
+        ..
+    } = resolved;
     let _kind = kind.as_str();
     let is_bundle = package.is_some();
 
@@ -1713,6 +1745,7 @@ async fn start_worker_resolved(
             is_bundle,
             over,
             admission.clone(),
+            published_image.as_ref(),
         )?;
         admission.revalidate().map_err(|e| e.to_string())?;
         command.lifecycle_leases.push(admission);
@@ -2083,30 +2116,84 @@ mod tests {
         let slug = super::super::worker_manager::oci::rootfs_slug_for_image(reference);
         let lower = cache.join(format!("{slug}.erofs"));
         std::fs::write(&lower, b"old").unwrap();
-        let lease = admit_cache_paths(lease, reference, &cache).unwrap();
+        let root = cache.join(&slug);
+        let probe = lease
+            .probe_cache(&[crate::worker_admission::CacheEntry { root: &root }])
+            .unwrap();
         let replacement = cache.join("replacement");
         std::fs::write(&replacement, b"new").unwrap();
         std::fs::rename(replacement, &lower).unwrap();
-        let result: Result<(), String> =
-            run_erofs_writer(lease, || panic!("must refuse before the next writer"));
-        assert!(result.is_err());
+        assert!(probe.checkpoint().is_err());
+        assert!(
+            probe.prepare().is_err(),
+            "invalidated probe must not authorize a writer"
+        );
         assert_eq!(std::fs::read(&lower).unwrap(), b"new");
         assert!(exclusive_available(&owner));
         assert!(exclusive_available(&cache));
-        // Integration seam: the current core pins existing file identities,
-        // including intentional cache/EROFS replacement. This is NOT a warm
-        // cache rebuild PASS; caller-side reacquisition would lose the fence.
+        // An external inode replacement after a live probe is not a producer
+        // handoff. Cancelling a different probe would release its read fence.
     }
 
     #[test]
     fn cold_generic_cache_admission_does_not_create_payload_hierarchy() {
         let (_t, owner, _input, lease) = writer_fixture();
         let cache = owner.join("missing/cache");
-        let admitted = admit_cache_paths(lease, "docker.io/library/alpine:3.20", &cache).unwrap();
-        admitted.revalidate().unwrap();
-        drop(admitted);
+        // Probe is pure and requires its cache parent to exist; only the
+        // separate admitted short setup may create a cold cache hierarchy.
+        assert!(admit_cache_paths(lease, "docker.io/library/alpine:3.20", &cache).is_err());
         assert!(!owner.join("missing").exists());
         assert!(exclusive_available(&owner));
+    }
+
+    #[test]
+    fn published_mutable_image_is_consumed_only_through_its_exact_read_guard() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::PermissionsExt;
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let source = t.path().join("source");
+        let state = t.path().join("state");
+        let image = t.path().join("output.erofs");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(&image, b"published fixture bytes").unwrap();
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let lease = crate::worker_admission::with_paths(
+            context.local(&state).unwrap(),
+            &[
+                PathRequest {
+                    path: &image,
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &source,
+                    role: PathRole::Strict,
+                },
+            ],
+        )
+        .unwrap();
+        let over = VmOverride {
+            state_dir: state.clone(),
+            engine_url: "ws://127.0.0.1:1/ws",
+            extra_env: Default::default(),
+            image: Some(BootImage {
+                image: image.clone(),
+                upper: state.join("upper.ext4"),
+            }),
+        };
+        let used = lease.use_path(&image).unwrap();
+        assert!(
+            admit_worker_inputs_on(lease.clone(), &source, &over).is_err(),
+            "direct caller cannot change the original role"
+        );
+        admit_worker_inputs_read(lease.clone(), &source, &over, Some(&used)).unwrap();
+        assert!(!state.exists(), "preflight remains effect-free");
+        let wrong = lease.use_path(&source).unwrap();
+        assert!(admit_worker_inputs_read(lease, &source, &over, Some(&wrong)).is_err());
+        used.revalidate().unwrap();
     }
 
     #[test]
@@ -2151,6 +2238,7 @@ mod tests {
                 false,
                 over,
                 context.local(&root).unwrap(),
+                None,
             )
             .err()
             .unwrap();
