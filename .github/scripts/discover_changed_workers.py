@@ -127,11 +127,12 @@ CRATE_FIXTURE_PREFIXES = {
     "judge-provider": ("judge-typesafe/tests/support/",),
 }
 
-# Worker test support that other workers' suites compile through #[path]: a
-# change under the prefix also runs those workers' lint+test (as forced picks,
-# never source_changed).
+# Worker test support or fixtures that other workers' code compiles through
+# #[path] or include_str!: a change under the prefix (or to the exact file)
+# also runs those workers' lint+test (as forced picks, never source_changed).
 SHARED_TEST_SUPPORT = {
     "judge-typesafe/tests/support/": ("judge", "judge-openai"),
+    "memory/tests/fixtures/automatic-model-cases.json": ("memory-consolidate",),
 }
 
 # Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's

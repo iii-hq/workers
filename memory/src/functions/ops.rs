@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
-use crate::extract::{CURSOR_SCOPE, PassHealth};
+use crate::extract::{CURSOR_SCOPE, ModelReason, PassHealth};
+use crate::hooks::EXTRACTION_QUEUE;
 use crate::store::Store;
 use crate::types::{Confidence, Memory, fingerprint, now_ms};
 
@@ -89,6 +90,27 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
     let health = crate::extract::pass_health();
     checks.push(extraction_check(cfg.extraction_enabled, &health));
 
+    // 7. Advisory: the model extraction calls, and why that one.
+    let model = if cfg.extraction_enabled {
+        Some(crate::extract::resolve_model(&deps.iii, &cfg.extraction_model, 3_000).await)
+    } else {
+        None
+    };
+    checks.push(model_check(model));
+
+    // 8. Advisory: jobs the queue gave up on after its retries.
+    let stats = deps
+        .iii
+        .call(CallRequest {
+            function_id: "engine::queue::topic_stats".into(),
+            payload: json!({ "topic": EXTRACTION_QUEUE }),
+            action: None,
+            timeout_ms: Some(3_000),
+        })
+        .await
+        .ok();
+    checks.push(queue_check(stats.as_ref()));
+
     Ok(DoctorResponse {
         ok: roundtrip_ok,
         checks,
@@ -141,6 +163,56 @@ fn extraction_check(enabled: bool, health: &PassHealth) -> DoctorCheck {
     };
     DoctorCheck {
         name: "extraction-passes".into(),
+        ok,
+        detail,
+    }
+}
+
+/// `None` when extraction is off: no model is called, so none is resolved.
+fn model_check(resolved: Option<Result<(String, ModelReason), String>>) -> DoctorCheck {
+    let (ok, detail) = match resolved {
+        None => (true, "extraction disabled by config".to_string()),
+        Some(Ok((model, ModelReason::Pinned))) => (true, format!("pinned: {model}")),
+        Some(Ok((model, reason))) => (
+            true,
+            format!("automatic: {model} ({})", reason.as_str().replace('_', " ")),
+        ),
+        Some(Err(e)) => (false, e),
+    };
+    DoctorCheck {
+        name: "extraction-model".into(),
+        ok,
+        detail,
+    }
+}
+
+/// `None` when the queue's stats could not be read: advisory, never a
+/// failure.
+fn queue_check(stats: Option<&Value>) -> DoctorCheck {
+    let (ok, detail) = match stats.map(|s| s["dlq_depth"].as_u64()) {
+        None | Some(None) => (true, "queue stats unavailable".to_string()),
+        Some(Some(0)) => (true, "no dead-lettered jobs reported".to_string()),
+        Some(Some(n)) => {
+            let (jobs, wait) = if n == 1 {
+                ("job", "waits")
+            } else {
+                ("jobs", "wait")
+            };
+            (
+                false,
+                format!(
+                    "{n} extraction {jobs} failed every retry and {wait} in the dead-letter \
+                     queue. List the queue with engine::queue::dlq_messages, then retry with \
+                     iii::queue::redrive or drop one entry with iii::queue::discard_message \
+                     (topic {EXTRACTION_QUEUE}). A dead-lettered entry holds the job only. \
+                     The error and model of each failure are in the extraction-passes check \
+                     and the `extraction pass failed` WARN."
+                ),
+            )
+        }
+    };
+    DoctorCheck {
+        name: "extraction-queue".into(),
         ok,
         detail,
     }
@@ -326,6 +398,68 @@ mod tests {
             check.detail.contains("2 left a backlog"),
             "{}",
             check.detail
+        );
+    }
+
+    #[test]
+    fn dead_lettered_jobs_fail_the_queue_check() {
+        let check = queue_check(Some(&json!({ "depth": 0, "dlq_depth": 2 })));
+        assert!(!check.ok);
+        assert_eq!(check.name, "extraction-queue");
+        assert!(
+            check
+                .detail
+                .starts_with("2 extraction jobs failed every retry and wait"),
+            "{}",
+            check.detail
+        );
+        for function in [
+            "engine::queue::dlq_messages",
+            "iii::queue::redrive",
+            "iii::queue::discard_message",
+            "memory-extraction",
+            "extraction-passes",
+        ] {
+            assert!(check.detail.contains(function), "{}", check.detail);
+        }
+        let one = queue_check(Some(&json!({ "dlq_depth": 1 }))).detail;
+        assert!(
+            one.starts_with("1 extraction job failed every retry and waits"),
+            "{one}"
+        );
+        let empty = queue_check(Some(&json!({ "depth": 3, "dlq_depth": 0 })));
+        assert!(empty.ok);
+        assert_eq!(empty.detail, "no dead-lettered jobs reported");
+    }
+
+    #[test]
+    fn unreadable_queue_stats_do_not_fail_doctor() {
+        for stats in [None, Some(json!({})), Some(json!({ "dlq_depth": "two" }))] {
+            let check = queue_check(stats.as_ref());
+            assert!(check.ok, "{stats:?}");
+            assert_eq!(check.detail, "queue stats unavailable");
+        }
+    }
+
+    #[test]
+    fn a_disabled_extraction_passes_the_model_check() {
+        let check = model_check(None);
+        assert!(check.ok);
+        assert_eq!(check.name, "extraction-model");
+        assert_eq!(check.detail, "extraction disabled by config");
+
+        let pinned = model_check(Some(Ok(("a::m".into(), ModelReason::Pinned))));
+        assert_eq!((pinned.ok, pinned.detail.as_str()), (true, "pinned: a::m"));
+        let automatic = model_check(Some(Ok(("a::m".into(), ModelReason::ProviderDefault))));
+        assert_eq!(automatic.detail, "automatic: a::m (provider default)");
+        let listed = model_check(Some(Ok(("a::m".into(), ModelReason::FirstListedModel))));
+        assert_eq!(listed.detail, "automatic: a::m (first listed model)");
+        let none = model_check(Some(Err("no usable model: x; set extraction_model".into())));
+        assert!(!none.ok);
+        assert!(
+            none.detail.ends_with("set extraction_model"),
+            "{}",
+            none.detail
         );
     }
 }

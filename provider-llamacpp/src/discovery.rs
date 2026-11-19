@@ -205,7 +205,9 @@ pub fn params_billions(id: &str) -> Option<f64> {
 /// The provider's default-model preference list for this listing: loaded
 /// models first (router-mode servers report `status.value`; a classic
 /// single-model server reports nothing and is loaded), then larger
-/// parameter counts, ties in the server's own order.
+/// parameter counts, ties in the server's own order. An embedding or
+/// rerank id is never a default; the catalog still lists it, so it stays
+/// pinnable.
 pub fn rank_default_models(json: &Value) -> Vec<String> {
     let Some(rows) = json.get("data").and_then(Value::as_array) else {
         return Vec::new();
@@ -216,7 +218,7 @@ pub fn rank_default_models(json: &Value) -> Vec<String> {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())?;
+                .filter(|s| !s.is_empty() && !non_chat(s))?;
             let loaded = row
                 .pointer("/status/value")
                 .and_then(Value::as_str)
@@ -230,6 +232,15 @@ pub fn rank_default_models(json: &Value) -> Vec<String> {
         .into_iter()
         .map(|(_, _, id)| id.to_string())
         .collect()
+}
+
+/// An id that names an embedding or rerank model.
+// shortcut: a name heuristic (`bge-m3` matches, a chat id holding `e5-` would too), read a modality field once llama-server reports one.
+fn non_chat(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    ["embed", "rerank", "bge-", "minilm", "e5-", "gte-"]
+        .iter()
+        .any(|marker| id.contains(marker))
 }
 
 enum FetchOutcome {
@@ -399,6 +410,23 @@ mod tests {
         let classic = json!({ "data": [{ "id": "served-8B" }] });
         assert_eq!(rank_default_models(&classic), vec!["served-8B"]);
         assert!(rank_default_models(&json!({ "object": "list" })).is_empty());
+    }
+
+    #[test]
+    fn an_embedding_model_is_never_the_default() {
+        let listing = json!({ "data": [
+            { "id": "nomic-embed-text-v1.5", "status": { "value": "loaded" } },
+            { "id": "chat-fixture-8B", "status": { "value": "unloaded" } },
+            { "id": "bge-reranker-v2-m3", "status": { "value": "loaded" } },
+            { "id": "multilingual-e5-large" },
+            { "id": "all-MiniLM-L6-v2" },
+            { "id": "gte-Qwen2-7B" },
+        ]});
+        assert_eq!(rank_default_models(&listing), vec!["chat-fixture-8B"]);
+        // The catalog still lists every id, so an embedding model stays pinnable.
+        assert_eq!(parse_live_models(&listing, &Props::default()).len(), 6);
+        let embedding_only = json!({ "data": [{ "id": "Qwen3-Embedding-8B" }] });
+        assert!(rank_default_models(&embedding_only).is_empty());
     }
 
     #[test]

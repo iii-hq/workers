@@ -21,6 +21,8 @@
 //! before it (`expected`).
 
 use std::collections::BTreeSet;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use iii_sdk::IIIClient;
 use iii_sdk::protocol::CallRequest;
@@ -180,27 +182,148 @@ pub fn merge_promotions(existing: &str, promotions: &[Promotion]) -> (String, us
     (out, added, landed)
 }
 
-/// The extraction model: the configured pin, else the first catalog entry.
+/// The automatic model and when it was picked: reused for
+/// [`AUTOMATIC_TTL`], logged when it changes.
+static AUTOMATIC: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// How long an automatic pick is reused. A pass makes up to
+/// `max_llm_calls_per_run` model calls, and each one resolves the model.
+const AUTOMATIC_TTL: Duration = Duration::from_secs(60);
+
+/// The model: the configured pin verbatim (the router is not asked), else
+/// [`automatic_model`] over the router's providers and, only when no usable
+/// provider declares a chat default, its chat models.
 pub(crate) async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, String> {
     if !configured.is_empty() {
         return Ok(configured.to_string());
     }
+    if let Some(model) = fresh(&lock(&AUTOMATIC), Instant::now()) {
+        return Ok(model);
+    }
+    let providers = router_list(iii, "router::provider::list", "providers").await?;
+    let (model, reason) = match automatic_model(&providers, &[]) {
+        Ok(picked) => picked,
+        Err(_) => automatic_model(
+            &providers,
+            &router_list(iii, "router::models::list", "models").await?,
+        )?,
+    };
+    if remember(&mut lock(&AUTOMATIC), &model, Instant::now()) {
+        tracing::info!(model = %model, reason = %reason, "automatic consolidation model");
+    }
+    Ok(model)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The remembered pick while it is younger than [`AUTOMATIC_TTL`].
+fn fresh(memo: &Option<(String, Instant)>, now: Instant) -> Option<String> {
+    memo.as_ref()
+        .filter(|(_, at)| now.duration_since(*at) < AUTOMATIC_TTL)
+        .map(|(model, _)| model.clone())
+}
+
+/// Remembers `model`, picked at `now`; true when it differs from the last
+/// pick.
+fn remember(memo: &mut Option<(String, Instant)>, model: &str, now: Instant) -> bool {
+    let changed = memo.as_ref().is_none_or(|(last, _)| last != model);
+    *memo = Some((model.to_string(), now));
+    changed
+}
+
+/// One router listing: the array under `key`, empty when absent.
+async fn router_list(iii: &IIIClient, function_id: &str, key: &str) -> Result<Vec<Value>, String> {
     let reply = iii
         .call(CallRequest {
-            function_id: "router::models::list".into(),
+            function_id: function_id.into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(5_000),
         })
         .await
-        .map_err(|e| format!("router::models::list: {e}"))?;
-    reply
-        .get("models")
+        .map_err(|e| format!("{function_id}: {e}"))?;
+    Ok(reply
+        .get(key)
         .and_then(Value::as_array)
-        .and_then(|m| m.first())
-        .and_then(|m| m.get("id").and_then(Value::as_str))
-        .map(str::to_string)
-        .ok_or_else(|| "no models in the router catalog".to_string())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// The automatic model as `provider::id`, with its reason. A provider is
+/// usable when it is available and signed in, or owns its sign-in (no env
+/// var). Tier 1 (`provider_default`): the default model of the first usable
+/// provider by id. Tier 2 (`first_listed_model`): the first listed chat
+/// model of a usable provider by (provider, id). An embedding or rerank id
+/// is never picked. Sorting is on the pair, never on the composite string:
+/// `a-b::c` sorts before `a::z` as a string.
+/// Twins with the same rule: memory/src/extract.rs and
+/// ade/ui/src/configuration-forms/model-catalog.ts; all three run the cases
+/// in memory/tests/fixtures/automatic-model-cases.json.
+fn automatic_model(
+    providers: &[Value],
+    models: &[Value],
+) -> Result<(String, &'static str), String> {
+    let usable = |p: &Value| {
+        p["available"] == true && (p["configured"] == true || p["credential_env_var"].is_null())
+    };
+    // shortcut: a name heuristic (an id like `bge-m3` passes), the call then fails loudly naming the model; read a modality field once the router reports one.
+    let chat = |id: &str| {
+        let id = id.to_ascii_lowercase();
+        !id.contains("embed") && !id.contains("rerank")
+    };
+    let mut sorted: Vec<&Value> = providers.iter().collect();
+    sorted.sort_by_key(|p| p["id"].as_str().unwrap_or_default());
+    let default = sorted.iter().filter(|p| usable(p)).find_map(|p| {
+        let model = p["default_model"]
+            .as_str()
+            .filter(|m| !m.is_empty() && chat(m))?;
+        Some(format!("{}::{model}", p["id"].as_str()?))
+    });
+    if let Some(model) = default {
+        return Ok((model, "provider_default"));
+    }
+    let owners: BTreeSet<&str> = sorted
+        .iter()
+        .filter(|p| usable(p))
+        .filter_map(|p| p["id"].as_str())
+        .collect();
+    let listed = models
+        .iter()
+        .filter_map(|m| Some((m["provider"].as_str()?, m["id"].as_str()?)))
+        .filter(|(provider, id)| owners.contains(provider) && chat(id))
+        .min();
+    if let Some((provider, id)) = listed {
+        return Ok((format!("{provider}::{id}"), "first_listed_model"));
+    }
+    let skips: Vec<String> = sorted
+        .iter()
+        .map(|p| {
+            let id = p["id"].as_str().unwrap_or_default();
+            if p["available"] != true {
+                format!("{id} is unavailable")
+            } else if !usable(p) {
+                format!(
+                    "{id} is not configured ({})",
+                    p["credential_env_var"].as_str().unwrap_or_default()
+                )
+            } else {
+                match p["default_model"].as_str().filter(|m| !m.is_empty()) {
+                    Some(m) => {
+                        format!("{id} defaults to {m}, not a chat model, and lists no chat model")
+                    }
+                    None => format!("{id} declares no default and lists no chat model"),
+                }
+            }
+        })
+        .collect();
+    let skips = if skips.is_empty() {
+        "no provider is registered".to_string()
+    } else {
+        skips.join("; ")
+    };
+    Err(format!("no usable model: {skips}; set llm_model"))
 }
 
 /// One judge call for one bank, with the router's `usage` for the call.
@@ -216,8 +339,8 @@ pub async fn judge(
 }
 
 /// One `router::complete` call with a static system prompt (cache-friendly)
-/// and one user message; the raw reply, so callers can classify provider
-/// errors (`message.stop_reason == "error"`) before reading text.
+/// and one user message; the raw reply. A failed call and a provider error
+/// reply are both an `Err` that ends in `(model <id>)`.
 pub(crate) async fn complete(
     iii: &IIIClient,
     configured_model: &str,
@@ -242,7 +365,23 @@ pub(crate) async fn complete(
         timeout_ms: Some(LLM_TIMEOUT_MS),
     })
     .await
-    .map_err(|e| format!("router::complete: {e}"))
+    .map_err(|e| format!("router::complete: {e} (model {model})"))
+    .and_then(|reply| provider_error(reply, &model))
+}
+
+/// The router returns a provider failure (sign-in, quota, retired or
+/// non-chat model) as a reply with `stop_reason == "error"`, not as a failed
+/// call. Same wording as memory's extraction error.
+fn provider_error(reply: Value, model: &str) -> Result<Value, String> {
+    let message = &reply["message"];
+    if message["stop_reason"] != "error" {
+        return Ok(reply);
+    }
+    Err(format!(
+        "router::complete: provider error {}: {} (model {model})",
+        message["error_kind"].as_str().unwrap_or("unknown"),
+        message["error_message"].as_str().unwrap_or("")
+    ))
 }
 
 /// The assistant text of a `router::complete` reply.
@@ -270,6 +409,92 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_automatic_model_follows_the_shared_case_table() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../memory/tests/fixtures/automatic-model-cases.json"
+        ))
+        .unwrap();
+        for case in &cases {
+            let name = case["name"].as_str().unwrap();
+            let got = automatic_model(
+                case["providers"].as_array().unwrap(),
+                case["models"].as_array().unwrap(),
+            );
+            let expect = &case["expect"];
+            match expect["error"].as_array() {
+                Some(parts) => {
+                    let e = got.expect_err(name);
+                    assert!(e.ends_with("; set llm_model"), "{name}: {e}");
+                    for part in parts {
+                        assert!(e.contains(part.as_str().unwrap()), "{name}: {e}");
+                    }
+                }
+                None => {
+                    let (model, reason) = got.unwrap_or_else(|e| panic!("{name}: {e}"));
+                    assert_eq!(model, expect["model"], "{name}");
+                    assert_eq!(reason, expect["reason"], "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_provider_error_reply_is_an_error_that_names_the_model() {
+        let reply = |stop: &str| json!({"message": {"stop_reason": stop, "error_kind": "permanent", "error_message": "not a chat model"}});
+        assert_eq!(
+            provider_error(reply("error"), "llamacpp::nomic-embed").unwrap_err(),
+            "router::complete: provider error permanent: not a chat model (model llamacpp::nomic-embed)"
+        );
+        assert_eq!(
+            provider_error(json!({"message": {"stop_reason": "error"}}), "a::x").unwrap_err(),
+            "router::complete: provider error unknown:  (model a::x)"
+        );
+        assert_eq!(
+            provider_error(reply("stop"), "a::x").unwrap(),
+            reply("stop")
+        );
+        assert_eq!(
+            provider_error(reply("length"), "a::x").unwrap(),
+            reply("length")
+        );
+        let overflow =
+            json!({"message": {"stop_reason": "error", "error_kind": "context_overflow"}});
+        assert!(matches!(
+            crate::semantic::classify(&provider_error(overflow, "a::x")),
+            crate::semantic::Outcome::InputShaped(_)
+        ));
+        assert!(matches!(
+            crate::semantic::classify(&provider_error(reply("error"), "a::x")),
+            crate::semantic::Outcome::Transport(_)
+        ));
+    }
+
+    #[test]
+    fn the_automatic_model_is_logged_only_when_it_changes() {
+        let (mut memo, now) = (None, Instant::now());
+        assert!(remember(&mut memo, "a::x", now), "the first pick");
+        assert!(!remember(&mut memo, "a::x", now), "the same pick again");
+        assert!(remember(&mut memo, "b::y", now), "a new pick");
+        assert!(remember(&mut memo, "a::x", now), "back to the first");
+    }
+
+    #[test]
+    fn the_automatic_model_is_reused_for_a_minute() {
+        let (mut memo, now) = (None, Instant::now());
+        assert_eq!(fresh(&memo, now), None, "nothing picked yet");
+        remember(&mut memo, "a::x", now);
+        assert_eq!(
+            fresh(&memo, now + Duration::from_secs(59)).as_deref(),
+            Some("a::x")
+        );
+        assert_eq!(
+            fresh(&memo, now + AUTOMATIC_TTL),
+            None,
+            "stale: resolve again"
+        );
+    }
 
     fn row(id: &str, text: &str, corroboration: u32) -> MemoryRow {
         MemoryRow {

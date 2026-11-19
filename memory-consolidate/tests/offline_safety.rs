@@ -738,6 +738,7 @@ async fn supplied_semantic_corpus_runs_through_handler_and_checks_actual_mutatio
                 .calls()
                 .iter()
                 .all(|(f, _)| f != "router::models::list"
+                    && f != "router::provider::list"
                     && f != "router::embed"
                     && !f.starts_with("memory::rule::"))
         );
@@ -910,7 +911,9 @@ async fn semantic_transport_failure_holds_cursor_until_a_supplied_reply_can_be_c
         boundary
             .calls()
             .iter()
-            .all(|(f, _)| f != "router::models::list" && f != "router::embed")
+            .all(|(f, _)| f != "router::models::list"
+                && f != "router::provider::list"
+                && f != "router::embed")
     );
 }
 
