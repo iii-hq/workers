@@ -44,7 +44,7 @@ pub struct WorkerConfig {
     /// guard that keeps history from growing into a value large enough to
     /// break the `state` worker's connection. `0` disables history
     /// recording; it only applies when `history_max_entries` is above `0`.
-    /// Applied live.
+    /// Default `262144`. Applied live.
     #[serde(
         default = "default_history_max_bytes",
         skip_serializing_if = "is_default_history_max_bytes"

@@ -321,20 +321,29 @@ export const HISTORY_CASES: TestCase[] = [
     },
   },
   {
-    name: 'history off (history_max_entries 0) makes no state call per query',
+    name: 'history is off by default: a config without history_max_entries makes no state call per query',
     applies: ['sqlite_db'],
     async run(ctx) {
       const mock = registerMockState(ctx.iii)
-      const setEntries = async (n: number) => {
-        await ctx.call('configuration::set', {
-          id: DATABASE_CONFIG_ID,
-          value: { ...DATABASE_CONFIG_VALUE, history_max_entries: n },
-        })
-        await sleep(1500) // the worker reloads on configuration::on-updated
+      const setConfig = async (value: Record<string, unknown>) => {
+        await ctx.call('configuration::set', { id: DATABASE_CONFIG_ID, value })
       }
       try {
         await mockReady(ctx, mock)
-        await setEntries(0)
+        // The key is absent, not 0: this is the default under test.
+        const { history_max_entries: _chosen, ...withoutEntries } = DATABASE_CONFIG_VALUE
+        await setConfig(withoutEntries)
+        // Wait for the reload: probe queries keep recording until it lands.
+        const deadline = Date.now() + READY_TIMEOUT_MS
+        for (;;) {
+          const before = mock.setAttempts.length
+          await ctx.call('database::query', { db: ctx.driver, sql: 'SELECT 0' })
+          await sleep(300)
+          if (mock.setAttempts.length === before) break
+          if (Date.now() > deadline) throw new Error('config without history_max_entries never turned history off')
+        }
+        mock.gets.clear()
+        mock.setAttempts.length = 0
         for (let i = 1; i <= 5; i++) {
           await ctx.call('database::query', { db: ctx.driver, sql: `SELECT ${400 + i}` })
         }
@@ -343,7 +352,15 @@ export const HISTORY_CASES: TestCase[] = [
         expectEqual(mock.setAttempts.length, 0, 'no state::set')
         expectEqual(mock.updates, 0, 'no state::update')
       } finally {
-        await setEntries(MAX_ENTRIES)
+        await setConfig({ ...DATABASE_CONFIG_VALUE })
+        // Wait until recording is back so later cases see the seeded caps.
+        const deadline = Date.now() + READY_TIMEOUT_MS
+        for (;;) {
+          const before = mock.setAttempts.length
+          await ctx.call('database::query', { db: ctx.driver, sql: 'SELECT 0' })
+          await sleep(300)
+          if (mock.setAttempts.length > before || Date.now() > deadline) break
+        }
         mock.unregister()
       }
     },

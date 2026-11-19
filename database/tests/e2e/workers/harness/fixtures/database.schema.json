@@ -407,7 +407,7 @@
       "type": "object"
     },
     "history_max_bytes": {
-      "description": "Maximum JSON-serialized size in bytes of one database's stored query history; oldest entries are dropped until the list fits. The hard guard that keeps history from growing into a value large enough to break the `state` worker's connection. `0` disables history recording; it only applies when `history_max_entries` is above `0`. Applied live.",
+      "description": "Maximum JSON-serialized size in bytes of one database's stored query history; oldest entries are dropped until the list fits. The hard guard that keeps history from growing into a value large enough to break the `state` worker's connection. `0` disables history recording; it only applies when `history_max_entries` is above `0`. Default `262144`. Applied live.",
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"

@@ -57,7 +57,7 @@ export const DATABASE_CONFIG_VALUE = {
     },
   },
   // Tiny query-history caps so cases-history.ts exercises entry/byte
-  // rotation with a handful of queries. Worker defaults: 200 / 262144.
+  // rotation with a handful of queries. Worker defaults: history off (0) / 262144.
   history_max_entries: 5,
   history_max_bytes: 8192,
 } as const;
