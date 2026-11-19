@@ -709,12 +709,7 @@ async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_con
     );
 }
 
-#[tokio::test]
-async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm_tree() {
-    let s = setup(false);
-    let backup = s._root.path().join("independent-backup");
-    private(&backup);
-    std::fs::write(backup.join("sentinel"), b"protected").unwrap();
+async fn install_retired_fixture(s: &Setup) {
     let lease = s.vms.admission(Some("key")).unwrap();
     let session = crate::sandbox_daemon::adapters::runtime_test_session(
         lease.clone(),
@@ -724,6 +719,7 @@ async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm
     .await;
     let (status, receipt) = session.wait().await;
     let receipt = receipt.unwrap();
+    session.finish_resources(&receipt).await.unwrap();
     let console = Console {
         admission: Some(lease.clone()),
         failed: false,
@@ -751,6 +747,15 @@ async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm
         leased: AtomicBool::new(false),
     });
     s.vms.slots().insert(vm_id("key"), Slot::Booted(vm));
+}
+
+#[tokio::test]
+async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm_tree() {
+    let s = setup(false);
+    let backup = s._root.path().join("independent-backup");
+    private(&backup);
+    std::fs::write(backup.join("sentinel"), b"protected").unwrap();
+    install_retired_fixture(&s).await;
     let retained = s
         .vms
         .destroy(WorkerDestroyRequest {
@@ -767,20 +772,52 @@ async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm
     );
     assert!(!s.vm.join(STATE_FILE).exists());
     assert!(s.vm.join(BUILD_MODE_SEAL).exists());
-    // A receipt is one-shot for its exact removal. A later broad prune is a
-    // new policy request, not permission to reuse/expand the consumed receipt.
+    assert!(s.vm.exists());
+    // Prune is tested as the first removal of a different genuine lifecycle.
+    let fresh = setup(false);
+    install_retired_fixture(&fresh).await;
+    let pruned = fresh
+        .vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: true,
+        })
+        .unwrap();
+    assert!(pruned.destroyed);
+    assert!(!fresh.vm.exists());
+    assert_eq!(
+        std::fs::read(s.vm.join(PRE_BUILD_DISK)).unwrap(),
+        b"OLD-do-not-archive"
+    );
+    assert_eq!(
+        std::fs::read(backup.join("sentinel")).unwrap(),
+        b"protected"
+    );
+}
+
+#[tokio::test]
+async fn consumed_destroy_receipt_cannot_be_expanded_into_later_prune() {
+    let s = setup(false);
+    install_retired_fixture(&s).await;
+    s.vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: false,
+        })
+        .unwrap();
     assert!(
         s.vms
             .destroy(WorkerDestroyRequest {
                 auth: "token".into(),
                 state_key: "key".into(),
-                prune: true,
+                prune: true
             })
             .is_err()
     );
-    assert!(s.vm.exists());
     assert_eq!(
-        std::fs::read(backup.join("sentinel")).unwrap(),
-        b"protected"
+        std::fs::read(s.vm.join(PRE_BUILD_DISK)).unwrap(),
+        b"OLD-do-not-archive"
     );
 }

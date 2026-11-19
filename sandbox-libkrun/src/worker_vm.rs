@@ -500,6 +500,7 @@ impl WorkerVms {
                 admission,
                 built.lifecycle_leases,
                 Some(built.runtime_paths),
+                built.runtime_endpoints,
             )
             .map_err(|e| match e {
                 SandboxError::BootFailed(e) => SandboxError::BootFailed(with_notes(e, &notes)),
@@ -1025,6 +1026,7 @@ impl WorkerVms {
             admission,
             Vec::new(),
             None,
+            Vec::new(),
         )
     }
 
@@ -1037,6 +1039,7 @@ impl WorkerVms {
         admission: crate::worker_admission::Lease,
         local_leases: Vec<crate::worker_admission::Lease>,
         runtime_paths: Option<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>>,
+        runtime_endpoints: Vec<PathBuf>,
     ) -> Result<WorkerStartResponse, SandboxError> {
         let control = self.base.join(vm_id(state_key));
         let admission = crate::worker_admission::with_paths(
@@ -1087,7 +1090,7 @@ impl WorkerVms {
         let stdin = child.take_stdin();
         let stdout = child.take_stdout().expect("stdout is piped");
         let stderr = child.take_stderr().expect("stderr is piped");
-        let (lifecycle, completion) = child.supervise(admission.clone());
+        let (lifecycle, completion) = child.supervise(admission.clone(), runtime_endpoints);
         let vm = Arc::new(Vm {
             instance,
             #[cfg(test)]
@@ -1143,7 +1146,10 @@ impl WorkerVms {
             }
             for mut pump in pumps {
                 match tokio::time::timeout(DRAIN_GRACE, &mut pump).await {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(Ok(()))) => {}
+                    Ok(Ok(Err(error))) => {
+                        retirement = Err(format!("console pipe read failed: {error}"))
+                    }
                     Ok(Err(error)) => retirement = Err(format!("console pump failed: {error}")),
                     Err(_) => {
                         pump.abort();
@@ -1161,6 +1167,11 @@ impl WorkerVms {
                 .failed
             {
                 retirement = Err("console publication failed; cleanup retained".into());
+            }
+            if let (Ok(Some(receipt)), Some(session)) = (&retirement, &waited.lifecycle) {
+                if let Err(error) = session.finish_resources(receipt).await {
+                    retirement = Err(format!("worker endpoint retirement failed: {error}"));
+                }
             }
             if retirement.is_ok() {
                 writer_admission.reaped();
@@ -1724,10 +1735,8 @@ async fn cancel_writer(slot: &WriterSlot, state: &AtomicU8) -> Option<Result<Str
     )
 }
 
-/// The temporary image files a build of an earlier adapter process left in
-/// `out` (it died while writing): `.image.erofs.<pid>-<n>.partial` and
-/// `.image.id.<pid>-<n>.partial` of another pid. This process's own may be a
-/// running build's.
+/// Preserve temporary image evidence left by another or this process. There
+/// is deliberately no PID-based removal authority in this compatibility hook.
 fn sweep_image_partials(out: &Path) {
     tracing::warn!(path=%out.display(), "partial images retained: PID/name is not disposal authority");
 }
@@ -1755,6 +1764,7 @@ async fn run_build_vm(
     // These local preparation guards supplement the outer worker build guard.
     // Cancellation may drop this future before Child::wait: retain their shared
     // leases conservatively unless successful wait proves the writer is gone.
+    let runtime_endpoints = vm.runtime_endpoints;
     let lifecycle_leases = vm.lifecycle_leases;
     for lease in &lifecycle_leases {
         lease
@@ -1789,6 +1799,7 @@ async fn run_build_vm(
                 let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
                     child,
                     admission.clone(),
+                    runtime_endpoints.clone(),
                 );
                 tokio::spawn(async move {
                     if let Some(mut stdout) = stdout {
@@ -1823,16 +1834,21 @@ async fn run_build_vm(
     let stdin = child.take_stdin();
     let stdout = child.take_stdout().expect("stdout piped");
     let stderr = child.take_stderr().expect("stderr piped");
-    let session =
-        crate::sandbox_daemon::adapters::RuntimeSession::supervise(child, admission.clone());
+    let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+        child,
+        admission.clone(),
+        runtime_endpoints,
+    );
     let lifecycle_leases = crate::worker_admission::WriterLease::new(lifecycle_leases);
     let env_stdin = vm.env_stdin;
     let feed = tokio::spawn(async move {
         crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
     });
     let (lines, mut received) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(forward_lines(stdout, LogStream::Stdout, lines.clone()));
-    tokio::spawn(forward_lines(stderr, LogStream::Stderr, lines));
+    let pumps = [
+        tokio::spawn(forward_lines(stdout, LogStream::Stdout, lines.clone())),
+        tokio::spawn(forward_lines(stderr, LogStream::Stderr, lines)),
+    ];
     let waited = session.wait();
     tokio::pin!(waited);
     let (status, receipt) = loop {
@@ -1859,6 +1875,15 @@ async fn run_build_vm(
     .map_err(|_| {
         SandboxError::BuildFailed("build output writers did not drain; retaining evidence".into())
     })??;
+    for pump in pumps {
+        pump.await
+            .map_err(|e| SandboxError::BuildFailed(format!("build pipe task: {e}")))?
+            .map_err(|e| SandboxError::BuildFailed(format!("build pipe read: {e}")))?;
+    }
+    session
+        .finish_resources(&receipt)
+        .await
+        .map_err(|e| SandboxError::BuildFailed(format!("build endpoint retirement: {e}")))?;
     lifecycle_leases.reaped();
     Ok((status, receipt))
 }
@@ -1868,20 +1893,24 @@ async fn forward_lines(
     out: impl AsyncRead + Unpin,
     stream: LogStream,
     lines: tokio::sync::mpsc::UnboundedSender<(LogStream, String)>,
-) {
+) -> io::Result<()> {
     let mut out = BufReader::new(out);
     let mut line = Vec::new();
     loop {
         line.clear();
         match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return Ok(()),
+            Err(error) => return Err(error),
             Ok(_) => {}
         }
         let text = line.strip_suffix(b"\n").unwrap_or(&line);
         let text = text.strip_suffix(b"\r").unwrap_or(text);
         let text = String::from_utf8_lossy(text).into_owned();
         if lines.send((stream.clone(), text)).is_err() {
-            return;
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "build log receiver closed",
+            ));
         }
     }
 }
@@ -2241,9 +2270,8 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-/// Remove the scratch dirs (`build-<pid>-<seq>`) that a build of an earlier
-/// adapter process left in `vm_dir`; this process's own builds remove theirs.
-/// Nothing else matches: not the `build-mode` seal.
+/// Preserve unresolved build scratch. Only stage disposal or a current exact
+/// cleanup receipt may remove it; a filename/PID is diagnostic evidence only.
 fn sweep_build_scratch(vm_dir: &Path) {
     tracing::warn!(path=%vm_dir.display(), "scratch retained: only owned stage discard or recovery may remove it");
 }
@@ -3108,6 +3136,7 @@ impl LaunchedChild {
     fn supervise(
         self,
         lease: crate::worker_admission::Lease,
+        endpoints: Vec<PathBuf>,
     ) -> (
         Option<Arc<crate::sandbox_daemon::adapters::RuntimeSession>>,
         tokio::task::JoinHandle<(
@@ -3117,8 +3146,9 @@ impl LaunchedChild {
     ) {
         match self {
             Self::Runtime(child) => {
-                let session =
-                    crate::sandbox_daemon::adapters::RuntimeSession::supervise(child, lease);
+                let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+                    child, lease, endpoints,
+                );
                 let held = session.clone();
                 let task = tokio::spawn(async move {
                     let (status, retirement) = held.wait().await;
@@ -3346,14 +3376,19 @@ impl Console {
 
 /// Copy one output stream into `console.log`, a record per line. It keeps
 /// reading after a write error, so a full disk cannot stall the VM on a full pipe.
-async fn pump(out: impl AsyncRead + Unpin, stream: LogStream, console: Arc<Mutex<Console>>) {
+async fn pump(
+    out: impl AsyncRead + Unpin,
+    stream: LogStream,
+    console: Arc<Mutex<Console>>,
+) -> io::Result<()> {
     let mut out = BufReader::new(out);
     let mut line = Vec::new();
     let mut warned = false;
     loop {
         line.clear();
         match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return Ok(()),
+            Err(error) => return Err(error),
             Ok(_) => {}
         }
         let text = line.strip_suffix(b"\n").unwrap_or(&line);
@@ -4131,6 +4166,19 @@ mod tests {
     async fn retirement_survives_final_console_and_retention_without_deleting_data() {
         let t = tempfile::tempdir().unwrap();
         let (lease, mut console) = admitted_console_fixture(t.path(), b"");
+        let control = t.path().join("endpoints");
+        std::fs::create_dir(&control).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let endpoint = control.join("worker.sock");
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[crate::worker_admission::PathRequest {
+                path: &endpoint,
+                role: crate::worker_admission::PathRole::Endpoint,
+            }],
+        )
+        .unwrap();
         let dir = console.dir.clone();
         let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
         let mut create = lease
@@ -4140,16 +4188,24 @@ mod tests {
         image.file_mut().write_all(b"guest-data").unwrap();
         create.publish_file(image).unwrap();
         create.commit().unwrap();
-        let session = crate::sandbox_daemon::adapters::runtime_test_session(
+        let session = crate::sandbox_daemon::adapters::runtime_test_session_resources(
             lease.clone(),
             &t.path().join("catalog"),
             false,
+            crate::sandbox_daemon::adapters::RuntimeTestResources {
+                reads: vec![dir.join("root")],
+                endpoints: vec![endpoint.clone()],
+                exit_without_drop: true,
+                ..Default::default()
+            },
         )
         .await;
         let receipt = session.wait().await.1.unwrap();
         console
             .append(&LogStream::Stdout, b"last line after OS wait")
             .unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        assert!(!endpoint.exists());
         let (removed, kept) =
             remove_runtime_state_admitted(&lease, &receipt, &dir, "console", false).unwrap();
         assert!(removed);
@@ -6120,7 +6176,7 @@ mod tests {
     }
 
     #[test]
-    fn only_an_earlier_processs_build_scratch_is_swept() {
+    fn build_scratch_is_preserved_without_owned_removal_authority() {
         let t = tempfile::tempdir().unwrap();
         let mine = t.path().join(format!("build-{}-0", std::process::id()));
         let stale = t.path().join("build-1-0");
@@ -6138,10 +6194,10 @@ mod tests {
         assert!(t.path().join("build-2-0").is_file());
     }
 
-    /// A build whose adapter died while writing left its temporary image in the
-    /// project; the next build removes it, and only it.
+    /// A prior adapter's partial image is unresolved evidence, not permission
+    /// for the next process to remove it by filename or diagnostic PID.
     #[test]
-    fn the_next_build_sweeps_an_earlier_processs_partial_image() {
+    fn the_next_build_preserves_unrelated_partial_image_evidence() {
         let t = tempfile::tempdir().unwrap();
         let mine = format!("{}-3", std::process::id());
         let names = [

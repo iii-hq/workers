@@ -1119,7 +1119,7 @@ fn boot_vm(
     args: &VmBootArgs,
     stdin_env: Vec<(String, String)>,
     mount_plan: VirtiofsMountPlan,
-    admission: crate::worker_admission::Lease,
+    _admission: crate::worker_admission::Lease,
     runtime: crate::worker_admission::RuntimeWriter,
 ) -> Result<std::convert::Infallible, String> {
     use msb_krun::VmBuilder;
@@ -1143,7 +1143,7 @@ fn boot_vm(
     let mut input_uses = Vec::new();
     if args.rootfs_readonly {
         input_uses.push(
-            admission
+            runtime
                 .use_path(std::path::Path::new(&args.rootfs))
                 .map_err(|e| e.to_string())?,
         );
@@ -1151,7 +1151,7 @@ fn boot_vm(
     for entry in &mount_plan.entries {
         let path = std::path::Path::new(&entry.host_path);
         if !path.starts_with(std::path::Path::new(&args.rootfs)) {
-            input_uses.push(admission.use_path(path).map_err(|e| e.to_string())?);
+            input_uses.push(runtime.use_path(path).map_err(|e| e.to_string())?);
         }
     }
     for path in args
@@ -1161,7 +1161,7 @@ fn boot_vm(
         .chain(args.source_readonly.iter())
     {
         input_uses.push(
-            admission
+            runtime
                 .use_path(std::path::Path::new(path))
                 .map_err(|e| e.to_string())?,
         );
@@ -1367,14 +1367,14 @@ fn boot_vm(
     // actually started. Otherwise a failed `shell_relay::spawn` still
     // sets III_SHELL_PORT and the guest dispatcher spins on a port
     // nobody reads, silently breaking `sandbox::exec` for the VM's
-    // lifetime. Fail-closed: on relay spawn failure, skip the env var
-    // and drop the attached fd so the VM boots without the port.
+    // lifetime. A requested relay is required: its failure aborts boot and
+    // remains in the parent's exact expected endpoint set.
     let mut shell_port_env = false;
     let mut guest_shell_fd: Option<i32> = None;
     let mut shell_relay: Option<crate::cli::shell_relay::AdmittedRelay> = None;
     if let Some(sock_path) = args.shell_sock.clone() {
         let (host_end, guest_fd) = setup_port_socketpair()?;
-        let endpoint = admission
+        let endpoint = runtime
             .endpoint(std::path::Path::new(&sock_path))
             .map_err(|e| e.to_string())?;
         match crate::cli::shell_relay::spawn_admitted(tokio_rt.handle(), endpoint, host_end) {
@@ -1384,16 +1384,13 @@ fn boot_vm(
                 shell_port_env = true;
             }
             Err(e) => {
-                eprintln!(
-                    "warning: shell relay failed to start ({e}). \
-                     sandbox exec disabled; VM boots normally."
-                );
                 // `host_end` was moved into `shell_relay::spawn` and is
                 // dropped on its Err path. Close our guest half so we
                 // don't leak the fd for the __vm-boot process lifetime.
                 unsafe {
                     libc::close(guest_fd);
                 }
+                return Err(format!("required shell relay failed to start: {e}"));
             }
         }
     }
@@ -1582,9 +1579,9 @@ fn boot_vm(
     // SIGINT delivered to this __vm-boot process now triggers the
     // VMM's shutdown path (event-loop reads the exit eventfd, notifies
     // on_exit observers, `_exit`s with the current exit code), so the
-    // on_exit closure only requests asynchronous endpoint closure. _exit or
-    // SIGKILL may leave its receipt Bound; parent cleanup must then refuse until
-    // a core-owned exact endpoint retirement operation proves the sentinel free.
+    // on_exit requests asynchronous closure. _exit/SIGKILL can skip it; after
+    // actual retirement the parent settles the exact launched endpoint set via
+    // WriterRetirement::retire_runtime_endpoints before data removal.
     // Nothing reaches the guest: the worker gets no SIGTERM and
     // iii-init's sync-on-exit does not run, so guest writes still in
     // its page cache (the ext4 upper) are lost.

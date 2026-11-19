@@ -100,6 +100,8 @@ pub struct SandboxRegistry {
     initializing: Arc<Mutex<std::collections::HashSet<Uuid>>>,
     #[cfg(test)]
     context: Option<crate::worker_admission::AdmissionContext>,
+    #[cfg(test)]
+    layout_root: Option<PathBuf>,
 }
 
 /// A create's claim on one of `max_concurrent_sandboxes`, from the cap check
@@ -134,6 +136,8 @@ impl SandboxRegistry {
             initializing: Arc::default(),
             #[cfg(test)]
             context: None,
+            #[cfg(test)]
+            layout_root: None,
         }
     }
 
@@ -152,6 +156,25 @@ impl SandboxRegistry {
         context: crate::worker_admission::AdmissionContext,
     ) -> Self {
         self.context = Some(context);
+        self
+    }
+
+    pub(crate) fn layout(&self, id: Uuid) -> super::overlay::OverlayLayout {
+        #[cfg(test)]
+        if let Some(root) = &self.layout_root {
+            let base = root.join(id.to_string());
+            return super::overlay::OverlayLayout {
+                upper: base.join("upper"),
+                work: base.join("work"),
+                merged: base.join("merged"),
+                root: base.join("root"),
+            };
+        }
+        super::overlay::OverlayLayout::for_sandbox(id)
+    }
+    #[cfg(test)]
+    pub(crate) fn with_layout_root(mut self, root: PathBuf) -> Self {
+        self.layout_root = Some(root);
         self
     }
 

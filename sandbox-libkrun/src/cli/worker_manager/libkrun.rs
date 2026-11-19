@@ -99,6 +99,9 @@ pub struct VmCommand {
     pub(crate) lifecycle_leases: Vec<crate::worker_admission::Lease>,
     /// Exact prepared writable paths; activate only after host control writes.
     pub(crate) runtime_paths: Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>,
+    /// This builder currently launches no shell relay. Future relay flags must
+    /// be added together with their exact declared endpoint, never by scanning.
+    pub(crate) runtime_endpoints: Vec<PathBuf>,
 }
 
 /// Writes [`VmCommand::env_stdin`] into a spawned `__vm-boot` and closes the
@@ -265,6 +268,14 @@ pub(crate) fn build_vm_command_admitted(
     cmd.stdin(std::process::Stdio::piped());
     attach_child_admission(&mut cmd, &admission)?;
 
+    // This builder does not emit --shell-sock (unlike the sandbox launcher).
+    // Refuse accidental drift rather than settling an empty set for a relay.
+    if cmd.as_std().get_args().any(|arg| {
+        arg == "--shell-sock" || arg.to_str().is_some_and(|s| s.starts_with("--shell-sock="))
+    }) {
+        return Err("worker command added an undeclared runtime endpoint".into());
+    }
+
     // Deliberately no `setsid` here: how the child is detached belongs to
     // whoever spawns it. A caller that supervises its own children puts them in
     // a process group it can signal, and `setsid` fails once the child is
@@ -274,6 +285,7 @@ pub(crate) fn build_vm_command_admitted(
         env_stdin,
         lifecycle_leases: vec![admission],
         runtime_paths,
+        runtime_endpoints: Vec::new(),
     })
 }
 

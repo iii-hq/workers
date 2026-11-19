@@ -335,17 +335,59 @@ mod tests {
         assert!(l.merged.ends_with("merged"));
     }
 
+    #[tokio::test]
+    async fn ensure_dirs_and_cleanup_roundtrip() {
+        let namespace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let base = data.path().join("sandbox");
+        let layout = OverlayLayout {
+            upper: base.join("upper"),
+            work: base.join("work"),
+            merged: base.join("merged"),
+            root: base.join("root"),
+        };
+        layout.prepare_parents(&context).unwrap();
+        let lease = layout.admit(&context).unwrap();
+        layout.ensure_admitted(&lease).unwrap();
+        assert!(layout.upper.exists());
+        let session = super::super::adapters::runtime_test_session_resources(
+            lease,
+            namespace.path(),
+            false,
+            super::super::adapters::RuntimeTestResources {
+                reads: vec![layout.root.clone()],
+                endpoints: vec![layout.shell_sock()],
+                exit_without_drop: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let receipt = session.wait().await.1.unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        layout.cleanup_retired(session.lease(), &receipt).unwrap();
+        assert!(!layout.base().exists());
+        assert!(!layout.shell_sock().exists());
+    }
+
     #[test]
-    fn ensure_dirs_and_cleanup_roundtrip() {
-        let id = Uuid::new_v4();
-        let l = OverlayLayout::for_sandbox(id);
-        l.ensure_dirs().unwrap();
-        assert!(l.upper.exists());
-        assert!(
-            l.cleanup().is_err(),
-            "raw cleanup must never acquire authority"
+    fn raw_cleanup_without_receipt_preserves_existing_layout() {
+        let data = tempfile::tempdir().unwrap();
+        let base = data.path().join("sandbox");
+        let layout = OverlayLayout {
+            upper: base.join("upper"),
+            work: base.join("work"),
+            merged: base.join("merged"),
+            root: base.join("root"),
+        };
+        std::fs::create_dir_all(&layout.root).unwrap();
+        std::fs::write(layout.root.join("keep"), b"retained").unwrap();
+        assert!(layout.cleanup().is_err());
+        assert_eq!(
+            std::fs::read(layout.root.join("keep")).unwrap(),
+            b"retained"
         );
-        assert!(l.base().exists());
     }
 
     #[test]
@@ -367,10 +409,10 @@ mod tests {
         );
     }
 
-    /// A SIGKILLed adapter's dirs go at the next start; a live adapter's, and
-    /// anything without an owner file or a sandbox-id name, stay.
+    /// Legacy owners and unresolved layouts all remain for explicit recovery;
+    /// an exited diagnostic PID does not make deletion safe.
     #[test]
-    fn sweep_removes_only_dirs_of_dead_owners() {
+    fn sweep_preserves_dead_live_unowned_and_foreign_layouts() {
         let mut gone = std::process::Command::new("true").spawn().unwrap();
         gone.wait().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -460,9 +502,9 @@ mod tests {
         );
     }
 
-    /// A lax mode on a root this user owns is tightened to 0700.
+    /// Setup never tightens existing insecure parents to manufacture admission.
     #[test]
-    fn a_lax_root_of_this_user_is_tightened() {
+    fn a_lax_root_of_this_user_is_refused_without_chmod() {
         use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
         let root = t.path().join("root");

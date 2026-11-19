@@ -164,6 +164,8 @@ pub(crate) fn env_stdin_frame(params: &BootParams) -> Result<Vec<u8>, SandboxErr
 pub(crate) struct RuntimeSession {
     lease: crate::worker_admission::Lease,
     control: crate::worker_admission::RuntimeControl,
+    /// Exact launch configuration; never inferred from disk or reduced on error.
+    endpoints: Vec<PathBuf>,
     completion: tokio::sync::watch::Receiver<Option<RuntimeResult>>,
     host_writers: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<std::io::Result<()>>>>,
     host_failure: Mutex<Option<String>>,
@@ -178,12 +180,14 @@ impl RuntimeSession {
     pub(crate) fn supervise(
         child: crate::worker_admission::RuntimeChild,
         lease: crate::worker_admission::Lease,
+        endpoints: Vec<PathBuf>,
     ) -> std::sync::Arc<Self> {
         let control = child.control();
         let (done, completion) = tokio::sync::watch::channel(None);
         let session = std::sync::Arc::new(Self {
             lease,
             control,
+            endpoints,
             completion,
             host_writers: tokio::sync::Mutex::new(Vec::new()),
             host_failure: Mutex::new(None),
@@ -234,6 +238,14 @@ impl RuntimeSession {
             .expect("writers attached synchronously before publishing session")
             .push(task);
     }
+    #[cfg(test)]
+    pub(crate) async fn add_test_host_writer(
+        &self,
+        task: tokio::task::JoinHandle<std::io::Result<()>>,
+    ) {
+        self.host_writers.lock().await.push(task);
+    }
+
     pub(crate) async fn finish_host_writers(&self) -> std::io::Result<()> {
         let mut tasks = self.host_writers.lock().await;
         if let Some(error) = self
@@ -267,6 +279,17 @@ impl RuntimeSession {
         }
         Ok(())
     }
+    /// Called after actual retirement and after caller-owned pumps have joined.
+    /// Failure may leave an exact partial close; never clear or shrink the set.
+    pub(crate) async fn finish_resources(
+        &self,
+        receipt: &crate::worker_admission::WriterRetirement,
+    ) -> std::io::Result<()> {
+        self.finish_host_writers().await?;
+        let paths: Vec<&Path> = self.endpoints.iter().map(PathBuf::as_path).collect();
+        receipt.retire_runtime_endpoints(&self.lease, &paths)
+    }
+
     pub(crate) fn lease(&self) -> &crate::worker_admission::Lease {
         &self.lease
     }
@@ -569,7 +592,11 @@ impl VmLauncher for VmBootLauncher {
                 if let Some(mut child) = child {
                     drop(child.take_stdin());
                     let stderr = child.take_stderr();
-                    let session = RuntimeSession::supervise(child, admission.clone());
+                    let session = RuntimeSession::supervise(
+                        child,
+                        admission.clone(),
+                        vec![params.shell_sock.clone()],
+                    );
                     if let Some(stderr) = stderr {
                         session.pump_stderr(stderr, log_path.clone());
                     }
@@ -581,7 +608,8 @@ impl VmLauncher for VmBootLauncher {
         let vm_pid = child.id();
         let stdin = child.take_stdin();
         let stderr = child.take_stderr();
-        let session = RuntimeSession::supervise(child, admission.clone());
+        let session =
+            RuntimeSession::supervise(child, admission.clone(), vec![params.shell_sock.clone()]);
         // Ownership is installed synchronously above, before registry or stdin awaits.
         if let Some(stderr) = stderr {
             session.pump_stderr(stderr, log_path.clone());
@@ -1077,10 +1105,36 @@ impl SignalStopper {
 }
 
 #[cfg(test)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RuntimeTestResources {
+    pub reads: Vec<PathBuf>,
+    pub endpoints: Vec<PathBuf>,
+    pub exit_without_drop: bool,
+    pub skip_bind: bool,
+    pub descendant_release: Option<PathBuf>,
+}
+
+#[cfg(test)]
 pub(crate) async fn runtime_test_session(
     lease: crate::worker_admission::Lease,
     namespace: &Path,
     keep_running: bool,
+) -> std::sync::Arc<RuntimeSession> {
+    runtime_test_session_resources(
+        lease,
+        namespace,
+        keep_running,
+        RuntimeTestResources::default(),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn runtime_test_session_resources(
+    lease: crate::worker_admission::Lease,
+    namespace: &Path,
+    keep_running: bool,
+    resources: RuntimeTestResources,
 ) -> std::sync::Arc<RuntimeSession> {
     let mut command = tokio::process::Command::new("/bin/sh");
     command.arg("-c").arg(r#"
@@ -1098,6 +1152,10 @@ pub(crate) async fn runtime_test_session(
         "III_TEST_RUNTIME_LIVE",
         if keep_running { "1" } else { "0" },
     );
+    command.env(
+        "III_TEST_RUNTIME_RESOURCES",
+        serde_json::to_string(&resources).unwrap(),
+    );
     crate::cli::worker_manager::libkrun::attach_child_admission(&mut command, &lease).unwrap();
     command.stdout(std::process::Stdio::piped());
     let mut child = lease
@@ -1106,7 +1164,7 @@ pub(crate) async fn runtime_test_session(
         .spawn(command)
         .unwrap_or_else(|e| panic!("runtime fixture spawn: {}", e.error()));
     let stdout = child.take_stdout().unwrap();
-    let session = RuntimeSession::supervise(child, lease);
+    let session = RuntimeSession::supervise(child, lease, resources.endpoints);
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -1148,12 +1206,279 @@ mod tests {
         })
         .unwrap();
         writer.checkpoint().unwrap();
+        let resources: RuntimeTestResources =
+            serde_json::from_str(&std::env::var("III_TEST_RUNTIME_RESOURCES").unwrap()).unwrap();
+        let reads: Vec<_> = resources
+            .reads
+            .iter()
+            .map(|path| writer.use_path(path).unwrap())
+            .collect();
+        let endpoints: Vec<_> = if resources.skip_bind {
+            Vec::new()
+        } else {
+            resources
+                .endpoints
+                .iter()
+                .map(|path| writer.endpoint(path).unwrap().bind().unwrap())
+                .collect()
+        };
+        if let Some(release) = &resources.descendant_release {
+            // The guards, not this variable, must retain the dedicated writer.
+            drop(writer);
+            let child = unsafe { libc::fork() };
+            assert!(child >= 0);
+            if child == 0 {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !release.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                unsafe { libc::_exit(0) }
+            }
+            println!("RUNTIME_READY");
+            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            unsafe { libc::_exit(0) }
+        }
         println!("RUNTIME_READY");
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
         if std::env::var("III_TEST_RUNTIME_LIVE").unwrap() == "1" {
             std::thread::sleep(Duration::from_secs(30));
         }
+        if resources.exit_without_drop {
+            // Deliberately bypass every Rust Drop; only real wait + G settlement
+            // may retire these imported runtime-owned reads/endpoints.
+            unsafe { libc::_exit(0) }
+        }
+        for endpoint in endpoints {
+            endpoint.close().unwrap();
+        }
+        drop(reads);
         drop(writer);
         drop(lease);
+    }
+
+    fn resource_fixture(
+        t: &Path,
+        context: &crate::worker_admission::AdmissionContext,
+        count: usize,
+    ) -> (crate::worker_admission::Lease, PathBuf, Vec<PathBuf>) {
+        use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::PermissionsExt;
+        let root = t.join("payload");
+        let parent = t.join("endpoints");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let paths: Vec<_> = (0..count)
+            .map(|i| parent.join(format!("shell-{i}.sock")))
+            .collect();
+        let declarations: Vec<_> = paths
+            .iter()
+            .map(|path| PathRequest {
+                path,
+                role: PathRole::Endpoint,
+            })
+            .collect();
+        let lease =
+            crate::worker_admission::with_paths(context.local(&root).unwrap(), &declarations)
+                .unwrap();
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: root.clone() })
+            .unwrap();
+        create.create_dir_all(&root, 0o700).unwrap();
+        create.commit().unwrap();
+        (lease, root, paths)
+    }
+
+    #[tokio::test]
+    async fn runtime_read_and_endpoints_settle_after_no_drop_exit_or_explicit_close() {
+        for explicit_close in [false, true] {
+            let namespace = tempfile::tempdir().unwrap();
+            let data = tempfile::tempdir().unwrap();
+            let context =
+                crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+            let (lease, root, paths) = resource_fixture(data.path(), &context, 2);
+            let parent_read = lease.use_path(&root).unwrap();
+            let session = runtime_test_session_resources(
+                lease.clone(),
+                namespace.path(),
+                false,
+                RuntimeTestResources {
+                    reads: vec![root.clone()],
+                    endpoints: paths.clone(),
+                    exit_without_drop: !explicit_close,
+                    ..Default::default()
+                },
+            )
+            .await;
+            let (status, receipt) = session.wait().await;
+            assert!(status.unwrap().success());
+            let receipt = receipt.unwrap();
+            session.finish_resources(&receipt).await.unwrap();
+            session.finish_resources(&receipt).await.unwrap(); // exact idempotence before Remove
+            for path in &paths {
+                assert!(!path.exists());
+            }
+            assert!(
+                lease
+                    .begin(crate::worker_admission::MutationPlan::Reclone { root: root.clone() })
+                    .is_err(),
+                "parent read must survive child retirement without consuming Remove authority"
+            );
+            parent_read.revalidate().unwrap();
+            drop(parent_read);
+            let mut removal = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
+            removal.remove_path(&root).unwrap();
+            removal.commit().unwrap();
+            assert!(!root.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn expected_endpoint_missing_or_replaced_never_becomes_an_empty_set() {
+        for skip_bind in [false, true] {
+            let namespace = tempfile::tempdir().unwrap();
+            let data = tempfile::tempdir().unwrap();
+            let context =
+                crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+            let (lease, root, paths) = resource_fixture(data.path(), &context, 2);
+            let session = runtime_test_session_resources(
+                lease.clone(),
+                namespace.path(),
+                false,
+                RuntimeTestResources {
+                    reads: vec![root.clone()],
+                    endpoints: paths.clone(),
+                    exit_without_drop: true,
+                    skip_bind,
+                    ..Default::default()
+                },
+            )
+            .await;
+            let receipt = session.wait().await.1.unwrap();
+            let replacement = if skip_bind {
+                None
+            } else {
+                std::fs::rename(&paths[1], paths[1].with_extension("held")).unwrap();
+                Some(std::os::unix::net::UnixListener::bind(&paths[1]).unwrap())
+            };
+            assert!(session.finish_resources(&receipt).await.is_err());
+            assert_eq!(session.endpoints, paths);
+            assert!(root.exists());
+            if !skip_bind {
+                assert!(
+                    paths[0].exists(),
+                    "prevalidate all paths before the first close"
+                );
+                assert!(paths[1].exists());
+            }
+            drop(replacement);
+        }
+    }
+
+    #[tokio::test]
+    async fn host_drain_failure_blocks_endpoint_settlement_and_removal() {
+        let namespace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let (lease, root, paths) = resource_fixture(data.path(), &context, 1);
+        let session = runtime_test_session_resources(
+            lease.clone(),
+            namespace.path(),
+            false,
+            RuntimeTestResources {
+                endpoints: paths.clone(),
+                exit_without_drop: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let receipt = session.wait().await.1.unwrap();
+        session.host_writers.lock().await.push(tokio::spawn(async {
+            Err(std::io::Error::other("host drain fault"))
+        }));
+        assert!(session.finish_resources(&receipt).await.is_err());
+        assert!(session.finish_resources(&receipt).await.is_err());
+        assert!(paths[0].exists());
+        assert!(root.exists());
+        assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+    }
+
+    #[tokio::test]
+    async fn completed_endpoint_subset_stays_visible_when_a_later_endpoint_refuses() {
+        let namespace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let (lease, root, paths) = resource_fixture(data.path(), &context, 2);
+        let session = runtime_test_session_resources(
+            lease.clone(),
+            namespace.path(),
+            false,
+            RuntimeTestResources {
+                endpoints: paths.clone(),
+                exit_without_drop: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let receipt = session.wait().await.1.unwrap();
+        session.finish_host_writers().await.unwrap();
+        receipt
+            .retire_runtime_endpoints(&lease, &[&paths[0]])
+            .unwrap();
+        std::fs::rename(&paths[1], paths[1].with_extension("held")).unwrap();
+        let replacement = std::os::unix::net::UnixListener::bind(&paths[1]).unwrap();
+        assert!(session.finish_resources(&receipt).await.is_err());
+        assert!(!paths[0].exists());
+        assert!(paths[1].exists());
+        assert!(root.exists());
+        assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+        drop(replacement);
+    }
+
+    #[tokio::test]
+    async fn descendant_read_or_listener_keeps_runtime_retirement_uncertain() {
+        for listener in [false, true] {
+            let namespace = tempfile::tempdir().unwrap();
+            let data = tempfile::tempdir().unwrap();
+            let context =
+                crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+            let (lease, root, paths) =
+                resource_fixture(data.path(), &context, usize::from(listener));
+            let release = data.path().join("release-descendant");
+            let session = runtime_test_session_resources(
+                lease.clone(),
+                namespace.path(),
+                false,
+                RuntimeTestResources {
+                    reads: if listener {
+                        Vec::new()
+                    } else {
+                        vec![root.clone()]
+                    },
+                    endpoints: paths.clone(),
+                    descendant_release: Some(release.clone()),
+                    ..Default::default()
+                },
+            )
+            .await;
+            let (status, retirement) = session.wait().await;
+            assert!(status.unwrap().success());
+            assert!(
+                retirement.is_err(),
+                "surviving guard is actual writer ownership"
+            );
+            assert!(root.exists());
+            for path in paths {
+                assert!(path.exists());
+            }
+            std::fs::write(release, b"release").unwrap();
+            session.finish_host_writers().await.unwrap();
+            assert!(
+                session.retirement().is_err(),
+                "later descriptor closure does not erase the original failed completion"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1170,7 +1495,7 @@ mod tests {
             .spawn(command)
             .unwrap_or_else(|e| panic!("{}", e.error()));
         let control = child.control();
-        let session = RuntimeSession::supervise(child, lease);
+        let session = RuntimeSession::supervise(child, lease, Vec::new());
         let (status, retirement) = session.wait().await;
         assert!(status.unwrap().success());
         assert!(
@@ -1219,15 +1544,20 @@ mod tests {
         let session = runtime_test_session(lease.clone(), namespace.path(), false).await;
         let receipt = session.wait().await.1.unwrap();
         session.finish_host_writers().await.unwrap();
-        assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+        assert!(
+            receipt
+                .retire_runtime_endpoints(&lease, &[&socket])
+                .is_err(),
+            "parent-owned endpoint is not the child's settlement authority"
+        );
         endpoint.close().unwrap();
         let mut removal = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
         removal.remove_path(&root).unwrap();
         removal.commit().unwrap();
         assert!(!root.exists());
         assert!(!socket.exists());
-        // The parent cannot call endpoint.close after guest _exit: it does not
-        // own this wrapper then. That remains a separate integration API gate.
+        // Parent-owned endpoints remain independent. Child-owned endpoints use
+        // the exact G settlement route exercised by the cross-exec tests.
     }
 
     #[tokio::test]
@@ -1299,6 +1629,7 @@ mod tests {
         let (status, receipt) = session.wait().await;
         assert!(status.unwrap().success());
         let receipt = receipt.unwrap();
+        session.finish_resources(&receipt).await.unwrap(); // validated no-relay set
         assert!(
             session
                 .signal(crate::worker_admission::RuntimeSignal::Kill)

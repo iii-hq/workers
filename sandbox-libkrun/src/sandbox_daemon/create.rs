@@ -514,10 +514,10 @@ mod tests {
         }
     }
 
-    /// Only a finished create keeps its sandbox dir: a failed boot and a
-    /// create dropped mid-boot remove it.
+    /// A completed create has real runtime authority for explicit cleanup;
+    /// cancellation or startup failure retains the layout and closing entry.
     #[tokio::test]
-    async fn only_a_finished_create_keeps_its_sandbox_dir() {
+    async fn owned_create_can_cleanup_and_interrupted_create_preserves_uncertainty() {
         use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
         let namespace = t.path().join("catalog");
@@ -581,7 +581,7 @@ mod tests {
                 let id = Uuid::parse_str(&response.sandbox_id).unwrap();
                 let session = reg.lifecycle(id).await.unwrap();
                 let receipt = session.stop(std::time::Duration::ZERO).await.unwrap();
-                session.finish_host_writers().await.unwrap();
+                session.finish_resources(&receipt).await.unwrap();
                 let mut remove = receipt
                     .begin_remove(session.lease(), &base, &[&base])
                     .unwrap();
