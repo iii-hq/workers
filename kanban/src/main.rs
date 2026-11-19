@@ -101,8 +101,8 @@ async fn main() -> Result<()> {
     // serialized path every later update takes.
     reload.run().await;
     // Finish claims a restart interrupted, park cards whose session ended
-    // meanwhile, then start what the rules call for.
-    tokio::spawn(iii_kanban::dispatch::boot(ctx.clone()));
+    // meanwhile, start what the rules call for, and keep checking.
+    iii_kanban::dispatch::spawn_sweep(ctx.clone());
 
     ui::register(&iii);
     // Native app for the iii app (kanban::native-ui); the handle lives as long as the worker.

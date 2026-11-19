@@ -303,7 +303,7 @@ dispatch:
 ```
 
 A card starts when it is top-level (not a subtask), in `todo`, assigned to the
-rule's `assignee`, in one of its projects, and its newest create, move to To do
+rule's `assignee` (or its `agent`: deepwork rewrites its run ticket's assignee), in one of its projects, and its newest create, move to To do
 or assignment was written by one of its `actors`. The dispatcher claims it
 (moves it to In progress with the `starting` pill, as actor `kanban-dispatch`)
 and sends its first message: the card key, then
@@ -318,17 +318,23 @@ as in a console session; the card gets `▶ Started deepwork — session …`.
   progress.
 - **A session that stops.** When a dispatched session's final turn ends
   (`harness::on-turn-completed` with `terminal: true`) and its card is still In
-  progress (failed, cancelled, out of budget, or ended without moving it),
-  the card moves to Backlog with `unfinished`, the `needs you` pill and a
-  comment naming the session and the cause. Nothing restarts on its own: move
-  the card to To do to resume it. A refused `harness::send` parks the card the
-  same way, labelled `blocked`.
-- **Restarts.** Session ids are `dispatch-<key>-<claim seq>` and double as the
-  send's idempotency key, so a claim interrupted by a restart is sent again on
-  boot without starting a second session, and a late event from an earlier
-  claim changes nothing. On boot the worker also asks `harness::status` about
-  every dispatched card still In progress and parks the ones whose session is
-  gone.
+  progress under the same claim (failed, cancelled, out of budget, or ended
+  without moving it), the card moves to Backlog with `unfinished`, the
+  `needs you` pill and a comment naming the session and the cause. Nothing
+  restarts on its own: move the card to To do to resume it. A claim ends when
+  anyone moves the card afterwards, and a run ticket whose
+  `Orchestrator session:` names another session (a resume from the chat) is
+  that session's, so neither is parked.
+- **A send that fails.** The dispatcher asks `harness::status` about the session
+  first: a send that timed out may have started it anyway, and then the card
+  keeps running. A refusal parks the card the same way, labelled `blocked`.
+- **Restarts and missed events.** Session ids are `dispatch-<key>-<claim seq>`
+  and double as the send's idempotency key. At boot and every five minutes the
+  worker asks `harness::status` about every card it still claims: a claim whose
+  session the harness never saw is sent again without starting a second
+  session, a session that ended parks its card, and a running one loses the
+  `starting` pill. A harness that does not answer is asked again at the next
+  pass.
 - **Trust.** `actors` compares the activity `actor`, which callers set
   themselves: it keeps agents' writes from starting runs by accident, not an
   agent that pretends to be `user`. Map only projects whose cards you would run.

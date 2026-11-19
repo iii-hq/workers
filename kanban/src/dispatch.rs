@@ -43,6 +43,7 @@ const IN_PROGRESS: &str = "in_progress";
 const BACKLOG: &str = "backlog";
 const RUN_LABEL: &str = "dw:run";
 const SEND_TIMEOUT_MS: u64 = 30_000;
+const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DispatchProject {
@@ -208,6 +209,12 @@ fn assigned(ticket: &Ticket, assignee: &str) -> bool {
     ticket.assignee.as_deref().map(str::trim) == Some(assignee)
 }
 
+/// A card is the rule's when it is assigned to the rule's assignee, or to its
+/// agent (deepwork rewrites its run ticket's assignee to `deepwork`).
+fn assigned_to_rule(ticket: &Ticket, rule: &DispatchRule) -> bool {
+    assigned(ticket, &rule.assignee) || assigned(ticket, rule.agent())
+}
+
 /// The actor of the write that made the card eligible: its newest create, or
 /// change of `status` to `todo`, or of `assignee` to `assignee`.
 pub fn trigger_actor<'a>(ticket: &'a Ticket, assignee: &str) -> &'a str {
@@ -226,21 +233,45 @@ pub fn trigger_actor<'a>(ticket: &'a Ticket, assignee: &str) -> &'a str {
         .unwrap_or(ticket.created_by.as_str())
 }
 
-/// The sequence number of the dispatcher's newest claim of this card.
+/// The sequence number of the dispatcher's live claim of this card: its
+/// newest status change, when that was the dispatcher moving it In progress.
+/// A later move by anyone (a person taking it back by hand, the run finishing)
+/// ends the claim.
 pub fn claim_seq(ticket: &Ticket) -> Option<u64> {
+    let last_move = ticket.activity.iter().rev().find(|entry| {
+        entry
+            .changes
+            .iter()
+            .flatten()
+            .any(|change| change.field == "status")
+    })?;
+    let claimed = last_move.actor == ACTOR
+        && last_move
+            .changes
+            .iter()
+            .flatten()
+            .any(|change| change.field == "status" && change.to == json!(IN_PROGRESS));
+    claimed.then_some(last_move.seq)
+}
+
+/// The session a deepwork run ticket names as its orchestrator, when it does.
+fn orchestrator_session(ticket: &Ticket) -> Option<&str> {
     ticket
-        .activity
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry.actor == ACTOR
-                && entry
-                    .changes
-                    .iter()
-                    .flatten()
-                    .any(|change| change.field == "status" && change.to == json!(IN_PROGRESS))
-        })
-        .map(|entry| entry.seq)
+        .description
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Orchestrator session:"))
+        .map(str::trim)
+        .next_back()
+}
+
+/// Whether `session` still runs this card under the dispatcher's claim: the
+/// claim is live with its seq, and no other session took the run over (a
+/// resume from the chat rewrites `Orchestrator session:` first).
+fn runs_card(ticket: &Ticket, session: &str, seq: u64) -> bool {
+    live(ticket)
+        && ticket.status == IN_PROGRESS
+        && claim_seq(ticket) == Some(seq)
+        && orchestrator_session(ticket).is_none_or(|owner| owner == session)
 }
 
 pub fn session_id(key: &str, seq: u64) -> String {
@@ -285,7 +316,7 @@ pub fn plan(board: &Board, rules: &[DispatchRule]) -> Vec<Action> {
         let mut running: Vec<(&str, u32)> = Vec::new();
         for ticket in board.tickets.values().filter(top_level) {
             if ticket.status == IN_PROGRESS
-                && assigned(ticket, &rule.assignee)
+                && assigned_to_rule(ticket, rule)
                 && let Some(project) = root_of(ticket.project_id.as_deref())
             {
                 match running.iter_mut().find(|(root, _)| *root == project.root) {
@@ -298,12 +329,14 @@ pub fn plan(board: &Board, rules: &[DispatchRule]) -> Vec<Action> {
             .tickets
             .values()
             .filter(top_level)
-            .filter(|t| t.status == TODO && assigned(t, &rule.assignee))
+            .filter(|t| t.status == TODO && assigned_to_rule(t, rule))
             .filter(|t| root_of(t.project_id.as_deref()).is_some())
             .filter(|t| {
-                rule.actors
-                    .iter()
-                    .any(|a| a == trigger_actor(t, &rule.assignee))
+                let actor = match t.assignee.as_deref().map(str::trim) {
+                    Some(assignee) => trigger_actor(t, assignee),
+                    None => t.created_by.as_str(),
+                };
+                rule.actors.iter().any(|a| a == actor)
             })
             .collect();
         queue.sort_by(|a, b| board::by_order(a, b));
@@ -360,7 +393,7 @@ pub fn relevant<'a>(rules: &[DispatchRule], mut tickets: impl Iterator<Item = &'
         && tickets.any(|ticket| {
             ticket.pills.contains(&queued_pill())
                 || (ticket.parent_id.is_none()
-                    && rules.iter().any(|rule| assigned(ticket, &rule.assignee)))
+                    && rules.iter().any(|rule| assigned_to_rule(ticket, rule)))
         })
 }
 
@@ -422,7 +455,7 @@ pub fn stopped_reason(board: &Board, event: &Value) -> Option<(String, String)> 
     let session = event.get("session_id")?.as_str()?;
     let (key, seq) = parse_session_id(session)?;
     let ticket = board::find_ticket(board, &key)?;
-    if !live(ticket) || ticket.status != IN_PROGRESS || claim_seq(ticket) != Some(seq) {
+    if !runs_card(ticket, session, seq) {
         return None;
     }
     let status = event
@@ -500,13 +533,14 @@ async fn reconcile(ctx: &Arc<Ctx>) {
             return;
         }
     };
+    let in_todo = |t: &Ticket| live(t) && t.status == TODO;
     for action in plan(&board, &rules) {
         match action {
             Action::Queue { key } => {
-                let _ = update(ctx, &key, Some(TODO), pills(vec![queued_pill()])).await;
+                let _ = update(ctx, &key, in_todo, pills(vec![queued_pill()])).await;
             }
             Action::Unqueue { key } => {
-                let _ = update(ctx, &key, Some(TODO), pills(Vec::new())).await;
+                let _ = update(ctx, &key, in_todo, pills(Vec::new())).await;
             }
             Action::Start {
                 key,
@@ -528,17 +562,19 @@ fn pills(pills: Vec<Pill>) -> UpdatePatch {
     }
 }
 
-/// One ticket update by the dispatcher, applied only while the ticket is
-/// still in `expect` (when given). Returns the ticket as written.
-async fn update(ctx: &Ctx, key: &str, expect: Option<&str>, patch: UpdatePatch) -> Option<Ticket> {
+/// One ticket update by the dispatcher, applied under the store lock only
+/// while `guard` still holds for the ticket as it is then (a plan is a
+/// snapshot, and a send can take seconds). Returns the ticket as written.
+async fn update(
+    ctx: &Ctx,
+    key: &str,
+    guard: impl Fn(&Ticket) -> bool,
+    patch: UpdatePatch,
+) -> Option<Ticket> {
     let result = functions::apply(ctx, "ticket.updated", |board, context, at| {
         let before = board::find_ticket(board, key).cloned();
-        match (&before, expect) {
-            (None, _) => return Ok(Outcome::silent(None)),
-            (Some(ticket), Some(status)) if ticket.status != status || !live(ticket) => {
-                return Ok(Outcome::silent(None));
-            }
-            _ => {}
+        if !before.as_ref().is_some_and(&guard) {
+            return Ok(Outcome::silent(None));
         }
         let updated = board::update_ticket(board, key, &patch, ACTOR, context, at)?;
         let related = updated
@@ -591,13 +627,42 @@ async fn start(
         remove_labels: Some(vec!["blocked".to_string(), "unfinished".to_string()]),
         ..UpdatePatch::default()
     };
-    let Some(ticket) = update(ctx, key, Some(TODO), claim).await else {
-        return; // moved by someone else meanwhile, or gone
+    // Still what the plan saw: in To do, top-level, the rule's, in its project.
+    let eligible = |t: &Ticket| {
+        live(t)
+            && t.status == TODO
+            && t.parent_id.is_none()
+            && assigned_to_rule(t, rule)
+            && t.project_id.as_deref() == Some(project_id)
+    };
+    let Some(ticket) = update(ctx, key, eligible, claim).await else {
+        return; // moved, reassigned or gone meanwhile
     };
     send(ctx, rule, &ticket, project_id, root, resume).await;
 }
 
-/// Send the claimed card's first message; on a refusal, park the card.
+async fn harness_status(ctx: &Ctx, session: &str) -> Result<Value, Error> {
+    ctx.iii
+        .call(CallRequest {
+            function_id: "harness::status".into(),
+            payload: json!({ "session_id": session }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+}
+
+/// Whether a `harness::status` answer is a session still working or waiting.
+fn session_alive(status: &Value) -> bool {
+    matches!(
+        status.get("status").and_then(Value::as_str),
+        Some("running" | "awaiting_functions")
+    ) || status.get("expects_wake").and_then(Value::as_bool) == Some(true)
+}
+
+/// Send the claimed card's first message. A failed call is checked against
+/// the harness first: a send that timed out may still have started the
+/// session, and parking its card would let a second session start on it.
 async fn send(
     ctx: &Arc<Ctx>,
     rule: &DispatchRule,
@@ -609,6 +674,7 @@ async fn send(
     let Some(seq) = claim_seq(ticket) else {
         return;
     };
+    let session = session_id(&ticket.key, seq);
     let payload = send_request(rule, ticket, project_id, root, resume, seq);
     let request = CallRequest {
         function_id: "harness::send".into(),
@@ -616,49 +682,76 @@ async fn send(
         action: None,
         timeout_ms: Some(SEND_TIMEOUT_MS),
     };
-    match ctx.iii.call(request).await {
-        Ok(_) => {
+    let error = match ctx.iii.call(request).await {
+        Ok(_) => None,
+        Err(error) => match harness_status(ctx, &session).await {
+            Ok(status) if !status.is_null() => None, // it started after all
+            Ok(_) => Some(error.to_string()),
+            Err(_) => {
+                // The harness does not answer: keep the claim; the sweep sends again.
+                tracing::warn!(key = %ticket.key, %error, "dispatch: send unconfirmed, retried by the sweep");
+                return;
+            }
+        },
+    };
+    let claimed = |t: &Ticket| runs_card(t, &session, seq);
+    match error {
+        None => {
+            let started = UpdatePatch {
+                pills: Some(Vec::new()),
+                ..UpdatePatch::default()
+            };
+            // Clear `starting` unless the run already set its own pills.
+            let _ = update(
+                ctx,
+                &ticket.key,
+                |t| claimed(t) && t.pills == vec![starting_pill()],
+                started,
+            )
+            .await;
             let verb = if resume { "Resumed" } else { "Started" };
             comment(
                 ctx,
                 &ticket.key,
-                format!(
-                    "▶ {verb} {} — session {} in {root}.",
-                    rule.agent(),
-                    session_id(&ticket.key, seq)
-                ),
+                format!("▶ {verb} {} — session {session} in {root}.", rule.agent()),
             )
             .await;
         }
-        Err(error) => {
+        Some(error) => {
             let park = UpdatePatch {
                 status: Some(BACKLOG.to_string()),
                 add_labels: Some(vec!["blocked".to_string()]),
                 pills: Some(vec![needs_you_pill()]),
                 ..UpdatePatch::default()
             };
-            update(ctx, &ticket.key, Some(IN_PROGRESS), park).await;
-            comment(
-                ctx,
-                &ticket.key,
-                format!(
-                    "⛔ Needs you — couldn't start {}: {error}. Fix the cause, then move this card to To do.",
-                    rule.agent()
-                ),
-            )
-            .await;
+            if update(ctx, &ticket.key, claimed, park).await.is_some() {
+                comment(
+                    ctx,
+                    &ticket.key,
+                    format!(
+                        "⛔ Needs you — couldn't start {}: {error}. Fix the cause, then move this card to To do.",
+                        rule.agent()
+                    ),
+                )
+                .await;
+            }
         }
     }
 }
 
-async fn park_stopped(ctx: &Arc<Ctx>, key: &str, reason: &str) {
+/// Park a card whose session ended, re-checked under the lock: the claim and
+/// the session must still be the ones that ended.
+async fn park_stopped(ctx: &Arc<Ctx>, key: &str, session: &str, seq: u64, reason: &str) {
     let park = UpdatePatch {
         status: Some(BACKLOG.to_string()),
         add_labels: Some(vec!["unfinished".to_string()]),
         pills: Some(vec![needs_you_pill()]),
         ..UpdatePatch::default()
     };
-    if update(ctx, key, Some(IN_PROGRESS), park).await.is_some() {
+    if update(ctx, key, |t| runs_card(t, session, seq), park)
+        .await
+        .is_some()
+    {
         comment(
             ctx,
             key,
@@ -694,8 +787,31 @@ pub struct Ack {
     pub ok: bool,
 }
 
-/// Register the final-turn sink and observe `harness::on-turn-completed` for
-/// dispatched sessions. The observer stays pending while no harness runs.
+/// Park the card of a dispatched session whose final turn ended.
+async fn on_final_turn(ctx: &Arc<Ctx>, event: &Value) {
+    let Some((_, seq)) = event
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(parse_session_id)
+    else {
+        return; // a child of a dispatched session, not the session itself
+    };
+    let board = match ctx.store.read().await {
+        Ok(board) => board,
+        Err(error) => {
+            tracing::warn!(%error, "dispatch: board read failed; the sweep checks this session again");
+            return;
+        }
+    };
+    if let Some((key, reason)) = stopped_reason(&board, event) {
+        let session = event["session_id"].as_str().unwrap_or_default();
+        park_stopped(ctx, &key, session, seq, &reason).await;
+    }
+}
+
+/// Register the final-turn sink, observe `harness::on-turn-completed` for
+/// dispatched sessions (the observer stays pending while no harness runs),
+/// and start the sweep.
 pub fn register(ctx: &Arc<Ctx>) {
     ctx.dispatch.bind(ctx);
     let handler_ctx = ctx.clone();
@@ -706,10 +822,8 @@ pub fn register(ctx: &Arc<Ctx>) {
             async move {
                 if let Some(event) = delivery.input
                     && let Ok(event) = serde_json::to_value(event)
-                    && let Ok(board) = ctx.store.read().await
-                    && let Some((key, reason)) = stopped_reason(&board, &event)
                 {
-                    park_stopped(&ctx, &key, &reason).await;
+                    on_final_turn(&ctx, &event).await;
                 }
                 Ok::<Ack, Error>(Ack { ok: true })
             }
@@ -730,10 +844,24 @@ pub fn register(ctx: &Arc<Ctx>) {
     );
 }
 
-/// After a restart: finish a claim whose send never happened (the same
-/// session id and idempotency key make a repeat harmless), park cards whose
-/// session ended while the worker was down, then reconcile.
-pub async fn boot(ctx: Arc<Ctx>) {
+/// Every few minutes, and first at boot: the safety net under the
+/// turn-completed event, which a restart, a harness that was down or a failed
+/// write can miss. ponytail: a fixed 5-minute poll of the dispatched cards
+/// still In progress (a handful); a harness event log would make it exact.
+pub fn spawn_sweep(ctx: Arc<Ctx>) {
+    tokio::spawn(async move {
+        loop {
+            sweep(&ctx).await;
+            tokio::time::sleep(SWEEP_EVERY).await;
+        }
+    });
+}
+
+/// For each card the dispatcher still claims: a claim whose session the
+/// harness never saw is sent again (same session id and idempotency key, so a
+/// repeat is harmless); a session that ended parks its card; a live one that
+/// still shows `starting` loses the pill. Then reconcile.
+async fn sweep(ctx: &Arc<Ctx>) {
     let config = config_snapshot(&ctx.config);
     if config.dispatch.is_empty() {
         return;
@@ -741,55 +869,54 @@ pub async fn boot(ctx: Arc<Ctx>) {
     let Ok(board) = ctx.store.read().await else {
         return;
     };
-    for ticket in board
-        .tickets
-        .values()
-        .filter(|t| live(t) && t.status == IN_PROGRESS)
-    {
+    for ticket in board.tickets.values() {
         let Some(seq) = claim_seq(ticket) else {
             continue;
         };
         let session = session_id(&ticket.key, seq);
-        if ticket.pills.contains(&starting_pill()) {
-            if let Some(action) = plan_for_claimed(&board, &config.dispatch, ticket) {
-                let (rule, project_id, root) = action;
-                send(
-                    &ctx,
-                    &config.dispatch[rule],
-                    ticket,
-                    &project_id,
-                    &root,
-                    ticket.labels.iter().any(|l| l == RUN_LABEL),
-                )
-                .await;
-            }
+        if !runs_card(ticket, &session, seq) {
             continue;
         }
-        let status = ctx
-            .iii
-            .call(CallRequest {
-                function_id: "harness::status".into(),
-                payload: json!({ "session_id": session }),
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await;
-        let Ok(status) = status else { continue }; // harness down: decide later
-        let gone = status.is_null()
-            || (!matches!(
-                status.get("status").and_then(Value::as_str),
-                Some("running" | "awaiting_functions")
-            ) && status.get("expects_wake").and_then(Value::as_bool) != Some(true));
-        if gone {
-            let mut event = status.clone();
-            if event.is_null() {
-                event = json!({ "status": "unknown to the harness" });
+        let Ok(status) = harness_status(ctx, &session).await else {
+            continue; // the harness does not answer: the next sweep decides
+        };
+        if status.is_null() {
+            if ticket.pills.contains(&starting_pill()) {
+                if let Some((rule, project_id, root)) =
+                    plan_for_claimed(&board, &config.dispatch, ticket)
+                {
+                    let resume = ticket.labels.iter().any(|l| l == RUN_LABEL);
+                    send(
+                        ctx,
+                        &config.dispatch[rule],
+                        ticket,
+                        &project_id,
+                        &root,
+                        resume,
+                    )
+                    .await;
+                }
+            } else {
+                let event = json!({ "session_id": session, "terminal": true, "status": "unknown to the harness" });
+                on_final_turn(ctx, &event).await;
             }
+        } else if !session_alive(&status) {
+            let mut event = status.clone();
             event["session_id"] = json!(session);
             event["terminal"] = json!(true);
-            if let Some((key, reason)) = stopped_reason(&board, &event) {
-                park_stopped(&ctx, &key, &reason).await;
-            }
+            on_final_turn(ctx, &event).await;
+        } else if ticket.pills == vec![starting_pill()] {
+            let started = UpdatePatch {
+                pills: Some(Vec::new()),
+                ..UpdatePatch::default()
+            };
+            let _ = update(
+                ctx,
+                &ticket.key,
+                |t| runs_card(t, &session, seq) && t.pills == vec![starting_pill()],
+                started,
+            )
+            .await;
         }
     }
     ctx.dispatch.poke();
@@ -802,7 +929,7 @@ fn plan_for_claimed(
     ticket: &Ticket,
 ) -> Option<(usize, String, String)> {
     rules.iter().enumerate().find_map(|(index, rule)| {
-        if !assigned(ticket, &rule.assignee) {
+        if !assigned_to_rule(ticket, rule) {
             return None;
         }
         rule.projects.iter().find_map(|p| {
@@ -1028,6 +1155,75 @@ mod tests {
         assert!(!relevant(&rules, [&sub, &other].into_iter()));
         assert!(relevant(&rules, [&queued].into_iter()));
         assert!(!relevant(&[], [&card].into_iter()));
+    }
+
+    #[test]
+    fn a_later_move_ends_the_claim_and_a_new_owner_keeps_the_card() {
+        let mut t = ticket("KAN-3", 1, "in_progress", "deepwork", Some("p1"), "user");
+        t.activity.push(activity(
+            2,
+            ACTOR,
+            "ticket.updated",
+            vec![("status", json!("in_progress"))],
+        ));
+        assert_eq!(claim_seq(&t), Some(2));
+        assert!(runs_card(&t, "dispatch-kan-3-2", 2));
+        t.description = "Goal: x\n## Run details\nOrchestrator session: console-abc".into();
+        assert!(
+            !runs_card(&t, "dispatch-kan-3-2", 2),
+            "a chat resume took the run over"
+        );
+        t.description = "Orchestrator session: dispatch-kan-3-2".into();
+        assert!(runs_card(&t, "dispatch-kan-3-2", 2));
+        t.activity.push(activity(
+            3,
+            "user",
+            "ticket.moved",
+            vec![("status", json!("backlog"))],
+        ));
+        t.activity.push(activity(
+            4,
+            "user",
+            "ticket.moved",
+            vec![("status", json!("in_progress"))],
+        ));
+        assert_eq!(claim_seq(&t), None, "a person moved it back by hand");
+        let event =
+            json!({ "session_id": "dispatch-kan-3-2", "terminal": true, "status": "failed" });
+        assert_eq!(stopped_reason(&board(vec![t]), &event), None);
+    }
+
+    #[test]
+    fn a_rule_owns_the_cards_assigned_to_its_agent() {
+        let mut r = rule(1);
+        r.assignee = "dw-sonnet".into();
+        r.agent = Some("deepwork".into());
+        // The run ticket deepwork rewrote to `deepwork` still holds the slot.
+        let running = ticket("KAN-1", 1, "in_progress", "deepwork", Some("p1"), "user");
+        let waiting = ticket("KAN-2", 2, "todo", "dw-sonnet", Some("p1"), "user");
+        assert_eq!(
+            keys(&plan(&board(vec![running, waiting]), &[r.clone()])),
+            vec!["queue KAN-2"]
+        );
+        // And dragging it back to To do still dispatches it.
+        let mut back = ticket("KAN-1", 1, "todo", "deepwork", Some("p1"), "user");
+        back.labels.push("dw:run".into());
+        assert_eq!(
+            keys(&plan(&board(vec![back]), &[r])),
+            vec!["start KAN-1 resume"]
+        );
+    }
+
+    #[test]
+    fn session_alive_reads_running_and_parked() {
+        assert!(session_alive(&json!({ "status": "running" })));
+        assert!(session_alive(
+            &json!({ "status": "completed", "expects_wake": true })
+        ));
+        assert!(!session_alive(
+            &json!({ "status": "completed", "expects_wake": false })
+        ));
+        assert!(!session_alive(&json!({ "status": "failed" })));
     }
 
     #[test]
