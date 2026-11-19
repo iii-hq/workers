@@ -557,27 +557,33 @@ export function NewProjectDialog({
   onOpenChange,
   agents,
   onCreated,
+  project = null,
 }: {
   host: Host
   open: boolean
   onOpenChange: (open: boolean) => void
   agents: AgentProfile[]
+  /** The project as created, or as saved when editing. */
   onCreated: (project: ProjectView) => void
+  /** Edit this project (its name, description, lead and color) instead of creating one. */
+  project?: ProjectView | null
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [lead, setLead] = useState<string | undefined>(undefined)
-  const [color, setColor] = useState<GlyphTone>('blue')
+  // Null: a project saved without a color keeps none until one is picked.
+  const [color, setColor] = useState<GlyphTone | null>('blue')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const colorLabel = useId()
 
   useEffect(() => {
     if (!open) return
-    setName('')
-    setDescription('')
-    setLead(undefined)
-    setColor('blue')
+    // Read once as the dialog opens: a board reload under it must not undo what is being typed.
+    setName(project?.name ?? '')
+    setDescription(project?.description ?? '')
+    setLead(project?.lead ?? undefined)
+    setColor(project ? project.color : 'blue')
     setBusy(false)
     setError(null)
   }, [open])
@@ -589,14 +595,22 @@ export function NewProjectDialog({
     setBusy(true)
     setError(null)
     try {
-      const project = await api.createProject(host.iii, {
-        name: name.trim(),
-        description: description.trim(),
-        color,
-        ...(lead ? { lead } : {}),
-      })
+      const saved = project
+        ? await api.updateProject(host.iii, {
+            id: project.id,
+            name: name.trim(),
+            description: description.trim(),
+            color,
+            lead: lead ?? null,
+          })
+        : await api.createProject(host.iii, {
+            name: name.trim(),
+            description: description.trim(),
+            color: color ?? 'blue',
+            ...(lead ? { lead } : {}),
+          })
       announcePlanChange()
-      onCreated(project)
+      onCreated(saved)
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -610,8 +624,10 @@ export function NewProjectDialog({
     <ShadcnDialog onOpenChange={onOpenChange} open={open}>
       <ShadcnDialogContent className="kb-dialog kb-plan-dialog">
         <ShadcnDialogHeader>
-          <ShadcnDialogTitle>New project</ShadcnDialogTitle>
-          <ShadcnDialogDescription>A ticket belongs to at most one project.</ShadcnDialogDescription>
+          <ShadcnDialogTitle>{project ? 'Edit project' : 'New project'}</ShadcnDialogTitle>
+          <ShadcnDialogDescription>
+            {project ? 'Its tickets stay in it under the new name.' : 'A ticket belongs to at most one project.'}
+          </ShadcnDialogDescription>
         </ShadcnDialogHeader>
         <div className="kb-plan-form" onKeyDown={submitOnEnter(() => void submit())}>
           <Field error={nameError} hint="Unique on this board. Case is ignored." htmlFor={`${colorLabel}-name`} label="Name">
@@ -669,7 +685,7 @@ export function NewProjectDialog({
             Cancel
           </ShadcnButton>
           <ShadcnButton disabled={!canSubmit} onClick={() => void submit()} type="button">
-            {busy ? 'Creating…' : 'Create project'}
+            {project ? (busy ? 'Saving…' : 'Save') : busy ? 'Creating…' : 'Create project'}
           </ShadcnButton>
         </ShadcnDialogFooter>
       </ShadcnDialogContent>

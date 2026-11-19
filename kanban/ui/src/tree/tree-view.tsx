@@ -19,6 +19,7 @@ import {
   Minus,
   Network,
   Palette,
+  Pencil,
   Plus,
   Search,
   SquareKanban,
@@ -38,6 +39,7 @@ import {
   useState,
 } from 'react'
 import { type StatusStep, statusStep } from '../board-state'
+import { NewProjectDialog } from '../plan-dialogs'
 import type { AgentProfile, BoardData, GlyphTone, ProjectView, TicketSummary } from '../shared'
 import { assigneeName } from '../ui/avatar'
 import { Empty, Notice } from '../ui/feedback'
@@ -137,6 +139,8 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   const [toggled, setToggled] = usePaneState<Record<string, boolean>>(`kanban:tree-open:${paneKey}`, {})
   const [activeId, setActiveId] = useState<string | null>(null)
   const chartRef = useRef<HTMLDivElement | null>(null)
+  /** The project being edited from its card (the project dialog). */
+  const [editingProject, setEditingProject] = useState<ProjectView | null>(null)
   /** Where the last press on the canvas began: a click that did not move is not a pan. */
   const pressedAt = useRef<{ x: number; y: number } | null>(null)
   // Beside a chat the tree's pane is narrow: the toolbar keeps its controls and drops their words.
@@ -519,6 +523,7 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           onActivate={activate}
           onFocusRow={setActiveId}
           onDetails={onOpenTicket}
+          onEditProject={setEditingProject}
           onToggle={setOpen}
           position={1}
           phaseSince={phaseSince}
@@ -628,6 +633,16 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
       ) : (
         <div className="kb-chart-empty">{body}</div>
       )}
+      <NewProjectDialog
+        agents={agents}
+        host={host}
+        onCreated={() => setEditingProject(null)}
+        onOpenChange={(open) => {
+          if (!open) setEditingProject(null)
+        }}
+        open={editingProject !== null}
+        project={editingProject}
+      />
     </div>
   )
 }
@@ -681,6 +696,8 @@ type ItemProps = {
   phaseSince: ReadonlyMap<string, number>
   /** A ticket's details, in the dialog. */
   onDetails: (key: string) => void
+  /** Rename the project (or change its description, lead, color) in the project dialog. */
+  onEditProject: (project: ProjectView) => void
   /** Its place among its siblings: the stagger of its entrance. */
   enterIndex?: number
 }
@@ -887,6 +904,7 @@ function GroupCard({
   agents,
   open,
   onToggle,
+  onEditProject,
 }: ItemProps & { node: GroupNode; open: boolean; onToggle: () => void }) {
   const p = node.project
   const counts = tally(node)
@@ -915,6 +933,21 @@ function GroupCard({
             {counts.sessions} {counts.sessions === 1 ? 'agent' : 'agents'}
           </span>
         </>
+      }
+      action={
+        p ? (
+          <IconAction
+            className="kb-node__action"
+            label="Edit project"
+            onClick={(event) => {
+              event.stopPropagation()
+              onEditProject(p)
+            }}
+            size="icon-xs"
+          >
+            <Pencil size={16} />
+          </IconAction>
+        ) : null
       }
       kind="group"
       name={node.name}
