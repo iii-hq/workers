@@ -412,6 +412,8 @@ enqueue actions through the registered `engine::queue::enqueue` provider.
   address a bare topic name and, on the builtin adapter, aggregate across
   every subscriber's internal queue on that topic — matching the engine's
   behavior (and its naming quirk) exactly, rather than fixing it here.
+  The builtin adapter also counts the bare name itself, so a function queue
+  with the topic's name stays visible next to its subscriptions.
   On the rabbitmq transport this makes DLQ browse/redrive against a
   subscriber topic 404 (retries write to the per-subscriber DLQ), and the
   AMQP channel closure stops every consumer on the worker. Upstream engine
