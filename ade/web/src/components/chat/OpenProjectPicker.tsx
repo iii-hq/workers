@@ -80,6 +80,18 @@ const SEARCH_LIMIT = 30
 const isPathText = (text: string) =>
   text.startsWith('/') || text.startsWith('~')
 
+/** No row highlighted: the field's own folder is the target. */
+const NONE = -1
+
+/**
+ * The highlight a field value starts with. A path that ends in `/` names
+ * a folder outright (`~/code/app/`, typed or Tab-completed), so nothing
+ * under it is highlighted; anything else narrows the listing and leads
+ * with the best match.
+ */
+const highlightFor = (text: string) =>
+  isPathText(text) && text.endsWith('/') ? NONE : 0
+
 /** Footer key caps: hairline boxes that read as labels. */
 const CAP =
   'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none'
@@ -90,7 +102,9 @@ const CAP =
  *
  * - The field holds a path (`~/conductor/repos/`). Typing narrows the
  *  folder's children and the best completion shows as ghost text, fish
- *  style; Tab or → takes it, Backspace over a `/` climbs a level.
+ *  style; Tab or → takes it, Backspace over a `/` climbs a level. A
+ *  path that ends in `/` names its folder: nothing under it is
+ *  highlighted, so Add project adds that folder, not its first child.
  * - The listing under it is that folder: repositories first, each row
  *  opens on click and offers Add, the way Vercel's Import repository
  *  list does. A name that isn't in the folder is looked up across the
@@ -113,6 +127,8 @@ export function OpenProjectPicker({
   const [listings, setListings] = useState<
     Record<string, FolderListing | { error: string }>
   >({})
+  // The highlighted row, or NONE: the field names a whole folder (it ends in
+  // `/`) and that folder, not its first child, is what Add project adds.
   const [active, setActive] = useState(0)
   const [busyPath, setBusyPath] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -348,7 +364,8 @@ export function OpenProjectPicker({
   const go = (path: string) => {
     const shown = tildify(path, home)
     setText(shown === '/' ? '/' : `${shown}/`)
-    setActive(0)
+    // Stepping into a folder picks it; the listing is for going further.
+    setActive(NONE)
     setError(null)
     if (pointerFine) inputRef.current?.focus()
   }
@@ -401,6 +418,10 @@ export function OpenProjectPicker({
     } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       if (!rows.length) return
+      if (activeIndex === NONE) {
+        setActive(event.key === 'ArrowDown' ? 0 : rows.length - 1)
+        return
+      }
       const step = event.key === 'ArrowDown' ? 1 : -1
       setActive((activeIndex + step + rows.length) % rows.length)
     } else if (event.key === 'Enter') {
@@ -414,7 +435,7 @@ export function OpenProjectPicker({
       (event.key === 'Tab' && !event.shiftKey) ||
       (event.key === 'ArrowRight' && atEnd)
     ) {
-      const into = ghostFor ?? activeRow
+      const into = ghostFor ?? activeRow ?? rows[0]
       if (!into) return
       event.preventDefault()
       go(into.path)
@@ -528,7 +549,7 @@ export function OpenProjectPicker({
                 value={text}
                 onChange={(event) => {
                   setText(event.target.value)
-                  setActive(0)
+                  setActive(highlightFor(event.target.value))
                   setError(null)
                 }}
                 onKeyDown={onKeyDown}
