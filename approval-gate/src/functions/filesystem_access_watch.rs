@@ -122,7 +122,14 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
                 .take()
                 .or(existing.implicit_namespace);
         }
-        Ok(Some(_stale)) => {
+        Ok(Some(stale)) => {
+            // A second failure of the same call keeps the namespace the user
+            // was shown when this post_call omits it.
+            if stale.turn_id == input.turn_id && stale.function_id == call.function_id {
+                call.namespace = call.namespace.take().or(stale.namespace);
+                call.implicit_namespace =
+                    call.implicit_namespace.take().or(stale.implicit_namespace);
+            }
             // Clear the stale record so the write below (step 8) is a clean
             // insert rather than racing `hold`'s own duplicate-write
             // detection, which would otherwise suppress the re-emit this
@@ -735,6 +742,43 @@ mod tests {
             assert_eq!(
                 created[1]["access_request"]["requested_root"],
                 json!("/c/d")
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_filesystem_record_keeps_the_held_namespace_for_another_dir() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+
+            let mut first = jail_input("s_1", "c_1", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("laptop".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+
+            let out = handle(&stack.deps, jail_input("s_1", "c_1", "/c/d"))
+                .await
+                .unwrap();
+            assert_eq!(out, HookOutput::Hold);
+            let current = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(current["access_request"]["requested_root"], json!("/c/d"));
+            assert_eq!(current["namespace"], json!("laptop"));
+            assert_eq!(current["implicit_namespace"], json!("default"));
+
+            let always = crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: "c_1".into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: Some(crate::types::AccessDuration::Always),
+                namespace: None,
+            };
+            let out = crate::functions::resolve::handle(&stack.deps, always).await;
+            assert!(
+                matches!(out, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                "{out:?}"
             );
         })
         .await;

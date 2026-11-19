@@ -51,13 +51,14 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
 
     // An old surface shows no namespace, so it may not allow a call held in
     // another one. `deny` is always safe.
-    if req.decision == ResolveDecision::Allow
-        && allow_lacks_namespace_echo(&record, req.namespace.as_deref())
-    {
+    if let (ResolveDecision::Allow, Some(ns), true) = (
+        req.decision,
+        record.namespace.as_deref(),
+        allow_lacks_namespace_echo(&record, req.namespace.as_deref()),
+    ) {
         return Err(ApprovalError::InvalidPayload(format!(
-            "{} is held for namespace {}: allow it from a surface that shows the namespace",
-            record.function_id,
-            record.namespace.as_deref().unwrap_or("?")
+            "{} is held for namespace {ns}: allow it from a surface that shows the namespace",
+            record.function_id
         )));
     }
 
