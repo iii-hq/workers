@@ -286,6 +286,22 @@ fn unchanged(a: &Stamp, b: &Stamp) -> bool {
         && a.size == b.size
         && (a.mtime, a.mtime_ns, a.ctime, a.ctime_ns) == (b.mtime, b.mtime_ns, b.ctime, b.ctime_ns)
 }
+/// Source-pin equality. Exact for every kind except a symlink's atime: its
+/// content can only be read with readlink(2), which always touches the inode's
+/// atime (no O_NOATIME applies to it, and restoring atime with utimensat would
+/// itself advance ctime). That atime is the capture's own read side effect, not
+/// a source generation change. Identity (dev, ino, uid, mode, links), gid, size,
+/// mtime and ctime stay exact: retargeting needs a new inode, and renaming it
+/// over the name drops the pinned inode's link count and advances its ctime,
+/// which no unprivileged process can restore. Captured metadata keeps the atime
+/// stamped BEFORE the read, so the clone carries the pre-read value.
+fn source_unchanged(a: &Stamp, b: &Stamp) -> bool {
+    if a.identity.mode & libc::S_IFMT == libc::S_IFLNK {
+        same_sealed(a, b)
+    } else {
+        unchanged(a, b)
+    }
+}
 struct OwnedNode {
     pin: File,
     read: Option<File>,
@@ -821,7 +837,7 @@ impl PayloadBuilder {
             source.revalidate()?;
         }
         for (file, expected) in &self.source_pins {
-            if !unchanged(expected, &stamp(file)?) {
+            if !source_unchanged(expected, &stamp(file)?) {
                 return Err(invalid("source generation changed before publication"));
             }
         }
@@ -985,6 +1001,23 @@ pub(crate) struct ReadablePayload {
 }
 impl Lease {
     pub(crate) fn capture_payload(&self, root: &Path) -> io::Result<ReadablePayload> {
+        self.capture_payload_inner(root, None)
+    }
+    /// Test-only race injection: `race` runs with a symlink's relative path
+    /// after the symlink is pinned and before its target is read.
+    #[cfg(test)]
+    pub(crate) fn capture_payload_racing(
+        &self,
+        root: &Path,
+        race: &dyn Fn(&Path),
+    ) -> io::Result<ReadablePayload> {
+        self.capture_payload_inner(root, Some(race))
+    }
+    fn capture_payload_inner(
+        &self,
+        root: &Path,
+        race: Option<&dyn Fn(&Path)>,
+    ) -> io::Result<ReadablePayload> {
         let guard = self.use_path(root)?;
         let root = absolute(root)?;
         let parent = Directory::open(root.parent().ok_or_else(|| invalid("source parent"))?)?;
@@ -1003,6 +1036,7 @@ impl Lease {
             &mut pins,
             &mut links,
             &mut budget,
+            race,
         )?;
         if links.values().any(|(_, found, total)| found != total) {
             return Err(invalid("source hardlinks escape captured tree"));
@@ -1028,6 +1062,7 @@ fn capture_node(
     pins: &mut Vec<(File, Stamp)>,
     links: &mut BTreeMap<(u64, u64), (PathBuf, u64, u64)>,
     budget: &mut (u64, usize),
+    race: Option<&dyn Fn(&Path)>,
 ) -> io::Result<()> {
     relative(&path)?;
     if entries.len() >= CEILING_ENTRIES {
@@ -1126,17 +1161,23 @@ fn capture_node(
             PayloadKind::File { size: meta.len() }
         }
     } else if meta.file_type().is_symlink() {
-        super::payload_fs::noatime(parent)?;
-        PayloadKind::Symlink {
-            target: super::payload_fs::read_link(parent, leaf)?,
+        if let Some(race) = race {
+            race(&path);
         }
+        // The target is read through the pin itself; the name must still bind
+        // that inode afterwards, like the regular-file reader above.
+        let target = super::payload_fs::read_link(&pin)?;
+        if Identity::of(&open_pin(parent, leaf)?)? != Identity::of(&pin)? {
+            return Err(invalid("source replaced while reading link"));
+        }
+        PayloadKind::Symlink { target }
     } else {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "source payload object type unsupported",
         ));
     };
-    if !unchanged(&original, &stamp(&pin)?) {
+    if !source_unchanged(&original, &stamp(&pin)?) {
         return Err(invalid("source metadata changed while inventorying"));
     }
     entries.push(PayloadEntry {
@@ -1162,10 +1203,11 @@ fn capture_node(
                 pins,
                 links,
                 budget,
+                race,
             )?;
         }
     }
-    if !unchanged(&original, &stamp(&pin)?) {
+    if !source_unchanged(&original, &stamp(&pin)?) {
         return Err(invalid("source changed during capture"));
     }
     pins.push((pin, original));
@@ -1176,7 +1218,7 @@ impl ReadablePayload {
         guard.payload_source(&self.lease)?;
         self.guard.revalidate()?;
         for (fd, expected) in &self.pins {
-            if !unchanged(expected, &stamp(fd)?) {
+            if !source_unchanged(expected, &stamp(fd)?) {
                 return Err(invalid("captured source changed"));
             }
         }
@@ -1186,7 +1228,7 @@ impl ReadablePayload {
         }
         self.guard.revalidate()?;
         for (fd, expected) in &self.pins {
-            if !unchanged(expected, &stamp(fd)?) {
+            if !source_unchanged(expected, &stamp(fd)?) {
                 return Err(invalid("source changed during copy"));
             }
         }
@@ -1552,6 +1594,9 @@ impl Read for SealedFile {
         Ok(got)
     }
 }
+#[cfg(test)]
+#[path = "payload_capture_tests.rs"]
+mod capture_tests;
 #[cfg(test)]
 #[path = "payload_read_tests.rs"]
 mod read_tests;

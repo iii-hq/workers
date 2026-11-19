@@ -262,13 +262,17 @@ pub(super) fn names(file: &File, max: usize) -> io::Result<Vec<(OsString, u64)>>
     result.sort();
     Ok(result)
 }
-pub(super) fn read_link(parent: &File, leaf: &OsStr) -> io::Result<Vec<u8>> {
-    let leaf = name(leaf)?;
+/// The target of the symlink inode `pin` itself (an `O_PATH | O_NOFOLLOW`
+/// descriptor), read through the descriptor with an empty name (Linux >=
+/// 2.6.39), never through a name a concurrent rename could rebind.
+/// readlink(2) always touches the inode's atime (O_NOATIME cannot apply to it);
+/// callers compare symlink pins without atime for exactly that reason.
+pub(super) fn read_link(pin: &File) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0; 4097];
     let n = unsafe {
         libc::readlinkat(
-            parent.as_raw_fd(),
-            leaf.as_ptr(),
+            pin.as_raw_fd(),
+            c"".as_ptr(),
             bytes.as_mut_ptr().cast(),
             bytes.len(),
         )
@@ -281,16 +285,4 @@ pub(super) fn read_link(parent: &File, leaf: &OsStr) -> io::Result<Vec<u8>> {
     }
     bytes.truncate(n as usize);
     Ok(bytes)
-}
-pub(super) fn noatime(file: &File) -> io::Result<()> {
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    syscall(unsafe { libc::fstatvfs(file.as_raw_fd(), &mut stat) })?;
-    #[cfg(target_os = "linux")]
-    if stat.f_flag & libc::ST_NOATIME == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "symlink source capture requires an admitted noatime filesystem",
-        ));
-    }
-    Ok(())
 }
