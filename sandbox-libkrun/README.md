@@ -7,6 +7,16 @@ sandbox call to it as `sandbox-libkrun::<operation>`, and Compose boots
 functions. You rarely call it directly: callers use `sandbox::*`, and Compose
 installs this adapter when a project needs it.
 
+## Migration-candidate admission prerequisite
+
+This branch requires explicitly provisioned persistent host admission before normal
+VM use. Compose's package installation does **not** provision it. See
+[host admission installation and recovery](HOST-ADMISSION.md) for the fixed namespace,
+local `admission` commands and authorization requirements. No automatic bootstrap,
+permission repair, recovery or publication occurs. The integrated source has not yet
+passed runtime validation; historical macOS support below does not establish support
+for the new Linux pidfd/OFD admission path.
+
 ## Install
 
 Compose adds it on its own when a project needs sandboxes or VM workers. To

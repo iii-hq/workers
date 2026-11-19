@@ -73,6 +73,13 @@ async fn async_main() -> anyhow::Result<()> {
                 1
             }
         },
+        Some(Commands::Admission(args)) => match sandbox_libkrun::cli::admission::run(args) {
+            Ok(exit_code) => exit_code,
+            Err(error) => {
+                eprintln!("error: admission command failed: {error}");
+                1
+            }
+        },
         Some(Commands::VmBoot(args)) => {
             // Run the VM on a dedicated OS thread: `msb_krun`'s virtio-blk
             // Drop impls call `tokio::Runtime::block_on` for async shutdown,
