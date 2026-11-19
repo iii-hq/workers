@@ -117,7 +117,9 @@ async fn runtime_real_owned_wait_without_child_activation_refuses_retirement() {
     let mut command = tokio::process::Command::new("/bin/sh");
     command.arg("-c").arg("exit 0");
     let child = launch.spawn(command).unwrap();
-    assert!(child.wait().await.is_err());
+    let completion = child.wait().await;
+    assert!(completion.os_status().is_some());
+    assert!(completion.retirement().is_err());
     assert!(lease.begin(MutationPlan::Create { root: tree }).is_err());
 }
 
@@ -373,4 +375,198 @@ fn e_activity_failure_marks_parent_shared_description_even_when_catalog_is_busy(
     assert!(writer.checkpoint().is_err());
     // No active writer is retired here: this asserts the exact OFD gate that
     // RuntimeChild::wait checks before releasing its parent duplicate.
+}
+
+fn simple_command(script: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.arg("-c").arg(script);
+    command
+}
+#[tokio::test]
+async fn f_reap_is_published_before_catalog_failure_and_signals_never_retarget_pid() {
+    let (_temp, context, data) = fixture();
+    let lease = context.local(&data.join("state")).unwrap();
+    let launch = lease.prepare_runtime(&[]).unwrap();
+    let child = launch.spawn(simple_command("exit 7")).unwrap();
+    let control = child.control();
+    let lock = context
+        .namespace
+        .directory
+        .file("catalog.lock", false)
+        .unwrap();
+    flock(&lock).unwrap();
+    let completion = child.wait().await;
+    assert_eq!(completion.os_status().unwrap().code(), Some(7));
+    assert!(completion.retirement().is_err());
+    let observed = control.terminal().await;
+    assert_eq!(observed.phase(), RuntimePhase::RetirementFailed);
+    assert_eq!(observed.os_status().unwrap().code(), Some(7));
+    assert!(control.signal(super::super::RuntimeSignal::Kill).is_err());
+    drop(lock);
+}
+#[tokio::test]
+async fn f_signal_reap_race_uses_original_pidfd_only() {
+    let (_temp, context, data) = fixture();
+    let lease = context.local(&data.join("state")).unwrap();
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exec sleep 2"))
+        .unwrap();
+    let control = child.control();
+    let signal = control.clone();
+    let thread = std::thread::spawn(move || signal.signal(super::super::RuntimeSignal::Terminate));
+    let completion = child.wait().await;
+    let sent = thread.join().unwrap();
+    assert!(
+        sent.is_ok()
+            || sent
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.raw_os_error() == Some(libc::ESRCH))
+    );
+    assert!(completion.os_status().is_some());
+    assert!(control.signal(super::super::RuntimeSignal::Kill).is_err());
+    assert!(control.observation().retirement().is_none());
+}
+#[tokio::test]
+async fn f_wait_error_is_not_reap_and_dropped_waiter_is_terminal_not_hung() {
+    let (_temp, context, data) = fixture();
+    let lease = context.local(&data.join("state")).unwrap();
+    let mut child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    let control = child.control();
+    child.wait_failure = true;
+    let completion = child.wait().await;
+    assert!(completion.os_status().is_none());
+    assert!(completion.retirement().is_err());
+    let observed = control.terminal().await;
+    assert_eq!(observed.phase(), RuntimePhase::WaitFailed);
+    let candidate = lease.prepare_runtime(&[]).unwrap();
+    assert!(candidate.cancel_before_spawn().is_err());
+}
+#[tokio::test]
+async fn f_cancelled_waiter_retains_fences_but_not_an_unending_terminal_notifier() {
+    let (_temp, context, data) = fixture();
+    let lease = context.local(&data.join("state")).unwrap();
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    let control = child.control();
+    drop(child);
+    let observed = control.terminal().await;
+    assert_eq!(observed.phase(), RuntimePhase::Abandoned);
+    assert!(observed.retirement().is_none());
+}
+#[tokio::test]
+async fn f_pidfd_receive_failure_returns_the_real_owned_child_for_supervision() {
+    let (_temp, context, data) = fixture();
+    let lease = context.local(&data.join("state")).unwrap();
+    let mut launch = lease.prepare_runtime(&[]).unwrap();
+    launch.pidfd_receive_failure = true;
+    let result = launch.spawn(simple_command("exit 3"));
+    let error = match result {
+        Err(e) => e,
+        Ok(_) => panic!("fault must retain Child in error"),
+    };
+    let (cause, child) = error.into_parts();
+    assert!(cause.to_string().contains("pidfd"));
+    let child = child.expect("post-spawn acquisition failure must retain supervision");
+    let control = child.control();
+    assert!(control.signal(super::super::RuntimeSignal::Kill).is_err());
+    let completion = child.wait().await;
+    assert_eq!(completion.os_status().unwrap().code(), Some(3));
+    assert!(completion.retirement().is_err());
+}
+#[tokio::test]
+async fn f_spawn_error_never_issues_never_spawned_cleanup_receipt() {
+    let (_temp, context, data) = fixture();
+    let lease = context.local(&data.join("state")).unwrap();
+    let launch = lease.prepare_runtime(&[]).unwrap();
+    let command = tokio::process::Command::new(data.join("missing-executable"));
+    let error = match launch.spawn(command) {
+        Err(e) => e,
+        Ok(_) => panic!("missing executable"),
+    };
+    assert!(error.into_parts().1.is_none());
+    let tx = context.namespace.transaction().unwrap();
+    assert!(
+        tx.catalog
+            .runtimes
+            .iter()
+            .any(|r| r.state == RuntimeState::Uncertain)
+    );
+}
+
+fn activate_for_wait_fixture(child: &RuntimeChild) {
+    // Explicit own-context fixture activates the actual runtime OFD in-process;
+    // not evidence of the still-pending production cross-exec import journey.
+    let exported = child.lease.export_child().unwrap();
+    let context = crate::worker_admission::AdmissionContext {
+        namespace: child.lease.0.namespace.clone(),
+    };
+    let imported = context
+        .import_child(exported.duplicate_for_exec().unwrap())
+        .unwrap();
+    let writer = import_runtime_writer(
+        &imported,
+        duplicate(child.sentinel.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    drop(writer);
+    drop(imported);
+    drop(exported);
+}
+#[tokio::test]
+async fn f_real_wait_with_free_sentinel_issues_only_same_layout_one_shot_receipt() {
+    let (_temp, context, data) = fixture();
+    let root = data.join("vm");
+    std::fs::create_dir(&root).unwrap();
+    let lease = context.local(&root).unwrap();
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    let control = child.control();
+    activate_for_wait_fixture(&child);
+    let completion = child.wait().await;
+    assert!(completion.os_status().unwrap().success());
+    let receipt = completion.retirement().unwrap().clone();
+    assert_eq!(control.terminal().await.phase(), RuntimePhase::Retired);
+    assert!(control.signal(super::super::RuntimeSignal::Kill).is_err());
+    let other = context.local(&data.join("other")).unwrap();
+    assert!(receipt.begin_remove(&other, &root, &[&root]).is_err());
+    let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
+    remove.remove_path(&root).unwrap();
+    remove.commit().unwrap();
+    assert!(!root.exists());
+    assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+}
+#[tokio::test]
+async fn f_real_wait_descendant_description_blocks_receipt_after_os_reap() {
+    let (_temp, context, data) = fixture();
+    let lease = context.local(&data.join("vm")).unwrap();
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    activate_for_wait_fixture(&child);
+    let descendant = duplicate(child.sentinel.as_ref().unwrap()).unwrap();
+    let control = child.control();
+    let completion = child.wait().await;
+    assert!(completion.os_status().is_some());
+    assert!(completion.retirement().is_err());
+    assert_eq!(
+        control.observation().phase(),
+        RuntimePhase::RetirementFailed
+    );
+    drop(descendant);
+    assert!(control.observation().retirement().is_none());
 }

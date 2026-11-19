@@ -132,6 +132,35 @@ fn no_replace(from: &Directory, source: &Path, to: &Directory, target: &Path) ->
 }
 impl MutationGuard {
     pub(super) fn begin(lease: Lease, plan: MutationPlan) -> io::Result<Self> {
+        if matches!(plan, MutationPlan::Remove { .. }) {
+            return Err(invalid(
+                "Remove requires core-issued retirement or never-spawned receipt",
+            ));
+        }
+        Self::begin_inner(lease, plan, None)
+    }
+    // Only the private receipt module calls this; no crate-visible metadata
+    // constructor grants removal. Validation and hold acquisition share one tx.
+    pub(super) fn begin_authorized(
+        lease: Lease,
+        plan: MutationPlan,
+        epoch: u64,
+        bindings: &[super::catalog::Entry],
+        runtime: &str,
+        sentinel: &Identity,
+        never_spawned: bool,
+    ) -> io::Result<Self> {
+        Self::begin_inner(
+            lease,
+            plan,
+            Some((epoch, bindings, runtime, sentinel, never_spawned)),
+        )
+    }
+    fn begin_inner(
+        lease: Lease,
+        plan: MutationPlan,
+        authority: Option<(u64, &[super::catalog::Entry], &str, &Identity, bool)>,
+    ) -> io::Result<Self> {
         let removing = matches!(&plan, MutationPlan::Remove { .. });
         let control = matches!(&plan, MutationPlan::ControlFiles { .. });
         let (plan, remove_targets) = match plan {
@@ -231,6 +260,66 @@ impl MutationGuard {
         }
         lease.revalidate()?;
         let mut tx = lease.0.namespace.transaction()?;
+        if removing {
+            let (epoch, bindings, runtime, sentinel, never_spawned) =
+                authority.ok_or_else(|| invalid("missing cleanup receipt"))?;
+            let op = tx.operation(&lease.0.id)?;
+            if &op.sentinel != sentinel
+                || tx
+                    .catalog
+                    .runtimes
+                    .iter()
+                    .filter(|r| r.operation == lease.0.id)
+                    .map(|r| r.epoch)
+                    .max()
+                    != Some(epoch)
+                || !op.holds.is_empty()
+                || op.holder_ids.iter().any(|id| id != &lease.0.holder)
+                || op.journals.iter().any(|j| !j.committed)
+            {
+                return Err(invalid(
+                    "stale cleanup receipt/layout or unresolved effects",
+                ));
+            }
+            for binding in bindings {
+                super::validate_entry(binding)?;
+                if !op.entries.iter().any(|e| {
+                    e.path == binding.path && e.role == binding.role && e.pins == binding.pins
+                }) {
+                    return Err(invalid("layout binding changed since retirement"));
+                }
+            }
+            let required = if never_spawned {
+                super::catalog::RuntimeState::Cancelled
+            } else {
+                super::catalog::RuntimeState::Retired
+            };
+            if !tx
+                .catalog
+                .runtimes
+                .iter()
+                .any(|r| r.id == runtime && r.operation == lease.0.id && r.state == required)
+                || tx
+                    .catalog
+                    .runtimes
+                    .iter()
+                    .filter(|r| r.operation == lease.0.id)
+                    .any(|r| {
+                        !matches!(
+                            r.state,
+                            super::catalog::RuntimeState::Retired
+                                | super::catalog::RuntimeState::Cancelled
+                        )
+                    })
+            {
+                return Err(invalid("cleanup writer proof no longer current"));
+            }
+            if tx.catalog.endpoints.iter().any(|e| {
+                e.operation == lease.0.id && e.state != super::catalog::EndpointState::Retired
+            }) {
+                return Err(invalid("endpoint must retire before removal"));
+            }
+        }
         let op = tx.operation_mut(&lease.0.id)?;
         if op.uncertain
             || op.closed

@@ -1,4 +1,12 @@
-# Admission v2 core: amendment E source candidate
+# Admission v2 core: retirement F source candidate
+
+The concrete F1/F3 consumer seam and complete spawn/control/wait/cleanup examples
+are in [RETIREMENT-F.md](RETIREMENT-F.md). This increment is based on
+`4202dc282f751cb8c85534f2b0dd9d332e057616`; E1/E2/E4 remain unchanged. F replaces
+fallible-wait-as-reap inference with child-issued pidfd control, distinct OS-reap
+observation and an opaque writer-retirement receipt. Raw `Lease::begin(Remove)`
+now refuses; use the exact same-operation receipt methods. Caller routing F2 is
+not included in this core source delivery.
 
 Incremental after `d556cda04ebb1885a35cb9b3840dfd52a26a33b3` (tree
 `a9bab8b238469c4f71810bb90db695ab07a30be8`). C/D and earlier commits are preserved.
@@ -249,8 +257,9 @@ are implemented, not an assertion of complete caller routing. Remaining gates:
 libc target-symbol/typecheck, Linux6.13+ syscall/ACL filesystem matrix, positive
 cross-exec `_exit`/descendant lifetime, B sandbox launch/reap bookkeeping, beacon
 from_updater wiring, console cost/cursor behavior and full normal cold/warm/rebuild/
-retain/prune campaigns. RuntimeChild::wait still distinguishes success only after
-catalog retirement; no forged ExitStatus or PID-based retirement API was added.
+retain/prune campaigns. RuntimeChild::wait now returns RuntimeCompletion with independent os_status and
+retirement results; RuntimeControl publishes actual reap before catalog work.
+No forged ExitStatus or PID-based retirement API was added.
 
 Coordinator owns CLI/admin/install wiring and caller operation reuse; no caller,
 Cargo/dependency, compat_generation, auth/wire or root-document edits here.

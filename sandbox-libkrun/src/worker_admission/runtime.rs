@@ -9,6 +9,8 @@ use super::{
     Lease, PathRole,
     catalog::{ActivityFailure, ActivityOutcome, ActivityPhase},
     catalog::{Hold, HoldKind, Namespace, RuntimeEntry, RuntimeRecord, RuntimeState, overlaps},
+    process_control::{ProcessHandoff, RuntimeControl, RuntimeFailure, RuntimePhase},
+    retirement::{NeverSpawned, WriterRetirement},
     storage::*,
 };
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,9 @@ pub(crate) struct RuntimeLaunch {
     id: String,
     sentinel: Option<File>,
     spawned: bool,
+    spawn_attempted: bool,
+    #[cfg(test)]
+    pidfd_receive_failure: bool,
 }
 pub(crate) struct RuntimeChild {
     child: Option<tokio::process::Child>,
@@ -57,6 +62,52 @@ pub(crate) struct RuntimeChild {
     id: String,
     sentinel: Option<File>,
     complete: bool,
+    control: RuntimeControl,
+    #[cfg(test)]
+    wait_failure: bool,
+}
+pub(crate) struct RuntimeCompletion {
+    status: Option<std::process::ExitStatus>,
+    retirement: Result<WriterRetirement, RuntimeFailure>,
+}
+impl RuntimeCompletion {
+    pub(crate) fn os_status(&self) -> Option<std::process::ExitStatus> {
+        self.status
+    }
+    pub(crate) fn retirement(&self) -> Result<&WriterRetirement, &RuntimeFailure> {
+        self.retirement.as_ref()
+    }
+}
+pub(crate) struct RuntimeSpawnError {
+    error: io::Error,
+    child: Option<RuntimeChild>,
+}
+impl RuntimeSpawnError {
+    pub(crate) fn error(&self) -> &io::Error {
+        &self.error
+    }
+    pub(crate) fn into_parts(self) -> (io::Error, Option<RuntimeChild>) {
+        (self.error, self.child)
+    }
+}
+impl std::fmt::Debug for RuntimeSpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeSpawnError")
+            .field("error", &self.error)
+            .field("owned_child", &self.child.is_some())
+            .finish()
+    }
+}
+impl std::fmt::Display for RuntimeSpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, f)
+    }
+}
+impl std::error::Error for RuntimeSpawnError {}
+impl From<io::Error> for RuntimeSpawnError {
+    fn from(error: io::Error) -> Self {
+        Self { error, child: None }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct RuntimeWriter(Arc<WriterHeld>);
@@ -283,6 +334,9 @@ impl RuntimeLaunch {
             id,
             sentinel: Some(sentinel_file),
             spawned: false,
+            spawn_attempted: false,
+            #[cfg(test)]
+            pidfd_receive_failure: false,
         };
         let mut tx = launch.lease.0.namespace.transaction()?;
         let record = tx
@@ -344,10 +398,35 @@ impl RuntimeLaunch {
         drop(tx);
         Ok(launch)
     }
+    pub(crate) fn cancel_before_spawn(mut self) -> io::Result<NeverSpawned> {
+        if self.spawn_attempted || self.spawned {
+            return Err(invalid("launch already attempted"));
+        }
+        self.lease.revalidate()?;
+        let mut tx = self.lease.0.namespace.transaction()?;
+        let record = tx
+            .catalog
+            .runtimes
+            .iter_mut()
+            .find(|r| r.id == self.id)
+            .ok_or_else(|| invalid("runtime missing"))?;
+        if record.state != RuntimeState::Prepared || record.admission_holder.is_some() {
+            return Err(invalid("runtime is not provably never spawned"));
+        }
+        validate_paths(record)?;
+        record.state = RuntimeState::Cancelled;
+        tx.operation_mut(&self.lease.0.id)?
+            .holds
+            .retain(|h| h.id != self.id);
+        tx.save()?;
+        drop(tx);
+        self.spawned = true;
+        NeverSpawned::issue(&self.lease, &self.id)
+    }
     pub(crate) fn spawn(
         mut self,
         mut command: tokio::process::Command,
-    ) -> io::Result<RuntimeChild> {
+    ) -> Result<RuntimeChild, RuntimeSpawnError> {
         self.lease.revalidate()?;
         {
             let tx = self.lease.0.namespace.transaction()?;
@@ -358,7 +437,7 @@ impl RuntimeLaunch {
                 .find(|r| r.id == self.id)
                 .ok_or_else(|| invalid("runtime missing before spawn"))?;
             if record.state != RuntimeState::Prepared {
-                return Err(invalid("runtime is not prepared"));
+                return Err(invalid("runtime is not prepared").into());
             }
             validate_paths(record)?;
         }
@@ -373,7 +452,7 @@ impl RuntimeLaunch {
                 || a.to_str()
                     .is_some_and(|a| a.starts_with("--runtime-write-fd="))
         }) {
-            return Err(invalid("runtime fd argument is core-owned"));
+            return Err(invalid("runtime fd argument is core-owned").into());
         }
         command.arg("--runtime-write-fd").arg(raw.to_string());
         // Only the child copy changes CLOEXEC; the parent's selected descriptor
@@ -387,36 +466,70 @@ impl RuntimeLaunch {
                 syscall(libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC))
             });
         }
+        command.kill_on_drop(false); // cancellation must not signal through Tokio raw-PID cleanup
+        let handoff = ProcessHandoff::new()?;
+        handoff.install(&mut command);
+        // Never infer never-spawned from any later spawn/pre_exec error.
+        self.spawn_attempted = true;
         match command.spawn() {
             Ok(child) => {
                 drop(fd);
                 self.spawned = true;
-                Ok(RuntimeChild {
+                let acquisition = handoff.receive();
+                #[cfg(test)]
+                let acquisition = if self.pidfd_receive_failure {
+                    drop(acquisition);
+                    Err(io::Error::other(
+                        "injected post-spawn pidfd receive failure",
+                    ))
+                } else {
+                    acquisition
+                };
+                let (pidfd, error) = match acquisition {
+                    Ok(fd) => (Some(fd), None),
+                    Err(e) => (None, Some(e)),
+                };
+                let control = RuntimeControl::new(pidfd, error.as_ref());
+                let child = RuntimeChild {
                     child: Some(child),
                     lease: self.lease.clone(),
                     id: self.id.clone(),
                     sentinel: self.sentinel.take(),
                     complete: false,
-                })
+                    control,
+                    #[cfg(test)]
+                    wait_failure: false,
+                };
+                if let Some(error) = error {
+                    return Err(RuntimeSpawnError {
+                        error,
+                        child: Some(child),
+                    });
+                }
+                Ok(child)
             }
             Err(e) => {
                 drop(fd);
                 // Do not infer no child effects from an OS spawn error. An
                 // unactivated explicit cancellation is handled only before spawn.
+                if let Some(file) = self.sentinel.take() {
+                    std::mem::forget(file);
+                }
+                std::mem::forget(self.lease.clone());
                 if let Ok(mut tx) = self.lease.0.namespace.transaction() {
                     if let Some(r) = tx.catalog.runtimes.iter_mut().find(|r| r.id == self.id) {
                         r.state = RuntimeState::Uncertain;
                         let _ = tx.save();
                     }
                 }
-                Err(e)
+                Err(e.into())
             }
         }
     }
 }
 impl Drop for RuntimeLaunch {
     fn drop(&mut self) {
-        if !self.spawned {
+        if !self.spawned && !self.spawn_attempted {
             let _ = (|| -> io::Result<()> {
                 let mut tx = self.lease.0.namespace.transaction()?;
                 let record = tx
@@ -450,13 +563,58 @@ impl RuntimeChild {
     pub(crate) fn take_stderr(&mut self) -> Option<tokio::process::ChildStderr> {
         self.child.as_mut().and_then(|c| c.stderr.take())
     }
-    pub(crate) async fn wait(mut self) -> io::Result<std::process::ExitStatus> {
-        let status = self
-            .child
-            .as_mut()
-            .ok_or_else(|| invalid("runtime child consumed"))?
-            .wait()
-            .await?;
+    pub(crate) fn control(&self) -> RuntimeControl {
+        self.control.clone()
+    }
+    pub(crate) async fn wait(mut self) -> RuntimeCompletion {
+        #[cfg(test)]
+        if self.wait_failure {
+            let error = io::Error::other("injected OS wait failure without reap");
+            self.control.failed(RuntimePhase::WaitFailed, &error);
+            return RuntimeCompletion {
+                status: None,
+                retirement: Err(RuntimeFailure::capture(&error)),
+            };
+        }
+        let result = match self.child.as_mut() {
+            Some(child) => child.wait().await,
+            None => Err(invalid("runtime child consumed")),
+        };
+        let status = match result {
+            Ok(status) => status,
+            Err(error) => {
+                self.control.failed(RuntimePhase::WaitFailed, &error);
+                return RuntimeCompletion {
+                    status: None,
+                    retirement: Err(RuntimeFailure::capture(&error)),
+                };
+            }
+        };
+        // Infallible in-memory observation precedes sentinel/cursor/catalog I/O.
+        // An in-flight pidfd signal still names only the original kernel task.
+        self.record_reaped(status);
+        match self.finalize_retirement() {
+            Ok(receipt) => {
+                self.complete = true;
+                self.control.retired(receipt.clone());
+                RuntimeCompletion {
+                    status: Some(status),
+                    retirement: Ok(receipt),
+                }
+            }
+            Err(error) => {
+                self.control.failed(RuntimePhase::RetirementFailed, &error);
+                RuntimeCompletion {
+                    status: Some(status),
+                    retirement: Err(RuntimeFailure::capture(&error)),
+                }
+            }
+        }
+    }
+    fn record_reaped(&self, status: std::process::ExitStatus) {
+        self.control.reaped(status);
+    }
+    fn finalize_retirement(&mut self) -> io::Result<WriterRetirement> {
         // No LOCK_UN on the child-shared OFD. Closing our duplicate precedes
         // the independent nonblocking lock test for every descendant writer.
         if failed_ofd(
@@ -519,21 +677,54 @@ impl RuntimeChild {
         runtime.writer_retired = true;
         runtime.guest_consistent = false;
         tx.save()?;
-        self.complete = true;
-        Ok(status)
+        drop(tx);
+        WriterRetirement::issue(&self.lease, &self.id)
     }
 }
 impl Drop for RuntimeChild {
     fn drop(&mut self) {
         if !self.complete {
+            let observation = self.control.observation();
+            if !observation.is_terminal() {
+                self.control.failed(
+                    RuntimePhase::Abandoned,
+                    &io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "owned waiter dropped; writer retirement is unknown",
+                    ),
+                );
+            }
             if let Some(file) = self.sentinel.take() {
                 std::mem::forget(file);
             }
+            // Keep operation evidence even if the caller abandons its task.
             std::mem::forget(self.lease.clone());
             if let Ok(mut tx) = self.lease.0.namespace.transaction() {
-                if let Some(r) = tx.catalog.runtimes.iter_mut().find(|r| r.id == self.id) {
-                    r.state = RuntimeState::Uncertain;
+                if let Some(record) = tx.catalog.runtimes.iter_mut().find(|r| r.id == self.id) {
+                    record.state = RuntimeState::Uncertain;
+                    record.writer_retired = false;
                     let _ = tx.save();
+                }
+            }
+            if let Some(mut child) = self.child.take() {
+                // Drop never kills or blocks. Transfer actual Child supervision
+                // to a core reaper when a runtime exists; observers already have
+                // terminal Abandoned and will not wait forever on a notifier.
+                if observation.os_status().is_some() {
+                    return;
+                } // already reaped; no duplicate wait
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    let control = self.control.clone();
+                    handle.spawn(async move {
+                        match child.wait().await {
+                            Ok(status) => {
+                                control.abandoned_reaped(status);
+                            }
+                            Err(error) => control.failed(RuntimePhase::WaitFailed, &error),
+                        }
+                    });
+                } else {
+                    std::mem::forget(child);
                 }
             }
         }

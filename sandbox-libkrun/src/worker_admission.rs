@@ -6,15 +6,22 @@ mod catalog;
 mod endpoint;
 mod mutation;
 mod owner_read;
+mod process_control;
 mod recovery;
+mod retirement;
 mod runtime;
 pub(crate) use owner_read::{OwnerReadEntry, OwnerReadGuard};
+pub(crate) use process_control::{
+    RuntimeControl, RuntimeFailure, RuntimeObservation, RuntimeObserver, RuntimePhase,
+    RuntimeSignal,
+};
 pub(crate) use recovery::{
     RecoveryAction, RecoveryReport, RecoveryRequest, inspect_recovery_for_uid, recover_for_uid,
 };
+pub(crate) use retirement::{NeverSpawned, WriterRetirement};
 pub(crate) use runtime::{
-    RuntimeActivity, RuntimeChild, RuntimeLaunch, RuntimePath, RuntimePathKind, RuntimeWriter,
-    import_runtime_writer,
+    RuntimeActivity, RuntimeChild, RuntimeCompletion, RuntimeLaunch, RuntimePath, RuntimePathKind,
+    RuntimeSpawnError, RuntimeWriter, import_runtime_writer,
 };
 mod storage;
 use catalog::{Entry, Hold, HoldKind, Namespace, overlaps};

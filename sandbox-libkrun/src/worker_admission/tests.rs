@@ -1814,76 +1814,77 @@ fn amendment_d_remove_exact_runtime_targets_preserves_retained_upper() {
     let vm = f.data.join("vm");
     private(&vm);
     let runtime = vm.join("runtime");
-    private(&runtime);
-    std::fs::write(runtime.join("console.log"), b"log").unwrap();
     let upper = vm.join("upper.ext4");
     std::fs::write(&upper, b"KEEP").unwrap();
     let lease = f.context.local(&vm).unwrap();
-    let mut remove = lease
-        .begin(MutationPlan::Remove {
-            root: vm.clone(),
-            targets: vec![runtime.clone()],
+    let lease = mutable(lease, &runtime, PathRole::MutableTree);
+    let mut create = lease
+        .begin(MutationPlan::Create {
+            root: runtime.clone(),
         })
         .unwrap();
+    create.create_dir_all(&runtime, 0o700).unwrap();
+    create.commit().unwrap();
+    let receipt = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    let mut remove = receipt.begin_remove(&lease, &vm, &[&runtime]).unwrap();
     remove.remove_path(&runtime).unwrap();
     remove.commit().unwrap();
-    lease.revalidate().unwrap();
-    assert!(!runtime.exists());
     assert_eq!(std::fs::read(&upper).unwrap(), b"KEEP");
-    let mut repeat = lease
-        .begin(MutationPlan::Remove {
-            root: vm,
-            targets: vec![runtime.clone()],
-        })
+    assert!(!runtime.exists());
+    let repeat = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
         .unwrap();
-    repeat.remove_path(&runtime).unwrap();
-    repeat.commit().unwrap();
+    let mut remove = repeat.begin_remove(&lease, &vm, &[&runtime]).unwrap();
+    remove.remove_path(&runtime).unwrap();
+    remove.commit().unwrap();
 }
 #[test]
 fn amendment_d_remove_refuses_unlisted_protected_backup_and_external_hardlink() {
     let f = fixture();
     let root = f.data.join("vm");
-    private(&root);
-    let keep = root.join("upper.ext4");
-    std::fs::write(&keep, b"KEEP").unwrap();
-    let planned = root.join("runtime");
-    private(&planned);
     let lease = f.context.local(&root).unwrap();
-    let mut remove = lease
-        .begin(MutationPlan::Remove {
-            root: root.clone(),
-            targets: vec![planned],
-        })
+    let mut create = lease
+        .begin(MutationPlan::Create { root: root.clone() })
         .unwrap();
-    assert!(remove.remove_path(&keep).is_err());
-    assert_eq!(std::fs::read(&keep).unwrap(), b"KEEP");
-    let f = fixture();
-    let root = f.data.join("vm");
-    private(&root);
-    let backup = root.join("backup-old");
-    private(&backup);
-    let lease = f.context.local(&root).unwrap();
-    let mut remove = lease
-        .begin(MutationPlan::Remove {
-            root: root.clone(),
-            targets: vec![root.clone()],
-        })
+    create.create_dir_all(&root, 0o700).unwrap();
+    create.commit().unwrap();
+    let receipt = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
         .unwrap();
+    assert!(
+        receipt
+            .begin_remove(&lease, &root, &[&root.join("not-listed")])
+            .is_err()
+    );
+    private(&root.join("backup-old"));
+    let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
     assert!(remove.remove_path(&root).is_err());
-    assert!(backup.exists());
+    assert!(root.join("backup-old").exists());
     let f = fixture();
     let root = f.data.join("vm");
-    private(&root);
+    let lease = f.context.local(&root).unwrap();
+    let mut create = lease
+        .begin(MutationPlan::Create { root: root.clone() })
+        .unwrap();
+    create.create_dir_all(&root, 0o700).unwrap();
+    create.commit().unwrap();
     let file = root.join("file");
     std::fs::write(&file, b"KEEP").unwrap();
     std::fs::hard_link(&file, f.data.join("external")).unwrap();
-    let lease = f.context.local(&root).unwrap();
-    let mut remove = lease
-        .begin(MutationPlan::Remove {
-            root: root.clone(),
-            targets: vec![root.clone()],
-        })
+    let receipt = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
         .unwrap();
+    let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
     assert!(remove.remove_path(&root).is_err());
     assert!(file.exists());
 }
@@ -1891,18 +1892,22 @@ fn amendment_d_remove_refuses_unlisted_protected_backup_and_external_hardlink() 
 fn amendment_d_remove_nested_symlink_never_follows_external_tree() {
     let f = fixture();
     let root = f.data.join("vm");
-    private(&root);
     let foreign = f.data.join("foreign");
     private(&foreign);
     std::fs::write(foreign.join("data"), b"KEEP").unwrap();
-    symlink(&foreign, root.join("link")).unwrap();
     let lease = f.context.local(&root).unwrap();
-    let mut remove = lease
-        .begin(MutationPlan::Remove {
-            root: root.clone(),
-            targets: vec![root.clone()],
-        })
+    let mut create = lease
+        .begin(MutationPlan::Create { root: root.clone() })
         .unwrap();
+    create.create_dir_all(&root, 0o700).unwrap();
+    create.commit().unwrap();
+    symlink(&foreign, root.join("link")).unwrap();
+    let receipt = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
     remove.remove_path(&root).unwrap();
     remove.commit().unwrap();
     assert_eq!(std::fs::read(foreign.join("data")).unwrap(), b"KEEP");
@@ -2071,4 +2076,91 @@ fn amendment_e_control_publication_each_boundary_remains_terminal() {
             );
         }
     }
+}
+
+#[test]
+fn f_receipt_refuses_foreign_stale_legacy_and_raw_remove_paths() {
+    let f = fixture();
+    let old = f.data.join("legacy");
+    private(&old);
+    std::fs::write(old.join("data"), b"KEEP").unwrap();
+    let lease = f.context.local(&old).unwrap();
+    assert!(
+        lease
+            .begin(MutationPlan::Remove {
+                root: old.clone(),
+                targets: vec![old.clone()]
+            })
+            .is_err()
+    );
+    let proof = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    assert!(proof.begin_remove(&lease, &old, &[&old]).is_err());
+    let f = fixture();
+    let root = f.data.join("new");
+    let lease = f.context.local(&root).unwrap();
+    let mut create = lease
+        .begin(MutationPlan::Create { root: root.clone() })
+        .unwrap();
+    create.create_dir_all(&root, 0o700).unwrap();
+    create.commit().unwrap();
+    let proof = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    let other = f.context.local(&f.data.join("other")).unwrap();
+    assert!(proof.begin_remove(&other, &root, &[&root]).is_err());
+    let newer = lease.prepare_runtime(&[]).unwrap();
+    assert!(proof.begin_remove(&lease, &root, &[&root]).is_err());
+    drop(newer);
+    assert!(root.exists());
+}
+#[test]
+fn f_never_spawned_receipt_rejects_replaced_layout_and_is_one_shot() {
+    let f = fixture();
+    let root = f.data.join("new");
+    let lease = f.context.local(&root).unwrap();
+    let mut create = lease
+        .begin(MutationPlan::Create { root: root.clone() })
+        .unwrap();
+    create.create_dir_all(&root, 0o700).unwrap();
+    create.commit().unwrap();
+    let proof = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    std::fs::rename(&root, f.data.join("retained")).unwrap();
+    private(&root);
+    assert!(proof.begin_remove(&lease, &root, &[&root]).is_err());
+}
+
+#[test]
+fn f_receipt_is_stale_after_owned_target_mutation_without_new_runtime() {
+    let f = fixture();
+    let root = f.data.join("new");
+    let lease = f.context.local(&root).unwrap();
+    let mut create = lease
+        .begin(MutationPlan::Create { root: root.clone() })
+        .unwrap();
+    create.create_dir_all(&root, 0o700).unwrap();
+    create.commit().unwrap();
+    let proof = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .cancel_before_spawn()
+        .unwrap();
+    let mut mutation = lease
+        .begin(MutationPlan::Reclone { root: root.clone() })
+        .unwrap();
+    let stage = mutation.stage_tree(&root).unwrap();
+    std::fs::write(stage.path().join("data"), b"NEW").unwrap();
+    mutation.publish_tree(stage).unwrap();
+    mutation.commit().unwrap();
+    assert!(proof.begin_remove(&lease, &root, &[&root]).is_err());
+    assert_eq!(std::fs::read(root.join("data")).unwrap(), b"NEW");
 }
