@@ -205,8 +205,9 @@ fn queue_check(stats: Option<&Value>) -> DoctorCheck {
                      queue. List the queue with engine::queue::dlq_messages, then retry with \
                      iii::queue::redrive or drop one entry with iii::queue::discard_message \
                      (topic {EXTRACTION_QUEUE}). A dead-lettered entry holds the job only. \
-                     The error and model of each failure are in the extraction-passes check \
-                     and the `extraction pass failed` WARN."
+                     Each failure is in the `extraction pass failed` WARN, with the model \
+                     when the pass reached the model call; the extraction-passes check \
+                     keeps only the latest error."
                 ),
             )
         }
