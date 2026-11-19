@@ -293,11 +293,23 @@ async fn h1_failure_preserves_prepared_a_for_missing_foreign_used_and_stale_rece
                 removal.commit().unwrap();
             }
             "stale" => {
-                a.lease
-                    .prepare_runtime(&[])
-                    .unwrap()
-                    .cancel_before_spawn()
-                    .unwrap();
+                let later = a.lease.prepare_runtime(&[]).unwrap();
+                // Cancellation records the later runtime epoch, but this whole
+                // lifecycle has already run A: it must NOT receive NeverSpawned
+                // cleanup authority. Both facts are required by this negative.
+                assert!(later.cancel_before_spawn().is_err());
+                let receipt_probe = h1_cache(&s).join("stale-receipt-probe");
+                assert!(
+                    receipt
+                        .probe_cache(
+                            &a.lease,
+                            &[crate::worker_admission::CacheEntry {
+                                root: &receipt_probe,
+                            }],
+                        )
+                        .is_err(),
+                    "a later cancelled runtime must invalidate A's old receipt"
+                );
             }
             _ => {}
         }
