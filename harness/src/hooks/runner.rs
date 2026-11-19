@@ -1794,6 +1794,13 @@ mod tests {
             };
             assert!(functions_match(&gate, "desk", "fs::read"), "{glob}");
         }
+        // A `//` inside the id part keeps its qualifier.
+        let qualified = HookBinding {
+            functions: Some(vec!["laptop/api::get//x".into()]),
+            ..binding("gate", 0)
+        };
+        assert!(functions_match(&qualified, "laptop", "api::get//x"));
+        assert!(!functions_match(&qualified, "desk", "api::get//x"));
     }
 
     /// A scripted invoker: each target answers from the map, and every call

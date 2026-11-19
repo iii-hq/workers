@@ -78,8 +78,8 @@ with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/
 A pattern is `<namespace>/<pattern>` to match the id only in that namespace, or a bare
 `<pattern>` to match the id in every namespace; for example `laptop/shell::*`. A namespace
 qualifier must be a plain namespace (no glob characters, and not empty as in `/shell::exec`) and
-must be followed by an id pattern that does not start with `/` (as in `laptop//shell::exec`),
-otherwise the policy is rejected and every call is denied.
+must be followed by an id pattern that does not start with `/` (`laptop//shell::exec` is
+rejected); otherwise the policy is rejected and every call is denied.
 A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's own
 `<adapter>::<op>` (`sandbox-libkrun`, or the adapter `sandbox::adapter::info` reports). A
 `functions.deny` glob or a hook's `functions` glob matching either id covers both;

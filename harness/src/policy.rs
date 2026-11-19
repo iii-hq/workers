@@ -467,7 +467,8 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
             if target == "engine::functions::info"
                 && let Some(ns) = namespace.take()
                 && let Value::Object(p) = &mut payload
-                && p.get("namespace").is_none_or(Value::is_null)
+                && p.get("namespace")
+                    .is_none_or(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()))
             {
                 p.insert("namespace".to_string(), Value::String(ns));
             }
@@ -1042,6 +1043,7 @@ mod tests {
             json!({ "function": "engine::functions::info", "payload": { "function_ids": ["shell::exec"], "namespace": "laptop" } }),
             json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": "laptop" } }),
             json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": null } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": " " } }),
         ] {
             let call = planned(args);
             assert_eq!(
