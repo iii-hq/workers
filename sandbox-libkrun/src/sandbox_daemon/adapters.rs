@@ -170,6 +170,9 @@ pub(crate) struct RuntimeSession {
     diagnostic_pid: Option<u32>,
     completion: tokio::sync::watch::Receiver<Option<RuntimeResult>>,
     host_writers: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<std::io::Result<()>>>>,
+    /// Exact host log writers (sandbox stderr). Finished only after every host
+    /// writer joined and before endpoint retirement or the receipt's Remove.
+    logs: Mutex<Vec<crate::worker_admission::LogWriter>>,
     host_failure: Mutex<Option<String>>,
 }
 #[derive(Clone)]
@@ -194,6 +197,7 @@ impl RuntimeSession {
             diagnostic_pid: child.id(),
             completion,
             host_writers: tokio::sync::Mutex::new(Vec::new()),
+            logs: Mutex::new(Vec::new()),
             host_failure: Mutex::new(None),
         });
         let held = session.clone();
@@ -212,26 +216,44 @@ impl RuntimeSession {
         });
         session
     }
+    /// The stderr pump owns ONE clone of the exact log writer and drops it
+    /// before it reports; the session keeps the original for `finish`.
     fn pump_stderr(
         self: &std::sync::Arc<Self>,
-        stderr: tokio::process::ChildStderr,
-        path: PathBuf,
+        stderr: Option<tokio::process::ChildStderr>,
+        log: crate::worker_admission::LogWriter,
     ) {
-        let lease = self.lease.clone();
+        let Some(stderr) = stderr else {
+            self.adopt_log(log);
+            return;
+        };
+        self.adopt_log(log.clone());
         let task = tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             let mut failure = None;
-            while let Some(line) = lines.next_line().await? {
-                if failure.is_none() {
-                    if let Err(error) = append_stderr(&lease, &path, format!("{line}\n").as_bytes())
-                    {
-                        failure = Some(error);
+            let mut read = Ok(());
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        if failure.is_none() {
+                            if let Err(error) = append_stderr(&log, format!("{line}\n").as_bytes())
+                            {
+                                failure = Some(error);
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        read = Err(error);
+                        break;
                     }
                 }
-                // Drain even after publication failure: never block the guest
-                // on stderr, but cleanup must observe the failure at completion.
+                // Drain even after a failed append: never block the guest on
+                // stderr, but cleanup must observe the failure at completion.
             }
+            drop(log);
+            read?;
             match failure {
                 Some(error) => Err(error),
                 None => Ok(()),
@@ -241,6 +263,14 @@ impl RuntimeSession {
             .try_lock()
             .expect("writers attached synchronously before publishing session")
             .push(task);
+    }
+    /// Retain an exact log writer until every host writer joined; it is
+    /// finished (or kept uncertain on failure) by `finish_host_writers`.
+    pub(crate) fn adopt_log(&self, log: crate::worker_admission::LogWriter) {
+        self.logs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(log);
     }
     #[cfg(test)]
     pub(crate) async fn add_test_host_writer(
@@ -280,6 +310,23 @@ impl RuntimeSession {
                     .unwrap_or_else(PoisonError::into_inner) = Some(error.to_string());
                 return Err(error);
             }
+        }
+        // Every pump joined and returned its writer clone, so each retained
+        // original is the last one: finish it before endpoint retirement or
+        // the receipt's Remove. A finish failure is sticky and never hidden.
+        let logs = std::mem::take(&mut *self.logs.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut first = None;
+        for log in logs {
+            if let Err(error) = log.finish() {
+                first.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first {
+            *self
+                .host_failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(error.to_string());
+            return Err(error);
         }
         Ok(())
     }
@@ -388,36 +435,77 @@ impl std::fmt::Debug for RuntimeSession {
     }
 }
 
-fn initialize_stderr(lease: &crate::worker_admission::Lease, path: &Path) -> std::io::Result<()> {
-    let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
-        files: vec![path.to_path_buf()],
-    })?;
-    let file = guard.stage_file(path, 0o600)?;
-    guard.publish_file(file)?;
-    guard.commit()?;
-    Ok(())
-}
-fn append_stderr(
+fn initialize_stderr(
     lease: &crate::worker_admission::Lease,
     path: &Path,
-    bytes: &[u8],
-) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
-        files: vec![path.to_path_buf()],
+) -> std::io::Result<crate::worker_admission::LogWriter> {
+    use crate::worker_admission::{PathRequest, PathRole};
+    // The rotation target is declared exactly beside the stderr log; it is
+    // ordinary bounded retention, never `.iii-prior-*` migration evidence.
+    let previous = stderr_previous(path)?;
+    let lease = crate::worker_admission::with_paths(
+        lease.clone(),
+        &[PathRequest {
+            path: &previous,
+            role: PathRole::MutableFile,
+        }],
+    )?;
+    let mut missing = Vec::new();
+    for member in [path, previous.as_path()] {
+        match std::fs::symlink_metadata(member) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(member.to_path_buf())
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    // Created once per exact pair; an existing member is proven by the core.
+    if !missing.is_empty() {
+        let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+            files: missing.clone(),
+        })?;
+        for member in &missing {
+            let file = guard.stage_file(member, 0o600)?;
+            guard.publish_file(file)?;
+        }
+        guard.commit()?;
+    }
+    let log = lease.open_log(crate::worker_admission::LogSpec {
+        current: path,
+        previous: Some(&previous),
+        cap_bytes: STDERR_LOG_CAP,
     })?;
-    let mut file = guard.stage_file(path, 0o600)?;
-    let mut old = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    std::io::copy(&mut old, file.file_mut())?;
-    file.file_mut().write_all(bytes)?;
-    file.file_mut().sync_all()?;
-    guard.publish_file(file)?;
-    guard.commit()?;
-    Ok(())
+    // Each launch starts its own stderr, as the old empty replacement did.
+    log.reset_instance()?;
+    Ok(log)
+}
+
+/// Ordinary sandbox stderr retention: past this the log rotates IN PLACE into
+/// its declared `.1` sibling (one rotated window kept), as the worker console.
+const STDERR_LOG_CAP: u64 = 10 * 1024 * 1024;
+
+fn stderr_previous(path: &Path) -> std::io::Result<PathBuf> {
+    let mut name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("stderr log has no file name"))?
+        .to_os_string();
+    name.push(".1");
+    Ok(path.with_file_name(name))
+}
+
+/// One record through the exact core log writer; no stage, prior or journal.
+fn append_stderr(log: &crate::worker_admission::LogWriter, bytes: &[u8]) -> std::io::Result<()> {
+    log.append(bytes).map(|_| ())
+}
+
+/// A writer whose child was never spawned has no pump: finish it now so a
+/// never-spawned rollback is not blocked, and never hide a finish failure.
+fn settle_unspawned_stderr(log: crate::worker_admission::LogWriter, cause: String) -> String {
+    match log.finish() {
+        Ok(_) => cause,
+        Err(error) => format!("{cause}; stderr log retained unfinished: {error}"),
+    }
 }
 
 pub struct VmBootLauncher;
@@ -576,10 +664,6 @@ impl VmLauncher for VmBootLauncher {
             .parent()
             .ok_or_else(|| SandboxError::BootFailed("sandbox root has no layout parent".into()))?
             .join("vm-boot.stderr.log");
-        // Capture stderr through a pipe; publication uses exact control-file
-        // stages after each record, never an untracked FD handed to the child.
-        initialize_stderr(&admission, &log_path)
-            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
 
         // Lifeline: the registry entry will hold the write end; if this
         // daemon dies (any way, SIGKILL included) or the sandbox entry is
@@ -604,9 +688,20 @@ impl VmLauncher for VmBootLauncher {
         };
         drop(_root_use);
         drop(_lower_use);
-        let launch = admission
-            .prepare_runtime(&runtime_paths)
+        // Capture stderr through a pipe into ONE exact core log writer (stable
+        // descriptors, bounded in-place rotation into `.1`), issued right
+        // before the runtime; the child never receives a log descriptor.
+        let stderr_log = initialize_stderr(&admission, &log_path)
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let launch = match admission.prepare_runtime(&runtime_paths) {
+            Ok(launch) => launch,
+            Err(error) => {
+                return Err(SandboxError::BootFailed(settle_unspawned_stderr(
+                    stderr_log,
+                    error.to_string(),
+                )));
+            }
+        };
         let mut child = match launch.spawn(cmd) {
             Ok(child) => child,
             Err(error) => {
@@ -619,12 +714,14 @@ impl VmLauncher for VmBootLauncher {
                         admission.clone(),
                         vec![params.shell_sock.clone()],
                     );
-                    if let Some(stderr) = stderr {
-                        session.pump_stderr(stderr, log_path.clone());
-                    }
+                    session.pump_stderr(stderr, stderr_log);
                     registry.attach_runtime(id, session).await?;
+                    return Err(SandboxError::BootFailed(format!("spawn sandbox: {cause}")));
                 }
-                return Err(SandboxError::BootFailed(format!("spawn sandbox: {cause}")));
+                return Err(SandboxError::BootFailed(settle_unspawned_stderr(
+                    stderr_log,
+                    format!("spawn sandbox: {cause}"),
+                )));
             }
         };
         let vm_pid = child.id();
@@ -633,9 +730,7 @@ impl VmLauncher for VmBootLauncher {
         let session =
             RuntimeSession::supervise(child, admission.clone(), vec![params.shell_sock.clone()]);
         // Ownership is installed synchronously above, before registry or stdin awaits.
-        if let Some(stderr) = stderr {
-            session.pump_stderr(stderr, log_path.clone());
-        }
+        session.pump_stderr(stderr, stderr_log);
         registry.attach_runtime(id, session.clone()).await?;
         let vm_pid =
             vm_pid.ok_or_else(|| SandboxError::BootFailed("missing child diagnostic id".into()))?;
@@ -766,10 +861,16 @@ async fn guest_answers(sock: &Path, within: Duration) -> Result<(), String> {
     }
 }
 
+/// Diagnostic text only (never a cursor or authority): the rotated window,
+/// then the current one, so a recent rotation does not hide the failure.
 fn read_stderr_tail(log_path: &std::path::Path) -> String {
     const TAIL_LINES: usize = 32;
     const MAX_BYTES: usize = 4096;
-    let content = match std::fs::read_to_string(log_path) {
+    let rotated = stderr_previous(log_path)
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let content = match std::fs::read_to_string(log_path).map(|current| rotated + &current) {
         Ok(s) if !s.is_empty() => s,
         Ok(_) => return format!("  (stderr log at {} is empty)", log_path.display()),
         Err(e) => return format!("  (could not read stderr log {}: {e})", log_path.display()),
@@ -1346,6 +1447,8 @@ mod tests {
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let (lease, root, endpoints) = resource_fixture(data.path(), &context, 1);
         let stderr = root.join("vm-boot.stderr.log");
+        // As the sandbox layout: the guest-read tree is a sibling of the log.
+        let guest = root.join("rootfs");
         let lease = crate::worker_admission::with_paths(
             lease,
             &[PathRequest {
@@ -1354,10 +1457,15 @@ mod tests {
             }],
         )
         .unwrap();
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: root.clone() })
+            .unwrap();
+        create.create_dir_all(&guest, 0o700).unwrap();
+        create.commit().unwrap();
         let protected = data.path().join(".iii-prior-independent-evidence");
         std::fs::write(&protected, b"OLD independent evidence").unwrap();
-        initialize_stderr(&lease, &stderr).unwrap();
-        append_stderr(&lease, &stderr, b"normal sandbox startup line\n").unwrap();
+        let log = initialize_stderr(&lease, &stderr).unwrap();
+        append_stderr(&log, b"normal sandbox startup line\n").unwrap();
         assert_eq!(
             std::fs::read(&stderr).unwrap(),
             b"normal sandbox startup line\n"
@@ -1367,13 +1475,16 @@ mod tests {
             namespace.path(),
             false,
             RuntimeTestResources {
-                reads: vec![root.clone()],
+                reads: vec![guest.clone()],
                 endpoints: endpoints.clone(),
                 exit_without_drop: true,
                 ..Default::default()
             },
         )
         .await;
+        // The launch hands the session the original writer (the pump owns a
+        // clone); `finish_resources` finishes it after every host writer.
+        session.adopt_log(log);
         let (status, retirement) = session.wait().await;
         assert!(status.unwrap().success());
         let receipt = retirement.unwrap();
@@ -1381,8 +1492,15 @@ mod tests {
         for path in &endpoints {
             assert!(!path.exists());
         }
-        // Normal stderr replacement must not leave migration-like debris that
+        // Normal stderr retention must not leave migration-like debris that
         // makes every routine stop fail. Authority is the original receipt.
+        assert!(!std::fs::read_dir(&root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".iii-")
+        }));
         let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
         remove.remove_path(&root).unwrap();
         remove.commit().unwrap();
@@ -1413,10 +1531,12 @@ mod tests {
             }],
         )
         .unwrap();
-        initialize_stderr(&lease, &stderr).unwrap();
-        append_stderr(&lease, &stderr, b"ordinary line\n").unwrap();
+        let log = initialize_stderr(&lease, &stderr).unwrap();
+        append_stderr(&log, b"ordinary line\n").unwrap();
         let session = runtime_test_session(lease.clone(), namespace.path(), false).await;
+        session.adopt_log(log);
         let receipt = session.wait().await.1.unwrap();
+        // The log is Finished here, so the refusal below is the evidence's.
         session.finish_resources(&receipt).await.unwrap();
         let refused = match receipt.begin_remove(&lease, &root, &[&root]) {
             Err(_) => true,
@@ -1430,6 +1550,119 @@ mod tests {
             std::fs::read(&protected).unwrap(),
             b"OLD must not disappear"
         );
+    }
+
+    fn r2_stderr_fixture(
+        namespace: &Path,
+        data: &Path,
+    ) -> (crate::worker_admission::Lease, PathBuf, PathBuf) {
+        use crate::worker_admission::{PathRequest, PathRole};
+        let context = crate::worker_admission::testing::provision_context(namespace).unwrap();
+        let (lease, root, _) = resource_fixture(data, &context, 0);
+        let stderr = root.join("vm-boot.stderr.log");
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[PathRequest {
+                path: &stderr,
+                role: PathRole::MutableFile,
+            }],
+        )
+        .unwrap();
+        (lease, root, stderr)
+    }
+
+    fn r2_stderr_writer(script: &str) -> tokio::process::Child {
+        tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    /// R2 through the real pump: a piped writer emits ~12 MB, the log rotates
+    /// IN PLACE into its declared `.1` (same inodes, no `.iii-*` debris), the
+    /// session finishes the writer and the receipt's Remove consumes the base.
+    #[tokio::test]
+    async fn r2_routed_stderr_pump_rotates_in_place_and_cleanup_consumes_the_receipt() {
+        use std::os::unix::fs::MetadataExt;
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (lease, root, stderr) = r2_stderr_fixture(namespace.path(), data.path());
+        let rotated = stderr_previous(&stderr).unwrap();
+        let log = initialize_stderr(&lease, &stderr).unwrap();
+        let inodes = [&stderr, &rotated].map(|path| std::fs::metadata(path).unwrap().ino());
+        let session = runtime_test_session(lease.clone(), namespace.path(), false).await;
+        let mut writer = r2_stderr_writer(
+            "i=0; while [ $i -lt 12 ]; do head -c 1000000 /dev/zero | tr '\\0' x; echo; i=$((i + 1)); done >&2",
+        );
+        session.pump_stderr(writer.stderr.take(), log);
+        assert!(writer.wait().await.unwrap().success());
+        let receipt = session.wait().await.1.unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        // Rotation happens after the whole 11th record crossed the cap.
+        let record = 1_000_001usize;
+        assert_eq!(std::fs::read(&rotated).unwrap().len(), 11 * record);
+        assert_eq!(std::fs::read(&stderr).unwrap().len(), record);
+        for (path, inode) in [&stderr, &rotated].into_iter().zip(inodes) {
+            assert_eq!(std::fs::metadata(path).unwrap().ino(), inode);
+        }
+        assert!(!std::fs::read_dir(&root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".iii-")
+        }));
+        let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
+        remove.remove_path(&root).unwrap();
+        remove.commit().unwrap();
+        assert!(!root.exists());
+    }
+
+    /// R2 fault: a foreign writer swaps the admitted stderr inode after the
+    /// guest was reaped. The late record fails closed, the failure is sticky in
+    /// `finish_resources`, and the receipt cannot remove the retained base.
+    #[tokio::test]
+    async fn r2_routed_foreign_stderr_replacement_fails_closed_and_keeps_cleanup_blocked() {
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
+        let (lease, root, stderr) = r2_stderr_fixture(namespace.path(), data.path());
+        let log = initialize_stderr(&lease, &stderr).unwrap();
+        let session = runtime_test_session(lease.clone(), namespace.path(), false).await;
+        let receipt = session.wait().await.1.unwrap();
+        let held = root.join("held-stderr");
+        std::fs::rename(&stderr, &held).unwrap();
+        std::fs::write(&stderr, b"FOREIGN\n").unwrap();
+        let mut writer = r2_stderr_writer("echo late-after-reap >&2");
+        session.pump_stderr(writer.stderr.take(), log);
+        assert!(writer.wait().await.unwrap().success());
+        assert!(session.finish_resources(&receipt).await.is_err());
+        assert!(
+            session.finish_resources(&receipt).await.is_err(),
+            "a host writer failure is sticky, never cleared by a retry"
+        );
+        assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+        assert_eq!(std::fs::read(&stderr).unwrap(), b"FOREIGN\n");
+        assert!(std::fs::read(&held).unwrap().is_empty());
+        assert!(root.exists());
+    }
+
+    /// R2 negative: only an exact declared MutableFile can become a log; the
+    /// payload's MutableTree root is not a log grant and nothing is created.
+    #[test]
+    fn r2_undeclared_stderr_path_is_refused_before_any_file_exists() {
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let (lease, root, _) = resource_fixture(data.path(), &context, 0);
+        let stderr = root.join("vm-boot.stderr.log");
+        assert!(initialize_stderr(&lease, &stderr).is_err());
+        assert!(!stderr.exists());
+        assert!(!stderr_previous(&stderr).unwrap().exists());
     }
 
     fn resource_fixture(
