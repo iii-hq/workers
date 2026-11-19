@@ -1807,6 +1807,8 @@ fn amendment_d_owner_read_0000_internal_links_restore_original_guest_modes() {
     let file = dir.join("file");
     std::fs::write(&file, b"DATA").unwrap();
     std::fs::hard_link(&file, dir.join("alias")).unwrap();
+    // Failure-path cleanup only: the explicit 0700 below stays the success path.
+    let _access = testing::OwnerAccessOnDrop::arm(&dir);
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0)).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0)).unwrap();
     let lease = mutable(

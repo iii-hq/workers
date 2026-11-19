@@ -93,6 +93,9 @@ fn e_0000_directory_records_access_and_default_acl_before_grant_and_restores_exa
         "must run as nonroot; root masks the required lookup capability"
     );
     let (_tmp, context, cache) = fixture();
+    // Armed before the chmod, bound after the TempDir: it only acts at scope
+    // end, after the exact-restore oracles below, so the tree stays removable.
+    let _access = testing::OwnerAccessOnDrop::arm(&cache);
     let file = File::open(&cache).unwrap();
     let access = acl_bytes(0);
     let defaults = acl_bytes(7);
@@ -115,6 +118,12 @@ fn e_0000_directory_records_access_and_default_acl_before_grant_and_restores_exa
         original.mode()
     );
     guard.finish().unwrap();
+    // The product itself restored the exact original mode (also implied by
+    // capture_acls' same_inode check below); the cleanup guard has not run.
+    assert_eq!(
+        std::fs::symlink_metadata(&cache).unwrap().mode(),
+        original.mode()
+    );
     let parent = Directory::open(cache.parent().unwrap()).unwrap();
     let child = open_path(&parent.file, cache.file_name().unwrap()).unwrap();
     assert_eq!(
@@ -143,6 +152,7 @@ fn e_pregrant_faults_never_chmod_and_old_incomplete_records_are_not_inferred() {
         GrantFault::AfterIntent,
     ] {
         let (_tmp, context, cache) = fixture();
+        let _access = testing::OwnerAccessOnDrop::arm(&cache);
         std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0)).unwrap();
         let lease = lease(&context, &cache);
         let id = lease.0.id.clone();
