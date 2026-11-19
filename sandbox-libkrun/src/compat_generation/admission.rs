@@ -61,6 +61,9 @@ struct BootAuthority {
 struct Handoff<'a> {
     selected: Selected<'a>,
     _authority: &'a BootAuthority,
+    // The presented transition proof can differ from the Store's OfflineGrant.
+    // Keep its coordinator custody alive too; equal bindings are not ownership.
+    _transition_authority: &'a TransitionAuthority,
     _transition: crate::worker_admission::Lease,
 }
 /// Prepared internal seam: exact CURRENT selection and both authority/storage
@@ -68,7 +71,7 @@ struct Handoff<'a> {
 fn handoff<'a>(
     store: &'a Store<'a>,
     proof: &'a BootAuthority,
-    transition: &TransitionAuthority,
+    transition: &'a TransitionAuthority,
     base: &Path,
     vm_id: &str,
 ) -> Result<Handoff<'a>> {
@@ -85,6 +88,7 @@ fn handoff<'a>(
     Ok(Handoff {
         selected,
         _authority: proof,
+        _transition_authority: transition,
         _transition: lease,
     })
 }

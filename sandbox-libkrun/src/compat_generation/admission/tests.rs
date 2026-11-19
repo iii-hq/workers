@@ -239,7 +239,35 @@ fn private_handoff_selects_current_new_bytes_and_holds_transition_lease() {
         _sanitization_custody: File::open(&owner).unwrap(),
         _profile_custody: File::open(&owner).unwrap(),
     };
-    let selected = handoff(&store, &proof, &transition, &base, vm).unwrap();
+    // Present a distinct transition proof, not the one whose OfflineGrant the
+    // Store borrows. Matching metadata must not erase its independent custody.
+    let other_source_path = root.path().join("other-source");
+    private(&other_source_path);
+    write(&other_source_path.join("lower.erofs"), b"lower");
+    write(&other_source_path.join("upper.ext4"), b"OLD");
+    let other_source = fs::Dir::open(&other_source_path, true).unwrap();
+    let other_source_lease = other_source.lock().unwrap();
+    let other_pinned = tree::Inventory::scan(&other_source).unwrap();
+    let other_coordinator = root.path().join("other-coordinator");
+    private(&other_coordinator);
+    let presented_transition = TransitionAuthority {
+        _offline: OfflineGrant {
+            binding: binding.clone(),
+            environment: proof.environment.clone(),
+            source: other_source,
+            pinned: other_pinned,
+            _source_lease: other_source_lease,
+        },
+        _coordinator_custody: File::open(&other_coordinator).unwrap(),
+    };
+    assert!(!std::ptr::eq(&transition, &presented_transition));
+    let selected = handoff(&store, &proof, &presented_transition, &base, vm).unwrap();
+    assert!(std::ptr::eq(selected._authority, &proof));
+    assert!(std::ptr::eq(
+        selected._transition_authority,
+        &presented_transition
+    ));
+    assert!(!std::ptr::eq(selected._transition_authority, &transition));
     assert_eq!(selected.selected.record.generation, 1);
     let current = tree::Inventory::scan(&selected.selected.data).unwrap();
     assert_eq!(
