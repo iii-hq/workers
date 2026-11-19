@@ -102,6 +102,10 @@ pub struct SandboxRegistry {
     context: Option<crate::worker_admission::AdmissionContext>,
     #[cfg(test)]
     layout_root: Option<PathBuf>,
+    #[cfg(test)]
+    test_namespace: Option<PathBuf>,
+    #[cfg(test)]
+    test_layouts: Arc<std::sync::Mutex<HashMap<Uuid, super::overlay::OverlayLayout>>>,
 }
 
 /// A create's claim on one of `max_concurrent_sandboxes`, from the cap check
@@ -138,6 +142,10 @@ impl SandboxRegistry {
             context: None,
             #[cfg(test)]
             layout_root: None,
+            #[cfg(test)]
+            test_namespace: None,
+            #[cfg(test)]
+            test_layouts: Arc::default(),
         }
     }
 
@@ -161,6 +169,10 @@ impl SandboxRegistry {
 
     pub(crate) fn layout(&self, id: Uuid) -> super::overlay::OverlayLayout {
         #[cfg(test)]
+        if let Some(layout) = self.test_layouts.lock().unwrap().get(&id).cloned() {
+            return layout;
+        }
+        #[cfg(test)]
         if let Some(root) = &self.layout_root {
             let base = root.join(id.to_string());
             return super::overlay::OverlayLayout {
@@ -176,6 +188,20 @@ impl SandboxRegistry {
     pub(crate) fn with_layout_root(mut self, root: PathBuf) -> Self {
         self.layout_root = Some(root);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_namespace(mut self, namespace: PathBuf) -> Self {
+        self.test_namespace = Some(namespace);
+        self
+    }
+    #[cfg(test)]
+    pub(crate) fn test_namespace(&self) -> Option<PathBuf> {
+        self.test_namespace.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn test_record_layout(&self, id: Uuid, layout: super::overlay::OverlayLayout) {
+        self.test_layouts.lock().unwrap().insert(id, layout);
     }
 
     pub(crate) async fn attach_runtime(

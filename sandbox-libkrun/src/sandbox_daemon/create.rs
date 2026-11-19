@@ -131,6 +131,33 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     handle_create_in(req, cfg, registry, launcher, on_event, None).await
 }
 
+#[cfg(test)]
+pub(crate) async fn test_handle_create<
+    L: VmLauncher,
+    F: FnMut(SandboxCreateEvent) + Send + 'static,
+>(
+    req: CreateRequest,
+    cfg: &SandboxConfig,
+    registry: &SandboxRegistry,
+    launcher: &L,
+    on_event: F,
+    cache: &std::path::Path,
+) -> Result<CreateResponse, SandboxError> {
+    let layout = registry.layout(Uuid::new_v4());
+    handle_create_in(
+        req,
+        cfg,
+        registry,
+        launcher,
+        on_event,
+        Some(CreatePaths {
+            layout,
+            cache: cache.to_path_buf(),
+        }),
+    )
+    .await
+}
+
 struct CreatePaths {
     layout: OverlayLayout,
     cache: PathBuf,

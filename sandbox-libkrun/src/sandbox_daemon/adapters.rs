@@ -166,6 +166,8 @@ pub(crate) struct RuntimeSession {
     control: crate::worker_admission::RuntimeControl,
     /// Exact launch configuration; never inferred from disk or reduced on error.
     endpoints: Vec<PathBuf>,
+    #[cfg(test)]
+    diagnostic_pid: Option<u32>,
     completion: tokio::sync::watch::Receiver<Option<RuntimeResult>>,
     host_writers: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<std::io::Result<()>>>>,
     host_failure: Mutex<Option<String>>,
@@ -188,6 +190,8 @@ impl RuntimeSession {
             lease,
             control,
             endpoints,
+            #[cfg(test)]
+            diagnostic_pid: child.id(),
             completion,
             host_writers: tokio::sync::Mutex::new(Vec::new()),
             host_failure: Mutex::new(None),
@@ -288,6 +292,20 @@ impl RuntimeSession {
         self.finish_host_writers().await?;
         let paths: Vec<&Path> = self.endpoints.iter().map(PathBuf::as_path).collect();
         receipt.retire_runtime_endpoints(&self.lease, &paths)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_diagnostic_pid(&self) -> Option<u32> {
+        self.diagnostic_pid
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_imported_close_and_retain(
+        &self,
+    ) -> std::io::Result<crate::worker_admission::WriterRetirement> {
+        let receipt = self.stop(Duration::ZERO).await?;
+        self.finish_resources(&receipt).await?;
+        Ok(receipt)
     }
 
     pub(crate) fn lease(&self) -> &crate::worker_admission::Lease {
@@ -1140,6 +1158,29 @@ pub(crate) async fn runtime_test_session_resources(
     keep_running: bool,
     resources: RuntimeTestResources,
 ) -> std::sync::Arc<RuntimeSession> {
+    runtime_test_session_resources_inner(lease, namespace, keep_running, resources, None).await
+}
+
+#[cfg(test)]
+pub(crate) async fn runtime_test_session_registered(
+    lease: crate::worker_admission::Lease,
+    namespace: &Path,
+    registry: &super::registry::SandboxRegistry,
+    id: uuid::Uuid,
+    resources: RuntimeTestResources,
+) -> std::sync::Arc<RuntimeSession> {
+    runtime_test_session_resources_inner(lease, namespace, true, resources, Some((registry, id)))
+        .await
+}
+
+#[cfg(test)]
+async fn runtime_test_session_resources_inner(
+    lease: crate::worker_admission::Lease,
+    namespace: &Path,
+    keep_running: bool,
+    resources: RuntimeTestResources,
+    attach: Option<(&super::registry::SandboxRegistry, uuid::Uuid)>,
+) -> std::sync::Arc<RuntimeSession> {
     let mut command = tokio::process::Command::new("/bin/sh");
     command.arg("-c").arg(r#"
         binary=$1; shift
@@ -1169,6 +1210,9 @@ pub(crate) async fn runtime_test_session_resources(
         .unwrap_or_else(|e| panic!("runtime fixture spawn: {}", e.error()));
     let stdout = child.take_stdout().unwrap();
     let session = RuntimeSession::supervise(child, lease, resources.endpoints);
+    if let Some((registry, id)) = attach {
+        registry.attach_runtime(id, session.clone()).await.unwrap();
+    }
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
     tokio::time::timeout(Duration::from_secs(10), async {

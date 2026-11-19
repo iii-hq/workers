@@ -17,27 +17,27 @@
 //! manually so tests don't need rootfs/overlay machinery; the focus here
 //! is the post-create handler surface.
 
-mod common;
+use super::TestRegistry as SandboxRegistry;
 
 use std::path::PathBuf;
 
 use uuid::Uuid;
 
-use sandbox_libkrun::sandbox_daemon::errors::SandboxError;
-use sandbox_libkrun::sandbox_daemon::exec::{EnvShape, ExecRequest, handle_exec};
-use sandbox_libkrun::sandbox_daemon::list::{ListRequest, handle_list};
-use sandbox_libkrun::sandbox_daemon::registry::{SandboxRegistry, SandboxState};
-use sandbox_libkrun::sandbox_daemon::stop::{StopRequest, handle_stop};
+use crate::sandbox_daemon::errors::SandboxError;
+use crate::sandbox_daemon::exec::{EnvShape, ExecRequest, handle_exec};
+use crate::sandbox_daemon::list::{ListRequest, handle_list};
+use crate::sandbox_daemon::registry::SandboxState;
+use crate::sandbox_daemon::stop::{StopRequest, handle_stop};
 
-use common::sandbox_fakes::{FakeShellRunner, FakeVmStopper};
+use super::sandbox_fakes::{FakeShellRunner, FakeVmStopper};
 
 fn make_state(id: Uuid) -> SandboxState {
-    let mut s = sandbox_libkrun::sandbox_daemon::registry::sandbox_state_for_test(id);
+    let mut s = crate::sandbox_daemon::registry::sandbox_state_for_test(id);
     s.name = Some("workflow-fixture".into());
-    s.rootfs = PathBuf::from("/tmp/rootfs");
-    s.workdir = PathBuf::from("/tmp/work");
-    s.shell_sock = PathBuf::from("/tmp/shell.sock");
-    s.vm_pid = Some(7777);
+    s.rootfs = PathBuf::new();
+    s.workdir = PathBuf::new();
+    s.shell_sock = PathBuf::new();
+    s.vm_pid = None;
     s
 }
 
@@ -62,8 +62,7 @@ fn build_req(id: Uuid, cmd: impl Into<String>) -> ExecRequest {
 #[tokio::test]
 async fn workflow_create_exec_stop_list_round_trip() {
     let reg = SandboxRegistry::new();
-    let id = Uuid::new_v4();
-    reg.insert(make_state(id)).await;
+    let id = reg.insert_owned(make_state(Uuid::new_v4())).await;
 
     // List sees the sandbox
     let pre_list = handle_list(ListRequest::default(), &reg).await;
@@ -107,8 +106,13 @@ async fn workflow_create_exec_stop_list_round_trip() {
 #[tokio::test]
 async fn workflow_stopped_sandbox_rejects_further_work() {
     let reg = SandboxRegistry::new();
-    let id = Uuid::new_v4();
-    reg.insert(make_state(id)).await;
+    let id = reg.insert_owned(make_state(Uuid::new_v4())).await;
+    reg.lifecycle(id)
+        .await
+        .unwrap()
+        .test_imported_close_and_retain()
+        .await
+        .unwrap();
     reg.mark_stopped(id).await;
 
     let runner = FakeShellRunner::ok("", 0);

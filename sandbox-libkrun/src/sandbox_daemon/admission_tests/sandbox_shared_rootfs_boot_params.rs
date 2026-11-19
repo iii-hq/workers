@@ -11,16 +11,13 @@
 //! per-sandbox upper), so two sandboxes never share a writable root and the
 //! cached image is not the guest-visible root.
 
-use sandbox_libkrun::cli::rootfs_cache;
-use sandbox_libkrun::sandbox_daemon::config::SandboxConfig;
-use sandbox_libkrun::sandbox_daemon::{
-    SandboxError, catalog,
-    create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
+use super::{TestRegistry as SandboxRegistry, handle_create, owned_boot};
+use crate::sandbox_daemon::config::SandboxConfig;
+use crate::sandbox_daemon::{
+    SandboxError,
+    create::{BootHandle, BootParams, CreateRequest, VmLauncher},
     exec::EnvShape,
-    overlay::sandbox_root,
-    registry::SandboxRegistry,
 };
-use serial_test::serial;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -29,36 +26,19 @@ struct RecordingLauncher {
 }
 #[async_trait::async_trait]
 impl VmLauncher for RecordingLauncher {
-    async fn boot(&self, p: &BootParams) -> Result<BootHandle, SandboxError> {
+    async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
+        panic!("admitted fixture required")
+    }
+    async fn boot_admitted(
+        &self,
+        p: &BootParams,
+        lease: crate::worker_admission::Lease,
+        reg: &crate::sandbox_daemon::registry::SandboxRegistry,
+        id: uuid::Uuid,
+    ) -> Result<BootHandle, SandboxError> {
         self.seen.lock().unwrap().push(p.rootfs.clone());
-        Ok(BootHandle {
-            vm_pid: 999_999,
-            lifeline: None,
-        })
+        owned_boot(p, lease, reg, id).await
     }
-}
-
-#[allow(dead_code)]
-struct HomeGuard(tempfile::TempDir, Option<std::ffi::OsString>);
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.1 {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-    }
-}
-fn fake_home_with_cached_image(image: &str) -> (HomeGuard, PathBuf) {
-    let td = tempfile::tempdir().unwrap();
-    let orig = std::env::var_os("HOME");
-    // SAFETY: #[serial]; no other thread in this binary touches env.
-    unsafe { std::env::set_var("HOME", td.path()) };
-    let oci_ref = catalog::resolve_image(image, &Default::default()).unwrap();
-    let rootfs = rootfs_cache::canonical_path(&oci_ref);
-    std::fs::create_dir_all(rootfs.join("bin")).unwrap();
-    (HomeGuard(td, orig), rootfs)
 }
 
 fn req() -> CreateRequest {
@@ -74,29 +54,33 @@ fn req() -> CreateRequest {
 }
 
 #[tokio::test]
-#[serial]
 async fn two_sandboxes_must_not_share_the_cached_image_as_writable_root() {
-    let (_g, cached) = fake_home_with_cached_image("python");
+    let reg = SandboxRegistry::new();
+    let cached = reg.seed("python");
     let cfg = SandboxConfig {
         auto_install: false,
         image_allowlist: vec!["python".into()],
         ..Default::default()
     };
-    let reg = SandboxRegistry::new();
     let l = RecordingLauncher {
         seen: Mutex::new(vec![]),
     };
     let a = handle_create(req(), &cfg, &reg, &l, |_| {}).await.unwrap();
     let b = handle_create(req(), &cfg, &reg, &l, |_| {}).await.unwrap();
+    for created in [&a, &b] {
+        assert!(
+            reg.lifecycle(uuid::Uuid::parse_str(&created.sandbox_id).unwrap())
+                .await
+                .unwrap()
+                .observation()
+                .os_status()
+                .is_none()
+        );
+    }
     let seen = l.seen.lock().unwrap().clone();
     eprintln!("sandbox A {} rootfs = {}", a.sandbox_id, seen[0].display());
     eprintln!("sandbox B {} rootfs = {}", b.sandbox_id, seen[1].display());
     eprintln!("shared cached image  = {}", cached.display());
-
-    // cleanup overlay dirs created under the per-user sandbox root
-    for s in [&a.sandbox_id, &b.sandbox_id] {
-        let _ = std::fs::remove_dir_all(sandbox_root().join(s));
-    }
 
     assert_ne!(
         seen[0], cached,
@@ -106,4 +90,6 @@ async fn two_sandboxes_must_not_share_the_cached_image_as_writable_root() {
         seen[0], seen[1],
         "two sandboxes booted with the same writable root directory"
     );
+    assert_eq!(reg.count().await, 2);
+    reg.finish().await;
 }

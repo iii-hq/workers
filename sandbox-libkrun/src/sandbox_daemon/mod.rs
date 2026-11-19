@@ -17,6 +17,9 @@ pub mod registry;
 pub mod run;
 pub mod stop;
 
+#[cfg(test)]
+mod admission_tests;
+
 pub use errors::SandboxError;
 pub use registry::SandboxRegistry;
 
