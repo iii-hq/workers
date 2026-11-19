@@ -363,7 +363,7 @@
       }
     },
     "history_max_bytes": 262144,
-    "history_max_entries": 200
+    "history_max_entries": 0
   },
   "examples": [
     {
@@ -381,9 +381,7 @@
           },
           "url": "sqlite:./data/iii.db"
         }
-      },
-      "history_max_bytes": 262144,
-      "history_max_entries": 200
+      }
     }
   ],
   "properties": {
@@ -409,15 +407,13 @@
       "type": "object"
     },
     "history_max_bytes": {
-      "default": 262144,
-      "description": "Maximum JSON-serialized size in bytes of one database's stored query history; oldest entries are dropped until the list fits. The hard guard that keeps history from growing into a value large enough to break the `state` worker's connection. `0` disables history recording. Applied live.",
+      "description": "Maximum JSON-serialized size in bytes of one database's stored query history; oldest entries are dropped until the list fits. The hard guard that keeps history from growing into a value large enough to break the `state` worker's connection. `0` disables history recording; it only applies when `history_max_entries` is above `0`. Applied live.",
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"
     },
     "history_max_entries": {
-      "default": 200,
-      "description": "Maximum entries kept per database in the console query history (`database::history`, stored on the `state` worker). Oldest entries are dropped first. `0` disables history recording. Applied live.",
+      "description": "Maximum entries kept per database in the console query history (`database::history`, stored on the `state` worker). Oldest entries are dropped first. Default `0`: history is off, so a query costs no `state::get`/`state::set`; set a positive number to record it. Applied live.",
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"

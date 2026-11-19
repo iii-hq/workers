@@ -53,7 +53,7 @@ This is seeded into the `configuration` worker on first register and used as a r
 
 ### Optional seed file
 
-Pass `--config <path>` to supply a YAML seed file. When present, its `databases` block is passed as `initial_value` on `configuration::register` (overriding the built-in default for first-time registration). See [`config.yaml.example`](config.yaml.example).
+Pass `--config <path>` to supply a YAML seed file. When present, the whole value is passed as `initial_value` on `configuration::register` (overriding the built-in default for first-time registration). See [`config.yaml.example`](config.yaml.example).
 
 Engine-managed deployments can inline config under the worker entry; the engine delivers it via `--config` as before.
 
@@ -73,11 +73,13 @@ databases:
     url: ${ANALYTICS_URL:postgres://localhost/analytics}
     tls: { mode: disable }    # a local server without TLS; see "TLS" below
     pool: { max: 5 }
-history_max_entries: 200 # query history is off (0) unless set; 200 turns it on
+# history_max_entries: 200 # query history is off unless set above 0
 history_max_bytes: 262144 # per-database size cap, default shown
 ```
 
 `history_max_entries` / `history_max_bytes` cap the per-database query history stored on the [`state`](../state) worker — whichever cap hits first, oldest entries are dropped. History is **off by default** (`history_max_entries: 0`), so a query makes no `state` call; set `history_max_entries` above `0` to record. Applied live.
+
+**Upgrading:** installs registered up to 0.6.5 stored `history_max_entries: 200` in their configuration and keep recording after the upgrade; set `history_max_entries: 0` to stop. From this version a default value is no longer stored, so a configuration that never chose one follows the default.
 
 Env placeholders use **`${VAR:default}`** syntax. The configuration worker expands them on every `configuration::get` call, so env changes propagate without a restart.
 

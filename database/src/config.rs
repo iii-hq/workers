@@ -34,7 +34,10 @@ pub struct WorkerConfig {
     /// are dropped first. Default `0`: history is off, so a query costs no
     /// `state::get`/`state::set`; set a positive number to record it. Applied
     /// live.
-    #[serde(default = "default_history_max_entries")]
+    #[serde(
+        default = "default_history_max_entries",
+        skip_serializing_if = "is_default_history_max_entries"
+    )]
     pub history_max_entries: usize,
     /// Maximum JSON-serialized size in bytes of one database's stored query
     /// history; oldest entries are dropped until the list fits. The hard
@@ -42,7 +45,10 @@ pub struct WorkerConfig {
     /// break the `state` worker's connection. `0` disables history
     /// recording; it only applies when `history_max_entries` is above `0`.
     /// Applied live.
-    #[serde(default = "default_history_max_bytes")]
+    #[serde(
+        default = "default_history_max_bytes",
+        skip_serializing_if = "is_default_history_max_bytes"
+    )]
     pub history_max_bytes: usize,
     /// Entries left out because they do not parse or validate, by name, with
     /// why. Only [`WorkerConfig::from_json_isolating`] fills it: the running
@@ -952,6 +958,14 @@ fn default_history_max_entries() -> usize {
 fn default_history_max_bytes() -> usize {
     262_144
 }
+// Defaults are not written out, so a stored config that never chose a value
+// follows a later change of the default instead of freezing today's.
+fn is_default_history_max_entries(v: &usize) -> bool {
+    *v == default_history_max_entries()
+}
+fn is_default_history_max_bytes(v: &usize) -> bool {
+    *v == default_history_max_bytes()
+}
 
 impl WorkerConfig {
     /// Whether `query` records into `database::history`.
@@ -1385,6 +1399,11 @@ mod tests {
         assert_eq!(c.history_max_entries, 25);
         assert_eq!(c.history_max_bytes, 4096);
         assert!(c.records_history());
+
+        // Defaults stay out of the stored value; chosen values are kept.
+        assert!(d.to_json().get("history_max_entries").is_none());
+        assert!(d.to_json().get("history_max_bytes").is_none());
+        assert_eq!(c.to_json()["history_max_entries"], 25);
     }
 
     /// Regenerate the e2e harness schema fixture when `WorkerConfig` changes:

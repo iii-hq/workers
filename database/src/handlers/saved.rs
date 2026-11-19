@@ -312,11 +312,11 @@ pub fn record(
     tokio::spawn(async move {
         let (max_entries, max_bytes) = {
             let cfg = config.read().await;
+            if !cfg.records_history() {
+                return;
+            }
             (cfg.history_max_entries, cfg.history_max_bytes)
         };
-        if max_entries == 0 || max_bytes == 0 {
-            return;
-        }
         let key = history_key(&db);
         let mut items = if reset_pending(&db) {
             Vec::new()

@@ -37,7 +37,7 @@ pub struct QueryReq {
     // `browseTable`, `columnStats`, `explain` and `schemaDiagram` all run
     // through this same path, and recording them would bury the statements a
     // person actually typed under `PRAGMA table_info(...)` and spawn a
-    // `state::update` per internal read.
+    // `state::get` and `state::set` per internal read.
     #[serde(skip, default = "records_history")]
     pub record_history: bool,
 }

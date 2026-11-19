@@ -1,6 +1,7 @@
 import type { IIIClient } from 'iii-sdk'
 import type { TestCase, CaseContext } from './cases.ts'
 import { expect, expectEqual } from './cases.ts'
+import { DATABASE_CONFIG_ID, DATABASE_CONFIG_VALUE } from './database-config.ts'
 
 /**
  * Query-history cap cases (MOT-4372). The worker stores console history on
@@ -315,6 +316,34 @@ export const HISTORY_CASES: TestCase[] = [
         mock.getThrows.delete(hk)
         await recordedQuery(ctx, mock, 'SELECT 303')
       } finally {
+        mock.unregister()
+      }
+    },
+  },
+  {
+    name: 'history off (history_max_entries 0) makes no state call per query',
+    applies: ['sqlite_db'],
+    async run(ctx) {
+      const mock = registerMockState(ctx.iii)
+      const setEntries = async (n: number) => {
+        await ctx.call('configuration::set', {
+          id: DATABASE_CONFIG_ID,
+          value: { ...DATABASE_CONFIG_VALUE, history_max_entries: n },
+        })
+        await sleep(1500) // the worker reloads on configuration::on-updated
+      }
+      try {
+        await mockReady(ctx, mock)
+        await setEntries(0)
+        for (let i = 1; i <= 5; i++) {
+          await ctx.call('database::query', { db: ctx.driver, sql: `SELECT ${400 + i}` })
+        }
+        await sleep(500)
+        expectEqual([...mock.gets.values()].reduce((a, b) => a + b, 0), 0, 'no state::get')
+        expectEqual(mock.setAttempts.length, 0, 'no state::set')
+        expectEqual(mock.updates, 0, 'no state::update')
+      } finally {
+        await setEntries(MAX_ENTRIES)
         mock.unregister()
       }
     },
