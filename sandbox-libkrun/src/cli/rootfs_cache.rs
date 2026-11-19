@@ -1546,15 +1546,19 @@ mod tests {
     async fn r3_producer_input_failure_after_core_stage_never_publishes() {
         let (directory, context, cache) = h_context();
         let reference = "example.invalid/review/fault:v1";
-        let error = CacheRequest::new(
+        let result = CacheRequest::new(
             context.local(&directory.path().join("consumer")).unwrap(),
             reference,
             &cache,
         )
         .unwrap()
         .resolve_fixture_failure()
-        .await
-        .unwrap_err();
+        .await;
+        // `PreparedCache` deliberately has no Debug (it carries a lease).
+        let error = match result {
+            Ok(_) => panic!("fixture producer unexpectedly succeeded"),
+            Err(error) => error,
+        };
         assert!(
             format!("{error:#}").contains("fixture producer failed after staging"),
             "{error:#}"

@@ -879,7 +879,7 @@ async fn r8_auth_invalid_source_and_insecure_parent_do_not_create_or_repair_work
         assert!(vms.operations.lock().unwrap().is_empty());
         if failure == "parent" {
             assert_eq!(
-                std::fs::metadata(home).unwrap().permissions().mode() & 0o7777,
+                std::fs::metadata(&home).unwrap().permissions().mode() & 0o7777,
                 0o777
             );
         }
@@ -1008,7 +1008,14 @@ async fn r7_external_imagepair_replacement_is_not_blessed_by_the_old_retirement(
     let image = PathBuf::from(&build.build_dir).join(IMAGE_FILE);
     std::fs::rename(&image, image.with_extension("held-old")).unwrap();
     std::fs::write(&image, b"external replacement").unwrap();
-    assert!(h1_prepare(&s, H1_B, true).await.is_err());
+    let error = match h1_prepare(&s, H1_B, true).await {
+        Ok(_) => panic!("an external image replacement must not be blessed"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("admitted identity changed outside an owned mutation"),
+        "{error}"
+    );
     h1_assert_current(&s, H1_A);
     assert_eq!(std::fs::read(image).unwrap(), b"external replacement");
     assert!(a.root.exists());
