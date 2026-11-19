@@ -107,10 +107,71 @@ pub(crate) fn build_erofs_from_tar_to_files(
     Ok(())
 }
 
-/// Walk a registered managed OCI tree through the permission-restoration guard.
-/// Every mode recorded in EROFS is the original one, never temporary host access.
-fn managed_tree(
-    read: &mut crate::worker_admission::OwnerReadGuard,
+/// The managed tree source an EROFS build walks: the generic owner-read guard
+/// (unchanged profile for unsealed trees) or the reader bound to the exact seal
+/// a producer just published. Only these two implement it; neither can be
+/// constructed from a path, hash, PID or flag.
+trait ManagedRead {
+    type File: Read;
+    fn read_dir(&mut self, path: &Path)
+    -> io::Result<Vec<crate::worker_admission::OwnerReadEntry>>;
+    fn original_metadata(&self, path: &Path) -> io::Result<fs::Metadata>;
+    fn open_file(&mut self, path: &Path) -> io::Result<Self::File>;
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf>;
+    fn checkpoint(&self) -> io::Result<()>;
+}
+
+impl ManagedRead for crate::worker_admission::OwnerReadGuard {
+    type File = File;
+    fn read_dir(
+        &mut self,
+        path: &Path,
+    ) -> io::Result<Vec<crate::worker_admission::OwnerReadEntry>> {
+        crate::worker_admission::OwnerReadGuard::read_dir(self, path)
+    }
+    fn original_metadata(&self, path: &Path) -> io::Result<fs::Metadata> {
+        crate::worker_admission::OwnerReadGuard::original_metadata(self, path)
+    }
+    fn open_file(&mut self, path: &Path) -> io::Result<File> {
+        crate::worker_admission::OwnerReadGuard::open_file(self, path)
+    }
+    /// The generic guard reads link targets by path, between its checkpoints.
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        fs::read_link(path)
+    }
+    fn checkpoint(&self) -> io::Result<()> {
+        crate::worker_admission::OwnerReadGuard::checkpoint(self)
+    }
+}
+
+impl ManagedRead for crate::worker_admission::SealedPayloadRead {
+    type File = crate::worker_admission::SealedFile;
+    fn read_dir(
+        &mut self,
+        path: &Path,
+    ) -> io::Result<Vec<crate::worker_admission::OwnerReadEntry>> {
+        crate::worker_admission::SealedPayloadRead::read_dir(self, path)
+    }
+    fn original_metadata(&self, path: &Path) -> io::Result<fs::Metadata> {
+        crate::worker_admission::SealedPayloadRead::original_metadata(self, path)
+    }
+    fn open_file(&mut self, path: &Path) -> io::Result<crate::worker_admission::SealedFile> {
+        crate::worker_admission::SealedPayloadRead::open_file(self, path)
+    }
+    /// The sealed target, after the core verified the symlink inode.
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        crate::worker_admission::SealedPayloadRead::read_link(self, path)
+    }
+    fn checkpoint(&self) -> io::Result<()> {
+        crate::worker_admission::SealedPayloadRead::checkpoint(self)
+    }
+}
+
+/// Walk a registered managed OCI tree through the permission-restoration guard,
+/// or a sealed payload through its retained capability. Every mode recorded in
+/// EROFS is the original one, never temporary host access.
+fn managed_tree<R: ManagedRead>(
+    read: &mut R,
     root: &Path,
     dir: &Path,
     tree: &mut FileTree,
@@ -168,7 +229,7 @@ fn managed_tree(
             .map_err(|e| e.to_string())?;
         } else if meta.file_type().is_symlink() {
             read.checkpoint().map_err(|e| e.to_string())?;
-            let target = fs::read_link(&path).map_err(|e| e.to_string())?;
+            let target = read.read_link(&path).map_err(|e| e.to_string())?;
             read.checkpoint().map_err(|e| e.to_string())?;
             tree.insert(
                 rel.as_os_str().as_bytes(),
@@ -183,8 +244,8 @@ fn managed_tree(
     Ok(())
 }
 
-fn build_managed_erofs_to_files(
-    read: &mut crate::worker_admission::OwnerReadGuard,
+fn build_managed_erofs_to_files<R: ManagedRead>(
+    read: &mut R,
     root: &Path,
     output: File,
     spool: File,
@@ -701,6 +762,47 @@ pub(crate) fn build_prepared_erofs(
     )?;
     mutation.checkpoint.check()?;
     let mut read = prep.owner_read(base_dir)?;
+    let mut image = mutation.apply(|g| g.stage_file(&out, 0o600))?;
+    let mut spool = mutation.apply(|g| g.stage_file(&spool_path, 0o600))?;
+    build_managed_erofs_to_files(
+        &mut read,
+        base_dir,
+        image.file_mut().try_clone()?,
+        spool.file_mut().try_clone()?,
+    )
+    .map_err(anyhow::Error::msg)?;
+    read.finish()?;
+    image.file_mut().sync_all()?;
+    mutation.apply(|g| g.discard_file(spool))?;
+    mutation.apply(|g| g.publish_file(image))?;
+    lock.finish()?;
+    mutation.commit()?;
+    Ok(())
+}
+
+/// R3 producer path for a payload this producer just sealed and published:
+/// identical to `build_prepared_erofs`, except the tree is read ONLY through
+/// the reader bound to that exact seal (never `prep.owner_read`, whose generic
+/// 0o022 / 4096-object / depth profile stays unchanged for unsealed trees).
+/// `read.finish()` re-verifies every member and directory name set and hashes
+/// every regular inode not verified at EOF, BEFORE the image is synced,
+/// the spool discarded and the image published; any mismatch publishes none.
+pub(crate) fn build_sealed_erofs(
+    prep: &crate::worker_admission::CachePreparation,
+    base_dir: &Path,
+    mut read: crate::worker_admission::SealedPayloadRead,
+) -> anyhow::Result<()> {
+    let out = base_erofs_path(base_dir);
+    let spool_path = PathBuf::from(format!("{}.spool", out.display()));
+    let mutation =
+        crate::cli::rootfs_cache::MutationWriter::from_guard(prep.begin_erofs(base_dir)?);
+    let diagnostic = mutation.diagnostic(&PathBuf::from(format!("{}.lock", out.display())))?;
+    let lock = crate::cli::rootfs_cache::MutationLock::acquire(
+        diagnostic,
+        mutation.checkpoint.clone(),
+        false,
+    )?;
+    mutation.checkpoint.check()?;
     let mut image = mutation.apply(|g| g.stage_file(&out, 0o600))?;
     let mut spool = mutation.apply(|g| g.stage_file(&spool_path, 0o600))?;
     build_managed_erofs_to_files(
