@@ -437,7 +437,7 @@ pub fn stopped_reason(board: &Board, event: &Value) -> Option<(String, String)> 
             other => other.to_string(),
         });
     let reason = match (status, detail) {
-        ("completed", None) => "ended without finishing the card".to_string(),
+        ("completed", None) => "ended its run".to_string(),
         (status, None) => status.to_string(),
         (status, Some(detail)) => {
             format!("{status}: {}", detail.chars().take(300).collect::<String>())
@@ -662,7 +662,7 @@ async fn park_stopped(ctx: &Arc<Ctx>, key: &str, reason: &str) {
         comment(
             ctx,
             key,
-            format!("⛔ Needs you — the {reason} and left this card In progress. Move it to To do to resume."),
+            format!("⛔ Needs you — {reason}, with this card still In progress. Move it to To do to resume."),
         )
         .await;
     }
@@ -1067,7 +1067,7 @@ mod tests {
             stopped_reason(&b, &completed)
                 .unwrap()
                 .1
-                .contains("ended without finishing")
+                .ends_with("ended its run")
         );
     }
 

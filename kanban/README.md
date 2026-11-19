@@ -318,7 +318,7 @@ as in a console session; the card gets `▶ Started deepwork — session …`.
   progress.
 - **A session that stops.** When a dispatched session's final turn ends
   (`harness::on-turn-completed` with `terminal: true`) and its card is still In
-  progress (failed, cancelled, out of budget, or ended without finishing it),
+  progress (failed, cancelled, out of budget, or ended without moving it),
   the card moves to Backlog with `unfinished`, the `needs you` pill and a
   comment naming the session and the cause. Nothing restarts on its own: move
   the card to To do to resume it. A refused `harness::send` parks the card the
