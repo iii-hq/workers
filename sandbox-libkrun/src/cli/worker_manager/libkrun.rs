@@ -423,17 +423,28 @@ mod tests {
 
     #[test]
     fn independent_builder_refuses_mount_and_source_exports_before_provisioning() {
-        let t = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::DirBuilderExt;
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let base = t.path().join("workers");
         let id = "d".repeat(32);
+        // The namespace must be exactly 0700, never the umask-derived default.
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        // `base` is a worker base this namespace knows, as a production base is
+        // once a worker operation registered it. That operation ends before
+        // the retained VM below is planted.
+        drop(context.worker(&base, Some("registration")).unwrap());
         let retained = base.join(&id).join("root");
         std::fs::create_dir_all(&retained).unwrap();
         let custody = crate::worker_admission::custody(&base, &id).unwrap();
-        std::fs::create_dir_all(&custody).unwrap();
+        // Core reads a custody registry only when it is private (exactly 0700).
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&custody)
+            .unwrap();
         std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
-        let namespace = tempfile::tempdir().unwrap();
-        let context =
-            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let root = t.path().join("normal-root");
         for field in ["lower", "upper", "mount", "sync", "readonly"] {
             let mounts = if field == "mount" {

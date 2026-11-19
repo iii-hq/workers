@@ -2140,7 +2140,8 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let owner = t.path().join("owner");
         std::fs::create_dir(&owner).unwrap();
-        let namespace = tempfile::tempdir().unwrap();
+        // The namespace must be exactly 0700, never the umask-derived default.
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let lease = context.local(&owner.join("state")).unwrap();

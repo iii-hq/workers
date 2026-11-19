@@ -4313,18 +4313,27 @@ mod tests {
         let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
         // An adapter started without a token (or with an empty one) must refuse
         // an empty `auth` too, which the length and byte checks alone would pass.
-        for (token, auth) in [(None, "u"), (Some("t"), "u"), (None, ""), (Some(""), "")] {
-            let vms = Arc::new(vms(t, token, vec![t.into()]));
+        let cases = [(None, "u"), (Some("t"), "u"), (None, ""), (Some(""), "")];
+        for (round, (token, auth)) in cases.into_iter().enumerate() {
+            // One namespace for every adapter process: the first provisions it,
+            // each later one reopens it. Each round's VM has its own key, so no
+            // admission waits on the operation of an earlier round's VM.
+            let vms = Arc::new(if round == 0 {
+                vms(t, token, vec![t.into()])
+            } else {
+                reopened_vms(t, token, vec![t.into()])
+            });
+            let key = format!("k{round}");
             let err = prepare_err(&vms, auth, local(t)).await;
             assert_eq!(err.code().as_str(), "S505", "{err}");
 
             // A known VM: without the token, a stale instance is S505, not S503.
             let known = vms
-                .launch("k", sh("exit 0"), Vec::new(), None)
+                .launch(&key, sh("exit 0"), Vec::new(), None)
                 .unwrap()
                 .vm_id;
             assert_eq!(
-                code(vms.start(start_req(auth, "k", local(t))).await),
+                code(vms.start(start_req(auth, &key, local(t))).await),
                 "S505"
             );
             for vm_id in ["unknown", known.as_str()] {
@@ -4335,7 +4344,7 @@ mod tests {
                     "S505"
                 );
             }
-            assert_eq!(code(vms.destroy(destroy_req(auth, "k"))), "S505");
+            assert_eq!(code(vms.destroy(destroy_req(auth, &key))), "S505");
         }
     }
 
@@ -4738,8 +4747,15 @@ mod tests {
             (vec![t.to_path_buf()], t.join("esc"), &t_str),
             (vec![], t.to_path_buf(), "no host roots are configured"),
         ];
-        for (roots, host_path, needle) in cases {
-            let err = prepare_err(&vms(t, Some("t"), roots), "t", local(&host_path)).await;
+        for (index, (roots, host_path, needle)) in cases.into_iter().enumerate() {
+            // One adapter per case over one namespace: the first provisions it,
+            // every later one reopens it.
+            let adapter = if index == 0 {
+                vms(t, Some("t"), roots)
+            } else {
+                reopened_vms(t, Some("t"), roots)
+            };
+            let err = prepare_err(&adapter, "t", local(&host_path)).await;
             let msg = err.to_string();
             assert_eq!(err.code().as_str(), "S501", "{msg}");
             assert!(msg.contains("III_SANDBOX_HOST_ROOTS"), "{msg}");
@@ -5767,9 +5783,14 @@ mod tests {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![t.into()]));
-        let iii = IIIClient::new("ws://127.0.0.1:9");
-        let mine = vms
-            .launch("mine", sh("sleep 30"), Vec::new(), None)
+        // The test's own in-process engine stand-in: no connection reaches a
+        // port the test does not own.
+        let (iii, _frames, _reader_left) = channel_engine().await;
+        // `mine` is a genuine owned runtime lifecycle: its stop and destroy go
+        // through its retirement receipt.
+        let admission = vms.admission(Some("mine")).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 0, None, true);
+        let mine = owned_launch_key(&vms, "mine", &admission, child)
             .unwrap()
             .vm_id;
         let other = vms
@@ -5801,6 +5822,7 @@ mod tests {
         vms.logs(&iii, logs_req(&token, &mine, false))
             .await
             .unwrap();
+        wait_activated(&t.join("workers").join(&mine)).await;
         let stopped = vms.stop(stop_req(&token, &mine, 1, 0)).await.unwrap();
         assert!(matches!(stopped.state, State::Stopped), "{stopped:?}");
         assert!(vms.destroy(destroy_req(&token, "mine")).unwrap().destroyed);
@@ -5815,15 +5837,23 @@ mod tests {
     #[tokio::test]
     async fn no_token_derives_from_an_absent_or_empty_project_token() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
-        for token in [None, Some("")] {
-            let vms = vms(t.path(), token, vec![t.path().into()]);
+        for (round, token) in [None, Some("")].into_iter().enumerate() {
+            // One namespace: the first adapter provisions it and the next one
+            // reopens it. Each adapter's VM has its own key, so no admission
+            // waits on the operation of an earlier adapter's VM.
+            let vms = if round == 0 {
+                vms(t.path(), token, vec![t.path().into()])
+            } else {
+                reopened_vms(t.path(), token, vec![t.path().into()])
+            };
+            let key = format!("k{round}");
             let id = vms
-                .launch("k", sh("exit 0"), Vec::new(), None)
+                .launch(&key, sh("exit 0"), Vec::new(), None)
                 .unwrap()
                 .vm_id;
-            let forged = scoped_auth_token("", "k");
+            let forged = scoped_auth_token("", &key);
             assert_eq!(code(vms.status(status_req(&forged, &id, 1))), "S505");
-            assert_eq!(code(vms.destroy(destroy_req(&forged, "k"))), "S505");
+            assert_eq!(code(vms.destroy(destroy_req(&forged, &key))), "S505");
             assert_eq!(code(vms.status(status_req("", &id, 1))), "S505");
         }
     }
@@ -6370,8 +6400,10 @@ mod tests {
         std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
         let image = vms.admit_build("t", "k", &build_ref(&dir, &id)).unwrap();
         assert_eq!(image, dir.canonicalize().unwrap().join(IMAGE_FILE));
-        // Outside the host roots it is S501, before any id is read.
-        let outside = vms_without_roots(t);
+        // Outside the host roots it is S501, before any id is read: another
+        // adapter process over the same namespace, once this one went away.
+        drop(vms);
+        let outside = reopened_vms(t, Some("t"), vec![t.join("elsewhere")]);
         assert_eq!(
             code(outside.admit_build("t", "k", &build_ref(&dir, &id))),
             "S501"
@@ -6459,13 +6491,16 @@ mod tests {
     /// A scoped token never takes a directory another VM of the project
     /// recorded: S505, naming the record and the way out. The project token is
     /// never checked and records nothing.
-    #[test]
-    fn a_scoped_token_never_takes_a_dir_another_vm_recorded() {
+    #[tokio::test]
+    async fn a_scoped_token_never_takes_a_dir_another_vm_recorded() {
         use std::os::unix::fs::PermissionsExt;
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b, dir_c] = build_dirs(t, ["a", "b", "c"]);
         let [a, b, c, d, f] = ["a", "b", "c", "d", "f"].map(|key| scoped_auth_token("t", key));
+        // B boots one genuine lifecycle below: its worker base and VM dir are
+        // private before the claim path would create them from the umask.
+        private_dirs(&t.join("workers").join(vm_id("b")));
         let first = vms(t, Some("t"), vec![t.into()]);
 
         claim(&first, &a, "a", &dir_a).unwrap();
@@ -6489,8 +6524,9 @@ mod tests {
         claim(&first, "t", "c", &dir_c).unwrap();
         assert!(!record_of(t, "c").exists());
 
-        // The records outlive the adapter process, private.
-        let again = vms(t, Some("t"), vec![t.into()]);
+        // The records outlive the adapter process, private. The next adapter
+        // process reopens the provisioned namespace.
+        let again = reopened_vms(t, Some("t"), vec![t.into()]);
         assert_eq!(code(claim(&again, &a, "a", &dir_b)), "S505");
         let mode = std::fs::metadata(record_of(t, "a"))
             .unwrap()
@@ -6498,13 +6534,15 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
 
-        // A destroyed VM's directory is free again.
+        // A destroyed VM's directory is free again. The destroy spends the
+        // receipt of B's one genuine lifecycle, booted by this adapter.
+        owned_retired(&again, t, "b").await;
         assert!(again.destroy(destroy_req("t", "b")).unwrap().destroyed);
         claim(&again, &d, "d", &dir_b).unwrap();
 
         // A record the project token did not sign counts for nothing: under a
         // new token nobody holds a directory, and a forged record holds none.
-        let rotated = vms(t, Some("u"), vec![t.into()]);
+        let rotated = reopened_vms(t, Some("u"), vec![t.into()]);
         claim(&rotated, &scoped_auth_token("u", "c"), "c", &dir_a).unwrap();
         store_build_dir(&t.join("workers"), &vm_id("e"), "e", &dir_c, "not-t").unwrap();
         claim(&again, &f, "f", &dir_c).unwrap();
