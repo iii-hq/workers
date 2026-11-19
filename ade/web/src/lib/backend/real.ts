@@ -101,7 +101,7 @@ function resolveRunParams(model: ModelId): RunParams {
   const provider = model.startsWith('claude')
     ? 'anthropic'
     : model.startsWith('gemini')
-      ? 'google'
+      ? 'gemini'
       : 'openai'
   return { provider, model }
 }

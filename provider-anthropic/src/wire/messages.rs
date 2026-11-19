@@ -13,6 +13,19 @@ use std::collections::HashSet;
 const ORPHAN_TOOL_PLACEHOLDER: &str =
     "Tool call was interrupted before completing. Continue without its output.";
 
+/// Providers whose thinking signatures the Anthropic Messages API verifies.
+const SIGNED_THINKING_PROVIDERS: [&str; 3] = ["anthropic", "claude-code", "command-code"];
+
+/// Thinking from any other provider (e.g. a Gemini thought signature) fails
+/// Anthropic's signature verification, so it is dropped before mapping.
+fn replayable(provider: &str, block: &ContentBlock) -> bool {
+    SIGNED_THINKING_PROVIDERS.contains(&provider)
+        || !matches!(
+            block,
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+        )
+}
+
 /// One transcript content block → its Anthropic wire shape, or `None` to drop
 /// it. The `Image` arm is intentionally added vs the TS port (plan Task 5 #6):
 /// the TS dropped top-level user images; we map them to a base64 `source`.
@@ -161,8 +174,12 @@ pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
                 if !pending.is_empty() {
                     out.push(json!({ "role": "user", "content": std::mem::take(&mut pending) }));
                 }
-                let mut content: Vec<Value> =
-                    a.content.iter().filter_map(content_block_to_wire).collect();
+                let mut content: Vec<Value> = a
+                    .content
+                    .iter()
+                    .filter(|b| replayable(&a.provider, b))
+                    .filter_map(content_block_to_wire)
+                    .collect();
                 // Anthropic (thinking enabled) 400s when an assistant turn's
                 // final block is `thinking`/`redacted_thinking`. A tail thinking
                 // block is inert for replay — only thinking that PRECEDES a
@@ -240,6 +257,9 @@ mod tests {
         })
     }
     fn assistant(content: Vec<ContentBlock>) -> AgentMessage {
+        assistant_from("anthropic", content)
+    }
+    fn assistant_from(provider: &str, content: Vec<ContentBlock>) -> AgentMessage {
         AgentMessage::Assistant(AssistantMessage {
             role: AssistantRoleTag::Assistant,
             content,
@@ -250,7 +270,7 @@ mod tests {
             warnings: None,
             usage: None,
             model: "m".into(),
-            provider: "anthropic".into(),
+            provider: provider.into(),
             timestamp: 2,
         })
     }
@@ -556,6 +576,34 @@ mod tests {
         let content = wire[0]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "thinking");
         assert_eq!(content[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn thinking_from_a_non_anthropic_provider_is_not_replayed() {
+        let thought = || ContentBlock::Thinking {
+            text: "plan".into(),
+            signature: Some("sig".into()),
+        };
+        // Own family (and its Anthropic-wire siblings) replays thinking.
+        for provider in ["anthropic", "claude-code"] {
+            let wire = to_wire_messages(&[assistant_from(provider, vec![thought(), call("t1")])]);
+            assert_eq!(wire[0]["content"][0]["type"], "thinking", "{provider}");
+            assert_eq!(wire[0]["content"][1]["type"], "tool_use", "{provider}");
+        }
+        // A foreign signature would fail verification: only the tool_use stays.
+        let wire = to_wire_messages(&[assistant_from("gemini", vec![thought(), call("t1")])]);
+        let content = wire[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "tool_use");
+        // Foreign thinking-only turns leave no assistant row.
+        for block in [
+            thought(),
+            ContentBlock::RedactedThinking {
+                data: "opaque".into(),
+            },
+        ] {
+            assert!(to_wire_messages(&[assistant_from("gemini", vec![block])]).is_empty());
+        }
     }
 
     #[test]

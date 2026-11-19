@@ -1,0 +1,30 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"ErgBCrUBAWkUfRNx+1vpj4ZyupYPL7NTr9VmRBErgk4fLsOR0dI1KUKt7NN6owa/zTw/IxvEQ/5fus1g7pKlRJ/QwUK6mkU2RemzjqL0OYnQSEAlL9haSDyg11+eOtVTX0vkg4WL2x/GuXb8Oj7SyF/msmq4hdCF7bgj8JP/oBPdpKHdpLdN4aoib4mPqoynILlT4PGJCwOGQbOXnXcgxJdTbVi7J2meMHaLeR/1o982+mPENE2+CgmB8Q==","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"id":"call_11403068413581039653","type":"function_call","name":"lookup_population","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"arguments":"{\"city\":\"Braga\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"requires_action","usage":{"total_tokens":228,"total_input_tokens":199,"input_tokens_by_modality":[{"modality":"text","tokens":199}],"total_cached_tokens":0,"total_output_tokens":17,"total_tool_use_tokens":0,"total_thought_tokens":12,"initial_input_tokens":199},"created":"2026-11-19T17:19:40Z","updated":"2026-11-19T17:19:40Z","service_tier":"standard","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+
