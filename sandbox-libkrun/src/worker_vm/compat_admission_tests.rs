@@ -501,3 +501,161 @@ async fn image_build_refuses_foreign_source_before_default_image_or_firmware() {
     assert!(!scratch.exists());
     unchanged(&s);
 }
+
+fn valid_project(s: &Setup) {
+    std::fs::write(
+        s.source.join("iii.worker.yaml"),
+        "name: worker\nruntime:\n  base_image: docker.io/library/alpine:3.20\nscripts:\n  start: echo worker\n",
+    ).unwrap();
+}
+
+fn refused_cache(s: &Setup, sidecar: bool) -> PathBuf {
+    let cache = s._root.path().join("cache");
+    let target = s._root.path().join("cache-target");
+    private(&target);
+    if sidecar {
+        private(&cache);
+        let slug = oci::rootfs_slug_for_image("docker.io/library/alpine:3.20");
+        std::os::unix::fs::symlink(&target, cache.join(format!("{slug}.digest"))).unwrap();
+    } else {
+        std::os::unix::fs::symlink(&target, &cache).unwrap();
+    }
+    cache
+}
+
+#[tokio::test]
+async fn start_cache_refusal_leaves_reservation_counters_and_state_untouched() {
+    for sidecar in [false, true] {
+        let s = setup(false);
+        valid_project(&s);
+        let cache = refused_cache(&s, sidecar);
+        let checked = std::cell::Cell::new(false);
+        let result = s
+            .vms
+            .start_with_cache_admission(start(&s), |project, admission| {
+                checked.set(true);
+                // Same admission implementation, with an own-temp cache root only.
+                project.admit_cache_at(admission, &cache)
+            })
+            .await;
+        assert!(checked.get(), "must reach the actual cache admission");
+        assert!(matches!(result, Err(SandboxError::BootFailed(_))));
+        unchanged(&s);
+        assert_eq!(s.vms.build_seq.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read_dir(s._root.path().join("cache-target"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn build_cache_refusal_precedes_claim_output_sweeps_and_scratch_allocation() {
+    for sidecar in [false, true] {
+        for missing_output in [false, true] {
+            let s = setup(false);
+            valid_project(&s);
+            let cache = refused_cache(&s, sidecar);
+            // Canonical VM storage permits absent tails under the fixed owner
+            // domain. Generic absent output parents are a separate refusal gate.
+            let out = s.vm.join("build-output");
+            if !missing_output {
+                private(&out);
+                std::fs::write(out.join(".image.erofs.1-0.partial"), b"keep-partial").unwrap();
+            }
+            let stale = s.vm.join("build-1-0");
+            private(&stale);
+            std::fs::write(stale.join("sentinel"), b"keep-scratch").unwrap();
+            let checked = std::cell::Cell::new(false);
+            let iii = IIIClient::new("ws://127.0.0.1:1/ws");
+            let req = WorkerBuildRequest {
+                auth: crate::wire::scoped_auth_token("token", "key"),
+                state_key: "key".into(),
+                worker_name: "worker".into(),
+                source: source(&s),
+                output_dir: out.display().to_string(),
+                env: Default::default(),
+                base_image: None,
+                logs: iii_sdk::channels::StreamChannelRef {
+                    channel_id: "never-open".into(),
+                    access_key: "unused".into(),
+                    direction: iii_sdk::channels::ChannelDirection::Write,
+                },
+            };
+            let result = s
+                .vms
+                .build_with_cache_admission(&iii, req, |project, admission| {
+                    checked.set(true);
+                    project.admit_cache_at(admission, &cache)
+                })
+                .await;
+            assert!(
+                checked.get(),
+                "must reach cache admission before overlay/claim"
+            );
+            assert!(matches!(result, Err(SandboxError::BuildFailed(_))));
+            unchanged(&s);
+            assert_eq!(s.vms.build_seq.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                std::fs::read(stale.join("sentinel")).unwrap(),
+                b"keep-scratch"
+            );
+            assert!(
+                !s.vm
+                    .join(format!("build-{}-0", std::process::id()))
+                    .exists()
+            );
+            if missing_output {
+                assert!(!out.exists());
+            } else {
+                assert_eq!(
+                    std::fs::read(out.join(".image.erofs.1-0.partial")).unwrap(),
+                    b"keep-partial"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn symlink_image_id_refuses_external_start_and_internal_claim_before_effects() {
+    let s = setup(false);
+    valid_project(&s);
+    let dir = s._root.path().join("build-image");
+    private(&dir);
+    std::fs::write(dir.join(IMAGE_FILE), b"normal-image").unwrap();
+    let target = s._root.path().join("id-target");
+    std::fs::write(&target, b"sha256:fixture\n").unwrap();
+    std::os::unix::fs::symlink(&target, dir.join(IMAGE_ID_FILE)).unwrap();
+    let build = WorkerBuildRef {
+        build_dir: dir.display().to_string(),
+        build_id: "sha256:fixture".into(),
+    };
+    let auth = crate::wire::scoped_auth_token("token", "key");
+    let mut req = start(&s);
+    req.auth = auth.clone();
+    req.build = Some(build.clone());
+    assert!(matches!(
+        s.vms.start(req).await,
+        Err(SandboxError::BootFailed(_))
+    ));
+    unchanged(&s);
+    assert!(matches!(
+        s.vms.admit_build(&auth, "key", &build),
+        Err(SandboxError::BootFailed(_))
+    ));
+    unchanged(&s);
+    assert_eq!(s.vms.build_seq.load(Ordering::SeqCst), 0);
+    assert!(
+        read_image_id(&dir).is_none(),
+        "O_NOFOLLOW must remain in place"
+    );
+    assert_eq!(
+        std::fs::read(dir.join(IMAGE_FILE)).unwrap(),
+        b"normal-image"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"sha256:fixture\n");
+    assert_eq!(std::fs::read_link(dir.join(IMAGE_ID_FILE)).unwrap(), target);
+}
