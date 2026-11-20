@@ -21,7 +21,7 @@ import type { ProjectView } from './shared'
 /**
  * The Kanban page is one place for a project: pick the project in the header (or every project), then look at it
  * three ways — its Overview (progress, releases, details), its Board, or its Tree of tickets and agents. The
- * choice is kept per pane, and switching views keeps the project, the filters and the scroll of each view.
+ * choice is kept per pane, and switching views keeps the project and the board's filters.
  */
 export type HubView = 'overview' | 'board' | 'tree'
 

@@ -9,6 +9,24 @@ import type { ChatDraftSeed } from '@/lib/workspace-tabs'
 let seeds: Readonly<Record<string, ChatDraftSeed>> = {}
 const listeners = new Set<() => void>()
 
+let retire: ((sessionId: string) => void) | null = null
+
+/** The workspace hook's writer that drops one seed from the shared layout. */
+export function registerChatDraftRetirer(
+  next: ((sessionId: string) => void) | null,
+): void {
+  retire = next
+}
+
+/**
+ * The draft became a real session (sent), or its session was deleted: its seed must not bring it back. A no-op when
+ * the layout keeps no seed for it.
+ */
+export function retireChatDraftSeed(sessionId: string): void {
+  if (!(sessionId in seeds)) return
+  retire?.(sessionId)
+}
+
 export function publishChatDraftSeeds(
   next: Readonly<Record<string, ChatDraftSeed>>,
 ): void {

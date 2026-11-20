@@ -46,16 +46,17 @@ async function readSessions(iii: ExtensionIii): Promise<AgentSession[]> {
 
 /**
  * The ticket ↔ session links kanban recorded from each change's own session. `null` when this kanban predates
- * them (the tree then places sessions by their names, as before).
+ * them (the tree then places sessions by their names, as before); `undefined` when the read failed this time (the
+ * links read before still stand: a timeout must not hand placement back to name guesses).
  */
-async function readLinks(iii: ExtensionIii, projectId: string | null): Promise<TreeLink[] | null> {
+async function readLinks(iii: ExtensionIii, projectId: string | null): Promise<TreeLink[] | null | undefined> {
   try {
     const reply = await iii.call<LinksResponse>('kanban::sessions::links', projectId ? { project_id: projectId } : {}, {
       timeoutMs: 10_000,
     })
     return reply?.links ?? []
-  } catch {
-    return null
+  } catch (caught) {
+    return /function_not_found|not found|unknown function/i.test(errorMessage(caught)) ? null : undefined
   }
 }
 
@@ -87,22 +88,40 @@ export function useAgentSessions(iii: ExtensionIii, enabled: boolean, projectId:
   const timer = useRef<number | undefined>(undefined)
   const lastRead = useRef(0)
 
+  /** One read at a time: events during a read ask for one more after it, so a slow store still updates. */
+  const reading = useRef(false)
+  const again = useRef(false)
   const read = useCallback(async () => {
-    const token = ++seq.current
+    if (reading.current) {
+      again.current = true
+      return
+    }
+    reading.current = true
+    // `seq` moves only on teardown or a new project: a read started before either is dropped.
+    const token = seq.current
     lastRead.current = Date.now()
     try {
       const [next, nextLinks] = await Promise.all([readSessions(iii), readLinks(iii, projectId)])
       if (token !== seq.current) return
       setSessions(next)
-      setLinks(nextLinks)
+      if (nextLinks !== undefined) setLinks(nextLinks)
       setError(null)
     } catch (caught) {
       if (token !== seq.current) return
       setError(errorMessage(caught))
     } finally {
+      reading.current = false
       if (token === seq.current) setLoading(false)
+      // Asked for during this read (by events, or by a new project's first read): it runs now, with the latest
+      // `read` — a teardown in between left no subscription to ask, so nothing is queued then.
+      if (again.current) {
+        again.current = false
+        void readRef.current()
+      }
     }
   }, [iii, projectId])
+  const readRef = useRef(read)
+  readRef.current = read
 
   /** Throttled: the first event reads soon, a stream reads once a second, the last one is never lost. */
   const schedule = useCallback(() => {
@@ -147,6 +166,7 @@ export function useAgentSessions(iii: ExtensionIii, enabled: boolean, projectId:
       window.clearTimeout(timer.current)
       timer.current = undefined
       seq.current += 1
+      again.current = false
     }
   }, [enabled, iii, read, schedule])
 

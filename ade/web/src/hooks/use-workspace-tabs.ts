@@ -29,7 +29,10 @@ import {
   WORKSPACE_LAYOUT_QUERY_KEY,
   workspaceLayoutWriter,
 } from '@/hooks/lib/workspace-layout-writer'
-import { publishChatDraftSeeds } from '@/lib/chat-draft-seeds'
+import {
+  publishChatDraftSeeds,
+  registerChatDraftRetirer,
+} from '@/lib/chat-draft-seeds'
 import { getIiiClient } from '@/lib/iii-client'
 import { moveItem } from '@/lib/reorder'
 import { canCreateTab, DEFAULT_TAB_LIMIT } from '@/lib/tab-limit'
@@ -50,6 +53,7 @@ import {
   type ScreenPlacement,
   sessionIdForChatScreen,
   shouldFlushPendingWrite,
+  swappedPlacement,
   type TabScreen,
   tabColumns,
   tabPaneIds,
@@ -57,7 +61,6 @@ import {
   type WorkspaceState,
   type WorkspaceTab,
   withActiveTabId,
-  withAdjacentChatSwapped,
   withChatDrafts,
   withColumnAdded,
   withOnlyPane,
@@ -65,7 +68,6 @@ import {
   withPaneRemoved,
   withPaneSplit,
   withScreenDetached,
-  withScreenSwapped,
   withTabClosed,
   withTabSizes,
   withWorkspaceScreenOpened,
@@ -94,14 +96,52 @@ function workspaceState(layout: WorkspaceLayoutValue): LocalState {
   return { tabs, activeTabId, chatDrafts: parseChatDrafts(layout) }
 }
 
+/** `state` with `screen` swapped into tab `tabId` (see `swappedPlacement`), or `null` when nothing is swapped. */
+function withSwapIn(
+  state: LocalState,
+  tabId: string,
+  screen: TabScreen,
+  placement: ScreenPlacement,
+): LocalState | null {
+  const tab = state.tabs.find((candidate) => candidate.id === tabId)
+  const swapped = tab ? swappedPlacement(tab, screen, placement) : null
+  if (!tab || !swapped) return null
+  return {
+    ...state,
+    tabs: state.tabs.map((candidate) =>
+      candidate.id === tab.id ? swapped.tab : candidate,
+    ),
+  }
+}
+
+/** An unsent draft opened in a column keeps its seed with the layout (`ScreenPlacement.draft`). */
+function withDraftSeed(
+  state: LocalState,
+  screen: TabScreen,
+  placement: ScreenPlacement,
+): LocalState {
+  const sessionId = sessionIdForChatScreen(screen)
+  if (!placement.draft || !sessionId) return state
+  return {
+    ...state,
+    chatDrafts: { ...(state.chatDrafts ?? {}), [sessionId]: placement.draft },
+  }
+}
+
 /** Lift a transform onto the raw layout document; the pointer is re-stamped only when it moved. */
 export function workspaceLayoutTransform(
   update: WorkspaceTransform,
   now: () => number = Date.now,
 ): ConfigTransform {
   return (layout) => {
-    const next = update(workspaceState(layout))
-    const drafts = liveChatDrafts(next.chatDrafts ?? {}, next.tabs)
+    const current = workspaceState(layout)
+    const next = update(current)
+    // A transform that doesn't speak of the drafts (most build a fresh state) keeps them; only a draft whose column
+    // is no longer shown is dropped.
+    const drafts = liveChatDrafts(
+      next.chatDrafts ?? current.chatDrafts ?? {},
+      next.tabs,
+    )
     const kept = parseChatDrafts(layout)
     const tabsOnly = withWorkspaceTabs(layout, next.tabs)
     // Rewritten only when they changed: a layout that never had a draft keeps no empty key.
@@ -302,6 +342,18 @@ export function useWorkspaceTabs({
   useEffect(() => {
     publishChatDraftSeeds(parseChatDrafts(data ?? {}))
   }, [data])
+  // Sent or deleted: the draft's seed leaves the layout (see `retireChatDraftSeed`).
+  const persistRef = useRef<((update: WorkspaceTransform) => void) | null>(null)
+  useEffect(() => {
+    registerChatDraftRetirer((sessionId) =>
+      persistRef.current?.((state) => {
+        if (!state.chatDrafts?.[sessionId]) return state
+        const { [sessionId]: _retired, ...rest } = state.chatDrafts
+        return { ...state, chatDrafts: rest }
+      }),
+    )
+    return () => registerChatDraftRetirer(null)
+  }, [])
 
   // Rung after every layout write, this tab's own included: an injected page
   // (learn-iii) opens a screen over the bus, not through `persist`. Invalidate,
@@ -430,6 +482,8 @@ export function useWorkspaceTabs({
     },
     [available, data, layoutSource, qc, writer],
   )
+
+  persistRef.current = persist
 
   useEffect(() => {
     const pending = pendingWriteRef.current
@@ -661,53 +715,14 @@ export function useWorkspaceTabs({
     (screen: TabScreen, placement: ScreenPlacement = {}) => {
       const newScreenTabId = newTabId()
       const stablePaneId = { current: null as string | null }
+      // The tab this browser shows, which may not be the layout's shared pointer: a swap happens where the caller is.
+      const requestTabId = activeTabId
       const update: WorkspaceTransform = (state) => {
-        const sessionId = sessionIdForChatScreen(screen)
-        const chatDrafts =
-          placement.draft && sessionId
-            ? { ...(state.chatDrafts ?? {}), [sessionId]: placement.draft }
-            : state.chatDrafts
-        const placed = place(state)
-        return chatDrafts === state.chatDrafts
-          ? placed
-          : { ...placed, chatDrafts }
-      }
-      const place: WorkspaceTransform = (state) => {
-        // The chat directly beside the caller's page takes the screen (its side chat, from any browser).
-        if (placement.reuseBeside && placement.relativeTo) {
-          const active = state.tabs.find((tab) => tab.id === state.activeTabId)
-          const swapped = active
-            ? withAdjacentChatSwapped(
-                active,
-                placement.relativeTo,
-                placement.direction ?? 'right',
-                screen,
-              )
-            : null
-          if (active && swapped) {
-            return {
-              ...state,
-              tabs: state.tabs.map((tab) =>
-                tab.id === active.id ? swapped : tab,
-              ),
-            }
-          }
-        }
-        // A screen taking the place of the caller's earlier one, where the tab on screen still shows it.
-        if (placement.replaces) {
-          const active = state.tabs.find((tab) => tab.id === state.activeTabId)
-          const swapped = active
-            ? withScreenSwapped(active, placement.replaces, screen)
-            : null
-          if (active && swapped) {
-            return {
-              ...state,
-              tabs: state.tabs.map((tab) =>
-                tab.id === active.id ? swapped : tab,
-              ),
-            }
-          }
-        }
+        const target = state.tabs.some((tab) => tab.id === requestTabId)
+          ? requestTabId
+          : state.activeTabId
+        const swapped = withSwapIn(state, target, screen, placement)
+        if (swapped) return withDraftSeed(swapped, screen, placement)
         const next = withWorkspaceScreenOpened(
           state.tabs,
           state.activeTabId,
@@ -717,15 +732,20 @@ export function useWorkspaceTabs({
           placement.relativeTo,
           placement.direction,
         )
-        return {
-          ...next,
-          tabs: withPlacedSizes(
-            state.tabs,
-            stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
-            next.activeTabId,
-            placement.sizes,
-          ),
-        }
+        return withDraftSeed(
+          {
+            ...state,
+            ...next,
+            tabs: withPlacedSizes(
+              state.tabs,
+              stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+              next.activeTabId,
+              placement.sizes,
+            ),
+          },
+          screen,
+          placement,
+        )
       }
       const preview = update({ tabs, activeTabId })
       if (preview.activeTabId !== activeTabId) choose(preview.activeTabId)
@@ -740,6 +760,14 @@ export function useWorkspaceTabs({
       const stablePaneId = { current: null as string | null }
       persist((state) => {
         const requestedTabExists = state.tabs.some((tab) => tab.id === id)
+        // A queued request lands in the tab it was made in, with the same swap and draft rules as `openScreen`.
+        const swapped = withSwapIn(
+          state,
+          requestedTabExists ? id : state.activeTabId,
+          screen,
+          placement,
+        )
+        if (swapped) return withDraftSeed(swapped, screen, placement)
         const next = withWorkspaceScreenOpened(
           state.tabs,
           requestedTabExists ? id : state.activeTabId,
@@ -749,17 +777,22 @@ export function useWorkspaceTabs({
           placement.relativeTo,
           placement.direction,
         )
-        return {
-          tabs: withPlacedSizes(
-            state.tabs,
-            stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
-            next.activeTabId,
-            placement.sizes,
-          ),
-          activeTabId: requestedTabExists
-            ? state.activeTabId
-            : next.activeTabId,
-        }
+        return withDraftSeed(
+          {
+            ...state,
+            tabs: withPlacedSizes(
+              state.tabs,
+              stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+              next.activeTabId,
+              placement.sizes,
+            ),
+            activeTabId: requestedTabExists
+              ? state.activeTabId
+              : next.activeTabId,
+          },
+          screen,
+          placement,
+        )
       })
     },
     [persist],

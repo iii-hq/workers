@@ -313,6 +313,51 @@ export function withChatDrafts(
 }
 
 /**
+ * The tab after a placement that swaps a column (`reuseBeside` / `replaces`), and the pane that swap replaces;
+ * `null` when the placement swaps nothing in `tab` (it opens a column instead).
+ */
+export function swappedPlacement(
+  tab: WorkspaceTab,
+  screen: TabScreen,
+  placement: ScreenPlacement,
+  makePaneId: () => string = newPaneId,
+): { tab: WorkspaceTab; replacedPaneId: string } | null {
+  const swap = (from: TabScreen | null, next: WorkspaceTab | null) => {
+    if (!from || !next) return null
+    const at = tab.screens.indexOf(from)
+    const replacedPaneId = tabPaneIds(tab)[at]
+    return replacedPaneId ? { tab: next, replacedPaneId } : null
+  }
+  if (placement.reuseBeside && placement.relativeTo) {
+    const direction = placement.direction ?? 'right'
+    const at = tab.screens.indexOf(placement.relativeTo)
+    const beside =
+      at < 0
+        ? null
+        : (tab.screens[direction === 'right' ? at + 1 : at - 1] ?? null)
+    const swapped = swap(
+      beside,
+      withAdjacentChatSwapped(
+        tab,
+        placement.relativeTo,
+        direction,
+        screen,
+        makePaneId,
+      ),
+    )
+    if (swapped) return swapped
+  }
+  if (placement.replaces) {
+    const swapped = swap(
+      placement.replaces,
+      withScreenSwapped(tab, placement.replaces, screen, makePaneId),
+    )
+    if (swapped) return swapped
+  }
+  return null
+}
+
+/**
  * Put `screen` in the column directly on `direction`'s side of `anchor` when that column shows a session chat.
  * `null` when there is no such column (or the tab already shows `screen`).
  */

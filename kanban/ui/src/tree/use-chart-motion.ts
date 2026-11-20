@@ -1,4 +1,4 @@
-import { type RefObject, useLayoutEffect, useRef } from 'react'
+import { type RefObject, useEffect, useLayoutEffect, useReducer, useRef } from 'react'
 import { type Axis, advance, axis, settled } from './spring'
 import { type Camera, easeOut } from './use-camera'
 
@@ -301,4 +301,23 @@ export function useChartMotion({
   })
 
   useLayoutEffect(() => () => cancelAnimationFrame(loop.current), [])
+
+  // A card can change size without a React commit (a style or a web font settling): the layout is read again then,
+  // so the wires keep meeting the cards. Only a size that differs from the one last laid out asks for it.
+  const [, relayout] = useReducer((n: number) => n + 1, 0)
+  useEffect(() => {
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement
+        const id = (el.parentElement as HTMLElement | null)?.dataset.nodeId
+        const box = id ? boxes.current.get(id) : undefined
+        if (box && (box.w !== el.offsetWidth || box.h !== el.offsetHeight)) {
+          relayout()
+          return
+        }
+      }
+    })
+    for (const { el } of cards.current.values()) observer.observe(el)
+    return () => observer.disconnect()
+  })
 }

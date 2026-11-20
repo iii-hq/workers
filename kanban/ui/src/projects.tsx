@@ -100,7 +100,8 @@ export function ProjectsOverview({
   onConvert: () => void
   announce: (text: string) => void
 }) {
-  const [actionError, setActionError] = useState<string | null>(null)
+  // A failed project action, with the project it failed on: it is not shown over another project.
+  const [actionError, setActionError] = useState<{ project: string; message: string } | null>(null)
   const projects = useMemo(() => data?.projects ?? [], [data])
   const groups = useMemo(() => groupProjects(projects), [projects])
   const tickets = useMemo(() => (data?.columns ?? []).flatMap((column) => column.tickets), [data])
@@ -122,10 +123,10 @@ export function ProjectsOverview({
     body = (
       <>
         <Crumbs name={project.name} onBack={() => onSelect(null)} root="Projects" />
-        {actionError ? (
+        {actionError?.project === project.id ? (
           <Notice
             actionLabel="Dismiss"
-            detail={actionError}
+            detail={actionError.message}
             onAction={() => setActionError(null)}
             title="That change was not saved"
           />
@@ -137,7 +138,11 @@ export function ProjectsOverview({
           data={data}
           host={host}
           key={project.id}
-          onError={setActionError}
+          onError={(message) =>
+            setActionError((prev) =>
+              message !== null ? { project: project.id, message } : prev?.project === project.id ? null : prev,
+            )
+          }
           onOpenBoard={onOpenBoard}
           onOpenTicket={onOpenTicket}
           project={project}

@@ -308,10 +308,18 @@ type ComposerProps = {
   /** Resolves true once the comment is saved: a failed one keeps what was typed. */
   onSubmit: (body: string) => Promise<boolean>
   onCancelReply: () => void
+  /** Whether the box holds an unsent comment: part of the screen's unsaved work. */
+  onDraft?: (has: boolean) => void
 }
 
-function Composer({ inputId, replyTo, busy, onSubmit, onCancelReply }: ComposerProps) {
+function Composer({ inputId, replyTo, busy, onSubmit, onCancelReply, onDraft }: ComposerProps) {
   const [body, setBody] = useState('')
+  const hasDraft = body.trim().length > 0
+  useEffect(() => {
+    onDraft?.(hasDraft)
+  }, [hasDraft, onDraft])
+  // A deleted ticket drops the box, and what it held with it.
+  useEffect(() => () => onDraft?.(false), [onDraft])
   // Another comment to reply to starts a fresh box. Not when the reply is sent: the target resets to null then,
   // and the box may already hold the next comment.
   useEffect(() => {
@@ -346,6 +354,8 @@ function Composer({ inputId, replyTo, busy, onSubmit, onCancelReply }: ComposerP
         onChange={(event) => setBody(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Escape' && replyTo) {
+            // The reply is what Escape cancels here, not the ticket dialog around it.
+            event.stopPropagation()
             cancelReply()
             return
           }
@@ -659,12 +669,14 @@ export function TicketScreen({
     titleRef.current?.focus()
   }, [shownId])
 
+  // An unsent comment counts too: the screen is keyed by ticket, so moving to another drops it.
+  const [commentDraft, setCommentDraft] = useState(false)
   useEffect(() => {
     if (!setDirty) return
     const descriptionDirty = editingDescription && draft !== (ticket?.description ?? '')
     const titleDirty = editingTitle && titleDraft.trim() !== (ticket?.title ?? '')
-    setDirty(descriptionDirty || titleDirty)
-  }, [editingDescription, draft, ticket?.description, editingTitle, titleDraft, ticket?.title, setDirty])
+    setDirty(descriptionDirty || titleDirty || commentDraft)
+  }, [editingDescription, draft, ticket?.description, editingTitle, titleDraft, ticket?.title, commentDraft, setDirty])
 
   const composerId = useId()
   const linksTitleId = useId()
@@ -1125,7 +1137,9 @@ export function TicketScreen({
                         event.preventDefault()
                         void saveTitle()
                       } else if (event.key === 'Escape') {
+                        // The edit is what Escape cancels here, not the ticket dialog around it.
                         event.preventDefault()
+                        event.stopPropagation()
                         setEditingTitle(false)
                       }
                     }}
@@ -1170,6 +1184,7 @@ export function TicketScreen({
                         void saveDescription()
                       } else if (event.key === 'Escape') {
                         event.preventDefault()
+                        event.stopPropagation()
                         setEditingDescription(false)
                         setDraft(ticket.description)
                       }
@@ -1378,6 +1393,7 @@ export function TicketScreen({
                     busy={busy}
                     inputId={composerId}
                     onCancelReply={() => setReplyTo(null)}
+                    onDraft={setCommentDraft}
                     onSubmit={submitComment}
                     replyTo={replyTo}
                   />

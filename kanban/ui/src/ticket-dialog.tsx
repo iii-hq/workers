@@ -1,6 +1,6 @@
-import { type Host, type PageRenderProps, ShadcnDialog, ShadcnDialogContent } from '@iii-dev/console-ui'
+import { type Host, type PageRenderProps, ShadcnDialog, ShadcnDialogContent, useConfirm } from '@iii-dev/console-ui'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { type KeyboardEvent, useRef } from 'react'
+import { type KeyboardEvent, useCallback, useRef } from 'react'
 import type { AgentProfile, Column } from './shared'
 import { TicketScreen } from './ticket'
 import { IconAction } from './ui/icon-action'
@@ -21,7 +21,8 @@ function typing(target: EventTarget | null): boolean {
  * never unmounted), the ticket screen fills a large dialog, and closing it is Escape, the ✕ or a click outside.
  * A linked ticket opened from inside replaces the one shown; "Open in its own pane" still moves it to a pane.
  * Previous / next (the head's arrows, or K / J) walk the board's tickets in the order they are drawn — the project
- * and filters on screen — without closing anything.
+ * and filters on screen — without closing anything. Leaving a ticket with an unsaved title, description or comment
+ * (another ticket, or closing) asks first, as closing its pane does.
  */
 export function TicketDialog({
   host,
@@ -53,6 +54,30 @@ export function TicketDialog({
   // The dialog opens on its content, not its first button: focus there would show that button's tooltip, and the
   // first Escape would close the tooltip instead of the dialog.
   const start = useRef<HTMLDivElement | null>(null)
+  // What the screen reports through `setDirty`, as a pane's does to the host. A new ticket's screen reports afresh.
+  const dirty = useRef(false)
+  const setDirty = useCallback((next: boolean | string) => {
+    dirty.current = Boolean(next)
+  }, [])
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  /** Every way off the ticket on screen goes through here: nothing typed is dropped without asking. */
+  const leave = async (go: () => void) => {
+    if (
+      dirty.current &&
+      !(await confirm({
+        title: 'Discard your changes?',
+        description: "What you typed in this ticket hasn't been saved.",
+        confirmLabel: 'Discard',
+        cancelLabel: 'Keep editing',
+        tone: 'danger',
+      }))
+    )
+      return
+    dirty.current = false
+    go()
+  }
+  const openTicket = (key: string) => void leave(() => onOpenTicket(key))
+  const close = () => void leave(onClose)
   const at = ticketId ? order.findIndex((t) => t.key === ticketId || t.id === ticketId) : -1
   const prev = at > 0 ? order[at - 1] : null
   const next = at >= 0 && at < order.length - 1 ? order[at + 1] : null
@@ -62,10 +87,10 @@ export function TicketDialog({
         <span aria-live="polite" className="kb-ticket-nav__pos">
           {at + 1} / {order.length}
         </span>
-        <IconAction disabled={!prev} label="Previous ticket (K)" onClick={() => prev && onOpenTicket(prev.key)}>
+        <IconAction disabled={!prev} label="Previous ticket (K)" onClick={() => prev && openTicket(prev.key)}>
           <ChevronUp size={16} />
         </IconAction>
-        <IconAction disabled={!next} label="Next ticket (J)" onClick={() => next && onOpenTicket(next.key)}>
+        <IconAction disabled={!next} label="Next ticket (J)" onClick={() => next && openTicket(next.key)}>
           <ChevronDown size={16} />
         </IconAction>
       </span>
@@ -76,12 +101,12 @@ export function TicketDialog({
     const to = key === 'j' ? next : key === 'k' ? prev : null
     if (!to) return
     event.preventDefault()
-    onOpenTicket(to.key)
+    openTicket(to.key)
   }
   return (
     <ShadcnDialog
       onOpenChange={(open: boolean) => {
-        if (!open) onClose()
+        if (!open) close()
       }}
       open={ticketId !== null}
     >
@@ -102,15 +127,17 @@ export function TicketDialog({
               host={host}
               // One screen per ticket: drafts, reply target and errors never travel to the next one.
               key={ticketId}
-              onBack={onClose}
-              onOpenTicket={onOpenTicket}
+              onBack={close}
+              onOpenTicket={openTicket}
               priorities={priorities}
               dialogNav={nav}
+              setDirty={setDirty}
               ticketId={ticketId}
               variant="dialog"
             />
           ) : null}
         </div>
+        {confirmDialog}
       </ShadcnDialogContent>
     </ShadcnDialog>
   )

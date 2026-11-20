@@ -233,8 +233,11 @@ export function buildTree(input: BuildInput): ProjectTree {
     map.set(session, list)
   }
   const filedOnly = new Map<string, string[]>()
+  /** Sessions kanban recorded on a ticket here: placed by those records alone, never by their names. */
+  const recorded = new Set<string>()
   for (const link of input.links ?? []) {
     if (!byId.has(link.ticket_id)) continue
+    recorded.add(link.session_id)
     const worked = link.writes > 1 || link.last_action !== 'ticket.created'
     add(worked ? homes : filedOnly, link.session_id, link.ticket_id)
   }
@@ -258,21 +261,28 @@ export function buildTree(input: BuildInput): ProjectTree {
   // 2. Fallback for history recorded before sessions were (no links): a ticket key in the session's name or id,
   //    and an unnamed spawner where its named children's tickets meet.
   for (const session of sessions) {
-    if (homes.has(session.id)) continue
+    if (homes.has(session.id) || recorded.has(session.id)) continue
     const key = ticketKeyOf(session, prefix)
     const ticket = key ? byKey.get(key) : undefined
     if (ticket) homes.set(session.id, [ticket.id])
   }
-  for (const session of sessions) {
-    if (homes.has(session.id)) continue
-    const named = (spawned.get(session.id) ?? []).flatMap((child) => homes.get(child.id) ?? [])
-    if (named.length === 0) continue
-    const target = meeting(named)
-    if (target) {
-      homes.set(session.id, [target])
-      inferred.add(session.id)
-    }
+  // Bottom-up, whatever order the sessions came in: a spawner's home is where its children's homes meet, and an
+  // unnamed child placed this way counts for its own spawner in turn (guarded against cycles).
+  const resolving = new Set<string>()
+  const inferHome = (session: AgentSession): readonly string[] => {
+    const known = homes.get(session.id)
+    if (known) return known
+    if (recorded.has(session.id) || resolving.has(session.id)) return []
+    resolving.add(session.id)
+    const named = (spawned.get(session.id) ?? []).flatMap((child) => inferHome(child))
+    resolving.delete(session.id)
+    const target = named.length > 0 ? meeting(named) : null
+    if (!target) return []
+    homes.set(session.id, [target])
+    inferred.add(session.id)
+    return [target]
   }
+  for (const session of sessions) inferHome(session)
 
   // 3. A session with no ticket of its own (a lead's phases) belongs where its nearest placed ancestor does.
   const ticketsOf = (session: AgentSession): readonly string[] => {

@@ -331,4 +331,53 @@ assert.equal(modelName(null), null)
   assert.equal(tree.stats.running, 0)
 }
 
+// ── spawner placement does not depend on session order ───────────────────
+{
+  const chain = [
+    session('p', 'Lead run', {}),
+    session('m', 'Planner', { parentId: 'p' }),
+    session('c', 'KAN-1 · Worker', { parentId: 'm' }),
+  ]
+  const orders = [
+    [0, 1, 2],
+    [2, 1, 0],
+    [1, 0, 2],
+    [0, 2, 1],
+  ]
+  const placements = orders.map((order) => {
+    const tree = buildTree({
+      tickets: [ticket('KAN-1', 'in_progress')],
+      sessions: order.map((i) => chain[i]),
+      prefix: 'KAN',
+      columns,
+      doneStatus: 'done',
+      canceledStatus: 'canceled',
+    })
+    const ids: string[] = []
+    walk(tree.roots[0].sessions, (n) => {
+      if (n.kind === 'session') ids.push(n.session.id)
+    })
+    return ids.sort().join(',')
+  })
+  assert.deepEqual(new Set(placements), new Set(['c,m,p']), 'every order places the whole chain under KAN-1')
+}
+
+// ── a session kanban recorded is never placed by its name ────────────────
+{
+  const tree = buildTree({
+    tickets: [ticket('KAN-80', 'todo'), ticket('KAN-81', 'todo'), ticket('KAN-82', 'todo')],
+    sessions: [session('planner', 'KAN-82 · Planner')],
+    links: [
+      { ticket_id: 'id-KAN-80', session_id: 'planner', writes: 1, last_action: 'ticket.created' },
+      { ticket_id: 'id-KAN-81', session_id: 'planner', writes: 1, last_action: 'ticket.created' },
+    ],
+    prefix: 'KAN',
+    columns,
+    doneStatus: 'done',
+    canceledStatus: 'canceled',
+  })
+  const k82 = tree.roots.find((n) => n.ticket.key === 'KAN-82')
+  assert.equal(k82?.sessions.length, 0, 'filed two unrelated tickets: not guessed under KAN-82 from its name')
+}
+
 console.log('tree.check: ok')

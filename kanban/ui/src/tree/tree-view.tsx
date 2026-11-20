@@ -193,10 +193,14 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     [tickets, data.projects],
   )
   /** Move every loose ticket into `target`, one write each; the board's change events redraw the chart. */
+  const looseRef = useRef(loose)
+  looseRef.current = loose
   const moveInto = async (target: ProjectView) => {
     setMoveError(null)
     const failed: string[] = []
-    for (const ticket of loose) {
+    // Decided when the project exists, not when the dialog opened: a ticket given a project meanwhile stays there.
+    for (const ticket of [...looseRef.current]) {
+      if (!looseRef.current.some((t) => t.id === ticket.id)) continue
       try {
         noteOwnWrite(await api.update(host.iii, { id: ticket.key, project: target.id, actor: 'user' }))
       } catch (caught) {
@@ -220,6 +224,19 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     [tickets, sessions, links, data, project],
   )
 
+  /** Every ticket node of the unfiltered tree, by ticket id (what a click resolves a conversation from). */
+  const ticketNodes = useMemo(() => {
+    const byId = new Map<string, TicketNode>()
+    const visit = (node: TicketNode) => {
+      byId.set(node.ticket.id, node)
+      node.subtasks.forEach(visit)
+    }
+    tree.roots.forEach(visit)
+    return byId
+  }, [tree])
+  const focusHold = useRef<(() => void) | null>(null)
+  useEffect(() => () => focusHold.current?.(), [])
+
   /** One root: the project on screen, or "All projects" over one node per project. */
   const root: GroupNode | null = useMemo(() => {
     const shown = hideDone ? withoutDone(tree.roots) : tree.roots
@@ -240,7 +257,9 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         node.ticket.project_id && data.projects.some((p) => p.id === node.ticket.project_id)
           ? node.ticket.project_id
           : null
-      groups.set(id, [...(groups.get(id) ?? []), node])
+      const bucket = groups.get(id)
+      if (bucket) bucket.push(node)
+      else groups.set(id, [node])
     }
     const children: GroupNode[] = []
     for (const p of data.projects) {
@@ -299,7 +318,12 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
       const known = firstSeen.current.get(node.id)
       // Folded at first sight, it still opens when work under it starts, fails or needs an answer: nobody should
       // have to open a branch to learn an agent is waiting on them. (A branch folded by hand stays folded.)
-      if (known !== undefined) return known || needsEyes.has(node.id)
+      if (known !== undefined) {
+        if (known || !needsEyes.has(node.id)) return known
+        // Opened for that work, it stays open after the work finishes (the result is what was being read).
+        firstSeen.current.set(node.id, true)
+        return true
+      }
       const open =
         node.kind === 'group' || needsEyes.has(node.id) || (node.state !== 'done' && node.state !== 'canceled')
       // Not before the sessions are read: a failed agent under a finished ticket must still open it.
@@ -309,8 +333,11 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     [needsEyes, sessionsPending],
   )
   const isOpen = useCallback(
-    (node: Node) => (toggled && typeof toggled === 'object' ? toggled[node.id] : undefined) ?? defaultOpen(node),
-    [toggled, defaultOpen],
+    (node: Node) =>
+      // The chart's root is always open: a fold saved for it as a child (under All projects) doesn't fold the chart.
+      node.id === root?.id ||
+      ((toggled && typeof toggled === 'object' ? toggled[node.id] : undefined) ?? defaultOpen(node)),
+    [toggled, defaultOpen, root],
   )
   const camera = useCamera(paneKey)
   /** The card a fold was asked on: it stays where it is while the layout moves (use-chart-motion). */
@@ -379,24 +406,32 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
    * (or a moment passing) ends the hold, and typing there works as always.
    */
   const keepFocusOnCard = (id: string) => {
-    let pointed = false
-    const onPointer = () => {
-      pointed = true
-    }
+    // One hold at a time: the latest activation's.
+    focusHold.current?.()
     const onFocusIn = (event: FocusEvent) => {
       const chart = chartRef.current
-      if (pointed || !chart) return done()
+      if (!chart) return done()
       if (event.composedPath().includes(chart)) return
+      // Only the composer's autofocus is turned back; any other move (Tab out, a dialog) ends the hold.
+      const target = event.composedPath()[0]
+      if (!(target instanceof HTMLElement) || !target.closest('[contenteditable="true"], textarea')) return done()
       chart.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"]`)?.focus({ preventScroll: true })
+    }
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Tab') done()
     }
     const done = () => {
       document.removeEventListener('focusin', onFocusIn, true)
-      document.removeEventListener('pointerdown', onPointer, true)
+      document.removeEventListener('pointerdown', done, true)
+      document.removeEventListener('keydown', onKey, true)
       window.clearTimeout(timer)
+      if (focusHold.current === done) focusHold.current = null
     }
     document.addEventListener('focusin', onFocusIn, true)
-    document.addEventListener('pointerdown', onPointer, true)
+    document.addEventListener('pointerdown', done, true)
+    document.addEventListener('keydown', onKey, true)
     const timer = window.setTimeout(done, FOCUS_HOLD_MS)
+    focusHold.current = done
   }
 
   /**
@@ -407,7 +442,8 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   const activate = (node: Node) => {
     if (node.kind === 'ticket') {
       setSelectedId(node.id)
-      const session = conversationOf(node)
+      // From the whole tree, not the filtered one: Hide done must not hide the ticket's finished conversation.
+      const session = conversationOf(ticketNodes.get(node.ticket.id) ?? node)
       const opened = session
         ? openChatBeside(host, screen, session.id)
         : draftChatBeside(host, screen, {
@@ -427,24 +463,35 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     } else if (node.project && node.project.id !== project?.id) onOpenProject(node.project.id)
   }
 
-  /** The project's own chat: the one this button opened before (by its title), else a new one about the project. */
+  /**
+   * The project's own chat: the one this button opened for this project before (remembered by project id, and only
+   * once it is a real session), else a new one about the project. A session merely titled like it is never taken.
+   */
   const askAboutProject = () => {
     const title = project ? `Project · ${project.name}` : 'Board · all projects'
-    const earlier = sessions.filter((s) => s.name === title).sort((a, b) => b.updatedAt - a.updatedAt)[0]
-    if (earlier) {
-      openChatBeside(host, screen, earlier.id)
+    const chatKey = `kanban:project-chat:${project?.id ?? 'all'}`
+    const remembered = readLocal(chatKey)
+    if (remembered && sessions.some((s) => s.id === remembered)) {
+      openChatBeside(host, screen, remembered)
       return
     }
     const tops = tree.roots.slice(0, 3).map((n) => `@kanban(id="${n.ticket.key}")`)
     const scope = project ? `the kanban project “${project.name}”` : 'the kanban board'
     const count = `${tree.stats.tickets} ${tree.stats.tickets === 1 ? 'ticket' : 'tickets'}`
-    draftChatBeside(host, screen, {
-      title,
-      text: `About ${scope} (${count}${tops.length ? `, starting from ${tops.join(' ')}` : ''}): `,
-    })
+    draftChatBeside(
+      host,
+      screen,
+      {
+        title,
+        text: `About ${scope} (${count}${tops.length ? `, starting from ${tops.join(' ')}` : ''}): `,
+      },
+      (id) => writeLocal(chatKey, id),
+    )
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // The tree's keys are a card's keys: a button inside a card (Edit project, Ticket details) keeps its own Enter.
+    if ((event.target as HTMLElement).getAttribute('role') !== 'treeitem') return
     const index = visible.findIndex((row) => row.node.id === focusedId)
     if (index < 0) return
     const { node, parent } = visible[index]
@@ -694,7 +741,8 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
       <NewProjectDialog
         agents={agents}
         host={host}
-        onCreated={() => setEditingProject(null)}
+        // A save that finishes after another project's edit was opened leaves that newer edit alone.
+        onCreated={(saved) => setEditingProject((current) => (current && current.id !== saved.id ? current : null))}
         onOpenChange={(open) => {
           if (!open) setEditingProject(null)
         }}
@@ -1271,4 +1319,20 @@ function ChartSkeleton() {
       </div>
     </div>
   )
+}
+
+function readLocal(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeLocal(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // Private mode: the next Ask starts a new chat; nothing worse.
+  }
 }

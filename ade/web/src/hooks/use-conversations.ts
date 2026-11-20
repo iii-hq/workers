@@ -43,6 +43,7 @@ import {
 } from '@/lib/attachments/draft-attachments'
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
+import { retireChatDraftSeed } from '@/lib/chat-draft-seeds'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
@@ -96,10 +97,12 @@ import type {
 } from '@/lib/sessions/types'
 import {
   loadActiveId,
+  loadDraftText,
   loadLastModel,
   loadLastThinkingLevel,
   loadNewChatDraft,
   saveActiveId,
+  saveDraftText,
   saveLastModel,
   saveLastThinkingLevel,
   saveNewChatDraft,
@@ -2208,6 +2211,8 @@ export function useConversations(
           }
         },
         onDeleted: (event) => {
+          // A deleted chat never comes back as the draft it started as.
+          retireChatDraftSeed(event.session_id)
           markConversationMissing(event.session_id)
           invalidateSessionMetaLookup(event.session_id)
           pendingCompletionBellRef.current.delete(event.session_id)
@@ -2709,7 +2714,8 @@ export function useConversations(
             firstCatalogKey,
           ),
           loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
-          draft,
+          // What this browser typed in it since beats the text it was opened with.
+          { ...draft, text: loadDraftText(id) ?? draft.text },
         ),
         id,
       }
@@ -3244,8 +3250,10 @@ export function useConversations(
           // the e2e suite name their own kind when they create theirs.
           kind: 'user',
         })
-        // Sent: the session holds its draft now, not the new chat's slot.
+        // Sent: the session holds its draft now, not the new chat's slot (nor the layout's seed).
         forgetNewChatDraft(id)
+        retireChatDraftSeed(id)
+        saveDraftText(id, '')
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
             { ...c, draft: false, hydrated: false },
@@ -3356,6 +3364,7 @@ export function useConversations(
       // in-tab switches keep it, and in localStorage to outlive the browser.
       if (conv?.draft) {
         saveNewChatDraft(text)
+        saveDraftText(id, text)
         newChatDraftOwnerRef.current = id
       }
       if (!serverEnabled) return

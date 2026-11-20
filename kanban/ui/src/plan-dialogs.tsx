@@ -579,6 +579,8 @@ export function NewProjectDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [move, setMove] = useState(true)
+  // The lead as the dialog opened: an edit sends `lead` only if it was changed here, so a lead set elsewhere since stays.
+  const openedLead = useRef<string | undefined>(undefined)
   const colorLabel = useId()
 
   useEffect(() => {
@@ -587,6 +589,7 @@ export function NewProjectDialog({
     setName(project?.name ?? '')
     setDescription(project?.description ?? '')
     setLead(project?.lead ?? undefined)
+    openedLead.current = project?.lead ?? undefined
     setColor(project ? project.color : 'blue')
     setBusy(false)
     setError(null)
@@ -606,7 +609,7 @@ export function NewProjectDialog({
             name: name.trim(),
             description: description.trim(),
             color,
-            lead: lead ?? null,
+            ...(lead !== openedLead.current ? { lead: lead ?? null } : {}),
           })
         : await api.createProject(host.iii, {
             name: name.trim(),

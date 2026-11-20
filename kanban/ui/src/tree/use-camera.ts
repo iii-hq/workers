@@ -145,9 +145,12 @@ export function useCamera(paneKey: string) {
   /** The follow spring: how far the camera still is from the fit it is heading to, and how fast it is closing. */
   const chase = useRef<{ to: Cam; x: Axis; y: Axis; s: Axis } | null>(null)
 
+  /** Where a timed glide (a zoom button, Fit) is headed, while it runs. */
+  const glideTarget = useRef<Cam | null>(null)
   const stop = useCallback(() => {
     cancelAnimationFrame(glide.current)
     glide.current = 0
+    glideTarget.current = null
     chase.current = null
   }, [])
 
@@ -158,6 +161,8 @@ export function useCamera(paneKey: string) {
     },
     [clamp, paint],
   )
+  const writeRef = useRef(write)
+  writeRef.current = write
 
   /** Glide to `target` from wherever the camera is now; a new glide mid-way starts from there. */
   const glideTo = useCallback(
@@ -168,6 +173,7 @@ export function useCamera(paneKey: string) {
         write(to)
         return
       }
+      glideTarget.current = to
       const from = { ...cam.current }
       // Timed from the first frame's own timestamp: a frame's time can trail performance.now(), and a glide timed
       // from the call would start "before" its first frame and stand still.
@@ -184,11 +190,14 @@ export function useCamera(paneKey: string) {
         // In this frame, not the next: a glide that paints a frame late trails whatever it moves with.
         apply()
         glide.current = t < 1 ? requestAnimationFrame(step) : 0
+        if (t >= 1) glideTarget.current = null
       }
       glide.current = requestAnimationFrame(step)
     },
     [apply, clamp, stop, write],
   )
+  const glideToRef = useRef(glideTo)
+  glideToRef.current = glideTo
 
   /**
    * Move the camera by (dx, dy) now, before this frame paints (a re-layout is being kept steady): returns the move
@@ -196,11 +205,15 @@ export function useCamera(paneKey: string) {
    */
   const shiftNow = useCallback(
     (dx: number, dy: number) => {
+      // The chart grew under a zoom in flight: the zoom keeps going to its scale, from the corrected place.
+      const target = glideTarget.current
       stop()
       const before = cam.current
       cam.current = clamp({ ...before, x: before.x + dx, y: before.y + dy })
       apply()
-      return { dx: cam.current.x - before.x, dy: cam.current.y - before.y }
+      const moved = { dx: cam.current.x - before.x, dy: cam.current.y - before.y }
+      if (target) glideToRef.current({ ...target, x: target.x + moved.dx, y: target.y + moved.dy })
+      return moved
     },
     [apply, clamp, stop],
   )
@@ -357,7 +370,9 @@ export function useCamera(paneKey: string) {
       } else if (followRef.current && (vw !== lastView.vw || vh !== lastView.vh)) {
         refit()
       } else if (lastView.vw && (vw !== lastView.vw || vh !== lastView.vh)) {
-        // The pane was resized (a chat column opened beside it): once it settles, bring the kept card back in.
+        // The pane was resized (a chat column opened beside it): the chart is kept inside the new bounds now, and
+        // once it settles the kept card comes back into view.
+        writeRef.current(cam.current)
         window.clearTimeout(settle)
         settle = window.setTimeout(() => revealRef.current(keepInViewRef.current?.() ?? null), RESIZE_SETTLE_MS)
       }
@@ -412,7 +427,9 @@ export function useCamera(paneKey: string) {
 
   const onPointerDown = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0 || event.pointerType === 'touch') return
+      // Touch drags pan too (`touch-action: none` keeps the browser's own gestures out); a second finger doesn't
+      // take over the drag the first one started.
+      if (event.button !== 0 || drag.current) return
       if ((event.target as HTMLElement).closest('.kb-node, button, a, input, label')) return
       event.preventDefault()
       stop()
@@ -442,6 +459,13 @@ export function useCamera(paneKey: string) {
     },
     [write],
   )
+
+  /** The browser took the gesture back: the drag ends where it is, with no fling. */
+  const onPointerCancel = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (drag.current?.id !== event.pointerId) return
+    drag.current = null
+    setPanning(false)
+  }, [])
 
   const onPointerUp = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
@@ -493,6 +517,6 @@ export function useCamera(paneKey: string) {
     /** The scale the camera is at this instant (the label lags a little). */
     scaleNow: () => cam.current.s,
     isFollowing: () => followRef.current,
-    handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp },
+    handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel },
   }
 }

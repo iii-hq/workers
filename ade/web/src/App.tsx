@@ -105,6 +105,7 @@ import {
   MIN_COLUMN_FRACTION,
   type ScreenPlacement,
   sessionIdForChatScreen,
+  swappedPlacement,
   type TabScreen,
   tabColumns,
   tabPaneIds,
@@ -406,14 +407,34 @@ export function App({
           reuseBeside,
           draft,
         }) => {
-          openWorkspaceScreen(screen, {
+          const placement = {
             relativeTo,
             direction,
             sizes,
             replaces,
             reuseBeside,
             draft,
-          })
+          }
+          const open = () => openWorkspaceScreen(screen, placement)
+          // A screen that takes another column's place asks first when that panel has unsaved work, the way
+          // closing it does.
+          const tab = workspaceRef.current.activeTab
+          const swap = swappedPlacement(tab, screen, placement)
+          if (
+            swap &&
+            dirtyReasonsForPane(tab.id, swap.replacedPaneId).length > 0
+          ) {
+            if (discardPromptRef.current) return
+            setDiscardPrompt({
+              title: 'Replace this panel?',
+              proceed: () => {
+                setPaneDirty(tab.id, swap.replacedPaneId, false)
+                open()
+              },
+            })
+            return
+          }
+          open()
         },
       ),
     [openWorkspaceScreen],
@@ -1427,6 +1448,11 @@ function WorkspacePanes({
   const openScreens = activeTab.screens.filter(
     (candidate): candidate is TabScreen => candidate !== null,
   )
+  // An empty column offers what the split menu offers: a page already open in
+  // this tab is not opened twice (a page finds its column by screen).
+  const emptyPaneOptions = screenOptions.filter(
+    (option) => !openScreens.includes(option.value),
+  )
 
   const resetSizes = () => {
     if (enteringPanel || exitingPanelRef.current) return
@@ -1604,7 +1630,7 @@ function WorkspacePanes({
               <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
                 {screen === null ? (
                   <EmptyPane
-                    screenOptions={screenOptions}
+                    screenOptions={emptyPaneOptions}
                     onAttach={(next) =>
                       workspace.attachScreen(activeTab.id, column, next)
                     }

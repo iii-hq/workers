@@ -285,15 +285,18 @@ export function BoardPage({
   )
   const shown = useMemo(() => applyFilters(tickets, filters, ctx), [tickets, filters, ctx])
   const shownIds = useMemo(() => new Set(shown.map((ticket) => ticket.id)), [shown])
-  /** The dialog's previous / next: the tickets on screen, column by column, top to bottom (as the board draws them). */
+  /**
+   * The dialog's previous / next: the tickets on screen, column by column, top to bottom (as the board draws them).
+   * A narrow board draws one lane, so J / K stay in it.
+   */
   const dialogOrder = useMemo(
     () =>
-      (data?.columns ?? []).flatMap((column) =>
+      (narrow && layout === 'board' ? (visibleLane ? [visibleLane] : []) : columns).flatMap((column) =>
         column.tickets
           .filter((ticket) => shownIds.has(ticket.id))
           .map((ticket) => ({ id: ticket.id, key: ticket.key })),
       ),
-    [data, shownIds],
+    [columns, layout, narrow, visibleLane, shownIds],
   )
   const filtering = !isEmpty(filters)
   // Subtasks and their parents are read off the whole board, not the filtered one: "2/12" does not change with a search.
@@ -511,7 +514,8 @@ export function BoardPage({
       }))
     }
     if (release !== null || project === '') {
-      if (project === '') setScope(null)
+      // A release spans projects: a link that names no project shows all of it, not the part in this pane's project.
+      if (!project) setScope(null)
       setActiveViewId(ALL_VIEW.id)
       setFilters({
         ...EMPTY_FILTERS,
@@ -522,8 +526,9 @@ export function BoardPage({
   }, [panelContext, setActiveViewId, setFilters, setFolded, setGroup, setLayout, setScope, setView])
 
   // What is on screen is remembered by id: a project reached by name survives a rename.
+  // Only while the stored value is still the one resolved: a link applied in the same commit wins.
   useEffect(() => {
-    if (scope && scope.id !== storedScope) setScope(scope.id)
+    if (scope && scope.id !== storedScope) setScope((current) => (current === storedScope ? scope.id : current))
   }, [scope, storedScope, setScope])
 
   useEffect(() => {
@@ -984,7 +989,11 @@ export function BoardPage({
       setScope(null)
       setActiveViewId(ALL_VIEW.id)
       setFilters({ ...EMPTY_FILTERS, projects: [''] })
-    } else setScope(project)
+    } else {
+      setScope(project)
+      // The No project shortcut's filter would leave a named project's board empty.
+      if (filters.projects.includes('')) setFilters({ ...filters, projects: filters.projects.filter((id) => id !== '') })
+    }
     if (list) setLayout('list')
     setView('board')
   }
@@ -1244,8 +1253,8 @@ export function BoardPage({
           setCreatingProject(false)
           setScope(project.id)
           setView('overview')
+          // The dialog announced the write, and the board reads itself on that (one read, not two racing).
           announce(`Created ${project.name}`)
-          void load(true)
         }}
         onOpenChange={setCreatingProject}
         open={creatingProject}
@@ -1261,8 +1270,8 @@ export function BoardPage({
               setScope(first.id)
               setView('overview')
             }
+            // Read on the dialog's plan-changed announcement, as above.
             announce(outcome.text)
-            void load(true)
           }}
           onOpenChange={setConverting}
           open={converting}

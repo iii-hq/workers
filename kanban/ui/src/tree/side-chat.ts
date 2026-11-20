@@ -38,12 +38,25 @@ export function openChatBeside(host: Host, beside: string, sessionId: string): b
  * Start a new chat beside the tree with `text` in its composer (not sent): about a ticket, or the project. On a
  * console whose `openDraft` does not return the draft's id, the draft opens in the main chat instead.
  */
-export function draftChatBeside(host: Host, beside: string, draft: { text: string; title?: string }): boolean {
+export function draftChatBeside(
+  host: Host,
+  beside: string,
+  draft: { text: string; title?: string },
+  /** The new chat's id, when the console says it. */
+  onDraftId?: (id: string) => void,
+): boolean {
   const chat = host.chat
   if (chat?.openDraft) {
+    // Hidden only when something can then show it: beside the page, or as the main chat. Otherwise it opens visibly.
+    if (!host.panels?.openScreen && !chat.selectConversation) {
+      chat.openDraft(draft)
+      return true
+    }
     const id = chat.openDraft(draft, { show: false })
+    if (typeof id === 'string' && id) onDraftId?.(id)
     if (typeof id === 'string' && id && showBeside(host, beside, id, draft)) return true
-    if (typeof id === 'string') chat.selectConversation?.(id)
+    if (typeof id === 'string' && id) chat.selectConversation?.(id)
+    else chat.openDraft(draft)
     return true
   }
   if (chat?.compose) {
