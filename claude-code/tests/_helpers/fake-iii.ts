@@ -53,6 +53,8 @@ export type FakeIii = {
   functions: Map<string, Hosted>;
   /** What the worker observed: `iii.observe(source, target, options)`. */
   observed: Array<{ source: unknown; target: unknown; options?: unknown }>;
+  /** Ids of the observers the worker disposed (`handle.dispose()`). */
+  disposed: string[];
   /** Add an observer of one of the worker's functions the way the engine would; rejects with the hook's error. */
   observeFeed: (functionId: string, session_id: string, opts?: ObserveOptions) => Promise<string>;
   /** Remove an observer the way `dispose()` would. */
@@ -65,6 +67,8 @@ export type FakeIii = {
   deliveries: Delivery[];
   /** Frames one feed delivered to its default observer target, in order. */
   feedFrames: (functionId: string) => Array<Record<string, unknown>>;
+  /** A session's transcript as session-manager holds it now (appends + updates applied). */
+  sessionMessages: (sessionId?: string) => Array<Record<string, unknown>>;
 };
 
 /**
@@ -86,8 +90,14 @@ export function fakeIii(): FakeIii {
   const hooks = new Map<string, Hooks>();
   const active = new Map<string, Observer[]>();
   const observed: FakeIii['observed'] = [];
+  const disposed: string[] = [];
   const deliveries: Delivery[] = [];
   let nextObserver = 0;
+  let nextEntry = 0;
+  const transcripts = new Map<
+    string,
+    Array<{ entry_id: string; revision: number; message: Record<string, unknown> }>
+  >();
   let nextActivation = 0;
 
   // The envelope iii delivers: the call's fields the observer's capture names;
@@ -215,6 +225,84 @@ export function fakeIii(): FakeIii {
         return null;
       }
       if (req.function_id === 'state::get') return state.get(`${scope}/${key}`) ?? null;
+      // session-manager, as far as a child session needs it: `ensure` creates
+      // once and keeps the creation metadata, `get` answers `{ meta }` or null,
+      // the live worker's response shapes.
+      if (req.function_id === 'session::ensure') {
+        const sessionKey = `session-manager/${String(payload.session_id)}`;
+        const created = !state.has(sessionKey);
+        if (created) {
+          state.set(sessionKey, {
+            session_id: payload.session_id,
+            title: payload.title ?? '',
+            metadata: payload.metadata ?? {},
+          });
+        }
+        return { created, meta: state.get(sessionKey), session_id: payload.session_id };
+      }
+      // The transcript: `append` returns the entry id, `update-message`
+      // replaces an entry's content (and usage), as session-manager does.
+      if (req.function_id === 'session::append') {
+        const sid = String(payload.session_id);
+        const list = transcripts.get(sid) ?? [];
+        // A caller-supplied id makes the append idempotent: a retry of a
+        // write that already committed returns the existing entry.
+        const supplied = typeof payload.entry_id === 'string' ? payload.entry_id : undefined;
+        if (supplied && list.some((e) => e.entry_id === supplied)) {
+          return { entry_id: supplied, timestamp: 0 };
+        }
+        const entry_id = supplied ?? `e-${++nextEntry}`;
+        list.push({ entry_id, revision: 0, message: structuredClone(payload.message) as never });
+        transcripts.set(sid, list);
+        return { entry_id, timestamp: 0 };
+      }
+      if (req.function_id === 'session::update-message') {
+        const entry = transcripts
+          .get(String(payload.session_id))
+          ?.find((e) => e.entry_id === payload.entry_id);
+        if (!entry) throw new Error(`unknown entry ${String(payload.entry_id)}`);
+        entry.message = {
+          ...entry.message,
+          content: structuredClone(payload.content),
+          ...(payload.usage !== undefined ? { usage: structuredClone(payload.usage) } : {}),
+        };
+        entry.revision += 1;
+        return { updated: true, revision: entry.revision };
+      }
+      // Status lives on the session record; `list` filters on status and on
+      // metadata equality, paged by an opaque cursor, as session-manager does.
+      if (req.function_id === 'session::set-status') {
+        const sessionKey = `session-manager/${String(payload.session_id)}`;
+        const meta = state.get(sessionKey) as Record<string, unknown> | undefined;
+        if (meta) {
+          state.set(sessionKey, {
+            ...meta,
+            status: payload.status,
+            ...(payload.reason ? { status_reason: payload.reason } : {}),
+          });
+        }
+        return null;
+      }
+      if (req.function_id === 'session::list') {
+        const wanted = (payload.metadata ?? {}) as Record<string, unknown>;
+        const all = [...state.entries()]
+          .filter(([k]) => k.startsWith('session-manager/'))
+          .map(([, v]) => v as Record<string, unknown>)
+          .filter((m) => payload.status == null || (m.status ?? 'idle') === payload.status)
+          .filter((m) => {
+            const md = (m.metadata ?? {}) as Record<string, unknown>;
+            return Object.entries(wanted).every(([k, v]) => md[k] === v);
+          });
+        const start = typeof payload.cursor === 'string' ? Number(payload.cursor) : 0;
+        const limit = typeof payload.limit === 'number' ? payload.limit : 50;
+        const page = all.slice(start, start + limit);
+        const next = start + limit < all.length ? String(start + limit) : null;
+        return { sessions: page, next_cursor: next };
+      }
+      if (req.function_id === 'session::get') {
+        const meta = state.get(`session-manager/${String(payload.session_id)}`);
+        return meta ? { meta } : null;
+      }
       // The iii context lives in the `iii-directory` worker, so a turn that
       // wants it asks the bus for it — these are the two calls it makes.
       if (req.function_id === 'directory::system-prompts::get') {
@@ -255,12 +343,15 @@ export function fakeIii(): FakeIii {
     isObserved: (functionId: string, call?: Partial<Call>) => ref(functionId).isObserved(call),
     observe: vi.fn((source: unknown, target: unknown, options?: unknown) => {
       observed.push(options === undefined ? { source, target } : { source, target, options });
+      const id = `observer-${observed.length}`;
       return {
-        id: `observer-${observed.length}`,
+        id,
         state: 'pending',
         ready: async () => {},
         onStateChange: () => () => {},
-        dispose: async () => {},
+        dispose: async () => {
+          disposed.push(id);
+        },
       };
     }),
   } as unknown as IIIClient;
@@ -312,11 +403,17 @@ export function fakeIii(): FakeIii {
     registered,
     functions,
     observed,
+    disposed,
     observeFeed,
     unobserve,
     observersOf,
     feedTarget,
     deliveries,
     feedFrames,
+    sessionMessages: (sessionId?: string) =>
+      (sessionId === undefined
+        ? [...transcripts.values()].flat()
+        : (transcripts.get(sessionId) ?? [])
+      ).map((e) => e.message),
   };
 }
