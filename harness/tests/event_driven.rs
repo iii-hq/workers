@@ -467,6 +467,44 @@ async fn a_duplicate_fire_during_delivery_is_not_a_second_outcome() {
     );
 }
 
+/// A call target that fails on every fire tells its owner once. Each fire
+/// still writes its own record; the owner is not woken again for the same
+/// binding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_call_target_tells_its_owner_once() {
+    let stack = Stack::new().await;
+    let mut binding = call_binding("sub_call_fails", false, AgentMessage::now_ms() + 60_000);
+    // The mock engine answers no `sink::broken`: every dispatch fails.
+    binding.target = BindingTarget::new("sink::broken");
+    park(&stack, &binding);
+
+    for _ in 0..3 {
+        let result = harness::functions::observer_deliver::handle(
+            &stack.deps,
+            json!({ "type": "state", "scope": "watched", "key": "k", "new_value": 1 }),
+            Some(json!({ "__binding": "sub_call_fails" })),
+        )
+        .await
+        .unwrap();
+        assert!(!result.delivered, "{result:?}");
+    }
+
+    assert_eq!(stack.fired_records("sub_call_fails").len(), 3);
+    let store = stack.store.lock().unwrap();
+    let notices: Vec<&Value> = store
+        .calls
+        .iter()
+        .filter(|(f, data, _)| {
+            f == "session::append" && data["entry_id"] == "e_callfail_sub_call_fails"
+        })
+        .map(|(_, data, _)| data)
+        .collect();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    let text = notices[0].to_string();
+    assert!(text.contains("its call to sink::broken FAILED"), "{text}");
+    assert!(text.contains("unexpected mock RPC sink::broken"), "{text}");
+}
+
 /// A binding pass (boot, worker change) that finds a record its delivery
 /// already consumed — mid-retirement, or left by a claimer that died —
 /// cleans it up without reporting an expiry it never had.
