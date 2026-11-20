@@ -12,6 +12,22 @@
         "description": "The function id to evaluate.",
         "type": "string"
       },
+      "implicit_namespace": {
+        "default": null,
+        "description": "Where a call to `function_id` without `namespace` runs.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "namespace": {
+        "default": null,
+        "description": "Resolved target namespace of the call. Absent from an older harness: a namespaced grant or allow rule then does not match.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "session_id": {
         "description": "Session whose effective settings apply (mode + always-allow list).",
         "type": "string"

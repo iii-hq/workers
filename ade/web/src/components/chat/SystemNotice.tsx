@@ -565,6 +565,14 @@ function workingDirCopy(scope: WorkingDirScope): {
         title: 'Working directory unavailable',
         description: `The saved folder ${previous ?? ''} is no longer available and there is no default to fall back to. From the next message on this session runs unscoped; pick a folder from the composer to scope it again.`,
       }
+    case 'moved':
+      return {
+        verb: 'moved to',
+        path: scope.path,
+        title: 'Working directory moved by the agent',
+        description:
+          "The agent moved this session's work to this folder; shell and file operations already run there.",
+      }
     default:
       return scope.path === null
         ? {

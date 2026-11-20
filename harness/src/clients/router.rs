@@ -31,34 +31,73 @@ use crate::types::event::{
 use crate::types::message::{AssistantMessage, empty_assistant};
 use crate::types::model::{AgentFunction, Model, ProviderDefaults, ThinkingLevel};
 
-/// Remove every attachment reference from a router-bound message list (wire
-/// JSON form of `AgentMessage`): `{"type":"file"}` blocks are dropped and
-/// `{"type":"image"}` blocks lose their `attachment_id` link (the inline
-/// bytes stay), recursing into `function_result` blocks. Mirrors [`crate::types::content::ContentBlock::strip_files`]
-/// for the `Value` shape the request carries: a non-empty content array
-/// never strips to empty — an all-file message gets a single
-/// `"(attachment)"` text block instead.
-pub(crate) fn strip_file_blocks(messages: &mut [Value]) {
+/// Rewrite every attachment reference in a router-bound message list (wire
+/// JSON form of `AgentMessage`) for the model: each `{"type":"file"}` block
+/// becomes, in place, its `<attachment>` text block naming
+/// `session::read-attachment` for `session_id`, and `{"type":"image"}` blocks
+/// lose their `attachment_id` link (the inline bytes stay), recursing into
+/// `function_result` blocks. The `Value` twin of
+/// [`crate::types::content::ContentBlock::strip_files`]: both produce the same
+/// blocks, file for file.
+pub(crate) fn strip_file_blocks(messages: &mut [Value], session_id: Option<&str>) {
     for message in messages.iter_mut() {
         if let Some(content) = message.get_mut("content") {
-            strip_file_blocks_in_content(content);
+            let mut twins = std::collections::HashSet::new();
+            collect_image_twins(content, &mut twins);
+            strip_file_blocks_in_content(content, session_id, &twins);
         }
     }
 }
 
-fn strip_file_blocks_in_content(content: &mut Value) {
+/// The `attachment_id` of every linked image in `content` (recursing into
+/// `function_result`): the files whose picture the message already carries.
+fn collect_image_twins(content: &Value, twins: &mut std::collections::HashSet<String>) {
+    let Some(blocks) = content.as_array() else {
+        return;
+    };
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("image") => {
+                if let Some(id) = block.get("attachment_id").and_then(Value::as_str) {
+                    twins.insert(id.to_string());
+                }
+            }
+            Some("function_result") => {
+                if let Some(nested) = block.get("content") {
+                    collect_image_twins(nested, twins);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn strip_file_blocks_in_content(
+    content: &mut Value,
+    session_id: Option<&str>,
+    twins: &std::collections::HashSet<String>,
+) {
     let Some(blocks) = content.as_array_mut() else {
         return;
     };
-    if blocks.is_empty() {
-        return;
-    }
-    blocks.retain(|block| block.get("type").and_then(Value::as_str) != Some("file"));
     for block in blocks.iter_mut() {
         match block.get("type").and_then(Value::as_str) {
+            Some("file") => {
+                let field = |key: &str| block.get(key).and_then(Value::as_str).unwrap_or_default();
+                let attachment_id = field("attachment_id");
+                let text = crate::types::content::attachment_text(
+                    attachment_id,
+                    field("name"),
+                    field("mime"),
+                    block.get("size").and_then(Value::as_u64).unwrap_or(0),
+                    session_id,
+                    twins.contains(attachment_id),
+                );
+                *block = json!({ "type": "text", "text": text });
+            }
             Some("function_result") => {
                 if let Some(nested) = block.get_mut("content") {
-                    strip_file_blocks_in_content(nested);
+                    strip_file_blocks_in_content(nested, session_id, twins);
                 }
             }
             // The link only serves lazy transcript readers; providers get
@@ -70,12 +109,6 @@ fn strip_file_blocks_in_content(content: &mut Value) {
             }
             _ => {}
         }
-    }
-    if blocks.is_empty() {
-        blocks.push(json!({
-            "type": "text",
-            "text": crate::types::content::ATTACHMENT_PLACEHOLDER,
-        }));
     }
 }
 
@@ -329,11 +362,12 @@ impl RouterClient {
         });
 
         let request_id = params.request_id.clone();
-        // Last line of defense: the model never receives `file` attachment
-        // references (assembly already stripped the transcript; hook appends
-        // and future callers are covered here).
+        // Last line of defense: the model never receives a raw `file`
+        // attachment reference, only its `<attachment>` block (assembly
+        // already rewrote the transcript; hook appends and future callers
+        // are covered here).
         let mut messages = params.messages;
-        strip_file_blocks(&mut messages);
+        strip_file_blocks(&mut messages, Some(&params.session_id));
         let mut payload = json!({
             "writer_ref": channel.writer_ref,
             "request_id": params.request_id,
@@ -1101,7 +1135,7 @@ fn utf8_tail(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod attachment_strip_tests {
     use super::*;
-    use crate::types::content::{ATTACHMENT_PLACEHOLDER, ContentBlock};
+    use crate::types::content::{ContentBlock, attachment_text};
     use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
     use serde_json::json;
 
@@ -1114,16 +1148,38 @@ mod attachment_strip_tests {
         }
     }
 
+    fn report_text() -> String {
+        attachment_text(
+            "a_3f2e",
+            "report.pdf",
+            "application/pdf",
+            12345,
+            Some("s_1"),
+            false,
+        )
+    }
+
     fn user_with_attachment() -> AgentMessage {
         AgentMessage::User(UserMessage {
             role: UserRoleTag::User,
             content: vec![
                 ContentBlock::text("please read the attached report"),
                 file_block(),
+                ContentBlock::File {
+                    attachment_id: "a_9c1d".into(),
+                    name: "photo.png".into(),
+                    mime: "image/png".into(),
+                    size: 8,
+                },
                 ContentBlock::Image {
                     mime: "image/png".into(),
                     data: "iVBORw0KGgo=".into(),
                     attachment_id: Some("a_9c1d".into()),
+                },
+                ContentBlock::FunctionResult {
+                    function_call_id: "c1".into(),
+                    content: vec![file_block()],
+                    is_error: None,
                 },
             ],
             timestamp: 1,
@@ -1131,37 +1187,55 @@ mod attachment_strip_tests {
     }
 
     #[test]
-    fn router_bound_copy_drops_file_blocks_and_keeps_text_and_image() {
+    fn router_bound_copy_turns_file_blocks_into_attachment_text_in_place() {
         let persisted = user_with_attachment();
         let mut messages = vec![serde_json::to_value(&persisted).unwrap()];
 
-        strip_file_blocks(&mut messages);
+        strip_file_blocks(&mut messages, Some("s_1"));
 
         let sent = messages[0]["content"].as_array().unwrap();
-        assert_eq!(sent.len(), 2);
-        assert_eq!(sent[0]["type"], "text");
-        assert_eq!(sent[0]["text"], "please read the attached report");
-        assert_eq!(sent[1]["type"], "image");
-        assert_eq!(sent[1]["mime"], "image/png");
-        assert_eq!(sent[1]["data"], "iVBORw0KGgo=");
+        assert_eq!(sent.len(), 5);
+        assert_eq!(
+            sent[0],
+            json!({ "type": "text", "text": "please read the attached report" })
+        );
+        assert_eq!(sent[1], json!({ "type": "text", "text": report_text() }));
+        // The photo's file block knows its picture is in the message.
+        assert_eq!(
+            sent[2],
+            json!({ "type": "text", "text": attachment_text("a_9c1d", "photo.png", "image/png", 8, Some("s_1"), true) })
+        );
+        assert!(
+            sent[2]["text"]
+                .as_str()
+                .unwrap()
+                .contains("The picture is in this message")
+        );
         // The inline bytes travel; the link to the stored original does not.
-        assert!(sent[1].get("attachment_id").is_none());
+        assert_eq!(
+            sent[3],
+            json!({ "type": "image", "mime": "image/png", "data": "iVBORw0KGgo=" })
+        );
+        assert_eq!(
+            sent[4]["content"],
+            json!([{ "type": "text", "text": report_text() }])
+        );
         assert!(sent.iter().all(|b| b["type"] != "file"));
-        // The stripped copy still parses as a harness message.
+        // The rewritten copy still parses as a harness message.
         let parsed: AgentMessage = serde_json::from_value(messages[0].clone()).unwrap();
         let AgentMessage::User(user) = parsed else {
             panic!("expected a user message");
         };
-        assert!(!ContentBlock::contains_file(&user.content));
+        assert!(!ContentBlock::contains_attachment_refs(&user.content));
 
         // The original (what session-manager persists) is intact.
         let AgentMessage::User(original) = &persisted else {
             panic!("expected a user message");
         };
-        assert_eq!(original.content.len(), 3);
+        assert_eq!(original.content.len(), 5);
         assert_eq!(original.content[1], file_block());
         assert!(matches!(
-            &original.content[2],
+            &original.content[3],
             ContentBlock::Image { attachment_id: Some(id), .. } if id == "a_9c1d"
         ));
     }
@@ -1176,7 +1250,7 @@ mod attachment_strip_tests {
             ],
             "timestamp": 1
         })];
-        strip_file_blocks(&mut messages);
+        strip_file_blocks(&mut messages, Some("s_1"));
         assert_eq!(
             messages[0]["content"],
             json!([
@@ -1187,21 +1261,34 @@ mod attachment_strip_tests {
     }
 
     #[test]
-    fn all_file_message_becomes_a_placeholder_never_an_empty_array() {
+    fn an_all_file_message_becomes_its_attachment_blocks() {
         let mut messages = vec![json!({
             "role": "user",
             "content": [serde_json::to_value(file_block()).unwrap()],
             "timestamp": 1
         })];
-        strip_file_blocks(&mut messages);
+        strip_file_blocks(&mut messages, Some("s_1"));
         assert_eq!(
             messages[0]["content"],
-            json!([{ "type": "text", "text": ATTACHMENT_PLACEHOLDER }])
+            json!([{ "type": "text", "text": report_text() }])
+        );
+        // Without a session the call names the id alone.
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [serde_json::to_value(file_block()).unwrap()],
+            "timestamp": 1
+        })];
+        strip_file_blocks(&mut messages, None);
+        assert!(
+            messages[0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(r#"session::read-attachment {"attachment_id":"a_3f2e"}"#)
         );
     }
 
     #[test]
-    fn nested_function_result_content_is_stripped_and_other_messages_untouched() {
+    fn nested_function_result_content_is_rewritten_and_other_messages_untouched() {
         let assistant = json!({
             "role": "assistant",
             "content": [],
@@ -1225,22 +1312,27 @@ mod attachment_strip_tests {
                 "timestamp": 3
             }),
         ];
-        strip_file_blocks(&mut messages);
+        strip_file_blocks(&mut messages, Some("s_1"));
         // An already-empty assistant placeholder stays empty (no fake text).
         assert_eq!(messages[0], assistant);
         assert_eq!(
             messages[1]["content"][0]["content"],
-            json!([{ "type": "text", "text": "ok" }])
+            json!([{ "type": "text", "text": report_text() }, { "type": "text", "text": "ok" }])
         );
     }
 
     #[test]
     fn typed_strip_on_agent_message_matches_the_wire_strip() {
         let mut typed = user_with_attachment();
-        typed.strip_file_blocks();
+        typed.strip_file_blocks(Some("s_1"));
         let mut wire = vec![serde_json::to_value(user_with_attachment()).unwrap()];
-        strip_file_blocks(&mut wire);
+        strip_file_blocks(&mut wire, Some("s_1"));
         assert_eq!(serde_json::to_value(&typed).unwrap(), wire[0]);
+        // Rewriting twice changes nothing (the router re-runs it on what
+        // assembly already rewrote).
+        let mut again = wire.clone();
+        strip_file_blocks(&mut again, Some("s_1"));
+        assert_eq!(again, wire);
     }
 }
 

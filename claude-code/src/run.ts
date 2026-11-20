@@ -24,11 +24,14 @@ import {
 } from './map.js';
 import { listSessions, loadSession, saveSession } from './state.js';
 import {
-  appendTranscript,
+  childSessionOwnership,
   linkChildSession,
   recordTaskOutcome,
   setSessionStatus,
+  settleSessionStatus,
+  type Ownership,
 } from './session-link.js';
+import { ChildTranscript, type TurnSink } from './session-writer.js';
 import { runTurnSpan } from './trace.js';
 import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
 
@@ -155,7 +158,13 @@ const RUN_RESPONSE_FORMAT = jsonSchema(
   }),
 );
 const START_RESPONSE_FORMAT = jsonSchema(
-  z.object({ session_id: z.string(), started: z.boolean() }),
+  z.object({
+    session_id: z.string(),
+    started: z.boolean(),
+    // A follow-up while the previous run is still saving: not started.
+    busy: z.boolean().optional(),
+    reason: z.string().optional(),
+  }),
 );
 const STOP_RESPONSE_FORMAT = jsonSchema(
   z.object({ session_id: z.string(), stopped: z.boolean(), reason: z.string().optional() }),
@@ -165,8 +174,29 @@ const STATUS_RESPONSE_FORMAT = jsonSchema(
 );
 const SESSIONS_RESPONSE_FORMAT = jsonSchema(z.object({ sessions: z.array(SessionRecordSchema) }));
 
-type LiveRun = { interrupt: () => Promise<void> };
+/**
+ * A run's slot. `interrupt` is a placeholder until the query exists; a stop
+ * that arrives before then sets `stopped`, which the run checks just before
+ * creating the query, so the stop is honored rather than lost.
+ */
+type LiveRun = { interrupt: () => Promise<void>; stopped?: boolean };
 const live = new Map<string, LiveRun>();
+
+/** Sessions this worker has run a turn in since it started, kept until the
+ *  startup scan ends: that scan must not settle any of them. */
+const ranSinceBoot = new Set<string>();
+let trackingSinceBoot = true;
+
+/** Whether this worker has run (or is running) a turn in `sessionId` since it started. */
+export function ranSinceStart(sessionId: string): boolean {
+  return live.has(sessionId) || ranSinceBoot.has(sessionId);
+}
+
+/** The startup scan is over: stop remembering. */
+export function startupScanDone(): void {
+  trackingSinceBoot = false;
+  ranSinceBoot.clear();
+}
 
 /** Best-effort: flip a session record to `error` so a failed background run
  *  never leaves it stuck in `working`. Swallows its own failure. */
@@ -239,21 +269,64 @@ export async function executeRun(
   if (live.has(session_id)) {
     return { session_id, busy: true, reason: 'a run is already active for this session' };
   }
-  const handle: LiveRun = { interrupt: async () => {} };
+  const handle: LiveRun = {
+    interrupt: async () => {
+      handle.stopped = true;
+    },
+  };
   live.set(session_id, handle);
+  if (trackingSinceBoot) ranSinceBoot.add(session_id);
 
   try {
     // A run that names a parent is a sub-agent: give it a linked session first,
     // because `parent_session_id` only applies on creation, and that link is
-    // what nests it in the console.
-    const linked = payload.parent_session_id
+    // what nests it in the console. A later turn on the same child (resumed
+    // with its session id alone) stays a child.
+    const link = payload.parent_session_id
       ? await linkChildSession(iii, {
           sessionId: session_id,
           parentSessionId: payload.parent_session_id,
           task: prompt,
         })
-      : { linked: false, detail: '' };
-    if (linked.linked) await setSessionStatus(iii, session_id, 'working');
+      : undefined;
+    // Ownership, not the link's success, decides: `session::ensure` adopts an
+    // existing session without comparing owners, but it does answer with the
+    // stored metadata — the evidence used first. Only a session this worker
+    // created is ever written to.
+    let ownership: Ownership =
+      link && link.owner !== 'unknown' ? link.owner : await childSessionOwnership(iii, session_id);
+    if (ownership === 'child') await setSessionStatus(iii, session_id, 'working');
+    // The feeds are a live tape: a window opened after the run has nothing to
+    // replay from them. A child's turn is written to session-manager AS IT
+    // HAPPENS — the prompt now, each message streaming in place — so the
+    // console renders it like any chat, whichever entrypoint started it. When
+    // ownership could not be read yet, the writer only keeps the turn and
+    // asks again at the end.
+    const writer =
+      ownership === 'other'
+        ? undefined
+        : new ChildTranscript(iii, session_id, ownership === 'child', prompt);
+    const finish = async (status: 'done' | 'error', reason?: string) => {
+      if (!writer) return;
+      const written = await writer.finish(async () => {
+        ownership = await childSessionOwnership(iii, session_id);
+        if (ownership !== 'child') return false;
+        await setSessionStatus(iii, session_id, 'working');
+        return true;
+      });
+      if (!written.write) return;
+      // Transcript first, status second: the console opens a child on `done`,
+      // and a transcript that could not be written whole is never `done`.
+      if (written.complete) await settleSessionStatus(iii, session_id, status, reason);
+      else {
+        await settleSessionStatus(
+          iii,
+          session_id,
+          'error',
+          reason ?? 'the transcript could not be saved in full',
+        );
+      }
+    };
     // One turn, one traced scope. The identity keys are the harness's own, so
     // a headless Claude Code turn groups and labels itself in the console's
     // trace views like a native turn — and every call the turn makes inherits
@@ -266,16 +339,38 @@ export async function executeRun(
         kind: 'claude.run',
         message: prompt,
       },
-      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle),
+      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle, writer),
     ).catch(async (err) => {
-      if (linked.linked) await setSessionStatus(iii, session_id, 'error', String(err));
+      writer?.note('error', String(err));
+      await finish('error', String(err));
       throw err;
     });
-    if (linked.linked) await setSessionStatus(iii, session_id, 'done');
+    const stop = String(result.stop_reason ?? 'end');
+    const said =
+      typeof result.result === 'string' && result.result
+        ? result.result
+        : `Claude Code stopped: ${stop}`;
+    // A turn that hit a cap or failed ends with how it ended: entries already
+    // written cannot have their stop reason rewritten.
+    if (stop !== 'end') writer?.note(stop, said);
+    await finish(
+      result.is_error === true ? 'error' : 'done',
+      result.is_error === true ? said : stop === 'interrupted' ? 'stopped' : undefined,
+    );
     return result;
   } finally {
     if (live.get(session_id) === handle) live.delete(session_id);
   }
+}
+
+function publishing(feed: Emit, name: string): Emit {
+  return async (sessionId, event) => {
+    try {
+      await feed(sessionId, event);
+    } catch (err) {
+      console.warn(`claude-code: ${name} delivery failed for ${sessionId}: ${String(err)}`);
+    }
+  };
 }
 
 async function runReserved(
@@ -287,9 +382,14 @@ async function runReserved(
   session_id: string,
   prompt: string,
   handle: LiveRun,
+  sink?: TurnSink,
 ): Promise<Record<string, unknown>> {
   const prior = await loadSession(iii, session_id);
   const d = cfg.defaults;
+  // A feed is a live view: one that cannot deliver must never end the turn or
+  // cost the child transcript a message.
+  const agentFeed = publishing(emit, 'claude::on-agent-event');
+  const rawFeed = publishing(emitRaw, 'claude::on-raw-event');
 
   const record: SessionRecord = prior ?? {
     session_id,
@@ -337,18 +437,27 @@ async function runReserved(
       : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
     settingSources: [],
     ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
+    // A child session renders its turn live: ask for the stream. Before the
+    // caller's options, so a caller can still turn it off.
+    ...(sink?.streaming ? { includePartialMessages: true } : {}),
     ...callerOptions(payload, cfg),
     ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
   };
 
-  const q = query({ prompt, options });
+  // A stop that arrived during setup: start no query. The turn ends like an
+  // interrupted one (stop_reason `interrupted`, not an error). No await sits
+  // between this check and the handle's promotion, so no stop slips between.
+  const stoppedEarly = handle.stopped === true;
+  const q = stoppedEarly ? null : query({ prompt, options });
   // promote the placeholder to the real interrupt now that the query exists.
   // Its answer is discarded on purpose: a caller of `claude::stop` learns
   // whether a run WAS live from the stop response, and the SDK's control
   // reply adds nothing a caller can act on.
-  handle.interrupt = async () => {
-    await q.interrupt();
-  };
+  if (q) {
+    handle.interrupt = async () => {
+      await q.interrupt();
+    };
+  }
 
   // persist `working` only once the query + live handle exist, so a throw
   // during setup never leaves the record stuck in `working`
@@ -362,10 +471,21 @@ async function runReserved(
   let resultText = '';
   let stopReason = 'end';
   let isError = false;
+  /** Whether a claude::stop had landed when the turn's outcome arrived: a
+   *  stop after an SDK error result must not hide that failure. */
+  let stoppedAtOutcome = false;
 
+  if (stoppedEarly) {
+    stopReason = 'interrupted';
+    resultText = 'Stopped before the turn started.';
+  }
   try {
-    for await (const msg of q) {
-      await emitRaw(session_id, msg);
+    for await (const msg of q ?? []) {
+      // The child transcript sees every event before the feeds or the record
+      // do, so neither failing can lose what the turn produced.
+      if (msg.type === 'stream_event') sink?.streamEvent((msg as { event?: unknown }).event);
+      if (msg.type === 'result') stoppedAtOutcome = handle.stopped === true;
+      await rawFeed(session_id, msg);
       if (msg.type === 'system' && msg.subtype === 'init') {
         record.claude_session_id = msg.session_id;
         await saveSession(iii, record);
@@ -373,11 +493,17 @@ async function runReserved(
         const usage = mapUsage(msg.message.usage);
         const content = mapAssistantContent(msg.message.content as never, calls);
         const assistant = makeAssistantMessage(content, msg.message.model ?? record.model, usage);
+        sink?.assistant(
+          (msg.message as { id?: string }).id,
+          content,
+          msg.message.model ?? record.model,
+          usage,
+        );
         transcript.push(assistant);
-        await emit(session_id, { type: 'message_complete', message: assistant });
+        await agentFeed(session_id, { type: 'message_complete', message: assistant });
         for (const block of content) {
           if (block.type === 'function_call') {
-            await emit(session_id, {
+            await agentFeed(session_id, {
               type: 'function_execution_start',
               function_call_id: block.id,
               function_id: block.function_id,
@@ -398,9 +524,10 @@ async function runReserved(
             content,
             b.is_error === true,
           );
+          sink?.functionResult(fr);
           transcript.push(fr);
           pendingResults.push(fr);
-          await emit(session_id, {
+          await agentFeed(session_id, {
             type: 'function_execution_end',
             function_call_id: callId,
             function_id: fr.function_id,
@@ -416,13 +543,28 @@ async function runReserved(
         record.usage = mapUsage(msg.usage);
         isError = msg.is_error === true;
         stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
-        resultText = 'result' in msg && typeof msg.result === 'string' ? msg.result : '';
+        // A failed result may carry its reason only in `errors`.
+        resultText =
+          'result' in msg && typeof msg.result === 'string' && msg.result
+            ? msg.result
+            : 'errors' in msg && Array.isArray(msg.errors) && msg.errors.length
+              ? msg.errors.map(String).join('; ')
+              : '';
       }
     }
   } catch (err) {
+    stoppedAtOutcome = handle.stopped === true;
     isError = true;
     stopReason = 'error';
     resultText = String(err);
+  }
+  // A requested stop: the interrupted query answers with an error result (or
+  // throws), which is how it was stopped, not a failure. A turn that finished
+  // before the stop landed keeps its own outcome.
+  if (stoppedAtOutcome && !stoppedEarly && (isError || stopReason !== 'end')) {
+    isError = false;
+    stopReason = 'interrupted';
+    resultText = 'Stopped by claude::stop.';
   }
   // slot release is handled by executeRun's finally (covers setup throws too)
 
@@ -431,21 +573,21 @@ async function runReserved(
   await saveSession(iii, record);
 
   if (transcript.length === 0) {
-    transcript.push(
-      makeAssistantMessage(
-        [{ type: 'text', text: resultText }],
-        record.model,
-        record.usage,
-        stopReason,
-      ),
+    const closing = makeAssistantMessage(
+      [{ type: 'text', text: resultText }],
+      record.model,
+      record.usage,
+      stopReason,
     );
+    sink?.terminal(closing);
+    transcript.push(closing);
   }
-  await emit(session_id, {
+  await agentFeed(session_id, {
     type: 'turn_end',
     message: lastAssistant(transcript),
     function_results: pendingResults,
   });
-  await emit(session_id, { type: 'agent_end', messages: transcript });
+  await agentFeed(session_id, { type: 'agent_end', messages: transcript });
 
   return {
     session_id,
@@ -477,6 +619,18 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     async (payload: unknown) => {
       const parsed = RunPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
+      // Refuse here, not in the background: a busy result from executeRun
+      // would be discarded and the caller told `started: true` for a prompt
+      // that never runs (a follow-up sent on `agent_end` lands in the window
+      // where the previous turn is still writing its transcript).
+      if (live.has(session_id)) {
+        return {
+          session_id,
+          started: false,
+          busy: true,
+          reason: 'a run is already active for this session',
+        };
+      }
       void executeRun(iii, getCfg(), emit, emitRaw, { ...parsed, session_id }).catch(
         async (err) => {
           console.error(`claude::start background run failed for ${session_id}: ${String(err)}`);
@@ -523,29 +677,22 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // to state under `agent_tasks/<session id>`, which is what an
       // orchestrator observes (`state::on-changed`) and gets woken by — the same
       // shape a harness sub-agent uses, with no polling and no blocking call.
-      // The turn is persisted as well as published. `claude::on-agent-event` is a
-      // live tape — a console window opened after the run has nothing to replay
-      // from it, which is why a finished sub-agent rendered blank with
-      // `message_count: 0`. The session manager is the durable side, so the
-      // transcript is written there when the turn ends.
-      const transcript: unknown[] = [];
-      const record: Emit = async (sid, event) => {
-        await emit(sid, event);
-        if ((event as { type?: string }).type === 'agent_end') {
-          const messages = (event as { messages?: unknown[] }).messages ?? [];
-          transcript.push(...messages);
-        }
-      };
-      void executeRun(iii, getCfg(), record, emitRaw, run)
+      // The transcript itself is persisted by executeRun, like any linked run.
+      void executeRun(iii, getCfg(), emit, emitRaw, run)
         .then(async (result) => {
-          await appendTranscript(iii, session_id, parsed.task, transcript);
+          // An SDK error result resolves normally: the outcome follows it,
+          // since the orchestrator reads this record as the task's outcome.
+          const text = typeof result.result === 'string' ? result.result : undefined;
+          const failed = result.is_error === true;
           await recordTaskOutcome(iii, {
             session_id,
             parent_session_id: parsed.parent_session_id,
             agent: 'claude-code',
             task: parsed.task,
-            status: 'done',
-            result: typeof result.result === 'string' ? result.result : undefined,
+            status: failed ? 'error' : 'done',
+            ...(failed
+              ? { error: text || `Claude Code stopped: ${String(result.stop_reason ?? 'error')}` }
+              : { result: text }),
             updated_at_ms: Date.now(),
           });
         })
@@ -578,6 +725,8 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       const { session_id } = SessionIdSchema.parse(payload ?? {});
       const run = live.get(session_id);
       if (!run) return { session_id, stopped: false, reason: 'no live run' };
+      // Marked first: the run reads it to tell a requested stop from a failure.
+      run.stopped = true;
       await run.interrupt();
       return { session_id, stopped: true };
     },

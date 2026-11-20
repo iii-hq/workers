@@ -932,3 +932,146 @@ async fn filters_read_the_request_as_the_server_received_it() {
     boot.shutdown().await;
     engine.shutdown().await;
 }
+
+/// A target that answers `200` after `delay`, without touching the response
+/// channel.
+fn register_slow(engine: &FakeEngine, id: &str, delay: Duration) {
+    engine.iii.register_function(
+        id.to_string(),
+        RegisterFunction::new_async(move |_req: HttpRequest| async move {
+            tokio::time::sleep(delay).await;
+            Ok::<Value, Error>(json!({ "status_code": 200 }))
+        }),
+    );
+}
+
+/// A client that gives up after 300 ms.
+fn impatient() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(300))
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_request_timeout_counts_the_wait_for_a_slot() {
+    let engine = FakeEngine::start().await;
+    let config = RestApiConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        default_timeout: 1000,
+        concurrency_request_limit: 1,
+        ..Default::default()
+    };
+    let boot = boot::start(engine.iii.clone(), config).await.unwrap();
+    register_slow(&engine, "test::slow", Duration::from_millis(600));
+    assert!(
+        observe(
+            &engine,
+            "obs-slow",
+            "test::slow",
+            json!({"method": "GET", "path": "/new/slow"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
+
+    let url = format!("http://{}/new/slow", boot.local_addr);
+    let http = client();
+    let (a, b) = tokio::join!(http.get(&url).send(), http.get(&url).send());
+    let mut statuses = [a.unwrap().status(), b.unwrap().status()];
+    statuses.sort();
+    // One request holds the only slot for 600 ms. The other waits for it,
+    // then needs 600 ms more: past its 1000 ms, counted from its arrival.
+    assert_eq!(statuses, [200, 504]);
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_request_the_client_left_closes_its_response_channel() {
+    let (engine, boot) = start().await;
+    register_slow(&engine, "test::slow", Duration::from_secs(1));
+    assert!(
+        observe(
+            &engine,
+            "obs-slow",
+            "test::slow",
+            json!({"method": "GET", "path": "/new/slow"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
+
+    let url = format!("http://{}/new/slow", boot.local_addr);
+    assert!(impatient().get(&url).send().await.is_err());
+    assert_eq!(engine.readers_opened(), 1, "the server read the response");
+    // The target never touches the channel, so nothing but the server can
+    // close its reader.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.readers_open() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the reader of a request the client left closes");
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_request_the_client_left_stops_its_call() {
+    let engine = FakeEngine::start_with_local_dispatch().await;
+    let config = RestApiConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        ..Default::default()
+    };
+    let boot = boot::start(engine.iii.clone(), config).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !boot.on_request.local_dispatch_active() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("http::on-request runs in-process");
+    engine.iii.register_function(
+        "test::wait".to_string(),
+        RegisterFunction::new_async(|_input: Value| async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok::<Value, Error>(json!({"action": "continue"}))
+        }),
+    );
+    let after = register_middleware(&engine, "test::after", json!({"action": "continue"}));
+    let target = register_echo(&engine, "test::target");
+    assert!(
+        observe(
+            &engine,
+            "obs-target",
+            "test::target",
+            json!({
+                "method": "GET",
+                "path": "/new/left",
+                "middleware_function_ids": ["test::wait", "test::after"],
+            }),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
+
+    let url = format!("http://{}/new/left", boot.local_addr);
+    assert!(impatient().get(&url).send().await.is_err());
+    // The client left while `test::wait` ran: nothing after it runs.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(after.load(Ordering::SeqCst), 0, "the next middleware");
+    assert_eq!(target.load(Ordering::SeqCst), 0, "the target");
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}

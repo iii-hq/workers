@@ -31,6 +31,7 @@ mod turn_snapshot;
 mod turns;
 mod ui;
 mod ui_state;
+mod worktree_follow;
 
 use configuration::AppState;
 use functions::types::{KillRequest, StatusRequest};
@@ -509,7 +510,7 @@ async fn main() -> Result<()> {
 
     // Durable per-session change history: harness hooks on shell/coder
     // writes, read back by shell::turns::list / shell::turns::get.
-    let _turn_log = turns::register(&iii, &cfg.turns, watch_resolver);
+    let _turn_log = turns::register(&iii, &cfg.turns, watch_resolver, state.runtime.clone());
 
     // Background reaper: time-based eviction of finished JobRecords. Without
     // it, an agent that uses exec_bg + status-polling (and never calls

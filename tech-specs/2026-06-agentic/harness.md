@@ -92,7 +92,7 @@ also carries, after any hook annotations (a hook cannot overwrite them):
 - `req` — a fingerprint of the request handed to `router::chat`, after hooks and context
   assembly: `{ system_sha, tools_sha, messages_sha, n }`, the lowercase sha256 hex of the compact
   JSON (object keys sorted) of the system prompt (`null` when absent), the tools array and the
-  messages array (as the router receives them, file blocks stripped), and `n` the message count.
+  messages array (as the router receives them, file blocks rewritten as `<attachment>` text), and `n` the message count.
   Equal digests mean an identical system prompt, tools and messages; `thinking_level`,
   `response_format`, `max_output_tokens` and `provider_options` are not covered, so a reader that
   needs the same request must compare them separately.

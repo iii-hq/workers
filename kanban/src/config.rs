@@ -48,6 +48,9 @@ pub struct KanbanConfig {
     pub priorities: Vec<String>,
     /// Fallback folder of agent profiles used when iii-directory is unavailable.
     pub agents_path: String,
+    /// Board dispatch rules ([`crate::dispatch`]); empty turns dispatch off.
+    #[serde(default)]
+    pub dispatch: Vec<crate::dispatch::DispatchRule>,
 }
 
 pub fn default_columns() -> Vec<Column> {
@@ -82,6 +85,7 @@ impl Default for KanbanConfig {
             columns: default_columns(),
             priorities: default_priorities(),
             agents_path: iii_worker_paths::default_path("agents"),
+            dispatch: Vec::new(),
         }
     }
 }
@@ -172,7 +176,8 @@ pub fn schema() -> Value {
                 "type": "string",
                 "minLength": 1,
                 "description": "Fallback folder of agent profiles used when iii-directory is unavailable."
-            }
+            },
+            "dispatch": crate::dispatch::schema()
         }
     })
 }
@@ -289,6 +294,7 @@ pub fn normalize(raw: &Value) -> KanbanConfig {
         } else {
             agents_path
         },
+        dispatch: crate::dispatch::normalize(field("dispatch")),
     }
 }
 

@@ -113,7 +113,7 @@ Consumer-facing:
 - `memory::reload` — drop RAM state and re-read every bank from disk (the recovery hatch after
   hand-editing files).
 
-Internal (agent-denied, see Security):
+Internal (denied by the suggested policy, see Security):
 
 - `memory::hook::pre-generate` — harness injection hook.
 - `memory::on-turn-completed` / `memory::extract-job` — capture pipeline.
@@ -176,12 +176,20 @@ search index is RAM-only, rebuilt at boot, so store and index cannot diverge. An
 
 ## Security
 
-Suggested defaults ship in `memory/iii-permissions.yaml`: agents get `memory::recall`,
-`memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`;
-the hook/pipeline internals, `memory::transcript` and `memory::correct` are denied, and bank/rule
-writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default — the
+The worker refuses its human-owned functions from inside an agent turn: bank create and delete,
+`memory::rule::set`, `memory::supersede`, `memory::correct`, `memory::transcript` and
+`memory::reload` answer a call carrying turn baggage (`iii.session.id`) with `forbidden` — the
 always-injected rules shape every future turn's system prompt, so writing them is a privileged
-operation.
+operation. A save, update or delete from inside a turn is held to the agent's own note: a user's
+session or its sub-agent only, the turn's own bank, no pin, no `user` entity or `demoted-rule`
+tag, 3 to 500 characters, at most `max_memories_per_turn` new notes per turn; an update edits
+only such a note, and a pinned memory is neither updated nor deleted (memory/README.md
+§ Permissions). The baggage is caller-supplied and not attested, so a call that leaves the turn
+without it arrives as a human's. `memory/iii-permissions.yaml` is a suggested policy for
+deployments that run a policy worker, and nothing loads it at run time: agents get
+`memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`,
+`memory::delete`; `memory::pin`, the functions above and the hook/pipeline internals are denied,
+and only that policy keeps an agent off the internals.
 
 ## The memory family
 

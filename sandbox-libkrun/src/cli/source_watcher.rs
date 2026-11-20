@@ -77,7 +77,9 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".idea",
     ".vscode",
     ".DS_Store",
-    // Compose: build images and package copies, inside a `path://.` worker
+    // Where Compose kept its builds and package copies before it moved them to
+    // `.iii/build/<c>` and `.iii/workers/<c>` (`.iii` is left out anyway):
+    // still ignored, inside a `path://.` worker
     ".build",
     ".workers",
 ];

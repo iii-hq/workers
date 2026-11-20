@@ -1,24 +1,32 @@
 //! Process-level write confinement for a scoped host exec
 //! (`fs.exec_confinement: landlock`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The git dir a commit in `root` writes to: the common dir of a linked
 /// worktree, or the `.git` directory of the repository enclosing `root`.
+pub fn repo_git_dir(root: &Path) -> Option<PathBuf> {
+    repo_layout(root).map(|(_, common)| common)
+}
+
+/// The (canonical) top of the worktree enclosing `root` and the common git
+/// dir it commits to.
 ///
 /// A confined exec can rewrite a `.git` inside its root, so nothing it names
 /// is taken on its word: a symlinked `.git` grants nothing, and a `.git` file
 /// counts only as git's `gitdir: <common>/worktrees/<id>` whose back-pointer
 /// (`<id>/gitdir`) names this file. Forging that takes a write inside the
 /// common dir it would grant. Anything else (a submodule too) is `None`.
-pub fn repo_git_dir(root: &Path) -> Option<PathBuf> {
+pub fn repo_layout(root: &Path) -> Option<(PathBuf, PathBuf)> {
     for dir in root.ancestors() {
         let dot_git = dir.join(".git");
         let Ok(meta) = std::fs::symlink_metadata(&dot_git) else {
             continue;
         };
+        let top = dir.canonicalize().ok()?;
         if meta.is_dir() {
-            return dot_git.canonicalize().ok();
+            return Some((top, dot_git.canonicalize().ok()?));
         }
         if !meta.is_file() {
             return None;
@@ -37,9 +45,30 @@ pub fn repo_git_dir(root: &Path) -> Option<PathBuf> {
         let is_git_dir = worktrees.file_name()? == "worktrees"
             && common.join("HEAD").is_file()
             && common.join("objects").is_dir();
-        return is_git_dir.then(|| common.to_path_buf());
+        return is_git_dir.then(|| (top, common.to_path_buf()));
     }
     None
+}
+
+/// The linked worktrees git has registered in `common`, as admin dir
+/// (`<common>/worktrees/<id>`, which `git worktree move` keeps) to canonical
+/// top. Each is kept only when its own `.git` file leads back to `common`
+/// ([`repo_layout`]): an admin entry alone cannot name an arbitrary directory.
+pub fn linked_worktrees(common: &Path) -> BTreeMap<PathBuf, PathBuf> {
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else {
+        return BTreeMap::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|admin| {
+            let admin = admin.path();
+            let text = std::fs::read_to_string(admin.join("gitdir")).ok()?;
+            let top = admin.join(text.trim()).parent()?.canonicalize().ok()?;
+            let is_file = std::fs::symlink_metadata(top.join(".git")).ok()?.is_file();
+            (is_file && repo_layout(&top) == Some((top.clone(), common.to_path_buf())))
+                .then_some((admin, top))
+        })
+        .collect()
 }
 
 /// Every path a confined exec may write under: the (canonical) scope root and
@@ -395,6 +424,48 @@ mod tests {
         std::fs::write(looks_like_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         assert_eq!(self_pointing(&looks_like_git.join("r")), None);
         assert_eq!(self_pointing(&tmp.path().join("q/worktrees")), None);
+    }
+
+    #[test]
+    fn linked_worktrees_read_relative_entries_and_skip_forged_ones() {
+        let (tmp, main_git) = linked_worktree();
+        let wt = tmp.path().join("wt").canonicalize().unwrap();
+        let main = tmp.path().join("main").canonicalize().unwrap();
+        assert_eq!(
+            repo_layout(&wt.join("sub")),
+            Some((wt.clone(), main_git.clone()))
+        );
+        assert_eq!(repo_layout(&main), Some((main, main_git.clone())));
+
+        std::fs::write(
+            main_git.join("worktrees/wt/gitdir"),
+            "../../../../wt/.git\n",
+        )
+        .unwrap();
+        // Admin entries naming a dir without a `.git`, and one whose `.git`
+        // points at another worktree's admin dir.
+        let plain = tmp.path().join("plain");
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join(".git"),
+            format!("gitdir: {}\n", main_git.join("worktrees/wt").display()),
+        )
+        .unwrap();
+        for (id, dir) in [("f1", &plain), ("f2", &other)] {
+            let admin = main_git.join("worktrees").join(id);
+            std::fs::create_dir_all(&admin).unwrap();
+            std::fs::write(
+                admin.join("gitdir"),
+                format!("{}\n", dir.join(".git").display()),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            linked_worktrees(&main_git),
+            BTreeMap::from([(main_git.join("worktrees/wt"), wt)])
+        );
     }
 
     #[test]

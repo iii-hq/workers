@@ -23,7 +23,7 @@ use iii_sdk::channels::{ChannelDirection, StreamChannelRef};
 use sandbox_libkrun::sandbox_daemon::SandboxError;
 use sandbox_libkrun::wire::{
     LogRecord, WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse, WorkerDestroyRequest,
-    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStopRequest,
+    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStopRequest, scoped_auth_token,
 };
 use sandbox_libkrun::worker_vm::{WorkerVms, vm_id};
 use serial_test::serial;
@@ -148,6 +148,7 @@ fn build_req(state_key: &str, source: WorkerSource, out: &Path) -> WorkerBuildRe
         output_dir: out.display().to_string(),
         env: BTreeMap::from([("BUILD_ENV".to_string(), "from-guest-env".to_string())]),
         logs: logs(),
+        base_image: None,
     }
 }
 
@@ -205,6 +206,7 @@ fn destroy(vms: &WorkerVms, state_key: &str) {
         .destroy(WorkerDestroyRequest {
             auth: "t".into(),
             state_key: state_key.into(),
+            prune: true,
         })
         .unwrap();
     assert!(destroyed.destroyed);
@@ -555,6 +557,224 @@ async fn the_build_codes() {
     wait_for(&console(t, "codes"), "READY", 120).await;
     stop(&vms, &started).await;
     destroy(&vms, "codes");
+}
+
+/// A VM's scoped token builds into and boots from its own build directory, and
+/// gets S505 on another VM's, whose image and id stay as they were.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_scoped_token_builds_and_boots_its_own_build_dir_only() {
+    if !kvm() {
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let t = t.path();
+    let project = t.join("project");
+    python_worker(&project, "echo installed", "echo READY; exec sleep 600\n");
+    let out_b = project.join(".iii/build/b");
+    let mut vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    // A scoped start is leased, and nothing follows its log here.
+    vms.lease_grace = Duration::from_secs(600);
+    let (iii, _frames, _) = channel_engine().await;
+    let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
+    let scoped_build = |auth: &str, state_key: &str, out: &Path| {
+        let mut req = build_req(state_key, local(&project), out);
+        req.auth = auth.to_string();
+        vms.build(&iii, req)
+    };
+    let scoped_start = |auth: &str, state_key: &str, build_id: &str, dir: &Path| {
+        vms.start(WorkerStartRequest {
+            auth: auth.into(),
+            state_key: state_key.into(),
+            worker_name: "w".into(),
+            source: local(&project),
+            env: Default::default(),
+            engine_url: "ws://127.0.0.1:49134".into(),
+            build: Some(WorkerBuildRef {
+                build_id: build_id.into(),
+                build_dir: dir.display().to_string(),
+            }),
+        })
+    };
+
+    let built = scoped_build(&b, "b", &out_b).await.unwrap();
+    assert_eq!(sha256(&out_b.join("image.erofs")), built.build_id);
+    // A's token on B's directory: S505 before any build VM or id check.
+    let refused = scoped_build(&a, "a", &out_b).await.unwrap_err();
+    eprintln!("[S505 build] {refused}");
+    assert_eq!(refused.code().as_str(), "S505");
+    let refused = scoped_start(&a, "a", &built.build_id, &out_b)
+        .await
+        .unwrap_err();
+    eprintln!("[S505 start] {refused}");
+    assert_eq!(refused.code().as_str(), "S505");
+    assert_eq!(names(&out_b), ["image.erofs", "image.id"]);
+    assert_eq!(sha256(&out_b.join("image.erofs")), built.build_id);
+    let id = std::fs::read_to_string(out_b.join("image.id")).unwrap();
+    assert_eq!(id.trim(), built.build_id);
+
+    // B boots its build with its own token.
+    let started = scoped_start(&b, "b", &built.build_id, &out_b)
+        .await
+        .unwrap();
+    wait_for(&console(t, "b"), "READY", 120).await;
+    stop(&vms, &started).await;
+    destroy(&vms, "b");
+}
+
+/// A static Linux binary at `path`, built here for the guest's arch: it prints
+/// its name, its working directory and what the package's install left, then
+/// waits. Needs the `<arch>-unknown-linux-musl` target, which the KVM CI job
+/// installs to build the guest init.
+fn static_worker(path: &Path) {
+    let dir = path.parent().unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    let src = dir.join("worker.rs");
+    write(
+        &src,
+        r#"fn main() {
+    let installed = std::fs::read_to_string("/var/installed").unwrap_or_default();
+    println!(
+        "BINARY-READY name={} cwd={} installed={}",
+        std::env::var("III_WORKER_NAME").unwrap_or_default(),
+        std::env::current_dir().unwrap().display(),
+        installed.trim()
+    );
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+"#,
+    );
+    let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let status = std::process::Command::new(rustc)
+        .args(["--edition", "2021", "--target", &target])
+        .args([
+            "-C",
+            "linker=rust-lld",
+            "-C",
+            "opt-level=s",
+            "-C",
+            "strip=symbols",
+        ])
+        .arg("-o")
+        .arg(path)
+        .arg(&src)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "cannot build the static test worker; `rustup target add {target}`"
+    );
+    std::fs::remove_file(&src).unwrap();
+}
+
+/// Contract 1.4: a binary package is built on the base image the request names
+/// (S001 without one), its manifest's install runs in the build, and the VM
+/// runs its executable from `/workspace`.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_binary_package_builds_and_boots() {
+    if !kvm() {
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let t = t.path();
+    let pkg = t.join("project/pkg");
+    static_worker(&pkg.join("bin/worker"));
+    write(
+        &pkg.join("iii.worker.yaml"),
+        "name: bin-worker\nscripts:\n  install: \"echo from-install > /var/installed\"\n",
+    );
+    let out = t.join("project/out");
+    let vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    let (iii, _frames, _) = channel_engine().await;
+    let source = WorkerSource::Binary {
+        package: "bin-worker".into(),
+        host_path: pkg.display().to_string(),
+        executable: "bin/worker".into(),
+    };
+
+    let mut req = build_req("bin", source.clone(), &out);
+    let refused = vms.build(&iii, req.clone()).await.unwrap_err();
+    eprintln!("[S001 no base image] {refused}");
+    assert_eq!(refused.code().as_str(), "S001");
+    req.base_image = Some(PYTHON.into());
+    let built = vms.build(&iii, req).await.unwrap();
+    eprintln!("[build] {built:?}");
+    assert_eq!(built.base_image.reference, PYTHON);
+    assert_eq!(sha256(&out.join("image.erofs")), built.build_id);
+
+    let started = start(&vms, "bin", source, Some((&built.build_id, &out)))
+        .await
+        .unwrap();
+    let log = wait_for(&console(t, "bin"), "BINARY-READY", 120).await;
+    eprintln!("[run] {log}");
+    assert!(
+        log.contains("BINARY-READY name=w cwd=/workspace installed=from-install"),
+        "{log}"
+    );
+    stop(&vms, &started).await;
+    destroy(&vms, "bin");
+}
+
+/// Contract 1.4: `worker::destroy` without `prune` keeps the data disk, and the
+/// next start of the key boots over it; with `prune` nothing stays.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_destroy_without_prune_keeps_the_data_for_the_next_start() {
+    if !kvm() {
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let t = t.path();
+    let project = t.join("project");
+    python_worker(
+        &project,
+        "echo ok",
+        r#"mkdir -p /var/lib/iii-test
+echo boot >> /var/lib/iii-test/boots
+sync
+echo "BOOTS=$(wc -l < /var/lib/iii-test/boots)"
+echo READY
+exec sleep 600
+"#,
+    );
+    let out = project.join("out");
+    let vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    let (iii, _frames, _) = channel_engine().await;
+    let console = console(t, "kept");
+    let vm_dir = t.join("workers").join(vm_id("kept"));
+
+    let built = build(&vms, &iii, "kept", local(&project), &out)
+        .await
+        .unwrap();
+    let boot = || start(&vms, "kept", local(&project), Some((&built.build_id, &out)));
+    let started = boot().await.unwrap();
+    let log = wait_for(&console, "READY", 120).await;
+    assert!(log.contains("BOOTS=1"), "{log}");
+    stop(&vms, &started).await;
+
+    let kept = vms
+        .destroy(WorkerDestroyRequest {
+            auth: "t".into(),
+            state_key: "kept".into(),
+            prune: false,
+        })
+        .unwrap();
+    assert!(kept.destroyed);
+    eprintln!("[kept] {:?} {:?}", kept.kept, names(&vm_dir));
+    assert_eq!(kept.kept, [vm_dir.join("upper.ext4").display().to_string()]);
+    assert_eq!(names(&vm_dir), ["build-mode", "upper.ext4"]);
+
+    let started = boot().await.unwrap();
+    let log = wait_for(&console, "READY", 120).await;
+    eprintln!("[after the destroy] {log}");
+    assert!(log.contains("BOOTS=2"), "{log}");
+    stop(&vms, &started).await;
+    destroy(&vms, "kept");
+    assert!(!vm_dir.exists());
 }
 
 /// Acceptance 3: the reader of `logs` leaves mid-build. The build VM stops, the

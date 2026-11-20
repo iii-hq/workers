@@ -201,6 +201,8 @@ pub struct SessionRecord {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct HookCall {
+    #[serde(default)]
+    pub id: String,
     pub function_id: String,
     #[serde(default)]
     pub arguments: Value,
@@ -254,12 +256,27 @@ where
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HookOutput {
     pub decision: &'static str,
+    /// on-post-call: `{ fs_scope: { root } }` when the call moved the
+    /// session into a git worktree (see `worktree_follow`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutations: Option<Value>,
+}
+
+impl HookOutput {
+    /// The on-post-call reply; the harness reads `mutations.fs_scope.root`.
+    fn moved_to(root: Option<String>) -> Self {
+        Self {
+            mutations: root.map(|root| json!({ "fs_scope": { "root": root } })),
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for HookOutput {
     fn default() -> Self {
         Self {
             decision: "continue",
+            mutations: None,
         }
     }
 }
@@ -1812,6 +1829,7 @@ pub fn register(
     iii: &IIIClient,
     config: &TurnsConfig,
     resolver: crate::code::state::ResolverCell,
+    runtime: Arc<tokio::sync::RwLock<crate::configuration::ShellRuntime>>,
 ) -> Arc<TurnLog> {
     let data_dir = config.resolved_data_dir();
     let log = Arc::new(TurnLog::new(
@@ -1822,16 +1840,24 @@ pub fn register(
     // of asking again on a timer.
     log.notify_changes(crate::turn_events::register_turns_changed(iii));
     let observers = crate::turn_observe::TurnObservers::new(log.clone(), data_dir);
+    let follow = Arc::new(crate::worktree_follow::WorktreeFollow::default());
 
     {
         let log = log.clone();
         let observers = observers.clone();
+        let follow = follow.clone();
         iii.register_function(
             PRE_HOOK_FN_ID,
             RegisterFunction::new_async(move |input: HookInput| {
                 let log = log.clone();
                 let observers = observers.clone();
+                let follow = follow.clone();
                 async move {
+                    // First, as `observers.ensure` can outlive the hook
+                    // timeout. A holder sorted after this hook leaves the
+                    // snapshot from before its hold: only a worktree the
+                    // command names can still be adopted.
+                    follow.on_pre(&input).await;
                     if let (Some(session_id), Some(turn_id)) =
                         (input.session_id.as_deref(), input.turn_id.as_deref())
                     {
@@ -1844,7 +1870,8 @@ pub fn register(
             })
             .description(
                 "Internal: keeps the pre-image of a file a shell or coder call is about to \
-                 change. Observes only; always continues.",
+                 change, and the git worktree list before a `worktree` exec. Observes only; \
+                 always continues.",
             )
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
@@ -1855,14 +1882,19 @@ pub fn register(
             POST_HOOK_FN_ID,
             RegisterFunction::new_async(move |input: HookInput| {
                 let log = log.clone();
+                let follow = follow.clone();
+                let runtime = runtime.clone();
                 async move {
+                    let cfg = runtime.read().await.config.clone();
+                    let root = follow.on_post(&input, cfg).await;
                     log.on_post_call(input).await;
-                    Ok::<HookOutput, Error>(HookOutput::default())
+                    Ok::<HookOutput, Error>(HookOutput::moved_to(root))
                 }
             })
             .description(
                 "Internal: records a file change made through a shell or coder call into \
-                 the session's durable change history. Observes only; always continues.",
+                 the session's durable change history, and moves the session into a git \
+                 worktree its exec created (`mutations.fs_scope.root`). Always continues.",
             )
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
@@ -2480,8 +2512,21 @@ mod tests {
         assert_eq!(fired, ["s1", "s2"]);
     }
 
+    #[test]
+    fn the_post_call_reply_carries_the_moved_root_only_when_there_is_one() {
+        assert_eq!(
+            serde_json::to_value(HookOutput::moved_to(Some("/repo.feat".into()))).unwrap(),
+            json!({ "decision": "continue", "mutations": { "fs_scope": { "root": "/repo.feat" } } })
+        );
+        assert_eq!(
+            serde_json::to_value(HookOutput::moved_to(None)).unwrap(),
+            json!({ "decision": "continue" })
+        );
+    }
+
     fn call(function_id: &str, arguments: Value) -> HookCall {
         HookCall {
+            id: String::new(),
             function_id: function_id.to_string(),
             arguments,
         }

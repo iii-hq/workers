@@ -1,5 +1,6 @@
 use regex::Regex;
 
+use super::split_namespace_pattern;
 use super::types::{Action, ConstraintSpec, RuleSpec};
 
 #[derive(Debug, Clone)]
@@ -11,6 +12,8 @@ pub enum CompiledConstraint {
 #[derive(Debug, Clone)]
 pub struct CompiledRule {
     pub rule_id: String,
+    /// The `<namespace>/` qualifier; `None` matches every namespace.
+    pub namespace: Option<String>,
     pub function_id: String,
     pub glob: Option<Regex>,
     pub action: Action,
@@ -86,33 +89,67 @@ fn compile_constraint(
     }
 }
 
+/// A glob, empty or doubled-slash qualifier would silently match nothing (`!*/x` and `!/x`
+/// denied nothing).
+fn check_namespace_qualifier(
+    pattern: &str,
+    namespace: Option<&str>,
+    index: usize,
+) -> Result<(), CompileError> {
+    let bad = match namespace {
+        None if pattern.starts_with('/') => {
+            Some(("", "drop the leading `/` to match every namespace"))
+        }
+        Some(ns) if ns.contains(['*', '?', '[', '{']) => {
+            Some((ns, "a bare pattern already matches every namespace"))
+        }
+        // `laptop//x` splits to the literal id `/x`, which no call carries.
+        Some(ns) if pattern[ns.len() + 1..].starts_with('/') => Some((
+            &pattern[..ns.len() + 2],
+            "put a single `/` between the namespace and the function id",
+        )),
+        _ => None,
+    };
+    match bad {
+        Some((ns, hint)) => Err(CompileError::Rule {
+            index,
+            message: format!("namespace qualifier must be a plain namespace, got {ns:?}; {hint}"),
+        }),
+        None => Ok(()),
+    }
+}
+
 pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, CompileError> {
     match spec {
         RuleSpec::Shorthand(raw) => {
-            if raw.starts_with('!') {
-                let function_id = raw.strip_prefix('!').unwrap_or(raw);
-                if function_id.is_empty() {
-                    return Err(CompileError::Rule {
-                        index,
-                        message: "deny shorthand must be !<function_id>".into(),
-                    });
-                }
-                let (function_id, glob) = compile_function_matcher(function_id, index)?;
-                return Ok(CompiledRule {
-                    rule_id: function_id.clone(),
-                    function_id,
-                    glob,
-                    action: Action::Deny,
-                    modes: None,
-                    constraints: Vec::new(),
+            let (pattern, action, empty_message) = match raw.strip_prefix('!') {
+                Some(pattern) => (
+                    pattern,
+                    Action::Deny,
+                    "deny shorthand must be !<function_id>",
+                ),
+                None => (
+                    raw.as_str(),
+                    Action::Allow,
+                    "allow shorthand must be <function_id>",
+                ),
+            };
+            let (namespace, id) = split_namespace_pattern(pattern);
+            check_namespace_qualifier(pattern, namespace, index)?;
+            // A bare empty allow `""` compiles as it always did.
+            if id.is_empty() && (namespace.is_some() || action == Action::Deny) {
+                return Err(CompileError::Rule {
+                    index,
+                    message: empty_message.into(),
                 });
             }
-            let (function_id, glob) = compile_function_matcher(raw, index)?;
+            let (function_id, glob) = compile_function_matcher(id, index)?;
             Ok(CompiledRule {
-                rule_id: function_id.clone(),
+                rule_id: pattern.to_string(),
+                namespace: namespace.map(str::to_string),
                 function_id,
                 glob,
-                action: Action::Allow,
+                action,
                 modes: None,
                 constraints: Vec::new(),
             })
@@ -124,7 +161,9 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
             modes,
             args,
         } => {
-            if function.is_empty() {
+            let (namespace, id) = split_namespace_pattern(function);
+            check_namespace_qualifier(function, namespace, index)?;
+            if id.is_empty() {
                 return Err(CompileError::Rule {
                     index,
                     message: "function is required".into(),
@@ -135,7 +174,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
                 .filter(|s| !s.is_empty())
                 .unwrap_or(function.as_str())
                 .to_string();
-            let (function_id, glob) = compile_function_matcher(function, index)?;
+            let (function_id, glob) = compile_function_matcher(id, index)?;
             let mut constraints: Vec<(String, CompiledConstraint)> = args
                 .iter()
                 .map(|(field, c)| compile_constraint(&rid, field, c).map(|cc| (field.clone(), cc)))
@@ -143,6 +182,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
             constraints.sort_by(|a, b| a.0.cmp(&b.0));
             Ok(CompiledRule {
                 rule_id: rid,
+                namespace: namespace.map(str::to_string),
                 function_id,
                 glob,
                 action: *action,

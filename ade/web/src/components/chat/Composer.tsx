@@ -102,7 +102,7 @@ const STARTER_PROMPTS = [
   },
 ]
 
-/** The chosen send key spelled for this keyboard: ↵, ⌘↵ or ⇧↵. */
+/** The chosen send key spelled for this keyboard: ↵, ⌘↵, ⌥↵ or ⇧↵. */
 function sendShortcutLabel(sendKey: SendKey): string {
   const platform = shortcutPlatform()
   return formatBinding(sendBinding(sendKey), platform).join(

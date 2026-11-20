@@ -162,6 +162,11 @@ import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { AgentProfilePicker } from './AgentProfilePicker'
 import { DEFAULT_AGENT_ID, idleComposerPlaceholder } from './agent-defaults'
 import {
+  actionRequiredText,
+  approvedAlwaysText,
+  filesystemDecisionText,
+} from './approval-announcements'
+import {
   type AsideRequest,
   type AsideTab,
   ChatAside,
@@ -1300,7 +1305,8 @@ export function ChatView({
       sessionId: string,
       functionCallId: string,
       decision: 'allow' | 'deny',
-    ) => fn(sessionId, functionCallId, decision)
+      namespace?: string,
+    ) => fn(sessionId, functionCallId, decision, { namespace })
   }, [backend])
 
   // Approval UI + `approval::*` RPC require BOTH the harness AND the optional
@@ -1334,9 +1340,11 @@ export function ChatView({
             announcedApprovalIdsRef.current.add(announcementId)
           }
           announcer.announceAssertive(
-            event.filesystemAccess
-              ? `Action required: ${event.functionId} needs approval to access ${event.filesystemAccess.requestedRoot}.`
-              : `Action required: approve or deny ${event.functionId}.`,
+            actionRequiredText(
+              event.functionId,
+              event.namespace,
+              event.filesystemAccess?.requestedRoot,
+            ),
           )
         }
         if (existing) {
@@ -1348,6 +1356,7 @@ export function ChatView({
             running: false,
             functionCallId: event.functionCallId,
             sessionId: event.sessionId,
+            namespace: event.namespace,
             filesystemAccess: event.filesystemAccess,
           })
           return
@@ -1361,6 +1370,7 @@ export function ChatView({
           pendingApproval: true,
           functionCallId: event.functionCallId,
           sessionId: event.sessionId,
+          namespace: event.namespace,
           filesystemAccess: event.filesystemAccess,
           createdAt: Date.now(),
         }
@@ -1531,10 +1541,15 @@ export function ChatView({
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
     if (!resolveFn) return undefined
-    return async (sId: string, functionCallId: string, functionId: string) => {
-      await approvalSettings.approveAlways(functionId)
-      await resolveFn(sId, functionCallId, 'allow')
-      announcer.announce(`approved always this session: ${functionId}`)
+    return async (
+      sId: string,
+      functionCallId: string,
+      functionId: string,
+      namespace?: string,
+    ) => {
+      await approvalSettings.approveAlways(functionId, namespace)
+      await resolveFn(sId, functionCallId, 'allow', { namespace })
+      announcer.announce(approvedAlwaysText(functionId, namespace))
     }
   }, [backend, approvalSettings, announcer])
 
@@ -1551,6 +1566,7 @@ export function ChatView({
       sId: string,
       functionCallId: string,
       action: FilesystemAccessAction,
+      namespace?: string,
     ) => {
       const requestedRoot = messagesRef.current.find(
         (m): m is FunctionCallMessage =>
@@ -1560,26 +1576,33 @@ export function ChatView({
       if (action === 'deny') {
         await resolveFn(sId, functionCallId, 'deny')
         announcer.announce(
-          requestedRoot
-            ? `denied filesystem access to ${requestedRoot}`
-            : 'denied filesystem access',
+          filesystemDecisionText(
+            requestedRoot
+              ? `denied filesystem access to ${requestedRoot}`
+              : 'denied filesystem access',
+            namespace,
+          ),
         )
         return
       }
 
       await resolveFn(sId, functionCallId, 'allow', {
         accessDuration: action,
+        namespace,
       })
       if (requestedRoot && (action === 'session' || action === 'always')) {
         filesystemGrants.addOptimistic(requestedRoot)
       }
       if (requestedRoot) {
         announcer.announce(
-          action === 'session'
-            ? `allowed ${requestedRoot} for this session`
-            : action === 'always'
-              ? `permanently allowed ${requestedRoot}`
-              : `allowed ${requestedRoot} for this call`,
+          filesystemDecisionText(
+            action === 'session'
+              ? `allowed ${requestedRoot} for this session`
+              : action === 'always'
+                ? `permanently allowed ${requestedRoot}`
+                : `allowed ${requestedRoot} for this call`,
+            namespace,
+          ),
         )
       }
     }
@@ -2215,6 +2238,7 @@ export function ChatView({
                     running: !event.pendingApproval,
                     functionCallId: event.functionCallId,
                     sessionId: event.sessionId,
+                    namespace: event.namespace,
                     filesystemAccess: event.filesystemAccess,
                   })
                   fcallId = existing
@@ -2237,6 +2261,7 @@ export function ChatView({
                 pendingApproval: event.pendingApproval,
                 functionCallId: event.functionCallId,
                 sessionId: event.sessionId,
+                namespace: event.namespace,
                 filesystemAccess: event.filesystemAccess,
                 createdAt: Date.now(),
               }

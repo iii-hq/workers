@@ -23,11 +23,11 @@ and the `# Memory` header says which case applies to yours:
   acknowledge it — no save call is needed.
 - **Not captured** (a sub-agent's turn: its session has a parent, or the
   harness reports a parent for the turn; or extraction off): nothing is saved
-  automatically. If `memory::save` is available to you, save what a later
-  session would need with it.
+  automatically. If `memory::save` is available to you, save short notes of
+  what a later session would need with it.
 - **Scripted** (an automation or e2e run): nothing is saved automatically, and
   the header does not ask you to save. A scripted run does not write into the
-  user's memory.
+  user's memory: its saves, updates and deletes are refused.
 
 **Rules** are markdown documents injected whole into the system prompt on every
 turn (`memory::rule::*`, on disk under the bank's `rules/` folder). **Memories**
@@ -38,42 +38,45 @@ rule; point-in-time information belongs in memories.
 ## When to Use
 
 - The header asks you to save — if `memory::save` is available to you, save
-  what a later session would need:
-  `memory::save { "text": "...", "entities": [...] }`, one self-contained
-  sentence each. It records your session and turn as its source; re-saving
-  reinforces, never duplicates.
-- The user asks to keep something for good (not in a scripted run) — if
-  `memory::save` is available to you, `memory::save { "text": "...",
-  "pinned": true }` in this turn; add `"entities": ["user"]` when it is a fact
-  about the user: a save from a turn is not tagged `user` on its own. In a
-  captured session, extraction then skips a restatement of that record in the
-  same or nearly the same words; a looser rewording can still land beside it,
-  unpinned. Without `memory::save`, in a captured session acknowledge it and
-  `memory::pin` it once `memory::recall` shows it; anywhere else, tell the user
-  it cannot be saved from here.
+  what a later session would need: `memory::save { "text": "..." }`, one
+  self-contained sentence of 3 to 500 characters each. It is your note: it
+  lands in your session's bank with your session and turn as its source, at
+  most `max_memories_per_turn` new notes per turn; re-saving reinforces, never
+  duplicates.
+- The user asks you to remember something (not in a scripted run) — in a
+  captured session acknowledge it: extraction saves it after the turn, and no
+  save call is needed. Where the header asks you to save, save it as a note.
+  Pinning, another bank and the `user` entity are the user's actions on the
+  console's memory page, refused from inside a turn: when the user wants it
+  kept for good, tell them to pin it there.
 - The user asks what you remember about a topic — `memory::recall { "query": "..." }`
   ranks the bank's memories for it. A turn is given fewer: only the hits with
   evidence, one line per fact and the newer of a stated change;
   `memory::preview` shows exactly what a turn on that topic would be given.
   A turn recalls on the user's message (or the earlier one it continues);
   a notification turn recalls nothing, so call `memory::recall` when one needs it.
-- The user asks to fix or forget something — find it via recall/list, then
-  `memory::update` (corrected text) or `memory::delete` (tombstone), and
-  `memory::pin` to protect the corrected version.
+- The user asks to forget something — find it via recall/list, then
+  `memory::delete` it (a recoverable tombstone), with the `bank` recall
+  returned for it. A pinned memory is the user's to delete on the memory page.
+- The user corrects something — in a captured session acknowledge it:
+  extraction supersedes the old memory. Elsewhere `memory::delete` the wrong
+  memory and save the corrected note. `memory::update` revises only a note
+  saved from a turn, never a pinned one. A save or an update refused with
+  `memory_retired` names the live memory that replaced it: act on that one.
 - The user wants a style or convention enforced everywhere — in a captured
   session acknowledge it: a standing instruction graduates into `learned`.
   Hand-written rules are the user's to edit on the console's memory page; rule
-  writes are not granted to agents by default.
+  writes are refused from inside a turn.
 - The user asks you never to remember something — `memory::delete` what is
   already stored (find it via `memory::recall` or `memory::list`), and tell
   them that keeping it out for good takes a rule they add on the memory page.
 - Separate contexts deserve separate banks (`blog` vs `coding`): a session
   selects its bank via session metadata `memory_bank` (`session::set-meta`)
   or the console composer's bank picker. The user creates banks on the
-  console's memory page: bank writes are not granted to agents by default.
-  Calls without `bank` act on your session's bank (the one named in your
-  `# Memory` header; a sub-agent shares its parent's), so leave it out unless
-  the user names another bank.
+  console's memory page: bank writes are refused from inside a turn. Calls
+  without `bank` act on your session's bank (the one named in your `# Memory`
+  header; a sub-agent shares its parent's). A save or an update acts only on
+  that bank, so leave `bank` out of them; a read may name another bank.
 - Memory seems absent — `memory::doctor {}` runs a real save→recall roundtrip
   and names what is degraded: a sibling (router, session-manager, state),
   embeddings, or extraction passes that keep failing. Its `extraction` reports
@@ -113,9 +116,13 @@ rule; point-in-time information belongs in memories.
 ## Functions
 
 - `memory::save` — explicit save; content-fingerprinted, repeat saves reinforce;
-  from a turn it records that session and turn.
+  from a turn it is your note in your session's bank (3 to 500 characters, at
+  most `max_memories_per_turn` per turn), and a pin, another bank, the `user`
+  entity and the `demoted-rule` tag are refused.
 - `memory::get / list / update / delete / pin` — memory CRUD; delete tombstones,
   update bumps a revision, pinned records are untouchable by automatic paths.
+  From a turn, update revises only a note saved from a turn, delete refuses a
+  pinned memory, and `memory::pin` is refused.
 - `memory::recall` — rank a bank's memories against a query (the injection
   hook's exact scorer); response names the retrieval mode that ran; `tag`
   narrows to one label. When the query was embedded, `vector_coverage
@@ -130,18 +137,19 @@ rule; point-in-time information belongs in memories.
   when the user wants memories organized within a bank.
 - `memory::bank::list` — named memory scopes; creating or deleting one
   (`memory::bank::create / delete`, delete trashes) is a human-owned surface,
-  denied to agents by default.
+  refused from inside a turn.
 - `memory::rule::list` — the bank's always-injected markdown rules, redacted
   as injected; writing one (`memory::rule::set`) is a human-owned surface,
-  denied to agents by default. A `set` with `expected` (the content as last
+  refused from inside a turn. A `set` with `expected` (the content as last
   listed; `""` to create only) is refused with `rule_changed` when the rule
   changed since: list again and merge.
 - `memory::supersede` — retire one memory in favor of another (tombstone +
-  pointer); the consolidation seam, agent-denied by default. `reinforce`
+  pointer); the consolidation seam, refused from inside a turn. `reinforce`
   makes it a merge; `reason` rides the `memory::on-item-changed` events.
 - `memory::doctor` — end-to-end self-test plus sibling, embeddings and
   extraction health; `extraction` reports calls, tokens and cost since boot.
-- `memory::reload` — re-read every bank from disk after hand-editing files.
+- `memory::reload` — re-read every bank from disk after hand-editing files;
+  refused from inside a turn.
 
 ## Observing changes
 

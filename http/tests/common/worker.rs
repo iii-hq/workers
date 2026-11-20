@@ -98,8 +98,8 @@ pub async fn start_http_worker_with_cors(iii: Arc<IIIClient>, cors: CorsConfig) 
 }
 
 /// Same as [`start_http_worker`], but boots with `config.default_timeout` set
-/// to `timeout_ms`, so timeout-parity tests can exercise the tower
-/// `TimeoutLayer` (504) / invocation-timeout race with a small, test-scale
+/// to `timeout_ms`, so timeout-parity tests can exercise the request
+/// timeout (504) / invocation-timeout race with a small, test-scale
 /// deadline instead of the 30s default.
 #[allow(dead_code)]
 pub async fn start_http_worker_with_timeout(iii: Arc<IIIClient>, timeout_ms: u64) -> BootHandle {

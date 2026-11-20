@@ -51,6 +51,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+// Compiled into worker build scripts by #[path]; here only for its tests.
+#[cfg(test)]
+mod ui_build;
+
 /// Empty user request. Ignore transport metadata such as `_caller_worker_id`,
 /// which the engine adds to routed calls; no payload field selects the entry.
 #[derive(Debug, Deserialize, JsonSchema)]

@@ -1,7 +1,6 @@
 import type { Host, PageCommand } from '@iii-dev/console-ui'
 import { BoardPage } from './src/board'
 import { KanbanConfigForm } from './src/overlays'
-import { ProjectsPage } from './src/projects'
 import { ReleasesPage } from './src/releases'
 import {
   createKanbanObserverRenderer,
@@ -43,7 +42,8 @@ export default function setup(host: Host) {
     id: PROJECTS_PAGE_ID,
     title: 'Projects',
     configurationId: COLUMNS_CONFIGURATION_ID,
-    render: (props) => <ProjectsPage {...props} host={host} />,
+    // The same hub as the board, opened on the Overview: projects, their boards and trees are one place.
+    render: (props) => <BoardPage {...props} entry="projects" host={host} />,
   })
 
   // Palette rows that work while the page is closed: they open it and hand it the action to start.

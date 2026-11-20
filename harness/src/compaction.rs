@@ -352,7 +352,8 @@ async fn summarise(
         }
     };
     let anchor = crate::turn_loop::compaction_anchor(&req.session_id, &entries);
-    let candidate = crate::window::build(&entries, anchor.window_start, None, None).candidate;
+    let candidate =
+        crate::window::build(&req.session_id, &entries, anchor.window_start, None, None).candidate;
     let settled = settled_prefix(&candidate, live_turn);
     if settled == 0 {
         return Summarised::Empty;
@@ -494,7 +495,7 @@ async fn refresh_snapshot(
         .await
         .map_err(|e| e.to_string())?;
     let anchor = crate::turn_loop::compaction_anchor(session_id, &entries);
-    let window = crate::window::build(&entries, anchor.window_start, None, None);
+    let window = crate::window::build(session_id, &entries, anchor.window_start, None, None);
     let context = deps.context().await;
     let count = |messages: Vec<Value>, system_prompt: &str| {
         context.count_tokens(CountTokensParams {

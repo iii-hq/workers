@@ -146,16 +146,19 @@ interface MessageListProps {
     sessionId: string,
     functionCallId: string,
     decision: 'allow' | 'deny',
+    namespace?: string,
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
     functionCallId: string,
     functionId: string,
+    namespace?: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
     functionCallId: string,
     action: FilesystemAccessAction,
+    namespace?: string,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   /** Open the model/provider picker from the empty provider state. */

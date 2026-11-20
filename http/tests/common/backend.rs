@@ -212,9 +212,8 @@ pub fn register_respond_middleware(iii: &Arc<IIIClient>, function_id: &str) -> A
 
 /// Register `test.slow` serving a route; the function sleeps for
 /// `sleep_ms` before returning 200. Used by timeout-parity tests to force the
-/// request past `default_timeout` and observe whether the tower
-/// `TimeoutLayer` (504) or the handler's own invocation-timeout mapping (500)
-/// wins the race.
+/// request past `default_timeout` and observe whether the request timeout
+/// (504) or the handler's own invocation-timeout mapping (500) wins the race.
 pub async fn register_slow_backend(
     iii: &Arc<IIIClient>,
     api_path: &str,

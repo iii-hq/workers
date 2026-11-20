@@ -324,6 +324,7 @@ pub struct ReloadResponse {
 }
 
 pub async fn reload(deps: &Deps, _req: ReloadRequest) -> Result<ReloadResponse, MemoryError> {
+    crate::scope::human_only(super::RELOAD_ID)?;
     let store = deps.store().await;
     let banks = store.reload().await?;
     Ok(ReloadResponse { ok: true, banks })

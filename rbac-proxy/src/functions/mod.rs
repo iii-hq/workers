@@ -14,7 +14,6 @@ use std::sync::atomic::Ordering;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 
-use crate::redact_url;
 use crate::server::ProxyState;
 use status::{STATUS_DESC, STATUS_ID, StatusInput, StatusOutput};
 
@@ -29,20 +28,12 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &ProxyState) {
             async move {
                 let cfg = state.config.read().await.clone();
                 let (host, port) = state.bound.read().await.clone();
-                Ok::<StatusOutput, Error>(StatusOutput {
+                Ok::<StatusOutput, Error>(status::status_output(
+                    &cfg,
                     host,
                     port,
-                    engine_url: redact_url(&cfg.engine_url),
-                    rbac_enabled: cfg.rbac_enabled(),
-                    expose_endpoints: cfg
-                        .rbac
-                        .endpoints()
-                        .iter()
-                        .map(|rule| rule.pattern().to_string())
-                        .collect(),
-                    active_connections: state.active.load(Ordering::Relaxed),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                })
+                    state.active.load(Ordering::Relaxed),
+                ))
             }
         })
         .description(STATUS_DESC),

@@ -157,6 +157,41 @@ def test_an_sdk_change_rebuilds_the_workers_that_bundle_it(
     assert payload["native_ui"] is True
 
 
+def test_a_console_ui_change_rebuilds_the_workers_whose_ui_bundles_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(discover, "changed_files", lambda base, head: ["packages/console-ui/format.mjs"])
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {"state", "workflow", "ade"} <= set(payload["by_language"]["rust"])
+    assert payload["source_changed"] == []
+
+
+@pytest.mark.parametrize(
+    ("changed", "expected"),
+    [
+        ("packages/editor-prefs/src/index.ts", {"ade", "ide"}),
+        ("packages/terminal-font/src/index.ts", {"ade", "ide", "tmux"}),
+        ("packages/agent-terminal-ui/src/index.tsx", {"claude-code", "pi"}),
+    ],
+)
+def test_a_bundled_prefs_package_change_rebuilds_the_workers_whose_ui_bundles_it(
+    changed: str,
+    expected: set[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(discover, "changed_files", lambda base, head: [changed])
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload["changed_workers"]) == expected
+    assert payload["source_changed"] == []
+
+
 def test_a_traces_ui_change_rebuilds_ade(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

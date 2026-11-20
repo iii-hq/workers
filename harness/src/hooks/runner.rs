@@ -24,6 +24,7 @@ use serde_json::{Map, Value, json};
 use super::{HookBinding, HookPoint, HookRegistry, ordered};
 use crate::clients::router::generation_capture::{AppendSource, CaptureMode, capture_mode};
 use crate::clients::session::LoadedEntry;
+use crate::filesystem_scope::is_scoped_function;
 use crate::types::content::ContentBlock;
 use crate::types::turn::TurnRecord;
 
@@ -41,6 +42,8 @@ struct HookMutations {
     content: Option<Vec<ContentBlock>>,
     details: Option<Value>,
     is_error: Option<bool>,
+    /// post_call: `fs_scope.root`, the session's new working directory.
+    fs_scope_root: Option<String>,
     annotations: Map<String, Value>,
 }
 
@@ -87,6 +90,9 @@ pub struct HookChainOutcome {
     /// on-post-call: `{ content, details, is_error }` as the chain left it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// on-post-call: the working directory a scoped target moved the session to.
+    #[serde(skip)]
+    pub(crate) fs_scope_root: Option<String>,
     /// on-post-turn deny: the corrective prompt, from the validator's
     /// `retry_prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,6 +142,8 @@ pub enum PostCallOutcome {
     Result {
         result: crate::call::ResultData,
         annotations: Map<String, Value>,
+        /// The session's new working directory, when a scoped target moved it.
+        fs_scope_root: Option<String>,
     },
     Hold {
         held_by: String,
@@ -447,6 +455,7 @@ impl HookRegistry {
             return PostCallOutcome::Result {
                 result,
                 annotations: Map::new(),
+                fs_scope_root: None,
             };
         };
         if outcome.decision == ChainDecision::Hold {
@@ -472,6 +481,7 @@ impl HookRegistry {
         PostCallOutcome::Result {
             result,
             annotations: outcome.annotations,
+            fs_scope_root: outcome.fs_scope_root,
         }
     }
 
@@ -1051,6 +1061,7 @@ async fn chain_post_call(
 ) -> HookChainOutcome {
     let (namespace, function_id) = called(&input);
     let mut annotations = Map::new();
+    let mut fs_scope_root = None;
     for binding in bindings {
         if !functions_match(binding, &namespace, &function_id) {
             continue;
@@ -1065,6 +1076,15 @@ async fn chain_post_call(
                 }
                 if let Some(e) = m.is_error {
                     input["result"]["is_error"] = Value::Bool(e);
+                }
+                // A filter that keeps the scope-enforcing worker family the
+                // only proposer, not authentication: any bus worker can
+                // already send a session any root.
+                if m.fs_scope_root.is_some()
+                    && is_scoped_function(&function_id)
+                    && is_scoped_function(&binding.target)
+                {
+                    fs_scope_root = m.fs_scope_root;
                 }
                 merge(&mut annotations, m.annotations);
             }
@@ -1083,6 +1103,7 @@ async fn chain_post_call(
     }
     HookChainOutcome {
         result: Some(input["result"].take()),
+        fs_scope_root,
         annotations,
         ..HookChainOutcome::default()
     }
@@ -1271,6 +1292,10 @@ fn parse_mutations(value: &Value) -> HookMutations {
         }
         muts.details = m.get("details").cloned();
         muts.is_error = m.get("is_error").and_then(Value::as_bool);
+        muts.fs_scope_root = m
+            .pointer("/fs_scope/root")
+            .and_then(Value::as_str)
+            .map(str::to_string);
     }
     if let Some(Value::Object(ann)) = value.get("annotations") {
         muts.annotations = ann.clone();
@@ -2118,5 +2143,57 @@ mod tests {
 
     fn ids_of(calls: &[(String, Value)]) -> Vec<&str> {
         calls.iter().map(|(target, _)| target.as_str()).collect()
+    }
+
+    /// The post_call chain for a call to `function_id`, every target in
+    /// `targets` observing all calls.
+    async fn post_call_chain(
+        invoker: &Scripted,
+        function_id: &str,
+        targets: &[&str],
+    ) -> HookChainOutcome {
+        let chain = targets
+            .iter()
+            .map(|target| HookBinding {
+                functions: None,
+                ..binding(target, 0)
+            })
+            .collect();
+        let input = json!({
+            "point": "post_call", "session_id": "s_1", "turn_id": "t_1", "step": 0, "depth": 0,
+            "call": { "id": "c_1", "function_id": function_id, "arguments": {} },
+            "result": { "function_call_id": "c_1", "function_id": function_id,
+                "content": [], "is_error": false, "details": null },
+        });
+        run_chain(HookPoint::PostCall, invoker, chain, input).await
+    }
+
+    /// Only a `shell::*`/`coder::*` target answering a `shell::*`/`coder::*`
+    /// call moves the session; a hold drops the move, and it never reaches an
+    /// external caller of the hook function.
+    #[tokio::test]
+    async fn a_post_call_root_counts_only_from_a_scoped_target_on_a_scoped_call() {
+        let moves = Ok(json!({ "decision": "continue",
+            "mutations": { "fs_scope": { "root": "/repo.feat" } } }));
+        let invoker = Scripted::new(&[
+            ("shell::turns::on-post-call", moves.clone()),
+            ("audit::post-call", moves),
+            ("gate", Ok(json!({ "decision": "hold" }))),
+        ]);
+        let ide = "shell::turns::on-post-call";
+
+        let moved = post_call_chain(&invoker, "shell::exec", &[ide]).await;
+        assert_eq!(moved.fs_scope_root.as_deref(), Some("/repo.feat"));
+        let wire = serde_json::to_value(&moved).unwrap();
+        assert!(wire.get("fs_scope_root").is_none(), "{wire}");
+        assert!(!wire.to_string().contains("/repo.feat"), "{wire}");
+
+        let other_target = post_call_chain(&invoker, "coder::write", &["audit::post-call"]).await;
+        assert_eq!(other_target.fs_scope_root, None);
+        let other_call = post_call_chain(&invoker, "worktree::create", &[ide]).await;
+        assert_eq!(other_call.fs_scope_root, None);
+        let held = post_call_chain(&invoker, "shell::exec", &[ide, "gate"]).await;
+        assert_eq!(held.decision, ChainDecision::Hold);
+        assert_eq!(held.fs_scope_root, None);
     }
 }

@@ -126,7 +126,7 @@ pub fn list_workspace_dirs(
     })
 }
 
-fn canonical_workspace_dir(path: &str, cfg: &ShellConfig) -> Result<PathBuf, FsError> {
+pub(crate) fn canonical_workspace_dir(path: &str, cfg: &ShellConfig) -> Result<PathBuf, FsError> {
     if path.is_empty() {
         return Err(FsError::new("S210", "path must not be empty"));
     }

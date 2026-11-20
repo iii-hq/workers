@@ -69,16 +69,19 @@ interface MessageProps {
     sessionId: string,
     functionCallId: string,
     decision: 'allow' | 'deny',
+    namespace?: string,
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
     functionCallId: string,
     functionId: string,
+    namespace?: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
     functionCallId: string,
     action: FilesystemAccessAction,
+    namespace?: string,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
@@ -200,16 +203,38 @@ function MessageBody({
         | ((action: FilesystemAccessAction) => Promise<void>)
         | undefined
       if (onResolveApproval && sessionId && functionCallId) {
-        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
-        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
+        onApprove = () =>
+          onResolveApproval(
+            sessionId,
+            functionCallId,
+            'allow',
+            message.namespace,
+          )
+        onDeny = () =>
+          onResolveApproval(
+            sessionId,
+            functionCallId,
+            'deny',
+            message.namespace,
+          )
       }
       if (onAlwaysAllow && sessionId && functionCallId) {
         onAlwaysAllowHandler = () =>
-          onAlwaysAllow(sessionId, functionCallId, message.functionId)
+          onAlwaysAllow(
+            sessionId,
+            functionCallId,
+            message.functionId,
+            message.namespace,
+          )
       }
       if (onResolveFilesystemAccess && sessionId && functionCallId) {
         onResolveFilesystemAccessHandler = (action) =>
-          onResolveFilesystemAccess(sessionId, functionCallId, action)
+          onResolveFilesystemAccess(
+            sessionId,
+            functionCallId,
+            action,
+            message.namespace,
+          )
       }
       return (
         <FunctionCallCard

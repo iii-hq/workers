@@ -50,6 +50,8 @@ const CUT: &str = " … ";
 /// A memory worker older than `memory::transcript`. A plain substring would
 /// also match memory reporting that session-manager is the missing worker.
 const OLD_MEMORY: &str = "memory::transcript: remote error (function_not_found)";
+/// The code memory refuses a call from inside an agent turn with.
+const FORBIDDEN: &str = "forbidden: ";
 
 pub struct VerifyOptions {
     pub model: String,
@@ -333,6 +335,12 @@ pub async fn run_verify_tier<T: ConsolidationTransport + ?Sized>(
             }
             checked += 1;
             match verify_note(iii, bank, opts, row, budget, report, &mut skips).await {
+                // Refused by memory (a run started inside an agent turn): an
+                // error, so the pass stays due for the scheduled run.
+                Step::Stop(note) if note.contains(FORBIDDEN) => {
+                    report.errors.push(note);
+                    break 'tier;
+                }
                 Step::Stop(note) => {
                     report.notes.push(note);
                     break 'tier;

@@ -51,7 +51,7 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
 /// fail-open) resolves to `Continue`; the caller never sees a held call it
 /// cannot explain.
 async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOutput {
-    let Some(call) = input.call.clone() else {
+    let Some(mut call) = input.call.clone() else {
         return HookOutput::Continue;
     };
     if validate_id("session_id", &input.session_id).is_err()
@@ -96,15 +96,24 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
     }
 
     // Idempotency: a redelivered post_call step re-holds the same call
-    // without re-counting an attempt or re-emitting — mirrors gate.rs's
-    // hold(). This only applies when the existing record is a redelivery of
+    // without re-counting an attempt or re-emitting, like gate.rs's hold()
+    // (which does not compare namespaces). This only applies when the existing record is a redelivery of
     // THIS SAME failure (its access_request matches `hint`); a record left
     // behind for a different failure (e.g. an orphan from a delete that
     // failed after resolve — see resolve.rs's "retry or purge will collect
     // it" path) must not be silently reused for a genuinely new root/path,
     // or the attempt cap (step 7) and the console never learn about it.
+    // A post_call naming a namespace the record does not hold is not a
+    // redelivery either: it goes the stale way, so a record held without
+    // one (older harness) costs one extra attempt and pending_created, and
+    // at the re-ask cap the watch stands down with the record gone.
     match pending::get(iii, &input.session_id, &call.id).await {
-        Ok(Some(existing)) if existing.access_request.as_ref() == Some(&hint) => {
+        Ok(Some(existing))
+            if existing.access_request.as_ref() == Some(&hint)
+                && (call.namespace.is_none() || existing.namespace == call.namespace)
+                && (call.implicit_namespace.is_none()
+                    || existing.implicit_namespace == call.implicit_namespace) =>
+        {
             return HookOutput::Hold;
         }
         Ok(Some(existing))
@@ -115,8 +124,21 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
             // The generic approval currently being resolved is allowed to
             // transition atomically into a filesystem approval for the same
             // call. Keeping it until put() avoids a blind gap in the inbox.
+            // Keep the namespace the user was shown if this post_call omits it.
+            call.namespace = call.namespace.take().or(existing.namespace);
+            call.implicit_namespace = call
+                .implicit_namespace
+                .take()
+                .or(existing.implicit_namespace);
         }
-        Ok(Some(_stale)) => {
+        Ok(Some(stale)) => {
+            // A second failure of the same call keeps the namespace the user
+            // was shown when this post_call omits it.
+            if stale.turn_id == input.turn_id && stale.function_id == call.function_id {
+                call.namespace = call.namespace.take().or(stale.namespace);
+                call.implicit_namespace =
+                    call.implicit_namespace.take().or(stale.implicit_namespace);
+            }
             // Clear the stale record so the write below (step 8) is a clean
             // insert rather than racing `hold`'s own duplicate-write
             // detection, which would otherwise suppress the re-emit this
@@ -185,6 +207,8 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: AccessReque
         turn_id: input.turn_id.clone(),
         function_call_id: call.id.clone(),
         function_id: call.function_id.clone(),
+        namespace: call.namespace.clone(),
+        implicit_namespace: call.implicit_namespace.clone(),
         arguments_excerpt: redact(&call.arguments),
         pending_at: now_ms(),
         session_title,
@@ -504,6 +528,8 @@ mod tests {
                 turn_id: "t_1".into(),
                 function_call_id: "c_1".into(),
                 function_id: "shell::fs::read".into(),
+                namespace: None,
+                implicit_namespace: None,
                 arguments_excerpt: json!({ "path": "/a/b" }),
                 pending_at: 100,
                 session_title: None,
@@ -537,6 +563,103 @@ mod tests {
             assert_eq!(
                 log_snapshot(&stack.created)[0]["kind"],
                 json!("filesystem_access")
+            );
+        })
+        .await;
+    }
+
+    /// Seeds the generic record the gate holds for `s_1/c_1` in `laptop`.
+    async fn seed_laptop_generic(stack: &TestStack) {
+        let generic = PendingApprovalRecord {
+            session_id: "s_1".into(),
+            turn_id: "t_1".into(),
+            function_call_id: "c_1".into(),
+            function_id: "shell::fs::read".into(),
+            namespace: Some("laptop".into()),
+            implicit_namespace: Some("default".into()),
+            arguments_excerpt: json!({ "path": "/a/b" }),
+            pending_at: 100,
+            session_title: None,
+            session_description: None,
+            session_metadata: None,
+            depth: 0,
+            assistant_excerpt: None,
+            kind: PendingKind::Function,
+            access_request: None,
+        };
+        state_set(
+            &stack.iii,
+            PENDING_SCOPE,
+            "s_1/c_1",
+            serde_json::to_value(generic).unwrap(),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn filesystem_approval_keeps_the_held_namespace_when_post_call_omits_it() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+            seed_laptop_generic(&stack).await;
+
+            let input = jail_input("s_1", "c_1", "/a/b");
+            assert_eq!(handle(&stack.deps, input).await.unwrap(), HookOutput::Hold);
+            let current = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(current["kind"], json!("filesystem_access"));
+            assert_eq!(current["namespace"], json!("laptop"));
+            assert_eq!(current["implicit_namespace"], json!("default"));
+
+            let always = crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: "c_1".into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: Some(crate::types::AccessDuration::Always),
+                namespace: None,
+            };
+            let out = crate::functions::resolve::handle(&stack.deps, always).await;
+            assert!(
+                matches!(out, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                "{out:?}"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn filesystem_approval_for_a_call_in_another_namespace_needs_the_namespace_echo() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+            seed_laptop_generic(&stack).await;
+
+            let mut input = jail_input("s_1", "c_1", "/a/b");
+            let call = input.call.as_mut().unwrap();
+            call.namespace = Some("laptop".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, input).await.unwrap(), HookOutput::Hold);
+            let current = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(current["kind"], json!("filesystem_access"));
+            assert_eq!(current["namespace"], json!("laptop"));
+            assert_eq!(current["implicit_namespace"], json!("default"));
+
+            let allow = |namespace: Option<&str>| crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: "c_1".into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: None,
+                namespace: namespace.map(str::to_string),
+            };
+            let old = crate::functions::resolve::handle(&stack.deps, allow(None)).await;
+            assert!(
+                matches!(old, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                "{old:?}"
+            );
+            assert!(
+                crate::functions::resolve::handle(&stack.deps, allow(Some("laptop")))
+                    .await
+                    .unwrap()
+                    .resolved
             );
         })
         .await;
@@ -629,6 +752,117 @@ mod tests {
                 created[1]["access_request"]["requested_root"],
                 json!("/c/d")
             );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_filesystem_record_keeps_the_held_namespace_for_another_dir() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+
+            let mut first = jail_input("s_1", "c_1", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("laptop".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+
+            let out = handle(&stack.deps, jail_input("s_1", "c_1", "/c/d"))
+                .await
+                .unwrap();
+            assert_eq!(out, HookOutput::Hold);
+            let current = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(current["access_request"]["requested_root"], json!("/c/d"));
+            assert_eq!(current["namespace"], json!("laptop"));
+            assert_eq!(current["implicit_namespace"], json!("default"));
+
+            let always = crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: "c_1".into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: Some(crate::types::AccessDuration::Always),
+                namespace: None,
+            };
+            let out = crate::functions::resolve::handle(&stack.deps, always).await;
+            assert!(
+                matches!(out, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                "{out:?}"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_namespace_the_post_call_carries_wins_over_the_held_one() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+            let carries_laptop = |call_id: &str, root: &str| {
+                let mut input = jail_input("s_1", call_id, root);
+                let call = input.call.as_mut().unwrap();
+                call.namespace = Some("laptop".into());
+                call.implicit_namespace = Some("default".into());
+                input
+            };
+            let always_without_echo = |call_id: &str| crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: call_id.into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: Some(crate::types::AccessDuration::Always),
+                namespace: None,
+            };
+
+            // Generic-record arm: held for (default, default).
+            seed_laptop_generic(&stack).await;
+            let mut held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            held["namespace"] = json!("default");
+            state_set(&stack.iii, PENDING_SCOPE, "s_1/c_1", held).await;
+            let out = handle(&stack.deps, carries_laptop("c_1", "/a/b")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            // Stale-record arm: a first failure held for (default, default).
+            let mut first = jail_input("s_1", "c_2", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("default".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+            let out = handle(&stack.deps, carries_laptop("c_2", "/c/d")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            // Same-hint arm: the same root held for (default, default).
+            let mut first = jail_input("s_1", "c_3", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("default".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+            let out = handle(&stack.deps, carries_laptop("c_3", "/a/b")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            // Same-hint arm, implicit half: held local for (laptop, laptop),
+            // redelivered by a harness whose own namespace is now `default`.
+            let mut first = jail_input("s_1", "c_4", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("laptop".into());
+            call.implicit_namespace = Some("laptop".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+            let out = handle(&stack.deps, carries_laptop("c_4", "/a/b")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            for call_id in ["c_1", "c_2", "c_3", "c_4"] {
+                let key = format!("s_1/{call_id}");
+                let current = state_get(&stack.iii, PENDING_SCOPE, &key).await;
+                assert_eq!(current["kind"], json!("filesystem_access"), "{call_id}");
+                assert_eq!(current["namespace"], json!("laptop"), "{call_id}");
+                assert_eq!(current["implicit_namespace"], json!("default"), "{call_id}");
+                let out =
+                    crate::functions::resolve::handle(&stack.deps, always_without_echo(call_id))
+                        .await;
+                assert!(
+                    matches!(out, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                    "{call_id}: {out:?}"
+                );
+            }
         })
         .await;
     }

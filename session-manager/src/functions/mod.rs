@@ -1,5 +1,7 @@
-//! The 23 `session::*` functions (21 session operations plus the two
-//! `session::mention::*` chat mention provider functions).
+//! The 26 `session::*` functions: 22 session operations (among them
+//! `session::read-attachment`) plus the four functions of the two chat
+//! mention providers, `session::mention::*` (`@session`) and
+//! `session::attachments::mention::*` (`@attachment`).
 //!
 //! Each `<verb>.rs` holds the request/response types (serde +
 //! `schemars::JsonSchema`, so the SDK emits request/response schemas)
@@ -10,6 +12,7 @@
 
 pub mod append;
 pub mod append_many;
+pub mod attachment_mention;
 pub mod create;
 pub mod delete;
 pub mod delete_attachment;
@@ -25,6 +28,7 @@ pub mod messages;
 pub mod messages_range;
 pub mod messages_tail;
 pub mod put_attachment;
+pub mod read_attachment;
 pub mod set_active_leaf;
 pub mod set_draft;
 pub mod set_meta;
@@ -294,6 +298,21 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         true,
         |d, r| async move { delete_attachment::handle(&d, r).await },
     );
+    // The agent's way into an attached file: text in windows, a recipe for
+    // everything else. The recipes are offered only for functions the engine
+    // has, so the handler probes the engine through the worker's client.
+    let probe = Arc::new(read_attachment::EngineProbe::new(iii.clone()));
+    register(
+        iii,
+        state,
+        read_attachment::FUNCTION_ID,
+        "Read a file attached to a chat by its attachment id (a_…; session_id optional): a text file as characters in windows (offset, max_chars, next_offset), and for a PDF, office document, image or any other file `how_to_read`, the exact calls that convert it to markdown or save it into your working folder on this engine. Null when unknown.",
+        false,
+        move |d, r| {
+            let probe = probe.clone();
+            async move { read_attachment::handle(&d, probe.as_ref(), r).await }
+        },
+    );
     // The chat mention provider: plumbing for the console's `@session:` menu
     // and pills, so internal (agents read sessions through session::get).
     register(
@@ -311,6 +330,25 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         "Resolve a @session(id=…) chat mention to its pill, preview card and agent summary; null for an unknown id. Declares the session mention provider.",
         mention::provider().metadata(),
         |d, r| async move { mention::get(&d, r).await },
+    );
+    // The `@attachment` provider: a chat's files, mentioned by attachment id.
+    // Plumbing for the console and the apps, so internal; agents read a
+    // mentioned file through session::read-attachment (the details call).
+    register(
+        iii,
+        state,
+        attachment_mention::SEARCH_FN,
+        "Search the asking chat's attachments (context.session_id) for the @attachment mention menu, by name; newest first for an empty query.",
+        true,
+        |d, r| async move { attachment_mention::search(&d, r).await },
+    );
+    register_with_metadata(
+        iii,
+        state,
+        attachment_mention::GET_FN,
+        "Resolve an @attachment(id=…) chat mention to its pill, preview card and agent summary by attachment id alone; null for an unknown id. Declares the attachment mention provider.",
+        attachment_mention::provider().metadata(),
+        |d, r| async move { attachment_mention::get(&d, r).await },
     );
 
     tracing::info!("all session::* functions registered");

@@ -19,7 +19,7 @@ use crate::server::{self, HotRouter, RouterCell, ServerControlCell, ServerHandle
 /// Handle to a running worker: the shared route table, the live config cell (so
 /// the caller can observe `configuration::on-updated` and follow
 /// hot-reloads), the swappable router cell (so a same-address config change can
-/// rebuild the CORS/timeout/concurrency layers live), the shared [`HotRouter`]
+/// rebuild the CORS/concurrency layers live), the shared [`HotRouter`]
 /// and [`ServerControlCell`] (so a host/port change can rebind the listener),
 /// plus the address the server bound at boot.
 ///

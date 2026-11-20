@@ -462,7 +462,8 @@ pub struct TurnRecord {
     /// Identical failures this turn, keyed by the digest of
     /// `[namespace, function_id, arguments]`: an entry that reaches the repeat limit
     /// makes the next identical call fail locally instead of re-running the target.
-    /// A success clears its entry; every new turn starts empty.
+    /// A success clears its entry, a root move clears all; every new turn starts
+    /// empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub failed_calls: BTreeMap<String, FailedCall>,
     /// Last effective names-only skill view admitted to the transcript.

@@ -651,7 +651,10 @@ async function realResolveApproval(
   sessionId: string,
   functionCallId: string,
   decision: 'allow' | 'deny',
-  opts?: { accessDuration?: 'once' | 'session' | 'always' },
+  opts?: {
+    accessDuration?: 'once' | 'session' | 'always'
+    namespace?: string
+  },
 ): Promise<void> {
   const client = await getIiiClient()
   await client.call('approval::resolve', {
@@ -660,6 +663,7 @@ async function realResolveApproval(
     decision,
     // Only ride `access_duration` on filesystem_access resolutions.
     ...(opts?.accessDuration ? { access_duration: opts.accessDuration } : {}),
+    ...(opts?.namespace !== undefined ? { namespace: opts.namespace } : {}),
   })
 }
 

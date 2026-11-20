@@ -36,20 +36,12 @@ pub async fn handle_internal(
             session_id: record.session_id.clone(),
             function_call_id: record.function_call_id.clone(),
             function_id: record.function_id.clone(),
+            namespace: record.namespace.clone(),
         },
     )
     .await?;
 
-    let args = record
-        .arguments_excerpt
-        .as_ref()
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "{}".into());
-    let prompt = format!(
-        "Approval required for `{}`\n{}",
-        record.function_id,
-        crate::text::truncate_ellipsis(&args, 500)
-    );
+    let prompt = approval_prompt(&record);
 
     let keyboard = telegram::inline_keyboard(vec![
         vec![
@@ -76,4 +68,42 @@ fn short_token(function_call_id: &str) -> String {
         hash = hash.wrapping_mul(31).wrapping_add(u64::from(b));
     }
     format!("{:08x}", hash & 0xffff_ffff)
+}
+
+pub(crate) fn approval_prompt(record: &PendingApprovalRecord) -> String {
+    let args = record
+        .arguments_excerpt
+        .as_ref()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "{}".into());
+    let ns = record
+        .namespace
+        .as_deref()
+        .map(|n| format!(" in namespace `{n}`"))
+        .unwrap_or_default();
+    format!(
+        "Approval required for `{}`{ns}\n{}",
+        record.function_id,
+        crate::text::truncate_ellipsis(&args, 500)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_prompt_names_the_namespace_when_present() {
+        let mut r: PendingApprovalRecord = serde_json::from_value(serde_json::json!({
+            "session_id": "s1", "function_call_id": "c1", "function_id": "shell::exec", "arguments_excerpt": {"cmd": "ls"} })).unwrap();
+        assert_eq!(
+            approval_prompt(&r),
+            "Approval required for `shell::exec`\n{\"cmd\":\"ls\"}"
+        );
+        r.namespace = Some("laptop".into());
+        assert_eq!(
+            approval_prompt(&r),
+            "Approval required for `shell::exec` in namespace `laptop`\n{\"cmd\":\"ls\"}"
+        );
+    }
 }

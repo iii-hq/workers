@@ -64,98 +64,49 @@ import { Empty, Notice } from './ui/feedback'
 import { IconAction } from './ui/icon-action'
 import { LabelBadge } from './ui/label-badge'
 
-export function ProjectsPage({
+/**
+ * The hub's Overview (src/board.tsx): every project as a list, or — once one is picked in the header — that
+ * project's progress, tickets, releases and details. The board data and the dialogs belong to the hub, so the
+ * Board and Tree views show the same reads and nothing is fetched twice.
+ */
+export function ProjectsOverview({
   host,
-  onRequestClose,
-  panelContext,
-  panelSide,
-  paneId,
-  tabId,
-  commands,
-}: PageRenderProps & { host: Host }) {
-  const paneKey = paneId || tabId || 'default'
-  const { data, loading, error, reload } = usePlanBoard(host)
-  const agents = useAgents(host)
-  const { ref, narrow } = useContainerNarrow({ below: 720 })
-  const [stored, setStored] = usePaneState<string | null>(`kanban:project:${paneKey}`, null)
-  /** The list is the landing; a project opens over it and the way back is the breadcrumb. Kept per pane. */
-  const [drilled, setDrilled] = usePaneState<boolean>(`kanban:project-open:${paneKey}`, false)
-  const [creating, setCreating] = useState(false)
-  const [converting, setConverting] = useState(false)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
-  const seq = useRef(0)
-  const announce = (text: string) => setAnnouncement({ seq: ++seq.current, text, urgency: 'polite' })
-
+  data,
+  agents,
+  error,
+  loading,
+  reload,
+  project,
+  onSelect,
+  onOpenBoard,
+  onOpenTicket,
+  onNewProject,
+  onConvert,
+  announce,
+}: {
+  host: Host
+  data: BoardData | null
+  agents: AgentProfile[]
+  error: string | null
+  loading: boolean
+  reload: (quiet?: boolean) => Promise<void>
+  /** The project picked in the header; null = the list of every project. */
+  project: ProjectView | null
+  onSelect: (id: string | null) => void
+  /** The board of a project (`''` = the tickets in no project), optionally as the list. */
+  onOpenBoard: (project: string, layout?: 'list') => void
+  onOpenTicket: (key: string) => void
+  onNewProject: () => void
+  onConvert: () => void
+  announce: (text: string) => void
+}) {
+  // A failed project action, with the project it failed on: it is not shown over another project.
+  const [actionError, setActionError] = useState<{ project: string; message: string } | null>(null)
   const projects = useMemo(() => data?.projects ?? [], [data])
   const groups = useMemo(() => groupProjects(projects), [projects])
   const tickets = useMemo(() => (data?.columns ?? []).flatMap((column) => column.tickets), [data])
-  const selected = resolveEntity(projects, stored)
-  const detailShown = Boolean(drilled && selected)
   const canOpenPane = Boolean(host.panels?.open)
-
-  const pick = (project: ProjectView) => {
-    setStored(project.id)
-    setDrilled(true)
-    setActionError(null)
-  }
-  const back = () => {
-    setDrilled(false)
-    setActionError(null)
-  }
-
-  // Other screens open a project (or a dialog) through `host.panels.open({ pageId, context })`.
-  // The host hands the last context to every mount of the page: each request is acted on once.
-  useEffect(() => {
-    const request = takePanelRequest(panelContext)
-    if (request.id) {
-      setStored(request.id)
-      setDrilled(true)
-    }
-    if (request.action === 'new') setCreating(true)
-    if (request.action === 'convert') setConverting(true)
-  }, [panelContext, setStored, setDrilled])
-
-  // What is on screen is remembered by id: a project reached by name survives a rename.
-  useEffect(() => {
-    if (selected && selected.id !== stored) setStored(selected.id)
-  }, [selected, stored, setStored])
-
-  useEffect(
-    () => commands?.register([{ id: 'refresh', title: 'Refresh projects', run: () => void reload() }]),
-    [commands, reload],
-  )
-
   const withoutProject = tickets.filter((ticket) => !ticket.project_id).length
-
-  const header = (
-    <PageHeader
-      actions={
-        narrow ? (
-          detailShown ? null : (
-            <IconAction label="New project" onClick={() => setCreating(true)} variant="default">
-              <Plus size={16} />
-            </IconAction>
-          )
-        ) : (
-          <>
-            <ShadcnButton disabled={!data} onClick={() => setConverting(true)} size="sm" type="button" variant="ghost">
-              <Tag size={16} />
-              Create from a label
-            </ShadcnButton>
-            <ShadcnButton onClick={() => setCreating(true)} size="sm" type="button">
-              <Plus size={16} />
-              New project
-            </ShadcnButton>
-          </>
-        )
-      }
-      description={data ? `${plural(projects.length, 'project')} · ${data.id_prefix}` : undefined}
-      icon={<FolderOpen size={16} />}
-      onClose={onRequestClose}
-      title="Projects"
-    />
-  )
 
   let body: ReactNode
   if (!data) {
@@ -168,34 +119,14 @@ export function ProjectsPage({
         ))}
       </div>
     )
-  } else if (projects.length === 0) {
-    body = (
-      <Empty
-        action={
-          <div className="kb-plan-empty-actions">
-            <ShadcnButton onClick={() => setConverting(true)} size="sm" type="button" variant="outline">
-              <Tag size={16} />
-              Create from a label
-            </ShadcnButton>
-            <ShadcnButton onClick={() => setCreating(true)} size="sm" type="button">
-              <Plus size={16} />
-              New project
-            </ShadcnButton>
-          </div>
-        }
-        description="Group tickets by what they belong to. You can start from a label like iii-cloud."
-        icon={FolderOpen}
-        title="No projects yet"
-      />
-    )
-  } else if (detailShown && selected) {
+  } else if (project) {
     body = (
       <>
-        <Crumbs name={selected.name} onBack={back} root="Projects" />
-        {actionError ? (
+        <Crumbs name={project.name} onBack={() => onSelect(null)} root="Projects" />
+        {actionError?.project === project.id ? (
           <Notice
             actionLabel="Dismiss"
-            detail={actionError}
+            detail={actionError.message}
             onAction={() => setActionError(null)}
             title="That change was not saved"
           />
@@ -206,13 +137,39 @@ export function ProjectsPage({
           canOpenPane={canOpenPane}
           data={data}
           host={host}
-          key={selected.id}
-          onError={setActionError}
-          project={selected}
+          key={project.id}
+          onError={(message) =>
+            setActionError((prev) =>
+              message !== null ? { project: project.id, message } : prev?.project === project.id ? null : prev,
+            )
+          }
+          onOpenBoard={onOpenBoard}
+          onOpenTicket={onOpenTicket}
+          project={project}
           reload={reload}
           tickets={tickets}
         />
       </>
+    )
+  } else if (projects.length === 0) {
+    body = (
+      <Empty
+        action={
+          <div className="kb-plan-empty-actions">
+            <ShadcnButton onClick={onConvert} size="sm" type="button" variant="outline">
+              <Tag size={16} />
+              Create from a label
+            </ShadcnButton>
+            <ShadcnButton onClick={onNewProject} size="sm" type="button">
+              <Plus size={16} />
+              New project
+            </ShadcnButton>
+          </div>
+        }
+        description="Group tickets by what they belong to. You can start from a label like iii-cloud."
+        icon={FolderOpen}
+        title="No projects yet"
+      />
     )
   } else {
     body = (
@@ -230,91 +187,48 @@ export function ProjectsPage({
                 <span className="kb-plan-group__count">{items.length}</span>
               </header>
               <ul className="kb-plan-rows">
-                {items.map((project) => (
-                  <li key={project.id}>
-                    <ProjectRow agents={agents} data={data} onOpen={() => pick(project)} project={project} tickets={tickets} />
+                {items.map((item) => (
+                  <li key={item.id}>
+                    <ProjectRow agents={agents} data={data} onOpen={() => onSelect(item.id)} project={item} tickets={tickets} />
                   </li>
                 ))}
               </ul>
             </section>
           ),
         )}
-        {canOpenPane ? (
-          <section aria-label="Board filters" className="kb-plan-group">
-            <header className="kb-plan-group__head">
-              <span className="kb-plan-group__title">Board filters</span>
-            </header>
-            <ul className="kb-plan-rows">
-              <li>
-                <button
-                  className="kb-plan-row kb-plan-row--filter"
-                  onClick={() => openPane(host, BOARD_PAGE_ID, { group: 'project', project: '' })}
-                  type="button"
-                >
-                  <span className="kb-plan-row__icon">
-                    <ListFilter size={16} />
-                  </span>
-                  <span className="kb-plan-row__name">
-                    <span className="kb-plan-row__title">No project</span>
-                    <span className="kb-plan-row__desc">Tickets that belong to no project, on the board</span>
-                  </span>
-                  <span className="kb-plan-row__pct">{plural(withoutProject, 'ticket')}</span>
-                  <ArrowUpRight aria-hidden="true" className="kb-plan-row__chevron" size={16} />
-                </button>
-              </li>
-            </ul>
-          </section>
-        ) : null}
+        <section aria-label="Board filters" className="kb-plan-group">
+          <header className="kb-plan-group__head">
+            <span className="kb-plan-group__title">Board filters</span>
+          </header>
+          <ul className="kb-plan-rows">
+            <li>
+              <button className="kb-plan-row kb-plan-row--filter" onClick={() => onOpenBoard('')} type="button">
+                <span className="kb-plan-row__icon">
+                  <ListFilter size={16} />
+                </span>
+                <span className="kb-plan-row__name">
+                  <span className="kb-plan-row__title">No project</span>
+                  <span className="kb-plan-row__desc">Tickets that belong to no project, on the board</span>
+                </span>
+                <span className="kb-plan-row__pct">{plural(withoutProject, 'ticket')}</span>
+                <ChevronRight aria-hidden="true" className="kb-plan-row__chevron" size={16} />
+              </button>
+            </li>
+          </ul>
+        </section>
       </div>
     )
   }
 
   return (
-    <PageShell className="kb kb-shell kb-plan" data-narrow={narrow ? 'true' : undefined} ref={ref}>
-      {header}
-      <PageBody side={panelSide}>
-        <PageMain>
-          <div className="kb-plan-scroll" data-autofocus="" tabIndex={-1}>
-            {body}
-          </div>
-        </PageMain>
-      </PageBody>
-
-      <NewProjectDialog
-        agents={agents}
-        host={host}
-        onCreated={(project) => {
-          setCreating(false)
-          setStored(project.id)
-          setDrilled(true)
-          announce(`Created ${project.name}`)
-          void reload(true)
-        }}
-        onOpenChange={setCreating}
-        open={creating}
-      />
-      {data ? (
-        <ConvertDialog
-          data={data}
-          host={host}
-          into="project"
-          onDone={(outcome) => {
-            const first = outcome.entities[0]
-            if (first) {
-              setStored(first.id)
-              setDrilled(true)
-            }
-            announce(outcome.text)
-            void reload(true)
-          }}
-          onOpenChange={setConverting}
-          open={converting}
-        />
-      ) : null}
-      <LiveRegion announcement={announcement} />
-    </PageShell>
+    <div className="kb-plan-scroll" data-autofocus="" tabIndex={-1}>
+      {body}
+    </div>
   )
 }
+
+/** The Projects page's palette rows and panel requests, now served by the hub (see board.tsx). */
+export { ConvertDialog, NewProjectDialog }
 
 /* ── one row of the list ──────────────────────────────────────────────── */
 
@@ -392,6 +306,8 @@ function ProjectDetail({
   reload,
   announce,
   onError,
+  onOpenBoard,
+  onOpenTicket,
 }: {
   host: Host
   project: ProjectView
@@ -402,6 +318,8 @@ function ProjectDetail({
   reload: (quiet?: boolean) => Promise<void>
   announce: (text: string) => void
   onError: (message: string | null) => void
+  onOpenBoard: (project: string, layout?: 'list') => void
+  onOpenTicket: (key: string) => void
 }) {
   const { confirm, dialog } = useConfirm()
   const archived = project.status === 'archived'
@@ -528,17 +446,10 @@ function ProjectDetail({
           ) : null}
           <span className="kb-plan-spacer" />
           <div className="kb-plan-head__actions">
-            {canOpenPane ? (
-              <ShadcnButton
-                onClick={() => openPane(host, BOARD_PAGE_ID, { group: 'project', project: project.id })}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <Columns3 size={16} />
-                Open on the board
-              </ShadcnButton>
-            ) : null}
+            <ShadcnButton onClick={() => onOpenBoard(project.id)} size="sm" type="button" variant="outline">
+              <Columns3 size={16} />
+              Open the board
+            </ShadcnButton>
             <ShadcnDropdownMenu>
               <ShadcnDropdownMenuTrigger
                 render={<ShadcnButton aria-label="More actions for this project" size="icon-sm" type="button" variant="ghost" />}
@@ -631,7 +542,7 @@ function ProjectDetail({
 
           {open.length > 0 ? (
             <Section count={open.length} flush title="Not done">
-              <TicketRows agents={agents} canOpenPane={canOpenPane} data={data} host={host} label="Not done" tickets={open} />
+              <TicketRows agents={agents} canOpenPane={canOpenPane} data={data} host={host} label="Not done" onOpen={onOpenTicket} tickets={open} />
             </Section>
           ) : null}
           {done.length > 0 ? (
@@ -652,7 +563,7 @@ function ProjectDetail({
               title={doneHeading}
             >
               {showDone ? (
-                <TicketRows agents={agents} canOpenPane={canOpenPane} data={data} host={host} label={doneHeading} tickets={done} />
+                <TicketRows agents={agents} canOpenPane={canOpenPane} data={data} host={host} label={doneHeading} onOpen={onOpenTicket} tickets={done} />
               ) : null}
             </Section>
           ) : null}
@@ -707,16 +618,9 @@ function ProjectDetail({
             ) : (
               <div className="kb-plan-section-empty">
                 <p className="kb-plan-faint">No ticket of this project is in a release.</p>
-                {canOpenPane ? (
-                  <ShadcnButton
-                    onClick={() => openPane(host, BOARD_PAGE_ID, { layout: 'list', project: project.id })}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    Open in List
-                  </ShadcnButton>
-                ) : null}
+                <ShadcnButton onClick={() => onOpenBoard(project.id, 'list')} size="sm" type="button" variant="outline">
+                  Open in List
+                </ShadcnButton>
               </div>
             )}
           </Section>

@@ -165,15 +165,6 @@ export async function listRules(bank: string): Promise<MemoryRule[]> {
     .map((p) => p.data)
 }
 
-export async function setRule(
-  bank: string,
-  name: string,
-  content: string,
-): Promise<void> {
-  const client = await getIiiClient()
-  await client.call('memory::rule::set', { bank, name, content })
-}
-
 const tagsSchema = z.object({
   tags: z
     .array(z.object({ tag: z.string(), count: z.number().default(0) }))

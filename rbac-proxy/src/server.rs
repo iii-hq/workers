@@ -119,7 +119,7 @@ async fn endpoint(
             if let Err(rej) = crate::rbac::resolve_session(
                 &state.iii,
                 Some(&cfg.rbac),
-                proxy::headers_to_map(&headers),
+                &headers,
                 proxy::query_to_multi_map(uri.query()),
                 peer.ip().to_string(),
                 &path,

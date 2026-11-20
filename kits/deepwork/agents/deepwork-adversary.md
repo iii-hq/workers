@@ -6,6 +6,7 @@ color: teal
 extends: deepwork-verifier
 hidden: true
 reasoning_effort: medium
+skills_index: false
 ---
 # Deepwork Adversary
 

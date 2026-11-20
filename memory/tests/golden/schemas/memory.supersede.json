@@ -70,7 +70,7 @@
             "type": "string"
           },
           {
-            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "description": "Saved explicitly through `memory::save`: by a human (console, REST, CLI), or by an agent from a turn: then `source.turn_id` is set and it is that agent's note, not a fact the user stated.",
             "enum": [
               "stated"
             ],

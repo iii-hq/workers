@@ -1,5 +1,5 @@
 {
-  "description": "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, which endpoints are exposed, and the live downstream connection count.",
+  "description": "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, which authentication admits worker and telemetry connections (auth function, loopback grant, or none; channel sockets are checked by the engine), which endpoints are exposed, and the live downstream connection count.",
   "function_id": "rbac-proxy::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -8,12 +8,48 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AuthMode": {
+        "description": "Which authentication admits new connections to the worker endpoint `/` and telemetry `/otel`. `/ws/channels/*` sockets are not authenticated by the proxy in any mode: the engine checks their channel access keys.",
+        "oneOf": [
+          {
+            "description": "`rbac.auth_function_id` authenticates every worker and telemetry connection.",
+            "enum": [
+              "function"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No auth function; `rbac.loopback_auth` admits loopback peers only to `/` and `/otel`.",
+            "enum": [
+              "loopback"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Neither: every worker and telemetry connection is refused; channel sockets (`/ws/channels/*`) are not, the engine checks their keys.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
     "properties": {
       "active_connections": {
         "description": "Live downstream connections.",
         "format": "uint32",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "auth": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AuthMode"
+          }
+        ],
+        "description": "The authentication in force for new worker (`/`) and telemetry (`/otel`) connections: `function` (the `auth_function_id`), `loopback` (no auth function; `loopback_auth` admits loopback peers) or `none` (every worker and telemetry connection is refused). `/ws/channels/*` sockets are not authenticated by the proxy in any mode: the engine checks their channel access keys."
       },
       "engine_url": {
         "description": "Upstream engine URL, with any `user:pass@` credentials redacted.",
@@ -47,6 +83,7 @@
     },
     "required": [
       "active_connections",
+      "auth",
       "engine_url",
       "expose_endpoints",
       "host",

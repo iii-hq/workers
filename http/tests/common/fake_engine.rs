@@ -43,6 +43,13 @@ struct State {
     registered: Notify,
     /// Every `invokefunction` frame the worker sent, in order.
     invocations: StdMutex<Vec<Value>>,
+    /// Confirm each registration with `functionregistered { local_dispatch:
+    /// true }`, as the engine does: the worker's calls of its own functions
+    /// then run in-process.
+    local_dispatch: bool,
+    /// Channel reader connections: ever opened, and open now.
+    readers_opened: AtomicUsize,
+    readers_open: AtomicUsize,
 }
 
 pub struct FakeEngine {
@@ -61,9 +68,24 @@ impl FakeEngine {
     /// hook's calls through an observer, whose target must be registered on
     /// [`FakeEngine::iii`].
     pub async fn start() -> Self {
+        Self::start_with(State::default()).await
+    }
+
+    /// [`FakeEngine::start`], confirming every registration for local
+    /// dispatch like the engine: the server's calls of `http::on-request`
+    /// run in-process, so the fake engine sees none of them.
+    pub async fn start_with_local_dispatch() -> Self {
+        Self::start_with(State {
+            local_dispatch: true,
+            ..State::default()
+        })
+        .await
+    }
+
+    async fn start_with(state: State) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
-        let state = Arc::new(State::default());
+        let state = Arc::new(state);
         let shared = state.clone();
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
@@ -95,6 +117,16 @@ impl FakeEngine {
 
     pub async fn set_config(&self, value: Value) {
         *self.state.config.lock().await = value;
+    }
+
+    /// How many channel reader connections the worker opened.
+    pub fn readers_opened(&self) -> usize {
+        self.state.readers_opened.load(Ordering::SeqCst)
+    }
+
+    /// How many channel reader connections are open now.
+    pub fn readers_open(&self) -> usize {
+        self.state.readers_open.load(Ordering::SeqCst)
     }
 
     /// How many times the worker registered `http::on-request`.
@@ -243,12 +275,25 @@ async fn connection(stream: TcpStream, state: Arc<State>) {
                 .receiver
                 .take();
             let mut receiver = receiver.expect("one reader per channel");
-            while let Some(message) = receiver.recv().await {
-                let closed = message.is_close();
-                if sink.send(message).await.is_err() || closed {
-                    break;
+            state.readers_opened.fetch_add(1, Ordering::SeqCst);
+            state.readers_open.fetch_add(1, Ordering::SeqCst);
+            loop {
+                tokio::select! {
+                    message = receiver.recv() => {
+                        let Some(message) = message else { break };
+                        let closed = message.is_close();
+                        if sink.send(message).await.is_err() || closed {
+                            break;
+                        }
+                    }
+                    // The reader closed its connection.
+                    message = source.next() => match message {
+                        Some(Ok(message)) if !message.is_close() => {}
+                        _ => break,
+                    },
                 }
             }
+            state.readers_open.fetch_sub(1, Ordering::SeqCst);
         }
         return;
     }
@@ -303,9 +348,15 @@ async fn reply_to(frame: Value, state: &State) -> Option<Value> {
                     .fetch_add(1, Ordering::SeqCst);
             }
             state.functions.lock().unwrap().insert(id.clone());
-            state.registrations.lock().unwrap().insert(id, frame);
+            state
+                .registrations
+                .lock()
+                .unwrap()
+                .insert(id.clone(), frame);
             state.registered.notify_waiters();
-            None
+            state.local_dispatch.then(|| {
+                json!({"type": "functionregistered", "id": id, "revision": 0, "local_dispatch": true, "observers": []})
+            })
         }
         "invocationresult" => Some(frame),
         "observerack" => {

@@ -54,7 +54,7 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   // The terminal tabs mark the open one with an attribute since the tab-row
   // redesign.
   ['ide/ui/styles.css', '.shui-terminal-tab[data-active]'],
-  ['ade/ui/styles.css', '.console-catalog-header-toggle[aria-pressed="true"]'],
+  ['ade/ui/styles.css', '.console-catalog-filter[data-active]'],
   ['sandbox-code-runner/ui/src/styles/page.css', '.cr-page-toggle.on'],
 ]
 

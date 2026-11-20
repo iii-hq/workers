@@ -46,22 +46,50 @@ repo, not with the SDK.
 
 `src/ui.rs` embeds `ui/dist/page.js` and `ui/dist/styles.css` with
 `include_str!`, so the build script must guarantee they exist and are current
-before rustc runs. Copy `state/build.rs`. It:
+before rustc runs. Copy `state/build.rs`: it forwards `TARGET` as
+`env!("TARGET")` for the manifest and makes one call to the shared helper,
+which it compiles straight from source (std only, no build-dependency):
 
-- forwards `TARGET` as `env!("TARGET")` for the manifest;
-- declares `rerun-if-changed` for `ui/page.tsx`, `ui/styles.css`, `ui/src`,
-  `ui/build.mjs`, `ui/package.json`, `ui/tsconfig.json` and the root
-  `../pnpm-lock.yaml` — never `ui/dist`, which would rebuild-loop on its own
-  output;
-- returns early when every dist asset is at least as new as every source
-  (`dist_is_fresh`);
-- otherwise runs `pnpm install` then `pnpm build` inside `ui/` and panics if
-  an asset is still missing afterwards;
-- honours `SKIP_UI_BUILD=1` (use the existing `dist/` as-is, panic if an
+```rust
+#[path = "../crates/console-ui/src/ui_build.rs"]
+mod ui_build;
+
+fn main() {
+    // ...the TARGET line...
+    ui_build::ensure_console_ui(&["dist/page.js", "dist/styles.css"]);
+}
+```
+
+`ensure_console_ui` (`crates/console-ui/src/ui_build.rs`):
+
+- watches every input with `rerun-if-changed`: the top-level files of `ui/`
+  and its `src/` tree, the same for `packages/console-ui` (its `/format`,
+  `/hooks` and `/ui-classes` subpaths are bundled into `page.js`), and the
+  root `pnpm-lock.yaml` and `pnpm-workspace.yaml`. It never enters
+  `node_modules`, `dist` or dot directories, so the build does not loop on
+  its own output. It also watches each asset, so deleting one rebuilds it;
+- returns early when every asset exists and `ui/.ui-build`, the marker a
+  successful build writes, lists the current inputs and is newer than all
+  of them (an added or deleted input, or an unreadable directory, is
+  stale). Without a marker, as after a plain `pnpm build` (CI pre-builds
+  that way), the assets must be newer than every input instead;
+- otherwise marks the build as running and runs `pnpm install` then
+  `pnpm build` inside `ui/`, then writes the marker dated to the start of
+  the build, so an input saved meanwhile rebuilds next time. A failed or
+  interrupted build leaves the assets in place and the marker saying
+  "building", so the next build runs pnpm again (the shared builder checks
+  its output after esbuild wrote it), and an asset still missing after a
+  successful build panics. Builds of one checkout from several cargo
+  processes (another target dir, rust-analyzer) take turns on the
+  gitignored `.ui-build.lock` at the repo root;
+- honours `SKIP_UI_BUILD=1` (use whatever `dist/` was last written, even by
+  a build whose checks failed, as release jobs restore it; panic if an
   asset is missing) and `PNPM=<path>` when pnpm is not on `PATH`.
 
-Extend the dist asset list when the worker ships more than `page.js` and
-`styles.css` (`canvas/build.rs` lists four).
+List every embedded asset (`canvas/build.rs` lists four). A project in
+another directory, another bundled package or an input outside the project
+uses `ui_build::ensure_built(&Frontend { .. })` (`ade/build.rs` for `web/`,
+`browser/build.rs` for `native-ui/`).
 
 ## 3. Embed and register in `src/ui.rs`
 
@@ -168,7 +196,7 @@ Testing.
 
 - `ui/` exists per `ade/injectable-ui` › Project layout and builds clean.
 - `Cargo.toml` links the crate by path.
-- `build.rs` is copied and its dist asset list matches `ui/dist`.
+- `build.rs` calls `ui_build::ensure_console_ui` with every embedded asset.
 - `src/ui.rs` embeds every asset, `lib.rs` exports the module, boot calls
   `ui::register` after the functions.
 - `cargo test` runs the three UI tests.

@@ -87,13 +87,15 @@ const BASE_FIELDS: SettingsSearchField[] = [
     label: 'Send messages with',
     trail: ['Chat'],
     description:
-      'Enter, Cmd/Ctrl + Enter, or Shift + Enter sends; the others add a new line.',
+      'Enter, Cmd/Ctrl + Enter, Alt + Enter, or Shift + Enter sends; the others add a new line.',
     keywords: [
       'enter',
       'return',
       'shift',
       'cmd',
       'ctrl',
+      'alt',
+      'option',
       'submit',
       'newline',
       'new line',

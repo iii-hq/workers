@@ -61,12 +61,18 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
           pendingApproval: true,
           functionCallId: record.function_call_id,
           sessionId: record.session_id,
+          ...(record.namespace ? { namespace: record.namespace } : {}),
           ...(accessRequest
             ? {
                 filesystemAccess: {
                   requestedRoot: accessRequest.requested_root,
                   attemptedPath: accessRequest.attempted_path,
                   errorCode: accessRequest.error_code,
+                  // The gate gives a call in another namespace one call only.
+                  ...(record.namespace &&
+                  record.namespace !== record.implicit_namespace
+                    ? { onceOnly: true }
+                    : {}),
                 },
               }
             : {}),
