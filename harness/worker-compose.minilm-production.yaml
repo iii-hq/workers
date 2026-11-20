@@ -142,9 +142,6 @@ containers:
       rule_learning_enabled: false
       embeddings_enabled: false
     scripts: { run: cargo run --locked --bin memory }
-  mcp:
-    worker: path://../mcp
-    scripts: { run: cargo run --locked --bin mcp }
   opencode:
     worker: path://../opencode
     start_after: [state]

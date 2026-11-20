@@ -208,7 +208,7 @@ pub struct TurnOptions {
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
     pub max_validation_retries: u32,
-    /// Mid-stream transient failures that may resume from the preserved
+    /// Retryable generation failures that may resume from the preserved
     /// transcript before this turn fails.
     #[serde(default = "default_max_transient_resumes")]
     pub max_transient_resumes: u32,
@@ -366,6 +366,18 @@ pub struct FailedCall {
     pub count: u32,
 }
 
+/// The failure a `failed` turn ended on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnFailure {
+    /// The failure code, e.g. `router/provider_transient` or `harness.turn_internal`.
+    pub code: String,
+    /// The failure is temporary, so a later send into the session may succeed: a
+    /// provider outage, rate limit or cut stream that outlasted the turn's
+    /// `max_transient_resumes` recovery generations, or a turn the harness could
+    /// not schedule.
+    pub retryable: bool,
+}
+
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
 /// `harness::send` / `spawn`, advanced one step per `harness::turn`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -475,6 +487,9 @@ pub struct TurnRecord {
     /// exhausted budget from a lean `harness::status` reader.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// Why a `failed` turn failed, machine-readable; absent on any other turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<TurnFailure>,
     /// Function ids the spawn granted at dispatch level only (the discovery
     /// pair, the skills fetch): callable by id, never surfaced as native
     /// tools, so a narrowed child's toolset stays exactly its work functions.
@@ -659,6 +674,7 @@ pub(crate) mod tests {
             result: None,
             result_error: None,
             stop_reason: None,
+            failure: None,
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
@@ -667,6 +683,31 @@ pub(crate) mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn failure_is_omitted_when_unset_and_defaults_on_legacy_records() {
+        // A record written before the field existed has no `failure` key.
+        let legacy = serde_json::to_value(record()).unwrap();
+        assert!(legacy.get("failure").is_none(), "{legacy}");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.failure, None);
+
+        let failed = TurnRecord {
+            status: TurnStatus::Failed,
+            failure: Some(TurnFailure {
+                code: "router/provider_transient".into(),
+                retryable: true,
+            }),
+            ..record()
+        };
+        let wire = serde_json::to_value(&failed).unwrap();
+        assert_eq!(
+            wire["failure"],
+            json!({"code": "router/provider_transient", "retryable": true})
+        );
+        let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.failure, failed.failure);
     }
 
     #[test]

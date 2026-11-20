@@ -55,7 +55,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_validation_retries")]
     pub max_validation_retries: u32,
 
-    /// Mid-stream transient provider/router failures to resume from the
+    /// Retryable provider/router failures to recover from the
     /// preserved transcript before the turn is marked failed. Transport
     /// retries remain owned by llm-router.
     #[serde(default = "default_max_transient_resumes")]
@@ -303,11 +303,7 @@ fn default_max_validation_retries() -> u32 {
     2
 }
 fn default_max_transient_resumes() -> u32 {
-    // Provider overloads (Anthropic 529s) cluster in bursts, and only
-    // mid-stream errors burn this budget (pre-stream errors are retried
-    // with backoff inside llm-router). A budget of 1 killed a turn that
-    // was one generation step from done when a second overload landed
-    // (observed live 2026-07-21, session dcmcp-scan-p6w4-c-aq).
+    // Provider overloads can span several generations of the same turn.
     3
 }
 /// Default for [`WorkerConfig::max_result_bytes`]: 256 KiB, the same ceiling

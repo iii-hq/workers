@@ -17,7 +17,7 @@ the registry's limits and records it in the descriptor's top-level
 mirrored here the way the CLI (``cli/src/screenshots.rs``) mirrors them, so a
 list the registry would refuse fails when the descriptor index is compiled,
 never when Release Control publishes. The build carries the bytes to
-``build-<source_sha>`` and the build manifest (``check_descriptor_entries``,
+``build-<worker>-<source_sha>`` and the build manifest (``check_descriptor_entries``,
 ``verify_file``); Release Control registers them on the version's registry
 release and lists them in ``POST /publish``.
 

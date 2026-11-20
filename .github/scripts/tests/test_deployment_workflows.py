@@ -153,6 +153,7 @@ def test_release_build_restores_frontends_with_a_portable_copy():
     steps = yaml.safe_load(text)["jobs"]["build"]["steps"]
     build = next(step for step in steps if step.get("name") == "Build immutable artifact")
     assert build["env"]["SKIP_UI_BUILD"] == "1"
+    assert build["env"]["SKIP_WEB_BUILD"] == "1"
     # rsync is not guaranteed on the Windows and macOS release runners: it may
     # be named only in comments, never invoked.
     for line in text.splitlines():
@@ -254,7 +255,12 @@ def test_build_workflow_only_builds_and_uploads_immutable_bytes():
     assert set(workflow["jobs"]["manifest"]["needs"]) == {"resolve", "assemble", "upload"}
     # Content-addressed surfaces only.
     assert "BUILD_TAG: build-${{ inputs.source_sha }}" in text
-    assert 'gh release create "$BUILD_TAG" --target "$SOURCE_SHA" --prerelease' in text
+    # One GitHub release per worker and SHA (a release holds at most 1000 assets).
+    assert "RELEASE_TAG: build-${{ inputs.worker }}-${{ inputs.source_sha }}" in text
+    assert 'gh release create "$RELEASE_TAG" --target "$SOURCE_SHA" --prerelease' in text
+    assert 'gh release upload "$RELEASE_TAG"' in text
+    assert '--arg tag "$RELEASE_TAG"' in text
+    assert 'gh release create "$BUILD_TAG"' not in text and 'gh release upload "$BUILD_TAG"' not in text
     assert 'docker buildx imagetools create --tag "$base:$BUILD_TAG"' in text
     assert 'sudo skopeo login --authfile "$authfile"' in text
     assert "--password-stdin" in text

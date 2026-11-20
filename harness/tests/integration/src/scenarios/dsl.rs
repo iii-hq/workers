@@ -1327,19 +1327,6 @@ impl Message {
         })
     }
 
-    /// The durable residue of a failed generation: the harness appends an empty
-    /// assistant row before streaming, and a scripted failure never fills it.
-    /// A later turn in the session sees it in its assembled context.
-    pub(super) fn assistant_empty(model: &ModelFixtureV1) -> Value {
-        json!({
-            "role": "assistant",
-            "content": [],
-            "stop_reason": "end",
-            "model": model.id,
-            "provider": model.provider
-        })
-    }
-
     pub(super) fn function_result(
         call_id: &str,
         function: &ControlledFunction,

@@ -1,0 +1,33 @@
+{
+  "description": "Return the current Codex OAuth access token (null when signed out) to judge-openai only; any other caller gets provider/forbidden. Pass rejected_token after an HTTP 401 to force one refresh of a ChatGPT sign-in session. Never returns the refresh or id token.",
+  "function_id": "provider::openai-codex::auth::token",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "rejected_token": {
+        "default": null,
+        "description": "The access token an upstream call just rejected with HTTP 401. When it is still the current ChatGPT sign-in token, the session is refreshed once. Ignored for vault and Codex CLI credentials.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "TokenRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "access_token": {
+        "description": "The OAuth access token for `Authorization: Bearer`; null when signed out.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "TokenResponse",
+    "type": "object"
+  }
+}

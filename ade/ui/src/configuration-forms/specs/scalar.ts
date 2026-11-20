@@ -1,4 +1,4 @@
-import { judgeProvider, number, object, password, select, stringList, text, toggle } from '../spec-helpers'
+import { judgeProvider, model, number, object, password, select, stringList, text, toggle } from '../spec-helpers'
 import { choice, type WorkerConfigurationSpec } from '../types'
 import { sandboxCatalogChoices } from './sandbox-catalog'
 
@@ -491,7 +491,9 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         title: 'Extraction',
         fields: [
           toggle('extraction_enabled', 'Extract memories', undefined, { defaultValue: true }),
-          text('extraction_model', 'Extraction model', 'Empty uses the first router model.'),
+          model('extraction_model', 'Extraction model', 'Automatic uses the default model of the first usable provider.', {
+            automatic: true,
+          }),
           number('extraction_window', 'Message window', undefined, { min: 1 }),
           number('extraction_timeout_ms', 'Extraction timeout (ms)', undefined, { min: 1 }),
           number('max_memories_per_turn', 'Memories per turn', undefined, { min: 1 }),

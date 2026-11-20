@@ -311,12 +311,11 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
     stub.clear_requests();
     stub.respond([quota_response(case)]);
     let quota = chat(&engine.url, case, case.model, "contract-quota").await?;
+    let error = assert_terminal_error(&quota, "permanent", false)?;
     anyhow::ensure!(
-        quota.response["ok"] == false,
-        "quota response: {}",
-        quota.response
+        error["content"] == json!([]),
+        "startup diagnostics leaked into assistant output: {error}"
     );
-    assert_error_kind(&quota.frames, "permanent")?;
     anyhow::ensure!(stub.post_requests().len() == 1, "quota request was retried");
 
     // A pre-content transient failure is retried once by the router.
@@ -339,30 +338,50 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
         "transient retry count mismatch"
     );
 
+    // The provider accepted the request but the body broke before any model output.
+    stub.clear_requests();
+    stub.respond([StubResponse::interrupted_sse(": keepalive\n\n")]);
+    let empty = chat(&engine.url, case, case.model, "contract-interrupted-start").await?;
+    let error = assert_terminal_error(&empty, "transient", true)?;
+    anyhow::ensure!(
+        error["content"] == json!([])
+            && error["error_message"]
+                .as_str()
+                .is_some_and(|s| s.contains("stream read failed")),
+        "unexpected error before the first token: {error}"
+    );
+    anyhow::ensure!(
+        stub.post_requests().len() == 1,
+        "accepted stream was retried by the router"
+    );
+
     // A cut inside function-call arguments: one transient error, no retry
     // after forwarded content, and the next call succeeds without a restart.
     stub.clear_requests();
     stub.respond([StubResponse::sse(truncated_sse(case.family))]);
     let truncated = chat(&engine.url, case, case.model, "contract-truncated").await?;
-    anyhow::ensure!(
-        truncated.response["ok"] == false,
-        "truncated response: {}",
-        truncated.response
-    );
-    assert_error_kind(&truncated.frames, "transient")?;
-    assert_truncated_partial(&truncated.frames)?;
-    anyhow::ensure!(
-        truncated
-            .frames
-            .iter()
-            .filter(|frame| is_terminal(frame))
-            .count()
-            == 1,
-        "truncated stream must end in exactly one terminal frame"
-    );
+    let truncated_error = assert_terminal_error(&truncated, "transient", true)?;
+    assert_truncated_partial(truncated_error)?;
     anyhow::ensure!(
         stub.post_requests().len() == 1,
         "truncated stream was retried after content reached the caller"
+    );
+    // A short HTTP body hits the transport read-error path, independently
+    // of how the SSE decoder handles clean EOF. Both must retain the same blocks.
+    stub.clear_requests();
+    stub.respond([StubResponse::interrupted_sse(truncated_sse(case.family))]);
+    let interrupted = chat(&engine.url, case, case.model, "contract-read-error").await?;
+    let error = assert_terminal_error(&interrupted, "transient", true)?;
+    anyhow::ensure!(
+        error["error_message"]
+            .as_str()
+            .is_some_and(|s| s.contains("stream read failed"))
+            && error["content"] == truncated_error["content"],
+        "read failure lost or changed the partial response: {error}"
+    );
+    anyhow::ensure!(
+        stub.post_requests().len() == 1,
+        "partial stream was retried by the router"
     );
     stub.clear_requests();
     stub.respond([StubResponse::sse(happy_sse(case.family))]);
@@ -412,12 +431,7 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
     stub.clear_requests();
     stub.respond([auth_response(case.family)]);
     let auth = chat(&engine.url, case, case.model, "contract-auth").await?;
-    anyhow::ensure!(
-        auth.response["ok"] == false,
-        "auth response: {}",
-        auth.response
-    );
-    assert_error_kind(&auth.frames, "auth_expired")?;
+    assert_terminal_error(&auth, "auth_expired", false)?;
     anyhow::ensure!(stub.post_requests().len() == 1, "auth request was retried");
 
     write_contract_result(case)?;
@@ -449,7 +463,9 @@ fn write_contract_result(case: ProviderCase) -> anyhow::Result<()> {
             "model-change",
             "quota-no-retry",
             "transient-retry",
+            "interruption-before-first-token",
             "truncated-stream-no-retry",
+            "interrupted-http-body",
             "abort",
             "auth-no-retry"
         ]
@@ -472,23 +488,20 @@ fn is_terminal(frame: &Value) -> bool {
     matches!(frame["type"].as_str(), Some("done") | Some("error"))
 }
 
-fn assert_truncated_partial(frames: &[Value]) -> anyhow::Result<()> {
-    let last = frames
-        .last()
-        .context("truncated stream emitted no frames")?;
-    let message = last["error"]["error_message"].as_str().unwrap_or_default();
+fn assert_truncated_partial(error: &Value) -> anyhow::Result<()> {
+    let message = error["error_message"].as_str().unwrap_or_default();
     anyhow::ensure!(
         message.contains("stream truncated") && message.contains("phase=sse-decode"),
-        "truncation error must name the decode phase: {last}"
+        "truncation error must name the decode phase: {error}"
     );
-    let content = last["error"]["content"]
+    let content = error["content"]
         .as_array()
         .context("truncated error carries no content")?;
     anyhow::ensure!(
         content
             .iter()
             .any(|block| block["type"] == "text" && block["text"] == "partial contract"),
-        "truncated error must keep the streamed text: {last}"
+        "truncated error must keep the streamed text: {error}"
     );
     let function_calls: Vec<_> = content
         .iter()
@@ -496,7 +509,7 @@ fn assert_truncated_partial(frames: &[Value]) -> anyhow::Result<()> {
         .collect();
     anyhow::ensure!(
         !function_calls.is_empty(),
-        "truncated error must keep the unfinished function call: {last}"
+        "truncated error must keep the unfinished function call: {error}"
     );
     for block in function_calls {
         let arguments = &block["arguments"];
@@ -508,14 +521,35 @@ fn assert_truncated_partial(frames: &[Value]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn assert_error_kind(frames: &[Value], expected: &str) -> anyhow::Result<()> {
-    let last = frames.last().context("error stream emitted no frames")?;
-    anyhow::ensure!(last["type"] == "error", "terminal frame: {last}");
+fn assert_terminal_error<'a>(
+    chat: &'a ChatResult,
+    kind: &str,
+    retryable: bool,
+) -> anyhow::Result<&'a Value> {
+    let response = &chat.response;
     anyhow::ensure!(
-        last["error"]["error_kind"] == expected,
-        "error kind mismatch: {last}"
+        response["ok"] == false
+            && response["error"]["kind"] == kind
+            && response["error"]["retryable"] == retryable,
+        "unexpected router error: {response}"
     );
-    Ok(())
+    let last = chat
+        .frames
+        .last()
+        .context("error stream emitted no frames")?;
+    anyhow::ensure!(
+        last["type"] == "error"
+            && last["error"]["error_kind"] == kind
+            && chat
+                .frames
+                .iter()
+                .filter(|frame| is_terminal(frame))
+                .count()
+                == 1,
+        "expected one terminal {kind} error, got {:?}",
+        chat.frames
+    );
+    Ok(&last["error"])
 }
 
 fn assert_request(

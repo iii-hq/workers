@@ -133,10 +133,10 @@ async fn run_upstream(
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
+                    .send(AssistantMessageEvent::error(
+                        build_partial(&state, &args.model),
                         ErrorKind::Transient,
+                        format!("stream read failed: {e}"),
                     ))
                     .await;
                 return;
@@ -177,7 +177,8 @@ mod tests {
 
     /// One-shot HTTP stub: accepts a single connection, consumes the request
     /// head, writes `response` verbatim, closes (read-until-close framing).
-    async fn stub(response: &'static str) -> String {
+    async fn stub(response: impl Into<String>) -> String {
+        let response = response.into();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -330,6 +331,63 @@ mod tests {
         match events.last() {
             Some(AssistantMessageEvent::Error { error }) => error,
             other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_errors_keep_partial_output_and_the_failure_kind() {
+        use crate::responses::{ResponsesUpstreamArgs, spawn_responses_upstream};
+
+        const TEXT: &str = "event: response.output_text.delta\ndata: {\"delta\":\"Hello\"}\n\n";
+        const FAILED: &str = "event: response.failed\ndata: {\"response\":{\"error\":{\"code\":\"invalid_api_key\",\"message\":\"invalid key\"}}}\n\n";
+        for (headers, tail, kind, message) in [
+            (
+                "content-length: 1024\r\n",
+                "",
+                ErrorKind::Transient,
+                "stream read failed",
+            ),
+            ("", "", ErrorKind::Transient, "ended before completion"),
+            ("", FAILED, ErrorKind::AuthExpired, "invalid key"),
+            (
+                "",
+                concat!(
+                    "event: error\ndata: {\"code\":\"insufficient_quota\",\"message\":\"credits exhausted\"}\n\n",
+                    "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n",
+                ),
+                ErrorKind::Permanent,
+                "credits exhausted",
+            ),
+        ] {
+            for (prefix, expected_content) in [
+                (": keepalive\n\n", vec![]),
+                (
+                    TEXT,
+                    vec![llm_router::types::content::ContentBlock::Text {
+                        text: "Hello".into(),
+                    }],
+                ),
+            ] {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n{headers}\r\n{prefix}{tail}"
+                );
+                let api_url = stub(response).await;
+                let events = drain(spawn_responses_upstream(
+                    reqwest::Client::new(),
+                    ResponsesUpstreamArgs {
+                        api_url,
+                        model: "grok-test".into(),
+                        headers: vec![],
+                        body: serde_json::json!({}),
+                        warnings: vec![],
+                    },
+                ))
+                .await;
+                let error = single_terminal_error(&events);
+                assert_eq!(error.error_kind, Some(kind));
+                assert!(error.error_message.as_deref().unwrap().contains(message));
+                assert_eq!(error.content, expected_content);
+            }
         }
     }
 

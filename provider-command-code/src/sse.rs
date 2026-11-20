@@ -45,19 +45,11 @@ pub fn synthetic_error(
     error_message: impl Into<String>,
     kind: ErrorKind,
 ) -> AssistantMessageEvent {
-    let error_message = error_message.into();
-    let mut error = message(
-        model,
-        vec![ContentBlock::Text {
-            text: error_message.clone(),
-        }],
-        StopReason::Error,
-        &[],
-        None,
-    );
-    error.error_message = Some(error_message);
-    error.error_kind = Some(kind);
-    AssistantMessageEvent::Error { error }
+    AssistantMessageEvent::error(
+        message(model, Vec::new(), StopReason::Error, &[], None),
+        kind,
+        error_message,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

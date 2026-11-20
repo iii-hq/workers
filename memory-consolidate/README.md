@@ -50,6 +50,17 @@ Each observer stays `pending` until its function registers, so the cron, configu
 
 All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass), `max_llm_calls_per_run` (200: `router::complete` calls per pass, the judge, semantic and verify tiers of every bank together; the rest waits for the next pass with a `deferred` note; 0 = no model calls), `verify_enabled` (off by default) and `verify_max_per_run` (20), see the verify tier below.
 
+### The model
+
+`llm_model` serves the judge, semantic and verify tiers. A pinned `provider::id` is used as written, and the router is not asked. Left empty, the model is automatic, by the same rule as memory's `extraction_model`:
+
+1. A provider is usable when it is available and signed in, or owns its sign-in (no credential env var).
+2. Tier 1: the default model of the first usable provider, by provider id.
+3. Tier 2, only when no usable provider declares a chat default: the first chat model `router::models::list` lists for a usable provider, by provider and then model id.
+4. An id that contains `embed` or `rerank` is never picked. With nothing left, the tier stops with a note that names each provider and why it was skipped.
+
+The pick is kept for 60 s, so a pass does not ask the router before every model call. It is logged at INFO when it changes, as `automatic consolidation model model=<provider::id> reason=<provider_default|first_listed_model>`. A failed `router::complete` call and a provider error reply both end in `(model <id>)`, so the pass notes name the model. On the judge tier, such an error is noted as `llm tier skipped`. The pick can change shortly after a restart, until every provider has finished its first model refresh, and a provider whose sign-in has expired can still be picked. Pin `llm_model` to rule this out.
+
 ## The LLM tier (optional)
 
 `llm_assist_enabled` (off by default) adds one `router::complete` judge call per bank after the deterministic pass:
@@ -61,7 +72,7 @@ Fail-soft: an unavailable router just skips the tier (named in the report's `not
 
 ## The semantic tier (on by default)
 
-`semantic_enabled` (on by default; set it to `false` to run without model calls) runs one more tier, last, on a fresh fetch. It costs one `router::complete` call per 8 new memories, capped at `semantic_max_per_run` per bank per pass. Without a router or an embed provider, it stops with a note and never blocks the pass. Its calls count in the bank's `llm_calls`, `llm_input_tokens`, `llm_output_tokens` and `llm_cost_usd`, and it is `deferred` with a note once the pass reaches `max_llm_calls_per_run`. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
+`semantic_enabled` (on by default; set it to `false` to run without model calls) runs one more tier, last, on a fresh fetch. It costs one `router::complete` call per 8 new memories, capped at `semantic_max_per_run` per bank per pass. Without a router or an embed provider, it stops with a note and never blocks the pass. While memories still lack a vector, it waits with a note (see **Vectors still landing** below). Its calls count in the bank's `llm_calls`, `llm_input_tokens`, `llm_output_tokens` and `llm_cost_usd`, and it is `deferred` with a note once the pass reaches `max_llm_calls_per_run`. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
 
 - **merge**: both state the same fact (paraphrase, another language). The duplicate retires and the survivor absorbs its observations. The survivor must keep every detail; when both are equally complete, the older one survives.
 - **supersede**: a state change ("moved to", "switched to", a rescheduled date). The outdated record retires in favour of the current one, which is the one stated last.
@@ -76,7 +87,8 @@ Every change goes through `memory::supersede` and carries the judge's one-senten
 - **Failure handling.**
   - Transport, auth or quota errors stop the tier for that bank with a note, and the cursor stays put.
   - An unparseable or truncated reply bisects the batch down to one memory. A memory that still fails alone is listed in `semantic_failed` and skipped once another reply of the pass parses. Until one does, the cursor stays before it and the tier goes on to the next batch; when that batch has failed replies too and none parsed, the tier stops with a note naming the first such memory and the cursor stays put.
-- **Cursor.** Progress is a per-bank cursor in the state worker, keyed by `(updated_at, id)`, so edited or resurrected records are judged again. It advances only over batches that were fully judged and fully applied.
+  - **Vectors still landing.** Each semantic recall reports `vector_coverage {covered, live}`: how many live memories of the bank have a vector for the current embedding model. A memory without one is missing from the semantic arm, so its twin would pass as "no action". While `covered < live`, the tier defers before any judge call: the cursor stays put and the bank gets the note `semantic tier deferred: N of M memories have no vector for the current embedding model yet; cursor held`. This happens during a re-embed after a model change, an embed outage backlog, or a save seconds before the pass. The next scheduled pass tries again. The first pass at least 30 minutes after the first deferral judges with what exists and notes `semantic tier judged without N of M memories whose vectors have not landed`. A bank with no vector at all for the current model keeps deferring. Any pass that judges clears the wait.
+- **Cursor.** Progress is a per-bank cursor in the state worker, keyed by `(updated_at, id)`, so edited or resurrected records are judged again. It advances only over batches that were fully judged and fully applied. While the tier waits for vectors, the same value also holds `waiting_since`, the time of the first deferral in ms.
 - **Dry runs** skip this tier with an `unevaluated` note.
 
 Config: `semantic_batch` (8 memories per LLM call), `semantic_candidates` (4 per arm), `semantic_max_per_run` (48 per bank per pass). The model comes from `llm_model`. `router::complete` has no temperature control, so the provider default applies.
@@ -139,5 +151,6 @@ Normalization keeps operators and signs (`<`, `<=`, `!=`, `+`, `#`, `-5`) and an
 - Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call), or `memory::correct` for the verify tier — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::on-item-changed` events.
 - Pinned memories are never superseded, even inside a duplicate group.
 - Every `memory::supersede` carries `expected_memory` and `expected_superseded_by`, both records as this pass read them, so a memory worker that knows these guards refuses a record edited since; the pass reports the error and stays due. An older memory worker ignores the fields.
+- A memory worker whose `memory::recall` does not report `vector_coverage` is judged as before, with one note per bank: `memory worker did not report vector coverage; semantic tier judged without knowing it; upgrade memory`.
 - Every `memory::rule::set` of `learned` carries `expected`, the rule as this pass last read it, so the memory worker refuses it with `rule_changed` when the rule changed since. An older memory worker ignores `expected` and writes unguarded.
 - Not extraction (the memory worker captures), not recall, not rule management. One job: keep banks clean.

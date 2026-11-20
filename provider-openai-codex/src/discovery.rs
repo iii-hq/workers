@@ -522,12 +522,14 @@ mod tests {
 
         let request = request_rx.await.unwrap().to_ascii_lowercase();
         assert!(request.contains(&format!(
-            "get /backend-api/codex/models?client_version={code_version} http/1.1",
-            code_version = CODEX_COMPAT_VERSION
+            "get /backend-api/codex/models?client_version={CODEX_COMPAT_VERSION} http/1.1"
         )));
         assert!(request.contains("authorization: bearer at"));
         assert!(request.contains("chatgpt-account-id: acc-1"));
         assert!(request.contains(&format!("version: {CODEX_COMPAT_VERSION}")));
+        assert!(request.contains("originator: codex_cli_rs"));
+        assert!(!request.contains("openai-beta:"));
+        assert!(!request.contains("text/event-stream"));
     }
 
     #[tokio::test]

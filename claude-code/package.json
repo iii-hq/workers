@@ -1,6 +1,6 @@
 {
   "name": "claude-code",
-  "version": "0.3.3",
+  "version": "0.3.6",
   "private": true,
   "description": "Claude Code as an iii worker: headless turns over the iii bus and a terminal page on the console, both on one login. Raw messages on the claude::on-raw-event function, AgentEvent frames on claude::on-agent-event.",
   "license": "Apache-2.0",
@@ -18,7 +18,7 @@
     "test": "vitest run",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "build:ui": "node ui/build.mjs"
+    "build:ui": "pnpm --dir .. --filter @iii-workers/claude-code-ui... install --frozen-lockfile && pnpm --dir .. --filter @iii-workers/claude-code-ui run build"
   },
   "bin": {
     "claude-code": "./dist/index.js"

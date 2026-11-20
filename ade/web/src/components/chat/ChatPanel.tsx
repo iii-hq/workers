@@ -22,6 +22,7 @@ import {
   sideChatsLeftByClosedTabs,
   sideChatsMadeHere,
 } from '@/lib/chat-aside'
+import { useChatDraftSeed } from '@/lib/chat-draft-seeds'
 import {
   claimChatPaneLead,
   isChatPaneLead,
@@ -130,6 +131,7 @@ export function ChatPanel({
     conversationLoadErrors,
     retryConversations,
     missingConversationIds,
+    restoreDraft,
   } = useConversationsCtx()
   const [importOpen, setImportOpen] = useState(false)
   const pinned = conversationId !== undefined
@@ -160,6 +162,18 @@ export function ChatPanel({
     if (!displayedId) return
     return watchConversation(displayedId)
   }, [displayedId, watchConversation])
+  // A pinned column showing an unsent draft (a worker page's side chat) that this browser doesn't have — it was
+  // opened in another browser, or before a reload — is brought back from the seed the layout keeps for it.
+  const pinnedMissing =
+    pinned &&
+    conversationId !== undefined &&
+    !displayedConversation &&
+    missingConversationIds.has(conversationId)
+  const draftSeed = useChatDraftSeed(pinnedMissing ? conversationId : undefined)
+  useEffect(() => {
+    if (pinnedMissing && conversationId !== undefined && draftSeed)
+      restoreDraft(conversationId, draftSeed)
+  }, [pinnedMissing, conversationId, draftSeed, restoreDraft])
   // A remembered chat outside the loaded list resolves through a watch, the
   // way a pinned pane's does.
   const unresolvedOwnId =

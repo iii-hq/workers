@@ -148,10 +148,10 @@ async fn run_upstream(
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
+                    .send(AssistantMessageEvent::error(
+                        build_partial(&state, &args.model),
                         ErrorKind::Transient,
+                        format!("stream read failed: {e}"),
                     ))
                     .await;
                 return;
@@ -160,10 +160,10 @@ async fn run_upstream(
         append_utf8_chunk(&mut byte_buf, &mut buf, &chunk);
         if buf.len() > MAX_SSE_BUFFER {
             let _ = tx
-                .send(synthetic_error_event(
-                    "upstream sent no SSE frame boundary within 1 MiB",
-                    &args.model,
+                .send(AssistantMessageEvent::error(
+                    build_partial(&state, &args.model),
                     ErrorKind::Transient,
+                    "upstream sent no SSE frame boundary within 1 MiB",
                 ))
                 .await;
             return;
@@ -202,7 +202,8 @@ mod tests {
 
     /// One-shot HTTP stub: accepts a single connection, consumes the request
     /// head, writes `response` verbatim, closes (read-until-close framing).
-    async fn stub(response: &'static str) -> String {
+    async fn stub(response: impl Into<String>) -> String {
+        let response = response.into();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -295,6 +296,7 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+                assert!(error.content.is_empty());
             }
             other => panic!("want error, got {other:?}"),
         }
@@ -303,11 +305,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn oversized_error_body_is_truncated_in_the_frame() {
         let big = "x".repeat(MAX_ERROR_BODY * 2);
-        let response: &'static str = Box::leak(
-            format!(
-                "HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n{big}"
-            )
-            .into_boxed_str(),
+        let response = format!(
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n{big}"
         );
         let url = stub(response).await;
         let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
@@ -382,6 +381,61 @@ mod tests {
         match events.last() {
             Some(AssistantMessageEvent::Error { error }) => error,
             other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_unterminated_frame_keeps_the_last_decoded_text() {
+        let url = stub(format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: {{\"choices\":[{{\"delta\":{{\"content\":\"saved\"}}}}]}}\n\ndata: {}",
+            "x".repeat(MAX_SSE_BUFFER + 1)
+        )).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        assert!(
+            error
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("no SSE frame boundary")
+        );
+        assert!(
+            matches!(&error.content[..], [llm_router::types::content::ContentBlock::Text { text }] if text == "saved")
+        );
+    }
+
+    #[tokio::test]
+    async fn body_read_error_reports_only_content_received_before_disconnect() {
+        use llm_router::types::content::ContentBlock;
+
+        for (response, expected) in [
+            (
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 1024\r\n\r\n: keepalive\n\n",
+                vec![],
+            ),
+            (
+                concat!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 1024\r\n\r\n",
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                ),
+                vec![ContentBlock::Text {
+                    text: "Hello".into(),
+                }],
+            ),
+        ] {
+            let url = stub(response).await;
+            let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+            let error = single_terminal_error(&events);
+            assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+            assert!(
+                error
+                    .error_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("stream read failed")
+            );
+            assert_eq!(error.content, expected);
         }
     }
 

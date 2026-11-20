@@ -214,14 +214,7 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
 }
 
 pub fn synthetic_error_event(message: &str, model: &str, kind: ErrorKind) -> AssistantMessageEvent {
-    let mut error = empty_assistant(model);
-    error.content = vec![ContentBlock::Text {
-        text: message.to_string(),
-    }];
-    error.stop_reason = StopReason::Error;
-    error.error_message = Some(message.to_string());
-    error.error_kind = Some(kind);
-    AssistantMessageEvent::Error { error }
+    AssistantMessageEvent::error(empty_assistant(model), kind, message)
 }
 
 fn close_open_block(

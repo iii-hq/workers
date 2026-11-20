@@ -206,10 +206,10 @@ async fn run_upstream(
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
+                    .send(AssistantMessageEvent::error(
+                        build_partial(&state, &args.model),
                         ErrorKind::Transient,
+                        format!("stream read failed: {e}"),
                     ))
                     .await;
                 return;
@@ -325,6 +325,7 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::AuthExpired));
+                assert!(error.content.is_empty());
             }
             other => panic!("want error, got {other:?}"),
         }
@@ -422,6 +423,28 @@ mod tests {
             Some(AssistantMessageEvent::Error { error }) => error,
             other => panic!("want error, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn body_read_error_preserves_already_streamed_text() {
+        // The body ends before the declared length, after a complete SSE event.
+        let url = stub(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 500\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        )
+        .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        assert!(
+            error
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("stream read failed")
+        );
+        assert!(
+            matches!(&error.content[..], [llm_router::types::content::ContentBlock::Text { text }] if text == "Hello")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

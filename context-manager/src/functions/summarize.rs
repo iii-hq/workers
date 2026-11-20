@@ -1,15 +1,26 @@
 //! Bounded, anchored summarization shared by automatic and explicit compaction.
 use std::time::Duration;
 
+use super::assemble::PROVIDER_COUNT_SHARE;
 use crate::core::estimate::{Estimator, estimator_for_model};
 use crate::core::prune::cap_results_with_sizes;
 use crate::core::summary::{build_system_prompt, render_user_prompt, strip_media};
-use crate::ports::{Deps, SummarizeError, SummarizeRequest};
+use crate::ports::{Deps, SummarizeError, SummarizeRequest, TurnKnobs};
 use crate::types::{AgentMessage, ContentBlock, ModelInput};
 
 // Bound cost and runtime even when a summary fails to shrink between chunks.
 const MAX_CHUNKS: usize = 32;
 const REQUEST_OVERHEAD_TOKENS: u64 = 64;
+/// Tightenings of one fragment the provider still counts over the window;
+/// past them the fragment is sent and an overflow reply shrinks it.
+const MAX_RECOUNTS: usize = 3;
+/// Retries of one fragment, each with two thirds the history of the last,
+/// after the provider rejected it as larger than the model's context window.
+/// Every attempt still counts against `MAX_CHUNKS`.
+const MAX_OVERFLOW_RETRIES: usize = 6;
+const FRAGMENT_NOTE: &str = "\nThe conversation is supplied in consecutive fragments. This fragment may \
+     start or end within a message. Merge it into the anchored summary, preserving \
+     relevant facts from earlier fragments; do not treat a fragment as a complete history.";
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct PromptSteering<'a> {
@@ -68,45 +79,110 @@ async fn summarize_prompt(
             "history needs at least {optimistic_chunks} fragments; maximum is {MAX_CHUNKS}"
         )));
     }
+    // Fragments are cut in estimate units, and the estimate can undercount a
+    // provider's tokenizer by far more than any headroom: a 1M-token Claude
+    // window was sent a fragment it counted at 1.45M. A fragment large enough
+    // to matter is checked against the provider's count of the exact request,
+    // and an overflow reply shrinks it. What either teaches is how much
+    // history a request can carry, so the cap applies to the history alone:
+    // each request still measures the anchor it actually sends. The cap only
+    // shrinks and carries over, since later fragments come from the same
+    // history.
+    let mut history_cap = u64::MAX;
+    let mut calls = 0usize;
+    let mut counter = ProviderCounter {
+        deps,
+        model,
+        available: true,
+    };
     let mut summary = None::<String>;
     for chunk in 0..MAX_CHUNKS {
-        let mut system_prompt = build_system_prompt(
+        let anchored = build_system_prompt(
             summary.as_deref().or(steering.previous_summary),
             steering.instructions,
         );
-        // The rendered transcript is split, not truncated. Even one oversized
-        // user message can cross a boundary; every byte is consumed in order.
-        if chunk > 0 || request_tokens(estimator, &system_prompt, remaining) > input_budget {
-            system_prompt.push_str(
-                "\nThe conversation is supplied in consecutive fragments. This fragment may \
-                 start or end within a message. Merge it into the anchored summary, preserving \
-                 relevant facts from earlier fragments; do not treat a fragment as a complete history.",
+        let mut recounts = 0;
+        let mut overflow_retries = 0;
+        let (next, end) = loop {
+            // The rendered transcript is split, not truncated. Even one oversized
+            // user message can cross a boundary; every byte is consumed in order.
+            let fragmented = chunk > 0
+                || request_tokens(estimator, &anchored, remaining)
+                    > request_budget(estimator, &anchored, input_budget, history_cap);
+            let system_prompt = if fragmented {
+                format!("{anchored}{FRAGMENT_NOTE}")
+            } else {
+                anchored.clone()
+            };
+            let budget = request_budget(estimator, &system_prompt, input_budget, history_cap);
+            let end = fitting_prefix(estimator, &system_prompt, remaining, budget);
+            if end == 0 {
+                return Err(SummarizeError::Failed(format!(
+                    "summary instructions and anchor leave no room for history within {input_budget} tokens"
+                )));
+            }
+            let user_prompt = &remaining[..end];
+            let estimate = request_tokens(estimator, &system_prompt, user_prompt);
+            let history = estimate.saturating_sub(request_tokens(estimator, &system_prompt, ""));
+            if recounts < MAX_RECOUNTS
+                && estimate.saturating_mul(PROVIDER_COUNT_SHARE) >= input_budget
+                && let Some(counted) = counter.count(&system_prompt, user_prompt).await
+                && counted > input_budget
+            {
+                recounts += 1;
+                // The excess comes out of the history, at the rate this
+                // request was billed.
+                let fitting = tightened(estimate, input_budget, counted);
+                history_cap = shrunk(history, history.saturating_sub(estimate - fitting));
+                tracing::info!(
+                    chunk = chunk + 1,
+                    estimate,
+                    counted,
+                    input_budget,
+                    history_cap,
+                    "summarize: the provider counts the fragment over the window; history shrunk"
+                );
+                continue;
+            }
+            if calls == MAX_CHUNKS {
+                break (Err(too_many_calls()), end);
+            }
+            calls += 1;
+            tracing::debug!(
+                model = %model.id,
+                provider = ?model.provider,
+                chunk = chunk + 1,
+                input_budget,
+                input_tokens = estimate,
+                "summarizing bounded history fragment"
             );
-        }
-        let end = fitting_prefix(estimator, &system_prompt, remaining, input_budget);
-        if end == 0 {
-            return Err(SummarizeError::Failed(format!(
-                "summary instructions and anchor leave no room for history within {input_budget} tokens"
-            )));
-        }
-        let user_prompt = remaining[..end].to_owned();
-        tracing::debug!(
-            model = %model.id,
-            provider = ?model.provider,
-            chunk = chunk + 1,
-            input_budget,
-            input_tokens = request_tokens(estimator, &system_prompt, &user_prompt),
-            "summarizing bounded history fragment"
-        );
-        let next = deps
-            .summarizer
-            .summarize(SummarizeRequest {
-                system_prompt,
-                user_prompt,
-                model: model.id.clone(),
-                provider: model.provider.clone(),
-            })
-            .await?;
+            let result = deps
+                .summarizer
+                .summarize(SummarizeRequest {
+                    system_prompt,
+                    user_prompt: user_prompt.to_owned(),
+                    model: model.id.clone(),
+                    provider: model.provider.clone(),
+                })
+                .await;
+            match result {
+                Err(SummarizeError::ContextOverflow(detail))
+                    if overflow_retries < MAX_OVERFLOW_RETRIES =>
+                {
+                    overflow_retries += 1;
+                    history_cap = shrunk(history, history.saturating_mul(2) / 3);
+                    tracing::warn!(
+                        chunk = chunk + 1,
+                        estimate,
+                        history_cap,
+                        %detail,
+                        "summarize: the provider rejected the fragment as too large; retrying with less history"
+                    );
+                }
+                result => break (result, end),
+            }
+        };
+        let next = next?;
         if next.trim().is_empty() {
             return Err(SummarizeError::Empty);
         }
@@ -118,9 +194,75 @@ async fn summarize_prompt(
     }
     // Do not return a partial anchor: the caller must not persist a summary
     // that silently drops the unprocessed suffix of the conversation.
-    Err(SummarizeError::Failed(format!(
+    Err(too_many_calls())
+}
+
+fn too_many_calls() -> SummarizeError {
+    SummarizeError::Failed(format!(
         "history requires more than {MAX_CHUNKS} bounded summary calls"
-    )))
+    ))
+}
+
+/// The estimate-unit budget for one request: its own instructions and
+/// anchor as sent, plus at most `history_cap` of history, within the window.
+fn request_budget(
+    estimator: &dyn Estimator,
+    system_prompt: &str,
+    input_budget: u64,
+    history_cap: u64,
+) -> u64 {
+    input_budget.min(request_tokens(estimator, system_prompt, "").saturating_add(history_cap))
+}
+
+/// A smaller history cap than the `history` just sent: `target`, but always
+/// below `history` so a retry makes progress, and never zero.
+fn shrunk(history: u64, target: u64) -> u64 {
+    target.min(history.saturating_sub(1)).max(1)
+}
+
+/// The provider's count of one summariser request. A failed count leaves
+/// the estimate in charge for the rest of the pipeline.
+struct ProviderCounter<'a> {
+    deps: &'a Deps,
+    model: &'a ModelInput,
+    available: bool,
+}
+
+impl ProviderCounter<'_> {
+    async fn count(&mut self, system_prompt: &str, user_prompt: &str) -> Option<u64> {
+        if !self.available {
+            return None;
+        }
+        let message = user_message(user_prompt);
+        match self
+            .deps
+            .resolver
+            .count_prompt_tokens(
+                self.model.provider.as_deref(),
+                &self.model.id,
+                system_prompt,
+                &[],
+                std::slice::from_ref(&message),
+                TurnKnobs::default(),
+            )
+            .await
+        {
+            // The estimate carries the request overhead; the provider's count
+            // of the prompt and message does not.
+            Ok(counted) => Some(counted.saturating_add(REQUEST_OVERHEAD_TOKENS)),
+            Err(error) => {
+                tracing::debug!(%error, "summarize: no provider count; the estimate holds");
+                self.available = false;
+                None
+            }
+        }
+    }
+}
+
+/// The estimate-unit budget at which a request the provider counted at
+/// `counted` for an `estimate` would count within `usable`.
+fn tightened(estimate: u64, usable: u64, counted: u64) -> u64 {
+    (u128::from(usable) * u128::from(estimate) / u128::from(counted.max(1))) as u64
 }
 
 /// Returns an optimistic lower bound on the number of requests needed.
@@ -160,18 +302,21 @@ fn preflight_chunk_count(
     Ok(prompt_bytes.div_ceil(max_fragment_bytes))
 }
 
-fn request_tokens(estimator: &dyn Estimator, system_prompt: &str, user_prompt: &str) -> u64 {
-    // Count the actual user-message shape, including JSON escaping and framing,
-    // rather than estimating raw text alone (quotes/newlines can double in JSON).
-    let message = AgentMessage::User {
+fn user_message(user_prompt: &str) -> AgentMessage {
+    AgentMessage::User {
         content: vec![ContentBlock::Text {
             text: user_prompt.to_owned(),
         }],
         timestamp: i64::MAX,
-    };
+    }
+}
+
+fn request_tokens(estimator: &dyn Estimator, system_prompt: &str, user_prompt: &str) -> u64 {
+    // Count the actual user-message shape, including JSON escaping and framing,
+    // rather than estimating raw text alone (quotes/newlines can double in JSON).
     estimator
         .text(system_prompt)
-        .saturating_add(estimator.message(&message))
+        .saturating_add(estimator.message(&user_message(user_prompt)))
         .saturating_add(REQUEST_OVERHEAD_TOKENS)
 }
 

@@ -91,11 +91,36 @@ export function catalogKeysInRouterOrder(
   return rows.map((row) => makeCatalogModelKey(row.provider, row.id))
 }
 
+const MODEL_VERSION = /\d+(?:\.\d+)*/
+
+/**
+ * Picker order: families (the name before its first version number)
+ * alphabetically, newest version first inside a family, so `Gemini 4 Neon`
+ * leads `Gemini 3.8 Flash` and `GPT-6.1` leads `GPT-6`. A name with no
+ * version (`Gemini Flash Latest`) is its own family and sorts after the
+ * versioned ones sharing its first words.
+ */
+export function compareModelNames(a: string, b: string): number {
+  const va = MODEL_VERSION.exec(a)
+  const vb = MODEL_VERSION.exec(b)
+  const family = (name: string, v: RegExpExecArray | null) =>
+    (v ? name.slice(0, v.index) : name).toLowerCase()
+  const byFamily = family(a, va).localeCompare(family(b, vb))
+  if (byFamily !== 0 || !va || !vb) return byFamily || a.localeCompare(b)
+  const pa = va[0].split('.').map(Number)
+  const pb = vb[0].split('.').map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const newerFirst = (pb[i] ?? 0) - (pa[i] ?? 0)
+    if (newerFirst !== 0) return newerFirst
+  }
+  return a.localeCompare(b)
+}
+
 export function catalogRowsToModelOptions(
   rows: CatalogModelRow[],
 ): ModelOption[] {
   const sorted = [...rows].sort((a, b) =>
-    a.display_name.localeCompare(b.display_name),
+    compareModelNames(a.display_name, b.display_name),
   )
   return sorted.map((m) => ({
     id: makeCatalogModelKey(m.provider, m.id),

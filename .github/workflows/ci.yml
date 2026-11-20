@@ -266,10 +266,11 @@ jobs:
             (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
 
-      # The rule editor's save merges and retries; installed by the pre-build.
-      - name: Memory UI tests
-        if: matrix.worker == 'memory'
-        working-directory: memory/ui
+      # memory: the rule editor's save merges and retries; workflow: the chat
+      # cards and the Context section. Installed by the pre-build.
+      - name: UI tests
+        if: matrix.worker == 'memory' || matrix.worker == 'workflow'
+        working-directory: ${{ matrix.worker }}/ui
         run: pnpm test
 
       # The worker's web/, ui/ and native-ui/ projects are members of the root
@@ -1566,6 +1567,9 @@ jobs:
           elif [[ "$WORKER" == judge-clef ]]; then
             export III_CLEF_CHECKPOINT_DIR="$PWD/judge-clef/tests/fixtures/tiny"
           fi
+          # mcp-server boots with its config.collect.yaml (interface_only:
+          # registers its functions, serves nothing), so it needs neither
+          # rbac-proxy nor an http worker here.
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
           # checkout with no data/ dir, reproducing the publish boot exactly.

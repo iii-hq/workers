@@ -366,6 +366,16 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | `SettingsField` | `SettingsRow` owning ids and ARIA via `renderControl`; `controlSize`, `error` | Every form control |
 | `SettingsDeck` | Overview ↔ detail: `open`, `overview`, `detail`, `title`, `onBack` | Drill-in settings on narrow panes |
 
+Settings forms use one spacing scale, in px: 4 label to description, 8 between adjacent controls
+and between list items, 12 nested insets where rows have side padding, 20 row padding and
+heading to list, 24 label to control, 48 between sections. A `SettingsList` with
+`data-dividers="all"` draws the hairline above every child, composites and nested sections
+included, the way native settings lists do; the declarative worker forms set it on lists of
+fields, never on item sublists. `.configuration-surface` sets `--settings-section-gap` (48px),
+`--settings-row-inset` (0) and `--settings-sublist-fill` (transparent), and worker CSS reads them
+with its own values as fallbacks. Section titles sit one weight step above row labels (600 over
+500) on native and injected settings tabs alike.
+
 ### Actions
 
 | Component | Anatomy / props | Do / Don't |

@@ -1,9 +1,9 @@
 //! axum server wiring: binds the listener, assembles the router (catch-all
-//! handler + CORS + timeout + concurrency limit), and runs it with graceful
-//! shutdown.
+//! handler + CORS + concurrency limit, under the request timeout), and runs it
+//! with graceful shutdown.
 //!
 //! Ported from the in-engine `iii-http` `RestApiWorker` (`api_core.rs`):
-//! `build_cors_layer`, the `TimeoutLayer` / `ConcurrencyLimitLayer` stack and
+//! `build_cors_layer`, the `ConcurrencyLimitLayer` stack and
 //! the `axum::serve` + `with_graceful_shutdown` task. Routes are dynamic: every
 //! request hits `dynamic_handler`, which calls `http::on-request`, whose
 //! deliver hook matches routes from the shared [`RouteTable`] at request time,
@@ -11,8 +11,8 @@
 //!
 //! ## Hot-swappable layers (Phase A)
 //!
-//! The CORS / outer-timeout / concurrency tower layers are baked into the axum
-//! `Router` at build time, so they cannot change per-request. To let them
+//! The CORS / concurrency tower layers are baked into the axum `Router` at
+//! build time, so they cannot change per-request. To let them
 //! hot-reload on a **same-address** config change without dropping the listener,
 //! the router is wrapped in a [`HotRouter`] — a `tower::Service` holding an
 //! `Arc<RwLock<Router>>`. Each request clones the current `Router`, injects the
@@ -43,6 +43,7 @@ use axum::{
     Extension, Router,
     body::Body,
     http::{Method, Request, Response, StatusCode},
+    response::IntoResponse,
     serve::IncomingStream,
 };
 use futures::Future;
@@ -52,10 +53,7 @@ use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tower::Service;
 use tower::limit::ConcurrencyLimitLayer;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    timeout::TimeoutLayer,
-};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::RestApiConfig;
 use crate::configuration::ConfigCell;
@@ -148,27 +146,28 @@ pub fn build_cors_layer(config: &RestApiConfig) -> CorsLayer {
 }
 
 /// Build the layered axum `Router` from a config snapshot: the fallback-only
-/// `dynamic_handler` wrapped in the CORS, outer-timeout, and concurrency tower
-/// layers. The [`AppState`] extension is intentionally NOT added here — the
-/// [`HotRouter`] injects it per request (mirroring the engine injecting its
-/// `engine` extension), so the router itself carries only the reloadable layers.
+/// `dynamic_handler` wrapped in the CORS and concurrency tower layers. The
+/// [`AppState`] extension is intentionally NOT added here — the [`HotRouter`]
+/// injects it per request (mirroring the engine injecting its `engine`
+/// extension), so the router itself carries only the reloadable layers. The
+/// [`HotRouter`] also applies the request timeout, around the wait for a
+/// concurrency slot.
 pub fn build_router(snapshot: &RestApiConfig) -> Router {
     let cors = build_cors_layer(snapshot);
-    let timeout = TimeoutLayer::with_status_code(
-        StatusCode::GATEWAY_TIMEOUT,
-        Duration::from_millis(snapshot.default_timeout),
-    );
     let concurrency = ConcurrencyLimitLayer::new(snapshot.concurrency_request_limit);
 
+    // `with_state` builds the layers once, here: a router left with its
+    // handler unbuilt builds them again for every request, which gives every
+    // request a concurrency limit of its own.
     Router::new()
         .fallback(handler::dynamic_handler)
         .layer(cors)
-        .layer(timeout)
         .layer(concurrency)
+        .with_state(())
 }
 
 /// Rebuild the layered router from `snapshot` and swap it into `router`. The
-/// next request served by the [`HotRouter`] picks up the new CORS / timeout /
+/// next request served by the [`HotRouter`] picks up the new CORS /
 /// concurrency layers; the listener is untouched. Called on a same-address
 /// config change (see [`crate::configuration::on_config_change`]).
 pub async fn rebuild_layers(router: &RouterCell, snapshot: &RestApiConfig) {
@@ -207,56 +206,73 @@ impl Service<Request<Body>> for HotRouter {
         let router_arc = self.inner.clone();
         let state = self.state.clone();
         Box::pin(async move {
-            // The restricted listener faces the internet: a request no
-            // public route matches is refused here, before CORS (which
-            // answers every OPTIONS request) and before its body is read.
-            // The others reach dynamic_handler, whose call of
-            // `http::on-request` matches them against the public routes
-            // again (routes may change meanwhile).
-            if state.public_webhooks_only {
-                let table = state.routes.read().await;
-                if table
-                    .match_route_for_listener(req.method().as_str(), req.uri().path(), true)
-                    .is_none()
-                {
-                    let allowed = table.allowed_methods_for_listener(req.uri().path(), true);
-                    let status = if allowed.is_empty() {
-                        StatusCode::NOT_FOUND
-                    } else {
-                        StatusCode::METHOD_NOT_ALLOWED
-                    };
-                    let mut response = handler::error_response(
-                        status,
-                        if allowed.is_empty() {
-                            "NOT_FOUND"
-                        } else {
-                            "METHOD_NOT_ALLOWED"
-                        },
-                        status.canonical_reason().unwrap_or("Request rejected"),
-                    );
-                    if !allowed.is_empty()
-                        && let Ok(value) = allowed.join(", ").parse()
-                    {
-                        response
-                            .headers_mut()
-                            .insert(axum::http::header::ALLOW, value);
-                    }
-                    return Ok(response);
-                }
-            }
-            let router_clone = {
-                let router_guard = router_arc.read().await;
-                router_guard.clone()
-            };
-
-            let router_with_extension = router_clone.layer(Extension(state));
-            let mut router_service = router_with_extension.into_service();
-
-            match Service::call(&mut router_service, req).await {
-                Ok(response) => Ok(response),
-                Err(infallible) => match infallible {},
-            }
+            // The request's time runs from its arrival, so the wait for a
+            // concurrency slot counts. Expiry drops the request, and with it
+            // the work it started (see `handler::respond`).
+            let timeout = Duration::from_millis(state.config.read().await.default_timeout);
+            Ok(
+                tokio::time::timeout(timeout, dispatch(router_arc, state, req))
+                    .await
+                    .unwrap_or_else(|_| StatusCode::GATEWAY_TIMEOUT.into_response()),
+            )
         })
+    }
+}
+
+/// Serves one request through the current router, with `state` injected.
+async fn dispatch(
+    router_arc: RouterCell,
+    state: Arc<AppState>,
+    req: Request<Body>,
+) -> Response<Body> {
+    // The restricted listener faces the internet: a request no
+    // public route matches is refused here, before CORS (which
+    // answers every OPTIONS request) and before its body is read.
+    // The others reach dynamic_handler, whose call of
+    // `http::on-request` matches them against the public routes
+    // again (routes may change meanwhile).
+    if state.public_webhooks_only {
+        let table = state.routes.read().await;
+        if table
+            .match_route_for_listener(req.method().as_str(), req.uri().path(), true)
+            .is_none()
+        {
+            let allowed = table.allowed_methods_for_listener(req.uri().path(), true);
+            let status = if allowed.is_empty() {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::METHOD_NOT_ALLOWED
+            };
+            let mut response = handler::error_response(
+                status,
+                if allowed.is_empty() {
+                    "NOT_FOUND"
+                } else {
+                    "METHOD_NOT_ALLOWED"
+                },
+                status.canonical_reason().unwrap_or("Request rejected"),
+            );
+            if !allowed.is_empty()
+                && let Ok(value) = allowed.join(", ").parse()
+            {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::ALLOW, value);
+            }
+            return response;
+        }
+    }
+    let router_clone = {
+        let router_guard = router_arc.read().await;
+        router_guard.clone()
+    };
+
+    let router_with_extension = router_clone.layer(Extension(state));
+    let mut router_service = router_with_extension.into_service();
+
+    match Service::call(&mut router_service, req).await {
+        Ok(response) => response,
+        Err(infallible) => match infallible {},
     }
 }
 
@@ -286,12 +302,12 @@ impl<'a> Service<IncomingStream<'a, TcpListener>> for MakeHotRouterService {
 /// address (so callers can reach an ephemeral port), the swappable router cell,
 /// and the task/shutdown handles.
 ///
-/// The CORS, outer timeout, and concurrency tower layers are built from a
-/// snapshot taken here at serve time, but — unlike a static router — they can be
+/// The CORS and concurrency tower layers are built from a snapshot taken here
+/// at serve time, but — unlike a static router — they can be
 /// rebuilt live via [`rebuild_layers`] on a same-address config change (see
 /// [`crate::configuration`]). The shared [`ConfigCell`] is handed to the
-/// handler, which reads `middleware` and `default_timeout` from it per-request,
-/// so those fields hot-reload too.
+/// [`HotRouter`] and the handler, which read `default_timeout` and `middleware`
+/// from it per request, so those fields hot-reload too.
 pub async fn serve(
     routes: Arc<RwLock<RouteTable>>,
     requests: InFlightRequests,

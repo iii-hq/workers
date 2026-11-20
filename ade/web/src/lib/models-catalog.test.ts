@@ -3,6 +3,7 @@ import {
   type CatalogModelRow,
   catalogKeysInRouterOrder,
   catalogRowsToModelOptions,
+  compareModelNames,
   type ProviderListEntry,
   parseProviderList,
   preferredStartingModel,
@@ -198,9 +199,44 @@ describe('catalogKeysInRouterOrder', () => {
       'claude-code::claude-code/claude-sonnet-5-5',
       'claude-code::claude-code/claude-fable-5',
     ])
-    // The picker still lists them alphabetically.
+    // The picker still lists families alphabetically.
     expect(catalogRowsToModelOptions(rows).map((o) => o.id)[0]).toBe(
       'claude-code::claude-code/claude-fable-5',
     )
+  })
+})
+
+describe('compareModelNames', () => {
+  it('lists each family newest version first, unversioned names last', () => {
+    const names = [
+      'Gemini Flash Latest',
+      'Gemini 3.8 Flash',
+      'Gemini 4 Neon',
+      'Gemini 3.10 Flash',
+      'Gemini 4 Argon',
+      'GPT-6-Sol',
+      'GPT-5.6-Luna',
+      'GPT-6.1-Sol',
+      'Claude Opus 5',
+      'Claude Opus 5.5',
+      'Claude Haiku 4.5',
+      'GLM 5',
+      'GLM 5 Turbo',
+    ]
+    expect([...names].sort(compareModelNames)).toEqual([
+      'Claude Haiku 4.5',
+      'Claude Opus 5.5',
+      'Claude Opus 5',
+      'Gemini 4 Argon',
+      'Gemini 4 Neon',
+      'Gemini 3.10 Flash',
+      'Gemini 3.8 Flash',
+      'Gemini Flash Latest',
+      'GLM 5',
+      'GLM 5 Turbo',
+      'GPT-6.1-Sol',
+      'GPT-6-Sol',
+      'GPT-5.6-Luna',
+    ])
   })
 })

@@ -6,8 +6,9 @@
 //!   3. Connect to the local iii engine.
 //!   4. Register config schema (seed = None for MVP) and fetch authoritative value.
 //!   5. Build ConfigCell + Deps.
-//!   6. Register every function, `workflow::start` behind a closed gate, then
-//!      define the `workflow` and `workflow-notify` queues (exit on failure).
+//!   6. Register every function, `workflow::start` behind a closed gate, and the
+//!      console UI assets, then define the `workflow` and `workflow-notify`
+//!      queues (exit on failure).
 //!   7. Observe `cron::on-tick` for the sweep (retain the handle for hot-reload).
 //!   8. Observe the harness: one-shot observers of on-turn-completed /
 //!      hook::on-pre-call, plus hook::on-pre-generate per `inject_guidance` (each
@@ -127,6 +128,7 @@ async fn main() -> Result<()> {
     // Before the queue define, so the function list has it when the worker boots alone.
     let start_gate = functions::StartGate::default();
     functions::register_start(&iii, &deps, start_gate.clone());
+    workflow::ui::register(&iii);
 
     // Ticks and default notify ride on these queues; without them nothing runs.
     workflow::queue::ensure_workflow_queue(&iii)

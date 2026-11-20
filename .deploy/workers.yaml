@@ -1292,16 +1292,16 @@ workers:
       - armv7-unknown-linux-gnueabihf
       windows_exception: not published to the Registry yet; no Windows build to restore
     publish: true
-  mcp:
+  mcp-server:
     source:
-      path: mcp
+      path: mcp-server
       package_manifest: Cargo.toml
     artifact:
       kind: rust-binary
       toolchain:
         name: rust
         version: 1.97.1
-      binary: mcp
+      binary: mcp-server
       targets: *id001
     publish: true
   memory:
@@ -1570,6 +1570,18 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-elevenlabs
+      targets: *id001
+    publish: true
+  provider-gemini:
+    source:
+      path: provider-gemini
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-gemini
       targets: *id001
     publish: true
   provider-github-copilot:
@@ -2429,6 +2441,26 @@ workers:
       - aarch64-unknown-linux-gnu
       - armv7-unknown-linux-gnueabihf
       windows_exception: not published to the Registry yet; no Windows build to restore
+      frontends:
+      - workspace_root: .
+        source_path: workflow/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
     publish: true
   worktree:
     source:

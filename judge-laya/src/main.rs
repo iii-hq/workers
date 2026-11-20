@@ -54,11 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let initial = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)?;
-    let (model, revision, preload) = (
-        initial.model.clone(),
-        initial.revision.clone(),
-        initial.preload.clone(),
-    );
+    let models = initial.checkpoints();
     let options = engine::Options {
         threads: initial.threads,
         gpu_layers: initial.gpu_layers,
@@ -71,9 +67,7 @@ async fn main() -> anyhow::Result<()> {
         .run()
         .await;
     let checkpoints = Checkpoints {
-        model,
-        revision,
-        preload,
+        models,
         checkpoint_dir: cli.checkpoint_dir,
         gguf: cli.gguf,
     };
@@ -98,9 +92,8 @@ async fn main() -> anyhow::Result<()> {
 /// Where the checkpoints come from; read once at start.
 #[derive(Clone)]
 struct Checkpoints {
-    model: String,
-    revision: Option<String>,
-    preload: Vec<String>,
+    /// `LayaConfig::checkpoints`: the default model first.
+    models: Vec<String>,
     checkpoint_dir: Option<PathBuf>,
     gguf: Option<PathBuf>,
 }
@@ -108,14 +101,12 @@ struct Checkpoints {
 /// Fetch (unless local) and load every configured checkpoint.
 fn load(source: &Checkpoints, options: engine::Options) -> anyhow::Result<LayaClient> {
     let Checkpoints {
-        model,
-        revision,
-        preload,
+        models,
         checkpoint_dir,
         gguf,
     } = source.clone();
     let mut checkpoints = Vec::new();
-    for (i, name) in std::iter::once(&model).chain(&preload).enumerate() {
+    for (i, name) in models.iter().enumerate() {
         let checkpoint = match &checkpoint_dir {
             Some(dir) if i == 0 => download::local(name, dir)?,
             // A local directory holds one checkpoint; extra ones need the Hub.
@@ -128,11 +119,7 @@ fn load(source: &Checkpoints, options: engine::Options) -> anyhow::Result<LayaCl
                     model = name,
                     "fetching laya checkpoint from the Hugging Face Hub"
                 );
-                download::fetch(
-                    name,
-                    revision.as_deref(),
-                    gguf.as_deref().filter(|_| i == 0),
-                )?
+                download::fetch(name, gguf.as_deref().filter(|_| i == 0))?
             }
         };
         tracing::info!(

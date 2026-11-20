@@ -66,8 +66,26 @@ pub struct RecallResponse {
     /// silent. `hybrid`: `bm25-entity`, or `bm25-entity-semantic` when the
     /// query was embedded through `router::embed`. `lexical`: `lexical`.
     /// `semantic`: `semantic`, or `semantic-unavailable` (empty result —
-    /// NOT "no matches") when the query could not be embedded.
+    /// NOT "no matches") when the query could not be embedded. A label with
+    /// semantic does not say every memory has a vector: see
+    /// `vector_coverage`.
     pub retrieval: String,
+    /// How much of `bank` the semantic signal could reach. Present when the
+    /// query was embedded and `bank` exists, so never in `lexical` mode.
+    /// `covered < live` means some live memories have no vector in the
+    /// query's model yet (backfill or a re-embed is still running), and
+    /// the semantic arm cannot find them; `retrieval` does not change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_coverage: Option<VectorCoverage>,
+}
+
+/// Live memories of the response's `bank` with a vector comparable with
+/// the query's, of all its live memories. Layers read under it are not
+/// counted.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct VectorCoverage {
+    pub covered: usize,
+    pub live: usize,
 }
 
 pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallResponse, MemoryError> {
@@ -93,6 +111,14 @@ pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallRespons
         _ => crate::embed_client::query_vector(deps, &req.query).await,
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
+    // Read before ranking, so a lower bound of what the arm saw.
+    let vector_coverage = match (&bank, qv) {
+        (Some(b), Some(_)) => {
+            let (covered, live) = b.vector_coverage(query_model).await;
+            Some(VectorCoverage { covered, live })
+        }
+        _ => None,
+    };
     // One BM25 scale for the bank and its layers, as the hook ranks them.
     let mut bm25_max = 0.0_f32;
     if let Some(b) = &bank {
@@ -130,6 +156,7 @@ pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallRespons
         bank: scope.bank,
         memories,
         retrieval: retrieval_label(req.mode, query_vec.is_some()).into(),
+        vector_coverage,
     })
 }
 

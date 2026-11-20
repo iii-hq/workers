@@ -252,6 +252,21 @@ mod tests {
     }
 
     #[test]
+    fn expose_endpoints_is_optional_and_in_the_schema() {
+        assert!(WorkerConfig::default().rbac.expose_endpoints.is_none());
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(
+            "rbac:\n  expose_endpoints:\n    - match(\"/\")\n    - match(\"/otel\")\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.rbac.expose_endpoints.as_ref().map(Vec::len), Some(2));
+        let schema = WorkerConfig::json_schema();
+        let prop = &schema["definitions"]["RbacConfig"]["properties"]["expose_endpoints"];
+        assert!(prop.to_string().contains("\"array\""), "{prop}");
+        // The default leaves it out, which serves `/`.
+        assert!(schema["example"]["rbac"].get("expose_endpoints").is_none());
+    }
+
+    #[test]
     fn json_schema_is_typed_object_with_example() {
         let schema = WorkerConfig::json_schema();
         assert_eq!(schema["type"], "object");

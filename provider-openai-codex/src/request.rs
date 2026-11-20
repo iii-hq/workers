@@ -9,15 +9,12 @@ use llm_router::types::model::AgentFunction;
 use llm_router::types::router::PromptCacheIntent;
 use serde_json::{Value, json};
 
-/// Codex client version whose Responses contract this worker mirrors.
+/// Shared Codex compatibility identity for model discovery and Responses requests.
 ///
-/// The ChatGPT backend uses this header to gate newly released models. Omitting
-/// it makes supported models such as GPT-5.6 Luna fail as "Model not found",
-/// and the `/models` catalog drops models the version is too old for (e.g.
-/// `gpt-6-astra` needs >= 0.153.0). Bump to the installed `codex --version`
-/// when the CLI lists a model this provider does not; the configuration UI
-/// shows the current value.
-pub(crate) const CODEX_COMPAT_VERSION: &str = "0.159.0";
+/// Sent as the backend `version` header and discovery `client_version` query
+/// parameter, and displayed in the configuration UI. This identity does not
+/// establish model availability or account entitlement.
+pub(crate) const CODEX_COMPAT_VERSION: &str = "0.169.0";
 
 const SUMMARY_UNSUPPORTED_MODEL: &str = "gpt-5.3-codex-spark";
 
@@ -164,6 +161,11 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_version_is_approved_release() {
+        assert_eq!(CODEX_COMPAT_VERSION, "0.169.0");
+    }
+
+    #[test]
     fn body_has_responses_shape() {
         let body = build_body(&args());
         assert_eq!(body["model"], "gpt-5.5");
@@ -244,7 +246,8 @@ mod tests {
         assert!(h.contains(&("chatgpt-account-id", "acc-1".to_string())));
         assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
         assert!(h.contains(&("originator", "codex_cli_rs".to_string())));
-        assert!(h.iter().any(|(k, _)| *k == "openai-beta"));
+        assert!(h.contains(&("openai-beta", "responses=experimental".to_string())));
+        assert!(h.contains(&("content-type", "application/json".to_string())));
         assert!(h.contains(&("accept", "text/event-stream".to_string())));
     }
 
@@ -256,9 +259,13 @@ mod tests {
             api_url: crate::config::DEFAULT_API_URL.into(),
         };
         let h = build_backend_headers(&cfg);
+        assert!(h.contains(&("authorization", "Bearer at".to_string())));
+        assert!(h.contains(&("chatgpt-account-id", "acc-1".to_string())));
+        assert!(h.contains(&("originator", "codex_cli_rs".to_string())));
         assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
         assert!(!h.iter().any(|(key, _)| *key == "openai-beta"));
         assert!(!h.iter().any(|(key, _)| *key == "accept"));
+        assert!(!h.iter().any(|(key, _)| *key == "content-type"));
     }
 
     /// RFC 4122 v4 shape: 36 chars, hyphens at 8/13/18/23, version nibble

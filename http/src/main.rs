@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
     tracing::info!(address = %boot.local_addr, "iii-http ready");
 
     // Observe configuration updates so middleware/default_timeout and the
-    // CORS/timeout/concurrency layers reload live on a same-address change, and
+    // CORS/concurrency layers reload live on a same-address change, and
     // a host/port change rebinds the listener live (see configuration).
     let _config_observer = configuration::register_config_observer(
         &iii,

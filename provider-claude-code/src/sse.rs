@@ -234,14 +234,7 @@ pub fn synthetic_error_event_from_state(
     model: &str,
     kind: ErrorKind,
 ) -> AssistantMessageEvent {
-    let mut error = build_partial(state, model);
-    error.content.push(ContentBlock::Text {
-        text: message.to_string(),
-    });
-    error.stop_reason = StopReason::Error;
-    error.error_message = Some(message.to_string());
-    error.error_kind = Some(kind);
-    AssistantMessageEvent::Error { error }
+    AssistantMessageEvent::error(build_partial(state, model), kind, message)
 }
 
 fn wire_index(parsed: &Value) -> Option<usize> {

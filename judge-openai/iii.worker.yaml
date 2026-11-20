@@ -9,6 +9,7 @@ bin: judge-openai
 tags: [evaluation, noul, choice, score, openai, relevance]
 description: OpenAI Decisions evaluation (judge-openai::evaluate), model listing (judge-openai::models::list) and caller-scoped cancellation (judge-openai::cancel), with typed usage, provider errors, per-call retries and worker-owned credentials.
 config:
+  auth: api_key
   api_key: null
   model: gpt-6-luna
   max_request_bytes: 8388608

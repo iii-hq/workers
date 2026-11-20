@@ -1,0 +1,21 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-4-hydrogen"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"EsYBCsMBAWkUfRMVCiRJxBTifwRiOAtTDn70kYfpVNp7Bz7y9k+QjU4VLY4QdFSpyCzQJF3RWLsinZATRMxGJl9sCAH9F8YGJbrN5RIFRCgZunsZrpOBJU7qf0Zo1cTzQ31MJW/CIO/87W09xvhAKdljR3gxX/C40iCeDxUpVEq70WZjpuAL1bowHWTD7iKz5NDWJ3OAjrm6EGZ6hlHTHlt47keRaElon+HppmOR0pqw6Iys5ZoivuUfPbqVCDiSk6KnBcJ2r96v","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"completed","usage":{"total_tokens":249,"total_input_tokens":177,"input_tokens_by_modality":[{"modality":"text","tokens":177}],"total_cached_tokens":0,"total_output_tokens":8,"output_tokens_by_modality":[{"modality":"text","tokens":8}],"total_tool_use_tokens":0,"total_thought_tokens":64,"initial_input_tokens":177},"created":"2026-11-19T17:31:02Z","updated":"2026-11-19T17:31:02Z","service_tier":"standard","object":"interaction","model":"gemini-4-hydrogen"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

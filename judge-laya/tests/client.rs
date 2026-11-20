@@ -2,6 +2,7 @@
 mod support;
 
 use judge_contract::{Answer, EvaluateRequest, EvaluateResponse, ModelsRequest, ModelsResponse};
+use judge_laya::download::MODELS;
 use serde_json::{Map, Value, json};
 use support::{tiny_client, tiny_client_named};
 
@@ -347,6 +348,11 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
     );
     assert_eq!(model_of(routed.evaluate(one(english, &noul)).await), "laya");
     assert_eq!(model_of(routed.evaluate(one("12345", &noul)).await), "laya");
+    // A non-Latin script leaves the English default too.
+    assert_eq!(
+        model_of(routed.evaluate(one("Հայերեն", &noul)).await),
+        "laya-multilingual"
+    );
     // Routing off: everything answers on the default checkpoint.
     assert_eq!(
         model_of(client.evaluate(one(portuguese, &noul)).await),
@@ -410,4 +416,83 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
         model_of(multilingual.evaluate(one(english, &noul)).await),
         "laya"
     );
+}
+
+/// laya's recorded router decisions (`tests/fixtures/upstream/route_probe.json`)
+/// for the options this worker has: the router's `default` (here the first
+/// loaded checkpoint) and `auto_task_detection`, and a call's `state`,
+/// `questions` and `model`. Model aliases other than laya's three names and
+/// ours are skipped, and so are null and number states: the judge contract
+/// refuses them before any routing (`lang_probe.json` covers a null state's
+/// detection).
+#[tokio::test]
+async fn routing_matches_laya_recorded_probe() {
+    let probe: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/upstream/route_probe.json")).unwrap();
+    let name = |model: &str| match model {
+        "english" | "laya" => Some("laya"),
+        "multilingual" | "laya-multilingual" => Some("laya-multilingual"),
+        "typed-decisions" | "laya-typed-decisions" => Some("laya-typed-decisions"),
+        _ => None,
+    };
+    let within = |kwargs: &Value, keys: &[&str]| {
+        kwargs
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| keys.contains(&key.as_str()))
+    };
+    let (mut checked, mut failures) = (0, Vec::new());
+    for case in &probe {
+        let (router, route) = (&case["router_kwargs"], &case["route_kwargs"]);
+        if !within(router, &["default", "auto_task_detection"])
+            || !within(route, &["state", "questions", "model"])
+        {
+            continue;
+        }
+        // laya's Router default since 0.4.0.
+        let Some(default) = name(router["default"].as_str().unwrap_or("multilingual")) else {
+            continue;
+        };
+        if !matches!(
+            route["state"],
+            Value::String(_) | Value::Object(_) | Value::Array(_)
+        ) {
+            continue;
+        }
+        let explicit = match route["model"].as_str() {
+            None => None,
+            Some(model) => match name(model) {
+                Some(model) => Some(model),
+                None => continue,
+            },
+        };
+        checked += 1;
+        let mut names = vec![default];
+        names.extend(MODELS.iter().filter(|model| **model != default));
+        let client = tiny_client_named(&names).with_routing(judge_laya::Routing {
+            auto_route: true,
+            auto_task_detection: router["auto_task_detection"] == true,
+            ..Default::default()
+        });
+        let questions = route
+            .get("questions")
+            .filter(|questions| !questions.is_null())
+            .cloned()
+            .unwrap_or_else(|| json!({"q": {"type": "noul", "instructions": "Refund?"}}));
+        let mut call = request(json!({"evaluations": [
+            {"id": "e", "state": route["state"], "questions": questions}
+        ]}));
+        call.model = explicit.map(Into::into);
+        let got = match client.evaluate(call).await {
+            EvaluateResponse::Ok { model, .. } => model,
+            other => format!("{other:?}"),
+        };
+        let want = name(case["decision"]["model"].as_str().unwrap()).unwrap();
+        if got != want {
+            failures.push(format!("{}: {got}, expected {want}", case["label"]));
+        }
+    }
+    assert_eq!(checked, 88);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

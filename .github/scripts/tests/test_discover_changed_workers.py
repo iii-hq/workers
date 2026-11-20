@@ -100,6 +100,20 @@ def test_shared_test_support_runs_the_workers_that_compile_it(
     assert payload["source_changed"] == ["judge-typesafe"]
 
 
+def test_the_shared_model_case_table_runs_memory_consolidate(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        discover, "changed_files", lambda base, head: ["memory/tests/fixtures/automatic-model-cases.json"]
+    )
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {"memory", "memory-consolidate"} <= set(payload["changed_workers"])
+    assert "memory-consolidate" not in payload["source_changed"]
+
+
 def test_package_dependents_find_workers_whose_sub_projects_depend_on_the_package(tmp_path: Path) -> None:
     files = {
         "packages/native-ui/package.json": '{"name": "@iii-dev/native-ui"}',
@@ -141,6 +155,41 @@ def test_an_sdk_change_rebuilds_the_workers_that_bundle_it(
     assert "browser" in payload["by_language"]["rust"]
     assert payload["source_changed"] == []
     assert payload["native_ui"] is True
+
+
+def test_a_console_ui_change_rebuilds_the_workers_whose_ui_bundles_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(discover, "changed_files", lambda base, head: ["packages/console-ui/format.mjs"])
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {"state", "workflow", "ade"} <= set(payload["by_language"]["rust"])
+    assert payload["source_changed"] == []
+
+
+@pytest.mark.parametrize(
+    ("changed", "expected"),
+    [
+        ("packages/editor-prefs/src/index.ts", {"ade", "ide"}),
+        ("packages/terminal-font/src/index.ts", {"ade", "ide", "tmux"}),
+        ("packages/agent-terminal-ui/src/index.tsx", {"claude-code", "pi"}),
+    ],
+)
+def test_a_bundled_prefs_package_change_rebuilds_the_workers_whose_ui_bundles_it(
+    changed: str,
+    expected: set[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(discover, "changed_files", lambda base, head: [changed])
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload["changed_workers"]) == expected
+    assert payload["source_changed"] == []
 
 
 def test_a_traces_ui_change_rebuilds_ade(
@@ -200,7 +249,6 @@ def test_traces_ui_skips_other_changes(path: str) -> None:
         "packages/console-ui/format.mjs",
         "packages/editor-prefs/index.ts",
         "packages/terminal-font/src/index.ts",
-        "workflow/tests/fixtures/flat_start_cases.json",
         "crates/mention-contract/fixtures/tokens.json",
         "cursor/src/provider-icon.ts",
         "provider-openai/assets/icon.svg",
@@ -217,6 +265,7 @@ def test_ade_web_runs_for_its_inputs(path: str) -> None:
     [
         "ade/src/main.rs",
         "workflow/src/lib.rs",
+        "workflow/tests/fixtures/flat_start_cases.json",
         "harness/src/main.rs",
         "browser/native-ui/src/app.tsx",
         "README.md",

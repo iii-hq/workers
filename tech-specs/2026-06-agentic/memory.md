@@ -43,7 +43,8 @@ Recall fuses BM25 (unicode tokenizer, CJK bigrams) + entity match + corroboratio
 recency half-life, plus a semantic cosine signal against per-bank vector sidecars when
 `router::embed` has an embed-capable provider. Zero LLM at query time; responses name the
 retrieval mode that actually ran (`bm25-entity` vs `bm25-entity-semantic`) — degradation is
-explicit.
+explicit. An embedded query also reports `vector_coverage {covered, live}`: how many of the bank's
+live memories have a vector in the query's model.
 
 ## Standalone use
 
@@ -76,8 +77,9 @@ Embeddings are derived data: `vectors.jsonl` sidecars carry the embedded text an
 newly pinned `embedding_model`, or the provider's default changing) invalidates the vector;
 reinforcement, pins, and tag edits do not. Recall compares a query only with vectors of exactly
 the model reported for that query. Background backfill — on save, edit, and extraction, plus a sweep every
-minute — re-embeds through `router::embed`. Loss of a sidecar costs a re-embed, never memory
-integrity.
+minute — re-embeds through `router::embed`. While it runs, recall reports `covered < live`, so a
+caller that needs every memory reachable (consolidation) can wait. Loss of a sidecar costs a
+re-embed, never memory integrity.
 
 ## Functions
 

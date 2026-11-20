@@ -13,7 +13,8 @@ pub struct LayaConfig {
     /// tokens). Changing it takes effect at the next worker start.
     pub model: String,
     /// Extra checkpoints loaded at the next start (about 1 GB of RAM each),
-    /// selectable per request by `model` and used by routing.
+    /// selectable per request by `model` and used by routing. An entry equal to
+    /// `model` is already loaded and ignored.
     pub preload: Vec<String>,
     /// Route each evaluation without an explicit `model` by its state's script
     /// and language, like laya's Router: non-English states go to
@@ -28,9 +29,6 @@ pub struct LayaConfig {
     /// get cut: more accurate on wide label sets, at one more forward pass,
     /// and `confidence` covers the finalists only.
     pub choice_tournament: bool,
-    /// Hugging Face revision of `convaiinnovations/laya`; null follows `main`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub revision: Option<String>,
     /// CPU threads for the forward pass, applied at the next worker start.
     /// Hybrid CPUs run faster below their logical core count.
     #[schemars(range(min = 1, max = 256))]
@@ -70,7 +68,6 @@ impl Default for LayaConfig {
             auto_route: false,
             auto_task_detection: false,
             choice_tournament: false,
-            revision: None,
             threads: default_threads(),
             gpu_layers: None,
             batch_questions: limits.batch_questions,
@@ -88,19 +85,9 @@ impl LayaConfig {
             if !MODELS.contains(&extra.as_str()) {
                 return Err(format!("laya preload entries must be one of {MODELS:?}"));
             }
-            if *extra == self.model || self.preload[..i].contains(extra) {
-                return Err(
-                    "laya preload entries must be distinct from model and each other".into(),
-                );
+            if self.preload[..i].contains(extra) {
+                return Err("laya preload entries must be distinct".into());
             }
-        }
-        if self.revision.as_deref().is_some_and(|r| {
-            r.trim().is_empty()
-                || !r
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
-        }) {
-            return Err("laya revision must be a Hugging Face branch, tag or commit".into());
         }
         if self.threads == 0
             || self.threads > 256
@@ -113,6 +100,12 @@ impl LayaConfig {
             return Err("Invalid laya execution limits".into());
         }
         Ok(())
+    }
+    /// The checkpoints a start loads: `model` first, then each `preload` entry
+    /// that is not `model`.
+    pub fn checkpoints(&self) -> Vec<String> {
+        let extra = self.preload.iter().filter(|name| **name != self.model);
+        std::iter::once(&self.model).chain(extra).cloned().collect()
     }
     pub fn limits(&self) -> Limits {
         Limits {

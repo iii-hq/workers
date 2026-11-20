@@ -134,6 +134,19 @@ pub enum AssistantMessageEvent {
 }
 
 impl AssistantMessageEvent {
+    /// Finish a failed generation with its actual output and accounting.
+    /// Upstream diagnostics belong in `error_message`.
+    pub fn error(
+        mut partial: AssistantMessage,
+        kind: ErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        partial.stop_reason = StopReason::Error;
+        partial.error_kind = Some(kind);
+        partial.error_message = Some(message.into());
+        Self::Error { error: partial }
+    }
+
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -177,6 +190,42 @@ mod tests {
             model: "m".into(),
             provider: "p".into(),
             timestamp: 1,
+        }
+    }
+
+    #[test]
+    fn terminal_error_preserves_output_usage_and_provider_metadata() {
+        use crate::types::content::ContentBlock;
+
+        let started = AssistantMessage {
+            content: vec![ContentBlock::FunctionCall {
+                id: "call-1".into(),
+                function_id: "lookup".into(),
+                arguments: serde_json::json!({"id": 7}),
+            }],
+            native_stop_reason: Some("tool_calls".into()),
+            warnings: Some(vec!["upstream warning".into()]),
+            usage: Some(Usage {
+                input: Some(12),
+                output: Some(3),
+                cache_read: Some(2),
+                ..Usage::default()
+            }),
+            ..partial()
+        };
+        for original in [partial(), started] {
+            let expected = AssistantMessageEvent::Error {
+                error: AssistantMessage {
+                    stop_reason: StopReason::Error,
+                    error_kind: Some(ErrorKind::Transient),
+                    error_message: Some("connection reset".into()),
+                    ..original.clone()
+                },
+            };
+            assert_eq!(
+                AssistantMessageEvent::error(original, ErrorKind::Transient, "connection reset"),
+                expected
+            );
         }
     }
 

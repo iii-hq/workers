@@ -3,10 +3,67 @@
 use anyhow::{Result, anyhow, ensure};
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::{Cache, Repo, RepoType};
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 pub const LAYA_REPO: &str = "convaiinnovations/laya";
+
+/// The reviewed commit of [`LAYA_REPO`] (laya's `PINNED_REVISIONS`); every
+/// checkpoint is read from it.
+pub const REVISION: &str = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851";
+
+/// sha256 of each file a load reads at [`REVISION`]. The weights' come from
+/// laya's `verify/checkpoints.json`; the others were hashed from the pinned
+/// snapshot after checking each against its git blob id on the Hub.
+const DIGESTS: [(&str, &str); 12] = [
+    (
+        "model.safetensors",
+        "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+    ),
+    (
+        "rl_agent_config.json",
+        "ae287b56bbcf5f8c4f4541ae9dfd00c914c4c48b940b8398c3058af37ba92bbd",
+    ),
+    (
+        "encoder/config.json",
+        "bf3ab80598fdccf414855a2ce80f22859e4492d06ca8a62ddd1cfb63972f8979",
+    ),
+    (
+        "tokenizer/tokenizer.json",
+        "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+    ),
+    (
+        "multilingual/model.safetensors",
+        "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+    ),
+    (
+        "multilingual/rl_agent_config.json",
+        "25061739243b617ad88d1219ba6f8a9c86c5881ca28df024fa2d9b3b2fcc30c6",
+    ),
+    (
+        "multilingual/encoder/config.json",
+        "83f6916d13ef0f556ac461f28308dc2bffa7ebeadee8ec9e2db5812020ea5bb4",
+    ),
+    (
+        "multilingual/tokenizer/tokenizer.json",
+        "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f",
+    ),
+    (
+        "typed-decisions/model.safetensors",
+        "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+    ),
+    (
+        "typed-decisions/rl_agent_config.json",
+        "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+    ),
+    (
+        "typed-decisions/encoder/config.json",
+        "5268d24ad3b77c8151de5dcb0762ba4391619aad9ab0bda33e36fb083cfeae6d",
+    ),
+    (
+        "typed-decisions/tokenizer/tokenizer.json",
+        "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+    ),
+];
 
 /// The checkpoints the `model` setting accepts.
 pub const MODELS: [&str; 3] = ["laya", "laya-multilingual", "laya-typed-decisions"];
@@ -14,8 +71,7 @@ pub const MODELS: [&str; 3] = ["laya", "laya-multilingual", "laya-typed-decision
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
     pub model: String,
-    /// The commit whose snapshot the files were read from, as laya reports it;
-    /// `local:<dir>` for a checkpoint on disk.
+    /// [`REVISION`], as laya reports it; `local:<dir>` for a checkpoint on disk.
     pub revision: String,
     pub agent_config: PathBuf,
     pub tokenizer: PathBuf,
@@ -26,8 +82,22 @@ pub struct Checkpoint {
 /// `laya` (English, ModernBERT-large), `laya-multilingual` (mmBERT-base) or
 /// `laya-typed-decisions` (ModernBERT-large fine-tuned for laya's four
 /// workflows, 1024-token window), each with the tokenizer in its own
-/// `tokenizer/` directory, as laya loads them.
-pub fn fetch(model: &str, revision: Option<&str>, gguf: Option<&Path>) -> Result<Checkpoint> {
+/// `tokenizer/` directory, as laya loads them. Every file read is checked
+/// against its sha256 at [`REVISION`] first; a GGUF converted from verified
+/// files is trusted as derived state.
+pub fn fetch(model: &str, gguf: Option<&Path>) -> Result<Checkpoint> {
+    // `from_env` on both: `ApiBuilder::new` ignores HF_HOME (and HF_ENDPOINT),
+    // so the files and the GGUF would land in different caches.
+    let api = ApiBuilder::from_env().with_progress(true);
+    fetch_from(&Cache::from_env(), api, model, gguf)
+}
+
+fn fetch_from(
+    cache: &Cache,
+    api: ApiBuilder,
+    model: &str,
+    gguf: Option<&Path>,
+) -> Result<Checkpoint> {
     let subdir = match model {
         "laya" => "",
         "laya-multilingual" => "multilingual/",
@@ -38,18 +108,15 @@ pub fn fetch(model: &str, revision: Option<&str>, gguf: Option<&Path>) -> Result
             ));
         }
     };
-    let repo = Repo::with_revision(
-        LAYA_REPO.into(),
-        RepoType::Model,
-        revision.unwrap_or("main").into(),
-    );
-    // `from_env` on both: `ApiBuilder::new` ignores HF_HOME (and HF_ENDPOINT),
-    // so the files and the GGUF would land in different caches.
-    let cache = Cache::from_env();
-    let api = ApiBuilder::from_env()
-        .with_progress(true)
-        .build()?
-        .repo(repo.clone());
+    let repo = Repo::with_revision(LAYA_REPO.into(), RepoType::Model, REVISION.into());
+    let api = api.build()?.repo(repo.clone());
+    let out = cache
+        .path()
+        .parent()
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("judge-laya")
+        .join(format!("{model}-{REVISION}.gguf"));
+    let convert = gguf.is_none() && !out.is_file();
     // The weights and the encoder config only feed the conversion.
     let needed = [
         "rl_agent_config.json",
@@ -57,58 +124,94 @@ pub fn fetch(model: &str, revision: Option<&str>, gguf: Option<&Path>) -> Result
         "model.safetensors",
         "encoder/config.json",
     ];
-    let needed = &needed[..if gguf.is_some() { 2 } else { 4 }];
+    let needed = &needed[..if convert { 4 } else { 2 }];
     let needed: Vec<String> = needed.iter().map(|f| format!("{subdir}{f}")).collect();
-    if let Err(error) = follow(&api, &cache, &repo, &needed) {
+    if let Err(error) = link_snapshot(&api, cache, &repo, &needed) {
         tracing::warn!(
             %error,
-            revision = repo.revision(),
-            "could not check the laya revision on the Hugging Face Hub; using the cached snapshot"
+            "could not link the cached laya files into the pinned snapshot; downloading them"
         );
     }
-    let get = |file: &str| api.get(&format!("{subdir}{file}"));
+    let get = |file: &str| -> Result<PathBuf> {
+        let file = format!("{subdir}{file}");
+        let path = api.get(&file)?;
+        verify(&path, &file, digest(&file)?)?;
+        Ok(path)
+    };
     let agent_config = get("rl_agent_config.json")?;
     let tokenizer = get("tokenizer/tokenizer.json")?;
-    // Every file resolves through the same ref, so one snapshot names them all.
-    let revision = snapshot(&agent_config, &needed[0])
-        .ok_or_else(|| anyhow!("{} is not in a hub snapshot", agent_config.display()))?
-        .to_owned();
     let gguf = match gguf {
         Some(path) if path.is_file() => path.to_path_buf(),
         Some(path) => return Err(anyhow!("GGUF {} does not exist", path.display())),
-        None => {
-            // Keyed by the snapshot the inputs came from: new weights, configs
-            // or tokenizer convert again, a model-card-only commit does not.
-            let dir = cache
-                .path()
-                .parent()
-                .map_or_else(std::env::temp_dir, PathBuf::from)
-                .join("judge-laya");
-            converted(
-                &get("model.safetensors")?,
-                &get("encoder/config.json")?,
-                &agent_config,
-                &tokenizer,
-                &dir.join(format!("{model}-{revision}.gguf")),
-            )?
-        }
+        None if convert => converted(
+            &get("model.safetensors")?,
+            &get("encoder/config.json")?,
+            &agent_config,
+            &tokenizer,
+            &out,
+        )?,
+        None => out,
     };
     Ok(Checkpoint {
         model: model.into(),
-        revision,
+        revision: REVISION.into(),
         agent_config,
         tokenizer,
         gguf,
     })
 }
 
-/// Move `refs/<revision>` to the commit the revision names on the Hub now, when
-/// one of `files` differs there from the cached snapshot. hf-hub's `get` never
-/// asks the Hub about a file it already holds in the snapshot that ref names,
-/// so without this a null `revision` would stay on the first `main` fetched.
-/// A commit that leaves `files` alone (most only edit the model card) keeps
-/// the cached snapshot, and with it the GGUF named after it.
-fn follow(api: &ApiRepo, cache: &Cache, repo: &Repo, files: &[String]) -> Result<()> {
+fn digest(file: &str) -> Result<&'static str> {
+    DIGESTS
+        .iter()
+        .find(|(name, _)| *name == file)
+        .map(|(_, digest)| *digest)
+        .ok_or_else(|| anyhow!("{file} has no pinned sha256"))
+}
+
+/// Refuse `path` (the repo's `file`) unless its sha256 is `expected`: hf-hub's
+/// `get` never hashes what it downloads or finds in the cache.
+fn verify(path: &Path, file: &str, expected: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
+    let found = format!("{:x}", hasher.finalize());
+    if found == expected {
+        return Ok(());
+    }
+    // hf-hub serves a cached file without asking the Hub again, and relinks a
+    // cached blob: both have to go for the next load to download it.
+    let delete = if path.is_symlink() {
+        format!(
+            "{} and the blob it links to, {}",
+            path.display(),
+            std::fs::canonicalize(path)?.display()
+        )
+    } else {
+        path.display().to_string()
+    };
+    Err(anyhow!(
+        "{file} ({}) has sha256 {found}, expected {expected} at revision {REVISION}; \
+         delete {delete} and load again",
+        path.display()
+    ))
+}
+
+/// Point `refs/<REVISION>` at the pinned snapshot, linking into it the blobs
+/// already in the cache, as huggingface_hub does: `get` would download them
+/// again (2.3 GB for the three checkpoints). Asks the Hub only while one of
+/// `files` is missing from that snapshot, so once it is linked a load needs
+/// no network.
+fn link_snapshot(api: &ApiRepo, cache: &Cache, repo: &Repo, files: &[String]) -> Result<()> {
+    let cached = cache.repo(repo.clone());
+    let dir = cache.path().join(repo.folder_name());
+    // huggingface_hub fills `snapshots/<sha>` without `refs/<sha>` when asked
+    // for a commit, and hf-hub's `get` finds nothing without the ref.
+    let snapshot = dir.join("snapshots").join(repo.revision());
+    if files.iter().all(|file| snapshot.join(file).exists()) {
+        cached.create_ref(repo.revision())?;
+        return Ok(());
+    }
     #[derive(serde::Deserialize)]
     struct Head {
         sha: String,
@@ -131,8 +234,13 @@ fn follow(api: &ApiRepo, cache: &Cache, repo: &Repo, files: &[String]) -> Result
         .query("blobs", "true")
         .call()?
         .into_json()?;
-    // The commit and the blob ids become cache paths.
-    ensure!(hex(&head.sha), "the Hub named commit {:?}", head.sha);
+    // The commit becomes the ref, and the blob ids cache paths.
+    ensure!(
+        head.sha == repo.revision(),
+        "the Hub named commit {:?} for {}",
+        head.sha,
+        repo.revision()
+    );
     // hf-hub names a blob after the file's LFS sha256, else its git blob id.
     let blob = |file: &String| {
         head.siblings
@@ -146,19 +254,8 @@ fn follow(api: &ApiRepo, cache: &Cache, repo: &Repo, files: &[String]) -> Result
             })
             .filter(|id| hex(id))
     };
-    let cached = cache.repo(repo.clone());
-    let current = files.iter().all(|file| {
-        let path = cached.get(file).and_then(|path| path.canonicalize().ok());
-        path.as_deref().and_then(Path::file_name) == blob(file).map(OsStr::new)
-    });
-    if current {
-        return Ok(());
-    }
-    // Link the blobs already cached into the new snapshot, as huggingface_hub
-    // does; `get` would download them again.
     #[cfg(unix)]
     {
-        let dir = cache.path().join(repo.folder_name());
         for file in files {
             let link = dir.join("snapshots").join(&head.sha).join(file);
             let Some(id) = blob(file).filter(|id| dir.join("blobs").join(id).is_file()) else {
@@ -175,14 +272,6 @@ fn follow(api: &ApiRepo, cache: &Cache, repo: &Repo, files: &[String]) -> Result
     }
     cached.create_ref(&head.sha)?;
     Ok(())
-}
-
-/// The commit of the hub snapshot `path` holds `file` in
-/// (`…/snapshots/<sha>/<file>`), as laya's `snapshot_revision` reads it.
-fn snapshot<'a>(path: &'a Path, file: &str) -> Option<&'a str> {
-    let dir = path.ancestors().nth(Path::new(file).components().count())?;
-    let sha = dir.file_name()?.to_str()?;
-    (dir.parent()?.file_name()? == "snapshots").then_some(sha)
 }
 
 /// The GGUF at `out`, converted from the checkpoint when it is not there yet
@@ -253,23 +342,130 @@ pub fn local(model: &str, dir: &Path) -> Result<Checkpoint> {
 
 #[cfg(test)]
 mod tests {
-    use super::snapshot;
-    use std::path::Path;
+    use super::{DIGESTS, LAYA_REPO, MODELS, REVISION, digest, fetch_from, link_snapshot, verify};
+    use hf_hub::api::sync::ApiBuilder;
+    use hf_hub::{Cache, Repo, RepoType};
+
+    /// An API on a port nothing listens on: any Hub request fails.
+    fn offline(cache: &Cache) -> ApiBuilder {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        ApiBuilder::from_cache(cache.clone())
+            .with_endpoint(format!("http://127.0.0.1:{port}"))
+            .with_retries(0)
+    }
 
     #[test]
-    fn snapshot_names_the_commit_a_cached_file_came_from() {
-        let repo = Path::new("/srv/snapshots/hub/models--convaiinnovations--laya");
+    fn a_load_refuses_a_cached_file_whose_sha256_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        // Under `dir`, so the GGUF path (beside the cache) is too.
+        let cache = Cache::new(dir.path().join("hub"));
+        let repo = Repo::with_revision(LAYA_REPO.into(), RepoType::Model, REVISION.into());
+        let snapshot = cache
+            .path()
+            .join(repo.folder_name())
+            .join("snapshots")
+            .join(REVISION);
         for file in [
             "rl_agent_config.json",
-            "multilingual/tokenizer/tokenizer.json",
+            "tokenizer/tokenizer.json",
+            "model.safetensors",
+            "encoder/config.json",
         ] {
-            let path = repo.join("snapshots/7b928d82").join(file);
-            assert_eq!(snapshot(&path, file), Some("7b928d82"), "{file}");
+            let path = snapshot.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}").unwrap();
         }
-        // Not in a snapshot, though `snapshots` is further up the path.
-        let blob = repo.join("blobs/891102d3");
-        assert_eq!(snapshot(&blob, "model.safetensors"), None);
-        let local = Path::new("checkpoint/rl_agent_config.json");
-        assert_eq!(snapshot(local, "rl_agent_config.json"), None);
+        let error = fetch_from(&cache, offline(&cache), "laya", None)
+            .unwrap_err()
+            .to_string();
+        let path = snapshot.join("rl_agent_config.json");
+        assert!(
+            error.contains("sha256") && error.contains(&format!("delete {}", path.display())),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn every_file_a_load_reads_has_a_pinned_digest() {
+        for subdir in ["", "multilingual/", "typed-decisions/"] {
+            for file in [
+                "rl_agent_config.json",
+                "tokenizer/tokenizer.json",
+                "model.safetensors",
+                "encoder/config.json",
+            ] {
+                assert!(digest(&format!("{subdir}{file}")).is_ok(), "{subdir}{file}");
+            }
+        }
+        assert_eq!(DIGESTS.len(), 4 * MODELS.len());
+    }
+
+    #[test]
+    fn verify_refuses_a_file_whose_sha256_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rl_agent_config.json");
+        std::fs::write(&path, "abc").unwrap();
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        verify(&path, "rl_agent_config.json", abc).unwrap();
+        let error = verify(
+            &path,
+            "rl_agent_config.json",
+            digest("rl_agent_config.json").unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("rl_agent_config.json") && error.contains(abc),
+            "{error}"
+        );
+        // A snapshot link names its blob too: deleting the link alone relinks it.
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let error = verify(
+            &link,
+            "rl_agent_config.json",
+            digest("rl_agent_config.json").unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        let blob = std::fs::canonicalize(&path).unwrap();
+        assert!(
+            error.contains(&format!(
+                "delete {} and the blob it links to, {}",
+                link.display(),
+                blob.display()
+            )),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_linked_snapshot_needs_no_hub() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path().into());
+        let repo = Repo::with_revision(LAYA_REPO.into(), RepoType::Model, REVISION.into());
+        let api = offline(&cache).build().unwrap().repo(repo.clone());
+        let files = [
+            "rl_agent_config.json".to_owned(),
+            "tokenizer/tokenizer.json".to_owned(),
+        ];
+        assert!(link_snapshot(&api, &cache, &repo, &files).is_err());
+        let snapshot = dir
+            .path()
+            .join(repo.folder_name())
+            .join("snapshots")
+            .join(REVISION);
+        for file in &files {
+            let path = snapshot.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}").unwrap();
+        }
+        // No `refs/`, as huggingface_hub leaves a download by commit.
+        link_snapshot(&api, &cache, &repo, &files).unwrap();
+        assert!(cache.repo(repo).get(&files[0]).is_some());
     }
 }

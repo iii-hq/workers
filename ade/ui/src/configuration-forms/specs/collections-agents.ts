@@ -1,4 +1,5 @@
 import {
+  model,
   number,
   object,
   password,
@@ -294,18 +295,37 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
           toggle('enabled', 'Run scheduled passes', undefined, { defaultValue: true }),
           number('interval_hours', 'Interval (hours)', undefined, { min: 1 }),
           toggle('dry_run', 'Dry run', 'Plan supersedes without writing changes.'),
-          stringList('banks', 'Banks', 'Empty processes every bank.', { itemLabel: 'Bank' }),
+        ],
+      },
+      {
+        title: 'Scope and limits',
+        fields: [
+          stringList('banks', 'Banks', 'Only these banks are consolidated.', {
+            itemLabel: 'Bank',
+            emptyLabel: 'Every bank',
+            addLabel: 'Add bank',
+          }),
           number('max_supersedes_per_run', 'Supersedes per run', undefined, { min: 1 }),
+          number('max_llm_calls_per_run', 'Model calls per run', 'Zero makes no model calls.', { min: 0 }),
         ],
       },
       {
         title: 'Model assistance',
         fields: [
-          toggle('llm_assist_enabled', 'Enable model assistance'),
-          text('llm_model', 'Judge model', 'Empty uses the first router model.'),
+          model(
+            'llm_model',
+            'Model',
+            'Used by the judge, semantic and verify tiers. Automatic uses the default model of the first usable provider.',
+            { automatic: true },
+          ),
+          toggle('llm_assist_enabled', 'Judge tier', 'Confirms reorder merges and promotes standing instructions.'),
           number('promote_corroboration_threshold', 'Promotion threshold', 'Zero disables learned-rule promotion.', {
             min: 0,
           }),
+          toggle('semantic_enabled', 'Semantic tier', 'Merges paraphrases and outdated states among new memories.', {
+            defaultValue: true,
+          }),
+          toggle('verify_enabled', 'Verify tier', 'Checks each note against the transcript it came from.'),
         ],
       },
     ],
@@ -315,9 +335,12 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'dry_run',
       'banks[]',
       'max_supersedes_per_run',
+      'max_llm_calls_per_run',
       'llm_assist_enabled',
       'llm_model',
       'promote_corroboration_threshold',
+      'semantic_enabled',
+      'verify_enabled',
     ],
   },
   {

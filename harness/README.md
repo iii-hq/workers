@@ -210,7 +210,7 @@ default_max_turns: 16            # per-turn generate-step cap when a send omits 
 default_pending_timeout_ms: 1800000  # legacy parked-call (hold / pre-deploy child) wait guard
 max_depth: 3                     # sub-agent depth budget
 max_children: 8                  # sub-agent spawns-per-turn budget
-max_transient_resumes: 1         # recovery generations after a partial stream failure
+max_transient_resumes: 3         # recovery generations per turn after retryable provider failures; a turn that still fails reports failure.retryable: true on harness::status
 max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
 co_author: true                  # tell agents to end git commit messages with "Co-authored-by: iii harness (<model>) <noreply@iii.dev>"
@@ -699,7 +699,7 @@ with `decision` `continue`, `deny` or `hold`.
 | `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. | — | `decision`, `reason?` |
 | `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly to the turns its `sessions` globs and filters select (filters see the input without the assembled `system_prompt`, `messages` and `tools`), so the budget and compaction count it, and its target is not called. It joins the stable prefix ahead of the per-session runtime aid, so every session it selects shares it from the provider's prompt cache. | `generate { system_prompt, messages, model, provider, functions_generation, tools, expose }`, `parent?`, `parent_session_id?` (a sub-agent turn's parent, as on `harness::on-turn-completed`) | `decision`, `reason?`, `system_prompt?`, `append_messages?`, `annotations?` |
 | `harness::hook::on-post-generate` | After the final assistant message. Observe only. | `generated { message }` | `decision: continue` |
-| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, arguments }` | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
+| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, arguments, description? }` (`description`: the `agent_call` wrapper's display-only description of the call, when the model gave one; absent on a direct `harness::function::call`; a released hold recovers it from the transcript) | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
 | `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. | `call`, `result { function_call_id, function_id, content, is_error, details }` | `decision`, `held_by?`, `result?`, `annotations?` |
 | `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). | `result` (the turn's result) | `decision`, `reason?`, `prompt?` |
 

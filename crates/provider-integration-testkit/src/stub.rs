@@ -61,6 +61,7 @@ impl CapturedRequest {
 #[derive(Clone)]
 enum StubBody {
     Complete(String),
+    ShortBody(String),
     Hanging(Arc<AtomicBool>),
 }
 
@@ -77,6 +78,15 @@ impl StubResponse {
             status: StatusCode::OK,
             content_type: "text/event-stream",
             body: StubBody::Complete(body.into()),
+        }
+    }
+
+    /// An SSE response whose HTTP body ends before the promised length.
+    pub(crate) fn interrupted_sse(body: &str) -> Self {
+        Self {
+            status: StatusCode::OK,
+            content_type: "text/event-stream",
+            body: StubBody::ShortBody(body.to_string()),
         }
     }
 
@@ -225,6 +235,19 @@ fn build_stub_response(response: StubResponse) -> Response {
         .header("content-type", response.content_type);
     match response.body {
         StubBody::Complete(body) => builder.body(Body::from(body)).expect("stub response"),
+        StubBody::ShortBody(prefix) => {
+            let length = prefix.len() + 1;
+            let (sender, receiver) = mpsc::channel::<Result<axum::body::Bytes, Infallible>>(1);
+            tokio::spawn(async move {
+                let _ = sender.send(Ok(prefix.into())).await;
+                // Let hyper flush the SSE events before it detects the short body.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            });
+            builder
+                .header("content-length", length)
+                .body(Body::from_stream(ReceiverStream::new(receiver)))
+                .expect("short response")
+        }
         StubBody::Hanging(cancelled) => {
             let (sender, receiver) = mpsc::channel::<Result<axum::body::Bytes, Infallible>>(1);
             tokio::spawn(async move {

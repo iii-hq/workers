@@ -71,18 +71,18 @@ const engine = (reply: unknown = card) => {
   return { call } as unknown as Engine & { call: typeof call }
 }
 
-let root: Root | undefined
+const roots: Root[] = []
 async function mount(value: ConfigFormProps['value'], iii = engine(), extra: Partial<ConfigFormProps> = {}) {
   changes.clear()
   const container = document.body.appendChild(document.createElement('div'))
-  root = createRoot(container)
+  const root = createRoot(container)
+  roots.push(root)
   const onChange = vi.fn()
-  await act(async () => root!.render(<LayaConfigForm id="judge-laya" schema={{}} value={value} onChange={onChange} iii={iii} {...extra} />))
+  await act(async () => root.render(<LayaConfigForm id="judge-laya" schema={{}} value={value} onChange={onChange} iii={iii} {...extra} />))
   return { container, onChange, iii }
 }
 afterEach(async () => {
-  if (root) await act(async () => root!.unmount())
-  root = undefined
+  for (const root of roots.splice(0)) await act(async () => root.unmount())
   document.body.innerHTML = ''
 })
 
@@ -123,8 +123,6 @@ describe('LayaConfigForm', () => {
     const { onChange } = await mount(value)
     await act(async () => changes.get('model')?.('laya-multilingual'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, model: 'laya-multilingual' })
-    await act(async () => changes.get('revision')?.('abc123'))
-    expect(onChange).toHaveBeenLastCalledWith({ ...value, revision: 'abc123' })
     await act(async () => changes.get('threads')?.('6'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, threads: 6 })
     await act(async () => changes.get('gpu_layers')?.('0'))
@@ -147,15 +145,44 @@ describe('LayaConfigForm', () => {
     expect(onChange).toHaveBeenLastCalledWith({ model: 'laya', preload: ['laya-typed-decisions', 'laya-multilingual'] })
     await act(async () => changes.get('preload:laya-typed-decisions')?.('false'))
     expect(onChange).toHaveBeenLastCalledWith({ model: 'laya' })
+    // Flags store only a value that differs from the worker's default.
     await act(async () => changes.get('auto_route')?.('true'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_route: true })
-    await act(async () => changes.get('auto_task_detection')?.('false'))
+    await act(async () => changes.get('auto_route')?.('false'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value })
+    await act(async () => changes.get('auto_task_detection')?.('true'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_task_detection: true })
+    // Disabling drops a stored `true`.
+    const on = Object.freeze({ ...value, auto_route: true, auto_task_detection: true })
+    const { onChange: off } = await mount(on)
+    await act(async () => changes.get('auto_route')?.('false'))
+    expect(off).toHaveBeenLastCalledWith({ ...value, auto_task_detection: true })
+    await act(async () => changes.get('auto_task_detection')?.('false'))
+    expect(off).toHaveBeenLastCalledWith({ ...value, auto_route: true })
+  })
+
+  it('drops a stored revision, a setting the worker no longer accepts, on any edit', async () => {
+    const { onChange } = await mount({ model: 'laya', revision: 'main', future: 1 })
+    await act(async () => changes.get('threads')?.('6'))
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'laya', future: 1, threads: 6 })
+  })
+
+  it('shows the worker defaults for absent fields', async () => {
+    const { container } = await mount({})
+    const box = (name: string) => container.querySelector<HTMLInputElement>(`input[name="${name}"]`)!.checked
+    expect(container.textContent).toContain('Built-in default (laya)')
+    expect(box('preload:laya-multilingual')).toBe(false)
+    expect(box('preload:laya-typed-decisions')).toBe(false)
+    expect(box('auto_route')).toBe(false)
+    expect(box('auto_task_detection')).toBe(false)
+    const { container: stored } = await mount({ preload: ['laya-multilingual'], auto_route: true })
+    expect(stored.querySelector<HTMLInputElement>('input[name="preload:laya-multilingual"]')!.checked).toBe(true)
+    expect(stored.querySelector<HTMLInputElement>('input[name="auto_route"]')!.checked).toBe(true)
   })
 
   it('maps field errors, shows the rest in a panel, and keeps opaque roots', async () => {
-    const { container } = await mount({}, engine(), { errors: new Map([['/revision', 'bad revision'], ['', 'root failure']]) })
-    expect(container.querySelector('#laya-cfg-revision-error')?.textContent).toBe('bad revision')
+    const { container } = await mount({}, engine(), { errors: new Map([['/threads', 'bad threads'], ['', 'root failure']]) })
+    expect(container.querySelector('#laya-cfg-threads-error')?.textContent).toBe('bad threads')
     expect(container.querySelector('[role="alert"][data-variant="alert"]')?.textContent).toContain('root failure')
     const { container: opaque, onChange } = await mount('${LAYA}')
     expect(opaque.textContent).toContain('single value')
@@ -163,7 +190,7 @@ describe('LayaConfigForm', () => {
   })
 
   it('focuses the deep-linked control', async () => {
-    const { container } = await mount({}, engine(), { focusField: ['revision'] })
-    expect(document.activeElement).toBe(container.querySelector('#laya-cfg-revision'))
+    const { container } = await mount({}, engine(), { focusField: ['threads'] })
+    expect(document.activeElement).toBe(container.querySelector('#laya-cfg-threads'))
   })
 })

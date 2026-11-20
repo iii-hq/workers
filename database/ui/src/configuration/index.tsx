@@ -416,7 +416,7 @@ function HistorySettings({
           id="db-cfg-history-max-entries"
           field="history_max_entries"
           label="Maximum entries"
-          description="Set 0 to disable query history recording."
+          description="Off at 0 (default): queries make no state call. Set above 0 to record."
           meta={`${asNumber(value.history_max_entries, DEFAULT_HISTORY_MAX_ENTRIES).toLocaleString('en-US')} entries per database`}
           error={entriesError}
           controlSize="compact"

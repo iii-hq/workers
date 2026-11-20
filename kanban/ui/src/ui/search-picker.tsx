@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { splitTrigger, swallow } from './option-menu'
+import { splitTrigger, swallow, swallowActivation } from './option-menu'
 
 export type PickerOption = {
   value: string
@@ -113,7 +113,7 @@ export function SearchPicker(props: Single | Multiple) {
 
   return (
     <Popover onOpenChange={change} open={open}>
-      <PopoverTrigger disabled={disabled} onClick={swallow} onKeyDown={swallow} render={render}>
+      <PopoverTrigger disabled={disabled} onClick={swallow} onKeyDown={swallowActivation} render={render}>
         {children}
       </PopoverTrigger>
       <PopoverContent

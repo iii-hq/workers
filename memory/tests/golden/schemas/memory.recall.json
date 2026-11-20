@@ -267,6 +267,26 @@
           "score"
         ],
         "type": "object"
+      },
+      "VectorCoverage": {
+        "description": "Live memories of the response's `bank` with a vector comparable with the query's, of all its live memories. Layers read under it are not counted.",
+        "properties": {
+          "covered": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "live": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "covered",
+          "live"
+        ],
+        "type": "object"
       }
     },
     "properties": {
@@ -280,8 +300,19 @@
         "type": "array"
       },
       "retrieval": {
-        "description": "Retrieval mode actually used — degradation is explicit, never silent. `hybrid`: `bm25-entity`, or `bm25-entity-semantic` when the query was embedded through `router::embed`. `lexical`: `lexical`. `semantic`: `semantic`, or `semantic-unavailable` (empty result — NOT \"no matches\") when the query could not be embedded.",
+        "description": "Retrieval mode actually used — degradation is explicit, never silent. `hybrid`: `bm25-entity`, or `bm25-entity-semantic` when the query was embedded through `router::embed`. `lexical`: `lexical`. `semantic`: `semantic`, or `semantic-unavailable` (empty result — NOT \"no matches\") when the query could not be embedded. A label with semantic does not say every memory has a vector: see `vector_coverage`.",
         "type": "string"
+      },
+      "vector_coverage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/VectorCoverage"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "How much of `bank` the semantic signal could reach. Present when the query was embedded and `bank` exists, so never in `lexical` mode. `covered < live` means some live memories have no vector in the query's model yet (backfill or a re-embed is still running), and the semantic arm cannot find them; `retrieval` does not change."
       }
     },
     "required": [

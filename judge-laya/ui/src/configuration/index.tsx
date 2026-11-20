@@ -17,17 +17,18 @@ const MODELS = [
   { value: 'laya-multilingual', label: 'laya-multilingual', description: '100+ languages · mmBERT-base · 322M · 1024 tokens' },
   { value: 'laya-typed-decisions', label: 'laya-typed-decisions', description: 'Fine-tuned for laya’s four workflows · ModernBERT-large · 421M · 1024 tokens' },
 ]
+const DEFAULT_MODEL = 'laya'
 const routingFlags = [
-  { field: 'auto_route', label: 'Route by state language', description: 'Evaluations without an explicit model go to laya-multilingual when the state is not English (script and stopword detection, like laya’s Router). Needs that checkpoint preloaded.' },
-  { field: 'auto_task_detection', label: 'Detect typed-decisions workflows', description: 'Evaluations whose question ids form one of laya’s four workflows go to laya-typed-decisions. Needs that checkpoint preloaded.' },
-  { field: 'choice_tournament', label: 'Wide choices as a tournament', description: 'A choice of more than 16 options is asked in groups of 16, then once more over the group winners, instead of in one row whose labels get cut. More accurate on wide label sets; costs one more pass, and confidence covers the finalists only.' },
+  { field: 'auto_route', fallback: false, label: 'Route by state language', description: 'Evaluations without an explicit model go to laya-multilingual when the state is not English and to laya when it is, each when that checkpoint is loaded (script and stopword detection, like laya’s Router). Text the detector cannot place stays on the default model.' },
+  { field: 'auto_task_detection', fallback: false, label: 'Detect typed-decisions workflows', description: 'Evaluations whose question ids form one of laya’s four workflows go to laya-typed-decisions. Needs that checkpoint preloaded.' },
+  { field: 'choice_tournament', fallback: false, label: 'Wide choices as a tournament', description: 'A choice of more than 16 options is asked in groups of 16, then once more over the group winners, instead of in one row whose labels get cut. More accurate on wide label sets; costs one more pass, and confidence covers the finalists only.' },
 ]
 const limitFields = [
   { field: 'batch_questions', label: 'Questions per batch', fallback: 16, description: 'Questions scored in one forward pass (at most 8 for the 1024-token checkpoints); cancellation and deadlines are checked between batches. Clear to use 16.' },
   { field: 'max_request_bytes', label: 'Maximum request bytes', fallback: 8388608, description: 'Maximum encoded request size. Clear to use 8388608 (8 MiB).' },
   { field: 'max_timeout_ms', label: 'Maximum timeout (ms)', fallback: 300000, description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
 ]
-const knownFields = ['model', 'revision', 'threads', 'gpu_layers', 'preload', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
+const knownFields = ['model', 'threads', 'gpu_layers', 'preload', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
 
 interface ModelCard {
   name: string
@@ -83,7 +84,8 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
       />
     )
   }
-  const value = props.value ?? {}
+  // The worker refuses a stored `revision` (removed setting), so no edit carries it forward.
+  const { revision: _removed, ...value } = props.value ?? {}
   const setString = (field: string, raw: string | undefined) => {
     const next = { ...value }
     if (raw === undefined || raw === '') delete next[field]
@@ -100,10 +102,11 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
     }
     props.onChange(next)
   }
-  const setBool = (field: string, on: boolean) => {
+  // An absent flag takes the worker's default, so only a value that differs is stored.
+  const setBool = (field: string, on: boolean, fallback: boolean) => {
     const next = { ...value }
-    if (on) next[field] = true
-    else delete next[field]
+    if (on === fallback) delete next[field]
+    else next[field] = on
     props.onChange(next)
   }
   const preload = Array.isArray(value.preload) ? value.preload.filter((entry): entry is string => typeof entry === 'string') : []
@@ -118,7 +121,7 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
   const unassociatedErrors = [...(props.errors?.entries() ?? [])].filter(
     ([pointer]) => !knownFields.some((field) => pointer === `/${field}`),
   )
-  const selectedModel = typeof value.model === 'string' ? value.model : 'laya'
+  const selectedModel = typeof value.model === 'string' ? value.model : DEFAULT_MODEL
   const status =
     loaded === null && !probeError ? (
       <Chip tone="neutral">Checking the worker…</Chip>
@@ -149,31 +152,12 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
                 {...controlProps}
                 value={typeof value.model === 'string' ? value.model : undefined}
                 options={MODELS}
-                placeholder="laya"
+                placeholder={DEFAULT_MODEL}
                 allowEmpty
-                emptyLabel="Built-in default (laya)"
+                emptyLabel={`Built-in default (${DEFAULT_MODEL})`}
                 onClear={() => setString('model', undefined)}
                 onChange={(next) => setString('model', next)}
                 aria-label="Model"
-              />
-            )}
-          />
-          <SettingsField
-            id="laya-cfg-revision"
-            field="revision"
-            label="Revision"
-            description="Hugging Face branch, tag or commit of convaiinnovations/laya. Clear to follow main."
-            error={props.errors?.get('/revision')}
-            renderControl={(controlProps) => (
-              <Input
-                {...controlProps}
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="Revision"
-                placeholder="main"
-                value={typeof value.revision === 'string' ? value.revision : ''}
-                onChange={(next) => setString('revision', next)}
               />
             )}
           />
@@ -242,7 +226,7 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
               </div>
             )}
           />
-          {routingFlags.map(({ field, label, description }) => (
+          {routingFlags.map(({ field, fallback, label, description }) => (
             <SettingsField
               key={field}
               id={`laya-cfg-${field}`}
@@ -254,8 +238,8 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
                 <Checkbox
                   {...controlProps}
                   aria-label={label}
-                  checked={value[field] === true}
-                  onChange={(event) => setBool(field, event.currentTarget.checked)}
+                  checked={typeof value[field] === 'boolean' ? value[field] : fallback}
+                  onChange={(event) => setBool(field, event.currentTarget.checked, fallback)}
                 />
               )}
             />

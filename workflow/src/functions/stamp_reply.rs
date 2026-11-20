@@ -1,8 +1,8 @@
 //! `workflow::stamp-reply` — the pre_call hook that stamps the caller's session
-//! and folder into `workflow::start`.
+//! and folder into `workflow::start`, `workflow::list` and `workflow-result::submit`.
 //!
-//! Observes `harness::hook::on-pre-call` scoped to `workflow::start` (see
-//! `configuration::observe_pre_call_hook`). It stamps the TRUE caller session,
+//! Observes `harness::hook::on-pre-call` scoped to those functions (see
+//! `configuration::pre_call_hook_args`). It stamps the TRUE caller session,
 //! taken from the harness-supplied hook envelope, as `caller_session_id`,
 //! OVERWRITING anything the agent supplied: node sessions nest under it, and
 //! `workflow::start` answers it with the `next` observe call. It also replaces
@@ -10,6 +10,8 @@
 //! (`metadata.fs_scope.root`), so node sessions run where the caller runs. If
 //! there is nothing to stamp or remove, the hook answers a bare `continue` with
 //! no mutations (the harness parses that identically to `null`).
+//! On `workflow::start` alone it also fills an absent or blank `title` with
+//! the call's `description` (the agent's display-only wrapper field).
 //!
 //! The observer is bound `on_error: fail_closed`: a hook error or timeout
 //! refuses `workflow::start`, since an unstamped call would carry the agent's
@@ -73,20 +75,41 @@ pub struct StampCall {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
+    pub function_id: Option<String>,
+    #[serde(default)]
     pub arguments: Value,
+    /// The `agent_call` wrapper's description of the call, when given.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Pure decision: `continue` with rewritten arguments when there was a caller
 /// identity or folder to stamp, or a supplied folder to remove, else
 /// `continue` with no mutations (unchanged call).
 pub fn decide(event: StampReplyEvent) -> StampReplyResponse {
-    let mut args = event.call.map(|c| c.arguments).unwrap_or(Value::Null);
+    let (mut args, title) = match event.call {
+        Some(c) => {
+            let title = c
+                .description
+                .filter(|_| c.function_id.as_deref() == Some("workflow::start"));
+            (c.arguments, title)
+        }
+        None => (Value::Null, None),
+    };
     let Some(obj) = args.as_object_mut() else {
         return cont(None);
     };
     // The folder comes from the caller's turn, never the agent: drop a supplied
     // one even when there is no session to stamp.
     let mut changed = obj.remove("caller_fs_root").is_some();
+    let has_title = obj
+        .get("title")
+        .and_then(Value::as_str)
+        .is_some_and(|t| !t.trim().is_empty());
+    if let Some(title) = title.filter(|t| !has_title && !t.trim().is_empty()) {
+        obj.insert("title".into(), json!(title));
+        changed = true;
+    }
     let root = event
         .metadata
         .as_ref()
@@ -228,6 +251,40 @@ mod tests {
             json!({ "definition": {} }),
             "{out}"
         );
+    }
+
+    #[test]
+    fn titles_a_start_from_the_call_description_unless_it_has_one() {
+        let stamp = |function_id: &str, args: Value| {
+            wire(decide(
+                serde_json::from_value(json!({
+                    "session_id": "s_orch",
+                    "call": {
+                        "function_id": function_id,
+                        "arguments": args,
+                        "description": "Writing and checking tests",
+                    },
+                }))
+                .expect("envelope"),
+            ))["mutations"]["arguments"]
+                .clone()
+        };
+        let start = "workflow::start";
+        assert_eq!(
+            stamp(start, json!({ "nodes": {} }))["title"],
+            "Writing and checking tests"
+        );
+        assert_eq!(
+            stamp(start, json!({ "title": " " }))["title"],
+            "Writing and checking tests"
+        );
+        assert_eq!(stamp(start, json!({ "title": "Mine" }))["title"], "Mine");
+        for other in [
+            crate::functions::list::LIST_ID,
+            crate::functions::submit::SUBMIT_ID,
+        ] {
+            assert!(stamp(other, json!({})).get("title").is_none(), "{other}");
+        }
     }
 
     /// Mirrors the registry publish gate (`collect_worker_interface.py`): the

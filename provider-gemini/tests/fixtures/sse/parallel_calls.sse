@@ -1,0 +1,39 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"EtQDCtEDAWkUfRNIAxujskNB+SBaiLL6SDSCJnM0Mtq5jaFfRYtx+/+00iOa5TPs2D3Oy4azGP6IO/T4mCgtOGIPtKyT3gzrLkWLNKIiVHP34efhcz5wvYXz5OmjtCFAnHLPWysQbg8xS0ec5CPx0V7DjXPQXLL5ViSAWUD9FIPSOF6iNtfJSjmxwVuPXxpIbFzN0Ttr/+8RIWA4smpyiPvGxuBHmEOd6XlULTvN611XpUqr06BpfkssrpHRIeJpwZjIKaJ9RwUTkgR2BdC/AEv4bkuZsAwTBjQiCUxHmnYIrmCpd12sZ3NZxQkFAUhfeaiVdj43rlndYuCn07M6tgFRQIjsuaRveiAeD5L7zflEq+QlNLwsZ4Q242EaWn0qrdPlY//iiVxppXbvQbHQ4qIaysUtuPCcsoQxsa/QYALuohvEOo3O5keW6O2tlUmwZwzYSKv9D+asuaJweIF8Y4NGhs2sImyEJkBcAdup8SNOaYdwoD4wrtGXCvDCjXiBkD51iAvxB1smtF4Vmlyz6yNeGRMDHbW5xG7gBazyVdciTuVupNw9F4ye9wLn3JR0TfkFjGc9AukZz5wIQs8igdTTxoG6KoyqW5xt+C84gvdGGv+xv62V","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"id":"call_15652254846631736128","type":"function_call","name":"get_weather","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"arguments":"{\"city\":\"Lisbon\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":2,"step":{"id":"call_15652254846631735505","type":"function_call","name":"get_weather","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":2,"delta":{"arguments":"{\"city\":\"Porto\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":2,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"requires_action","usage":{"total_tokens":191,"total_input_tokens":79,"input_tokens_by_modality":[{"modality":"text","tokens":79}],"total_cached_tokens":0,"total_output_tokens":34,"total_tool_use_tokens":0,"total_thought_tokens":78,"initial_input_tokens":79},"created":"2026-11-19T17:26:18Z","updated":"2026-11-19T17:26:18Z","service_tier":"standard","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

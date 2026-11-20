@@ -43,6 +43,7 @@ import {
 } from '@/lib/attachments/draft-attachments'
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
+import { retireChatDraftSeed } from '@/lib/chat-draft-seeds'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
@@ -96,10 +97,12 @@ import type {
 } from '@/lib/sessions/types'
 import {
   loadActiveId,
+  loadDraftText,
   loadLastModel,
   loadLastThinkingLevel,
   loadNewChatDraft,
   saveActiveId,
+  saveDraftText,
   saveLastModel,
   saveLastThinkingLevel,
   saveNewChatDraft,
@@ -1197,6 +1200,11 @@ export interface ConversationsApi {
   /** Exact session ids confirmed absent/deleted by session-manager. */
   missingConversationIds: ReadonlySet<string>
   createNew: (draft?: { text: string; title?: string }) => string
+  /**
+   * Bring back an unsent draft under its own id (a column of the shared layout shows it, but this browser never
+   * had it, or lost it in a reload): local only, materialised on its first send like any draft. Not selected.
+   */
+  restoreDraft: (id: string, draft: { text: string; title?: string }) => void
   select: (id: string) => void
   /** Keep one session hydrated and subscribed while a chat panel is mounted. */
   watchConversation: (id: string) => () => void
@@ -2203,6 +2211,8 @@ export function useConversations(
           }
         },
         onDeleted: (event) => {
+          // A deleted chat never comes back as the draft it started as.
+          retireChatDraftSeed(event.session_id)
           markConversationMissing(event.session_id)
           invalidateSessionMetaLookup(event.session_id)
           pendingCompletionBellRef.current.delete(event.session_id)
@@ -2690,6 +2700,31 @@ export function useConversations(
       return next.id
     },
     [conversations, activeId, preferredModel, catalogSig, firstCatalogKey],
+  )
+
+  const restoreDraft = useCallback(
+    (id: string, draft: { text: string; title?: string }) => {
+      if (conversationsRef.current.some((c) => c.id === id)) return
+      const restored: Conversation = {
+        ...emptyConversation(
+          startingModel(
+            loadLastModel(),
+            catalogSig ? new Set(catalogSig.split('\u0001')) : null,
+            preferredModel,
+            firstCatalogKey,
+          ),
+          loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+          // What this browser typed in it since beats the text it was opened with.
+          { ...draft, text: loadDraftText(id) ?? draft.text },
+        ),
+        id,
+      }
+      setConversations((list) =>
+        list.some((c) => c.id === id) ? list : [restored, ...list],
+      )
+      clearConversationMissing(id)
+    },
+    [preferredModel, catalogSig, firstCatalogKey, clearConversationMissing],
   )
 
   const select = useCallback((id: string) => {
@@ -3215,8 +3250,10 @@ export function useConversations(
           // the e2e suite name their own kind when they create theirs.
           kind: 'user',
         })
-        // Sent: the session holds its draft now, not the new chat's slot.
+        // Sent: the session holds its draft now, not the new chat's slot (nor the layout's seed).
         forgetNewChatDraft(id)
+        retireChatDraftSeed(id)
+        saveDraftText(id, '')
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
             { ...c, draft: false, hydrated: false },
@@ -3327,6 +3364,7 @@ export function useConversations(
       // in-tab switches keep it, and in localStorage to outlive the browser.
       if (conv?.draft) {
         saveNewChatDraft(text)
+        saveDraftText(id, text)
         newChatDraftOwnerRef.current = id
       }
       if (!serverEnabled) return
@@ -3479,6 +3517,7 @@ export function useConversations(
     retryConversations,
     missingConversationIds,
     createNew,
+    restoreDraft,
     select,
     watchConversation,
     rename,
