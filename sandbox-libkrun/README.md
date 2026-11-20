@@ -168,8 +168,10 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
   the last `output_dir` or `build_dir` its scoped token presented, recorded in
   `~/.iii/sandbox/workers/<vm_id>/build-dir` with a MAC of the project token.
   On a directory another VM of the same project token recorded, a scoped token
-  gets S505 before anything is created or written there and before `image.id`
-  is read: the token Compose hands one container can neither replace nor boot
+  gets S505 before anything is written there and before `image.id` is read,
+  and before anything is created there but a second spelling of a recorded
+  directory that did not exist yet, which the build creates, empty, and then
+  refuses: the token Compose hands one container can neither replace nor boot
   an image in a directory another container's VM recorded. The message names
   that VM's record and the way out: destroy that VM, or delete that file.
   Another directory moves the VM there and releases the one it leaves, as the
@@ -180,7 +182,9 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
   adapter processes never give one directory to two VMs where the filesystem
   can lock a directory; elsewhere (NFS) a warning says so, and claims are
   serialized within one adapter process only. The check reads no directory
-  name; the project token is not checked.
+  name; the project token is not checked. A build creates its `output_dir`
+  under the claim, one component at a time through no symlink: a link put in
+  its path since the check is S501, and nothing is created outside the roots.
 - **Data disk.** A VM that boots builds keeps its writes on
   `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
   `root/`: they outlive restarts and rebuilds, and only `worker::destroy` with `prune`

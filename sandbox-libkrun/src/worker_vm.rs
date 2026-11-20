@@ -349,7 +349,7 @@ impl WorkerVms {
         build: &WorkerBuildRef,
     ) -> Result<PathBuf, SandboxError> {
         let dir = self.admit(&build.build_dir)?;
-        self.claim_build_dir(auth, state_key, &dir, "build_dir")?;
+        self.claim_build_dir(auth, state_key, &dir, "build_dir", None)?;
         let wanted = build.build_id.trim();
         match read_image_id(&dir) {
             Some(found) if found == wanted => {}
@@ -401,9 +401,15 @@ impl WorkerVms {
         // writer stopped and the scratch dir is gone.
         let _held = self.hold_build(&id)?;
         // Under the hold, so no `destroy` removes the claim while this build
-        // writes, and before the directory exists: a refused token creates nothing.
-        self.claim_build_dir(&req.auth, &req.state_key, &planned, "output_dir")?;
-        let out = self.create_output(&planned, &req.output_dir)?;
+        // writes; the claim creates the directory, so a refused token creates
+        // nothing and two claims never both create one directory.
+        let out = self.claim_build_dir(
+            &req.auth,
+            &req.state_key,
+            &planned,
+            "output_dir",
+            Some(&req.output_dir),
+        )?;
         // A base image in the request stands in for the manifest's.
         source.validate(&dir, base_image.is_none())?;
         let vm_dir = self.base.join(&id);
@@ -539,12 +545,43 @@ impl WorkerVms {
         })
     }
 
-    /// Create the directory `plan_output` planned for `output_dir`: S501 unless
-    /// it is then that very directory, with no link put in its way since.
+    /// Create the directory `plan_output` planned for `output_dir`, one
+    /// component at a time from `/`, through directory handles that follow no
+    /// symlink: a link put in its way since the plan stops the create, S501,
+    /// instead of redirecting it outside the roots. S501 too unless it is then
+    /// that very directory, under the roots.
     fn create_output(&self, planned: &Path, output_dir: &str) -> Result<PathBuf, SandboxError> {
-        std::fs::create_dir_all(planned).map_err(|e| {
+        use nix::errno::Errno;
+        use nix::fcntl::{OFlag, open, openat};
+        use nix::sys::stat::{Mode, mkdirat};
+        use std::path::Component;
+        let refused = |e: Errno| {
             SandboxError::SourceRejected(format!("cannot create output_dir {output_dir}: {e}"))
-        })?;
+        };
+        // A handle that only walks: no read permission needed where Linux has O_PATH.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let walk = OFlag::O_PATH;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let walk = OFlag::O_RDONLY;
+        let flags = walk | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let mut dir = open("/", flags, Mode::empty()).map_err(refused)?;
+        // `plan_output` made `planned` absolute, without `.` or `..`.
+        for component in planned.components() {
+            let Component::Normal(name) = component else {
+                continue;
+            };
+            dir = match openat(&dir, name, flags, Mode::empty()) {
+                Err(Errno::ENOENT) => {
+                    match mkdirat(&dir, name, Mode::from_bits_truncate(0o777)) {
+                        Ok(()) | Err(Errno::EEXIST) => {}
+                        Err(e) => return Err(refused(e)),
+                    }
+                    openat(&dir, name, flags, Mode::empty())
+                }
+                opened => opened,
+            }
+            .map_err(refused)?;
+        }
         let dir = self.admit(planned)?;
         if dir != planned || !dir.is_dir() {
             return Err(SandboxError::SourceRejected(format!(
@@ -571,26 +608,62 @@ impl WorkerVms {
     /// spelling (a bind mount, another case on a case-insensitive filesystem) is
     /// still the other VM's. Nothing reads a directory's name.
     ///
-    /// The check and the write hold the claims mutex and an flock on `<base>`,
-    /// so two claims of one directory, from two threads or two adapter
-    /// processes, never both succeed; on a filesystem that cannot lock a
-    /// directory, only the mutex, within this adapter process. The project token passes
-    /// and records nothing. `field` names the request field in errors.
+    /// With `create` (the request's `output_dir`, for errors), the claim creates
+    /// `dir` (`create_output`), with any token: after the check, so a refused
+    /// token creates nothing, and checked again once it exists, so a second
+    /// spelling of a recorded directory that did not exist yet is still S505,
+    /// before anything is written there. Returns the claimed directory.
+    ///
+    /// The check, the create and the write hold the claims mutex and an flock
+    /// on `<base>`, so two claims of one directory, from two threads or two
+    /// adapter processes, never both succeed; on a filesystem that cannot lock
+    /// a directory, only the mutex, within this adapter process. The project
+    /// token passes and records nothing. `field` names the request field in
+    /// errors.
     fn claim_build_dir(
         &self,
         auth: &str,
         state_key: &str,
         dir: &Path,
         field: &str,
-    ) -> Result<(), SandboxError> {
+        create: Option<&str>,
+    ) -> Result<PathBuf, SandboxError> {
+        let made = || match create {
+            Some(output_dir) => self.create_output(dir, output_dir),
+            None => Ok(dir.to_path_buf()),
+        };
         if self.is_project_token(auth) {
-            return Ok(());
+            return made();
         }
         // A scoped token that got here derives from a non-empty project token.
         let token = self.token.as_deref().unwrap_or("");
         let id = vm_id(state_key);
         let _claims = self.claims.lock().unwrap_or_else(PoisonError::into_inner);
         let _lock = lock_build_dirs(&self.base).map_err(SandboxError::FsIo)?;
+        let mut own = self.recorded_owner(token, &id, dir, field)?;
+        let dir = made()?;
+        if create.is_some() {
+            own = self.recorded_owner(token, &id, &dir, field)?;
+        }
+        if own.as_deref() == Some(dir.as_path()) {
+            return Ok(dir);
+        }
+        // A first claim, a move from another directory, or a new spelling.
+        store_build_dir(&self.base, &id, state_key, &dir, token).map_err(|e| {
+            SandboxError::FsIo(format!("cannot record the build directory of VM {id}: {e}"))
+        })?;
+        Ok(dir)
+    }
+
+    /// The record of VM `id` that names `dir`, if any: S505 when the record of
+    /// another VM names it (see `claim_build_dir`). Under the claims' lock.
+    fn recorded_owner(
+        &self,
+        token: &str,
+        id: &str,
+        dir: &Path,
+        field: &str,
+    ) -> Result<Option<PathBuf>, SandboxError> {
         let here = dir_identity(dir);
         let mut own = None;
         for (vm, recorded) in recorded_build_dirs(&self.base, token) {
@@ -607,13 +680,7 @@ impl WorkerVms {
             }
             own = Some(recorded);
         }
-        if own.as_deref() == Some(dir) {
-            return Ok(());
-        }
-        // A first claim, a move from another directory, or a new spelling.
-        store_build_dir(&self.base, &id, state_key, dir, token).map_err(|e| {
-            SandboxError::FsIo(format!("cannot record the build directory of VM {id}: {e}"))
-        })
+        Ok(own)
     }
 
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
@@ -3786,10 +3853,15 @@ mod tests {
             .unwrap();
         std::os::unix::fs::symlink(t.join("elsewhere"), project.join("late")).unwrap();
         assert_eq!(code(vms.create_output(&planned, "late/w")), "S501");
+        assert!(
+            !t.join("elsewhere/w").exists(),
+            "the create follows no link, so nothing appears outside the roots"
+        );
     }
 
     fn claim(vms: &WorkerVms, auth: &str, key: &str, dir: &Path) -> Result<(), SandboxError> {
-        vms.claim_build_dir(auth, key, dir, "output_dir")
+        vms.claim_build_dir(auth, key, dir, "output_dir", None)
+            .map(drop)
     }
 
     /// `<t>/project/build/<name>` for each name, created and canonical.
@@ -3900,6 +3972,34 @@ mod tests {
         claim(&vms, &b, "b", &dir_b).unwrap();
         assert_eq!(read_build_dir(&base, &vm_id("b"), "t"), Some(dir_b.clone()));
         assert_eq!(code(claim(&vms, &a, "a", &alias)), "S505");
+    }
+
+    /// A record that names a directory not created yet, under another spelling
+    /// (a bind mount): the build that creates it under its own spelling is
+    /// still S505, checked once it exists, and records nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_created_output_dir_is_checked_again_once_it_exists() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let [build] = build_dirs(t, [""]);
+        let new = build.join("new");
+        let alias = PathBuf::from(format!("/proc/self/root{}", new.display()));
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let a = scoped_auth_token("t", "a");
+        claim(&vms, &a, "a", &alias).unwrap();
+        assert!(!new.exists());
+        let b = scoped_auth_token("t", "b");
+        let refused = vms.claim_build_dir(&b, "b", &new, "output_dir", Some("new"));
+        assert_eq!(code(refused), "S505");
+        let base = t.join("workers");
+        assert_eq!(read_build_dir(&base, &vm_id("b"), "t"), None);
+        assert_eq!(read_build_dir(&base, &vm_id("a"), "t"), Some(alias));
+        // Its own VM creates it and keeps its record.
+        std::fs::remove_dir(&new).unwrap();
+        let got = vms.claim_build_dir(&a, "a", &new, "output_dir", Some("new"));
+        assert_eq!(got.unwrap(), new);
+        assert_eq!(read_build_dir(&base, &vm_id("a"), "t"), Some(new));
     }
 
     /// A record counts only in its own VM's dir, and only as a regular file: a

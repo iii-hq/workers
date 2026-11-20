@@ -49,14 +49,18 @@ are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
   `build_dir` (`worker::start`) its scoped token presented, recorded in
   `~/.iii/sandbox/workers/<vm_id>/build-dir` with a MAC of the project token.
   On a directory another VM of the same project token recorded, a scoped token
-  gets S505 before anything is created or written there: the token Compose
+  gets S505 before anything is written there, and before anything is created
+  there but a second spelling of a recorded directory that did not exist yet,
+  which the build creates, empty, and then refuses: the token Compose
   hands container A can no longer replace, or boot, the `image.erofs` and
   `image.id` in a directory container B's VM recorded. The message names B's
   record and the way out (destroy that VM, or delete that file). Presenting
   another directory moves the VM there and releases the old one; a second
   spelling of a recorded directory (same device and inode) is still its VM's;
   `worker::destroy` deletes the VM's record; the project token is not checked.
-  The check reads no directory name.
+  The check reads no directory name. A build creates its `output_dir` one
+  component at a time through no symlink, so a link put in its path since the
+  check is S501 and creates nothing outside the host roots.
 
 ### Release
 
