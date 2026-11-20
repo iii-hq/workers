@@ -56,16 +56,23 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
     let (effective, _) = settings::effective(stored, &cfg);
 
     // 3-5. Mode / allow-list short-circuits.
-    if decision::pre_policy_allow(&effective, &call.function_id) {
+    if decision::pre_policy_allow(
+        &effective,
+        call.namespace.as_deref(),
+        call.implicit_namespace.as_deref(),
+        &call.function_id,
+    ) {
         return Ok(HookOutput::Continue);
     }
 
     // 6. Config rules fallback — evaluate the inline permission rules
     //    (first match wins; no match → hold for human approval).
-    match cfg
-        .permissions()
-        .check(&call.function_id, &call.arguments, effective.mode)
-    {
+    match cfg.permissions().check_in(
+        call.namespace.as_deref(),
+        &call.function_id,
+        &call.arguments,
+        effective.mode,
+    ) {
         Decision::Allow { .. } => Ok(HookOutput::Continue),
         Decision::Deny {
             rule_id,
@@ -125,6 +132,8 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall) -> HookOutput {
         turn_id: input.turn_id.clone(),
         function_call_id: call.id.clone(),
         function_id: call.function_id.clone(),
+        namespace: call.namespace.clone(),
+        implicit_namespace: call.implicit_namespace.clone(),
         arguments_excerpt: redact(&call.arguments),
         pending_at,
         session_title,
@@ -200,7 +209,7 @@ mod tests {
         BootOpts, hook_input as test_hook_input, log_snapshot, settle, state_get, state_set,
         with_stack,
     };
-    use crate::types::{ApprovalSettings, PermissionMode};
+    use crate::types::{AlwaysAllowEntry, ApprovalSettings, GrantedBy, PermissionMode};
 
     fn hook_input(function_id: &str) -> HookInput {
         serde_json::from_value(test_hook_input("s_1", "c_1", function_id)).unwrap()
@@ -373,6 +382,65 @@ mod tests {
                 handle(&stack.deps, input).await.unwrap(),
                 HookOutput::Deny { .. }
             ));
+        })
+        .await;
+    }
+
+    fn input_in(namespace: &str) -> HookInput {
+        let mut v = test_hook_input("s_1", "c_1", "shell::run");
+        v["call"]["namespace"] = json!(namespace);
+        v["call"]["implicit_namespace"] = json!("default");
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_grant_does_not_release_a_call_in_another_namespace() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let grant = AlwaysAllowEntry {
+                namespace: None,
+                function_id: "shell::run".into(),
+                granted_at: 0,
+                granted_by: GrantedBy::UserClick,
+            };
+            seed_settings(
+                &stack.iii,
+                "s_1",
+                &ApprovalSettings {
+                    mode: PermissionMode::Manual,
+                    approved_always: vec![grant],
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert_eq!(
+                handle(&stack.deps, input_in("default")).await.unwrap(),
+                HookOutput::Continue
+            );
+            assert_eq!(
+                handle(&stack.deps, input_in("laptop")).await.unwrap(),
+                HookOutput::Hold
+            );
+            let held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(held["namespace"], json!("laptop"));
+            assert_eq!(held["implicit_namespace"], json!("default"));
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gate_registration_advertises_call_namespace() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let list = crate::testkit::call(&stack.iii, "engine::functions::list", json!({}))
+                .await
+                .unwrap();
+            let row = list["functions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["function_id"] == json!("approval::gate"))
+                .unwrap()
+                .clone();
+            assert_eq!(row["metadata"], json!({ "call_namespace": true }));
         })
         .await;
     }

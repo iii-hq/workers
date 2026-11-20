@@ -14,12 +14,12 @@ operational contract).
 |---|---|---|
 | `approval::gate` | harness only (the target of this worker's observer of `harness::hook::on-pre-call`) | The hook: `HookInput` → `{ decision: "continue" \| "deny" \| "hold" }`. Never call directly. |
 | `approval::filesystem-access-watch` | harness only (the target of this worker's observer of `harness::hook::on-post-call`) | The post-call hook: `HookInput` with the function result → `continue` or a `filesystem_access` hold. Never call directly. |
-| `approval::resolve` | console / inbox UI (human-only) | Apply a decision to a held call: `{ session_id, function_call_id, decision: "allow" \| "deny", reason? }` → `{ resolved, turn_resumed? }`. |
+| `approval::resolve` | console / inbox UI (human-only) | Apply a decision to a held call: `{ session_id, function_call_id, decision: "allow" \| "deny", reason?, namespace? }` → `{ resolved, turn_resumed? }`. `namespace` echoes the held call's namespace (the pending record's `namespace`); an `allow` without the echo is refused for a call held in another namespace (`namespace` set and different from `implicit_namespace`). `deny` never needs it. On a `filesystem_access` record, `allow` also takes `access_duration` (`once` \| `session` \| `always`); for a call held in another namespace, session and always last one call: the folder grant never reaches this namespace's shell or session roots. |
 | `approval::list-pending` | console / notification workers | The inbox: filters `session_id?`, `metadata?` (subset-equality tenancy match), `limit?` (default 50), opaque `cursor?`; ordered by `pending_at` asc. |
 | `approval::get-pending` | console | One record or `null`. |
 | `approval::set-mode` | console (human-only) | `manual` / `auto` / `full`. |
-| `approval::add-always-allow` / `remove-always-allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). |
-| `approval::approve-always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. |
+| `approval::add-always-allow` / `remove-always-allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). `namespace?` is the namespace the entry covers (absent = the implicit namespace); add and remove match the exact `(namespace, function_id)` pair, so a remove without it leaves a namespaced entry in place. |
+| `approval::approve-always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. Pass the pending record's `namespace`: the grant's `namespace` is compared exactly and its `function_id` matches as a `*` glob; one sent without `namespace` covers only the implicit namespace, not the namespace the prompt showed. |
 | `approval::get-settings` | console | Effective settings + `source: "stored" \| "defaults"`. Never writes. |
 | `approval::clear-settings` | console | Drop the stored record; revert to deployment defaults. |
 | `approval::on-config-change` / `on-session-deleted` / `on-turn-completed` | targets of this worker's observers of `configuration::on-updated`, `session::on-deleted`, `harness::on-turn-completed` | Internal — never call directly. |
@@ -48,7 +48,8 @@ hook returns `hold` — never on the hook's hot path.
 
 Event: the `PendingApprovalRecord` plus `status: "pending"` — ids
 (`session_id`, `turn_id`, `function_call_id`, `function_id`), redacted
-`arguments_excerpt`, `pending_at`, denormalized
+`arguments_excerpt`, `pending_at`, `namespace` / `implicit_namespace` (the call's namespace and the
+caller's own, so a surface can show where the call runs), denormalized
 `session_title` / `session_description` / `session_metadata` (omitted when
 session-manager was unreachable at hold time), sub-agent `depth`, `kind`
 and, for a `filesystem_access` hold, `access_request`.

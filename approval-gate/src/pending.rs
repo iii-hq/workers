@@ -115,6 +115,8 @@ mod tests {
             turn_id: "t_1".into(),
             function_call_id: call_id.into(),
             function_id: "shell::run".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 100,
             session_title: None,

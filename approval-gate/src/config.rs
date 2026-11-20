@@ -48,12 +48,12 @@ pub fn default_grant_reask_limit() -> usize {
 fn rules_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
     serde_json::from_value(json!({
         "type": "array",
-        "description": "Permission rules for the gate hook (first match wins). Each entry is a string or object.\n\nString shorthands: bare id/glob → allow; prefix ! → deny; no match → hold.\n\nStructured objects: { \"function\": \"shell::*\", \"action\": \"allow\" | \"deny\", \"modes\": [\"auto\"] } — optional modes scope the rule to manual, auto, or full (omit for all modes). Use modes: [\"auto\"] on allow rules to seed the auto-mode trust list.\n\nExamples:\n• \"state::get\" — allow reads\n• \"shell::*\" — allow any shell worker call\n• \"!approval::*\" — deny the approval decision plane (shipped default)\n• { \"function\": \"web::fetch\", \"action\": \"allow\", \"modes\": [\"auto\"] } — auto-mode trust",
+        "description": "Permission rules for the gate hook (first match wins). Each entry is a string or object.\n\nString shorthands: bare id/glob → allow; prefix ! → deny; no match → hold.\n\nPrefix `<namespace>/` to match one engine namespace (`laptop/shell::*`); a bare pattern matches every namespace.\n\nStructured objects: { \"function\": \"shell::*\", \"action\": \"allow\" | \"deny\", \"modes\": [\"auto\"] } — optional modes scope the rule to manual, auto, or full (omit for all modes). Use modes: [\"auto\"] on allow rules to seed the auto-mode trust list.\n\nExamples:\n• \"state::get\" — allow reads\n• \"shell::*\" — allow any shell worker call\n• \"!approval::*\" — deny the approval decision plane (shipped default)\n• { \"function\": \"web::fetch\", \"action\": \"allow\", \"modes\": [\"auto\"] } — auto-mode trust",
         "items": {
             "oneOf": [
                 {
                     "type": "string",
-                    "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\"."
+                    "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\". Prefix `<namespace>/` to match one engine namespace (`laptop/shell::*`); a bare pattern matches every namespace."
                 },
                 {
                     "type": "object",
@@ -62,7 +62,7 @@ fn rules_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema
                     "properties": {
                         "function": {
                             "type": "string",
-                            "description": "Function id or glob to match."
+                            "description": "Function id or glob to match. Prefix `<namespace>/` to match one engine namespace (`laptop/shell::*`); a bare pattern matches every namespace."
                         },
                         "action": {
                             "type": "string",

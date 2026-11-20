@@ -7,6 +7,14 @@
       "function_id": {
         "type": "string"
       },
+      "namespace": {
+        "default": null,
+        "description": "Namespace the entry covers; absent = the implicit namespace.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       }
@@ -33,6 +41,13 @@
           },
           "granted_by": {
             "$ref": "#/definitions/GrantedBy"
+          },
+          "namespace": {
+            "description": "Engine namespace the grant covers. Absent on grants stored before namespaces: those cover only the call's implicit namespace.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

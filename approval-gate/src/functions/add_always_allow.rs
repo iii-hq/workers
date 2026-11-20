@@ -10,6 +10,7 @@ pub async fn handle(
     deps: &Deps,
     req: AlwaysAllowMutationRequest,
 ) -> Result<SettingsResponse, ApprovalError> {
+    super::validate_namespace(req.namespace.as_deref())?;
     if req.function_id.is_empty() {
         return Err(ApprovalError::InvalidPayload(
             "function_id must be a non-empty string".to_string(),
@@ -19,7 +20,12 @@ pub async fn handle(
     let settings =
         settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, now| {
             ApprovalSettings {
-                always_allow: with_grant(&base.always_allow, &req.function_id, now),
+                always_allow: with_grant(
+                    &base.always_allow,
+                    req.namespace.as_deref(),
+                    &req.function_id,
+                    now,
+                ),
                 ..base
             }
         })
@@ -37,6 +43,7 @@ mod tests {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             let req = AlwaysAllowMutationRequest {
                 session_id: "s_1".into(),
+                namespace: None,
                 function_id: "shell::run".into(),
             };
             let first = handle(&stack.deps, req.clone()).await.unwrap();
@@ -44,6 +51,26 @@ mod tests {
             let second = handle(&stack.deps, req).await.unwrap();
             assert_eq!(second.settings.always_allow.len(), 1);
             assert_eq!(first.settings.always_allow, second.settings.always_allow);
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_namespace_is_rejected() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            for ns in ["", "  "] {
+                let err = handle(
+                    &stack.deps,
+                    AlwaysAllowMutationRequest {
+                        session_id: "s_1".into(),
+                        namespace: Some(ns.into()),
+                        function_id: "shell::run".into(),
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(matches!(err, ApprovalError::InvalidPayload(_)));
+            }
         })
         .await;
     }
