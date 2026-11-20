@@ -908,9 +908,10 @@ fn vm_resources(project_path: &Path, is_bundle: bool, worker_name: &str) -> (u32
         return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
     }
     // A binary package may ship no manifest: the defaults, as for a local
-    // worker that asks for nothing.
+    // worker that asks for nothing, and no second read, which would skip the
+    // clamp for a manifest that appeared since.
     if std::fs::symlink_metadata(project_path.join(WORKER_MANIFEST)).is_err() {
-        return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
+        return (2, 2048);
     }
     // Strict clamp at start-time so a publisher-controlled manifest
     // can't boot a libkrun guest with attacker-chosen resources:
