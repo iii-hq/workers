@@ -135,9 +135,17 @@ pub fn decide(probe: &ProbeResult, dangerous: Result<bool, String>, url: &str) -
             let mut notes = Vec::new();
             let auth = policy.get("auth_function").and_then(Value::as_bool) == Some(true);
             if exposes_everything(policy.get("expose_functions")) && !auth {
-                warnings.push(format!(
-                    "mcp-server: WARNING: the rbac-proxy at {url} exposes every function and has no auth function; RBAC is not restricting MCP clients."
-                ));
+                // `policy.auth` is absent from proxies older than loopback_auth.
+                let loopback = policy.get("auth").and_then(Value::as_str) == Some("loopback");
+                warnings.push(if loopback {
+                    format!(
+                        "mcp-server: WARNING: the rbac-proxy at {url} admits connections with rbac.loopback_auth and exposes every function; every process on this machine can call every function through MCP."
+                    )
+                } else {
+                    format!(
+                        "mcp-server: WARNING: the rbac-proxy at {url} exposes every function and has no auth function; RBAC is not restricting MCP clients."
+                    )
+                });
             }
             if dangerous {
                 notes.push(format!(
@@ -291,6 +299,62 @@ mod tests {
             panic!()
         };
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// A probe from a proxy that reports its auth mode (`policy.auth`).
+    fn proxied_in_mode(auth: &str, expose_functions: Value) -> ProbeResult {
+        let ProbeResult::Proxied(mut answer) = proxied_with(auth == "function", expose_functions)
+        else {
+            unreachable!()
+        };
+        answer["policy"]["auth"] = json!(auth);
+        ProbeResult::Proxied(answer)
+    }
+
+    fn start_warnings(probe: &ProbeResult) -> Vec<String> {
+        let Decision::Start { warnings, .. } = decide(probe, Ok(false), URL) else {
+            panic!("refused")
+        };
+        warnings
+    }
+
+    #[test]
+    fn loopback_auth_exposing_everything_warns_about_local_processes() {
+        let warnings = start_warnings(&proxied_in_mode("loopback", json!(["match(\"*\")"])));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let w = &warnings[0];
+        assert!(w.starts_with("mcp-server: WARNING:"), "{w}");
+        assert!(w.contains(URL), "{w}");
+        assert!(w.contains("loopback_auth"), "{w}");
+        assert!(w.contains("every process on this machine"), "{w}");
+        // The loopback grant is the authentication: "no auth function" alone
+        // would read as "nothing checks connections".
+        assert!(!w.contains("has no auth function"), "{w}");
+    }
+
+    #[test]
+    fn loopback_auth_with_narrow_globs_does_not_warn() {
+        for globs in [json!(["match(\"api::*\")"]), json!([])] {
+            assert!(
+                start_warnings(&proxied_in_mode("loopback", globs.clone())).is_empty(),
+                "{globs}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_auth_mode_picks_the_wording() {
+        let everything = || json!(["match(\"*\")"]);
+        // An auth function: `*` is the operator's choice.
+        assert!(start_warnings(&proxied_in_mode("function", everything())).is_empty());
+        // "none" (this proxy refuses `/` itself) and a proxy too old to
+        // report a mode keep the no-auth-function wording.
+        for probe in [proxied_in_mode("none", everything()), proxied(false, true)] {
+            let warnings = start_warnings(&probe);
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].contains("has no auth function"), "{warnings:?}");
+            assert!(!warnings[0].contains("loopback_auth"), "{warnings:?}");
+        }
     }
 
     #[test]
