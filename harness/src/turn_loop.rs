@@ -5059,7 +5059,10 @@ fn native_tool_name(
     function_id: &str,
     taken: &std::collections::BTreeSet<String>,
 ) -> String {
-    // 64 = strictest provider tool-name limit; llm-router maps `::` to `__` length for length, and `ns2` has no `_`, so the name round-trips.
+    // 64 = strictest provider tool-name limit. llm-router sends `::` as `__` (same length) and maps it back,
+    // so a name is free only when no other tool has its wire form. `ns2` has no `_`; an id holding `__`
+    // still decodes wrong (llm-router names.rs).
+    let wire = |name: &str| name.replace("::", "__");
     let ns2: String = namespace
         .chars()
         .map(|c| {
@@ -5071,7 +5074,7 @@ fn native_tool_name(
         })
         .collect();
     let base = format!("{ns2}::{function_id}");
-    if base.len() <= 64 && !taken.contains(&base) {
+    if base.len() <= 64 && !taken.iter().any(|t| wire(t) == wire(&base)) {
         return base;
     }
     let head = base[..base.floor_char_boundary(55)].trim_end_matches(':');
@@ -5936,6 +5939,39 @@ mod tests {
                 .unwrap()
                 .description
                 .starts_with("Runs in namespace `zz-a`. ")
+        );
+    }
+
+    #[test]
+    fn native_names_stay_apart_in_their_wire_form() {
+        let own = crate::clients::engine::own_namespace();
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*b::exec".into()],
+                deny: vec![],
+                expose: ExposeMode::Native,
+            }));
+        let d = |ns: &str, id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: None,
+            parameters: None,
+        };
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[d(&own, "zz__b::exec"), d("zz", "b::exec")],
+            &[],
+            ExposeMode::Native,
+        );
+        // llm-router sends `::` as `__`, so `zz::b::exec` would reach the provider as the own tool's name.
+        let wire: std::collections::BTreeSet<String> =
+            tools.iter().map(|t| t.name.replace("::", "__")).collect();
+        assert_eq!(wire.len(), 2);
+        // A reply for the own tool decodes to `zz::b::exec`; it must not reach zz's copy.
+        assert_eq!(names.get("zz::b::exec"), None);
+        assert_eq!(
+            names.values().collect::<Vec<_>>(),
+            vec![&("zz".to_string(), "b::exec".to_string())]
         );
     }
 
