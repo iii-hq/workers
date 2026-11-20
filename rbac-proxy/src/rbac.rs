@@ -42,17 +42,22 @@ use uuid::Uuid;
 #[serde(deny_unknown_fields)]
 pub struct RbacConfig {
     /// Engine function id invoked once per upgrade to authenticate the
-    /// connection. Unset ⇒ every upgrade is refused, except a loopback
-    /// peer's when `loopback_auth` is set.
+    /// worker (`/`) or telemetry (`/otel`) connection. Unset ⇒ every such
+    /// upgrade is refused, except a loopback peer's when `loopback_auth` is
+    /// set.
     #[serde(default)]
     pub auth_function_id: Option<String>,
     /// Built-in authentication for local projects, used only when
-    /// `auth_function_id` is not set: a connection whose peer address is
-    /// loopback (exactly 127.0.0.1, ::1 or ::ffff:127.0.0.1) gets these grants, as if an
-    /// auth function had returned them; any other peer is refused. Only safe
-    /// where every local process is trusted: a reverse proxy on the same
-    /// machine makes every client look local. `auth_function_id` wins when
-    /// both are set.
+    /// `auth_function_id` is not set. Like the auth function it governs the
+    /// worker endpoint `/` and telemetry `/otel` only (`/ws/channels/*`
+    /// sockets are checked by the engine's channel access keys): a connection
+    /// whose peer address is loopback (exactly 127.0.0.1, ::1 or
+    /// ::ffff:127.0.0.1) and whose upgrade shows no sign of a non-local client
+    /// (see `allowed_origins`, `allow_forwarded`) gets these grants, as if an
+    /// auth function had returned them; any other is refused. Only safe where
+    /// every local process is trusted: a tunnel, a reverse proxy or a sandbox
+    /// gateway on the same machine makes remote clients look local.
+    /// `auth_function_id` wins when both are set.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -102,15 +107,20 @@ impl RbacConfig {
     }
 }
 
-/// Which authentication admits new connections.
+/// Which authentication admits new connections to the worker endpoint `/`
+/// and telemetry `/otel`. `/ws/channels/*` sockets are not authenticated by
+/// the proxy in any mode: the engine checks their channel access keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMode {
-    /// `rbac.auth_function_id` authenticates every connection.
+    /// `rbac.auth_function_id` authenticates every worker and telemetry
+    /// connection.
     Function,
-    /// No auth function; `rbac.loopback_auth` admits loopback peers only.
+    /// No auth function; `rbac.loopback_auth` admits loopback peers only to
+    /// `/` and `/otel`.
     Loopback,
-    /// Neither: every connection is refused.
+    /// Neither: every worker and telemetry connection is refused; channel
+    /// sockets (`/ws/channels/*`) are not, the engine checks their keys.
     None,
 }
 

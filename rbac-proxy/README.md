@@ -9,9 +9,11 @@ listener, while at the boundary it:
 - **serves only the engine endpoints you list** in `rbac.expose_endpoints`
   (`/`, `/ws/channels/*`, `/otel`; `/` alone without the key, nothing with an
   empty list), and no other path at all,
-- **authenticates** each connection (the operator's `auth_function_id`, or,
-  on a local project without one, the built-in
-  [`loopback_auth`](#local-projects-loopback_auth)),
+- **authenticates** each worker (`/`) and telemetry (`/otel`) connection
+  (the operator's `auth_function_id`, or, on a local project without one, the
+  built-in [`loopback_auth`](#local-projects-loopback_auth)); channel sockets
+  (`/ws/channels/*`) are relayed to the engine, which checks their access
+  keys,
 - **gates** every invocation in the namespace it is made in (vendored
   `is_function_allowed`: forbidden > scoped grant > allowed > infrastructure
   carve-out > `expose_functions` > deny), and the namespace a connection may
@@ -192,7 +194,8 @@ prefix). `rbac` keys of entries stored before 0.26 are ignored with one
 
 ### Local projects: `loopback_auth`
 
-Without `auth_function_id` every connection is refused. A local project that
+Without `auth_function_id` every worker (`/`) and telemetry (`/otel`)
+connection is refused. A local project that
 wants rbac-proxy (for example in front of `mcp-server`) without writing an
 auth function or minting a per-project secret can set `rbac.loopback_auth`
 instead: a connection whose peer address is loopback gets these grants,
@@ -249,7 +252,8 @@ These checks catch the well-behaved cases; a forwarder that adds none of these
 headers is not detected (see the warnings below).
 
 - **It applies only without `auth_function_id`.** When both are set the auth
-  function authenticates every connection, `loopback_auth` is ignored, and a
+  function authenticates every worker and telemetry connection,
+  `loopback_auth` is ignored, and a
   warning naming both keys is logged each time such a configuration is
   applied.
 - **Only use it where every local process is trusted.** On such a machine any
@@ -262,8 +266,11 @@ headers is not detected (see the warnings below).
   a setup with an `auth_function_id`.
 
 `rbac-proxy::status` reports which authentication is in force as `auth`:
-`"function"`, `"loopback"` or `"none"` (every connection refused), next to
-`rbac_enabled` (still: an `auth_function_id` is set). The session probe a
+`"function"`, `"loopback"` or `"none"` (every worker and telemetry
+connection refused), next to `rbac_enabled` (still: an `auth_function_id` is
+set). The mode governs `/` and `/otel` only: in every mode, `/ws/channels/*`
+sockets go to the engine without the proxy authenticating them, and the engine
+checks each channel's access key, so `none` does not refuse channel sockets. The session probe a
 client sends through the proxy (`rbac-proxy::session`, used by mcp-server's
 `iii_status`) reports the same `auth` in its `policy`. Like the other
 `rbac.*` keys, a change applies to new connections.
@@ -375,8 +382,9 @@ them with `observable: false`. Details:
 `rbac-proxy::status` is a read-only health and identity probe: the bound
 host and port, the upstream engine URL with any `user:pass@` redacted,
 whether an auth function is configured, which authentication is in force
-(`auth`: `"function"`, `"loopback"` or `"none"`), the live connection count
-and the worker version.
+for worker and telemetry connections (`auth`: `"function"`, `"loopback"` or
+`"none"`; channel sockets are checked by the engine in every mode), the live
+connection count and the worker version.
 
 `rbac-proxy::session` answers "is **this** connection behind rbac-proxy?",
 while `rbac-proxy::status` reports on the proxy as a whole. The proxy's

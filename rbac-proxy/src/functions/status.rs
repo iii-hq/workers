@@ -12,7 +12,7 @@ use crate::config::WorkerConfig;
 use crate::rbac::AuthMode;
 
 pub const STATUS_ID: &str = "rbac-proxy::status";
-pub const STATUS_DESC: &str = "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, which authentication is in force (auth function, loopback grant, or none), which endpoints are exposed, and the live downstream connection count.";
+pub const STATUS_DESC: &str = "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, which authentication admits worker and telemetry connections (auth function, loopback grant, or none; channel sockets are checked by the engine), which endpoints are exposed, and the live downstream connection count.";
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct StatusInput {}
@@ -27,9 +27,12 @@ pub struct StatusOutput {
     pub engine_url: String,
     /// Whether an `auth_function_id` is configured.
     pub rbac_enabled: bool,
-    /// The authentication in force for new connections: `function` (the
-    /// `auth_function_id`), `loopback` (no auth function; `loopback_auth`
-    /// admits loopback peers) or `none` (every connection is refused).
+    /// The authentication in force for new worker (`/`) and telemetry
+    /// (`/otel`) connections: `function` (the `auth_function_id`),
+    /// `loopback` (no auth function; `loopback_auth` admits loopback peers)
+    /// or `none` (every worker and telemetry connection is refused).
+    /// `/ws/channels/*` sockets are not authenticated by the proxy in any
+    /// mode: the engine checks their channel access keys.
     pub auth: AuthMode,
     /// The `rbac.expose_endpoints` patterns: the paths the proxy serves.
     /// Empty: every connection is refused.
@@ -93,6 +96,31 @@ mod tests {
         assert_eq!(
             status_output(&cfg, "h".into(), 1, 0).auth,
             AuthMode::Function
+        );
+    }
+
+    #[test]
+    fn the_auth_mode_docs_scope_it_to_the_worker_and_telemetry_endpoints() {
+        // Channel sockets bypass the proxy's authentication: the engine
+        // checks their access keys. Every description of `auth` says so.
+        let schema = serde_json::to_value(schemars::schema_for!(StatusOutput)).unwrap();
+        let mut docs = vec![schema["properties"]["auth"]["description"].clone()];
+        docs.push(schema["definitions"]["AuthMode"]["description"].clone());
+        for variant in schema["definitions"]["AuthMode"]["oneOf"]
+            .as_array()
+            .unwrap()
+        {
+            docs.push(variant["description"].clone());
+        }
+        let scoped = |d: &str| d.contains("`/`") && d.contains("`/otel`");
+        let top = docs[0].as_str().unwrap();
+        assert!(scoped(top) && top.contains("/ws/channels/*"), "{top}");
+        let mode = docs[1].as_str().unwrap();
+        assert!(scoped(mode) && mode.contains("/ws/channels/*"), "{mode}");
+        let none = docs[4].as_str().unwrap();
+        assert!(
+            none.contains("/ws/channels/*") && none.contains("not"),
+            "{none}"
         );
     }
 
