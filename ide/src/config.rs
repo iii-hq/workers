@@ -426,11 +426,14 @@ pub struct EnvConfig {
     /// WARNING: it also forwards any secrets in the worker's env to every
     /// command — run the worker with a clean environment if that matters.
     /// When false (the default), children start from a clean env containing
-    /// only the keys listed in `allow`.
+    /// only the keys listed in `allow`, plus the engine's telemetry opt-outs
+    /// (`III_TELEMETRY_ENABLED`, `III_TELEMETRY_DEV` and the CI markers) when
+    /// they are set.
     #[serde(default)]
     pub inherit: bool,
-    /// Forwarding allowlist: when `inherit` is false, ONLY these keys are
-    /// copied from the worker's env into the child. Has NO effect on the
+    /// Forwarding allowlist: when `inherit` is false, ONLY these keys (and the
+    /// telemetry opt-outs, see `inherit`) are copied from the worker's env
+    /// into the child. Has NO effect on the
     /// per-call `env` override on `shell::exec`/`shell::exec_bg` — that is
     /// deny-only, gated solely by the hardcoded dangerous-key list (PATH,
     /// IFS, HOME, LD_*/DYLD_*, GCONV_PATH, BASH_ENV, PYTHONSTARTUP,

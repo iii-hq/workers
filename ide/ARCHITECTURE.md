@@ -108,7 +108,7 @@ denylist.
 | `default_timeout_ms` | `10000` | applied when caller omits `timeout_ms` |
 | `max_output_bytes` | `1048576` (1 MiB) | stdout/stderr truncated; `*_truncated` flagged |
 | `working_dir` | `null` | pins cwd for spawned commands when set |
-| `env.inherit` | `false` | forward the worker's FULL env to children; when `false`, only `env.allow` keys are forwarded |
+| `env.inherit` | `false` | forward the worker's FULL env to children; when `false`, only `env.allow` keys (plus the telemetry opt-outs `III_TELEMETRY_ENABLED`, `III_TELEMETRY_DEV` and the CI markers, when set) are forwarded |
 | `env.allow` | `[PATH, HOME, LANG, LC_ALL, TERM]` | forwarding allowlist when `env.inherit` is false. No effect on the per-call `env` override, which is deny-only (gated solely by the hardcoded dangerous-key list) |
 | `denylist_patterns` | `[]` | advisory regex tripwire on `argv.join(" ")` |
 | `max_concurrent_jobs` | `16` | rejects new `exec_bg` past the cap |

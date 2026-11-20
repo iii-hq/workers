@@ -79,7 +79,7 @@ max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
 env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
   # with inherit: false, git over SSH needs SSH_AUTH_SOCK in allow, which gives every child command the agent's keys: add it only if that is intended
-  allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; has no effect on per-call `env` (deny-only — dangerous keys never settable)
+  allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false, along with the engine's telemetry opt-outs (III_TELEMETRY_ENABLED, III_TELEMETRY_DEV, CI markers); has no effect on per-call `env` (deny-only — dangerous keys never settable)
 
 # Command policy is deny-only: allow/ask policy lives in the approval-gate.
 # denylist_patterns are advisory regex over argv.join(" "), a tripwire for
