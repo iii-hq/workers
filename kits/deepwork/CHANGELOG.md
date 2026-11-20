@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.7
+
+- **A run files its work in the board's projects and releases instead of making its own.** Every run without `project=` created a project such as `deepwork: failed deployment worker logs · 6ea0b7`, so a product's work was scattered across one project per run, and no run ever created a release: 40 small cards landed in one release with no division.
+  - Project: the goal ticket's, else the existing project that covers what the goal changes; a new one only for a new product area, named for it.
+  - Release: the goal ticket's, else an active or planned release that covers the goal, else a new one in the project's series (`<prefix> · R<next> — <outcome>`).
+  - A plan of more than 8 items with deliverables a person could ship apart gets one release per deliverable (`<prefix> · R<n>.<k> — <deliverable>`); R, shared foundations and adopted cards keep the run's release. New items take the release of the deliverable they serve.
+  - The orchestrator may call `kanban::project::list`, `kanban::release::list` and `kanban::release::create`.
+
 ## 0.8.6
 
 - **A check runs its Cargo and Node chains side by side.** One job per worktree chained every command: fmt, clippy, the Rust workspace tests and the database suite, then Biome, typecheck, the build and 2,737 Playwright tests, about 40 minutes per batch, while each card took about 5 minutes to code. Chains that share no build directory now run as separate jobs at once, and a batch takes the time of the longer one (the web suite, about 25 minutes). Commands that share a build directory stay chained.
