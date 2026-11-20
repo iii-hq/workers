@@ -32,25 +32,22 @@ export function WelcomeStep({
             iii's Agentic Development Environment (ADE)
           </abbr>
         </h2>
-        <p className="max-w-[56ch] text-pretty text-sm leading-5 text-muted-foreground">
-          iii is built on the idea that software should be easy to compose,
-          observe, discover, extend, and react to. In iii anything you build is
-          composed of one or more Functions. This means that there is no
-          division between what is a plugin, extension, service, or API.
-        </p>
-        <p className="max-w-[56ch] text-pretty text-sm leading-5 text-muted-foreground">
-          The Function primitive makes development clear, predictable, and
-          better fit for agentic development workflows than traditional system
-          architectures.
-        </p>
-        <p className="max-w-[56ch] text-pretty text-sm leading-5 text-muted-foreground">
-          The best way to see what we mean is to add your AI provider on the
-          next screen and start building either your own project or from one of
-          our many examples.
-        </p>
-        <p className="max-w-[56ch] text-pretty text-sm leading-5 text-muted-foreground">
-          And after that to check out our docs.
-        </p>
+        <div className="flex max-w-[56ch] flex-col gap-2.5 text-pretty text-sm leading-5 text-muted-foreground">
+          <p>
+            iii makes software easy to compose, observe, discover, extend, and
+            react to.
+          </p>
+          <p>
+            Everything you build is made of one primitive, the Function, so
+            there's no line between a plugin, an extension, a service, or an
+            API. Your agent fits into your projects as naturally as their own
+            code.
+          </p>
+          <p>
+            To see what we mean, connect your AI provider on the next screen,
+            then start your own project or one of our examples.
+          </p>
+        </div>
       </header>
     </StepLayout>
   )
