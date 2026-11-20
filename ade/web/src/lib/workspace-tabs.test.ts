@@ -7,10 +7,12 @@ import {
   deepLinkScreen,
   defaultTabs,
   isChatScreen,
+  liveChatDrafts,
   MAX_COLUMNS,
   type OpenDirection,
   parseActivation,
   parseActiveTabId,
+  parseChatDrafts,
   parseWorkspaceTabs,
   resolveActiveTab,
   resolvePointer,
@@ -25,6 +27,8 @@ import {
   tabSizes,
   type WorkspaceTab,
   withActiveTabId,
+  withAdjacentChatSwapped,
+  withChatDrafts,
   withColumnAdded,
   withColumnRemoved,
   withOnlyPane,
@@ -33,6 +37,7 @@ import {
   withPaneSplit,
   withScreenDetached,
   withScreenOpenedBeside,
+  withScreenSwapped,
   withTabClosed,
   withTabSizes,
   withWorkspaceScreenOpened,
@@ -422,6 +427,27 @@ describe('panel column transforms', () => {
     const parsed = parseWorkspaceTabs({ tabs: [four] })
     expect(parsed).toHaveLength(1)
     expect(tabColumns(parsed[0])).toBe(4)
+  })
+})
+
+describe('withScreenSwapped', () => {
+  const tab: WorkspaceTab = {
+    id: 'a',
+    columns: 3,
+    screens: [CHAT_SCREEN, 'ext:kanban-board', 'chat:s-1'],
+    paneIds: ['pane-chat', 'pane-kanban', 'pane-s1'],
+  }
+
+  it('puts the new screen in the column of the one it replaces, with a fresh pane', () => {
+    const next = withScreenSwapped(tab, 'chat:s-1', 'chat:s-2', () => 'pane-s2')
+    expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:kanban-board', 'chat:s-2'])
+    expect(next?.paneIds).toEqual(['pane-chat', 'pane-kanban', 'pane-s2'])
+    expect(next?.columns).toBe(3)
+  })
+
+  it('declines when the replaced screen is gone or the new one is already shown', () => {
+    expect(withScreenSwapped(tab, 'chat:closed', 'chat:s-2')).toBeNull()
+    expect(withScreenSwapped(tab, 'chat:s-1', CHAT_SCREEN)).toBeNull()
   })
 })
 
@@ -1008,5 +1034,94 @@ describe('the chat asked for beside the IDE', () => {
       'ext:ide',
     )
     expect(result.tabs).toBe(tabs)
+  })
+})
+
+describe('withAdjacentChatSwapped', () => {
+  const tab: WorkspaceTab = {
+    id: 'a',
+    columns: 3,
+    screens: ['ext:kanban-board', 'chat:s-1', CHAT_SCREEN],
+    paneIds: ['pane-kanban', 'pane-s1', 'pane-chat'],
+  }
+
+  it('takes the session chat beside the page, whoever opened it', () => {
+    const next = withAdjacentChatSwapped(
+      tab,
+      'ext:kanban-board',
+      'right',
+      'chat:s-2',
+      () => 'pane-s2',
+    )
+    expect(next?.screens).toEqual(['ext:kanban-board', 'chat:s-2', CHAT_SCREEN])
+    expect(next?.paneIds).toEqual(['pane-kanban', 'pane-s2', 'pane-chat'])
+  })
+
+  it("never takes the workspace's own chat, another page, or a column on the far side", () => {
+    const ownChat: WorkspaceTab = {
+      ...tab,
+      screens: ['ext:kanban-board', CHAT_SCREEN, 'chat:s-1'],
+    }
+    expect(
+      withAdjacentChatSwapped(ownChat, 'ext:kanban-board', 'right', 'chat:s-2'),
+    ).toBeNull()
+    const page: WorkspaceTab = {
+      ...tab,
+      screens: ['ext:kanban-board', 'ext:state', 'chat:s-1'],
+    }
+    expect(
+      withAdjacentChatSwapped(page, 'ext:kanban-board', 'right', 'chat:s-2'),
+    ).toBeNull()
+    const atRightEdge: WorkspaceTab = {
+      ...tab,
+      screens: ['chat:s-1', CHAT_SCREEN, 'ext:kanban-board'],
+    }
+    expect(
+      withAdjacentChatSwapped(
+        atRightEdge,
+        'ext:kanban-board',
+        'right',
+        'chat:s-2',
+      ),
+    ).toBeNull()
+    expect(
+      withAdjacentChatSwapped(tab, 'ext:missing', 'right', 'chat:s-2'),
+    ).toBeNull()
+  })
+})
+
+describe('chat draft seeds', () => {
+  it('reads only well-formed seeds', () => {
+    expect(
+      parseChatDrafts({
+        chatDrafts: {
+          a: { text: 'hi', title: 'KAN-8' },
+          b: { text: 3 },
+          c: null,
+          d: { text: 'x', title: 1 },
+        },
+      }),
+    ).toEqual({ a: { text: 'hi', title: 'KAN-8' }, d: { text: 'x' } })
+    expect(parseChatDrafts({ chatDrafts: ['nope'] })).toEqual({})
+    expect(parseChatDrafts({})).toEqual({})
+  })
+
+  it('keeps a seed only while a tab shows its draft', () => {
+    const tabs: WorkspaceTab[] = [
+      { id: 'a', columns: 2, screens: ['ext:kanban-board', 'chat:d-1'] },
+    ]
+    expect(
+      liveChatDrafts({ 'd-1': { text: 'a' }, 'd-2': { text: 'b' } }, tabs),
+    ).toEqual({ 'd-1': { text: 'a' } })
+  })
+
+  it('writes beside the rest of the document', () => {
+    expect(
+      withChatDrafts({ tabs: [], other: 1 }, { x: { text: 't' } }),
+    ).toEqual({
+      tabs: [],
+      other: 1,
+      chatDrafts: { x: { text: 't' } },
+    })
   })
 })

@@ -150,6 +150,48 @@ export function saveNewChatDraft(text: string): void {
   }
 }
 
+const DRAFT_TEXTS_KEY = 'iii-draft-texts'
+/** Unsent drafts remembered at most: the newest edits win. */
+const MAX_DRAFT_TEXTS = 20
+
+function loadDraftTexts(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(DRAFT_TEXTS_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === 'string',
+          ),
+        )
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+/** What was typed in an unsent draft, by its id: a draft a column brings back after a reload keeps its edits. */
+export function loadDraftText(id: string): string | undefined {
+  return loadDraftTexts()[id]
+}
+
+/** Remember (or, with no text, forget) an unsent draft's text under its id. */
+export function saveDraftText(id: string, text: string): void {
+  try {
+    const { [id]: _previous, ...rest } = loadDraftTexts()
+    const next = text ? { ...rest, [id]: text } : rest
+    const kept = Object.entries(next).slice(-MAX_DRAFT_TEXTS)
+    if (kept.length)
+      localStorage.setItem(
+        DRAFT_TEXTS_KEY,
+        JSON.stringify(Object.fromEntries(kept)),
+      )
+    else localStorage.removeItem(DRAFT_TEXTS_KEY)
+  } catch {
+    /* best-effort */
+  }
+}
+
 const EDGE_ADD_DISCOVERED_KEY = 'iii-edge-add-discovered'
 
 /**

@@ -115,6 +115,20 @@ export interface ScreenOpenRequest {
   /** Widths of the tab the screen is placed in, one positive number per
    *  column; ignored when the screen is reused or the count does not match. */
   sizes?: number[]
+  /** A screen this one takes the place of, where the tab on screen shows it:
+   *  the caller's own earlier screen (a side chat swapping one conversation
+   *  for the next, so columns never pile up). Absent there, or ignored by an
+   *  older console, the screen is placed as usual. */
+  replaces?: string
+  /** The column directly on `direction`'s side of `relativeTo` takes the
+   *  screen when it shows a session chat (`chat:<id>`): a page's side chat
+   *  found from the shared layout, whichever browser opened it. The
+   *  workspace's own chat column is never taken. */
+  reuseBeside?: boolean
+  /** `screen` is an unsent chat draft (`chat:<id>` from `chat.openDraft`):
+   *  its title and text are kept with the layout, so a reload or another
+   *  browser opens the same draft instead of a missing chat. */
+  draft?: { title?: string; text: string }
 }
 
 /** What `host.chat.compose` did: handed the draft to a composer (or held it
@@ -776,8 +790,14 @@ export interface Host {
    * declared optional so worker scripts degrade without casts.
    */
   chat?: {
-    /** Open a new, editable human chat draft without sending or creating a session. */
-    openDraft?(draft: { text: string; title?: string }): void
+    /**
+     * Open a new, editable human chat draft without sending or creating a
+     * session. Returns the draft's conversation id (older consoles return
+     * nothing). With `show: false` it is not brought up in the main chat:
+     * the caller shows it itself (e.g. `panels.openScreen({ screen:
+     * 'chat:<id>' })` beside its page).
+     */
+    openDraft?(draft: { text: string; title?: string }, options?: { show?: boolean }): string | void
     /**
      * Hand text and files to a chat's composer, the way a drop or a paste
      * would, and put the caret there: the only chat open, else the one used

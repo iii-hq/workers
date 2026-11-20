@@ -10,6 +10,7 @@
 //! - [`functions`] — the typed `kanban::*` function catalog.
 //! - [`agents`] — assignable profiles via iii-directory or the agents folder.
 //! - [`mentions`] — the `@kanban(id=…)` chat mention provider.
+//! - [`session_links`] — the agent session behind each change, and ticket ↔ session links.
 //! - [`ui`] — the injected console UI; [`native_ui`] — the app for the iii app.
 
 pub mod agents;
@@ -21,5 +22,6 @@ pub mod functions;
 pub mod mentions;
 pub mod native_ui;
 pub mod plan;
+pub mod session_links;
 pub mod store;
 pub mod ui;

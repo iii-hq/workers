@@ -557,29 +557,43 @@ export function NewProjectDialog({
   onOpenChange,
   agents,
   onCreated,
+  project = null,
+  moveCount = 0,
 }: {
   host: Host
   open: boolean
   onOpenChange: (open: boolean) => void
   agents: AgentProfile[]
-  onCreated: (project: ProjectView) => void
+  /** The project as created, or as saved when editing; `move`: the offered tickets are to move into it. */
+  onCreated: (project: ProjectView, options?: { move: boolean }) => void
+  /** Edit this project (its name, description, lead and color) instead of creating one. */
+  project?: ProjectView | null
+  /** Creating from tickets with no project: offer to move these many into the new project (ticked by default). */
+  moveCount?: number
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [lead, setLead] = useState<string | undefined>(undefined)
-  const [color, setColor] = useState<GlyphTone>('blue')
+  // Null: a project saved without a color keeps none until one is picked.
+  const [color, setColor] = useState<GlyphTone | null>('blue')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [move, setMove] = useState(true)
+  // The lead as the dialog opened: an edit sends `lead` only if it was changed here, so a lead set elsewhere since stays.
+  const openedLead = useRef<string | undefined>(undefined)
   const colorLabel = useId()
 
   useEffect(() => {
     if (!open) return
-    setName('')
-    setDescription('')
-    setLead(undefined)
-    setColor('blue')
+    // Read once as the dialog opens: a board reload under it must not undo what is being typed.
+    setName(project?.name ?? '')
+    setDescription(project?.description ?? '')
+    setLead(project?.lead ?? undefined)
+    openedLead.current = project?.lead ?? undefined
+    setColor(project ? project.color : 'blue')
     setBusy(false)
     setError(null)
+    setMove(true)
   }, [open])
 
   const canSubmit = name.trim().length > 0 && !busy
@@ -589,14 +603,22 @@ export function NewProjectDialog({
     setBusy(true)
     setError(null)
     try {
-      const project = await api.createProject(host.iii, {
-        name: name.trim(),
-        description: description.trim(),
-        color,
-        ...(lead ? { lead } : {}),
-      })
+      const saved = project
+        ? await api.updateProject(host.iii, {
+            id: project.id,
+            name: name.trim(),
+            description: description.trim(),
+            color,
+            ...(lead !== openedLead.current ? { lead: lead ?? null } : {}),
+          })
+        : await api.createProject(host.iii, {
+            name: name.trim(),
+            description: description.trim(),
+            color: color ?? 'blue',
+            ...(lead ? { lead } : {}),
+          })
       announcePlanChange()
-      onCreated(project)
+      onCreated(saved, { move: !project && moveCount > 0 && move })
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -610,8 +632,10 @@ export function NewProjectDialog({
     <ShadcnDialog onOpenChange={onOpenChange} open={open}>
       <ShadcnDialogContent className="kb-dialog kb-plan-dialog">
         <ShadcnDialogHeader>
-          <ShadcnDialogTitle>New project</ShadcnDialogTitle>
-          <ShadcnDialogDescription>A ticket belongs to at most one project.</ShadcnDialogDescription>
+          <ShadcnDialogTitle>{project ? 'Edit project' : 'New project'}</ShadcnDialogTitle>
+          <ShadcnDialogDescription>
+            {project ? 'Its tickets stay in it under the new name.' : 'A ticket belongs to at most one project.'}
+          </ShadcnDialogDescription>
         </ShadcnDialogHeader>
         <div className="kb-plan-form" onKeyDown={submitOnEnter(() => void submit())}>
           <Field error={nameError} hint="Unique on this board. Case is ignored." htmlFor={`${colorLabel}-name`} label="Name">
@@ -662,6 +686,23 @@ export function NewProjectDialog({
               </div>
             </div>
           </div>
+          {!project && moveCount > 0 ? (
+            <label className="kb-plan-choice" data-on={move ? 'true' : undefined}>
+              <ShadcnCheckbox
+                checked={move}
+                className="kb-plan-choice__box"
+                onCheckedChange={(next) => setMove(next === true)}
+              />
+              <span className="kb-plan-choice__body">
+                <span className="kb-plan-choice__line">
+                  {moveCount === 1
+                    ? 'Move the ticket with no project into it'
+                    : `Move the ${moveCount} tickets with no project into it`}
+                </span>
+                <span className="kb-field__hint">Their subtasks, agents and history stay with them.</span>
+              </span>
+            </label>
+          ) : null}
           {error && !nameError ? <p className="kb-field__error">{error}</p> : null}
         </div>
         <ShadcnDialogFooter>
@@ -669,7 +710,7 @@ export function NewProjectDialog({
             Cancel
           </ShadcnButton>
           <ShadcnButton disabled={!canSubmit} onClick={() => void submit()} type="button">
-            {busy ? 'Creating…' : 'Create project'}
+            {project ? (busy ? 'Saving…' : 'Save') : busy ? 'Creating…' : 'Create project'}
           </ShadcnButton>
         </ShadcnDialogFooter>
       </ShadcnDialogContent>

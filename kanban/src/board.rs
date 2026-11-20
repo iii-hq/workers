@@ -688,6 +688,8 @@ pub(crate) fn record(
     changes: Vec<Change>,
     comment_id: Option<String>,
 ) {
+    // The agent session (and turn) behind the call being handled, when an agent's turn made it.
+    let caller = crate::session_links::caller();
     ticket.activity.push(Activity {
         id: new_id(),
         ticket_id: ticket.id.clone(),
@@ -701,6 +703,8 @@ pub(crate) fn record(
             Some(changes)
         },
         comment_id,
+        session_id: caller.as_ref().map(|c| c.session_id.clone()),
+        turn_id: caller.and_then(|c| c.turn_id),
     });
 }
 
