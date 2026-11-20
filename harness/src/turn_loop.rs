@@ -5053,7 +5053,8 @@ fn concrete_allowed_tools(
 
 /// The native tool name of `function_id` in a namespace other than its
 /// implicit one: `<namespace>::<id>`, or a head of it plus a hash of the pair
-/// when that is too long or already taken.
+/// when that is too long or already taken; the hash is salted and retried
+/// until the name is free.
 fn native_tool_name(
     namespace: &str,
     function_id: &str,
@@ -5073,17 +5074,27 @@ fn native_tool_name(
             }
         })
         .collect();
+    let free = |name: &str| {
+        let name = wire(name);
+        !taken.iter().any(|t| wire(t) == name)
+    };
     let base = format!("{ns2}::{function_id}");
-    let base_wire = wire(&base);
-    if base.len() <= 64 && !taken.iter().any(|t| wire(t) == base_wire) {
+    if base.len() <= 64 && free(&base) {
         return base;
     }
     let head = base[..base.floor_char_boundary(55)].trim_end_matches(':');
-    let hash = format!(
-        "{:x}",
-        Sha256::digest(format!("{namespace}/{function_id}").as_bytes())
-    );
-    format!("{head}-{}", &hash[..8])
+    // Salt 0 hashes the bare pair, so a name that was free before stays the same.
+    (0u32..)
+        .map(|salt| {
+            let seed = match salt {
+                0 => format!("{namespace}/{function_id}"),
+                n => format!("{namespace}/{function_id}/{n}"),
+            };
+            let hash = format!("{:x}", Sha256::digest(seed.as_bytes()));
+            format!("{head}-{}", &hash[..8])
+        })
+        .find(|name| free(name))
+        .expect("`taken` is finite")
 }
 
 /// The invocation-schema surface attached to the generate request
@@ -5974,6 +5985,49 @@ mod tests {
             names.values().collect::<Vec<_>>(),
             vec![&("zz".to_string(), "b::exec".to_string())]
         );
+    }
+
+    #[test]
+    fn a_taken_hashed_native_name_is_not_reused() {
+        use sha2::{Digest, Sha256};
+        let own = crate::clients::engine::own_namespace();
+        // The own namespace already holds zz's hashed fallback name.
+        let reserved = format!(
+            "zz::b::exec-{}",
+            &format!("{:x}", Sha256::digest(b"zz/b::exec"))[..8]
+        );
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*b::exec".into(), reserved.clone()],
+                deny: vec![],
+                expose: ExposeMode::Native,
+            }));
+        let d = |ns: &str, id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: None,
+            parameters: None,
+        };
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[
+                d(&own, "zz__b::exec"),
+                d(&own, &reserved),
+                d("zz", "b::exec"),
+            ],
+            &[],
+            ExposeMode::Native,
+        );
+        let wire: std::collections::BTreeSet<String> =
+            tools.iter().map(|t| t.name.replace("::", "__")).collect();
+        assert_eq!(wire.len(), 3);
+        // A call to the own `reserved` tool must not be sent to zz.
+        assert_eq!(names.get(&reserved), None);
+        assert_eq!(
+            names.values().collect::<Vec<_>>(),
+            vec![&("zz".to_string(), "b::exec".to_string())]
+        );
+        assert!(tools.iter().all(|t| t.name.len() <= 64));
     }
 
     #[test]
