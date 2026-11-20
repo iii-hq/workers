@@ -1156,3 +1156,134 @@ async fn a_reload_keeps_the_slots_in_use_until_the_limit_changes() {
     boot.shutdown().await;
     engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_request_that_timed_out_closes_its_response_channel() {
+    let engine = FakeEngine::start().await;
+    let config = RestApiConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        default_timeout: 300,
+        ..Default::default()
+    };
+    let boot = boot::start(engine.iii.clone(), config).await.unwrap();
+    register_slow(&engine, "test::slow", Duration::from_secs(1));
+    assert!(
+        observe(
+            &engine,
+            "obs-slow",
+            "test::slow",
+            json!({"method": "GET", "path": "/new/slow"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
+
+    let url = format!("http://{}/new/slow", boot.local_addr);
+    assert_eq!(client().get(&url).send().await.unwrap().status(), 504);
+    assert_eq!(engine.readers_opened(), 1, "the server read the response");
+    // The target never touches the channel, so nothing but the server can
+    // close its reader.
+    readers_close(&engine, Duration::from_secs(2)).await;
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
+
+/// A target that writes `first`, waits `pause`, then writes `rest` and
+/// closes the response channel.
+fn register_pausing_stream(engine: &FakeEngine, id: &str, pause: Duration) {
+    let url = engine.url.clone();
+    engine.iii.register_function(
+        id.to_string(),
+        RegisterFunction::new_async(move |req: HttpRequest| {
+            let url = url.clone();
+            async move {
+                let writer = ChannelWriter::new(&url, &req.response);
+                writer.write(b"first").await?;
+                tokio::time::sleep(pause).await;
+                writer.write(b"rest").await?;
+                writer.close().await?;
+                Ok::<Value, Error>(Value::Null)
+            }
+        }),
+    );
+}
+
+/// Waits until no channel reader connection is open, at most `within`.
+async fn readers_close(engine: &FakeEngine, within: Duration) {
+    tokio::time::timeout(within, async {
+        while engine.readers_open() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the response channel's reader closes");
+}
+
+#[tokio::test]
+async fn a_stream_the_client_left_closes_its_response_channel() {
+    let (engine, boot) = start().await;
+    register_pausing_stream(&engine, "test::pausing", Duration::from_secs(3));
+    assert!(
+        observe(
+            &engine,
+            "obs-pausing",
+            "test::pausing",
+            json!({"method": "GET", "path": "/new/pausing"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
+
+    let mut resp = client()
+        .get(format!("http://{}/new/pausing", boot.local_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.chunk().await.unwrap().as_deref(), Some(&b"first"[..]));
+    drop(resp);
+    // The client left mid-stream, long before the target writes again.
+    readers_close(&engine, Duration::from_secs(1)).await;
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_idle_stream_ends_and_closes_its_response_channel() {
+    let engine = FakeEngine::start().await;
+    let config = RestApiConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        default_timeout: 300,
+        ..Default::default()
+    };
+    let boot = boot::start(engine.iii.clone(), config).await.unwrap();
+    register_pausing_stream(&engine, "test::pausing", Duration::from_secs(3));
+    assert!(
+        observe(
+            &engine,
+            "obs-pausing",
+            "test::pausing",
+            json!({"method": "GET", "path": "/new/pausing"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
+
+    let resp = client()
+        .get(format!("http://{}/new/pausing", boot.local_addr))
+        .send()
+        .await
+        .unwrap();
+    // Idle for longer than the 300 ms timeout: the stream ends there.
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"first");
+    readers_close(&engine, Duration::from_secs(1)).await;
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
