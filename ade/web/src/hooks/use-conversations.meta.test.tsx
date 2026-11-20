@@ -14,6 +14,11 @@ import {
   subscribeSessionDirectory,
 } from '@/lib/sessions/events'
 import type { SessionMeta } from '@/lib/sessions/types'
+import {
+  __resetWorktreeClaimsForTests,
+  recordConsoleClaim,
+} from '@/lib/worktree-claims'
+import { releaseWorktree } from '@/lib/worktrees'
 import { type ConversationsApi, useConversations } from './use-conversations'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
@@ -27,6 +32,10 @@ vi.mock('@/lib/sessions/api', async (original) => ({
 vi.mock('@/lib/sessions/events', () => ({
   subscribeSessionDirectory: vi.fn(),
   subscribeSessionTranscript: () => () => {},
+}))
+vi.mock('@/lib/worktrees', async (original) => ({
+  ...(await original<typeof import('@/lib/worktrees')>()),
+  releaseWorktree: vi.fn(),
 }))
 
 const OLD_MODEL = 'anthropic::claude-opus-5-5'
@@ -199,5 +208,45 @@ describe('session metadata writes', () => {
     })
     await vi.waitFor(() => expect(setSessionMeta).toHaveBeenCalledTimes(1))
     expect(vi.mocked(setSessionMeta).mock.calls[0]?.[0].session_id).toBe(id)
+  })
+})
+
+describe('working directory moved by the harness', () => {
+  const workingDir = () =>
+    api.conversations.find((c) => c.id === id)?.workingDir
+  const moved = (movedFrom: string, timestamp: number) =>
+    handlers.onMetaUpdated?.({
+      session_id: id,
+      title: meta.title,
+      description: '',
+      metadata: { fs_scope: { root: '/repo.feat', moved_from: movedFrom } },
+      timestamp,
+    })
+
+  it('follows the move without writing it back and releases the old claim', async () => {
+    // The chat shows /repo, the folder the move starts from.
+    await act(async () => root.unmount())
+    localStorage.clear()
+    const rooted = {
+      ...meta,
+      metadata: { ...meta.metadata, fs_scope: { root: '/repo' } },
+    }
+    vi.mocked(listSessions).mockResolvedValue([rooted])
+    vi.mocked(getSession).mockResolvedValue(rooted)
+    root = createRoot(host)
+    await act(async () => root.render(<Probe />))
+    expect(workingDir()).toBe('/repo')
+    __resetWorktreeClaimsForTests()
+    recordConsoleClaim(id, { worktreeId: 'wt-1', path: '/repo' })
+
+    // A move from a folder this chat does not show is ignored.
+    await act(async () => moved('/other', 10))
+    expect(workingDir()).toBe('/repo')
+    expect(releaseWorktree).not.toHaveBeenCalled()
+
+    await act(async () => moved('/repo', 11))
+    expect(workingDir()).toBe('/repo.feat')
+    expect(releaseWorktree).toHaveBeenCalledWith('wt-1', id)
+    expect(setSessionMeta).not.toHaveBeenCalled()
   })
 })

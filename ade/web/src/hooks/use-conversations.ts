@@ -107,6 +107,7 @@ import {
   saveLastThinkingLevel,
   saveNewChatDraft,
 } from '@/lib/storage'
+import { workingDirScopeNotice } from '@/lib/working-dir'
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
   type AgentProfileChangeOptions,
@@ -834,8 +835,26 @@ function conversationFromMeta(
   }
 }
 
+/** The folder the harness moved this session to (`fs_scope.moved_from` is set
+ * only by that move), when the move starts from the folder this chat shows.
+ * The console's own metadata echoes carry no `moved_from`, so they never
+ * re-root a chat. */
+function movedWorkingDir(
+  workingDir: string | null | undefined,
+  md: Record<string, unknown>,
+): string | null {
+  const scope = md.fs_scope
+  if (typeof scope !== 'object' || scope === null) return null
+  const { root, moved_from: movedFrom } = scope as Record<string, unknown>
+  if (typeof movedFrom !== 'string' || typeof root !== 'string' || !root)
+    return null
+  return workingDir == null || workingDir === movedFrom ? root : null
+}
+
 /** Apply one partial metadata event without letting unordered delivery roll
- * back a newer title or sub-agent presentation event. */
+ * back a newer title or sub-agent presentation event. A harness move of the
+ * working directory re-roots the chat and, when it is open, leaves a
+ * 'moved' row in its transcript. */
 export function applyConversationMetadataEvent(
   conversation: Conversation,
   event: MetaUpdatedEvent,
@@ -852,8 +871,10 @@ export function applyConversationMetadataEvent(
       md,
       conversation.started === true && !conversation.legacySkillMigration,
     )
+  const movedTo = movedWorkingDir(conversation.workingDir, md)
   const next: Conversation = {
     ...conversation,
+    ...(movedTo ? { workingDir: movedTo } : {}),
     title: event.title || conversation.title,
     titleManual: md.title_manual === true || conversation.titleManual,
     model:
@@ -891,7 +912,33 @@ export function applyConversationMetadataEvent(
     spawnedBy: spawnedByOf(md.spawned_by) ?? conversation.spawnedBy,
     updatedAt: Math.max(conversation.updatedAt, event.timestamp),
   }
-  return reconcileLegacySkillMigration(conversation, next)
+  const reconciled = reconcileLegacySkillMigration(conversation, next)
+  if (
+    !movedTo ||
+    reconciled.workingDir !== movedTo ||
+    movedTo === conversation.workingDir ||
+    !conversation.hydrated ||
+    !conversation.started
+  )
+    return reconciled
+  const notice = workingDirScopeNotice({
+    path: movedTo,
+    previousPath: conversation.workingDir ?? null,
+    cause: 'moved',
+  })
+  return appendMessageToConversation(
+    reconciled,
+    {
+      id: uid(),
+      role: 'system',
+      content: notice.content,
+      tone: 'info',
+      kind: 'working-dir',
+      scope: notice.scope,
+      createdAt: Date.now(),
+    },
+    reconciled.updatedAt,
+  )
 }
 
 /** Apply one partial lifecycle event without letting an older delivery turn a
@@ -2165,12 +2212,23 @@ export function useConversations(
         onMetaUpdated: (event) => {
           clearConversationMissing(event.session_id)
           missingSessionLookupGenerationRef.current.delete(event.session_id)
-          const known = conversationsRef.current.some(
+          const current = conversationsRef.current.find(
             (conversation) => conversation.id === event.session_id,
           )
+          const known = current !== undefined
           patchConversation(event.session_id, (conversation) =>
             applyConversationMetadataEvent(conversation, event),
           )
+          // A harness move re-roots the chat without going through
+          // setWorkingDir: that would write the root back and make the
+          // agent's worktree the folder for new chats.
+          const movedTo = current
+            ? applyConversationMetadataEvent(current, event).workingDir
+            : null
+          if (movedTo && movedTo !== current?.workingDir)
+            void releaseConsoleClaimIfAny(event.session_id, {
+              keepPath: movedTo,
+            })
           if (!known) {
             const requireWatched =
               (watchCountsRef.current.get(event.session_id) ?? 0) > 0
