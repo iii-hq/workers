@@ -145,15 +145,17 @@ impl AgentMessage {
         }
     }
 
-    /// Remove every attachment reference from this message's content — `file`
-    /// blocks and the `attachment_id` link on `image` blocks (see
+    /// Rewrite every attachment reference in this message's content for the
+    /// model: each `file` block becomes, in place, its `<attachment>` text
+    /// block naming `session::read-attachment` for `session_id`, and `image`
+    /// blocks lose their `attachment_id` link (see
     /// [`ContentBlock::strip_files`]). Call it on the MODEL-BOUND copy only —
     /// the persisted transcript keeps its references. A no-op (no allocation)
     /// when the message carries no reference.
-    pub fn strip_file_blocks(&mut self) {
+    pub fn strip_file_blocks(&mut self, session_id: Option<&str>) {
         let content = self.content_mut();
         if ContentBlock::contains_attachment_refs(content) {
-            *content = ContentBlock::strip_files(content);
+            *content = ContentBlock::strip_files(content, session_id);
         }
     }
 

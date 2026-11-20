@@ -23,7 +23,9 @@
 //! `<attachment_id>.bin` (the bytes) and `<attachment_id>.json` (the
 //! `AttachmentMeta`), both written atomically (tmp + rename), metadata
 //! last so a listed attachment always has its bytes. Deleting a session
-//! removes the folder.
+//! removes the folder. An index from attachment id to the sessions holding
+//! it (`attachment_owners`, for lookup by id alone) is built by one walk of
+//! `attachments/` on first use and kept by every put and delete.
 //!
 //! A lazy per-session cache makes reads cheap: the file is replayed on
 //! first access and kept write-through afterwards. Appends are serialized
@@ -226,6 +228,10 @@ type ReplayHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 pub struct FsStore {
     dir: PathBuf,
     cache: Mutex<HashMap<String, LoadedSession>>,
+    /// attachment id -> the sessions holding it (a fork copies attachments
+    /// under the same id), sorted. `None` until the first lookup walks the
+    /// attachment folders; afterwards put/delete keep it current.
+    attachment_index: Mutex<Option<HashMap<String, Vec<String>>>>,
     #[cfg(test)]
     after_replay: Option<ReplayHook>,
     #[cfg(test)]
@@ -245,6 +251,7 @@ impl FsStore {
         Ok(Self {
             dir,
             cache: Mutex::new(HashMap::new()),
+            attachment_index: Mutex::new(None),
             #[cfg(test)]
             after_replay: None,
             #[cfg(test)]
@@ -527,6 +534,74 @@ impl FsStore {
             dir.join(format!("{stem}.bin")),
         )
     }
+
+    /// Every attachment on disk as `attachment id -> sessions` (sorted): one
+    /// walk of `attachments/<encoded session>/<encoded id>.json`.
+    fn walk_attachments(&self) -> Result<HashMap<String, Vec<String>>, StoreError> {
+        let root = self.dir.join("attachments");
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        let sessions = match std::fs::read_dir(&root) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(index),
+            Err(e) => return Err(StoreError(format!("read {}: {e}", root.display()))),
+        };
+        for dent in sessions {
+            let dent = dent.map_err(|e| StoreError(format!("read attachments entry: {e}")))?;
+            let Some(session_id) = dent.file_name().to_str().and_then(decode_session_id) else {
+                continue;
+            };
+            let Ok(files) = std::fs::read_dir(dent.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let path = file.path();
+                if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(id) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(decode_session_id)
+                else {
+                    continue;
+                };
+                index.entry(id).or_default().push(session_id.clone());
+            }
+        }
+        for owners in index.values_mut() {
+            owners.sort();
+            owners.dedup();
+        }
+        Ok(index)
+    }
+
+    /// Run `f` on the attachment index, walking the disk first when it has
+    /// not been built yet.
+    fn with_attachment_index<T>(
+        &self,
+        f: impl FnOnce(&mut HashMap<String, Vec<String>>) -> T,
+    ) -> Result<T, StoreError> {
+        let mut guard = self
+            .attachment_index
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.walk_attachments()?);
+        }
+        Ok(f(guard.as_mut().expect("index built above")))
+    }
+
+    /// Apply `f` to the index only if it is already built (a later walk sees
+    /// the disk as it is anyway).
+    fn update_attachment_index(&self, f: impl FnOnce(&mut HashMap<String, Vec<String>>)) {
+        let mut guard = self
+            .attachment_index
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(index) = guard.as_mut() {
+            f(index);
+        }
+    }
 }
 
 #[async_trait]
@@ -678,7 +753,14 @@ impl SessionStore for FsStore {
         write_atomically(&bin_path, bytes)?;
         let json = serde_json::to_vec(meta)
             .map_err(|e| StoreError(format!("serialize attachment meta: {e}")))?;
-        write_atomically(&meta_path, &json)
+        write_atomically(&meta_path, &json)?;
+        self.update_attachment_index(|index| {
+            let owners = index.entry(meta.attachment_id.clone()).or_default();
+            if let Err(at) = owners.binary_search(&meta.session_id) {
+                owners.insert(at, meta.session_id.clone());
+            }
+        });
+        Ok(())
     }
 
     async fn get_attachment(
@@ -743,16 +825,37 @@ impl SessionStore for FsStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(StoreError(format!("remove {}: {e}", bin_path.display()))),
         }
+        if existed {
+            self.update_attachment_index(|index| {
+                if let Some(owners) = index.get_mut(attachment_id) {
+                    owners.retain(|s| s != session_id);
+                    if owners.is_empty() {
+                        index.remove(attachment_id);
+                    }
+                }
+            });
+        }
         Ok(existed)
     }
 
     async fn delete_attachments(&self, session_id: &str) -> Result<(), StoreError> {
         let dir = self.attachments_dir(session_id);
         match std::fs::remove_dir_all(&dir) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(StoreError(format!("remove {}: {e}", dir.display()))),
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError(format!("remove {}: {e}", dir.display()))),
         }
+        self.update_attachment_index(|index| {
+            index.retain(|_, owners| {
+                owners.retain(|s| s != session_id);
+                !owners.is_empty()
+            });
+        });
+        Ok(())
+    }
+
+    async fn attachment_owners(&self, attachment_id: &str) -> Result<Vec<String>, StoreError> {
+        self.with_attachment_index(|index| index.get(attachment_id).cloned().unwrap_or_default())
     }
 }
 
@@ -1759,5 +1862,46 @@ mod tests {
             .collect();
         assert!(names.iter().all(|n| !n.contains('/')), "{names:?}");
         assert!(store.get_attachment("s_1", id).await.unwrap().is_some());
+        assert_eq!(store.attachment_owners(id).await.unwrap(), vec!["s_1"]);
+    }
+
+    #[tokio::test]
+    async fn attachment_owners_come_from_the_disk_and_follow_puts_and_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = FsStore::new(dir.path()).unwrap();
+            // A fork copies an attachment under the same id.
+            for session in ["s_b", "s_a"] {
+                store
+                    .put_attachment(&attachment(session, "a_1", "r.pdf", b"x"), b"x")
+                    .await
+                    .unwrap();
+            }
+            store
+                .put_attachment(&attachment("s/odd", "a_2", "n.md", b"y"), b"y")
+                .await
+                .unwrap();
+        }
+
+        // A new process builds the index from the folders, sessions sorted.
+        let store = FsStore::new(dir.path()).unwrap();
+        assert_eq!(
+            store.attachment_owners("a_1").await.unwrap(),
+            vec!["s_a", "s_b"]
+        );
+        assert_eq!(store.attachment_owners("a_2").await.unwrap(), vec!["s/odd"]);
+        assert!(store.attachment_owners("a_9").await.unwrap().is_empty());
+
+        // Kept current without another walk.
+        store
+            .put_attachment(&attachment("s_c", "a_3", "z.zip", b"z"), b"z")
+            .await
+            .unwrap();
+        assert_eq!(store.attachment_owners("a_3").await.unwrap(), vec!["s_c"]);
+        assert!(store.delete_attachment("s_a", "a_1").await.unwrap());
+        assert_eq!(store.attachment_owners("a_1").await.unwrap(), vec!["s_b"]);
+        store.delete_attachments("s_b").await.unwrap();
+        assert!(store.attachment_owners("a_1").await.unwrap().is_empty());
+        assert_eq!(store.attachment_owners("a_3").await.unwrap(), vec!["s_c"]);
     }
 }
