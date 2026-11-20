@@ -1037,6 +1037,62 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     expect(JSON.stringify(assistants[assistants.length - 1].content)).toContain('connection reset');
   });
 
+  it('a claude::stop mid-query ends the turn as interrupted, not an error', async () => {
+    // Live behaviour: an interrupted query answers with an error result
+    // (`error_during_execution` and an `[ede_diagnostic]` line), which alone
+    // would mark a requested stop as a failure.
+    const fake = await worker();
+    let release: () => void = () => {};
+    const interrupted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let streaming = false;
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_s', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Once upon' },
+        });
+        streaming = true;
+        await interrupted;
+        yield {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          session_id: 'cs-1',
+          num_turns: 1,
+          errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
+        };
+      },
+      interrupt: async () => release(),
+    })) as never);
+    await fake.registered.get('claude::start')?.({
+      prompt: 'story',
+      session_id: 'stop-mid',
+      parent_session_id: 'p-1',
+    });
+    await vi.waitFor(() => expect(streaming).toBe(true));
+    expect(await fake.registered.get('claude::stop')?.({ session_id: 'stop-mid' })).toMatchObject({
+      stopped: true,
+    });
+    await vi.waitFor(() => expect(statuses(fake)).toEqual(['working', 'done']));
+    const done = fake.calls.find(
+      (c) => c.function_id === 'session::set-status' && c.payload.status === 'done',
+    );
+    expect(done?.payload.reason).toBe('stopped');
+    const messages = appended(fake, 'stop-mid');
+    expect(JSON.stringify(messages)).toContain('Once upon');
+    expect(messages[messages.length - 1].stop_reason).toBe('aborted');
+  });
+
   it('stores a stop before the query exists as aborted, not error', () => {
     const msg = toSessionMessage({ role: 'assistant', content: [], stop_reason: 'interrupted' });
     expect(msg.stop_reason).toBe('aborted');

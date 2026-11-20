@@ -343,7 +343,7 @@ export async function executeRun(
     if (stop !== 'end') writer?.note(stop, said);
     await finish(
       result.is_error === true ? 'error' : 'done',
-      result.is_error === true ? said : undefined,
+      result.is_error === true ? said : stop === 'interrupted' ? 'stopped' : undefined,
     );
     return result;
   } finally {
@@ -541,6 +541,14 @@ async function runReserved(
     stopReason = 'error';
     resultText = String(err);
   }
+  // A requested stop: the interrupted query answers with an error result (or
+  // throws), which is how it was stopped, not a failure. A turn that finished
+  // before the stop landed keeps its own outcome.
+  if (handle.stopped && !stoppedEarly && (isError || stopReason !== 'end')) {
+    isError = false;
+    stopReason = 'interrupted';
+    resultText = 'Stopped by claude::stop.';
+  }
   // slot release is handled by executeRun's finally (covers setup throws too)
 
   record.status = isError ? 'error' : 'done';
@@ -700,6 +708,8 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       const { session_id } = SessionIdSchema.parse(payload ?? {});
       const run = live.get(session_id);
       if (!run) return { session_id, stopped: false, reason: 'no live run' };
+      // Marked first: the run reads it to tell a requested stop from a failure.
+      run.stopped = true;
       await run.interrupt();
       return { session_id, stopped: true };
     },
