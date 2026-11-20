@@ -387,12 +387,13 @@ export interface SystemNoticeFailure {
  * A session working-directory change. `path: null` means the session is now
  * unscoped. `cause` says why the scope moved: the user picked a folder, the
  * console recovered to the harness default because the saved folder vanished,
- * or the saved folder vanished with nothing to fall back to.
+ * the saved folder vanished with nothing to fall back to, or the agent moved
+ * the session's work to another folder during its turn.
  */
 export interface WorkingDirScope {
   path: string | null
   previousPath?: string | null
-  cause: 'selected' | 'recovered' | 'unavailable'
+  cause: 'selected' | 'recovered' | 'unavailable' | 'moved'
 }
 
 /**

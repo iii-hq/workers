@@ -375,11 +375,12 @@ pub async fn resolve(
                     raw,
                 )
                 .await;
-            let (data, annotations) = match post_outcome {
+            let (data, annotations, moved_root) = match post_outcome {
                 crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
-                } => (result, annotations),
+                    fs_scope_root,
+                } => (result, annotations, fs_scope_root),
                 crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
@@ -443,6 +444,7 @@ pub async fn resolve(
                 crate::reconcile::contract_in_context(&record, &function_id),
             )
             .await;
+            let moved_from = crate::turn_loop::adopt_moved_root(&mut record, &mut data, moved_root);
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
@@ -470,7 +472,13 @@ pub async fn resolve(
                 cp.state = CallState::Done;
                 cp.entry_id = Some(entry_id);
             }
-            let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+            // Mirror before the `?`: the result is already in the transcript,
+            // and a retried resolve skips a call that is no longer pending.
+            let resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await;
+            if let Some(from) = moved_from {
+                crate::turn_loop::mirror_moved_root(&session, &record, &from).await;
+            }
+            let turn_resumed = resumed?;
             Ok(FunctionResolveResponse {
                 resolved: true,
                 turn_resumed,

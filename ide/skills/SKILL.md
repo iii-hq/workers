@@ -63,6 +63,20 @@ agents, pair with the `skills` worker.
   `shell::fs::*` and an exec `cwd` refuse paths outside that root and the
   session's grants (`C220`/`S220`, `C215`/`S215`); under `configured_roots`
   the root is only the default directory for relative paths.
+- A host `shell::exec` running `git worktree add` that creates a worktree and
+  names its directory on the command line moves the session there, for the
+  rest of the turn and later turns. Run it as the only call of its step; use
+  relative paths in the new worktree only after the session-context note
+  confirms the move (calls already written in the same step are re-anchored).
+  Under `workspace` the old checkout leaves scope and the new worktree needs
+  no grant; under `landlock` it must be where the exec can write (root,
+  grants, `fs.exec_writable`).
+  `git worktree remove` of the worktree you are rooted in returns the session
+  to the main checkout, and `git worktree move` of it takes you along. Under
+  `landlock` that way back needs the worktree's parent and the main checkout
+  writable for the exec; otherwise git empties the worktree, unregisters it
+  and fails, and you stay in the empty directory. For a worktree meant for a child or a side look, use
+  `worktree::create` (it does not move you).
 - With `fs.exec_confinement: landlock`, a session's host `shell::exec` /
   `exec_bg` can write only under its root, its grants, the repository's git
   dir and `fs.exec_writable` (`/tmp`, `/dev`, caches, toolchains); reads stay

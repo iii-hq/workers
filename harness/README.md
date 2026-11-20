@@ -700,7 +700,7 @@ with `decision` `continue`, `deny` or `hold`.
 | `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly to the turns its `sessions` globs and filters select (filters see the input without the assembled `system_prompt`, `messages` and `tools`), so the budget and compaction count it, and its target is not called. It joins the stable prefix ahead of the per-session runtime aid, so every session it selects shares it from the provider's prompt cache. | `generate { system_prompt, messages, model, provider, functions_generation, tools, expose }`, `parent?`, `parent_session_id?` (a sub-agent turn's parent, as on `harness::on-turn-completed`) | `decision`, `reason?`, `system_prompt?`, `append_messages?`, `annotations?` |
 | `harness::hook::on-post-generate` | After the final assistant message. Observe only. | `generated { message }` | `decision: continue` |
 | `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, arguments, description? }` (`description`: the `agent_call` wrapper's display-only description of the call, when the model gave one; absent on a direct `harness::function::call`; a released hold recovers it from the transcript) | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
-| `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. | `call`, `result { function_call_id, function_id, content, is_error, details }` | `decision`, `held_by?`, `result?`, `annotations?` |
+| `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result, or move the session's working directory (below). | `call`, `result { function_call_id, function_id, content, is_error, details }` | `decision`, `held_by?`, `result?`, `annotations?` |
 | `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). | `result` (the turn's result) | `decision`, `reason?`, `prompt?` |
 
 Hook args: `{ functions?, sessions?, payload?, result_into?, retry_prompt?,
@@ -725,6 +725,28 @@ iii.observe(
     "judge::mentions::pre-generate",
 );
 ```
+
+An `on-post-call` target may move the session's working directory: it answers
+`{ "decision": "continue", "mutations": { "fs_scope": { "root": "/abs/path" } } }`.
+The `ide` worker does this after a `shell::exec` that created a git worktree,
+or removed the one the session is rooted in. The harness takes the mutation
+only when both the target and the called function are `shell::*` / `coder::*`
+ids. That is a filter that keeps the scope-enforcing workers the only
+proposers, not authentication: any worker on the bus can already send a
+session any root. A failed call, a relative path or an unscoped session never
+moves; neither does a turn with another call awaiting approval, and the call's
+result tells the model so. On a move the harness:
+
+- sets the turn's root, so the step's later calls run there, later turns keep
+  it, and the model gets a runtime-context note at its next generation;
+- then mirrors `fs_scope { root, moved_from }` into the session's metadata
+  with `session::set-meta`. `moved_from` is the guard a client compares with
+  the folder it shows before following; the harness never reads it.
+
+Under the `workspace` boundary an approved `git worktree add` also moves the
+boundary there, for sub-agents too. A send that names a root still wins, so a
+client must adopt the mirrored root or its next send moves the session back. A
+re-tasked sub-agent keeps its own root unless the spawn names one.
 
 ### Agent observers
 

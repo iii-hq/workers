@@ -76,7 +76,7 @@
       "SpawnOptions": {
         "properties": {
           "filesystem_root": {
-            "description": "Absolute filesystem root for the child turn; omit to inherit the parent's.",
+            "description": "Absolute filesystem root for the child turn; omit to inherit the parent's (a reused child keeps its own).",
             "type": [
               "string",
               "null"

@@ -93,7 +93,9 @@ export function workingDirScopeNotice(scope: WorkingDirScope): {
       ? scope.path === null
         ? 'working directory cleared; this session is now unscoped — applies to the messages that follow'
         : `working directory changed to ${scope.path} — applies to the messages that follow`
-      : workingDirRecoveryNotice(previous ?? '(unknown)', scope.path)
+      : scope.cause === 'moved'
+        ? `the agent moved this session's work to ${scope.path}; shell and file operations already run there`
+        : workingDirRecoveryNotice(previous ?? '(unknown)', scope.path)
   return { content, scope }
 }
 
