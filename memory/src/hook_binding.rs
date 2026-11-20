@@ -48,7 +48,9 @@ impl HookBinding {
             let _ = import.await;
         }
     }
-    fn matches(&self, ctx: &InvocationCtx, iii: &IIIClient) -> bool {
+    /// Delivered by this worker's active observer of the harness hook, never
+    /// a direct call (an agent's own call carries no activation).
+    pub(crate) fn matches(&self, ctx: &InvocationCtx, iii: &IIIClient) -> bool {
         iii.get_connection_state() == IIIConnectionState::Connected
             && iii.engine_supports_observe() == Some(true)
             && ctx.function_id == hooks::PRE_GENERATE_FN
@@ -141,6 +143,9 @@ pub fn register_pre_generate(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let invocation = iii_sdk::current_invocation();
             let deps = deps.clone();
             async move {
+                let observed = invocation
+                    .as_ref()
+                    .is_some_and(|ctx| deps.hook_binding.matches(ctx, &deps.iii));
                 // Only a finished failed or cancelled request can add to the
                 // ledger; any other delivery costs this step nothing.
                 let rows = crate::extraction_proof::recoverable(&input);
@@ -159,7 +164,7 @@ pub fn register_pre_generate(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
                 {
                     context.remove("extraction_history");
                 }
-                hooks::pre_generate(&deps, input).await
+                hooks::pre_generate(&deps, input, observed).await
             }
         })
         .description(hooks::PRE_GENERATE_DESC)

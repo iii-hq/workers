@@ -18,6 +18,9 @@ pub enum MemoryError {
 
     #[error("sibling_unavailable: {0}")]
     SiblingUnavailable(String),
+
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 impl From<MemoryError> for Error {

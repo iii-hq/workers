@@ -295,10 +295,13 @@ pub struct AckResponse {
 
 /// Inject the bank's rules + recalled memories for one turn. Every failure
 /// path degrades to a plain `continue` — never an error, never a
-/// cross-bank fallback.
+/// cross-bank fallback. Only an `observed` delivery (the harness's, through
+/// this worker's observer) records the turn's bank: a direct call, an
+/// agent's from its own turn included, would rebind the bank its writes go to.
 pub async fn pre_generate(
     deps: &Arc<Deps>,
     input: PreGenerateInput,
+    observed: bool,
 ) -> Result<HookResponse, Error> {
     let cfg = deps.config().await;
     if input.session_id.is_empty() {
@@ -320,7 +323,7 @@ pub async fn pre_generate(
         None => {
             let resolved =
                 crate::scope::resolve(deps, &input.session_id, input.metadata.as_ref()).await;
-            if let (Ok(bank), Some(turn_id)) = (&resolved, turn_id) {
+            if let (true, Ok(bank), Some(turn_id)) = (observed, &resolved, turn_id) {
                 crate::scope::remember_turn(turn_id, bank.clone());
             }
             resolved
@@ -1191,6 +1194,25 @@ pub(crate) fn remember_session(session_id: &str, meta: &Value) -> Capture {
     capture
 }
 
+/// The session's [`Capture`] with extraction on: cached, else from its record.
+pub(crate) async fn session_capture_of(deps: &Deps, session_id: &str) -> Result<Capture, String> {
+    let cached = SESSION_CAPTURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session_id)
+        .copied();
+    Ok(match cached {
+        Some(capture) => capture,
+        // Only when the resolver did not walk this session (a turn naming
+        // `memory_bank`). One that does not exist (yet) is not cached: it
+        // is told nothing is captured until its record says otherwise.
+        None => match crate::scope::session_meta(&deps.iii, session_id.to_string()).await? {
+            Some(meta) => remember_session(session_id, &meta),
+            None => Capture::Scripted,
+        },
+    })
+}
+
 /// This turn's [`Capture`]: its session's, with extraction off or a parent
 /// on the turn (`sub_agent`: what turn-end skips) turning the user's own
 /// session into one that saves.
@@ -1200,22 +1222,7 @@ async fn turn_capture(
     session_id: &str,
     sub_agent: bool,
 ) -> Result<Capture, String> {
-    let cached = SESSION_CAPTURE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(session_id)
-        .copied();
-    let session = match cached {
-        Some(capture) => capture,
-        // Only when the resolver did not walk this session (a turn naming
-        // `memory_bank`). One that does not exist (yet) is not cached: it
-        // is told nothing is captured until its record says otherwise.
-        None => match crate::scope::session_meta(&deps.iii, session_id.to_string()).await? {
-            Some(meta) => remember_session(session_id, &meta),
-            None => Capture::Scripted,
-        },
-    };
-    Ok(match session {
+    Ok(match session_capture_of(deps, session_id).await? {
         Capture::Extracted if !cfg.extraction_enabled || sub_agent => Capture::Save,
         capture => capture,
     })
@@ -1821,6 +1828,7 @@ fn last_user_text(messages: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deps::offline_deps;
 
     #[test]
     fn the_extraction_observer_id_is_the_worker_and_its_topic() {
@@ -2193,6 +2201,7 @@ mod tests {
                     step: 1,
                     ..PreGenerateInput::default()
                 },
+                true,
             )
             .await
             .unwrap();
@@ -2238,6 +2247,41 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn only_the_observed_hook_records_the_bank_a_turn_writes_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(3)));
+        remember_session("s-rebind", &json!({ "kind": "user" }));
+        crate::scope::remember_turn("t-rebind", Some(crate::scope::Resolved::named("repo-a")));
+        let opening = |observed| {
+            let input = PreGenerateInput {
+                session_id: "s-rebind".into(),
+                turn_id: Some("t-rebind".into()),
+                metadata: Some(json!({ "memory_bank": "agent-reviewer" })),
+                ..PreGenerateInput::default()
+            };
+            crate::scope::in_turn("s-rebind", "t-rebind", pre_generate(&deps, input, observed))
+        };
+        let writes_to = || {
+            crate::scope::in_turn("s-rebind", "t-rebind", async {
+                let caller = crate::scope::Caller::from_baggage();
+                crate::scope::write_bank(&deps, &caller, None, false)
+                    .await
+                    .unwrap()
+                    .0
+            })
+        };
+        // The agent calling the internal hook from its own turn.
+        opening(false).await.unwrap();
+        assert_eq!(writes_to().await, "repo-a");
+        opening(true).await.unwrap();
+        assert_eq!(
+            writes_to().await,
+            "agent-reviewer",
+            "the harness's delivery"
+        );
+    }
+
     /// A turn the harness reports with a parent is one turn-end skips, so
     /// its header asks for a save even when its session's record has none.
     #[tokio::test]
@@ -2255,7 +2299,11 @@ mod tests {
             let deps = deps.clone();
             async move {
                 let input: PreGenerateInput = serde_json::from_value(input).unwrap();
-                pre_generate(&deps, input).await.unwrap().mutations.unwrap()
+                pre_generate(&deps, input, true)
+                    .await
+                    .unwrap()
+                    .mutations
+                    .unwrap()
             }
         };
         let link = json!({ "session_id": "p", "turn_id": "pt", "function_call_id": "fc" });
@@ -2376,29 +2424,37 @@ mod tests {
             pinned: false,
             session_id: None,
         };
-        let noted = iii_helpers::observability::run_with_baggage(
-            &[("iii.session.id", "s-1"), ("iii.message.id", "t-1")],
+        remember_session("s-note", &json!({ "kind": "user" }));
+        crate::scope::remember_turn("t-note", Some(crate::scope::Resolved::named(bank.clone())));
+        let noted = crate::scope::in_turn(
+            "s-note",
+            "t-note",
             crate::functions::items::save(&deps, request("The deploy script lives in ops/.")),
         )
         .await
         .unwrap()
         .memory;
-        let source = noted.source.expect("a save from a turn records its source");
+        let source = noted
+            .source
+            .clone()
+            .expect("a save from a turn records its source");
         assert_eq!(
             (source.session_id.as_deref(), source.turn_id.as_deref()),
-            (Some("s-1"), Some("t-1"))
+            (Some("s-note"), Some("t-note"))
         );
         assert!(
             !noted.entities.iter().any(|e| e == "user"),
             "{:?}",
             noted.entities
         );
+        assert!(noted.is_agent_note());
         let typed = crate::functions::items::save(&deps, request("The user prefers tea."))
             .await
             .unwrap()
             .memory;
         assert_eq!(typed.entities, ["user"], "the memory page's add field");
         assert_eq!(typed.source, None);
+        assert!(!typed.is_agent_note());
     }
 
     #[test]
@@ -2675,20 +2731,6 @@ Formal."
             (at_max / at_double - 2.0).abs() < 1e-3,
             "the caller's scale divides: {at_max} vs {at_double}"
         );
-    }
-
-    /// Deps over a store in `dir` and no engine: embeddings off, so
-    /// nothing in `injection` reaches the client.
-    fn offline_deps(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
-        let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
-        let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
-        Deps {
-            hook_binding: Arc::default(),
-            emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
-            iii,
-            store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
-            config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),
-        }
     }
 
     fn offline_cfg(recall_limit: usize) -> WorkerConfig {

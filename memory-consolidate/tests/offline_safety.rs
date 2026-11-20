@@ -2296,6 +2296,21 @@ async fn verify_stops_with_one_note_on_an_older_memory_worker() {
 }
 
 #[tokio::test]
+async fn verify_refused_from_an_agent_turn_keeps_the_pass_due() {
+    let refused = "memory::transcript: remote error (invocation_failed): forbidden: calling \
+                   `memory::transcript` is not allowed from inside an agent turn; it is a \
+                   console, REST or CLI action";
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    boundary.0.lock().unwrap().transcript_error = Some(refused.into());
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(model_calls(&boundary), 0);
+    assert!(verify_cursor(&boundary).is_null());
+    assert_eq!(bank.errors, [format!("verify tier stopped: {refused}")]);
+    assert!(!response.checkpointed);
+}
+
+#[tokio::test]
 async fn verify_checks_priority_notes_first() {
     let boundary = with_transcripts(vec![tea("extracted"), standup()]);
     boundary.decision(json!({"verdict":"supported"}));

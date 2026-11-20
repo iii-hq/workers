@@ -138,7 +138,7 @@ III_NAMESPACE=<ns> cargo test --test judge_golden -- --ignored --nocapture
 - **Older memory worker.** A memory worker without `memory::transcript` stops the tier before any model call, with one note: `verify tier skipped: memory worker lacks memory::transcript — upgrade memory`. Release memory first.
 - **Dry runs** skip this tier.
 
-Both memory functions are internal and agent-denied: only this worker calls them.
+Both memory functions are internal, and memory refuses them, like `memory::supersede` and `memory::rule::set`, from inside an agent turn: only this worker calls them, from a pass that carries no turn baggage. A `memory-consolidate::run` started from inside a turn carries that turn's baggage into every memory call it makes, so memory refuses its writes and `memory::transcript` with `forbidden`. Each refusal is a bank error (the verify tier stops there, its cursor where it was), so that pass is not checkpointed and the scheduled pass still runs when due.
 
 ## What counts as a duplicate
 

@@ -1839,6 +1839,21 @@ impl Bank {
             .collect()
     }
 
+    /// Memories saved or brought back from `turn_id` (`source.turn_id`),
+    /// retired ones included.
+    pub async fn saved_in_turn(&self, turn_id: &str) -> usize {
+        let inner = self.inner.read().await;
+        inner
+            .memories
+            .values()
+            .filter(|m| {
+                m.source
+                    .as_ref()
+                    .is_some_and(|s| s.turn_id.as_deref() == Some(turn_id))
+            })
+            .count()
+    }
+
     pub async fn counts(&self) -> (usize, usize) {
         let inner = self.inner.read().await;
         let live = inner.memories.values().filter(|f| f.is_live()).count();

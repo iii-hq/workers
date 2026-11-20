@@ -66,6 +66,8 @@ pub(crate) async fn demote_over_cap(deps: &Deps, bank_name: &str) -> Result<usiz
             }
             // Trashed since the write: it stays gone, and has no rule to trim.
             Err(MemoryError::BankNotFound(_)) => return Ok(0),
+            // A line whose memory was superseded too: a line has no date, so
+            // it may be the user's newest statement, written after the correction.
             Err(e) => {
                 tracing::warn!(bank = %bank_name, error = %e, "a learned line could not be demoted; it stays");
                 from = i + 1;
@@ -192,6 +194,76 @@ mod tests {
 
         assert_eq!(demote_over_cap(&deps, "main").await.unwrap(), 0);
         assert_eq!(learned(&deps, "main").await, rule);
+    }
+
+    #[tokio::test]
+    async fn a_demotion_under_turn_baggage_still_writes_its_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), 300);
+        let lines = numbered(12);
+        seed(&deps, "main", &lines).await;
+        // The queue hands the extraction job the turn's baggage; this
+        // process never saw that session or turn.
+        let moved = crate::scope::in_turn("s-job", "t-job", demote_over_cap(&deps, "main"))
+            .await
+            .unwrap();
+        assert!(moved > 0);
+        let bank = deps.store().await.bank("main").await.unwrap();
+        for line in &lines[..moved] {
+            let memory = bank.get(&fingerprint(line)).await.expect(line);
+            assert!(memory.is_live(), "{line}");
+            assert!(memory.tags.iter().any(|t| t == DEMOTED_TAG), "{line}");
+            assert!(memory.entities.iter().any(|e| e == "user"), "{line}");
+            assert_eq!(memory.source, None, "the worker's own write: {line}");
+            assert!(!memory.is_agent_note(), "{line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_line_added_back_after_its_memory_was_superseded_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), 300);
+        let lines = numbered(12);
+        let saved = |text: &str| crate::functions::items::SaveRequest {
+            bank: Some("main".into()),
+            text: text.into(),
+            entities: vec!["amber".into()],
+            tags: Vec::new(),
+            pinned: false,
+            session_id: None,
+        };
+        let save = |text: &str| crate::functions::items::save(&deps, saved(text));
+        let old = save(&lines[0]).await.unwrap().memory;
+        let correction = save("Learned line number 01 was wrong.")
+            .await
+            .unwrap()
+            .memory;
+        let req = crate::functions::items::SupersedeRequest {
+            bank: Some("main".into()),
+            id: old.id.clone(),
+            superseded_by: correction.id.clone(),
+            expected_memory: None,
+            expected_superseded_by: None,
+            reinforce: false,
+            reason: None,
+        };
+        crate::functions::items::supersede(&deps, req)
+            .await
+            .unwrap();
+        // The user said it again: the line is newer than the correction.
+        seed(&deps, "main", &lines).await;
+
+        let moved = demote_over_cap(&deps, "main").await.unwrap();
+        assert!(moved > 0);
+        let rule = learned(&deps, "main").await;
+        assert!(injected(&rule) <= 300, "{rule}");
+        let kept = kept(&rule);
+        assert_eq!(kept[0], lines[0], "{rule}");
+        assert_eq!(kept[1..], lines[1 + moved..]);
+        let bank = deps.store().await.bank("main").await.unwrap();
+        assert!(!bank.get(&old.id).await.unwrap().is_live());
+        assert!(bank.get(&correction.id).await.unwrap().is_live());
+        assert!(bank.get(&fingerprint(&lines[1])).await.unwrap().is_live());
     }
 
     #[tokio::test]
