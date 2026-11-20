@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.9
+
+- **A failing test outside the batch is rerun once before it fails the batch.** Under load the 2,737-test web suite dropped one test each time, a different one each run (`members-actions.spec.ts:116`, `deployments-worker-log.spec.ts:81`, `api-keys.spec.ts:50`), all in files the batch never touched and each green when run alone (`deployments-worker-log` 90/90 over five repeats). The verifier counted each as the batch's, so five cards that passed review and every focused check stayed unverified for three rounds. Now a suite whose only other failures sit outside the batch's files reruns just those tests once, alone; a test that passes there is recorded as `flaky:` and does not fail the batch.
+
 ## 0.8.8
 
 - **The full database suite starts on a fresh container.** The run's Postgres container lived the whole run, and every suite left one database per test behind: after a day of rounds it held 13,648 databases and 143 GB. Suites killed at their deadline had also left 18 shared-memory segments filling `/dev/shm`, so the next suite failed 46 targets with `PoolTimedOut` and `53100` while the code was fine, and the run stopped blocked. The suite's command now recreates the container (`docker rm -f -v`, the same `docker run`, `pg_isready`) before it runs.
