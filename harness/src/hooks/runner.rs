@@ -1079,10 +1079,12 @@ async fn chain_post_call(
                 }
                 // A filter that keeps the scope-enforcing worker family the
                 // only proposer, not authentication: any bus worker can
-                // already send a session any root.
+                // already send a session any root. A call that ran in another
+                // namespace (another machine) never moves this session's root.
                 if m.fs_scope_root.is_some()
                     && is_scoped_function(&function_id)
                     && is_scoped_function(&binding.target)
+                    && namespace == crate::clients::engine::resolve_namespace(&function_id, None)
                 {
                     fs_scope_root = m.fs_scope_root;
                 }
@@ -2195,5 +2197,35 @@ mod tests {
         let held = post_call_chain(&invoker, "shell::exec", &[ide, "gate"]).await;
         assert_eq!(held.decision, ChainDecision::Hold);
         assert_eq!(held.fs_scope_root, None);
+    }
+
+    /// A worktree created on another machine never moves this session's root.
+    #[tokio::test]
+    async fn a_post_call_root_from_another_namespace_moves_nothing() {
+        let ide = "shell::turns::on-post-call";
+        let invoker = Scripted::new(&[(
+            ide,
+            Ok(json!({ "decision": "continue",
+                "mutations": { "fs_scope": { "root": "/repo.feat" } } })),
+        )]);
+        let run_in = |namespace: String| {
+            let chain = vec![HookBinding {
+                functions: None,
+                ..binding(ide, 0)
+            }];
+            let input = json!({
+                "point": "post_call", "session_id": "s_1", "turn_id": "t_1", "step": 0, "depth": 0,
+                "call": { "id": "c_1", "function_id": "shell::exec", "namespace": namespace,
+                    "arguments": {} },
+                "result": { "function_call_id": "c_1", "function_id": "shell::exec",
+                    "content": [], "is_error": false, "details": null },
+            });
+            run_chain(HookPoint::PostCall, &invoker, chain, input)
+        };
+        let own = crate::clients::engine::own_namespace();
+        let here = run_in(own.clone()).await;
+        assert_eq!(here.fs_scope_root.as_deref(), Some("/repo.feat"));
+        let elsewhere = run_in(format!("{own}-laptop")).await;
+        assert_eq!(elsewhere.fs_scope_root, None);
     }
 }

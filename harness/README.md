@@ -752,9 +752,10 @@ or removed the one the session is rooted in. The harness takes the mutation
 only when both the target and the called function are `shell::*` / `coder::*`
 ids. That is a filter that keeps the scope-enforcing workers the only
 proposers, not authentication: any worker on the bus can already send a
-session any root. A failed call, a relative path or an unscoped session never
-moves; neither does a turn with another call awaiting approval, and the call's
-result tells the model so. On a move the harness:
+session any root. A failed call, a call that ran in another namespace, a
+relative path or an unscoped session never moves; neither does a turn with
+another call awaiting approval, and the call's result tells the model so. On a
+move the harness:
 
 - sets the turn's root, so the step's later calls run there, later turns keep
   it, and the model gets a runtime-context note at its next generation;
