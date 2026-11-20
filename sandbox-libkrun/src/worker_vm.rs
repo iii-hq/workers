@@ -4386,12 +4386,22 @@ mod tests {
             "{run}"
         );
         assert!(run.contains("code from the build image"), "{run}");
-        let build = crate::cli::local_worker::build_image_script(&project, true);
+        let build =
+            crate::cli::local_worker::build_image_script(&project, true, Some("bin/worker"));
         assert!(build.contains("--exclude=.iii"), "{build}");
+        assert!(
+            build.contains("[ ! -x '/workspace/bin/worker' ]"),
+            "{build}"
+        );
 
         std::fs::write(pkg.join("data"), "").unwrap();
         std::fs::set_permissions(pkg.join("data"), std::fs::Permissions::from_mode(0o644)).unwrap();
         std::os::unix::fs::symlink("bin/worker", pkg.join("link")).unwrap();
+        // Only the root's `init.krun` is the guest init's.
+        for init in ["init.krun", "bin/init.krun"] {
+            std::fs::copy(pkg.join("bin/worker"), pkg.join(init)).unwrap();
+        }
+        validate_binary(&pkg, "pkg", "bin/init.krun").unwrap();
         let outside = t.path().join("outside");
         std::fs::write(&outside, "").unwrap();
         std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -4400,6 +4410,10 @@ mod tests {
             ("/bin/sh", "relative path"),
             ("../outside", "relative path"),
             ("./bin/worker", "relative path"),
+            ("bin/./worker", "relative path"),
+            ("bin//worker", "relative path"),
+            ("bin/worker/", "relative path"),
+            ("init.krun", "guest init"),
             ("bin/missing", "cannot be read"),
             ("bin", "not a regular file"),
             ("data", "not executable"),
@@ -4430,6 +4444,16 @@ mod tests {
         )
         .unwrap();
         assert!(validate_binary(&pkg, "pkg", "bin/worker").is_err());
+        // A base image it names passes the bundle gate, though the build's request names it.
+        for (image, ok) in [("oven/bun:1", true), ("\"not an image\"", false)] {
+            std::fs::write(
+                pkg.join("iii.worker.yaml"),
+                format!("name: pkg\nruntime:\n  base_image: {image}\n"),
+            )
+            .unwrap();
+            let got = validate_binary(&pkg, "pkg", "bin/worker");
+            assert_eq!(got.is_ok(), ok, "{image}: {:?}", got.err());
+        }
     }
 
     /// A build's base image: trimmed, a plausible reference, and required for a

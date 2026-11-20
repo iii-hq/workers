@@ -15,8 +15,12 @@ are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
   package into the image and runs its `scripts.install` when it ships a
   manifest; a start of the build runs the executable from `/workspace`. A
   binary package boots only a build (S501 on `worker::prepare`, or a start
-  without `build`). `adapter::info` advertises `worker.binary` in the overlay
-  mode.
+  without `build`). Its `executable` is S501 with a `.` component or as
+  `init.krun` at the package root, the guest init's name, which the build's
+  copy leaves out; the build fails (S507) when its scripts leave the executable
+  no executable regular file. `III_BUNDLE_WORKERS_DISABLED=1` refuses bundle
+  sources only, not binary packages. `adapter::info` advertises
+  `worker.binary` in the overlay mode.
 - **A build's `base_image`.** `worker::build` takes a `base_image` that overrides
   the manifest's `runtime.base_image` for every source; a local worker's
   manifest may then leave it out.

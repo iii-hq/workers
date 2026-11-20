@@ -469,7 +469,15 @@ fi"#
 /// Each nonempty hook is evaluated in the existing shell, preserving setup's
 /// cwd, variables, functions and options for install. A nonzero total status
 /// exits before the success message, even if the hook disabled `errexit`.
-pub fn build_image_script(project: &ProjectInfo, is_bundle: bool) -> String {
+///
+/// `executable`, a binary package's, must still be an executable regular file
+/// in `/workspace` once the scripts ran: else the script fails, so no image
+/// that cannot start the worker replaces the previous one.
+pub fn build_image_script(
+    project: &ProjectInfo,
+    is_bundle: bool,
+    executable: Option<&str>,
+) -> String {
     let mut parts = script_header();
     parts.push(SOURCE_SHARE_CHECK.to_string());
     parts.push("echo \"iii: build: copying the worker's code into /workspace\" >&2".to_string());
@@ -507,8 +515,23 @@ case $? in 0) ;; *) exit $? ;; esac"#
             ));
         }
     }
+    if let Some(executable) = executable {
+        parts.push(executable_check(executable));
+    }
     parts.push("echo \"iii: build: scripts done\" >&2".to_string());
     parts.join("\n")
+}
+
+/// Fails the build script unless `/workspace/<executable>` is a regular file
+/// with an execute bit, as `validate_binary` found it on the host.
+fn executable_check(executable: &str) -> String {
+    let path = shell_quote(&format!("/workspace/{executable}"));
+    format!(
+        r#"if [ ! -f {path} ] || [ ! -x {path} ]; then
+  printf 'iii: ERROR %s is not an executable regular file after the build scripts\n' {path} >&2
+  exit 1
+fi"#
+    )
 }
 
 pub fn build_local_env(
@@ -750,8 +773,12 @@ pub(crate) async fn image_build_command(
         .map_err(|e| format!("cannot create the build VM's dir {}: {e}", root.display()))?;
     let upper = crate::cli::upper::ensure_upper_ext4(scratch)
         .map_err(|e| format!("failed to materialize the build's upper: {e}"))?;
-    let script_dir = write_run_script(&root, true, &build_image_script(&project, is_bundle))
-        .map_err(|e| format!("Failed to write the build script: {e}"))?;
+    let script_dir = write_run_script(
+        &root,
+        true,
+        &build_image_script(&project, is_bundle, executable),
+    )
+    .map_err(|e| format!("Failed to write the build script: {e}"))?;
 
     let mut env_all = project.env.clone();
     env_all.extend(env);
@@ -1064,7 +1091,10 @@ pub(crate) fn validate_binary(
         ));
     }
     let relative = Path::new(executable);
-    if executable.is_empty()
+    // `components()` drops an inner `.` and an empty component: the text first.
+    if executable
+        .split('/')
+        .any(|c| c.is_empty() || c == "." || c == "..")
         || relative
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
@@ -1081,6 +1111,14 @@ pub(crate) fn validate_binary(
     {
         return Err(format!(
             "executable {executable:?} is under `.iii`, which never reaches the image"
+        ));
+    }
+    // The build's source share lists no `init.krun` at its root, where the
+    // guest init is injected, so the image would not have it.
+    if executable == "init.krun" {
+        return Err(format!(
+            "executable {executable:?} at the package root is the guest init's name, which \
+             never reaches the image"
         ));
     }
     let path = root.join(relative);
@@ -1127,6 +1165,12 @@ pub(crate) fn validate_binary(
             return Err(rejected(format!(
                 "it declares name {name:?}, not the package {package:?}"
             )));
+        }
+        // The build's request names the base image, but the gate holds all the same.
+        if !super::bundle_download::manifest_base_image_plausible(&doc) {
+            return Err(rejected(
+                super::bundle_download::IMPLAUSIBLE_BASE_IMAGE.to_string(),
+            ));
         }
         let scripts = manifest.scripts.as_ref();
         if scripts
@@ -1523,7 +1567,7 @@ mod tests {
     #[test]
     fn the_build_script_installs_and_exits() {
         let project = project_with("apt-get install -y git", "npm ci");
-        let script = build_image_script(&project, /*is_bundle=*/ false);
+        let script = build_image_script(&project, /*is_bundle=*/ false, None);
         assert!(
             script.contains("eval 'apt-get install -y git'\ncase $? in 0) ;; *) exit $? ;; esac")
         );
@@ -1535,9 +1579,45 @@ mod tests {
         assert!(!script.contains("source-ready"));
         assert!(script.find("apt-get") < script.find("npm ci"));
         // A bundle's whole package is its code, vendored deps included.
-        let bundle = build_image_script(&project, /*is_bundle=*/ true);
+        let bundle = build_image_script(&project, /*is_bundle=*/ true, None);
         assert!(bundle.contains("tar -cf - --exclude=.iii ."), "{bundle}");
         assert!(!bundle.contains("--exclude=node_modules"));
+    }
+
+    /// A binary package's build fails when its scripts left the executable
+    /// missing, not a regular file, or without an execute bit.
+    #[test]
+    fn the_build_script_checks_the_executable_after_the_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+        let project = project_with("", "chmod a-x bin/worker");
+        let script = build_image_script(&project, true, Some("bin/worker"));
+        let check = executable_check("bin/worker");
+        assert!(script.find("chmod a-x") < script.find(&check), "{script}");
+        assert!(
+            script.find(&check) < script.find("scripts done"),
+            "{script}"
+        );
+        assert!(!build_image_script(&project, true, None).contains("is not an executable"));
+        let t = tempfile::tempdir().unwrap();
+        let ws = t.path().join("ws");
+        std::fs::create_dir_all(ws.join("bin/dir")).unwrap();
+        let check = check.replace("'/workspace/", &format!("'{}/", ws.display()));
+        let run = |exe: &str| {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &check.replace("bin/worker", exe)])
+                .output()
+                .unwrap()
+                .status
+                .code()
+        };
+        let exe = ws.join("bin/worker");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(run("bin/worker"), Some(0));
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(run("bin/worker"), Some(1));
+        assert_eq!(run("bin/missing"), Some(1));
+        assert_eq!(run("bin/dir"), Some(1));
     }
 
     /// Exercise the generated composition, not a stubbed shell exit status.
@@ -1704,7 +1784,7 @@ fi"#,
                     }
 
                     let project = project_with(setup, install);
-                    let mut script = build_image_script(&project, is_bundle);
+                    let mut script = build_image_script(&project, is_bundle, None);
                     let copy = if is_bundle {
                         r#"( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=.iii . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }"#.to_string()
                     } else {

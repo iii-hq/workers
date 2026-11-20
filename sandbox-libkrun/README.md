@@ -214,14 +214,20 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
 - **Binary packages.** From 0.5.0 (sandbox contract 1.4) a `Binary` source names
   the directory where Compose put a binary package's Linux build and its
   `executable`, relative to it: a relative path of plain components naming an
-  executable regular file in the package, through no symlink and under no
-  `.iii` (in any case, which the build's copy leaves out); S501 otherwise.
+  executable regular file in the package, through no symlink, under no `.iii`
+  (in any case, which the build's copy leaves out) and not `init.krun` at the
+  package root, the guest init's name, which the build's copy leaves out too;
+  S501 otherwise.
   `worker::build` needs a `base_image` for it (S001 without one), copies the
   package whole into `/workspace`, and runs its `scripts.install` when the
   package ships an `iii.worker.yaml`. That manifest passes the bundle gates but
   one: its name is the package's and it declares no `scripts.setup`, and it
-  needs no `scripts.start`. A start of the build runs the executable from
-  `/workspace`, with no argument and the usual env (`III_URL`,
+  needs no `scripts.start`. The build fails (S507) when the executable is no
+  longer an executable regular file in `/workspace` once the scripts ran, so
+  the previous image stays. `III_BUNDLE_WORKERS_DISABLED=1` refuses bundle
+  sources only: a binary package, which Compose otherwise runs as a host
+  process, still builds and starts. A start of the build runs the executable
+  from `/workspace`, with no argument and the usual env (`III_URL`,
   `III_WORKER_NAME`). A binary package boots only a build: `worker::prepare`, and
   `worker::start` without `build`, are S501.
 - **`base_image`.** From 0.5.0 `worker::build` takes a `base_image` that
