@@ -17,3 +17,6 @@ dependencies:
   rbac-proxy: "latest"
   # iii_secret_store writes credentials to the secrets vault.
   secrets: "latest"
+  # iii_list_agents, iii_get_agent, iii_list_skills and iii_get_skill read
+  # agent profiles and skills from directory::agents::* and directory::skills::*.
+  iii-directory: "latest"
