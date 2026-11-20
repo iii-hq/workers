@@ -53,6 +53,8 @@ export type FakeIii = {
   functions: Map<string, Hosted>;
   /** What the worker observed: `iii.observe(source, target, options)`. */
   observed: Array<{ source: unknown; target: unknown; options?: unknown }>;
+  /** Ids of the observers the worker disposed (`handle.dispose()`). */
+  disposed: string[];
   /** Add an observer of one of the worker's functions the way the engine would; rejects with the hook's error. */
   observeFeed: (functionId: string, session_id: string, opts?: ObserveOptions) => Promise<string>;
   /** Remove an observer the way `dispose()` would. */
@@ -88,6 +90,7 @@ export function fakeIii(): FakeIii {
   const hooks = new Map<string, Hooks>();
   const active = new Map<string, Observer[]>();
   const observed: FakeIii['observed'] = [];
+  const disposed: string[] = [];
   const deliveries: Delivery[] = [];
   let nextObserver = 0;
   let nextEntry = 0;
@@ -266,6 +269,36 @@ export function fakeIii(): FakeIii {
         entry.revision += 1;
         return { updated: true, revision: entry.revision };
       }
+      // Status lives on the session record; `list` filters on status and on
+      // metadata equality, paged by an opaque cursor, as session-manager does.
+      if (req.function_id === 'session::set-status') {
+        const sessionKey = `session-manager/${String(payload.session_id)}`;
+        const meta = state.get(sessionKey) as Record<string, unknown> | undefined;
+        if (meta) {
+          state.set(sessionKey, {
+            ...meta,
+            status: payload.status,
+            ...(payload.reason ? { status_reason: payload.reason } : {}),
+          });
+        }
+        return null;
+      }
+      if (req.function_id === 'session::list') {
+        const wanted = (payload.metadata ?? {}) as Record<string, unknown>;
+        const all = [...state.entries()]
+          .filter(([k]) => k.startsWith('session-manager/'))
+          .map(([, v]) => v as Record<string, unknown>)
+          .filter((m) => payload.status == null || (m.status ?? 'idle') === payload.status)
+          .filter((m) => {
+            const md = (m.metadata ?? {}) as Record<string, unknown>;
+            return Object.entries(wanted).every(([k, v]) => md[k] === v);
+          });
+        const start = typeof payload.cursor === 'string' ? Number(payload.cursor) : 0;
+        const limit = typeof payload.limit === 'number' ? payload.limit : 50;
+        const page = all.slice(start, start + limit);
+        const next = start + limit < all.length ? String(start + limit) : null;
+        return { sessions: page, next_cursor: next };
+      }
       if (req.function_id === 'session::get') {
         const meta = state.get(`session-manager/${String(payload.session_id)}`);
         return meta ? { meta } : null;
@@ -316,12 +349,15 @@ export function fakeIii(): FakeIii {
     isObserved: (functionId: string, call?: Partial<Call>) => ref(functionId).isObserved(call),
     observe: vi.fn((source: unknown, target: unknown, options?: unknown) => {
       observed.push(options === undefined ? { source, target } : { source, target, options });
+      const id = `observer-${observed.length}`;
       return {
-        id: `observer-${observed.length}`,
+        id,
         state: 'pending',
         ready: async () => {},
         onStateChange: () => () => {},
-        dispose: async () => {},
+        dispose: async () => {
+          disposed.push(id);
+        },
       };
     }),
   } as unknown as IIIClient;
@@ -373,6 +409,7 @@ export function fakeIii(): FakeIii {
     registered,
     functions,
     observed,
+    disposed,
     observeFeed,
     unobserve,
     observersOf,

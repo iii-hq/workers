@@ -33,7 +33,7 @@ the `default` namespace.
 iii call compose::add worker=mcp-server
 ```
 
-`mcp-server` declares `http`, `rbac-proxy` and `secrets` as dependencies, so they
+`mcp-server` declares `http`, `rbac-proxy`, `secrets` and `iii-directory` as dependencies, so they
 come with it.
 
 The http worker listens on every interface (`0.0.0.0`) by default, and `mcp-server`
@@ -213,7 +213,7 @@ connection straight to the engine gets `function_not_found`.
 
 | Situation | Outcome |
 |---|---|
-| Behind rbac-proxy | Starts. If the proxy's `expose_functions` include `match("*")` **and** it has no auth function, it logs a warning. |
+| Behind rbac-proxy | Starts. If the proxy's `expose_functions` include `match("*")` **and** it has no auth function, it logs a warning. When the proxy admits connections with `rbac.loopback_auth`, the warning says that every process on this machine can call every function. |
 | Not behind rbac-proxy | Refuses to start (exit 1), with the message below. |
 | Not behind rbac-proxy, `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC=true` or `1` | Starts, warns in the log, `initialize` instructions and `iii_status`. |
 | `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC` set to anything else | Refuses, naming the accepted values. |

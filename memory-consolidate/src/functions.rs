@@ -130,7 +130,7 @@ pub(crate) fn should_checkpoint(reports: &[BankReport]) -> bool {
     reports.iter().all(|r| r.errors.is_empty())
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

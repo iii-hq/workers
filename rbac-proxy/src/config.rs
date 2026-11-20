@@ -130,6 +130,30 @@ impl WorkerConfig {
                 );
             }
         }
+        // `allow_function_registration: true` requires a non-empty
+        // `function_registration_prefix` (`LoopbackAuth::validate`), so
+        // `configuration::set` refuses what `from_json` would.
+        if let Some(grants) = definitions
+            .get_mut("LoopbackAuth")
+            .and_then(Value::as_object_mut)
+        {
+            grants.insert(
+                "if".into(),
+                serde_json::json!({
+                    "properties": { "allow_function_registration": { "const": true } },
+                    "required": ["allow_function_registration"]
+                }),
+            );
+            grants.insert(
+                "then".into(),
+                serde_json::json!({
+                    "properties": {
+                        "function_registration_prefix": { "type": "string", "pattern": "\\S" }
+                    },
+                    "required": ["function_registration_prefix"]
+                }),
+            );
+        }
         if let Some(obj) = schema.as_object_mut() {
             if !root.definitions.is_empty() {
                 obj.insert("definitions".into(), definitions);
@@ -264,6 +288,124 @@ mod tests {
         assert!(prop.to_string().contains("\"array\""), "{prop}");
         // The default leaves it out, which serves `/`.
         assert!(schema["example"]["rbac"].get("expose_endpoints").is_none());
+    }
+
+    #[test]
+    fn config_parses_with_and_without_loopback_auth() {
+        let without = WorkerConfig::from_json(&json!({ "rbac": {} })).unwrap();
+        assert!(without.rbac.loopback_auth.is_none());
+        assert_eq!(without, WorkerConfig::default());
+
+        let with: WorkerConfig = serde_yaml_ng::from_str(
+            "rbac:\n  loopback_auth:\n    worker_names: [mcp-server]\n    forbidden_functions: [secrets::resolve]\n",
+        )
+        .unwrap();
+        let grants = with.rbac.loopback_auth.as_ref().unwrap();
+        assert_eq!(grants.worker_names, vec!["mcp-server"]);
+        assert_eq!(grants.forbidden_functions, vec!["secrets::resolve"]);
+        // The rest takes the auth result's defaults, except registration.
+        assert!(!grants.allow_function_registration);
+        assert_eq!(grants.context, json!({}));
+        assert!(grants.namespaces.is_empty());
+        assert!(grants.allowed_functions.is_empty());
+        assert!(grants.function_registration_prefix.is_none());
+        assert!(with.rbac.auth_function_id.is_none());
+        assert!(
+            !with.rbac_enabled(),
+            "rbac_enabled keeps meaning an auth function"
+        );
+        assert_eq!(WorkerConfig::from_json(&with.to_json()).unwrap(), with);
+
+        // `{}` admits loopback peers with the defaults.
+        let empty = WorkerConfig::from_json(&json!({ "rbac": { "loopback_auth": {} } })).unwrap();
+        assert_eq!(
+            empty.rbac.loopback_auth,
+            Some(crate::rbac::LoopbackAuth::default())
+        );
+        assert!(
+            WorkerConfig::from_json(&json!({ "rbac": { "loopback_auth": { "nope": 1 } } }))
+                .is_err()
+        );
+        // Registration without a prefix is a configuration error: a stored
+        // value fails to load instead of granting unprefixed registration.
+        let err = WorkerConfig::from_json(&json!({
+            "rbac": { "loopback_auth": { "allow_function_registration": true } }
+        }))
+        .unwrap_err();
+        assert!(err.contains("function_registration_prefix"), "{err}");
+    }
+
+    #[test]
+    fn loopback_auth_is_in_the_schema_with_docs() {
+        let schema = WorkerConfig::json_schema();
+        let prop = &schema["definitions"]["RbacConfig"]["properties"]["loopback_auth"];
+        assert!(
+            prop["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("loopback") && d.contains("auth_function_id")),
+            "{prop}"
+        );
+        assert!(
+            prop.to_string().contains("#/definitions/LoopbackAuth"),
+            "{prop}"
+        );
+        let grants = &schema["definitions"]["LoopbackAuth"];
+        assert_eq!(grants["type"], "object");
+        // Unknown keys are refused by configuration::set too.
+        assert_eq!(grants["additionalProperties"], false, "{grants}");
+        for key in [
+            "namespaces",
+            "allowed_functions",
+            "forbidden_functions",
+            "allow_function_registration",
+            "context",
+            "function_registration_prefix",
+            "worker_names",
+            "allowed_origins",
+            "allow_forwarded",
+        ] {
+            assert!(
+                grants["properties"][key]["description"].is_string(),
+                "{key} has no description: {grants}"
+            );
+        }
+        assert_eq!(
+            grants["properties"]["allow_function_registration"]["default"],
+            false
+        );
+        assert_eq!(grants["properties"]["allow_forwarded"]["default"], false);
+        assert_eq!(
+            grants["properties"]["allowed_origins"]["default"],
+            json!([])
+        );
+        // configuration::set refuses registration without a prefix.
+        assert_eq!(
+            grants["if"],
+            json!({
+                "properties": { "allow_function_registration": { "const": true } },
+                "required": ["allow_function_registration"]
+            }),
+            "{grants}"
+        );
+        assert_eq!(
+            grants["then"],
+            json!({
+                "properties": {
+                    "function_registration_prefix": { "type": "string", "pattern": "\\S" }
+                },
+                "required": ["function_registration_prefix"]
+            }),
+            "{grants}"
+        );
+        for key in [
+            "allow_function_registration",
+            "function_registration_prefix",
+        ] {
+            let doc = grants["properties"][key]["description"].as_str().unwrap();
+            assert!(doc.contains("required"), "{key}: {doc}");
+        }
+        // The built-in default leaves it unset: no change unless asked for.
+        assert!(schema["example"]["rbac"].get("loopback_auth").is_none());
     }
 
     #[test]

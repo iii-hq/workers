@@ -31,35 +31,52 @@ pub fn is_legacy_generation(model_id: &str) -> bool {
         || base.starts_with("o4")
 }
 
+/// Display name, context window, output ceiling, xhigh, pricing. `xhigh` is
+/// `None` where the specification lists no reasoning efforts.
+type FamilyMeta = (&'static str, u64, u64, Option<bool>, Option<Pricing>);
+
 /// Hand-maintained metadata from the official OpenAI model specifications.
 /// Unknown families use conservative limits; pricing is USD per MTok.
-fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, Option<Pricing>)> {
+fn family_meta(base: &str) -> Option<FamilyMeta> {
     match base {
         // GPT-6 family: tiered pricing above 272K input, so no flat rates.
-        "gpt-6-astra" => Some(("GPT-6 Astra", 1_050_000, 128_000, true, None)),
-        "gpt-6.1-sol" => Some(("GPT-6.1 Sol", 1_050_000, 128_000, true, None)),
-        "gpt-6-sol" => Some(("GPT-6 Sol", 1_050_000, 128_000, true, None)),
-        "gpt-6-luna" => Some(("GPT-6 Luna", 1_050_000, 128_000, true, None)),
-        "gpt-5.2" => Some(("GPT-5.2", 400_000, 128_000, true, Some(price(1.75, 14.0)))),
-        "gpt-5.1" => Some(("GPT-5.1", 400_000, 128_000, false, Some(price(1.25, 10.0)))),
+        "gpt-6-astra" => Some(("GPT-6 Astra", 1_050_000, 128_000, Some(true), None)),
+        "gpt-6.2-sol" => Some(("GPT-6.2 Sol", 1_050_000, 128_000, None, None)),
+        "gpt-6.1-sol" => Some(("GPT-6.1 Sol", 1_050_000, 128_000, Some(true), None)),
+        "gpt-6-sol" => Some(("GPT-6 Sol", 1_050_000, 128_000, Some(true), None)),
+        "gpt-6-luna" => Some(("GPT-6 Luna", 1_050_000, 128_000, Some(true), None)),
+        "gpt-5.2" => Some((
+            "GPT-5.2",
+            400_000,
+            128_000,
+            Some(true),
+            Some(price(1.75, 14.0)),
+        )),
+        "gpt-5.1" => Some((
+            "GPT-5.1",
+            400_000,
+            128_000,
+            Some(false),
+            Some(price(1.25, 10.0)),
+        )),
         "gpt-5-mini" => Some((
             "GPT-5 Mini",
             400_000,
             128_000,
-            false,
+            Some(false),
             Some(price(0.25, 2.0)),
         )),
         "gpt-5-nano" => Some((
             "GPT-5 Nano",
             400_000,
             128_000,
-            false,
+            Some(false),
             Some(price(0.05, 0.40)),
         )),
         // GPT-5.6 changes rates above 272K input; flat pricing would misstate cost.
-        "gpt-5.6" | "gpt-5.6-sol" => Some(("GPT-5.6 Sol", 1_050_000, 128_000, true, None)),
-        "gpt-5.6-terra" => Some(("GPT-5.6 Terra", 1_050_000, 128_000, true, None)),
-        "gpt-5.6-luna" => Some(("GPT-5.6 Luna", 1_050_000, 128_000, true, None)),
+        "gpt-5.6" | "gpt-5.6-sol" => Some(("GPT-5.6 Sol", 1_050_000, 128_000, Some(true), None)),
+        "gpt-5.6-terra" => Some(("GPT-5.6 Terra", 1_050_000, 128_000, Some(true), None)),
+        "gpt-5.6-luna" => Some(("GPT-5.6 Luna", 1_050_000, 128_000, Some(true), None)),
         _ => None,
     }
 }
@@ -80,7 +97,7 @@ pub fn enrich(id: &str) -> Model {
             max_output_tokens,
             input_limit: None,
             supports_thinking: Some(true),
-            supports_xhigh: Some(xhigh),
+            supports_xhigh: xhigh,
             supports_thinking_off: Some(crate::reasoning::can_disable(id)),
             reasoning_efforts: None,
             supports_tools: Some(true),
@@ -236,6 +253,21 @@ mod tests {
             assert_eq!(m.supports_thinking_off, Some(off), "{id}");
             assert!(m.pricing.is_none(), "{id}: tiered pricing is not flat");
         }
+    }
+
+    #[test]
+    fn enrich_applies_gpt_6_2_sol_metadata_from_its_model_page() {
+        // developers.openai.com/api/docs/models/gpt-6.2-sol: text and image in,
+        // `none` effort rejected, no effort list, so xhigh is not claimed.
+        let m = enrich("gpt-6.2-sol");
+        assert_eq!(m.display_name.as_deref(), Some("GPT-6.2 Sol"));
+        assert_eq!(m.context_window, 1_050_000);
+        assert_eq!(m.max_output_tokens, 128_000);
+        assert_eq!(m.supports_thinking, Some(true));
+        assert_eq!(m.supports_thinking_off, Some(false));
+        assert_eq!(m.supports_xhigh, None);
+        assert_eq!(m.supports_vision, Some(true));
+        assert!(m.pricing.is_none(), "tiered pricing is not flat");
     }
 
     #[test]

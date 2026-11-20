@@ -15,7 +15,7 @@ import {
 import { LoaderCircle, Trash2 } from 'lucide-react'
 import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { HUB_WORKER, type JudgeSetup, judgeOptions, useJudgeProviders, useJudgeSetup } from './judge-providers'
-import { ConfigurationHostContext, useModelCatalog, withStoredModel } from './model-catalog'
+import { ConfigurationHostContext, modelFieldState, useModelCatalog } from './model-catalog'
 import { mergeChoices, useRemoteChoices } from './remote-choices'
 import {
   emptyStructuredValue,
@@ -230,7 +230,7 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
           aria-label={field.label}
           aria-invalid={Boolean(error)}
           aria-describedby={errorId}
-          className="console-worker-config-select"
+          className="console-worker-config-select console-worker-config-value"
         />
       )
     }
@@ -271,7 +271,7 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
           aria-invalid={Boolean(error)}
           aria-describedby={errorId}
           aria-label={field.label}
-          className="console-worker-config-control console-worker-config-number"
+          className="console-worker-config-control console-worker-config-number console-worker-config-value"
         />
       )
     }
@@ -301,7 +301,7 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
         aria-invalid={Boolean(error)}
         aria-describedby={errorId}
         aria-label={field.label}
-        className="console-worker-config-control"
+        className="console-worker-config-control console-worker-config-value"
       />
     )
   }
@@ -335,16 +335,21 @@ function ModelField({
   field: ModelFieldSpec
   basePath?: ConfigPath
 }) {
-  const { options, loading } = useModelCatalog(useContext(ConfigurationHostContext))
+  const catalog = useModelCatalog(useContext(ConfigurationHostContext))
   const path = joinPath(basePath, field.path)
   const thinkingPath = field.thinkingKey ? [...path.slice(0, -1), field.thinkingKey] : undefined
   const stored = atPath(context.root, path)
   const model = typeof stored === 'string' && stored !== '' ? stored : null
+  const automatic = field.automatic === true
+  const state = modelFieldState({ ...catalog, stored: model, automatic })
   const storedLevel = thinkingPath ? atPath(context.root, thinkingPath) : undefined
   const thinkingLevel =
     typeof storedLevel === 'string' && storedLevel !== '' ? storedLevel : (field.thinkingDefault ?? 'default')
   const error = errorFor(context.errors, path) ?? (thinkingPath ? errorFor(context.errors, thinkingPath) : undefined)
-  const errorId = error ? `${fieldId(path)}-error` : undefined
+  const id = fieldId(path)
+  const errorId = error ? `${id}-error` : undefined
+  const noticeId = state.notice === 'none' ? undefined : `${id}-notice`
+  const describedBy = [errorId, noticeId].filter(Boolean).join(' ') || undefined
 
   // Choosing a model reports the model and, in the same tick, the effort that
   // goes with it. Both handlers would otherwise start from the render that
@@ -356,8 +361,52 @@ function ModelField({
     context.onChange(next)
   }
 
-  return (
+  // A retry that succeeds unmounts the focused Retry button; hand focus to the picker.
+  const group = useRef<HTMLDivElement | null>(null)
+  const retried = useRef(false)
+  useEffect(() => {
+    if (catalog.loading || !retried.current) return
+    retried.current = false
+    if (state.notice === 'unreachable') return
+    const active = document.activeElement
+    if (active === null || active === document.body) group.current?.querySelector('button')?.focus()
+  }, [catalog.loading, state.notice])
+
+  const notice =
+    state.notice === 'unreachable' ? (
+      <StatusPanel
+        id={noticeId}
+        variant="warn"
+        headline="Could not list models"
+        detail="The router did not answer. The saved choice is kept."
+        action={
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-busy={catalog.loading}
+            onClick={() => {
+              retried.current = true
+              catalog.reload()
+            }}
+          >
+            {catalog.loading ? <LoaderCircle className="iii-ui-spin" aria-hidden /> : null}
+            {catalog.loading ? 'Retrying…' : 'Retry'}
+          </Button>
+        }
+      />
+    ) : state.notice === 'no-usable-model' ? (
+      <StatusPanel
+        id={noticeId}
+        variant="warn"
+        headline="No provider can serve this call"
+        detail="It fails until a provider is signed in or a model is chosen."
+      />
+    ) : null
+
+  const row = (
     <SettingsRow
+      role="presentation"
       data-field={path[0]}
       data-path={path.join('.')}
       label={field.label}
@@ -367,27 +416,41 @@ function ModelField({
           <span id={errorId} className="console-worker-config-error">
             {error}
           </span>
-        ) : undefined
+        ) : (
+          state.meta
+        )
       }
       control={
         // biome-ignore lint/a11y/useSemanticElements: the picker trigger has no label of its own; a fieldset would add default chrome to this row.
-        <div role="group" aria-label={field.label} aria-describedby={errorId} className="console-worker-config-model">
+        <div
+          ref={group}
+          role="group"
+          aria-label={field.label}
+          aria-describedby={describedBy}
+          className="console-worker-config-model"
+        >
           <ModelPicker
-            value={model}
-            options={withStoredModel(options, model)}
+            value={state.value}
+            options={state.options}
             thinkingLevel={thinkingLevel}
             onChange={(next) => commit(setAtPath(draft.current, path, next))}
             onThinkingLevelChange={(next) => {
               if (thinkingPath) commit(setAtPath(draft.current, thinkingPath, next))
             }}
+            automatic={
+              automatic
+                ? { label: state.automaticLabel, onSelect: () => commit(deleteAtPath(draft.current, path)) }
+                : undefined
+            }
             placeholder={field.placeholder ?? DEFAULT_MODEL_PLACEHOLDER}
-            loading={loading}
+            loading={catalog.loading}
+            disabled={catalog.failed}
             showReasoningEffort={thinkingPath !== undefined}
             showRefresh={false}
             showProviderConfiguration={false}
-            className="console-worker-config-model-picker"
+            className="console-worker-config-model-picker console-worker-config-value"
           />
-          {field.optional && model !== null ? (
+          {field.optional && !automatic && model !== null ? (
             <Button
               type="button"
               variant="ghost"
@@ -401,6 +464,14 @@ function ModelField({
         </div>
       }
     />
+  )
+  // One root with or without a notice, so a notice coming or going never remounts the picker.
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: SettingsList is an embeddable ARIA list rather than a semantic ul.
+    <div className="console-worker-config-composite" role="listitem">
+      {row}
+      {notice ? <div className="console-worker-config-notice">{notice}</div> : null}
+    </div>
   )
 }
 
@@ -566,7 +637,7 @@ function JudgeProviderControl({
           aria-label={field.label}
           aria-invalid={Boolean(error)}
           aria-describedby={errorId}
-          className="console-worker-config-select"
+          className="console-worker-config-select console-worker-config-value"
         />
       }
     />
@@ -594,19 +665,22 @@ function StringListField({
   const values = Array.isArray(raw) ? raw : []
   const error = errorFor(context.errors, path)
   const errorId = error ? `${fieldId(path)}-error` : undefined
-  const listRef = useRef<HTMLDivElement | null>(null)
-  const pendingFocusIndex = useRef<number | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  // An item index, or `add` for the Add button (after removing the first item).
+  const pendingFocus = useRef<number | 'add' | null>(null)
 
   const update = (next: JsonValue[]) => context.onChange(setAtPath(context.root, path, next))
 
   useEffect(() => {
-    const index = pendingFocusIndex.current
-    if (index === null || index >= values.length) return
-    pendingFocusIndex.current = null
+    const target = pendingFocus.current
+    if (target === null || (target !== 'add' && target >= values.length)) return
+    pendingFocus.current = null
     const frame = window.requestAnimationFrame(() => {
-      listRef.current
+      rootRef.current
         ?.querySelector<HTMLElement>(
-          `[data-string-list-index="${index}"] input, [data-string-list-index="${index}"] button`,
+          target === 'add'
+            ? '[data-string-list-add]'
+            : `[data-string-list-index="${target}"] input, [data-string-list-index="${target}"] button`,
         )
         ?.focus()
     })
@@ -614,13 +688,19 @@ function StringListField({
   }, [values.length])
 
   const add = () => {
-    pendingFocusIndex.current = values.length
+    pendingFocus.current = values.length
     update([...values, field.options?.[0]?.value ?? ''])
   }
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: SettingsList is an embeddable ARIA list rather than a semantic ul.
-    <div className="console-worker-config-composite" role="listitem" data-field={path[0]} data-path={path.join('.')}>
+    <div
+      ref={rootRef}
+      className="console-worker-config-composite"
+      role="listitem"
+      data-field={path[0]}
+      data-path={path.join('.')}
+    >
       <SettingsRow
         label={field.label}
         description={field.description}
@@ -631,15 +711,27 @@ function StringListField({
             </span>
           ) : undefined
         }
+        control={
+          values.length === 0 && field.emptyLabel ? (
+            <span className="console-worker-config-empty-value">{field.emptyLabel}</span>
+          ) : undefined
+        }
         action={
-          <Button type="button" variant="pill" size="sm" aria-describedby={errorId} onClick={add}>
+          <Button
+            type="button"
+            variant="pill"
+            size="sm"
+            aria-describedby={errorId}
+            onClick={add}
+            data-string-list-add=""
+          >
             {field.addLabel ?? `Add ${field.itemLabel ?? 'item'}`}
           </Button>
         }
         layout="inline"
       />
       {values.length > 0 ? (
-        <SettingsList ref={listRef} className="console-worker-config-sublist console-worker-config-string-list">
+        <SettingsList className="console-worker-config-sublist console-worker-config-string-list">
           {values.map((entry, index) => {
             const label = `${field.itemLabel ?? field.label} ${index + 1}`
             const knownOption = typeof entry === 'string' && field.options?.some((option) => option.value === entry)
@@ -697,7 +789,10 @@ function StringListField({
                   <IconButton
                     label={`Remove ${label}`}
                     tooltipSide="left"
-                    onClick={() => update(values.filter((_, item) => item !== index))}
+                    onClick={() => {
+                      pendingFocus.current = index > 0 ? index - 1 : 'add'
+                      update(values.filter((_, item) => item !== index))
+                    }}
                     className="console-worker-config-string-list-remove"
                   >
                     <Trash2 aria-hidden />
@@ -1784,7 +1879,7 @@ function ObjectField({ field, basePath = [], ...context }: FieldProps) {
         </div>
       ) : null}
       {enabled || !field.optional ? (
-        <SettingsList>
+        <SettingsList data-dividers="all">
           {field.fields.map((child, index) => (
             <FieldRenderer
               key={`${child.kind}-${child.path.join('.')}-${index}`}
@@ -1856,7 +1951,7 @@ function VariantField({
       title={field.label}
       description={field.description}
     >
-      <SettingsList>
+      <SettingsList data-dividers="all">
         <SettingsRow
           label="Type"
           description={
@@ -1898,7 +1993,7 @@ function VariantField({
               aria-label={`${field.label} type`}
               aria-invalid={Boolean(error)}
               aria-describedby={errorId}
-              className="console-worker-config-select"
+              className="console-worker-config-select console-worker-config-value"
             />
           }
         />
@@ -2087,7 +2182,7 @@ function ObjectListField({
                 Remove
               </Button>
             </div>
-            <SettingsList>
+            <SettingsList data-dividers="all">
               {field.fields.map((child, index) => (
                 <FieldRenderer
                   key={`${child.kind}-${child.path.join('.')}-${index}`}
@@ -2217,7 +2312,7 @@ function ObjectMapField({
                 Remove
               </Button>
             </div>
-            <SettingsList>
+            <SettingsList data-dividers="all">
               {field.fields.map((child, index) => (
                 <FieldRenderer
                   key={`${child.kind}-${child.path.join('.')}-${index}`}

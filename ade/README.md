@@ -134,6 +134,7 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 - **Conversation sidebar** — create, inline rename, delete, auto-title from the first message
 - **Context-usage meter** — token estimate with warn / danger thresholds and a `/compact` nudge
 - **Session ID** — copyable, deep-links every conversation into the trace explorer via `iii.session.id`
+- **Working directory follows the session** — when the harness moves a session's working directory (a metadata event whose `fs_scope.moved_from` equals the chat's folder), the chip, the IDE pane and later sends switch to `fs_scope.root`, and an open chat gets a "moved" row; the ADE writes no metadata for it, and a live metadata event without `moved_from` never re-roots a chat (a session re-list takes the stored root as is)
 - **Persistence** — conversations, active id, last model, sidebar state — all in `localStorage`
 
 ### Import local conversations

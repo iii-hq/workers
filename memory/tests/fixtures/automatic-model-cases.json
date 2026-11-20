@@ -1,0 +1,75 @@
+[
+  {
+    "name": "the_automatic_model_is_the_default_of_the_first_usable_provider",
+    "providers": [
+      { "id": "openai", "available": false, "configured": true, "credential_env_var": "OPENAI_API_KEY", "default_model": "gpt-fixture" },
+      { "id": "llamacpp", "available": true, "configured": true, "credential_env_var": null, "default_model": "nomic-embed-text-v1.5" },
+      { "id": "anthropic", "available": true, "configured": false, "credential_env_var": "ANTHROPIC_API_KEY", "default_model": "claude-fixture" },
+      { "id": "openai-codex", "available": true, "configured": false, "credential_env_var": null, "default_model": "codex-fixture" }
+    ],
+    "models": [
+      { "provider": "anthropic", "id": "claude-fixture" },
+      { "provider": "llamacpp", "id": "chat-fixture-8B" }
+    ],
+    "expect": { "model": "openai-codex::codex-fixture", "reason": "provider_default" }
+  },
+  {
+    "name": "a_provider_with_no_default_falls_back_to_its_first_listed_model",
+    "providers": [
+      { "id": "anthropic", "available": true, "configured": false, "credential_env_var": "ANTHROPIC_API_KEY", "default_model": "claude-fixture" },
+      { "id": "cursor", "available": true, "configured": true, "credential_env_var": null }
+    ],
+    "models": [
+      { "provider": "cursor", "id": "sonnet-fixture" },
+      { "provider": "anthropic", "id": "aaa-fixture" },
+      { "provider": "cursor", "id": "auto" },
+      { "provider": "cursor", "id": "a-embed-fixture" }
+    ],
+    "expect": { "model": "cursor::auto", "reason": "first_listed_model" }
+  },
+  {
+    "name": "provider_order_in_the_reply_does_not_change_the_pick",
+    "providers": [
+      { "id": "a-b", "available": true, "configured": true, "credential_env_var": "A_B_KEY", "default_model": "c" },
+      { "id": "b", "available": true, "configured": true, "credential_env_var": null, "default_model": "y" },
+      { "id": "a", "available": true, "configured": true, "credential_env_var": null, "default_model": "z" }
+    ],
+    "models": [],
+    "expect": { "model": "a::z", "reason": "provider_default" }
+  },
+  {
+    "name": "model_order_in_the_reply_does_not_change_the_pick",
+    "providers": [
+      { "id": "a-b", "available": true, "configured": true, "credential_env_var": null },
+      { "id": "a", "available": true, "configured": true, "credential_env_var": null, "default_model": "" }
+    ],
+    "models": [
+      { "provider": "a-b", "id": "c" },
+      { "provider": "a", "id": "z" },
+      { "provider": "a-b", "id": "a" }
+    ],
+    "expect": { "model": "a::z", "reason": "first_listed_model" }
+  },
+  {
+    "name": "no_usable_model_is_an_error_that_names_each_skip",
+    "providers": [
+      { "id": "openai", "available": false, "configured": true, "credential_env_var": "OPENAI_API_KEY", "default_model": "gpt-fixture" },
+      { "id": "llamacpp", "available": true, "configured": true, "credential_env_var": null, "default_model": "jina-reranker-v2" },
+      { "id": "anthropic", "available": true, "configured": false, "credential_env_var": "ANTHROPIC_API_KEY", "default_model": "claude-fixture" }
+    ],
+    "models": [
+      { "provider": "anthropic", "id": "claude-fixture" },
+      { "provider": "llamacpp", "id": "nomic-embed-text-v1.5" },
+      { "provider": "openai", "id": "gpt-fixture" }
+    ],
+    "expect": {
+      "error": ["anthropic is not configured (ANTHROPIC_API_KEY)", "llamacpp defaults to jina-reranker-v2", "openai is unavailable"]
+    }
+  },
+  {
+    "name": "no_provider_is_an_error",
+    "providers": [],
+    "models": [],
+    "expect": { "error": ["no provider is registered"] }
+  }
+]

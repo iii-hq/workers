@@ -118,7 +118,9 @@ rule; point-in-time information belongs in memories.
   update bumps a revision, pinned records are untouchable by automatic paths.
 - `memory::recall` — rank a bank's memories against a query (the injection
   hook's exact scorer); response names the retrieval mode that ran; `tag`
-  narrows to one label.
+  narrows to one label. When the query was embedded, `vector_coverage
+  {covered, live}` counts the bank's live memories the semantic signal can
+  reach; `covered < live` means some vectors have not landed yet.
 - `memory::preview` — the FULL injection dry-run for a hypothetical chat
   message: the system-prompt rules section, the memories a turn would be
   handed (past the relevance cut and token budget), and the appended message verbatim;

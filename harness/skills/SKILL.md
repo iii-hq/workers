@@ -134,6 +134,40 @@ Under `workspace`, an in-turn spawn's `options.filesystem_root` must lie
 inside the parent's root or grants. What an exec'd process itself writes is
 the `ide` worker's `fs.exec_confinement` switch.
 
+A `harness::hook::on-post-call` target may move the working directory by
+answering `mutations.fs_scope.root` on a `shell::*` / `coder::*` call; the
+`ide` worker does so after a `git worktree add` (and back, after removing the
+worktree the session is rooted in). Only a `shell::*` / `coder::*` target is
+heard: a filter, not authentication. The step's later calls and later turns
+run in the new root, and session metadata gets `fs_scope { root, moved_from }`.
+Under `workspace` an approved `git worktree add` moves the boundary too, for
+sub-agents as well. A send that names a root still wins, so a client must
+adopt the mirrored root. A re-tasked sub-agent keeps its own root unless the
+spawn names one.
+
+## Attachments
+
+A file attached to a message is stored by `session-manager` and rides the
+message as a `file` block (the text mentions it as `@attachment(id="a_…")`).
+The model never gets the bytes or the raw block: each `file` block reaches it,
+in place, as one text block whose attribute values are escaped as XML:
+
+```text
+<attachment id="a_…" name="report.pdf" mime="application/pdf" size="1234567">
+Read it with session::read-attachment {"session_id":"<sid>","attachment_id":"a_…"}
+</attachment>
+```
+
+Read a file by making that call when the task needs it; nothing is inlined.
+`session::read-attachment` answers a text file's characters in windows
+(`offset`, `next_offset`), and for a PDF, an office document, an image or any
+other file `how_to_read`: the exact `fp::pipe` calls that convert it to
+markdown (`pdf::to-markdown`, `document::to-markdown`) or save it into the
+working folder for your own tools (unzip an archive, run a script over data),
+or the worker to install when one is missing. When the message also carries
+the file's picture, the block says so before the call. The persisted
+transcript keeps the `file` block.
+
 ## Turn events
 
 The harness hosts private functions that consumers and sibling workers observe

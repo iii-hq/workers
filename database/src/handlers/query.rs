@@ -37,7 +37,7 @@ pub struct QueryReq {
     // `browseTable`, `columnStats`, `explain` and `schemaDiagram` all run
     // through this same path, and recording them would bury the statements a
     // person actually typed under `PRAGMA table_info(...)` and spawn a
-    // `state::update` per internal read.
+    // `state::get` and `state::set` per internal read.
     #[serde(skip, default = "records_history")]
     pub record_history: bool,
 }
@@ -100,6 +100,7 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
     let row_count = result.rows.len();
     // Fire and forget — a history line must never fail the query.
     if req.record_history
+        && state.config.read().await.records_history()
         && let Some(iii) = state.client()
     {
         crate::handlers::saved::record(

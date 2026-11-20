@@ -65,6 +65,13 @@ type Draft = {
   /** Blocks as the stream builds them, by block index. */
   streamed: Array<ContentBlock | undefined>;
   partialJson: Map<number, string>;
+  /** Stream indexes that reached `content_block_stop`: the SDK reports each of
+   *  those as a complete block. One that never stopped was cut off. */
+  stopped: Set<number>;
+  /** Stopped stream indexes the SDK has reported as complete blocks. Matched
+   *  by event order: the SDK reports a block after its `content_block_stop`,
+   *  so each reported block is the oldest stopped one not yet matched. */
+  supplied: Set<number>;
   /** Blocks from the SDK's complete assistant messages — authoritative once streaming ends. */
   final: ContentBlock[];
   streaming: boolean;
@@ -154,6 +161,7 @@ export class ChildTranscript implements TurnSink {
         return; // arguments render once they parse, at block stop
       } else return;
     } else if (event.type === 'content_block_stop') {
+      draft.stopped.add(index);
       const block = draft.streamed[index];
       const json = draft.partialJson.get(index);
       if (block?.type === 'function_call' && json) {
@@ -181,6 +189,13 @@ export class ChildTranscript implements TurnSink {
   ): void {
     const draft = this.draft(id, model);
     draft.final.push(...content);
+    for (let n = 0; n < content.length; n++) {
+      const next = [...draft.stopped]
+        .sort((a, b) => a - b)
+        .find((index) => !draft.supplied.has(index));
+      if (next === undefined) break;
+      draft.supplied.add(next);
+    }
     if (usage) draft.usage = usage;
     if (model) draft.model = model;
     this.refresh(draft);
@@ -239,6 +254,8 @@ export class ChildTranscript implements TurnSink {
         usage: null,
         streamed: [],
         partialJson: new Map(),
+        stopped: new Set(),
+        supplied: new Set(),
         final: [],
         streaming: false,
       };
@@ -247,16 +264,36 @@ export class ChildTranscript implements TurnSink {
     return draft;
   }
 
-  /** What a draft shows: the live stream while it runs, the SDK's complete blocks after. */
+  /**
+   * What a draft shows: the live stream while it runs, the SDK's complete
+   * blocks after. A turn that ended mid-stream also keeps the block it was
+   * streaming, after the complete ones: blocks stream one at a time, in order,
+   * so a block that never reached `content_block_stop` has no complete
+   * counterpart and follows every block that does. A cut-off tool call is
+   * dropped: it never ran, and its arguments are incomplete.
+   */
   private display(draft: Draft): ContentBlock[] {
     const streamed = draft.streamed.filter(visible).map((b) => ({ ...b }));
     if (draft.streaming) return streamed.length ? streamed : [...draft.final];
-    return draft.final.length ? [...draft.final] : streamed;
+    // After the stream: the SDK's complete blocks, then every streamed text or
+    // thinking block it never reported (completed or cut off), in order. An
+    // unreported tool call is dropped: a tool runs only after the SDK reports
+    // its block, so it never ran.
+    const unreported = draft.streamed
+      .map((block, index) => ({ block, index }))
+      .filter(
+        ({ block, index }) =>
+          visible(block) && block.type !== 'function_call' && !draft.supplied.has(index),
+      )
+      .map(({ block }) => ({ ...block }) as ContentBlock);
+    return [...draft.final, ...unreported];
   }
 
   private refresh(draft: Draft, schedule = true): void {
     const content = this.display(draft);
-    if (content.length === 0) return;
+    // Nothing to show: write nothing new, but empty an entry already written
+    // (a cut-off tool call shown live).
+    if (content.length === 0 && !draft.entry) return;
     const usage: Usage | null =
       draft.outputTokens === undefined
         ? draft.usage
@@ -268,7 +305,16 @@ export class ChildTranscript implements TurnSink {
       draft.entry = this.add(message);
       return;
     }
-    draft.entry.message = { ...draft.entry.message, content, usage: message.usage };
+    // Unchanged content and usage: nothing to write. A rewrite of a settled
+    // entry is one more write that could fail and fail a whole transcript.
+    const before = draft.entry.message;
+    if (
+      JSON.stringify([before.content, before.usage ?? null]) ===
+      JSON.stringify([content, message.usage ?? null])
+    ) {
+      return;
+    }
+    draft.entry.message = { ...before, content, usage: message.usage };
     draft.entry.dirty = true;
     if (schedule) this.schedule();
   }

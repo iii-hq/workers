@@ -10,9 +10,8 @@ picker); the `judge-openai::*` functions below are the same contract addressed
 directly. They are registered as internal, so default discovery
 (`engine::functions::list`, `directory::search_functions`) shows only the hub.
 
-The Decisions API is in public beta. The reply format may still change; this
-worker ignores unknown reply fields and rejects anything it cannot validate as
-`invalid_response`.
+The worker ignores unknown reply fields and rejects anything it cannot validate
+as `invalid_response`.
 
 ## Install
 
@@ -82,11 +81,13 @@ Check `status` before reading answers. Errors return `status: "error"` and a
 Each evaluation is one `POST https://api.openai.com/v1/decisions` with all of its
 questions; evaluations run in parallel on at most four connections per worker.
 Each question is sent with `name` set to its question id, and answers are matched
-back by name.
+back by name. The API takes at most 400 questions per request, so an evaluation
+with more than 400 (one-option choices aside) is `payload_too_large` before any
+HTTP: split it into several evaluations.
 
 | judge | Decisions request | Answer |
 | --- | --- | --- |
-| `state` | `input`: a string as is; an object or array as compact JSON text | — |
+| `state` | `input`: a string as is; an object, or an array of objects, as one user message's `input_json` part when it fits that part's limits (32 levels, 10,000 values, 256 KiB of compact JSON); any other state as compact JSON text | — |
 | `noul` | `predicate`; `criteria.true` / `criteria.false` are appended to the instructions as `True means: …` / `False means: …` | `probability` → `noul` |
 | `choice` | `choice` with `choices: [{value: key, description}]` in key order | `choice`, `probabilities` and `confidence` as returned |
 | `score` | `score` with `levels: [{label}]` in order; a blank level is labelled with its index | `score`, `probabilities` keyed `"0"`…`"n-1"`, `confidence` as returned, `legend` = the request's levels |
@@ -133,6 +134,7 @@ environment to use another entry. The form masks the API key and exposes these
 defaults:
 
 ```yaml
+auth: api_key                  # api_key, or codex (experimental, see below).
 api_key: null                  # secret://OPENAI_API_KEY, or fall back to the worker's OPENAI_API_KEY.
 model: gpt-6-luna               # The only supported model.
 max_request_bytes: 8388608      # Maximum JSON bytes per Decisions request.
@@ -157,6 +159,38 @@ The key a call uses:
    worker started with a shared environment file answers with that key. Leave
    the variable out of this worker's environment to require the configured key.
 
+### `auth: codex` (experimental, opt-in)
+
+With `auth: codex` the bearer is the access token of the ChatGPT sign-in that
+[provider-openai-codex](../provider-openai-codex) holds. Each call asks
+`provider::openai-codex::auth::token` for the current token; judge-openai
+stores no token. A 401 from OpenAI forces one token refresh (at most once
+every 5 minutes for the whole worker) and retries once with the new token.
+
+- provider-openai-codex must be running and signed in with ChatGPT.
+- `api_key` and `OPENAI_API_KEY` are ignored, with no fallback to them. A
+  configured `api_key` stays stored, so switching back to `auth: api_key`
+  restores it.
+- The Codex token cannot read `GET /v1/models`, so `judge-openai::models::list`
+  returns the built-in `gpt-6-luna` card without HTTP. A successful listing
+  means a Codex session reaches the worker, not that OpenAI accepts it.
+- Unverified: where OpenAI bills these calls, and whether OpenAI's terms allow
+  the Codex login outside Codex. This mode may stop working without notice.
+
+When no token can be had, calls answer `missing_key` with
+`provider_error.message` naming the fix, and `judge-openai::status` answers
+`configured: false` with the same reason:
+
+| Cause | `provider_error.message` |
+| --- | --- |
+| provider-openai-codex is absent or too old | `provider-openai-codex is not running, or older than the version with auth::token; start or upgrade it, or set auth: api_key` |
+| Signed out | `not signed in to Codex; sign in with ChatGPT in the provider-openai-codex settings` |
+| `provider/auth_expired` | `the Codex session expired; sign in with ChatGPT again` |
+| `provider/forbidden` | `provider-openai-codex refused judge-openai (different namespace?)` |
+| A timeout or any other code | `could not read the Codex session (<code>); retry` |
+
+A 401 that persists after the refresh, and any 403, stay `http` errors.
+
 All configuration fields hot-reload for new calls; in-flight calls keep their
 snapshot, and rejected reloads keep the last valid value. Changing the process
 environment requires a restart.
@@ -169,6 +203,10 @@ warning with its error code, HTTP status and timings. The worker also sets
 no request or response payloads. Spans recorded by the `judge` hub and by the
 calling workers still include the payload; set the variable on those workers
 too if that matters.
+
+With `auth: codex`, the Codex access token crosses the bus from
+provider-openai-codex to this worker on every call. Only judge-openai may call
+`provider::openai-codex::auth::token`, and span payloads redact `access_token`.
 
 ## Consumer compatibility
 

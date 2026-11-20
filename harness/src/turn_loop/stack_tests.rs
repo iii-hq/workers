@@ -672,6 +672,40 @@ async fn a_released_call_held_again_stops_claiming_to_run_tools() {
     );
 }
 
+/// The hooks after the holder see the wrapper's description on release, as
+/// they would have without the hold: it lives only in the transcript.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_shows_later_hooks_its_description() {
+    let stored = json!([{"entry_id": "e_t1_1_assistant", "message": {
+        "role": "assistant", "stop_reason": "function_call",
+        "model": "fake", "provider": "fake", "timestamp": 2,
+        "usage": {"input": 10, "output": 2, "cost_usd": 0.1},
+        "content": [{"type": "function_call", "id": "call_hold",
+            "function_id": "agent_call",
+            "arguments": {"function": "test::hold", "arguments": {},
+                "description": "Writing tests"}}]}}]);
+    let hooks = json!({"harness::hook::on-pre-call": {
+        "decision": "continue", "targets": ["test::gate", "test::stamp"]}});
+    let (result, calls, _) = run_on_fake_engine(
+        json!({"call_hold": held_call()}),
+        stored,
+        None,
+        hooks,
+        |deps| async move {
+            crate::deferred::resolve(&deps, resolve_request("call_hold", "execute")).await
+        },
+    )
+    .await;
+    assert!(result.unwrap().turn_resumed);
+    let resumed: Vec<&Value> = calls
+        .iter()
+        .filter(|(function, _)| function == "harness::hook::on-pre-call")
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(resumed.len(), 1, "only the hook after the holder runs");
+    assert_eq!(resumed[0]["call"]["description"], "Writing tests");
+}
+
 /// The released call finished and a sibling still waits on a person, for
 /// hours maybe: `running tools` would stay up with nothing running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1750,6 +1784,237 @@ async fn status_expects_a_wake_on_a_finished_turn_that_continues() {
     assert_eq!(expects, [true, false], "no binding is stored");
 }
 
+/// The ide's post_call answer after a `git worktree add`: move the session to
+/// `root`.
+fn moves_to(root: &str) -> Value {
+    json!({"harness::hook::on-post-call": {"decision": "continue",
+        "target": "shell::turns::on-post-call",
+        "mutations": {"fs_scope": {"root": root}}}})
+}
+
+/// A reply calling `shell::exec` (`call_wt`) then `coder::read-file`
+/// (`call_next`), after a `call_held` already held when `held`.
+fn worktree_reply(held: bool) -> Value {
+    let call = |id: &str, function: &str| {
+        json!({"type": "function_call", "id": id, "function_id": "agent_call",
+            "arguments": {"function": function, "payload": {}}})
+    };
+    let mut content = vec![
+        call("call_wt", "shell::exec"),
+        call("call_next", "coder::read-file"),
+    ];
+    if held {
+        content.insert(0, call("call_held", "shell::exec"));
+    }
+    json!({"role": "assistant", "stop_reason": "function_call",
+        "model": "fake", "provider": "fake", "timestamp": 2,
+        "usage": {"input": 10, "output": 2, "cost_usd": 0.1}, "content": content})
+}
+
+/// Store `t1` rooted at `root` (unscoped when `None`).
+async fn root_turn(deps: &Deps, root: Option<&str>) {
+    let cfg = deps.cfg().await;
+    let mut record = crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+        .await
+        .unwrap()
+        .unwrap();
+    if let Some(root) = root {
+        record.options.set_filesystem_root(root);
+    }
+    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+        .await
+        .unwrap();
+}
+
+/// Run step 1 of `t1` rooted at `root` under `boundary`.
+async fn step_rooted(
+    root: Option<&'static str>,
+    boundary: crate::filesystem_scope::BoundaryMode,
+    checkpoints: Value,
+    reply: Value,
+    hooks: Value,
+) -> (
+    Result<TurnStepResult, HarnessError>,
+    Vec<(String, Value)>,
+    Value,
+) {
+    run_on_fake_engine(
+        checkpoints,
+        json!([]),
+        Some(reply),
+        hooks,
+        |deps| async move {
+            let cfg = deps.cfg().await;
+            *deps.config.write().await = Arc::new(crate::config::WorkerConfig {
+                filesystem_boundary: boundary,
+                ..(*cfg).clone()
+            });
+            root_turn(&deps, root).await;
+            step_one(deps).await
+        },
+    )
+    .await
+}
+
+/// The `fs_scope` stamped on the first call to `function`.
+fn stamped<'a>(calls: &'a [(String, Value)], function: &str) -> &'a Value {
+    let (_, data) = calls.iter().find(|(f, _)| f == function).unwrap();
+    &data["fs_scope"]
+}
+
+/// The `session::set-meta` writes, in order.
+fn meta_writes(calls: &[(String, Value)]) -> Vec<&Value> {
+    calls
+        .iter()
+        .filter(|(f, _)| f == "session::set-meta")
+        .map(|(_, data)| data)
+        .collect()
+}
+
+/// A root the ide reports re-stamps the step's next call and the record, and
+/// reaches the session metadata with the root it left once the record is
+/// stored, merged into what the ADE stored there. Under `workspace` a
+/// worktree outside the root and grants is followed too: the exec that
+/// created it could already write there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worktree_the_ide_reports_moves_the_session() {
+    use crate::filesystem_scope::BoundaryMode;
+    for (mode, boundary) in [
+        (BoundaryMode::ConfiguredRoots, "configured_roots"),
+        (BoundaryMode::Workspace, "workspace"),
+    ] {
+        // The ADE's own metadata (`metadataFor`): every other key survives.
+        let mut hooks = moves_to("/repo.feat");
+        hooks["session::get"] = json!({"meta": {"session_id": "s", "metadata": {
+            "surface": "console", "model": "fake", "fs_scope": {"root": "/repo"}}}});
+        let (result, calls, turn) =
+            step_rooted(Some("/repo"), mode, json!({}), worktree_reply(false), hooks).await;
+        assert_eq!(result.unwrap().next_step, Some(2));
+        let scope = |root: &str| json!({"root": root, "grants": [], "boundary": boundary});
+        assert_eq!(stamped(&calls, "shell::exec"), &scope("/repo"));
+        assert_eq!(stamped(&calls, "coder::read-file"), &scope("/repo.feat"));
+        assert_eq!(
+            turn["options"]["metadata"]["fs_scope"],
+            json!({"root": "/repo.feat"})
+        );
+        assert_eq!(
+            meta_writes(&calls),
+            [
+                &json!({"session_id": "s", "metadata": {"surface": "console", "model": "fake",
+                "fs_scope": {"root": "/repo.feat", "moved_from": "/repo"}}})
+            ],
+            "one mirror: the next call's equal root moves nothing"
+        );
+        let stored = calls.iter().position(|(f, data)| {
+            f == "state::set"
+                && data["value"]["options"]["metadata"]["fs_scope"]["root"] == "/repo.feat"
+        });
+        let mirrored = calls.iter().position(|(f, _)| f == "session::set-meta");
+        assert!(
+            stored.unwrap() < mirrored.unwrap(),
+            "record first, mirror second"
+        );
+    }
+}
+
+/// No move on a failed call, on an unscoped session, or while another call of
+/// the turn awaits approval; the last one tells the model why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worktree_report_moves_nothing_on_a_failure_an_unscoped_session_or_a_held_sibling() {
+    let mut failed = moves_to("/repo.feat");
+    failed["harness::hook::on-post-call"]["mutations"]["is_error"] = json!(true);
+    let held = json!({"call_held": {"state": "pending", "function_id": "shell::exec",
+        "held_by": "test::gate", "held_arguments": {}}});
+    for (root, checkpoints, hooks) in [
+        (Some("/repo"), json!({}), failed),
+        (None, json!({}), moves_to("/repo.feat")),
+        (Some("/repo"), held, moves_to("/repo.feat")),
+    ] {
+        let sibling_held = !checkpoints.as_object().unwrap().is_empty();
+        let (_, calls, turn) = step_rooted(
+            root,
+            crate::filesystem_scope::BoundaryMode::ConfiguredRoots,
+            checkpoints,
+            worktree_reply(sibling_held),
+            hooks,
+        )
+        .await;
+        let root = root.map_or(Value::Null, |root| json!(root));
+        assert_eq!(turn["options"]["metadata"]["fs_scope"]["root"], root);
+        assert_eq!(stamped(&calls, "coder::read-file")["root"], root);
+        assert!(meta_writes(&calls).is_empty(), "{calls:?}");
+        let told = calls.iter().any(|(f, data)| {
+            f == "session::append"
+                && data.to_string().contains("call_wt")
+                && data
+                    .to_string()
+                    .contains("did not move to /repo.feat: another call of this turn")
+        });
+        assert_eq!(told, sibling_held, "{calls:?}");
+    }
+}
+
+/// An approved `git worktree add` follows on release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_worktree_add_moves_the_session() {
+    let held = json!({"call_wt": {"state": "pending", "function_id": "shell::exec",
+        "held_by": "test::gate", "held_arguments": {}}});
+    let (result, calls, turn) = run_on_fake_engine(
+        held,
+        json!([]),
+        None,
+        moves_to("/repo.feat"),
+        |deps| async move {
+            root_turn(&deps, Some("/repo")).await;
+            crate::deferred::resolve(&deps, resolve_request("call_wt", "execute")).await
+        },
+    )
+    .await;
+    assert!(result.unwrap().turn_resumed);
+    assert_eq!(stamped(&calls, "shell::exec")["root"], "/repo");
+    assert_eq!(
+        turn["options"]["metadata"]["fs_scope"]["root"],
+        "/repo.feat"
+    );
+    assert_eq!(
+        meta_writes(&calls),
+        [&json!({"session_id": "s",
+            "metadata": {"fs_scope": {"root": "/repo.feat", "moved_from": "/repo"}}})]
+    );
+}
+
+/// A released move is mirrored even when its next step cannot be queued: the
+/// record already holds the new root and a retried resolve finds the call
+/// settled, so nothing else would mirror it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_move_is_mirrored_when_the_next_step_cannot_be_queued() {
+    let held = json!({"call_wt": {"state": "pending", "function_id": "shell::exec",
+        "held_by": "test::gate", "held_arguments": {}}});
+    let (result, calls, turn) = run_on_faulty_engine(
+        held,
+        json!([]),
+        None,
+        moves_to("/repo.feat"),
+        |f, _| f == "harness::turn",
+        |deps| async move {
+            root_turn(&deps, Some("/repo")).await;
+            crate::deferred::resolve(&deps, resolve_request("call_wt", "execute")).await
+        },
+    )
+    .await;
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(
+        turn["options"]["metadata"]["fs_scope"]["root"],
+        "/repo.feat"
+    );
+    assert_eq!(turn["calls"]["call_wt"]["state"], "done");
+    assert_eq!(
+        meta_writes(&calls),
+        [&json!({"session_id": "s",
+            "metadata": {"fs_scope": {"root": "/repo.feat", "moved_from": "/repo"}}})]
+    );
+}
+
 fn held_call() -> Value {
     json!({"state": "pending", "function_id": "test::hold",
         "held_by": "test::gate", "held_arguments": {}})
@@ -1885,6 +2150,20 @@ async fn run_on_faulty_engine<T, F: std::future::Future<Output = T>>(
     .await
 }
 
+/// The hook points a test's `hooks` map observes. Any other key
+/// (`session::get`) only answers that function. Kept out of
+/// `run_on_misleading_engine`, whose debug poll frame sits near the 2 MiB
+/// test-thread stack.
+fn observed_hook_points(hooks: &Value) -> Vec<String> {
+    hooks
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|id| id.starts_with("harness::hook::"))
+        .cloned()
+        .collect()
+}
+
 /// [`run_on_faulty_engine`], storing a refused turn write that `lands` matches all
 /// the same: the error does not tell whether the write happened.
 async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
@@ -1910,7 +2189,7 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
         "created_at": 1, "updated_at": 1
     })));
     let stored_turn = turn.clone();
-    let observed_hooks: Vec<String> = hooks.as_object().unwrap().keys().cloned().collect();
+    let observed_hooks = observed_hook_points(&hooks);
     let server = tokio::spawn(async move {
         let mut queue = serde_json::Map::new();
         let mut prompts = serde_json::Map::new();
@@ -1948,8 +2227,16 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 let id = message["id"].as_str().unwrap();
                 if !hooks[id].is_null() {
                     let target = hooks[id]["target"].as_str().unwrap_or("test::gate");
+                    // `targets` observes the point once per target, in chain order.
+                    let observers: Vec<Value> = match hooks[id]["targets"].as_array() {
+                        Some(targets) => targets
+                            .iter()
+                            .map(|t| json!({"id": format!("o_{id}#{}", t.as_str().unwrap()), "target": t}))
+                            .collect(),
+                        None => vec![json!({"id": format!("o_{id}"), "target": target})],
+                    };
                     let registered = json!({"type": "functionregistered", "id": id, "revision": 1,
-                        "observers": [{"id": format!("o_{id}"), "target": target}]});
+                        "observers": observers});
                     let frame = tokio_tungstenite::tungstenite::Message::Text(
                         registered.to_string().into(),
                     );
@@ -1967,6 +2254,7 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
             let function = message["activation"]["observer_id"]
                 .as_str()
                 .and_then(|id| id.strip_prefix("o_"))
+                .and_then(|id| id.split('#').next())
                 .map_or(function, str::to_string);
             let data = message["data"].clone();
             observed

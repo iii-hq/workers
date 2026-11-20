@@ -156,6 +156,9 @@ pub enum SandboxError {
     #[error("resource limit exceeded: {0}")]
     ResourceLimit(String),
 
+    /// Bad manifest, `host_path` outside the allowed roots, an invalid binary
+    /// executable, or a binary source outside a build (`worker::prepare`,
+    /// `worker::start` without `build`).
     #[error("worker source rejected: {0}")]
     SourceRejected(String),
 
@@ -176,6 +179,11 @@ pub enum SandboxError {
         "worker::* needs the project token this adapter was started with, or the token scoped to that VM"
     )]
     Unauthorized,
+
+    /// A scoped token named a build directory another VM recorded: S505, as
+    /// for any VM but its own.
+    #[error("the token scoped to this VM cannot use this build directory: {0}")]
+    BuildDirRefused(String),
 
     #[error("worker prepare failed: {0}")]
     PrepareFailed(String),
@@ -292,7 +300,7 @@ impl SandboxError {
             Self::StateBusy { .. } => SandboxErrorCode::S502,
             Self::InstanceMismatch { .. } => SandboxErrorCode::S503,
             Self::VmNotFound(_) => SandboxErrorCode::S504,
-            Self::Unauthorized => SandboxErrorCode::S505,
+            Self::Unauthorized | Self::BuildDirRefused(_) => SandboxErrorCode::S505,
             Self::PrepareFailed(_) => SandboxErrorCode::S506,
             Self::BuildFailed(_) => SandboxErrorCode::S507,
             Self::BuildMismatch(_) => SandboxErrorCode::S508,
@@ -422,6 +430,13 @@ impl SandboxError {
             Self::Unauthorized => (
                 None,
                 Some("call worker::* through Compose, which passes the token"),
+            ),
+            Self::BuildDirRefused(_) => (
+                None,
+                Some(
+                    "another VM of the project recorded this build directory: destroy that VM, \
+                     or delete its build-dir record, or call with the project token",
+                ),
             ),
             Self::PrepareFailed(_) => (None, Some("transient: retry after a short delay")),
             Self::BuildFailed(_) => (
@@ -846,6 +861,14 @@ mod tests {
                 SandboxError::Unauthorized,
                 "worker::* needs the project token this adapter was started with, or the token scoped to that VM",
                 Some("call worker::* through Compose, which passes the token"),
+            ),
+            (
+                SandboxError::BuildDirRefused("x".into()),
+                "the token scoped to this VM cannot use this build directory: x",
+                Some(
+                    "another VM of the project recorded this build directory: destroy that VM, \
+                     or delete its build-dir record, or call with the project token",
+                ),
             ),
             (
                 SandboxError::PrepareFailed("x".into()),

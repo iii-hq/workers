@@ -8,7 +8,7 @@
  *
  * Lenient (passthrough, optional) so a payload with extra/new capability flags
  * still parses and renders rather than falling back to raw JSON. Mirrors the
- * workflow:: / engine:: parser modules.
+ * engine:: parser module.
  */
 import { z } from 'zod'
 import { unwrapEnvelope } from '@/components/chat/sandbox/parsers'
@@ -91,7 +91,7 @@ export function formatTokens(n: number | undefined): string | null {
   return String(n)
 }
 
-/* ---------------- generic parse helpers (mirror workflow/parsers) ---------------- */
+/* ---------------- generic parse helpers (mirror engine/parsers) ---------------- */
 
 export function safeParseRequest<T>(
   schema: z.ZodType<T>,

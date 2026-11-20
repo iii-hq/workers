@@ -90,6 +90,7 @@ function setupConfiguredPage(): UiModule {
 function createHarness({
   conversationAdapter = {
     selectConversation: vi.fn(),
+    openConversation: vi.fn(),
     openDraft: vi.fn(),
     composerModel: vi.fn(() => null),
     startChat: vi.fn(async () => 'chat-1'),
@@ -815,6 +816,7 @@ describe('injectable UI conversation adapters', () => {
       conversationAdapter: {
         openDraft,
         selectConversation,
+        openConversation: vi.fn(),
         composerModel: () => null,
         startChat: vi.fn(async () => 'chat-1'),
       },
@@ -845,6 +847,35 @@ describe('injectable UI conversation adapters', () => {
     harness.stop()
   })
 
+  it('opens a session in a new pane, apart from selecting it', async () => {
+    const selectConversation = vi.fn()
+    const openConversation = vi.fn()
+    const harness = createHarness({
+      conversationAdapter: {
+        selectConversation,
+        openConversation,
+        openDraft: vi.fn(),
+        composerModel: () => null,
+        startChat: vi.fn(async () => 'chat-1'),
+      },
+      importModule: async () => ({
+        default(host) {
+          host.chat.openConversation?.('node-session')
+        },
+      }),
+    })
+
+    harness.emit({
+      op: 'sync',
+      assets: [{ path: 'workflow/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() =>
+      expect(openConversation).toHaveBeenCalledWith('node-session'),
+    )
+    expect(selectConversation).not.toHaveBeenCalled()
+    harness.stop()
+  })
+
   it('keeps concurrent loader hosts isolated through teardown and reload', async () => {
     const selectA = vi.fn()
     const selectB = vi.fn()
@@ -860,6 +891,7 @@ describe('injectable UI conversation adapters', () => {
     const first = createHarness({
       conversationAdapter: {
         selectConversation: selectA,
+        openConversation: vi.fn(),
         openDraft: vi.fn(),
         composerModel: modelA,
         startChat: vi.fn(async () => 'chat-a'),
@@ -869,6 +901,7 @@ describe('injectable UI conversation adapters', () => {
     const second = createHarness({
       conversationAdapter: {
         selectConversation: selectB,
+        openConversation: vi.fn(),
         openDraft: vi.fn(),
         composerModel: modelB,
         startChat: vi.fn(async () => 'chat-b'),

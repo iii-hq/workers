@@ -100,7 +100,7 @@ impl HookPoint {
                 "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` { id, function_id, arguments }, the arguments as the previous target left them; the harness gets back the merged outcome { decision, reason?, held_by?, arguments?, annotations? }."
             }
             HookPoint::PostCall => {
-                "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` and `result` { function_call_id, function_id, content, is_error, details }; the harness gets back the merged outcome { decision, held_by?, result?, annotations? }."
+                "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` and `result` { function_call_id, function_id, content, is_error, details }; the harness gets back the merged outcome { decision, held_by?, result?, annotations? }. A `shell::*`/`coder::*` target may answer mutations.fs_scope.root on a `shell::*`/`coder::*` call to move the session's working directory."
             }
             HookPoint::PostTurn => {
                 "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Args `sessions` globs scope it; args `payload`+`result_into` call a plain composition function (fp::pipe) as the validator. Each matching observer's target is called with the hook input plus the turn's `result` (or the template with the result injected); the harness gets back the merged outcome { decision, reason?, prompt? }."
@@ -195,6 +195,10 @@ pub struct CallInput {
     pub id: String,
     pub function_id: String,
     pub arguments: Value,
+    /// on-pre-call only: the `agent_call` wrapper's display-only
+    /// `description` of this call, when the model gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// `harness::hook::on-pre-call` input.

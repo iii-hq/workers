@@ -63,23 +63,345 @@ export async function linkChildSession(
 }
 
 /** Move the session's coarse status, so a tree shows working / done / error. */
-export async function setSessionStatus(
+/** Waits before each retry of a terminal status write. `[0, 0]` in tests. */
+export const statusRetry = { delaysMs: [500, 2_000] };
+
+/**
+ * Terminal statuses whose every retry failed, by session. Written the next
+ * time any status write of this worker succeeds (session-manager answers
+ * again), with no timer; a session's own next write replaces its entry.
+ */
+const unsettled = new Map<string, { status: 'done' | 'error'; reason?: string }>();
+let reconciling = false;
+/** A success arrived during a sweep: run another pass once it ends. */
+let reconcileRequested = false;
+/** Counts successful status writes, so a write that fails can tell whether
+ *  the store answered while it was pending. */
+let successes = 0;
+
+/**
+ * Keep a status that could not be written for replay. If a write succeeded
+ * while this one was pending, the store answers again and no later success
+ * may come: replay now. A store that keeps failing records no success, so
+ * this never loops.
+ */
+function retainForReplay(
+  iii: IIIClient,
+  sessionId: string,
+  pending: { status: 'done' | 'error'; reason?: string },
+  successesBefore: number,
+): void {
+  unsettled.set(sessionId, pending);
+  pendingChanged?.();
+  if (successes !== successesBefore) void reconcileUnsettled(iii);
+}
+
+/** Set by {@link startStatusRecovery}: called whenever something becomes pending. */
+let pendingChanged: (() => void) | null = null;
+
+/** Each session's status writes, replays included, go out one at a time, in order. */
+const statusQueues = new Map<string, Promise<unknown>>();
+
+function inOrder<T>(sessionId: string, op: () => Promise<T>): Promise<T> {
+  const next = (statusQueues.get(sessionId) ?? Promise.resolve()).then(op, op);
+  const settled = next.catch(() => undefined);
+  statusQueues.set(sessionId, settled);
+  void settled.then(() => {
+    if (statusQueues.get(sessionId) === settled) statusQueues.delete(sessionId);
+  });
+  return next;
+}
+
+async function writeStatus(
   iii: IIIClient,
   sessionId: string,
   status: 'working' | 'done' | 'error',
   reason?: string,
 ): Promise<void> {
+  await iii.call({
+    function_id: 'session::set-status',
+    payload: { session_id: sessionId, status, ...(reason ? { reason } : {}) },
+    timeoutMs: TIMEOUT_MS,
+  });
+}
+
+async function reconcileUnsettled(iii: IIIClient): Promise<void> {
+  if (unsettled.size === 0) return;
+  if (reconciling) {
+    // Only a successful write asks, so a store that keeps failing never loops.
+    reconcileRequested = true;
+    return;
+  }
+  reconciling = true;
   try {
-    await iii.call({
-      function_id: 'session::set-status',
-      payload: { session_id: sessionId, status, ...(reason ? { reason } : {}) },
-      timeoutMs: TIMEOUT_MS,
-    });
+    do {
+      reconcileRequested = false;
+      for (const [sessionId, pending] of [...unsettled]) {
+        try {
+          await inOrder(sessionId, async () => {
+            // A newer write for this session was requested meanwhile: it wins,
+            // and this replay is never sent.
+            if (unsettled.get(sessionId) !== pending) return;
+            await writeStatus(iii, sessionId, pending.status, pending.reason);
+            if (unsettled.get(sessionId) === pending) unsettled.delete(sessionId);
+          });
+        } catch {
+          // Still failing: it stays pending for the next success; try the rest.
+        }
+      }
+    } while (reconcileRequested && unsettled.size > 0);
+  } finally {
+    reconciling = false;
+    pendingChanged?.();
+  }
+}
+
+export async function setSessionStatus(
+  iii: IIIClient,
+  sessionId: string,
+  status: 'working' | 'done' | 'error',
+  reason?: string,
+): Promise<boolean> {
+  // A newer status for this session replaces a lost one at once, so a replay
+  // not yet sent is skipped; one already sent finishes first (in order).
+  unsettled.delete(sessionId);
+  try {
+    await inOrder(sessionId, () => writeStatus(iii, sessionId, status, reason));
+    successes++;
+    // The store answers again: write any other session's lost status, in the
+    // background, without holding this caller.
+    void reconcileUnsettled(iii);
+    return true;
   } catch (err) {
     console.warn(
       `claude-code: session::set-status ${status} failed for ${sessionId}: ${String(err)}`,
     );
+    return false;
   }
+}
+
+export const RESTART_REASON = 'claude-code restarted while this run was active';
+
+/** Waits before each retry of a startup listing that failed. Bounded. */
+export const startupRetry = { delaysMs: [2_000, 5_000, 10_000, 30_000, 60_000] };
+
+/**
+ * {@link settleStaleSessions}, retried after a failed listing (session-manager
+ * not up yet) at the bounded `startupRetry` delays. Runs in the background, so
+ * it never delays the worker's functions. `null` when every attempt failed.
+ */
+export async function settleStaleSessionsWithRetry(
+  iii: IIIClient,
+  ranHere: (sessionId: string) => boolean,
+): Promise<number | null> {
+  let settled = await settleStaleSessions(iii, ranHere);
+  for (const delay of startupRetry.delaysMs) {
+    if (settled !== null) return settled;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    settled = await settleStaleSessions(iii, ranHere);
+  }
+  return settled;
+}
+
+/**
+ * At startup, settle every session this worker created that still says
+ * `working`: no run of its own can be live yet, so each one lost its final
+ * status (a write that never landed, or a worker that died mid-run). Each
+ * namespace has at most one claude-code, and its calls reach only its own
+ * namespace's session-manager, so every `agent: claude-code` session listed
+ * here is this worker's. `null` when the listing failed (nothing written).
+ * `ranHere` spares every session this worker has run a turn in since it started,
+ * so a turn that starts and finishes during the scan keeps its own status. Every
+ * page is read before anything is written: a write moves a session out of the
+ * `working` filter under the cursor. Returns how many were settled.
+ */
+export async function settleStaleSessions(
+  iii: IIIClient,
+  ranHere: (sessionId: string) => boolean,
+): Promise<number | null> {
+  const stale: string[] = [];
+  try {
+    let cursor: string | null | undefined;
+    do {
+      const page = await iii.call<
+        unknown,
+        { sessions?: Array<{ session_id?: string }>; next_cursor?: string | null } | null
+      >({
+        function_id: 'session::list',
+        payload: {
+          status: 'working',
+          metadata: { agent: 'claude-code' },
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        },
+        timeoutMs: TIMEOUT_MS,
+      });
+      for (const s of page?.sessions ?? []) {
+        if (typeof s.session_id === 'string') stale.push(s.session_id);
+      }
+      cursor = page?.next_cursor;
+    } while (cursor);
+  } catch (err) {
+    console.warn(`claude-code: could not list sessions left working: ${String(err)}`);
+    return null;
+  }
+  let settled = 0;
+  for (const sessionId of stale) {
+    if (ranHere(sessionId)) continue;
+    const before = successes;
+    if (await setSessionStatus(iii, sessionId, 'error', RESTART_REASON)) settled++;
+    // Not written: replayed once the store answers, unless a turn started on
+    // this session while the write was pending (checked in the same step as
+    // the save, so a replay can never land on a running turn).
+    else if (!ranHere(sessionId)) {
+      retainForReplay(iii, sessionId, { status: 'error', reason: RESTART_REASON }, before);
+    }
+  }
+  return settled;
+}
+
+/** The internal function engine::on-functions-changed calls (see {@link startStatusRecovery}). */
+export const RECOVERY_FN_ID = 'claude::on-functions-changed';
+/** The internal function session-manager's commit events call while anything is pending. */
+export const ACTIVITY_FN_ID = 'claude::on-session-activity';
+/**
+ * What shows session-manager's store answers again, for any caller: its
+ * commit events (emitted only after a write commits) and the reads that show
+ * a session to anyone (the console opening its list or a chat). A status
+ * nobody writes past and nobody reads cannot be seen as stale; the first read
+ * writes it.
+ */
+const ACTIVITY_SOURCES = [
+  'session::on-status-changed',
+  'session::on-message-added',
+  'session::list',
+  'session::get',
+  'session::messages-tail',
+];
+
+/**
+ * Start the recovery of statuses this worker could not write, driven by
+ * session-manager itself rather than by another status write:
+ * - the startup scan ({@link settleStaleSessions}) runs now, again at the
+ *   bounded `startupRetry` delays while its listing fails, and
+ * - claude-code observes engine::on-functions-changed: when the event lists
+ *   `session::set-status` (session-manager registered, e.g. after a restart),
+ *   every pending status is written and a scan that has not succeeded runs.
+ * `onScanned` runs once, after the first scan that listed successfully.
+ */
+export function startStatusRecovery(
+  iii: IIIClient,
+  ranHere: (sessionId: string) => boolean,
+  onScanned: () => void,
+): void {
+  let scanned = false;
+  let scanning: Promise<void> | null = null;
+  const tryScan = (): Promise<void> => {
+    if (scanned) return Promise.resolve();
+    scanning ??= (async () => {
+      const n = await settleStaleSessions(iii, ranHere);
+      if (n === null) return;
+      scanned = true;
+      if (n > 0) console.info(`claude-code: marked ${n} session(s) left working as error`);
+      onScanned();
+    })().finally(() => {
+      scanning = null;
+      syncWatch();
+    });
+    return scanning;
+  };
+  // While a status is pending or the scan has not listed, watch
+  // session-manager's activity (ACTIVITY_SOURCES): the first commit or read
+  // after its store recovers, by any caller, is the signal, with no
+  // registration event needed. Nothing pending: no observers at all.
+  let watching: Array<{ dispose: () => Promise<void> }> = [];
+  const syncWatch = (): void => {
+    const needed = unsettled.size > 0 || !scanned;
+    if (needed && watching.length === 0) {
+      watching = ACTIVITY_SOURCES.map((function_id) =>
+        iii.observe({ function_id, capture: [] }, ACTIVITY_FN_ID),
+      );
+    } else if (!needed && watching.length > 0) {
+      const handles = watching;
+      watching = [];
+      for (const handle of handles) void handle.dispose().catch(() => undefined);
+    }
+  };
+  const recover = async (): Promise<void> => {
+    await Promise.all([reconcileUnsettled(iii), tryScan()]);
+    syncWatch();
+  };
+  pendingChanged = syncWatch;
+  iii.registerFunction(
+    ACTIVITY_FN_ID,
+    async () => {
+      await recover();
+      return null;
+    },
+    {
+      description:
+        'Internal: session-manager committed a write, so its store answers: write the statuses claude-code could not write.',
+      metadata: { internal: true },
+      request_format: { type: 'object' },
+      response_format: { type: 'null' },
+    },
+  );
+  iii.registerFunction(
+    RECOVERY_FN_ID,
+    async (event: unknown) => {
+      const functions =
+        (event as { input?: { functions?: Array<{ function_id?: string }> } } | null)?.input
+          ?.functions ?? [];
+      if (!functions.some((f) => f.function_id === 'session::set-status')) return null;
+      await recover();
+      return null;
+    },
+    {
+      description:
+        'Internal: write the session statuses claude-code could not write, once session-manager registers.',
+      metadata: { internal: true },
+      request_format: { type: 'object' },
+      response_format: { type: 'null' },
+    },
+  );
+  iii.observe({ function_id: 'engine::on-functions-changed', capture: ['input'] }, RECOVERY_FN_ID);
+  void (async () => {
+    await tryScan();
+    for (const delay of startupRetry.delaysMs) {
+      if (scanned) return;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      await tryScan();
+    }
+    if (!scanned) {
+      console.warn(
+        'claude-code: could not list sessions left working yet; it runs when session-manager registers',
+      );
+    }
+  })();
+}
+
+/**
+ * A run's last status write: retried, since nothing writes this session's
+ * status again until its next run, and a lost `done` or `error` would leave it
+ * reporting `working` with no run behind it.
+ */
+export async function settleSessionStatus(
+  iii: IIIClient,
+  sessionId: string,
+  status: 'done' | 'error',
+  reason?: string,
+): Promise<boolean> {
+  const before = successes;
+  if (await setSessionStatus(iii, sessionId, status, reason)) return true;
+  for (const delay of statusRetry.delaysMs) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (await setSessionStatus(iii, sessionId, status, reason)) return true;
+  }
+  console.error(
+    `claude-code: session ${sessionId} still shows working: its ${status} status could not be written; it is written once session-manager answers again`,
+  );
+  retainForReplay(iii, sessionId, { status, ...(reason ? { reason } : {}) }, before);
+  return false;
 }
 
 /**
@@ -154,6 +476,8 @@ const STOP_REASONS = new Set(['end', 'length', 'function_call', 'aborted', 'erro
 function sessionStopReason(raw: unknown): string {
   const reason = String(raw ?? 'end');
   if (STOP_REASONS.has(reason)) return reason;
+  // A `claude::stop` that ended the turn: stopped by request, not failed.
+  if (reason === 'interrupted') return 'aborted';
   // SDK result subtypes: `error_max_turns`, `error_max_budget_usd`, … hit a
   // cap; every other subtype (`error_during_execution`) is a failure.
   return reason.startsWith('error_max') ? 'length' : 'error';

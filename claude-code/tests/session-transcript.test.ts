@@ -5,8 +5,14 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { registerAgentFeeds } from '../src/agent-feed.js';
 import { type Config, loadConfig } from '../src/config.js';
-import { executeRun, RunPayloadSchema, register } from '../src/run.js';
-import { toSessionMessage } from '../src/session-link.js';
+import { executeRun, RunPayloadSchema, ranSinceStart, register } from '../src/run.js';
+import {
+  RESTART_REASON,
+  setSessionStatus,
+  settleStaleSessions,
+  statusRetry,
+  toSessionMessage,
+} from '../src/session-link.js';
 import { streamTiming } from '../src/session-writer.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 import {
@@ -767,5 +773,678 @@ describe('append retry race', () => {
       },
     ]);
     expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+});
+
+describe('review: terminal status, settled entries, partial blocks, stop and errors', () => {
+  const defaultDelays = statusRetry.delaysMs;
+  beforeEach(() => {
+    statusRetry.delaysMs = [0, 0];
+  });
+  afterEach(() => {
+    statusRetry.delaysMs = defaultDelays;
+  });
+
+  async function worker(): Promise<FakeIii> {
+    const fake = fakeIii();
+    const config = await cfg();
+    const feeds = registerAgentFeeds(fake.iii);
+    register(fake.iii, () => config, feeds.agent.emit, feeds.raw.emit);
+    return fake;
+  }
+
+  /** Fails the first `times` set-status writes of `status`, without recording them. */
+  function failStatus(fake: FakeIii, status: string, times: number) {
+    const real = fake.iii.call.bind(fake.iii);
+    let n = 0;
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { status?: string };
+    }) => {
+      if (
+        req.function_id === 'session::set-status' &&
+        req.payload.status === status &&
+        n++ < times
+      ) {
+        throw new Error('timeout');
+      }
+      return real(req as never);
+    };
+  }
+
+  it('retries the terminal done status when its first write fails', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'done', 1);
+    await run(fake, { prompt: 'x', session_id: 'st-1', parent_session_id: 'p-1' });
+    expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+
+  it('retries the terminal error status of an incomplete transcript', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'error', 2);
+    const real = fake.iii.call.bind(fake.iii);
+    let appends = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::append' && ++appends > 1) throw new Error('down');
+      return real(req as never);
+    };
+    await run(fake, { prompt: 'x', session_id: 'st-2', parent_session_id: 'p-1' });
+    expect(statuses(fake)).toEqual(['working', 'error']);
+  });
+
+  function statusesOf(fake: FakeIii, sessionId: string) {
+    return fake.calls
+      .filter((c) => c.function_id === 'session::set-status' && c.payload.session_id === sessionId)
+      .map((c) => c.payload.status);
+  }
+
+  it('writes a status that exhausted its retries once session-manager answers again', async () => {
+    const fake = fakeIii();
+    // Every attempt at `done` fails during the first run: retries exhausted.
+    failStatus(fake, 'done', 3);
+    await run(fake, { prompt: 'x', session_id: 'lost-1', parent_session_id: 'p-1' });
+    expect(statusesOf(fake, 'lost-1')).toEqual(['working']);
+    // The next status write that succeeds, for any session, proves the
+    // store is back: the lost `done` is written then.
+    await run(fake, { prompt: 'y', session_id: 'other-1', parent_session_id: 'p-1' });
+    // The replay runs in the background, without holding that run.
+    await vi.waitFor(() => expect(statusesOf(fake, 'lost-1')).toEqual(['working', 'done']));
+    expect(statusesOf(fake, 'other-1')).toEqual(['working', 'done']);
+    // Written once: a later success does not repeat it.
+    await run(fake, { prompt: 'z', session_id: 'other-2', parent_session_id: 'p-1' });
+    expect(statusesOf(fake, 'lost-1')).toEqual(['working', 'done']);
+  });
+
+  it('a new run on the same session replaces a status that was never written', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'done', 3);
+    await run(fake, { prompt: 'x', session_id: 'lost-2', parent_session_id: 'p-1' });
+    // The follow-up turn owns the status now: the old `done` must not land
+    // after its `working`.
+    await run(fake, { prompt: 'again', session_id: 'lost-2' });
+    expect(statusesOf(fake, 'lost-2')).toEqual(['working', 'working', 'done']);
+  });
+
+  /** Holds race-1's first `done` before it commits; records what commits for it. */
+  function holdReplay(fake: FakeIii, sessionId: string) {
+    const committed: unknown[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const state = { held: false };
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const ours =
+        req.function_id === 'session::set-status' && req.payload.session_id === sessionId;
+      if (ours && req.payload.status === 'done' && !state.held) {
+        state.held = true;
+        await gate;
+      }
+      const out = await real(req as never);
+      if (ours) committed.push(req.payload.status);
+      return out;
+    };
+    return { committed, release, state };
+  }
+
+  it('a replay in flight never overwrites a newer status of the same session', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'done', 3);
+    await run(fake, { prompt: 'x', session_id: 'race-1', parent_session_id: 'p-1' });
+    const hold = holdReplay(fake, 'race-1');
+    // Another session's write succeeds: the replay starts and is held.
+    await setSessionStatus(fake.iii, 'other-3', 'working');
+    await vi.waitFor(() => expect(hold.state.held).toBe(true));
+    // The newer write is requested while the replay is in flight: it queues.
+    const newer = setSessionStatus(fake.iii, 'race-1', 'working');
+    hold.release();
+    expect(await newer).toBe(true);
+    expect(hold.committed).toEqual(['done', 'working']);
+  });
+
+  it('a success during a sweep runs the sweep again for what was lost meanwhile', async () => {
+    const fake = fakeIii();
+    // `done` fails for the sessions in `down`; sweep-a's replay is then held.
+    const down = new Set(['sweep-a', 'sweep-c']);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = false;
+    let holding = false;
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const id = String(req.payload.session_id);
+      if (req.function_id === 'session::set-status' && req.payload.status === 'done') {
+        if (holding && id === 'sweep-a' && !held) {
+          held = true;
+          await gate;
+        } else if (down.has(id)) {
+          throw new Error('timeout');
+        }
+      }
+      return real(req as never);
+    };
+    const { settleSessionStatus } = await import('../src/session-link.js');
+    expect(await settleSessionStatus(fake.iii, 'sweep-a', 'done')).toBe(false);
+    // A success starts a sweep, held on sweep-a's replay.
+    holding = true;
+    down.delete('sweep-a');
+    await setSessionStatus(fake.iii, 'other-4', 'working');
+    await vi.waitFor(() => expect(held).toBe(true));
+    // During the sweep, sweep-c loses its `done`, then a write succeeds.
+    expect(await settleSessionStatus(fake.iii, 'sweep-c', 'done')).toBe(false);
+    down.delete('sweep-c');
+    await setSessionStatus(fake.iii, 'other-5', 'working');
+    release();
+    // The pass that was running took its list before sweep-c was lost: only
+    // a second pass writes it.
+    await vi.waitFor(() => {
+      const done = fake.calls.filter(
+        (c) =>
+          c.function_id === 'session::set-status' &&
+          c.payload.session_id === 'sweep-c' &&
+          c.payload.status === 'done',
+      );
+      expect(done.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('a replay that fails does not stop the sweep for the others', async () => {
+    const fake = fakeIii();
+    // Both lose their `done`; first-bad keeps failing, second-ok recovers.
+    const down = new Set(['first-bad', 'second-ok']);
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      if (
+        req.function_id === 'session::set-status' &&
+        req.payload.status === 'done' &&
+        down.has(String(req.payload.session_id))
+      ) {
+        throw new Error('timeout');
+      }
+      return real(req as never);
+    };
+    await run(fake, { prompt: 'x', session_id: 'first-bad', parent_session_id: 'p-1' });
+    await run(fake, { prompt: 'x', session_id: 'second-ok', parent_session_id: 'p-1' });
+    down.delete('second-ok');
+    await setSessionStatus(fake.iii, 'other-6', 'working');
+    await vi.waitFor(() => expect(statusesOf(fake, 'second-ok')).toEqual(['working', 'done']));
+  });
+
+  /** A session-manager record for `id`, owned by claude-code and `working`. */
+  function staleSession(fake: FakeIii, id: string) {
+    seedSession(fake, id, { agent: 'claude-code' });
+    const meta = fake.state.get(`session-manager/${id}`) as Record<string, unknown>;
+    fake.state.set(`session-manager/${id}`, { ...meta, status: 'working' });
+  }
+
+  /** Holds the first restart `error` write for `id`, then fails it. */
+  function holdThenFailRestart(fake: FakeIii, id: string) {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const state = { held: false };
+    const committed: unknown[] = [];
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const ours = req.function_id === 'session::set-status' && req.payload.session_id === id;
+      if (ours && req.payload.status === 'error' && !state.held) {
+        state.held = true;
+        await gate;
+        throw new Error('timeout');
+      }
+      const out = await real(req as never);
+      if (ours) committed.push(req.payload.status);
+      return out;
+    };
+    return { release, state, committed };
+  }
+
+  it('a restart error that fails after a success meanwhile is replayed at once', async () => {
+    const fake = fakeIii();
+    staleSession(fake, 'pend-1');
+    const hold = holdThenFailRestart(fake, 'pend-1');
+    const scan = settleStaleSessions(fake.iii, () => false);
+    await vi.waitFor(() => expect(hold.state.held).toBe(true));
+    // The store answers while the restart write is pending...
+    await setSessionStatus(fake.iii, 'other-8', 'working');
+    hold.release();
+    await scan;
+    // ...so the failed write is replayed without waiting for another success.
+    await vi.waitFor(() => expect(hold.committed).toEqual(['error']));
+  });
+
+  it('never saves a restart replay for a session a turn started in meanwhile', async () => {
+    const fake = fakeIii();
+    staleSession(fake, 'pend-2');
+    const hold = holdThenFailRestart(fake, 'pend-2');
+    const scan = settleStaleSessions(fake.iii, ranSinceStart);
+    await vi.waitFor(() => expect(hold.state.held).toBe(true));
+    // A turn starts on that session while its restart write is pending.
+    const turn = run(fake, { prompt: 'x', session_id: 'pend-2' });
+    await vi.waitFor(() => expect(ranSinceStart('pend-2')).toBe(true));
+    hold.release();
+    await scan;
+    await turn;
+    await setSessionStatus(fake.iii, 'other-9', 'working');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(hold.committed).toEqual(['working', 'done']);
+  });
+
+  it('a stop that arrives after an SDK error result does not hide the failure', async () => {
+    const fake = await worker();
+    let release: () => void = () => {};
+    const after = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let resultSeen = false;
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          session_id: 'cs-1',
+          num_turns: 1,
+          errors: ['real failure'],
+        };
+        resultSeen = true;
+        // The stop lands after the error result was received.
+        await after;
+      },
+      interrupt: async () => release(),
+    })) as never);
+    const started = fake.registered.get('claude::run')?.({ prompt: 'x', session_id: 'late-stop' });
+    await vi.waitFor(() => expect(resultSeen).toBe(true));
+    await fake.registered.get('claude::stop')?.({ session_id: 'late-stop' });
+    const out = (await started) as { stop_reason?: string; is_error?: boolean; result?: string };
+    expect(out).toMatchObject({ is_error: true, stop_reason: 'error_during_execution' });
+    expect(out.result).toBe('real failure');
+  });
+
+  it('the startup scan never settles a session this worker ran since it started', async () => {
+    // The scan lists `ran-b` as working, a turn on it then starts AND finishes
+    // while the scan is still busy with an earlier session: `done` must stay.
+    const fake = fakeIii();
+    seedSession(fake, 'stale-a', { agent: 'claude-code' });
+    seedSession(fake, 'ran-b', { agent: 'claude-code' });
+    for (const id of ['stale-a', 'ran-b']) {
+      const meta = fake.state.get(`session-manager/${id}`) as Record<string, unknown>;
+      fake.state.set(`session-manager/${id}`, { ...meta, status: 'working' });
+    }
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let listed = false;
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const out = await real(req as never);
+      if (req.function_id === 'session::list') listed = true;
+      if (req.function_id === 'session::set-status' && req.payload.session_id === 'stale-a') {
+        await gate;
+      }
+      return out;
+    };
+    const scan = settleStaleSessions(fake.iii, ranSinceStart);
+    await vi.waitFor(() => expect(listed).toBe(true));
+    await run(fake, { prompt: 'x', session_id: 'ran-b' });
+    release();
+    await scan;
+    const meta = (id: string) => fake.state.get(`session-manager/${id}`) as Record<string, unknown>;
+    expect(meta('ran-b').status).toBe('done');
+    expect(meta('stale-a')).toMatchObject({ status: 'error', status_reason: RESTART_REASON });
+  });
+
+  it('a restart error that could not be written is replayed once the store answers', async () => {
+    const fake = fakeIii();
+    seedSession(fake, 'stale-c', { agent: 'claude-code' });
+    const meta = fake.state.get('session-manager/stale-c') as Record<string, unknown>;
+    fake.state.set('session-manager/stale-c', { ...meta, status: 'working' });
+    failStatus(fake, 'error', 1);
+    expect(await settleStaleSessions(fake.iii, () => false)).toBe(0);
+    await setSessionStatus(fake.iii, 'other-7', 'working');
+    await vi.waitFor(() =>
+      expect(fake.state.get('session-manager/stale-c')).toMatchObject({
+        status: 'error',
+        status_reason: RESTART_REASON,
+      }),
+    );
+  });
+
+  it('uses the SDK errors when a failed result has empty result text', async () => {
+    const fake = fakeIii();
+    const turn = [
+      initMsg,
+      {
+        ...resultMsg,
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: '',
+        errors: ['quota exceeded'],
+      },
+    ];
+    const out = (await run(fake, { prompt: 'x' }, turn)) as { result?: string };
+    expect(out.result).toBe('quota exceeded');
+  });
+
+  it('never rewrites an entry whose content and usage are already stored', async () => {
+    // A rewrite of a settled entry is a write that can fail twice and turn a
+    // complete transcript into an `error` session; refuse every such no-op.
+    const fake = fakeIii();
+    const real = fake.iii.call.bind(fake.iii);
+    const stored = new Map<string, string>();
+    let noops = 0;
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: Record<string, unknown>;
+    }) => {
+      const p = req.payload;
+      if (req.function_id === 'session::append') {
+        const m = p.message as Record<string, unknown>;
+        const out = await real(req as never);
+        stored.set(String(p.entry_id), JSON.stringify([m.content, m.usage ?? null]));
+        return out;
+      }
+      if (req.function_id === 'session::update-message') {
+        const now = JSON.stringify([p.content, p.usage ?? null]);
+        if (stored.get(String(p.entry_id)) === now) {
+          noops++;
+          throw new Error('timeout');
+        }
+        const out = await real(req as never);
+        stored.set(String(p.entry_id), now);
+        return out;
+      }
+      return real(req as never);
+    };
+    await run(
+      fake,
+      { prompt: 'x', session_id: 'settled-1', parent_session_id: 'p-1' },
+      streamedTurn,
+    );
+    expect(noops).toBe(0);
+    expect(statuses(fake)).toEqual(['working', 'done']);
+    const assistant = appended(fake, 'settled-1').find((m) => m.role === 'assistant');
+    expect(assistant?.content).toEqual([
+      { type: 'text', text: 'Hello' },
+      {
+        type: 'function_call',
+        id: 'toolu_1',
+        function_id: expect.any(String),
+        arguments: { command: 'ls' },
+      },
+    ]);
+  });
+
+  /** One block completes, the next is cut off mid-stream by a failure. */
+  function cutOffTurn(second: Record<string, unknown>, delta: Record<string, unknown>) {
+    return (() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_c', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Done part' },
+        });
+        yield stream({ type: 'content_block_stop', index: 0 });
+        yield {
+          type: 'assistant',
+          message: { id: 'msg_c', model: 'm', content: [{ type: 'text', text: 'Done part' }] },
+        };
+        yield stream({ type: 'content_block_start', index: 1, content_block: second });
+        yield stream({ type: 'content_block_delta', index: 1, delta });
+        throw new Error('connection reset');
+      },
+      interrupt: async () => {},
+    })) as never;
+  }
+
+  async function runCutOff(fake: FakeIii, sessionId: string) {
+    const feeds = registerAgentFeeds(fake.iii);
+    await executeRun(
+      fake.iii,
+      await cfg(),
+      feeds.agent.emit,
+      feeds.raw.emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: sessionId, parent_session_id: 'p-1' }),
+    );
+    return appended(fake, sessionId).filter((m) => m.role === 'assistant');
+  }
+
+  it('keeps a streamed block that was cut off before it completed, after the completed ones', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation(
+      cutOffTurn({ type: 'text', text: '' }, { type: 'text_delta', text: 'Half wri' }),
+    );
+    const [message, note] = await runCutOff(fake, 'cut-1');
+    expect(message.content).toEqual([
+      { type: 'text', text: 'Done part' },
+      { type: 'text', text: 'Half wri' },
+    ]);
+    expect(JSON.stringify(note.content)).toContain('connection reset');
+  });
+
+  it('drops a tool call that was cut off: it never ran and its arguments are incomplete', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation(
+      cutOffTurn(
+        { type: 'tool_use', id: 'toolu_cut', name: 'Bash', input: {} },
+        { type: 'input_json_delta', partial_json: '{"comm' },
+      ),
+    );
+    const [message] = await runCutOff(fake, 'cut-2');
+    expect(message.content).toEqual([{ type: 'text', text: 'Done part' }]);
+  });
+
+  it('keeps a completed block whose SDK message never arrived, without duplicating others', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_k', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'Plan' },
+        });
+        yield stream({ type: 'content_block_stop', index: 0 });
+        yield {
+          type: 'assistant',
+          message: { id: 'msg_k', model: 'm', content: [{ type: 'thinking', thinking: 'Plan' }] },
+        };
+        yield stream({
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'text', text: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'text_delta', text: 'Complete answer' },
+        });
+        yield stream({ type: 'content_block_stop', index: 1 });
+        // The SDK fails before it reports block 1 as an assistant message.
+        throw new Error('connection reset');
+      },
+      interrupt: async () => {},
+    })) as never);
+    const [message] = await runCutOff(fake, 'cut-4');
+    const texts = JSON.stringify(message.content);
+    expect(texts).toContain('Complete answer');
+    expect(texts.match(/Plan/g)).toHaveLength(1);
+  });
+
+  it('clears a cut-off tool call that was the only block, even after it was shown live', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_t', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_first', name: 'Bash', input: {} },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"comm' },
+        });
+        throw new Error('connection reset');
+      },
+      interrupt: async () => {},
+    })) as never);
+    const assistants = await runCutOff(fake, 'cut-3');
+    // Shown live while it streamed, so an entry exists: it ends empty.
+    expect(JSON.stringify(assistants)).not.toContain('toolu_first');
+    expect(JSON.stringify(assistants[assistants.length - 1].content)).toContain('connection reset');
+  });
+
+  it('a claude::stop mid-query ends the turn as interrupted, not an error', async () => {
+    // Live behaviour: an interrupted query answers with an error result
+    // (`error_during_execution` and an `[ede_diagnostic]` line), which alone
+    // would mark a requested stop as a failure.
+    const fake = await worker();
+    let release: () => void = () => {};
+    const interrupted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let streaming = false;
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_s', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Once upon' },
+        });
+        streaming = true;
+        await interrupted;
+        yield {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          session_id: 'cs-1',
+          num_turns: 1,
+          errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
+        };
+      },
+      interrupt: async () => release(),
+    })) as never);
+    await fake.registered.get('claude::start')?.({
+      prompt: 'story',
+      session_id: 'stop-mid',
+      parent_session_id: 'p-1',
+    });
+    await vi.waitFor(() => expect(streaming).toBe(true));
+    expect(await fake.registered.get('claude::stop')?.({ session_id: 'stop-mid' })).toMatchObject({
+      stopped: true,
+    });
+    await vi.waitFor(() => expect(statuses(fake)).toEqual(['working', 'done']));
+    const done = fake.calls.find(
+      (c) => c.function_id === 'session::set-status' && c.payload.status === 'done',
+    );
+    expect(done?.payload.reason).toBe('stopped');
+    const messages = appended(fake, 'stop-mid');
+    expect(JSON.stringify(messages)).toContain('Once upon');
+    expect(messages[messages.length - 1].stop_reason).toBe('aborted');
+  });
+
+  it('stores a stop before the query exists as aborted, not error', () => {
+    const msg = toSessionMessage({ role: 'assistant', content: [], stop_reason: 'interrupted' });
+    expect(msg.stop_reason).toBe('aborted');
+  });
+
+  it('carries the SDK errors text when a failed result has no result field', async () => {
+    const fake = await worker();
+    const { result: _drop, ...failed } = resultMsg;
+    queryMock.mockImplementation(
+      scriptedQuery(
+        [
+          initMsg,
+          {
+            ...failed,
+            subtype: 'error_during_execution',
+            is_error: true,
+            errors: ['API quota exceeded', 'retry later'],
+          },
+        ],
+        { interrupted: false },
+      ) as never,
+    );
+    await fake.registered.get('claude::task')?.({
+      task: 'review',
+      session_id: 'err-1',
+      parent_session_id: 'p-1',
+    });
+    await vi.waitFor(() => {
+      expect(fake.state.get('agent_tasks/err-1')).toMatchObject({ status: 'error' });
+    });
+    const outcome = fake.state.get('agent_tasks/err-1') as { error: string };
+    expect(outcome.error).toContain('API quota exceeded');
+    expect(outcome.error).toContain('retry later');
+  });
+
+  it('keeps preferring the result text over errors', async () => {
+    const fake = fakeIii();
+    const turn = [
+      initMsg,
+      {
+        ...resultMsg,
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'own words',
+        errors: ['raw'],
+      },
+    ];
+    const out = (await run(fake, { prompt: 'x' }, turn)) as { result?: string };
+    expect(out.result).toBe('own words');
+  });
+
+  it('publishes the busy fields in the claude::start response format', async () => {
+    const fake = await worker();
+    const format = fake.functions.get('claude::start')?.options.response_format as {
+      properties: Record<string, unknown>;
+    };
+    for (const key of ['session_id', 'started', 'busy', 'reason']) {
+      expect(format.properties, key).toHaveProperty(key);
+    }
   });
 });

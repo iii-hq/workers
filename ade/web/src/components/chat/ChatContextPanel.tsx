@@ -103,6 +103,7 @@ import {
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
   moveSection,
+  sectionSource,
   toggleGroup,
   useContextSections,
   useFoldedGroups,
@@ -131,24 +132,12 @@ import {
   type SubagentVisualStatus,
 } from './active-subagents'
 import { ContextTrackingBody, useContextTracking } from './ContextTracking'
-import { useContextWorkflow } from './ContextWorkflow'
 import {
   ObserverDetailDialog,
   ObserverStatus,
   observerTrigger,
 } from './ObserverDetailDialog'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
-import {
-  nodeLabel,
-  nodeLine,
-  nodeMark,
-  runFacts,
-  runMark,
-  soleFacts,
-  soleNode,
-  type WorkflowMark,
-  type WorkflowRunView,
-} from './workflow/run-view'
 
 /**
  * Coloured trailing text is a plain span: the tree recipe's `__meta` class
@@ -159,8 +148,6 @@ const deltaClassName = 'font-mono text-meta leading-4 tabular-nums'
 /** Sub-agents are what people come here for; every other section shows less. */
 const SUBAGENT_CAP = 5
 const SECTION_CAP = 3
-/** A run lists this many nodes before "Show N more". */
-const WORKFLOW_NODE_CAP = 8
 /** One row of the four-across strip: three pictures and a "+N". */
 const IMAGE_CAP = 3
 
@@ -551,24 +538,6 @@ export function ChatContextPanel({
   const order = useContextSections()
   const hiddenSections = useHiddenSections()
   const workerSections = useExtContextSections()
-  const foldedGroups = useFoldedGroups()
-  const nodeSessions = useMemo(
-    () => subagents.map(({ child }) => child),
-    [subagents],
-  )
-  const workflow = useContextWorkflow({
-    messages: conversation.messages,
-    sessions: nodeSessions,
-    active,
-    shown: !hiddenSections.has('workflow'),
-    open: !foldedGroups.has('workflow'),
-    status: conversation.status,
-  })
-  const workflowRows = capRows(workflow.runs, SECTION_CAP, !!expanded.workflow)
-  const runsWith = (status: string) =>
-    workflow.runs.filter((run) => run.status === status).length
-  const liveRuns = workflow.runs.filter((run) => run.live).length
-  const failedRuns = runsWith('failed')
   const { announcement, announce } = useLiveAnnouncer()
   const onMove = (id: string, target: ReorderTarget) => {
     moveSection(
@@ -942,68 +911,6 @@ export function ChatContextPanel({
           />
         </Section>
       ) : null,
-    workflow:
-      workflow.runs.length > 0 ? (
-        <Section
-          id="workflow"
-          label="Workflow"
-          count={workflow.runs.length}
-          extra={
-            liveRuns > 0 ? (
-              <span className="flex items-center gap-1.5 text-[11px] font-normal text-ink">
-                <StatusDot tone="accent" pulse />
-                {liveRuns} running
-              </span>
-            ) : null
-          }
-          brief={
-            <>
-              {failedRuns > 0 ? <StatusDot tone="alert" /> : null}
-              <span className={cn('truncate', failedRuns > 0 && 'text-ink')}>
-                {plural([
-                  [failedRuns, 'failed', 'failed'],
-                  [runsWith('cancelled'), 'cancelled', 'cancelled'],
-                  [runsWith('completed'), 'completed', 'completed'],
-                ])}
-              </span>
-            </>
-          }
-        >
-          {workflowRows.shown.map((run, index) => {
-            const runKey = `workflow-run:${run.runId}`
-            const nodesKey = `workflow-nodes:${run.runId}`
-            const open =
-              expanded[runKey] ??
-              (run.live || run.status === 'failed' || index === 0)
-            return (
-              <WorkflowRunItem
-                key={run.runId}
-                run={run}
-                open={open}
-                onToggle={() =>
-                  setExpanded((current) => ({ ...current, [runKey]: !open }))
-                }
-                allNodes={!!expanded[nodesKey]}
-                onToggleNodes={() => toggle(nodesKey)}
-                onOpenNode={onOpenConversation}
-              />
-            )
-          })}
-          <ShowMore
-            hidden={workflowRows.hidden}
-            expanded={!!expanded.workflow}
-            total={workflow.runs.length}
-            cap={SECTION_CAP}
-            onToggle={() => toggle('workflow')}
-          />
-          {workflow.earlier > 0 ? (
-            <p className="px-3 py-1 text-[11px] leading-4 text-ink-faint">
-              {workflow.earlier} earlier{' '}
-              {workflow.earlier === 1 ? 'run' : 'runs'} not listed
-            </p>
-          ) : null}
-        </Section>
-      ) : null,
     subagents:
       subagents.length > 0 ? (
         <Section
@@ -1295,174 +1202,6 @@ function SubagentStatus({
     <>
       <StatusDot tone={tone} pulse={status === 'working'} />
       <span className="text-meta leading-4 text-ink">{status}</span>
-    </>
-  )
-}
-
-/** The dot and word at a workflow row's end, as a sub-agent row has them. */
-function WorkflowStatus({ mark }: { mark: WorkflowMark }) {
-  const quiet = mark.tone === 'ok' || mark.tone === 'ghost'
-  return (
-    <>
-      <StatusDot tone={mark.tone} pulse={mark.pulse} />
-      {mark.text ? (
-        <span
-          className={
-            quiet ? uiClasses.treeItemMeta : 'text-[11px] leading-4 text-ink'
-          }
-        >
-          {mark.text}
-        </span>
-      ) : null}
-    </>
-  )
-}
-
-/**
- * One run. A run of one node is that node's row and opens its session; a
- * larger run is a row that folds its nodes, in the order they ran.
- */
-function WorkflowRunItem({
-  run,
-  open,
-  onToggle,
-  allNodes,
-  onToggleNodes,
-  onOpenNode,
-}: {
-  run: WorkflowRunView
-  open: boolean
-  onToggle: () => void
-  allNodes: boolean
-  onToggleNodes: () => void
-  onOpenNode: (sessionId: string) => void
-}) {
-  const now = Date.now()
-  const Agent = SUBAGENT_ICON_COMPONENTS.agent
-  const sole = soleNode(run)
-  if (sole) {
-    const sessionId = sole.sessionId
-    const error = sole.error ?? run.error
-    return (
-      <Row
-        icon={<Agent aria-hidden />}
-        label={run.title}
-        title={[run.title, sole.profile, run.runId, error]
-          .filter(Boolean)
-          .join(' · ')}
-        ariaLabel={
-          sessionId
-            ? `Open ${run.title} in a new panel (${run.status})`
-            : `${run.title} (${run.status})`
-        }
-        disabled={!sessionId}
-        onActivate={sessionId ? () => onOpenNode(sessionId) : undefined}
-        description={
-          error ? (
-            <span className="truncate text-alert">{error}</span>
-          ) : (
-            <span className="truncate">{soleFacts(run, sole)}</span>
-          )
-        }
-        meta={
-          <WorkflowStatus
-            mark={run.live ? nodeMark(sole, now) : runMark(run, now)}
-          />
-        }
-      />
-    )
-  }
-  const nodes = run.phases.flatMap((phase) => phase.nodes)
-  const rows = capRows(nodes, WORKFLOW_NODE_CAP, allNodes)
-  return (
-    <>
-      <Row
-        icon={
-          <ChevronRight
-            aria-hidden
-            className={cn(
-              'motion-safe:transition-transform',
-              open && 'rotate-90',
-            )}
-          />
-        }
-        label={run.title}
-        title={[run.title, run.runId, run.error].filter(Boolean).join(' · ')}
-        ariaLabel={`${run.title} (${run.status})`}
-        aria-expanded={open}
-        onActivate={onToggle}
-        description={
-          run.error ? (
-            <span className="truncate text-alert">{run.error}</span>
-          ) : (
-            <span className="truncate">{runFacts(run)}</span>
-          )
-        }
-        meta={<WorkflowStatus mark={runMark(run, now)} />}
-      />
-      {open ? (
-        <>
-          {rows.shown.map((node) => {
-            const label = nodeLabel(run, node)
-            const name = node.suffix ? `${label} ${node.suffix}` : label
-            const sessionId = node.sessionId
-            return (
-              <Row
-                key={node.uid}
-                style={NESTED_ROW}
-                icon={<Agent aria-hidden />}
-                // Passes and items share the label, so their suffix stays out of its ellipsis.
-                label={
-                  node.suffix ? (
-                    <span className="flex min-w-0 items-baseline">
-                      <span className="truncate">{label}</span>
-                      <span className="ml-2 shrink-0 font-mono text-[11px] font-normal text-ink-ghost">
-                        {node.suffix}
-                      </span>
-                    </span>
-                  ) : (
-                    label
-                  )
-                }
-                title={[node.label, node.profile, node.uid, node.error]
-                  .filter(Boolean)
-                  .join(' · ')}
-                ariaLabel={
-                  sessionId
-                    ? `Open ${name} in a new panel (${node.state})`
-                    : `${name} (${node.state})`
-                }
-                disabled={!sessionId}
-                onActivate={sessionId ? () => onOpenNode(sessionId) : undefined}
-                description={
-                  node.error ? (
-                    <span className="truncate text-alert">{node.error}</span>
-                  ) : (
-                    <span className="truncate">
-                      {nodeLine(run, node) || node.uid}
-                    </span>
-                  )
-                }
-                meta={<WorkflowStatus mark={nodeMark(node, now)} />}
-              />
-            )
-          })}
-          <ShowMore
-            style={NESTED_ROW}
-            hidden={rows.hidden}
-            expanded={allNodes}
-            total={nodes.length}
-            cap={WORKFLOW_NODE_CAP}
-            onToggle={onToggleNodes}
-          />
-          {run.phases.length > 0 && run.unlisted > 0 ? (
-            <p className="py-1 pr-3 pl-6 text-[11px] leading-4 text-ink-faint">
-              {run.unlisted} more {run.unlisted === 1 ? 'node' : 'nodes'} not
-              listed
-            </p>
-          ) : null}
-        </>
-      ) : null}
     </>
   )
 }
@@ -1831,7 +1570,8 @@ function Section({
 
 /**
  * A worker's section: the panel's header around the worker's body, which
- * reports the count and brief and leaves the section out while empty.
+ * reports the count, brief and live mark and leaves the section out while
+ * empty.
  */
 function WorkerSection({
   section,
@@ -1847,15 +1587,24 @@ function WorkerSection({
   isStreaming: boolean
 }) {
   const [summary, setSummary] = useState<ContextSectionSummary>({})
+  const open = !useFoldedGroups().has(section.id)
   const Body = section.render
   return (
     <Section
       id={section.id}
       label={section.title}
-      source={section.scope}
+      source={sectionSource(section)}
       count={summary.count}
       hidden={summary.empty === true}
       keepMounted
+      extra={
+        summary.live ? (
+          <span className="flex items-center gap-1.5 text-meta font-normal text-ink">
+            <StatusDot tone="accent" pulse />
+            {summary.live}
+          </span>
+        ) : null
+      }
       brief={
         summary.brief ? (
           <>
@@ -1869,6 +1618,7 @@ function WorkerSection({
         sessionId={sessionId}
         workingDir={workingDir}
         active={active}
+        open={open}
         isStreaming={isStreaming}
         setSummary={setSummary}
       />
@@ -1898,8 +1648,6 @@ interface RowProps
 
 /** A two-line row keeps the recipe's padding and grows to the list height. */
 const TWO_LINE_ROW = { '--iii-ui-tree-row': '2.75rem' } as CSSProperties
-/** A row one level in: a run's nodes. */
-const NESTED_ROW = { '--iii-ui-tree-depth': 1 } as CSSProperties
 
 /**
  * One tree row. Without actions it is the button itself (and can be a menu
@@ -2033,14 +1781,12 @@ function ShowMore({
   total,
   cap,
   onToggle,
-  style,
 }: {
   hidden: number
   expanded: boolean
   total: number
   cap: number
   onToggle: () => void
-  style?: CSSProperties
 }) {
   // "Show less" only once something was actually folded away.
   if (hidden === 0 && !(expanded && total > cap + 1)) return null
@@ -2048,7 +1794,6 @@ function ShowMore({
     <button
       type="button"
       className={uiClasses.treeItem}
-      style={style}
       aria-expanded={expanded}
       onClick={onToggle}
     >

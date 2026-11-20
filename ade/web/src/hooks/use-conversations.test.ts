@@ -607,6 +607,101 @@ describe('unordered directory events', () => {
   })
 })
 
+describe('working directory moved by the harness', () => {
+  const open = conversation({
+    workingDir: '/repo',
+    hydrated: true,
+    started: true,
+    serverMetadataUpdatedAt: 1_000,
+  })
+  const movedEvent = (
+    fsScope: Record<string, unknown>,
+    timestamp = 2_000,
+  ): MetaUpdatedEvent => ({
+    session_id: 'console-1',
+    title: 'old session',
+    description: '',
+    metadata: { fs_scope: fsScope },
+    timestamp,
+  })
+
+  it('re-roots the chat and leaves one moved row', () => {
+    const next = applyConversationMetadataEvent(
+      open,
+      movedEvent({ root: '/repo.feat', moved_from: '/repo' }),
+    )
+
+    expect(next.workingDir).toBe('/repo.feat')
+    expect(next.messages).toHaveLength(1)
+    expect(next.messages[0]).toMatchObject({
+      role: 'system',
+      kind: 'working-dir',
+      scope: { path: '/repo.feat', previousPath: '/repo', cause: 'moved' },
+    })
+
+    const redelivered = applyConversationMetadataEvent(
+      next,
+      movedEvent({ root: '/repo.feat', moved_from: '/repo' }, 3_000),
+    )
+    expect(redelivered.workingDir).toBe('/repo.feat')
+    expect(redelivered.messages).toHaveLength(1)
+  })
+
+  it('ignores an echo without the marker and a move from another folder', () => {
+    for (const fsScope of [
+      { root: '/elsewhere' },
+      { root: '/elsewhere', moved_from: '/other' },
+      { root: '', moved_from: '/repo' },
+    ]) {
+      const next = applyConversationMetadataEvent(open, movedEvent(fsScope))
+      expect(next.workingDir).toBe('/repo')
+      expect(next.messages).toHaveLength(0)
+    }
+  })
+
+  it('re-roots a chat that is not open without a row', () => {
+    const next = applyConversationMetadataEvent(
+      conversation({ workingDir: '/repo', hydrated: false, started: true }),
+      movedEvent({ root: '/repo.feat', moved_from: '/repo' }),
+    )
+
+    expect(next.workingDir).toBe('/repo.feat')
+    expect(next.messages).toHaveLength(0)
+  })
+
+  it('does not write moved_from back', () => {
+    const next = applyConversationMetadataEvent(
+      open,
+      movedEvent({ root: '/repo.feat', moved_from: '/repo' }),
+    )
+
+    expect(metadataForWrite(next).fs_scope).toEqual({ root: '/repo.feat' })
+  })
+
+  it('follows a late earlier move only when the newer move continues it', () => {
+    const late = movedEvent({ root: '/repo.one', moved_from: '/repo' }, 2_000)
+    const reversed = applyConversationMetadataEvent(
+      applyConversationMetadataEvent(open, {
+        ...movedEvent({ root: '/repo.two', moved_from: '/repo.one' }, 3_000),
+        title: 'new',
+      }),
+      late,
+    )
+    expect(reversed.workingDir).toBe('/repo.two')
+    expect(reversed.title).toBe('new')
+
+    // A console echo (no moved_from) newer than the move keeps the chat put.
+    const afterEcho = applyConversationMetadataEvent(
+      applyConversationMetadataEvent(
+        open,
+        movedEvent({ root: '/repo' }, 3_000),
+      ),
+      late,
+    )
+    expect(afterEcho.workingDir).toBe('/repo')
+  })
+})
+
 describe('reconnect hydration', () => {
   it('cancels only pre-reconnect reads for sessions being refreshed', () => {
     const first = {

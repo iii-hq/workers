@@ -70,7 +70,7 @@ pub async fn handle_connection(
     let session = match rbac::resolve_session(
         &state.iii,
         Some(&cfg.rbac),
-        headers_to_map(&headers),
+        &headers,
         query_to_multi_map(uri.query()),
         ip,
         "/",

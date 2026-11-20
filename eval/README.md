@@ -547,7 +547,8 @@ read (a Docker run's sessions never reach this engine); every metric but
 ### Starting a validation
 
 `eval::start-validation {evaluation_id, suggestion_index, scenario_id,
-candidate_ref, baseline_ref?, runs?, model, provider, criterion}` replaces the
+candidate_ref, baseline_ref?, runs?, stack?, agent?, model, provider,
+criterion}` replaces the
 manual steps of linking two E2E runs. It runs only when called: it spends model
 tokens and Docker time on two executions whose cost depends on the scenario and
 `runs` (a past cohort of the same scenario in the E2E is the best estimate).
@@ -559,7 +560,8 @@ is sent; `model`, `provider` and `criterion` are otherwise only required for a
 real start). It answers `{baseline, candidate, warnings}`, each side
 `{commit, short, branch}` (`short` is 12 characters, `branch` a remote branch
 that holds the commit, the one named like the ref when several do), and
-registers nothing, records no run and calls no E2E function. A baseline given
+registers nothing, records no run and calls no E2E function but, when `stack`
+is named, `e2e::dashboard::stacks-list` to read it. A baseline given
 that is not an ancestor of the candidate is a warning, not an error. The
 console asks it 400 ms after the last keystroke and when a field loses focus,
 shows `Resolved · <sha> · pushed to <branch>` or the refusal under each field,
@@ -574,16 +576,36 @@ refs, scenario and runs.
    after a push) because the E2E builds the Harness from GitHub. Errors:
    `git_unavailable:`, `git_ref_invalid:` (also when both resolve to the same
    commit), `commit_not_pushed:`.
-2. Each stack is the YAML of the E2E's stack built on the `harness` template
-   (`e2e::dashboard::stacks-list`) with only its `harness` container replaced by
-   `{worker: package://harness, commit: <sha>, repository: iii-hq/workers}`.
-   Everything else, including the `latest` versions the base declares, is the
-   E2E's own (a comparability check on the attached pair shows when two
-   executions resolved different ones).
+2. Each stack is the YAML of an E2E stack (`e2e::dashboard::stacks-list`):
+   the one whose id is `stack`, else the one built on the `harness` template
+   (`stack_not_found:` names a stack the E2E does not list). Its `harness`
+   container becomes `{worker: package://harness, commit: <sha>, repository:
+   iii-hq/workers}`, keeping the container's own settings (such as
+   `config_override`). Each Registry kit the stack installs (`kits:`) whose
+   name is the `iii.kit.yaml` of a `kits/<folder>` at that side's commit
+   becomes `commit:iii-hq/workers/kits/<folder>@<sha>`, which the E2E installs
+   from that commit: a prompt change is measured the way a Harness change is.
+   Such a kit adds no workers, so the stack must declare the ones the kit needs
+   (`deepwork-source` is the deepwork stack that does), and its profiles run
+   only under an `agent` that uses them (`deepwork-e2e`), sent as the
+   executions' agent profile. Everything else, including the `latest`
+   versions the base declares, is the E2E's own (a comparability check on the
+   attached pair shows when two executions resolved different ones). The E2E
+   refuses a kit whose manifest lists a worker the stack does not run.
+
+   What the pair would not measure is a warning, never a refusal (a branch
+   may change the Harness and a kit, and the Harness is still measured): a
+   changed `kits/<kit>` the stack does not install from the commits (the
+   default stack installs none), changed kits installed with no `agent`, and
+   a kit only one of the two commits holds (that side installs the stack's
+   published one). A dry run lists them in `warnings` (without `stack` it
+   reads no stack and takes the default one to install no kit); a start
+   records them in `run.warnings`.
 3. Nothing changed so far; now the criterion is registered and the run recorded
    as `starting` (`run` in the row: both commits, scenario, runs, model,
-   provider, `started_at`), and two executions start with
-   `e2e::dashboard::execution-start` (`where: docker`, one technical retry,
+   provider, `stack` and `agent` when given, `warnings`, `started_at`), and two
+   executions start with `e2e::dashboard::execution-start` (`where: docker`,
+   one technical retry,
    `runs` 1-20, default 5, label `eval <evaluation_id> S<n> baseline|candidate`
    with `n` the suggestion number from 1). The row goes to `running` with both
    execution ids. A refusal is `e2e_busy:` or `e2e_unavailable:`; the run is

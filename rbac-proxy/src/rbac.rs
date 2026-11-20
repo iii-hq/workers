@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 
+use axum::http::HeaderMap;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
@@ -42,9 +43,28 @@ use uuid::Uuid;
 #[serde(deny_unknown_fields)]
 pub struct RbacConfig {
     /// Engine function id invoked once per upgrade to authenticate the
-    /// connection. Unset ⇒ every upgrade is refused.
+    /// worker (`/`) or telemetry (`/otel`) connection. Unset ⇒ every such
+    /// upgrade is refused, except a loopback peer's when `loopback_auth` is
+    /// set.
     #[serde(default)]
     pub auth_function_id: Option<String>,
+    /// Built-in authentication for local projects, used only when
+    /// `auth_function_id` is not set. Like the auth function it governs the
+    /// worker endpoint `/` and telemetry `/otel` only (`/ws/channels/*`
+    /// sockets are checked by the engine's channel access keys): a connection
+    /// whose peer address is loopback (exactly 127.0.0.1, ::1 or
+    /// ::ffff:127.0.0.1) and whose upgrade shows no sign of a non-local client
+    /// (see `allowed_origins`, `allow_forwarded`) gets these grants, as if an
+    /// auth function had returned them; any other is refused. Only safe where
+    /// every local process is trusted: a tunnel, a reverse proxy or a sandbox
+    /// gateway on the same machine makes remote clients look local.
+    /// `auth_function_id` wins when both are set.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_loopback_auth"
+    )]
+    pub loopback_auth: Option<LoopbackAuth>,
     /// Filters exposing functions for invocation/discovery; a function is
     /// exposed if **any** filter matches.
     #[serde(default)]
@@ -73,10 +93,239 @@ pub struct RbacConfig {
 }
 
 impl RbacConfig {
+    /// The authentication in force for new connections.
+    pub fn auth_mode(&self) -> AuthMode {
+        match (&self.auth_function_id, &self.loopback_auth) {
+            (Some(_), _) => AuthMode::Function,
+            (None, Some(_)) => AuthMode::Loopback,
+            (None, None) => AuthMode::None,
+        }
+    }
+
     /// The endpoint rules in force ([`crate::endpoints::effective_endpoints`]).
     pub fn endpoints(&self) -> Vec<crate::endpoints::EndpointFilter> {
         crate::endpoints::effective_endpoints(self.expose_endpoints.as_deref())
     }
+}
+
+/// Which authentication admits new connections to the worker endpoint `/`
+/// and telemetry `/otel`. `/ws/channels/*` sockets are not authenticated by
+/// the proxy in any mode: the engine checks their channel access keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    /// `rbac.auth_function_id` authenticates every worker and telemetry
+    /// connection.
+    Function,
+    /// No auth function; `rbac.loopback_auth` admits loopback peers only to
+    /// `/` and `/otel`.
+    Loopback,
+    /// Neither: every worker and telemetry connection is refused; channel
+    /// sockets (`/ws/channels/*`) are not, the engine checks their keys.
+    None,
+}
+
+/// `rbac.loopback_auth`: the grants a loopback peer gets when no
+/// `auth_function_id` is set. The fields and defaults of an auth function's
+/// result ([`AuthResult`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopbackAuth {
+    /// Grants scoped to one namespace each (`{ orders: ["svc::*"] }`); the
+    /// keys are then the only namespaces the connection may declare.
+    #[serde(default)]
+    pub namespaces: HashMap<String, Vec<String>>,
+    /// Function ids the connection may call in the `default` namespace
+    /// (exact ids; a pattern goes in `namespaces`).
+    #[serde(default)]
+    pub allowed_functions: Vec<String>,
+    /// Function ids the connection may never call, in any namespace; wins
+    /// over every other rule.
+    #[serde(default)]
+    pub forbidden_functions: Vec<String>,
+    /// Whether the connection may register functions (event sources
+    /// included). Default `false`, unlike an auth function's result; when
+    /// `true`, a non-empty `function_registration_prefix` is required.
+    #[serde(default)]
+    pub allow_function_registration: bool,
+    /// Passed to the middleware and the registration hooks.
+    #[serde(default = "default_context")]
+    pub context: Value,
+    /// Private prefix for the connection's own registrations and worker
+    /// names. Non-empty and required when `allow_function_registration` is
+    /// `true`.
+    #[serde(default)]
+    pub function_registration_prefix: Option<String>,
+    /// Worker names the connection may declare unchanged (exact, never an
+    /// `rbac-proxy:` name; one live session at a time holds each).
+    #[serde(default)]
+    pub worker_names: Vec<String>,
+    /// `Origin` values whose upgrades still get the loopback grant (exact,
+    /// scheme and host compared case-insensitively, e.g.
+    /// `http://localhost:3000`). An upgrade carrying any other `Origin`, a
+    /// browser page's, is refused as a non-loopback peer; one with no
+    /// `Origin` (SDK workers) is unaffected. Default `[]`: every upgrade
+    /// that carries an `Origin` is refused.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// Whether an upgrade carrying a proxy's forwarding headers (`Forwarded`,
+    /// `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
+    /// `X-Real-IP` or `Via`) still gets the loopback grant. Default `false`:
+    /// such an upgrade came through a proxy, so its client is not known to be
+    /// local, and it is refused as a non-loopback peer.
+    #[serde(default)]
+    pub allow_forwarded: bool,
+}
+
+impl Default for LoopbackAuth {
+    fn default() -> Self {
+        Self {
+            namespaces: HashMap::new(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![],
+            allow_function_registration: false,
+            context: default_context(),
+            function_registration_prefix: None,
+            worker_names: vec![],
+            allowed_origins: vec![],
+            allow_forwarded: false,
+        }
+    }
+}
+
+impl LoopbackAuth {
+    /// The rules serde cannot express: registration needs a non-empty
+    /// `function_registration_prefix`, so every local process's registrations
+    /// stay apart from the engine's own ids.
+    pub fn validate(&self) -> Result<(), String> {
+        let has_prefix = self
+            .function_registration_prefix
+            .as_deref()
+            .is_some_and(|prefix| !prefix.trim().is_empty());
+        if self.allow_function_registration && !has_prefix {
+            return Err(
+                "rbac.loopback_auth: allow_function_registration: true requires a \
+                        non-empty function_registration_prefix"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// `rbac.loopback_auth`, refused when [`LoopbackAuth::validate`] fails: an
+/// invalid grant is a configuration error, like an unknown key.
+fn deserialize_loopback_auth<'de, D>(deserializer: D) -> Result<Option<LoopbackAuth>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let grants = Option::<LoopbackAuth>::deserialize(deserializer)?;
+    if let Some(grants) = &grants {
+        grants.validate().map_err(serde::de::Error::custom)?;
+    }
+    Ok(grants)
+}
+
+impl From<LoopbackAuth> for AuthResult {
+    fn from(grants: LoopbackAuth) -> Self {
+        Self {
+            namespaces: grants.namespaces,
+            allowed_functions: grants.allowed_functions,
+            forbidden_functions: grants.forbidden_functions,
+            allow_function_registration: grants.allow_function_registration,
+            context: grants.context,
+            function_registration_prefix: grants.function_registration_prefix,
+            worker_names: grants.worker_names,
+        }
+    }
+}
+
+/// `true` when `ip_address`, the peer address passed to auth, is loopback:
+/// exactly `127.0.0.1`, `::1` or the IPv4-mapped `::ffff:127.0.0.1`. The rest
+/// of 127.0.0.0/8 is not: a service-mesh sidecar (Istio connects from
+/// `127.0.0.6`) forwards remote clients from such an address. Anything that
+/// does not parse as an address is not loopback either.
+pub fn is_loopback_peer(ip_address: &str) -> bool {
+    ip_address
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => v4 == std::net::Ipv4Addr::LOCALHOST,
+            std::net::IpAddr::V6(v6) => v6 == std::net::Ipv6Addr::LOCALHOST,
+        })
+}
+
+/// The forwarding headers a proxy adds: an upgrade carrying one came through
+/// a proxy, so its client is not known to be local.
+pub const FORWARDING_HEADERS: [&str; 6] = [
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+    "via",
+];
+
+/// `true` when an upgrade's raw `headers` show no sign of a non-local
+/// client that `grants` does not allow. It reads the raw headers, not the
+/// string map an auth function gets (which drops values that are not text
+/// and keeps only the last of repeated headers), so:
+/// - every `Origin` must be text and in `allowed_origins` (compared
+///   case-insensitively): one allowed value cannot hide a foreign one;
+/// - a forwarding header counts when present, whatever its value, unless
+///   `allow_forwarded`.
+fn loopback_headers_allowed(grants: &LoopbackAuth, headers: &HeaderMap) -> bool {
+    let origins_allowed = headers
+        .get_all(axum::http::header::ORIGIN)
+        .iter()
+        .all(|value| {
+            value.to_str().is_ok_and(|origin| {
+                grants
+                    .allowed_origins
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(origin))
+            })
+        });
+    origins_allowed
+        && (grants.allow_forwarded
+            || FORWARDING_HEADERS
+                .iter()
+                .all(|name| !headers.contains_key(*name)))
+}
+
+/// The session `rbac.loopback_auth` grants the peer `ip_address` whose
+/// upgrade carried `headers`, built as from an auth function's result.
+/// `None` when an `auth_function_id` is set (it wins), when `loopback_auth`
+/// is not, when the peer is not loopback, or when the headers show a
+/// non-local client (a foreign `Origin`, a forwarding header) the grant does
+/// not allow.
+pub fn loopback_session(
+    rbac: &RbacConfig,
+    ip_address: &str,
+    headers: &HeaderMap,
+) -> Option<ProxySession> {
+    if rbac.auth_function_id.is_some() || !is_loopback_peer(ip_address) {
+        return None;
+    }
+    let grants = rbac.loopback_auth.clone()?;
+    if !loopback_headers_allowed(&grants, headers) {
+        return None;
+    }
+    Some(AuthResult::from(grants).into_session(ip_address.to_string()))
+}
+
+/// Logs one `warn` when both `auth_function_id` and `loopback_auth` are set
+/// (the auth function wins); `true` when it did. Called once per applied
+/// configuration.
+pub fn warn_auth_conflict(rbac: &RbacConfig) -> bool {
+    let conflict = rbac.auth_function_id.is_some() && rbac.loopback_auth.is_some();
+    if conflict {
+        tracing::warn!(
+            "rbac.auth_function_id and rbac.loopback_auth are both set; \
+             rbac.auth_function_id authenticates worker (/) and telemetry (/otel) connections \
+             and rbac.loopback_auth is ignored"
+        );
+    }
+    conflict
 }
 
 /// `rbac` keys that configuration entries stored before 0.26 may set, with
@@ -780,7 +1029,7 @@ fn granted_worker_names(names: Vec<String>) -> Vec<String> {
         .filter(|name| {
             let reserved = name.starts_with(WORKER_NAME_PREFIX);
             if reserved {
-                tracing::warn!(name = %name, "auth function granted a reserved worker name; ignored");
+                tracing::warn!(name = %name, "a worker_names grant names a reserved worker name; ignored");
             }
             !reserved
         })
@@ -825,20 +1074,28 @@ pub struct AuthRejection {
 /// connection (`iii.call`), exactly as the engine invokes it via
 /// `engine.call` (`Session::authenticate` in rbac_session.rs). Unset,
 /// unresolvable or errored all **fail closed** (reject the upgrade): neither
-/// a missing setting nor a broken control plane opens the door.
+/// a missing setting nor a broken control plane opens the door. The one
+/// exception is `rbac.loopback_auth`: with no auth function set, a loopback
+/// peer gets its grants ([`loopback_session`]).
 ///
 /// The auth function receives the upgrade's headers (bearer tokens
 /// included), so operators register it with `observable: false`.
 pub async fn resolve_session(
     iii: &IIIClient,
     rbac: Option<&RbacConfig>,
-    headers: HashMap<String, String>,
+    headers: &HeaderMap,
     query_params: HashMap<String, Vec<String>>,
     ip_address: String,
     endpoint: &str,
 ) -> Result<ProxySession, AuthRejection> {
     let Some(auth_fn) = rbac.and_then(|c| c.auth_function_id.as_deref()) else {
-        // No auth function: refuse (unlike the engine's permissive default).
+        // No auth function: a loopback peer gets `rbac.loopback_auth`'s
+        // grants when it is set and its upgrade shows no sign of a non-local
+        // client; otherwise it is refused exactly like a remote peer.
+        if let Some(session) = rbac.and_then(|c| loopback_session(c, &ip_address, headers)) {
+            return Ok(session);
+        }
+        // Otherwise refuse (unlike the engine's permissive default).
         // The proxy's stored default entry has none, so a lost override must
         // close the door, not open it.
         return Err(AuthRejection {
@@ -850,7 +1107,7 @@ pub async fn resolve_session(
     // `endpoint` ("/" or "/otel") lets the auth function grant an endpoint
     // per credential, for example /otel to trusted tokens only.
     let input = json!({
-        "headers": headers,
+        "headers": crate::proxy::headers_to_map(headers),
         "query_params": query_params,
         "ip_address": ip_address,
         "endpoint": endpoint,
@@ -1251,7 +1508,7 @@ mod tests {
             let refused = resolve_session(
                 &iii,
                 rbac.as_ref(),
-                HashMap::new(),
+                &HeaderMap::new(),
                 HashMap::new(),
                 "ip".into(),
                 "/",
@@ -1595,5 +1852,539 @@ mod tests {
         release_worker_names(a.session_id);
         assert_eq!(b.proxied_worker_name("granted-once"), "granted-once");
         release_worker_names(b.session_id);
+    }
+
+    // --- loopback_auth -----------------------------------------------------
+
+    /// The only addresses that count as loopback.
+    const LOOPBACK_PEERS: [&str; 3] = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+    const REMOTE_PEERS: [&str; 17] = [
+        // The rest of 127.0.0.0/8 is not loopback here: an Istio sidecar
+        // connects from 127.0.0.6 on behalf of remote clients.
+        "127.0.0.6",
+        "127.5.5.5",
+        "127.255.255.254",
+        "127.0.0.0",
+        "::ffff:127.0.0.2",
+        "::ffff:127.9.9.9",
+        "0:0:0:0:0:0:0:2",
+        "10.0.0.5",
+        "192.168.1.2",
+        "::ffff:10.0.0.1",
+        "fe80::1",
+        "0.0.0.0",
+        "::",
+        "128.0.0.1",
+        "2001:db8::1",
+        "not-an-ip",
+        "",
+    ];
+
+    fn loopback_rbac(grants: Value) -> RbacConfig {
+        serde_json::from_value(json!({ "loopback_auth": grants })).unwrap()
+    }
+
+    async fn resolve_from(rbac: &RbacConfig, ip: &str) -> Result<ProxySession, AuthRejection> {
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:1", iii_sdk::InitOptions::default());
+        resolve_session(
+            &iii,
+            Some(rbac),
+            &HeaderMap::new(),
+            HashMap::new(),
+            ip.to_string(),
+            "/",
+        )
+        .await
+    }
+
+    #[test]
+    fn loopback_auth_is_absent_by_default() {
+        assert!(RbacConfig::default().loopback_auth.is_none());
+        let parsed: RbacConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(parsed.loopback_auth.is_none());
+        // An absent key is not written back: stored entries stay as they were.
+        let back = serde_json::to_value(RbacConfig::default()).unwrap();
+        assert!(back.get("loopback_auth").is_none(), "{back}");
+    }
+
+    #[test]
+    fn an_empty_loopback_auth_has_the_auth_result_defaults() {
+        let grants = loopback_rbac(json!({})).loopback_auth.unwrap();
+        assert!(grants.namespaces.is_empty());
+        assert!(grants.allowed_functions.is_empty());
+        assert!(grants.forbidden_functions.is_empty());
+        // Unlike an auth function's result: registration is opt-in.
+        assert!(!grants.allow_function_registration);
+        assert_eq!(grants.context, json!({}));
+        assert!(grants.function_registration_prefix.is_none());
+        assert!(grants.worker_names.is_empty());
+        assert_eq!(grants, LoopbackAuth::default());
+    }
+
+    #[test]
+    fn loopback_auth_reads_every_grant_field() {
+        let rbac: RbacConfig = serde_yaml_ng::from_str(
+            r#"
+            loopback_auth:
+              namespaces:
+                orders: ["svc::*"]
+              allowed_functions: [api::a]
+              forbidden_functions: [secrets::resolve]
+              allow_function_registration: false
+              context: { tenant: local }
+              function_registration_prefix: local
+              worker_names: [mcp-server]
+            "#,
+        )
+        .unwrap();
+        let g = rbac.loopback_auth.clone().unwrap();
+        assert_eq!(g.namespaces, grants(&[("orders", &["svc::*"])]));
+        assert_eq!(g.allowed_functions, vec!["api::a"]);
+        assert_eq!(g.forbidden_functions, vec!["secrets::resolve"]);
+        assert!(!g.allow_function_registration);
+        assert_eq!(g.context, json!({ "tenant": "local" }));
+        assert_eq!(g.function_registration_prefix.as_deref(), Some("local"));
+        assert_eq!(g.worker_names, vec!["mcp-server"]);
+        // And back again.
+        let back: RbacConfig =
+            serde_json::from_value(serde_json::to_value(&rbac).unwrap()).unwrap();
+        assert_eq!(back, rbac);
+    }
+
+    async fn resolve_with_headers(
+        rbac: &RbacConfig,
+        ip: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<ProxySession, AuthRejection> {
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:1", iii_sdk::InitOptions::default());
+        let mut map = HeaderMap::new();
+        for (k, v) in headers {
+            map.append(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        resolve_session(&iii, Some(rbac), &map, HashMap::new(), ip.to_string(), "/").await
+    }
+
+    /// What a non-loopback peer gets, for comparison.
+    async fn refused_like_a_remote_peer(outcome: Result<ProxySession, AuthRejection>, what: &str) {
+        let refused = outcome
+            .err()
+            .unwrap_or_else(|| panic!("{what} was admitted"));
+        let remote = resolve_from(&RbacConfig::default(), "10.0.0.5")
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, remote.code, "{what}");
+        assert_eq!(refused.message, remote.message, "{what}");
+    }
+
+    #[test]
+    fn loopback_auth_origin_and_forwarded_keys_default_closed() {
+        let g = loopback_rbac(json!({})).loopback_auth.unwrap();
+        assert!(g.allowed_origins.is_empty());
+        assert!(!g.allow_forwarded);
+        let g = loopback_rbac(json!({
+            "allowed_origins": ["http://localhost:3000"],
+            "allow_forwarded": true
+        }))
+        .loopback_auth
+        .unwrap();
+        assert_eq!(g.allowed_origins, vec!["http://localhost:3000"]);
+        assert!(g.allow_forwarded);
+    }
+
+    #[tokio::test]
+    async fn a_loopback_upgrade_with_a_foreign_origin_is_refused() {
+        let rbac = loopback_rbac(json!({ "allowed_origins": ["http://localhost:3000"] }));
+        // SDK workers send no Origin: unaffected.
+        resolve_with_headers(&rbac, "127.0.0.1", &[("user-agent", "iii-sdk")])
+            .await
+            .unwrap();
+        for origin in [
+            "http://evil.example",
+            "null",
+            "http://localhost:3001",
+            "https://localhost:3000",
+            "",
+        ] {
+            let outcome = resolve_with_headers(&rbac, "127.0.0.1", &[("origin", origin)]).await;
+            refused_like_a_remote_peer(outcome, origin).await;
+        }
+        // Listed origins pass, scheme and host compared case-insensitively.
+        for origin in ["http://localhost:3000", "HTTP://LocalHost:3000"] {
+            resolve_with_headers(&rbac, "::1", &[("origin", origin)])
+                .await
+                .unwrap_or_else(|e| panic!("{origin} refused: {}", e.message));
+        }
+        // No list: every Origin is refused.
+        let closed = loopback_rbac(json!({}));
+        let outcome =
+            resolve_with_headers(&closed, "127.0.0.1", &[("origin", "http://localhost:3000")])
+                .await;
+        refused_like_a_remote_peer(outcome, "origin with an empty allowed_origins").await;
+    }
+
+    #[tokio::test]
+    async fn a_loopback_upgrade_with_forwarding_headers_is_refused() {
+        let closed = loopback_rbac(json!({}));
+        let open = loopback_rbac(json!({ "allow_forwarded": true }));
+        for header in [
+            "forwarded",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "x-real-ip",
+            "via",
+            "X-Forwarded-For",
+        ] {
+            let outcome = resolve_with_headers(&closed, "127.0.0.1", &[(header, "1.2.3.4")]).await;
+            refused_like_a_remote_peer(outcome, header).await;
+            resolve_with_headers(&open, "127.0.0.1", &[(header, "1.2.3.4")])
+                .await
+                .unwrap_or_else(|e| panic!("{header} refused with allow_forwarded: {}", e.message));
+        }
+        // allow_forwarded does not lift the Origin check.
+        let outcome = resolve_with_headers(
+            &open,
+            "127.0.0.1",
+            &[
+                ("x-forwarded-for", "1.2.3.4"),
+                ("origin", "http://evil.example"),
+            ],
+        )
+        .await;
+        refused_like_a_remote_peer(outcome, "forwarded + foreign origin").await;
+        // Neither header admits a remote peer.
+        let open_origin =
+            loopback_rbac(json!({ "allow_forwarded": true, "allowed_origins": ["http://a"] }));
+        let outcome =
+            resolve_with_headers(&open_origin, "10.0.0.5", &[("origin", "http://a")]).await;
+        refused_like_a_remote_peer(outcome, "remote peer").await;
+    }
+
+    #[test]
+    fn loopback_registration_requires_a_prefix() {
+        let parse = |grants: Value| {
+            serde_json::from_value::<RbacConfig>(json!({ "loopback_auth": grants }))
+        };
+        for bad in [
+            json!({ "allow_function_registration": true }),
+            json!({ "allow_function_registration": true, "function_registration_prefix": null }),
+            json!({ "allow_function_registration": true, "function_registration_prefix": "" }),
+            json!({ "allow_function_registration": true, "function_registration_prefix": "  " }),
+        ] {
+            let err = parse(bad.clone()).expect_err(&bad.to_string()).to_string();
+            assert!(
+                err.contains("function_registration_prefix")
+                    && err.contains("allow_function_registration"),
+                "{bad}: {err}"
+            );
+        }
+        let ok = parse(
+            json!({ "allow_function_registration": true, "function_registration_prefix": "mcp" }),
+        )
+        .unwrap()
+        .loopback_auth
+        .unwrap();
+        assert!(ok.allow_function_registration);
+        assert_eq!(ok.function_registration_prefix.as_deref(), Some("mcp"));
+        // Without registration no prefix is needed, and a prefix alone is fine.
+        parse(json!({ "allow_function_registration": false })).unwrap();
+        parse(json!({ "function_registration_prefix": "mcp" })).unwrap();
+        // An auth function's result keeps its own defaults: registration on,
+        // no prefix required.
+        let r: AuthResult =
+            serde_json::from_value(json!({ "allow_function_registration": true })).unwrap();
+        assert!(r.allow_function_registration && r.function_registration_prefix.is_none());
+        assert!(
+            serde_json::from_value::<AuthResult>(json!({}))
+                .unwrap()
+                .allow_function_registration
+        );
+    }
+
+    #[test]
+    fn loopback_auth_refuses_unknown_keys() {
+        // A typo must not silently drop a restriction.
+        for raw in [
+            json!({ "loopback_auth": { "forbidden_function": ["secrets::resolve"] } }),
+            json!({ "loopback_auth": { "auth_function_id": "p::auth" } }),
+        ] {
+            assert!(
+                serde_json::from_value::<RbacConfig>(raw.clone()).is_err(),
+                "{raw}"
+            );
+        }
+        for not_an_object in [json!(true), json!("127.0.0.1"), json!(1)] {
+            let raw = json!({ "loopback_auth": not_an_object });
+            assert!(
+                serde_json::from_value::<RbacConfig>(raw.clone()).is_err(),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn loopback_peers_are_recognised() {
+        for ip in LOOPBACK_PEERS {
+            assert!(is_loopback_peer(ip), "{ip} is loopback");
+        }
+        for ip in REMOTE_PEERS {
+            assert!(!is_loopback_peer(ip), "{ip} is not loopback");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_loopback_peer_gets_exactly_the_configured_grants() {
+        let rbac = loopback_rbac(json!({
+            "namespaces": { "orders": ["svc::*"] },
+            "allowed_functions": ["api::a"],
+            "forbidden_functions": ["secrets::resolve"],
+            "allow_function_registration": false,
+            "context": { "tenant": "local" },
+            "function_registration_prefix": "local",
+            "worker_names": ["mcp-server"]
+        }));
+        let mut ids = std::collections::HashSet::new();
+        for ip in LOOPBACK_PEERS {
+            let s = resolve_from(&rbac, ip)
+                .await
+                .unwrap_or_else(|e| panic!("{ip} refused: {}", e.message));
+            assert_eq!(s.ip_address, ip);
+            assert_eq!(s.namespaces, grants(&[("orders", &["svc::*"])]));
+            assert_eq!(s.allowed_functions, vec!["api::a"]);
+            assert_eq!(s.forbidden_functions, vec!["secrets::resolve"]);
+            assert!(!s.allow_function_registration);
+            assert_eq!(s.context, json!({ "tenant": "local" }));
+            assert_eq!(s.function_registration_prefix.as_deref(), Some("local"));
+            assert_eq!(s.worker_names, vec!["mcp-server"]);
+            // Each connection is a session of its own.
+            assert!(ids.insert(s.session_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_loopback_grant_is_the_empty_auth_result() {
+        let s = resolve_from(&loopback_rbac(json!({})), "127.0.0.1")
+            .await
+            .unwrap();
+        let expected = serde_json::from_value::<AuthResult>(json!({}))
+            .unwrap()
+            .into_session("127.0.0.1".to_string());
+        assert_eq!(s.namespaces, expected.namespaces);
+        assert_eq!(s.allowed_functions, expected.allowed_functions);
+        assert_eq!(s.forbidden_functions, expected.forbidden_functions);
+        // The one difference: an empty loopback grant registers nothing.
+        assert!(expected.allow_function_registration);
+        assert!(!s.allow_function_registration);
+        assert_eq!(s.context, expected.context);
+        assert_eq!(
+            s.function_registration_prefix,
+            expected.function_registration_prefix
+        );
+        assert_eq!(s.worker_names, expected.worker_names);
+    }
+
+    #[tokio::test]
+    async fn a_remote_peer_is_refused_as_without_loopback_auth() {
+        let with = loopback_rbac(json!({ "worker_names": ["mcp-server"] }));
+        let without = RbacConfig::default();
+        for ip in REMOTE_PEERS {
+            let refused = resolve_from(&with, ip).await.unwrap_err();
+            let today = resolve_from(&without, ip).await.unwrap_err();
+            assert_eq!(refused.code, "AUTH_ERROR", "{ip}");
+            assert_eq!(refused.code, today.code, "{ip}");
+            assert_eq!(refused.message, today.message, "{ip}");
+        }
+    }
+
+    #[tokio::test]
+    async fn without_loopback_auth_a_loopback_peer_is_still_refused() {
+        for ip in LOOPBACK_PEERS {
+            let refused = resolve_from(&RbacConfig::default(), ip).await.unwrap_err();
+            assert_eq!(refused.code, "AUTH_ERROR");
+            assert_eq!(refused.message, "rbac.auth_function_id is not set");
+        }
+    }
+
+    #[test]
+    fn the_loopback_grant_applies_only_without_an_auth_function() {
+        let mut rbac = loopback_rbac(json!({ "worker_names": ["mcp-server"] }));
+        assert!(loopback_session(&rbac, "127.0.0.1", &HeaderMap::new()).is_some());
+        assert!(loopback_session(&rbac, "10.0.0.5", &HeaderMap::new()).is_none());
+        rbac.auth_function_id = Some("p::auth".to_string());
+        for ip in LOOPBACK_PEERS.into_iter().chain(REMOTE_PEERS) {
+            assert!(
+                loopback_session(&rbac, ip, &HeaderMap::new()).is_none(),
+                "{ip}"
+            );
+        }
+        assert!(loopback_session(&RbacConfig::default(), "127.0.0.1", &HeaderMap::new()).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_auth_function_wins_over_loopback_auth() {
+        // The auth function is called (and here fails: nothing answers on the
+        // control connection), the loopback grant is never used.
+        let mut rbac = loopback_rbac(json!({}));
+        rbac.auth_function_id = Some("p::auth".to_string());
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            resolve_from(&rbac, "127.0.0.1"),
+        )
+        .await;
+        assert!(
+            !matches!(outcome, Ok(Ok(_))),
+            "loopback_auth admitted a connection while auth_function_id is set"
+        );
+    }
+
+    #[test]
+    fn both_auth_keys_set_is_warned_about() {
+        let mut rbac = loopback_rbac(json!({}));
+        assert!(!warn_auth_conflict(&rbac));
+        rbac.auth_function_id = Some("p::auth".to_string());
+        assert!(warn_auth_conflict(&rbac));
+        // Once per applied configuration, so again for the next one.
+        assert!(warn_auth_conflict(&rbac));
+        rbac.loopback_auth = None;
+        assert!(!warn_auth_conflict(&rbac));
+        assert!(!warn_auth_conflict(&RbacConfig::default()));
+    }
+
+    #[test]
+    fn the_auth_mode_names_what_admits_connections() {
+        let mut rbac = RbacConfig::default();
+        assert_eq!(rbac.auth_mode(), AuthMode::None);
+        rbac.loopback_auth = Some(LoopbackAuth::default());
+        assert_eq!(rbac.auth_mode(), AuthMode::Loopback);
+        rbac.auth_function_id = Some("p::auth".to_string());
+        assert_eq!(rbac.auth_mode(), AuthMode::Function);
+        rbac.loopback_auth = None;
+        assert_eq!(rbac.auth_mode(), AuthMode::Function);
+        assert_eq!(
+            serde_json::to_value([AuthMode::Function, AuthMode::Loopback, AuthMode::None]).unwrap(),
+            json!(["function", "loopback", "none"])
+        );
+    }
+
+    #[test]
+    fn loopback_worker_names_follow_the_auth_function_rules() {
+        let rbac = loopback_rbac(json!({
+            "worker_names": ["loopback-granted", "rbac-proxy:tenant2::queue", "rbac-proxy:x"]
+        }));
+        // The reserved `rbac-proxy:` names are dropped, as from an auth function.
+        let a = loopback_session(&rbac, "127.0.0.1", &HeaderMap::new()).unwrap();
+        assert_eq!(a.worker_names, vec!["loopback-granted"]);
+        // A granted name passes as declared; another is pinned.
+        assert_eq!(
+            a.proxied_worker_name("loopback-granted"),
+            "loopback-granted"
+        );
+        assert_eq!(
+            a.proxied_worker_name("queue"),
+            format!("rbac-proxy:{}:queue", a.session_id)
+        );
+        // One live holder: a second loopback session gets its own name.
+        let b = loopback_session(&rbac, "::1", &HeaderMap::new()).unwrap();
+        assert_eq!(
+            b.proxied_worker_name("loopback-granted"),
+            format!("rbac-proxy:{}:loopback-granted", b.session_id)
+        );
+        release_worker_names(a.session_id);
+        assert_eq!(
+            b.proxied_worker_name("loopback-granted"),
+            "loopback-granted"
+        );
+        release_worker_names(b.session_id);
+    }
+
+    #[test]
+    fn loopback_grants_are_enforced_like_an_auth_functions() {
+        let mut rbac = loopback_rbac(json!({
+            "forbidden_functions": ["secrets::resolve"],
+            "namespaces": { "orders": ["svc::*"] }
+        }));
+        rbac.expose_functions = vec![FunctionFilter::match_pattern("*")];
+        let s = loopback_session(&rbac, "127.0.0.1", &HeaderMap::new()).unwrap();
+        assert!(access_allowed(Some(&rbac), &s, "default", "api::x", None));
+        assert!(!access_allowed(
+            Some(&rbac),
+            &s,
+            "default",
+            "secrets::resolve",
+            None
+        ));
+        assert!(access_allowed(Some(&rbac), &s, "orders", "svc::a", None));
+        assert!(!access_allowed(
+            Some(&rbac),
+            &s,
+            "orders",
+            "secrets::resolve",
+            None
+        ));
+        assert_eq!(
+            remediation(&s, "secrets::resolve"),
+            "remove from rbac.forbidden_functions"
+        );
+    }
+
+    /// An upgrade's raw headers, values as bytes (not all of them valid text).
+    fn raw_headers(pairs: &[(&str, &[u8])]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.append(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_bytes(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    fn open_loopback() -> RbacConfig {
+        loopback_rbac(json!({ "allowed_origins": ["http://localhost:3000"] }))
+    }
+
+    #[test]
+    fn a_forwarding_header_counts_whatever_its_value() {
+        // A value that is not valid text is dropped from the string map the
+        // auth function gets; the loopback check must still see the header.
+        let rbac = open_loopback();
+        for name in FORWARDING_HEADERS {
+            let headers = raw_headers(&[(name, b"\xff\xfe")]);
+            assert!(
+                loopback_session(&rbac, "127.0.0.1", &headers).is_none(),
+                "{name} with a non-text value was admitted"
+            );
+        }
+    }
+
+    #[test]
+    fn every_origin_must_be_allowed() {
+        // Repeated headers collapse to the last value in the string map: one
+        // allowed Origin must not hide a foreign one, in either order.
+        let rbac = open_loopback();
+        for pairs in [
+            [
+                ("origin", &b"http://localhost:3000"[..]),
+                ("origin", &b"http://evil.example"[..]),
+            ],
+            [
+                ("origin", &b"http://evil.example"[..]),
+                ("origin", &b"http://localhost:3000"[..]),
+            ],
+        ] {
+            assert!(loopback_session(&rbac, "127.0.0.1", &raw_headers(&pairs)).is_none());
+        }
+        let allowed = raw_headers(&[("origin", b"http://LOCALHOST:3000")]);
+        assert!(loopback_session(&rbac, "127.0.0.1", &allowed).is_some());
+    }
+
+    #[test]
+    fn an_origin_that_is_not_text_is_refused() {
+        let rbac = open_loopback();
+        let headers = raw_headers(&[("origin", b"http://localhost:3000\xff")]);
+        assert!(loopback_session(&rbac, "127.0.0.1", &headers).is_none());
     }
 }

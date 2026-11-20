@@ -291,8 +291,9 @@ events keep appending at the tail.
 The transcript never carries file bytes inline. A client stores the
 original upload first, then embeds the returned `file` block in the
 message's `content` (beside whatever text expansion the model reads);
-readers resolve the block back to the bytes on demand. Consumers that hand
-content to a model drop `file` blocks. Uploading is event-silent and does
+readers resolve the block back to the bytes on demand. The harness hands
+each `file` block to the model as an `<attachment>` text block naming
+`session::read-attachment` (never the bytes). Uploading is event-silent and does
 not touch `message_count` / `updated_at` — the attachment surfaces through
 the message that references it. `session::delete` removes a session's
 attachments; `session::fork` copies exactly the attachments the copied
@@ -320,7 +321,41 @@ type AttachmentMeta = { attachment_id, session_id, name, mime, size, sha256, cre
 // session/attachment_in_use. Also dropped from the parked draft. No event;
 // deleted: false when already absent.
 { session_id, attachment_id } -> { deleted: boolean }
+
+// session::read-attachment — the agent's read, by attachment id alone
+// (session_id optional). kind from the mime and the extension: pdf, then an
+// office document, then markup (svg/html/xml, read as text), then an image,
+// then text; anything else binary, and text that is not UTF-8 is binary.
+// text: the character window [offset, offset + max_chars) (max_chars default
+// 20000, at most 100000), next_offset null at the end. Every other kind:
+// how_to_read, the exact fp::pipe calls (from session::get-attachment, so the
+// bytes stay worker-side) that convert it with pdf::to-markdown /
+// document::to-markdown or save it into the working folder through
+// shell::exec, or the worker to install when the engine lacks one.
+// null when unknown.
+{ attachment_id, session_id?, offset?, max_chars? }
+  -> { attachment: AttachmentMeta, kind: "text" | "image" | "pdf" | "document" | "binary",
+       text: string | null, offset: number, next_offset: number | null,
+       total_chars: number | null, truncated: boolean, how_to_read: string | null } | null
 ```
+
+Attachment ids are store-generated and unique per upload, but a fork copies
+an attachment under the same id, so a lookup by id alone (`read-attachment`,
+the `@attachment` mention's get) answers from the first session that holds it
+— the bytes are identical — unless `session_id` names one of the holders.
+The fs store answers it from an index (attachment id → sessions) built by one
+walk of `attachments/` on first use and kept by every put and delete; a
+bridged instance walks the main's sessions per lookup.
+
+The `@attachment(id="a_…")` chat mention is session-manager's second
+provider: `session::attachments::mention::search` (only the asking chat's
+files, `context.session_id`; nothing without it; newest first, then exact
+name, prefix, word prefix, substring) and `session::attachments::mention::get`
+(`label` the name, `hint` the size, `fields` Type / Size / Added, `summary`
+`Attachment "report.pdf" · application/pdf · 1.2 MB`, `data` `{ session_id,
+name, mime, size, created_at }`, no `open`; `null` for an unknown id). Both are
+internal and denied to agents; the descriptor's details call is
+`session::read-attachment`.
 
 The composer's unsent chips ride on the draft: `session::set-draft` takes
 `attachment_ids?` (uploaded beforehand; omitted = unchanged, `[]` = clear,

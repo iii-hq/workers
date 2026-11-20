@@ -139,6 +139,8 @@ pub async fn resolve(
                     .await
                     .unwrap_or(Value::Null),
             };
+            // The wrapper's description lives only in the transcript.
+            let description = find_call_description(deps, &record, &req.function_call_id).await;
             let (arguments, pre_annotations) = match deps
                 .hooks
                 .run_pre_call(
@@ -147,6 +149,7 @@ pub async fn resolve(
                     &req.function_call_id,
                     &function_id,
                     &arguments,
+                    description.as_deref(),
                     Some(&held_by),
                 )
                 .await
@@ -372,11 +375,12 @@ pub async fn resolve(
                     raw,
                 )
                 .await;
-            let (data, annotations) = match post_outcome {
+            let (data, annotations, moved_root) = match post_outcome {
                 crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
-                } => (result, annotations),
+                    fs_scope_root,
+                } => (result, annotations, fs_scope_root),
                 crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
@@ -440,6 +444,7 @@ pub async fn resolve(
                 crate::reconcile::contract_in_context(&record, &function_id),
             )
             .await;
+            let moved_from = crate::turn_loop::adopt_moved_root(&mut record, &mut data, moved_root);
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
@@ -467,7 +472,13 @@ pub async fn resolve(
                 cp.state = CallState::Done;
                 cp.entry_id = Some(entry_id);
             }
-            let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+            // Mirror before the `?`: the result is already in the transcript,
+            // and a retried resolve skips a call that is no longer pending.
+            let resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await;
+            if let Some(from) = moved_from {
+                crate::turn_loop::mirror_moved_root(&session, &record, &from).await;
+            }
+            let turn_resumed = resumed?;
             Ok(FunctionResolveResponse {
                 resolved: true,
                 turn_resumed,
@@ -524,6 +535,26 @@ async fn find_call_arguments(
         }
     }
     None
+}
+
+/// Recover a held call's `agent_call` wrapper description from the
+/// transcript, for the hooks after the holder.
+async fn find_call_description(
+    deps: &Deps,
+    record: &crate::types::turn::TurnRecord,
+    call_id: &str,
+) -> Option<String> {
+    let session = deps.session().await;
+    let entries = session.messages(&record.session_id, false).await.ok()?;
+    entries
+        .into_iter()
+        .rev()
+        .find_map(|entry| match entry.message {
+            Some(AgentMessage::Assistant(a)) => {
+                crate::turn_loop::call_description(&a.content, call_id).map(str::to_string)
+            }
+            _ => None,
+        })
 }
 
 /// Resolve a parked parent call from a finishing child (harness.md §

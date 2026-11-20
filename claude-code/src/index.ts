@@ -23,7 +23,8 @@ import {
 import { registerAgentFeeds } from './agent-feed.js';
 import { pluginSourceLine } from './iii-plugin/install.js';
 import { resolveClaudeExecutable } from './executable.js';
-import { register } from './run.js';
+import { ranSinceStart, register, startupScanDone } from './run.js';
+import { startStatusRecovery } from './session-link.js';
 import { registerActivity } from './terminal/activity.js';
 import { registerAuth } from './terminal/auth.js';
 import { registerTerminal } from './terminal/terminal.js';
@@ -125,6 +126,13 @@ const feeds = registerAgentFeeds(iii);
 const emit = feeds.agent.emit;
 const emitRaw = feeds.raw.emit;
 register(iii, () => holder.current, emit, emitRaw);
+// A session this worker left `working` (a lost final status, or a restart
+// mid-run) is settled now: nothing of ours can be running yet.
+// Statuses this worker could not write (a lost final status, or a restart
+// mid-run) are settled now, retried while session-manager is not up, and
+// again whenever session-manager registers; runs since startup stay tracked
+// until the first scan that listed successfully.
+startStatusRecovery(iii, ranSinceStart, startupScanDone);
 
 // The terminal half: the hook sink, what a session runs, who pays for it, and
 // the console page that opens it.

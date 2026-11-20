@@ -113,7 +113,7 @@ pub struct SpawnOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_children: Option<u32>,
     /// Absolute filesystem root for the child turn; omit to inherit the
-    /// parent's.
+    /// parent's (a reused child keeps its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem_root: Option<String>,
 }

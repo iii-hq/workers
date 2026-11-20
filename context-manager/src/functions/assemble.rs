@@ -604,7 +604,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 
 /// The provider is asked once the estimate passes this share (1/N) of the
 /// window; content billing more than N times its estimate still slips past.
-const PROVIDER_COUNT_SHARE: u64 = 3;
+pub(super) const PROVIDER_COUNT_SHARE: u64 = 3;
 
 /// Reductions after relief left a request the provider counts over the
 /// window; past them the request is an overflow.

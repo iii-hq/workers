@@ -113,9 +113,9 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
 use crate::sandbox_daemon::errors::{Payload, SandboxErrorWire};
 use crate::wire::{
-    AdapterInfo, AdapterInfoRequest, ContractVersion, FEATURE_BUILD, FEATURE_LEASE,
-    FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, WORKER_BUILD, WORKER_DESTROY, WORKER_LOGS,
-    WORKER_PREPARE, WORKER_START, WORKER_STATUS, WORKER_STOP,
+    AdapterInfo, AdapterInfoRequest, ContractVersion, FEATURE_BINARY, FEATURE_BUILD, FEATURE_LEASE,
+    FEATURE_LOGS_FROM_END, FEATURE_PRUNE, FEATURE_SCOPED_AUTH, WORKER_BUILD, WORKER_DESTROY,
+    WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STATUS, WORKER_STOP,
 };
 use crate::worker_vm::WorkerVms;
 
@@ -259,7 +259,8 @@ pub fn register_all(
             vms.clone(),
             WORKER_PREPARE,
             "Validate a worker VM's source and pull its base image; idempotent. \
-             Needs the project token in `auth`, and `host_path` under the host roots.",
+             Needs the project token in `auth`, and `host_path` under the host roots; a \
+             binary source, which boots only a build, is S501.",
             |vms, req| async move { vms.prepare(req).await },
         ),
         register_worker_op(
@@ -267,10 +268,11 @@ pub fn register_all(
             vms.clone(),
             WORKER_BUILD,
             "Build the image of `state_key`'s VM into `output_dir` (image.erofs, then \
-             image.id): a build VM on the base image runs scripts.setup and \
-             scripts.install. The output streams into `logs`, and the build ends when its \
-             reader leaves. Needs the project token or the VM's scoped token; S509 while \
-             another build of the key runs, S507 when a step fails.",
+             image.id): a build VM on the base image (`base_image`, or the manifest's; \
+             required for a binary source) runs scripts.setup and scripts.install. The output streams into `logs`, and the build ends when its \
+             reader leaves. Needs the project token or the VM's scoped token, which never \
+             writes a build directory another VM recorded (S505); S509 while another build of \
+             the key runs, S507 when a step fails.",
             {
                 let iii = iii.clone();
                 move |vms, req| {
@@ -284,8 +286,9 @@ pub fn register_all(
             vms.clone(),
             WORKER_START,
             "Boot the worker VM of `state_key` as its next instance; with `build`, the \
-             image worker::build wrote (S508 when image.id does not match). Needs the \
-             project token; S502 while that VM is preparing or running.",
+             image worker::build wrote (S508 when image.id does not match; a scoped token \
+             boots no build directory another VM recorded, S505). Needs the project token or the \
+             VM's scoped token; S502 while that VM is preparing or running.",
             |vms, req| async move { vms.start(req).await },
         ),
         register_worker_op(
@@ -322,8 +325,12 @@ pub fn register_all(
             iii,
             vms,
             WORKER_DESTROY,
-            "Remove the state of `state_key`'s worker VM. Needs the project token; \
-             S502 while that VM is preparing or running, S509 while a build of it runs.",
+            "Remove the state of `state_key`'s worker VM: with `prune`, all of it; without, \
+             all but its data (the reply lists it in `kept`): a later start with `build` \
+             boots over the kept data disk, one without `build` begins with a new disk and \
+             what the previous one held stays under the pre-build names. Needs the project \
+             token or the VM's scoped token; S502 while that VM is preparing or running, \
+             S509 while a build of it runs.",
             // Off the runtime: removing a legacy rootfs clone takes seconds.
             |vms, req| async move {
                 tokio::task::spawn_blocking(move || vms.destroy(req))
@@ -357,8 +364,10 @@ pub fn adapter_info() -> AdapterInfo {
 /// so only it advertises `worker.build`.
 fn adapter_info_for(overlay: bool) -> AdapterInfo {
     let mut features = vec![FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END];
+    // A destroy without prune keeps the data for a start with build to boot on,
+    // which only the overlay mode does.
     if overlay {
-        features.push(FEATURE_BUILD);
+        features.extend([FEATURE_BUILD, FEATURE_BINARY, FEATURE_PRUNE]);
     }
     AdapterInfo {
         adapter: ADAPTER_NAME.to_string(),
@@ -753,15 +762,15 @@ mod registration_tests {
             ),
             ("sandbox-libkrun", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
-        // iii-compose installs ADAPTER_RANGE "^0.4" for contract 1.3, so releases stay 0.4.x.
+        // iii-compose installs ADAPTER_RANGE "^0.5" for contract 1.4, so releases stay 0.5.x.
         assert_eq!(
             (
                 env!("CARGO_PKG_VERSION_MAJOR"),
                 env!("CARGO_PKG_VERSION_MINOR")
             ),
-            ("0", "4")
+            ("0", "5")
         );
-        assert_eq!((i.contract.major, i.contract.minor), (1, 3));
+        assert_eq!((i.contract.major, i.contract.minor), (1, 4));
         // What `iii sandbox run` and `iii sandbox build` refuse an adapter without.
         assert_eq!(
             adapter_info_for(true).features,
@@ -769,12 +778,16 @@ mod registration_tests {
                 "worker.scoped_auth",
                 "worker.lease",
                 "worker.logs_from_end",
-                "worker.build"
+                "worker.build",
+                "worker.binary",
+                "worker.prune"
             ]
         );
     }
 
-    /// Only the overlay mode boots a build: the legacy mode keeps quiet about it.
+    /// Only the overlay mode boots a build, a binary package's included, and
+    /// only a start with build boots on the data a destroy kept: the legacy
+    /// mode advertises neither `worker.build`, `worker.binary` nor `worker.prune`.
     #[test]
     fn the_legacy_mode_does_not_advertise_worker_build() {
         assert_eq!(

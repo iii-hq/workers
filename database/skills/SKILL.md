@@ -187,8 +187,9 @@ arrays as JSON arrays. When writing them back, pass the same forms.
   kept in the `state` worker: console-only, not files. To save a query for
   the person, write a `.sql` file into the connection's `folder` (see
   "Saving a query").
-- `database::history` — recent queries, newest first. Best effort, not an audit
-  log; observe `database::on-row-changed` for that.
+- `database::history` — recent queries, newest first. Best effort: records only while
+  `history_max_entries` is above `0` (off by default); earlier entries stay
+  readable; not an audit log; observe `database::on-row-changed` for that.
 
 ## Reacting to writes
 

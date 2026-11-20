@@ -14,11 +14,17 @@ use std::collections::BTreeMap;
 const MAX_REFUSED_IDS: usize = 32;
 /// gpt-6-luna's maximum input tokens: one evaluation is all input, no output.
 const CONTEXT_WINDOW: u32 = 922_000;
+/// Questions one request can ask.
+const MAX_QUESTIONS: usize = 400;
+/// `input_json` limits: container levels, values and compact UTF-8 bytes.
+const JSON_MAX_DEPTH: usize = 32;
+const JSON_MAX_VALUES: usize = 10_000;
+const JSON_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Serialize)]
 struct DecisionRequest<'a> {
     model: &'a str,
-    input: String,
+    input: Value,
     questions: Vec<DecisionQuestion<'a>>,
 }
 #[derive(Serialize)]
@@ -50,7 +56,7 @@ struct DecisionLevel {
     label: String,
 }
 
-// Replies are beta-API DTOs: unknown fields are ignored, unknown answer types
+// Reply DTOs: unknown fields are ignored, unknown answer types
 // and negative or fractional counters fail parsing (`invalid_response`).
 #[derive(Deserialize)]
 struct Decision {
@@ -225,8 +231,42 @@ fn question<'a>(name: &'a str, question: &'a Question) -> DecisionQuestion<'a> {
     }
 }
 
+/// The shared input: string state as is; an object, or an array of objects,
+/// within the `input_json` limits as one user message's JSON part; any other
+/// state as compact JSON text.
+fn input(state: &Value) -> Value {
+    match state {
+        Value::String(text) => Value::String(text.clone()),
+        Value::Object(_) | Value::Array(_) if json_part_fits(state) => json!([{
+            "role": "user",
+            "content": [{"type": "input_json", "data": state}],
+        }]),
+        state => Value::String(state.to_string()),
+    }
+}
+fn json_part_fits(state: &Value) -> bool {
+    fn walk(value: &Value, depth: usize, values: &mut usize) -> bool {
+        *values += 1;
+        let children: Box<dyn Iterator<Item = &Value>> = match value {
+            Value::Object(map) => Box::new(map.values()),
+            Value::Array(items) => Box::new(items.iter()),
+            _ => return *values <= JSON_MAX_VALUES,
+        };
+        depth < JSON_MAX_DEPTH
+            && *values <= JSON_MAX_VALUES
+            && children
+                .into_iter()
+                .all(|child| walk(child, depth + 1, values))
+    }
+    let objects = match state {
+        Value::Array(items) => items.iter().all(Value::is_object),
+        _ => state.is_object(),
+    };
+    objects && state.to_string().len() <= JSON_MAX_BYTES && walk(state, 0, &mut 0)
+}
+
 /// The body for `evaluation`'s remote questions, each named by its question
-/// id. String state is the input text; object or array state is compact JSON.
+/// id. More than the API's 400 questions is `payload_too_large`.
 pub(crate) fn encode(
     model: &str,
     evaluation: &Evaluation,
@@ -234,10 +274,7 @@ pub(crate) fn encode(
 ) -> Result<Vec<u8>, ErrorCode> {
     let request = DecisionRequest {
         model,
-        input: match &evaluation.state {
-            Value::String(text) => text.clone(),
-            state => state.to_string(),
-        },
+        input: input(&evaluation.state),
         questions: evaluation
             .questions
             .iter()
@@ -245,6 +282,9 @@ pub(crate) fn encode(
             .map(|(name, asked)| question(name, asked))
             .collect(),
     };
+    if request.questions.len() > MAX_QUESTIONS {
+        return Err(ErrorCode::PayloadTooLarge);
+    }
     let body = serde_json::to_vec(&request).map_err(|_| ErrorCode::InvalidRequest)?;
     if body.len() > max_request_bytes {
         return Err(ErrorCode::PayloadTooLarge);
@@ -385,17 +425,28 @@ pub(crate) fn model_cards(bytes: &[u8]) -> Result<Vec<ModelCard>, ErrorCode> {
         .data
         .into_iter()
         .filter(|model| crate::SUPPORTED_MODELS.contains(&model.id.as_str()))
-        .map(|model| ModelCard {
-            name: model.id,
-            description: "OpenAI Decisions (beta)".into(),
-            release_date: model
-                .created
-                .map(|seconds| civil_from_days(seconds.div_euclid(86_400)))
-                .unwrap_or_default(),
-            context_window: Some(CONTEXT_WINDOW),
-            max_options: None,
-        })
+        .map(|model| card(model.id, model.created))
         .collect())
+}
+
+/// The built-in catalog, for a credential that cannot read `/v1/models`.
+pub(crate) fn supported_cards() -> Vec<ModelCard> {
+    crate::SUPPORTED_MODELS
+        .iter()
+        .map(|id| card((*id).into(), None))
+        .collect()
+}
+
+fn card(name: String, created: Option<i64>) -> ModelCard {
+    ModelCard {
+        name,
+        description: "OpenAI Decisions".into(),
+        release_date: created
+            .map(|seconds| civil_from_days(seconds.div_euclid(86_400)))
+            .unwrap_or_default(),
+        context_window: Some(CONTEXT_WINDOW),
+        max_options: None,
+    }
 }
 
 /// `YYYY-MM-DD` of a day count since 1970-01-01 (Howard Hinnant's algorithm).
@@ -514,7 +565,8 @@ mod tests {
         ));
         assert_eq!(
             object["input"],
-            r#"{"message":"Sign-in is blocked","tags":[1,2]}"#
+            json!([{"role": "user", "content": [{"type": "input_json",
+                    "data": {"message": "Sign-in is blocked", "tags": [1, 2]}}]}])
         );
         assert_eq!(
             object["questions"],
@@ -528,11 +580,57 @@ mod tests {
                  "instructions": "{\"ask\":\"urgent?\"}\n\nTrue means: [\"outage\",\"data loss\"]\nFalse means: routine"}
             ])
         );
-        // An array is one compact JSON input, never a list of input messages.
+        // An array of objects is one JSON part, never a list of input messages.
+        let rows = body(&evaluation(json!([{"role": "user"}]), questions.clone()));
+        assert_eq!(
+            rows["input"][0]["content"][0]["data"],
+            json!([{"role": "user"}])
+        );
+        // Any other array is compact JSON text, which the JSON part cannot hold.
         let array = body(&evaluation(json!(["a", {"b": 1}]), questions.clone()));
         assert_eq!(array["input"], r#"["a",{"b":1}]"#);
         let text = body(&evaluation(json!("  raw text  "), questions));
         assert_eq!(text["input"], "  raw text  ");
+    }
+
+    #[test]
+    fn state_past_the_json_part_limits_is_sent_as_text() {
+        let mut deep = json!({"leaf": 1});
+        for _ in 0..JSON_MAX_DEPTH - 1 {
+            deep = json!({"next": deep});
+        }
+        assert!(json_part_fits(&deep));
+        let deeper = json!({"next": deep});
+        assert!(!json_part_fits(&deeper));
+        let wide = json!({"items": vec![0; JSON_MAX_VALUES]});
+        assert!(!json_part_fits(&wide));
+        let big = json!({"text": "x".repeat(JSON_MAX_BYTES)});
+        assert!(!json_part_fits(&big));
+        assert_eq!(input(&big), Value::String(big.to_string()));
+        assert_eq!(input(&json!(7)), json!("7"));
+    }
+
+    #[test]
+    fn more_than_four_hundred_remote_questions_is_payload_too_large() {
+        let questions = |count: usize| {
+            Value::Object(
+                (0..count)
+                    .map(|i| {
+                        (
+                            format!("q{i:03}"),
+                            json!({"type": "noul", "instructions": "Is it?"}),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        let at = evaluation(json!("x"), questions(MAX_QUESTIONS));
+        assert!(encode("gpt-6-luna", &at, usize::MAX).is_ok());
+        let past = evaluation(json!("x"), questions(MAX_QUESTIONS + 1));
+        assert!(matches!(
+            encode("gpt-6-luna", &past, usize::MAX),
+            Err(ErrorCode::PayloadTooLarge)
+        ));
     }
 
     #[test]
@@ -868,7 +966,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             serde_json::to_value(cards).unwrap(),
-            json!([{"name": "gpt-6-luna", "description": "OpenAI Decisions (beta)",
+            json!([{"name": "gpt-6-luna", "description": "OpenAI Decisions",
                     "release_date": "2026-09-14", "context_window": 922000}])
         );
         let undated = model_cards(br#"{"data":[{"id":"gpt-6-luna"}]}"#).unwrap();

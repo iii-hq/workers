@@ -22,7 +22,6 @@ import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
 import { shellFixtures } from '@/stories/fixtures/shell-fixtures'
 import { stateFixtures } from '@/stories/fixtures/state-fixtures'
 import { webFixtures } from '@/stories/fixtures/web-fixtures'
-import { workflowFixtures } from '@/stories/fixtures/workflow-fixtures'
 import { worktreeFixtures } from '@/stories/fixtures/worktree-fixtures'
 import type { FunctionCallMessage as FCallType } from '@/types/chat'
 import { FileChangesCard } from '../../../../../ide/ui/src/function-call/FileChangesCard'
@@ -398,11 +397,6 @@ export const WebFamily: Story = {
 export const CoderFamily: Story = {
   name: 'coder family',
   render: () => <FamilyGallery fixtures={coderFixtures} />,
-}
-
-export const WorkflowFamily: Story = {
-  name: 'workflow family',
-  render: () => <FamilyGallery fixtures={workflowFixtures} />,
 }
 
 export const WorktreeFamily: Story = {

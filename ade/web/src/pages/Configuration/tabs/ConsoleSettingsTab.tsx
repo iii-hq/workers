@@ -87,10 +87,11 @@ const NEW_CHAT_MODE_OPTIONS: { value: NewChatMode; label: string }[] = [
 /* Spelled out rather than as key caps, so the closed trigger reads at a
  glance; Cmd on a Mac, Ctrl everywhere else. */
 function buildSendKeyOptions(): { value: SendKey; label: string }[] {
-  const mod = shortcutPlatform() === 'mac' ? 'Cmd' : 'Ctrl'
+  const mac = shortcutPlatform() === 'mac'
   return [
     { value: 'enter', label: 'Enter' },
-    { value: 'mod-enter', label: `${mod} + Enter` },
+    { value: 'mod-enter', label: `${mac ? 'Cmd' : 'Ctrl'} + Enter` },
+    { value: 'alt-enter', label: `${mac ? 'Option' : 'Alt'} + Enter` },
     { value: 'shift-enter', label: 'Shift + Enter' },
   ]
 }

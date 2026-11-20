@@ -11,20 +11,21 @@ in-process.
 
 | Path | Responsibility |
 |---|---|
-| [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connection, configuration register/fetch (**fatal** on an invalid bridge `config`), builds the initial `SessionRuntime` via `build_runtime` and wraps it in the hot-swappable `AppState`, registration order (event functions + store protocol + 21 functions + `session::on-config-change` with its `configuration::on-updated` observer + `session::config-status`), Ctrl+C shutdown (the bridge relay's observer and the remote connection too when a bridge runtime is live). |
+| [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connection, configuration register/fetch (**fatal** on an invalid bridge `config`), builds the initial `SessionRuntime` via `build_runtime` and wraps it in the hot-swappable `AppState`, registration order (event functions + store protocol + 26 functions + `session::on-config-change` with its `configuration::on-updated` observer + `session::config-status`), Ctrl+C shutdown (the bridge relay's observer and the remote connection too when a bridge runtime is live). |
 | [src/config.rs](../src/config.rs) | `WorkerConfig { adapter, default_list_limit, max_list_limit }` with serde + `schemars::JsonSchema`. `adapter` is an adjacently tagged enum `StorageAdapter` (`name` + `config`, `rename_all = "snake_case"`) → `Fs(FsBackendConfig)` / `Bridge(BridgeBackendConfig)`, each `config` a typed `deny_unknown_fields` struct; `schemars` emits a `oneOf` so the console shows a variant picker plus the selected adapter's fields. `resolve_adapter()` returns the typed selection; bridge `url` is required at parse time. `~/` expansion for `data_dir`; `${VAR}` seed expansion; `json_schema()` / `to_json` / `from_json` / `from_file`; `boot_signature()` = the `adapter` half, compared on reload to decide rebuild-vs-tune. |
 | [src/configuration.rs](../src/configuration.rs) | Integration with the `configuration` worker: `register_config` (schema + seed), `fetch_config`, the hot-swappable `AppState` (live `SessionRuntime` + reload lock + `ReloadStatus`), `apply_runtime` / `reload_serialized` (build a candidate then swap; last-good on failure), `register_config_observer` (registers `session::on-config-change` and observes `configuration::on-updated` with it, filtered to this entry's `configuration:updated` events), `register_config_status` (`session::config-status`), `ConfigCell` (per-call list-limit snapshot). |
 | [src/runtime.rs](../src/runtime.rs) | `SessionRuntime` (store + service + sink + local emitter + `AdapterMode` + optional bridge remote and relay; `close_bridge` retires both), `SessionBuildContext`, `build_runtime` (constructs the runtime for an adapter; pure, so the reload path builds a candidate and only swaps on success). |
 | [src/resync.rs](../src/resync.rs) | `resync_observers`: after an adapter swap, replays the new store's state (`session::on-created` + per-entry `session::on-message-added` / `session::on-message-updated`) through the local emitter and calls `session::on-deleted` for vanished sessions, so observers stay real-time without a refetch. It builds only the events the emitter wants (`Emitter::wants`), reads entries only while a message event is wanted, and reads nothing when no event is. |
+| [src/reading.rs](../src/reading.rs) | What an attachment is and how an agent reads it: `AttachmentKind` (the ADE's order: pdf, office document, markup as text, image, text, else binary; non-UTF-8 text is binary), the text window, `human_size`, and `how_to_read`, the `fp::pipe` recipes (`pdf::to-markdown`, `document::to-markdown`, saving through `shell::exec`) for the functions the engine has. Pure, unit-tested. |
 | [src/manifest.rs](../src/manifest.rs) | `--manifest` JSON for the registry publish pipeline; `default_config` mirrors `WorkerConfig::default()`. |
 | [src/types.rs](../src/types.rs) | Wire contracts: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `SessionEntry` (message/custom envelope), `SessionMeta`, `SessionStatus`, `CustomPayload`, `metadata_matches` (subset-equality helper for `session::list`). All serde + `schemars::JsonSchema`; serde tags keep the JSON byte-compatible with the spec's TypeScript. |
 | [src/error.rs](../src/error.rs) | `SessionError` — every variant renders as `code: message` with a stable `session/*` code; `From<SessionError> for Error` puts that string on the bus. |
-| [src/store/mod.rs](../src/store/mod.rs) | `SessionStore` trait (11 methods) + `StoreError` (maps to `session/storage`). |
+| [src/store/mod.rs](../src/store/mod.rs) | `SessionStore` trait (18 methods, `attachment_owners` with a scanning default) + `StoreError` (maps to `session/storage`). |
 | [src/store/fs.rs](../src/store/fs.rs) | Filesystem backend (JSONL per session). |
 | [src/store/bridge.rs](../src/store/bridge.rs) | Bridge backend (defers to a main instance's `session::store::*`). |
 | [src/service.rs](../src/service.rs) | **All domain logic.** Per-session locks, id/clock injection, cursors, active-path walks, fork copying. Returns `(response, Vec<EmittableEvent>)` — never emits itself. |
 | [src/events.rs](../src/events.rs) | The six private event functions (`register_event_functions`), their event payloads and `WithSessionMetadata`, `Emitter` (calls a function only while it is observed), `EventDeliverer` / `IiiDeliverer`, `EventEnvelope`, `EventSink` (`Emitter` / `RemotePublisher`), the internal `session::store::on-events` feed, `attach_bridge_relay` / `BridgeRelay`. |
-| [src/functions/mod.rs](../src/functions/mod.rs) | `Deps { service, sink }` built per call from the live `AppState` runtime (so a hot-reload is picked up without re-registering), generic typed registration helper, `register_all` (the 21 `session::*` functions). |
+| [src/functions/mod.rs](../src/functions/mod.rs) | `Deps { service, sink }` built per call from the live `AppState` runtime (so a hot-reload is picked up without re-registering), generic typed registration helper, `register_all` (the 26 `session::*` functions; `session::read-attachment`'s handler also holds an `EngineProbe`, `engine::functions::info` per recipe function). |
 | [src/functions/<verb>.rs](../src/functions) | One file per function: request/response structs (serde + JsonSchema, doc comments become schema descriptions) and a thin `pub async fn handle(deps, req)` = service call + `sink.publish_all(events)`. |
 | [src/functions/store_protocol.rs](../src/functions/store_protocol.rs) | The internal `session::store::*` protocol (11 raw store functions + `publish_events`). Registered unconditionally but mode-gated per call: served only while in fs mode, so it follows adapter hot-reloads (bridge mode rejects). |
 | [tests/](../tests) | Cucumber BDD (`tests/bdd.rs`, `harness = false`) + `tests/manifest.rs` subprocess test. See §10. |
@@ -154,6 +155,8 @@ counting rules:
 get_meta / put_meta / delete_meta / list_metas
 get_entry / put_entry / list_entries / delete_entries
 get_active_leaf / set_active_leaf / delete_active_leaf
+put_attachment / get_attachment / list_attachments / delete_attachment / delete_attachments
+attachment_owners        (default: walk every session's attachments)
 ```
 
 `list_*` return values carry their identity inline (`meta.session_id`,
@@ -198,6 +201,14 @@ Record per line, discriminated by `type`:
   down the session or `list_metas`.
 - `list_metas` = read dir, load every session, collect metas (O(total data)
   on first call; cached afterwards).
+- **Attachment index.** `attachment_owners` (lookup by attachment id alone,
+  for `session::read-attachment` and the `@attachment` mention) answers from
+  `attachment id -> sessions`, built by one walk of
+  `attachments/<encoded session>/*.json` on first use and kept by
+  `put_attachment` / `delete_attachment` / `delete_attachments`. Several
+  sessions hold one id after a fork (copies under the same id); the service
+  answers from the session the caller named when it is a holder, else the
+  first (sorted).
 
 ### 5.3 BridgeStore
 
@@ -482,6 +493,11 @@ III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test bdd -- --tags @engine
   tolerate lost and unordered events, so the recovery is a read-back.
 - **Events emitted while a bridge is detached** (main engine restarting)
   never reach it (§6.4).
+- **Lookup by attachment id is O(sessions) on a bridged instance:** the
+  trait's default `attachment_owners` walks the main's sessions through the
+  store protocol per call (the main itself answers from its index). Fine for
+  the reads it serves (an agent's read, a mention hover); a
+  `session::store::*` lookup is the fix if it ever isn't.
 - **Lock-map growth:** one entry per session touched per process lifetime,
   by design (never freed).
 - **`session::store::*` is a god-mode surface** — raw writes bypass all

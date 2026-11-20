@@ -69,6 +69,9 @@ export interface ModelUsage {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  /** Generations stored with no usage at all: while non-zero, every
+      counter is a lower bound. Absent when zero. */
+  unreported_generations?: number
 }
 
 export interface SessionUsage {
@@ -84,6 +87,9 @@ export interface SessionUsage {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  /** Generations stored with no usage at all: while non-zero, every
+      counter is a lower bound. Absent when zero. */
+  unreported_generations?: number
   by_model?: ModelUsage[]
   context?: ContextSnapshot
 }
@@ -99,6 +105,9 @@ export interface MetricsTotals {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  /** Generations stored with no usage at all: while non-zero, every
+      counter is a lower bound. Absent when zero. */
+  unreported_generations?: number
   by_model?: ModelUsage[]
 }
 
@@ -304,32 +313,39 @@ function modelRow(sessionId: string, m: ModelUsage): SessionUsage {
     cache_read_tokens: m.cache_read_tokens,
     cache_write_tokens: m.cache_write_tokens,
     cost_usd: m.cost_usd,
+    unreported_generations: m.unreported_generations,
   }
 }
 
+/** `≥` before a counter while a generation stored with no usage at all makes it a lower bound. */
+export const lowerBound = (usage: { unreported_generations?: number }) =>
+  usage.unreported_generations ? '≥' : ''
+
 /**
- * One session's own counters. The server leaves a counter `null` once more
- * than one step did not report it, so a conversation that ran 37 steps on a
- * model reporting nothing loses the tokens of the 53 steps that did. Its
- * `by_model` still has them: such a counter is filled with what the models
- * reported and marked partial (`≥`), and `unreported` names the models that
- * left it out.
+ * One session's own counters. A generation stored with no usage at all
+ * (`unreported_generations`) makes every counter it has a lower bound. The
+ * server also leaves a counter `null` once more than one step that reported
+ * usage lacked it; its `by_model` may still have it: such a counter is filled
+ * with what the models reported. Either way the counter is marked partial
+ * (`≥`), and `unreported` names the models that left something out.
  */
 export function ownUsage(row: SessionUsage): UsageTotals {
   const own: UsageTotals = { ...row, partial: [], unreported: [], cacheHit: cacheHitPct(row) }
+  if (row.unreported_generations) own.partial = SUMMED.filter((key) => row[key] != null)
   const models = modelsOf(row)
-  if (!models.length || SUMMED.every((key) => row[key] != null)) return own
-  const sum = sumUsage(models.map((m) => modelRow(modelLabel(m), m)))
-  for (const key of SUMMED) {
-    if (row[key] == null && sum[key] != null) {
-      own[key] = sum[key]
-      own.partial.push(key)
+  if (models.length && SUMMED.some((key) => row[key] == null)) {
+    const sum = sumUsage(models.map((m) => modelRow(modelLabel(m), m)))
+    for (const key of SUMMED) {
+      if (row[key] == null && sum[key] != null) {
+        own[key] = sum[key]
+        own.partial.push(key)
+      }
     }
+    own.cacheHit ??= sum.cacheHit
   }
   if (!own.partial.length) return own
-  own.cacheHit ??= sum.cacheHit
   own.unreported = models
-    .filter((m) => m.turns > 0 && own.partial.some((key) => m[key] == null))
+    .filter((m) => m.unreported_generations || (m.turns > 0 && own.partial.some((key) => m[key] == null)))
     .map(modelLabel)
   return own
 }

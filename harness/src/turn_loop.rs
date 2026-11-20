@@ -26,7 +26,8 @@ use crate::types::event::ErrorKind;
 use crate::types::message::{AgentMessage, AssistantMessage, empty_assistant};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
-    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
+    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnFailure,
+    TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -38,6 +39,16 @@ struct FailureInfo<'a> {
     detail: Option<&'a str>,
     provider: Option<&'a str>,
     model: Option<&'a str>,
+}
+
+impl FailureInfo<'_> {
+    /// What the turn record keeps, for `harness::status`.
+    fn stored(&self) -> TurnFailure {
+        TurnFailure {
+            code: self.code.to_string(),
+            retryable: self.retryable,
+        }
+    }
 }
 
 const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -222,7 +233,7 @@ fn origin(turn_id: &str) -> Value {
 /// Cautions: mutations are silent; annotations record what ran).
 /// The `description` the model gave an `agent_call` call (dropped by
 /// `plan_calls`): the call's stated purpose, used as reconciliation intent.
-fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+pub(crate) fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
     content.iter().find_map(|block| match block {
         // Only the wrapper's field: in native exposure `description` would
         // be one of the target's own parameters.
@@ -235,6 +246,84 @@ fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'
         }
         _ => None,
     })
+}
+
+/// Make `proposed`, the working directory a post_call hook moved the session
+/// to (the ide after a `git worktree add`), the record's root. Returns the root
+/// it replaced. A failed call, a relative path or an unscoped session never
+/// moves.
+pub(crate) fn adopt_moved_root(
+    record: &mut TurnRecord,
+    data: &mut call::ResultData,
+    proposed: Option<String>,
+) -> Option<String> {
+    let root = proposed?;
+    let previous = record.options.filesystem_root()?.to_string();
+    if data.is_error || !std::path::Path::new(&root).is_absolute() || root == previous {
+        return None;
+    }
+    // A held call's release is stamped with the record's root: its approver
+    // would have reviewed the old one.
+    let held = record
+        .calls
+        .values()
+        .any(|c| c.state == CallState::Pending && c.held_by.is_some());
+    if held {
+        data.content.push(ContentBlock::text(format!(
+            "The session's working directory did not move to {root}: another call of this \
+             turn is awaiting approval. Use absolute paths or `cwd` to work there."
+        )));
+        return None;
+    }
+    record.options.set_filesystem_root(&root);
+    // The breaker keys on the model's arguments, not the root: a failure under
+    // the old root says nothing about the same relative call under the new one.
+    record.failed_calls.clear();
+    Some(previous)
+}
+
+/// Mirror a moved root into the session's metadata with the root it left
+/// (`moved_from`), the guard a client compares with the folder it shows
+/// before following. The turn record stays the source of truth.
+///
+/// Boxed here, not at the call: built inside `finish_step`'s frame, its state
+/// pushes that debug-build poll frame past a 2 MiB test thread.
+pub(crate) fn mirror_moved_root<'a>(
+    session: &'a SessionClient,
+    record: &'a TurnRecord,
+    moved_from: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(mirror_moved_root_inner(session, record, moved_from))
+}
+
+async fn mirror_moved_root_inner(session: &SessionClient, record: &TurnRecord, moved_from: &str) {
+    let Some(root) = record.options.filesystem_root() else {
+        return;
+    };
+    // shortcut: best-effort read-merge-write on a whole-object store. A failed
+    // write, a crash after the call's checkpoint (it is already Done, so
+    // nothing retries) or a concurrent client write drops this mirror, and a
+    // client that resends its old root then moves the session back; upgrade
+    // when session::set-meta has a revision check and the turn record can
+    // carry a pending mirror.
+    let mirrored = async {
+        let mut metadata = session
+            .metadata_of(&record.session_id)
+            .await?
+            .unwrap_or_default();
+        metadata.insert(
+            crate::types::turn::FS_SCOPE_KEY.into(),
+            json!({ "root": root, "moved_from": moved_from }),
+        );
+        session.set_metadata(&record.session_id, metadata).await
+    };
+    if let Err(error) = mirrored.await {
+        tracing::warn!(
+            session_id = %record.session_id,
+            %error,
+            "could not mirror the moved working directory into session metadata"
+        );
+    }
 }
 
 fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> Value {
@@ -607,7 +696,7 @@ async fn generate_step(
                 record.depth,
             )
             .await;
-        if let Err(reason) = deps.hooks.run_pre_turn(&record, payload.step).await {
+        if let Err(reason) = Box::pin(deps.hooks.run_pre_turn(&record, payload.step)).await {
             return finalize_failed(
                 deps,
                 &session,
@@ -654,7 +743,7 @@ async fn generate_step(
         // validated (live-caught by the validation_chain e2e: a turn that
         // burned its steps mid-loop finalized "completed" with the goal
         // unmet).
-        return (match deps.hooks.run_post_turn(&record, record.step, &text).await {
+        return (match Box::pin(deps.hooks.run_post_turn(&record, record.step, &text)).await {
             Ok(()) => finalize_completed(deps, &session, &mut record, Some(text)).await,
             Err(deny) => {
                 record.result = Some(text);
@@ -713,6 +802,7 @@ async fn generate_step(
     // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
     let anchor = compaction_anchor(&record.session_id, &entries);
     let mut window = crate::window::build(
+        &record.session_id,
         &entries,
         anchor.window_start,
         prev_watermark.as_deref(),
@@ -926,9 +1016,10 @@ async fn generate_step(
 
         // pre_generate hooks: extend the system prompt / append bounded messages,
         // or veto. Annotations ride the assistant entry's origin (audit trail).
-        let (gen_system_prompt, appended, append_sources, gen_annotations) = match deps
-            .hooks
-            .run_pre_generate(
+        // The hook futures are boxed out of line here and below: inline, they
+        // grow this frame past a default thread stack in debug builds.
+        let (gen_system_prompt, appended, append_sources, gen_annotations) =
+            match Box::pin(deps.hooks.run_pre_generate(
                 &record,
                 payload.step,
                 assembled.system_prompt.clone(),
@@ -936,35 +1027,35 @@ async fn generate_step(
                 current_generation,
                 &decision_tools,
                 &entries,
-            )
+            ))
             .await
-        {
-            crate::hooks::runner::PreGenerateOutcome::Continue {
-                system_prompt,
-                append_messages,
-                append_sources,
-                annotations,
-            } => (system_prompt, append_messages, append_sources, annotations),
-            crate::hooks::runner::PreGenerateOutcome::Deny(reason) => {
-                return finalize_failed(
-                    deps,
-                    &session,
-                    &mut record,
-                    &format!("pre_generate hook denied: {reason}"),
-                    FailureInfo {
-                        code: "harness.pre_generate_denied",
-                        phase: "pre_generate",
-                        retryable: false,
-                        kind: None,
-                        detail: None,
-                        provider: None,
-                        model: None,
-                    },
-                )
-                .await
-                .map(PreparedStep::Finished);
-            }
-        };
+            {
+                crate::hooks::runner::PreGenerateOutcome::Continue {
+                    system_prompt,
+                    append_messages,
+                    append_sources,
+                    annotations,
+                } => (system_prompt, append_messages, append_sources, annotations),
+                crate::hooks::runner::PreGenerateOutcome::Deny(reason) => {
+                    return finalize_failed(
+                        deps,
+                        &session,
+                        &mut record,
+                        &format!("pre_generate hook denied: {reason}"),
+                        FailureInfo {
+                            code: "harness.pre_generate_denied",
+                            phase: "pre_generate",
+                            retryable: false,
+                            kind: None,
+                            detail: None,
+                            provider: None,
+                            model: None,
+                        },
+                    )
+                    .await
+                    .map(PreparedStep::Finished);
+                }
+            };
         // The notices land after the hooks ran (they must not read them as
         // the newest user message) and before their appends (hook messages
         // stay last, closest to the decision point).
@@ -1253,11 +1344,11 @@ async fn generate_step(
     // repair. Persisted pruning happens with the normal pre-generation write.
     call::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
-    // The router client strips file blocks again (hook appends are not covered
-    // by assembly): fingerprint a stripped copy so it is of what it sends,
-    // without changing what the rest of the step sees.
+    // The router client rewrites file blocks again (hook appends are not
+    // covered by assembly): fingerprint a rewritten copy so it is of what it
+    // sends, without changing what the rest of the step sees.
     let mut sent_messages = gen_messages.clone();
-    crate::clients::router::strip_file_blocks(&mut sent_messages);
+    crate::clients::router::strip_file_blocks(&mut sent_messages, Some(&record.session_id));
     let assistant_origin = generate_origin(
         &record.turn_id,
         &gen_annotations,
@@ -1620,13 +1711,12 @@ async fn generate_step(
         .await?;
 
     // post_generate hooks: observe only (the message already streamed).
-    deps.hooks
-        .run_post_generate(
-            &record,
-            payload.step,
-            serde_json::to_value(&outcome.message).unwrap_or(Value::Null),
-        )
-        .await;
+    Box::pin(deps.hooks.run_post_generate(
+        &record,
+        payload.step,
+        serde_json::to_value(&outcome.message).unwrap_or(Value::Null),
+    ))
+    .await;
 
     // Re-acquire the lock before any further turn-record write, then refresh
     // the durable fields allowed to change while generation held no lock:
@@ -1904,7 +1994,8 @@ async fn finish_step(
         let session_grants =
             crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
                 .await?;
-        let filesystem_root = record.options.filesystem_root().map(str::to_string);
+        // A post_call hook can move the root mid-step: later calls take it.
+        let mut filesystem_root = record.options.filesystem_root().map(str::to_string);
         for call in dispatch_calls.iter().copied() {
             // Cancel check between tool calls. Only the in-process signal can
             // be observed here: this phase holds the session lock, so the
@@ -2138,6 +2229,7 @@ async fn finish_step(
                     &call.id,
                     &call.function_id,
                     &trusted_call_args,
+                    call_description(&outcome.message.content, &call.id),
                     None,
                 )
                 .await
@@ -2375,11 +2467,12 @@ async fn finish_step(
                 )
                 .await;
             let mut annotations = pre_ann;
-            let (data, post_ann) = match post_outcome {
+            let (data, post_ann, moved_root) = match post_outcome {
                 crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
-                } => (result, annotations),
+                    fs_scope_root,
+                } => (result, annotations, fs_scope_root),
                 crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
@@ -2428,6 +2521,10 @@ async fn finish_step(
                 crate::reconcile::contract_in_context(&record, &call.function_id),
             )
             .await;
+            let moved_from = adopt_moved_root(&mut record, &mut data, moved_root);
+            if moved_from.is_some() {
+                filesystem_root = record.options.filesystem_root().map(str::to_string);
+            }
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
@@ -2439,6 +2536,9 @@ async fn finish_step(
             );
             mark_done(&mut record, &call.id, &entry_id);
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+            if let Some(from) = moved_from {
+                mirror_moved_root(&session, &record, &from).await;
+            }
         }
     }
 
@@ -3292,6 +3392,7 @@ async fn finalize_failed(
     record.exchange_finished = terminal;
     record.continues = woke;
     record.result_error = Some(summary.clone());
+    record.failure = Some(failure.stored());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
     record.slim_finished();
@@ -6105,6 +6206,32 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_failure_keeps_the_code_and_whether_a_retry_may_succeed() {
+        let error = ChatError {
+            code: Some("router/provider_transient".into()),
+            message: "The provider temporarily failed.".into(),
+            detail: None,
+            kind: Some(ErrorKind::Transient),
+            retryable: None,
+        };
+        let failure = super::llm_failure_info(Some(&error), None, None, None);
+        assert_eq!(
+            failure.stored(),
+            crate::types::turn::TurnFailure {
+                code: "router/provider_transient".into(),
+                retryable: true,
+            }
+        );
+        assert_eq!(
+            super::INTERNAL_FAILURE.stored(),
+            crate::types::turn::TurnFailure {
+                code: "harness.turn_internal".into(),
+                retryable: false,
+            }
+        );
+    }
+
+    #[test]
     fn router_code_selects_a_friendly_summary_and_actions() {
         let error = ChatError {
             code: Some("router/provider_unavailable".into()),
@@ -6906,6 +7033,40 @@ mod tests {
         );
         let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
         assert!(stale(Some(&frozen), &live, &all).is_none());
+    }
+
+    /// A move resets the repeated-failure breaker, keyed on the model's
+    /// arguments: the same relative call under the new root is a new call. No
+    /// move (same root, failed call) leaves it alone.
+    #[test]
+    fn a_moved_root_clears_the_repeated_failure_breaker() {
+        let tripped = || {
+            let mut record = crate::types::turn::tests::record();
+            record.options.set_filesystem_root("/repo");
+            let key = crate::call::call_digest("coder::read-file", &serde_json::json!({}));
+            record.failed_calls.insert(
+                key.unwrap(),
+                crate::types::turn::FailedCall {
+                    error_digest: "e".into(),
+                    count: 2,
+                },
+            );
+            record
+        };
+        let failed = || crate::call::ResultData {
+            is_error: true,
+            ..dispatched("boom")
+        };
+        for (root, mut data, moves) in [
+            ("/repo.feat", dispatched("ok"), true),
+            ("/repo", dispatched("ok"), false),
+            ("/repo.feat", failed(), false),
+        ] {
+            let mut record = tripped();
+            let moved = super::adopt_moved_root(&mut record, &mut data, Some(root.into()));
+            assert_eq!(moved.is_some(), moves, "{root}");
+            assert_eq!(record.failed_calls.is_empty(), moves, "{root}");
+        }
     }
 
     fn dispatched(text: &str) -> crate::call::ResultData {

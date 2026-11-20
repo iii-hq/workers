@@ -107,8 +107,10 @@ async fn main() -> Result<()> {
         port = cfg.port,
         engine_url = %redact_url(&cfg.engine_url),
         rbac_enabled = cfg.rbac_enabled(),
+        auth = ?cfg.rbac.auth_mode(),
         "starting rbac-proxy"
     );
+    rbac_proxy::rbac::warn_auth_conflict(&cfg.rbac);
     if let Some(warning) =
         rbac_proxy::endpoints::endpoints_warning(cfg.rbac.expose_endpoints.as_deref())
     {

@@ -1,5 +1,5 @@
 {
-  "description": "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete roundtrip, sibling reachability (router, session-manager, state), whether embeddings answer, whether recent extraction passes failed, and what extraction spent (model calls, tokens, the router's cost) and wrote since boot. Reports degraded states explicitly, not a bare process-up health.",
+  "description": "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete roundtrip, sibling reachability (router, session-manager, state), whether embeddings answer, whether recent extraction passes failed, which model extraction calls and why, how many extraction jobs wait in the dead-letter queue, and what extraction spent (model calls, tokens, the router's cost) and wrote since boot. Reports degraded states explicitly, not a bare process-up health.",
   "function_id": "memory::doctor",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -1538,6 +1538,21 @@ impl Bank {
         self.inner.read().await.vectors.len()
     }
 
+    /// `(covered, live)`: live memories with a vector a query embedded by
+    /// `model` can be compared with (the semantic arm's own rule: empty
+    /// `model` accepts any), of all live memories. Exact because `vectors`
+    /// only holds live records embedded from their current text.
+    pub async fn vector_coverage(&self, model: &str) -> (usize, usize) {
+        let inner = self.inner.read().await;
+        let covered = inner
+            .vectors
+            .values()
+            .filter(|(m, _)| model.is_empty() || m == model)
+            .count();
+        let live = inner.memories.values().filter(|f| f.is_live()).count();
+        (covered, live)
+    }
+
     /// THE single mutation choke point: append the full record (fsync),
     /// then update the map and the index together. Every save / update /
     /// pin / supersede / tombstone flows through here.
@@ -3064,6 +3079,37 @@ mod tests {
         assert_eq!(bank.unembedded(10, "new-model").await.len(), 1);
         // Empty active model = provider default: whatever exists counts.
         assert!(bank.unembedded(10, "").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vector_coverage_counts_live_vectors_in_the_query_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let (a, b, c) = (memory("alpha"), memory("beta"), memory("gamma"));
+        for m in [&a, &b, &c] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.set_vector(&a.id, "new", &a.text, vec![0.5])
+            .await
+            .unwrap();
+        bank.set_vector(&b.id, "old", &b.text, vec![0.5])
+            .await
+            .unwrap();
+        assert_eq!(bank.vector_coverage("new").await, (1, 3));
+        // Empty model = provider default: any vector is comparable.
+        assert_eq!(bank.vector_coverage("").await, (2, 3));
+
+        bank.set_vector(&b.id, "new", &b.text, vec![0.5])
+            .await
+            .unwrap();
+        assert_eq!(bank.vector_coverage("new").await, (2, 3));
+
+        let mut gone = a.clone();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone).await.unwrap();
+        assert_eq!(bank.vector_coverage("new").await, (1, 2));
     }
 
     #[tokio::test]

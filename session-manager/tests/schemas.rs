@@ -86,8 +86,11 @@ fn catalog_lists_all_functions_in_registration_order() {
             "session::get-attachment",
             "session::list-attachments",
             "session::delete-attachment",
+            "session::read-attachment",
             "session::mention::search",
             "session::mention::get",
+            "session::attachments::mention::search",
+            "session::attachments::mention::get",
             "session::on-config-change",
             "session::config-status",
         ]

@@ -8,36 +8,24 @@
  *
  * Two things the old console did not do:
  *
- * - required fields are checked against the schema BEFORE the call, so an
- *   obvious mistake reads as "scope is required" instead of a worker-side
- *   serialization error
+ * - the body is checked against the schema BEFORE the call, so an obvious
+ *   mistake reads as "scope is required" or "weeks must be an integer"
+ *   instead of a worker-side serialization error, or no answer at all
+ * - a call that gets no answer comes back on its own (./engine.ts bounds
+ *   it), and can be stopped sooner, so the button never stays stuck
  * - every call this panel makes is kept for the session and can be replayed,
  *   so tuning a payload is a loop rather than a retype
  */
 
-import {
-  Button,
-  CodeEditor,
-  Eyebrow,
-  type Host,
-  JsonHighlight,
-  KeyCombo,
-  StatusDot,
-  StatusPanel,
-} from '@iii-dev/console-ui'
-import { Play } from 'lucide-react'
-import {
-  type MutableRefObject,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { Button, CodeEditor, type Host, JsonHighlight, StatusDot, StatusPanel } from '@iii-dev/console-ui'
+import { Play, Square } from 'lucide-react'
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDuration } from './ActivityFeed'
+import { asCliCommand } from './cli-command'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
-import { pretty, templateFromSchema } from './schema'
-import { CopyButton, CopyIconButton } from './widgets'
+import { pretty, schemaProblems, templateFromSchema } from './schema'
+import { CopyButton, CopyIconButton, ShortcutHint } from './widgets'
 
 interface Attempt {
   id: number
@@ -52,37 +40,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Required top-level fields the body is missing, by the schema's own list. */
-function missingRequired(schema: unknown, payload: unknown): string[] {
-  if (!isRecord(schema) || !isRecord(payload)) return []
-  const required = Array.isArray(schema.required)
-    ? schema.required.filter((k): k is string => typeof k === 'string')
-    : []
-  return required.filter(
-    (key) => payload[key] === undefined || payload[key] === '',
-  )
-}
-
-/**
- * The same call as a CLI line. `iii call` takes `key=value` pairs, so a
- * scalar body copies verbatim and anything nested copies as JSON — which is
- * exactly the difference between a command that runs and one that does not.
- */
-export function asCliCommand(functionId: string, payload: unknown): string {
-  if (!isRecord(payload) || Object.keys(payload).length === 0) {
-    return `iii call ${functionId}`
-  }
-  const args = Object.entries(payload).map(([key, value]) => {
-    const literal =
-      typeof value === 'string' ? value : (JSON.stringify(value) ?? '')
-    if (!/[\s"']/.test(literal)) return `${key}=${literal}`
-    // A single quote cannot appear inside single quotes: close the segment,
-    // emit an escaped quote, reopen.
-    return `${key}='${literal.replaceAll("'", `'\\''`)}'`
-  })
-  return `iii call ${functionId} ${args.join(' ')}`
-}
-
 export function InvokePanel({
   host,
   functionId,
@@ -92,7 +49,6 @@ export function InvokePanel({
   hint,
   prefill,
   runRef,
-  layout = 'stacked',
 }: {
   host: Host
   functionId: string
@@ -101,9 +57,6 @@ export function InvokePanel({
   label?: string
   runningLabel?: string
   hint?: string
-  /** `split` puts the request beside the response (the functions page's Run
-      tab); `stacked` is the framed card the observers page embeds. */
-  layout?: 'stacked' | 'split'
   /** A recorded input pushed in from the activity feed; changes replace the body. */
   prefill?: { value: unknown; nonce: number }
   /** Kept current with this panel's run() while mounted, so the page's
@@ -133,10 +86,7 @@ export function InvokePanel({
     setInvalid(null)
   }, [prefill])
 
-  const completions = useMemo(
-    () => schemaFieldNames(requestSchema),
-    [requestSchema],
-  )
+  const completions = useMemo(() => schemaFieldNames(requestSchema), [requestSchema])
 
   const latest = attempts[0] ?? null
   const outcome = latest?.outcome ?? null
@@ -146,43 +96,51 @@ export function InvokePanel({
     setInvalid(null)
   }
 
-  const inFlightRef = useRef(false)
+  // The id of the attempt in flight, or null. An attempt is a token, not a
+  // flag, so a stopped call that answers late cannot settle a newer one.
+  const inFlightRef = useRef<number | null>(null)
+  const stopRef = useRef<(() => void) | null>(null)
   const run = async () => {
     let payload: unknown
     try {
       payload = JSON.parse(body)
     } catch (err) {
-      setInvalid(err instanceof Error ? err.message : 'invalid JSON')
+      setInvalid(err instanceof Error ? err.message : 'Invalid JSON')
       return
     }
     if (!isRecord(payload)) {
-      setInvalid('the request body must be a JSON object')
+      setInvalid('The request body must be a JSON object')
       return
     }
-    const missing = missingRequired(requestSchema, payload)
-    if (missing.length > 0) {
-      setInvalid(
-        `${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required by the schema`,
-      )
+    const problems = schemaProblems(requestSchema, payload)
+    if (problems.length > 0) {
+      setInvalid(problems.join('. '))
       return
     }
-    if (inFlightRef.current) return
-    inFlightRef.current = true
+    if (inFlightRef.current !== null) return
+    attemptSeq += 1
+    const id = attemptSeq
+    inFlightRef.current = id
     setInvalid(null)
     setRunning(true)
-    let result: Awaited<ReturnType<typeof invoke>>
-    try {
-      result = await invoke(host, functionId, payload)
-    } finally {
-      inFlightRef.current = false
+    const startedAt = Date.now()
+    const settle = (outcome: InvokeOutcome) => {
+      // Only the attempt still in flight may settle; a stopped one that
+      // answers later is dropped, not appended.
+      if (inFlightRef.current !== id) return
+      inFlightRef.current = null
       setRunning(false)
+      setAttempts((prev) => [{ id, atMs: startedAt, body, outcome }, ...prev.slice(0, 9)])
     }
-    attemptSeq += 1
-    setAttempts((prev) => [
-      { id: attemptSeq, atMs: Date.now(), body, outcome: result },
-      ...prev.slice(0, 9),
-    ])
+    stopRef.current = () =>
+      settle({
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: 'Stopped waiting. The worker may still be running it; check the Calls tab.',
+      })
+    void invoke(host, functionId, payload).then(settle)
   }
+  const stop = () => stopRef.current?.()
 
   if (runRef) runRef.current = run
   useEffect(() => {
@@ -192,21 +150,16 @@ export function InvokePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const split = layout === 'split'
-
   const request = (
     <>
       <div className="console-catalog-invoke-head">
         <div>
-          <h3>{split ? 'Request' : 'Call function'}</h3>
-          <p className="invoke-description">
-            {split
-              ? 'A JSON body; required fields are checked before the call.'
-              : 'Provide the input payload and call this function.'}
-          </p>
+          <h3>Request</h3>
+          <p className="invoke-description">A JSON body; required fields and types are checked before the call.</p>
         </div>
         <Button
-          variant={split ? 'ghost' : 'pill'}
+          className="console-catalog-btn"
+          variant="ghost"
           size="sm"
           type="button"
           onClick={reset}
@@ -216,142 +169,119 @@ export function InvokePanel({
         </Button>
       </div>
       {hint ? <div className="console-catalog-note">{hint}</div> : null}
-      {split ? null : (
-        <Eyebrow className="console-catalog-field-label">
-          Input payload (JSON)
-        </Eyebrow>
-      )}
-      <CodeEditor
-        value={body}
-        onChange={setBody}
-        language="json"
-        className="console-catalog-editor"
-        completions={completions}
-        aria-label={`request body for ${functionId}`}
-      />
+      {/* Monaco binds ⌘↵ to "insert line below" and swallows it, so the run
+          shortcut is caught on the way down, before the editor sees it. */}
+      <div
+        className="console-catalog-editor-wrap"
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault()
+            event.stopPropagation()
+            void run()
+          }
+        }}
+      >
+        <CodeEditor
+          fontSize={13}
+          value={body}
+          onChange={setBody}
+          language="json"
+          className="console-catalog-editor"
+          completions={completions}
+          aria-label={`Request body for ${functionId}`}
+        />
+      </div>
       <div className="console-catalog-invoke-foot">
         <Button
+          className="console-catalog-btn"
           type="button"
-          variant={split ? 'primary' : undefined}
-          size={split ? 'md' : 'sm'}
+          variant="primary"
+          size="sm"
           onClick={run}
           disabled={running}
         >
-          {split ? <Play aria-hidden /> : null}
+          <Play aria-hidden />
           {running ? runningLabel : label}
-          {split ? <KeyCombo binding="Mod+Enter" /> : null}
+          <ShortcutHint keys="enter" />
         </Button>
+        {running ? (
+          <Button className="console-catalog-btn" type="button" variant="ghost" size="sm" onClick={stop}>
+            <Square aria-hidden />
+            Stop
+          </Button>
+        ) : null}
         <CopyButton
           value={asCliCommand(functionId, safeJson(body))}
-          label={split ? 'Copy as command' : 'Copy iii command'}
-          title="Copies this exact call as an `iii call …` line to run from the terminal"
+          label="Copy as command"
+          title="Copies this exact call as an `iii call …` line for the terminal"
         />
-        {invalid ? (
-          <span className="console-catalog-invalid">{invalid}</span>
-        ) : null}
+        {invalid ? <span className="console-catalog-invalid">{invalid}</span> : null}
       </div>
     </>
   )
 
+  // Keyed by attempt, so each result enters once instead of mutating in place.
   const response = outcome ? (
-    <div className="console-catalog-result-shell" data-ok={outcome.ok}>
+    <div key={latest?.id} className="console-catalog-result-shell" data-ok={outcome.ok}>
       <div className="console-catalog-result-head">
-        <span
-          className={
-            outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
-          }
-        >
+        <span className={outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'}>
           <StatusDot tone={outcome.ok ? 'ok' : 'alert'} />
-          {split
-            ? outcome.ok
-              ? 'Success'
-              : 'Error'
-            : outcome.ok
-              ? 'success'
-              : 'error'}
+          {outcome.ok ? 'Success' : 'Error'}
         </span>
         <span className="result-meta">
           {latest ? clockTime(latest.atMs) : null}
           <span>{formatDuration(outcome.durationMs)}</span>
-          {split && outcome.ok ? (
-            <CopyIconButton
-              value={pretty(outcome.data) || 'null'}
-              label="Copy response"
-            />
-          ) : null}
+          {outcome.ok ? <CopyIconButton value={pretty(outcome.data) || 'null'} label="Copy response" /> : null}
         </span>
       </div>
       {outcome.error ? (
         <StatusPanel variant="alert" headline={outcome.error} />
       ) : (
-        <JsonHighlight
-          code={pretty(outcome.data) || 'null'}
-          className="console-catalog-result"
-          wrap
-        />
+        <JsonHighlight code={pretty(outcome.data) || 'null'} className="console-catalog-result" wrap />
       )}
     </div>
   ) : null
 
-  // The stacked card lists only the earlier attempts (the latest is the
-  // result above it); the split view lists all of them under the editor,
-  // the latest marked, so the history reads as one column.
-  const earlier = split ? attempts : attempts.slice(1)
   const history =
-    earlier.length > 0 ? (
+    attempts.length > 0 ? (
       <div className="console-catalog-attempts">
-        <Eyebrow className="console-catalog-field-label">This session</Eyebrow>
-        {earlier.map((attempt) => (
+        <h4 className="console-catalog-field-label">This session</h4>
+        {attempts.map((attempt) => (
           <button
             key={attempt.id}
             type="button"
             className="console-catalog-attempt"
-            data-latest={split && attempt.id === latest?.id}
+            data-latest={attempt.id === latest?.id}
             onClick={() => setBody(attempt.body)}
             title="Put this body back in the editor"
           >
             <StatusDot tone={attempt.outcome.ok ? 'ok' : 'alert'} />
-            {split ? (
-              <span className="time">{clockTime(attempt.atMs)}</span>
-            ) : null}
+            <span className="time">{clockTime(attempt.atMs)}</span>
             <span className="body">{oneLine(attempt.body)}</span>
-            <span className="duration">
-              {formatDuration(attempt.outcome.durationMs)}
-            </span>
+            <span className="duration">{formatDuration(attempt.outcome.durationMs)}</span>
           </button>
         ))}
       </div>
     ) : null
 
-  if (split) {
-    return (
-      <div className="console-catalog-invoke" data-layout="split">
-        <section className="invoke-column" aria-label="Request">
-          {request}
-          {history}
-        </section>
-        <section className="invoke-column" aria-label="Response">
-          <div className="console-catalog-invoke-head">
-            <div>
-              <h3>Response</h3>
-            </div>
-          </div>
-          {response ?? (
-            <div className="console-catalog-response-empty">
-              Run the function to see what it returns. Each run stays in this
-              session's list, so you can load an earlier body back.
-            </div>
-          )}
-        </section>
-      </div>
-    )
-  }
-
   return (
     <div className="console-catalog-invoke">
-      {request}
-      {response}
-      {history}
+      <section className="invoke-column" aria-label="Request">
+        {request}
+        {history}
+      </section>
+      <section className="invoke-column" aria-label="Response">
+        <div className="console-catalog-invoke-head">
+          <div>
+            <h3>Response</h3>
+          </div>
+        </div>
+        {response ?? (
+          <div className="console-catalog-response-empty">
+            Run it to see what comes back. Each run stays in this session's list, so you can load an earlier body back.
+          </div>
+        )}
+      </section>
     </div>
   )
 }

@@ -230,7 +230,7 @@
             "type": "object"
           },
           {
-            "description": "Reference to an original upload in the session-manager attachment store (resolvable with `session::get-attachment`). A REFERENCE ONLY: the bytes are never inline. Persisted verbatim on user messages and stripped from every model-bound copy (see [`ContentBlock::strip_files`]).",
+            "description": "Reference to an original upload in the session-manager attachment store (resolvable with `session::get-attachment`). A REFERENCE ONLY: the bytes are never inline. Persisted verbatim on user messages; every model-bound copy replaces it with an `<attachment>` text block naming the call that reads it (see [`ContentBlock::strip_files`]).",
             "properties": {
               "attachment_id": {
                 "type": "string"
@@ -827,6 +827,18 @@
             "description": "The session owns an armed wake (a one-shot notify subscription, claimed or not, until its delivery has seeded the woken turn), or its finished turn drained a queued message and is about to be reseeded: a completed turn here is NOT the run's outcome — a later turn in this session carries it. Mirrors the `terminal` flag on `harness::on-turn-completed` (`expects_wake == !terminal`). Pollers (e.g. workflow reconcile) must treat `completed && expects_wake` as still running.",
             "type": "boolean"
           },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TurnFailure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Why a `failed` turn failed: `code`, and `retryable` when the failure is temporary, so a later send into this session may succeed. Present in the lean report too, only on a failed turn."
+          },
           "max_transient_resumes": {
             "format": "uint32",
             "minimum": 0.0,
@@ -948,6 +960,24 @@
           "error"
         ],
         "type": "string"
+      },
+      "TurnFailure": {
+        "description": "The failure a `failed` turn ended on.",
+        "properties": {
+          "code": {
+            "description": "The failure code, e.g. `router/provider_transient` or `harness.turn_internal`.",
+            "type": "string"
+          },
+          "retryable": {
+            "description": "The failure is temporary, so a later send into the session may succeed: a provider outage, rate limit or cut stream that outlasted the turn's `max_transient_resumes` recovery generations, or a turn the harness could not schedule.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "retryable"
+        ],
+        "type": "object"
       },
       "TurnStatus": {
         "description": "The coarse, harness-internal turn lifecycle (harness.md § API Reference). Finer-grained than the session's `status`, which the loop derives from it.",

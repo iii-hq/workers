@@ -27,9 +27,10 @@ import { listSessions, loadSession, saveSession } from './state.js';
 import {
   childSessionOwnership,
   linkChildSession,
-  type Ownership,
   recordTaskOutcome,
   setSessionStatus,
+  settleSessionStatus,
+  type Ownership,
 } from './session-link.js';
 import { ChildTranscript, type TurnSink } from './session-writer.js';
 import { runTurnSpan } from './trace.js';
@@ -158,7 +159,13 @@ const RUN_RESPONSE_FORMAT = jsonSchema(
   }),
 );
 const START_RESPONSE_FORMAT = jsonSchema(
-  z.object({ session_id: z.string(), started: z.boolean() }),
+  z.object({
+    session_id: z.string(),
+    started: z.boolean(),
+    // A follow-up while the previous run is still saving: not started.
+    busy: z.boolean().optional(),
+    reason: z.string().optional(),
+  }),
 );
 const STOP_RESPONSE_FORMAT = jsonSchema(
   z.object({ session_id: z.string(), stopped: z.boolean(), reason: z.string().optional() }),
@@ -175,6 +182,22 @@ const SESSIONS_RESPONSE_FORMAT = jsonSchema(z.object({ sessions: z.array(Session
  */
 type LiveRun = { interrupt: () => Promise<void>; stopped?: boolean };
 const live = new Map<string, LiveRun>();
+
+/** Sessions this worker has run a turn in since it started, kept until the
+ *  startup scan ends: that scan must not settle any of them. */
+const ranSinceBoot = new Set<string>();
+let trackingSinceBoot = true;
+
+/** Whether this worker has run (or is running) a turn in `sessionId` since it started. */
+export function ranSinceStart(sessionId: string): boolean {
+  return live.has(sessionId) || ranSinceBoot.has(sessionId);
+}
+
+/** The startup scan is over: stop remembering. */
+export function startupScanDone(): void {
+  trackingSinceBoot = false;
+  ranSinceBoot.clear();
+}
 
 /** Best-effort: flip a session record to `error` so a failed background run
  *  never leaves it stuck in `working`. Swallows its own failure. */
@@ -253,6 +276,7 @@ export async function executeRun(
     },
   };
   live.set(session_id, handle);
+  if (trackingSinceBoot) ranSinceBoot.add(session_id);
 
   try {
     // A run that names a parent is a sub-agent: give it a linked session first,
@@ -294,9 +318,9 @@ export async function executeRun(
       if (!written.write) return;
       // Transcript first, status second: the console opens a child on `done`,
       // and a transcript that could not be written whole is never `done`.
-      if (written.complete) await setSessionStatus(iii, session_id, status, reason);
+      if (written.complete) await settleSessionStatus(iii, session_id, status, reason);
       else {
-        await setSessionStatus(
+        await settleSessionStatus(
           iii,
           session_id,
           'error',
@@ -332,7 +356,7 @@ export async function executeRun(
     if (stop !== 'end') writer?.note(stop, said);
     await finish(
       result.is_error === true ? 'error' : 'done',
-      result.is_error === true ? said : undefined,
+      result.is_error === true ? said : stop === 'interrupted' ? 'stopped' : undefined,
     );
     return result;
   } finally {
@@ -464,6 +488,9 @@ async function runReserved(
     let resultText = '';
     let stopReason = 'end';
     let isError = false;
+    /** Whether a claude::stop had landed when the turn's outcome arrived: a
+     *  stop after an SDK error result must not hide that failure. */
+    let stoppedAtOutcome = false;
 
     if (stoppedEarly) {
       stopReason = 'interrupted';
@@ -474,6 +501,7 @@ async function runReserved(
         // The child transcript sees every event before the feeds or the record
         // do, so neither failing can lose what the turn produced.
         if (msg.type === 'stream_event') sink?.streamEvent((msg as { event?: unknown }).event);
+        if (msg.type === 'result') stoppedAtOutcome = handle.stopped === true;
         await rawFeed(session_id, msg);
         if (msg.type === 'system' && msg.subtype === 'init') {
           record.claude_session_id = msg.session_id;
@@ -532,13 +560,28 @@ async function runReserved(
           record.usage = mapUsage(msg.usage);
           isError = msg.is_error === true;
           stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
-          resultText = 'result' in msg && typeof msg.result === 'string' ? msg.result : '';
+          // A failed result may carry its reason only in `errors`.
+          resultText =
+            'result' in msg && typeof msg.result === 'string' && msg.result
+              ? msg.result
+              : 'errors' in msg && Array.isArray(msg.errors) && msg.errors.length
+                ? msg.errors.map(String).join('; ')
+                : '';
         }
       }
     } catch (err) {
+      stoppedAtOutcome = handle.stopped === true;
       isError = true;
       stopReason = 'error';
       resultText = String(err);
+    }
+    // A requested stop: the interrupted query answers with an error result (or
+    // throws), which is how it was stopped, not a failure. A turn that finished
+    // before the stop landed keeps its own outcome.
+    if (stoppedAtOutcome && !stoppedEarly && (isError || stopReason !== 'end')) {
+      isError = false;
+      stopReason = 'interrupted';
+      resultText = 'Stopped by claude::stop.';
     }
     // slot release is handled by executeRun's finally (covers setup throws too)
 
@@ -702,6 +745,8 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       const { session_id } = SessionIdSchema.parse(payload ?? {});
       const run = live.get(session_id);
       if (!run) return { session_id, stopped: false, reason: 'no live run' };
+      // Marked first: the run reads it to tell a requested stop from a failure.
+      run.stopped = true;
       await run.interrupt();
       return { session_id, stopped: true };
     },
