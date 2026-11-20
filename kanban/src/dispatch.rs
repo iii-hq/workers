@@ -978,6 +978,8 @@ mod tests {
                     .collect(),
             ),
             comment_id: None,
+            session_id: None,
+            turn_id: None,
         }
     }
 
