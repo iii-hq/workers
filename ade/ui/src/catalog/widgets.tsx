@@ -395,14 +395,14 @@ export function ShortcutHint({ keys }: { keys: 'enter' }) {
  * scrolls sideways instead.
  */
 export function CodeBlock({
-  label,
+  language,
   icon,
   children,
   copy,
   copyLabel,
 }: {
   /** The language, as a terminal or editor tab names it: `bash`, `json`. */
-  label: string
+  language: string
   icon?: ReactNode
   children: ReactNode
   copy: string
@@ -413,7 +413,7 @@ export function CodeBlock({
       <figcaption>
         <span className="snippet-lang">
           {icon}
-          {label}
+          {language}
         </span>
         <CopyIconButton value={copy} label={copyLabel} />
       </figcaption>
@@ -470,7 +470,7 @@ export function TerminalSnippet({
 }) {
   const scroller = useScrollEdges<HTMLElement>()
   return (
-    <CodeBlock label="bash" icon={<SquareTerminal aria-hidden />} copy={copy} copyLabel="Copy command">
+    <CodeBlock language="bash" icon={<SquareTerminal aria-hidden />} copy={copy} copyLabel="Copy command">
       {/* The section is the scroller: a scrollable region needs a tab stop
           (WCAG 2.1.1) and a name. */}
       {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-scrollable */}

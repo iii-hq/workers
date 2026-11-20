@@ -247,7 +247,7 @@ export function HttpTester({ host, binding }: { host: Host; binding: HttpBinding
                 value={entry.key}
                 onChange={(next) => setQuery((prev) => prev.map((q) => (q.id === entry.id ? { ...q, key: next } : q)))}
                 preserveCase
-                placeholder="key"
+                placeholder="Key"
                 aria-label="Query parameter name"
               />
               <Input
@@ -256,7 +256,7 @@ export function HttpTester({ host, binding }: { host: Host; binding: HttpBinding
                   setQuery((prev) => prev.map((q) => (q.id === entry.id ? { ...q, value: next } : q)))
                 }
                 preserveCase
-                placeholder="value"
+                placeholder="Value"
                 aria-label="Query parameter value"
               />
               <Button

@@ -910,7 +910,7 @@ function FunctionContract({ detail, onEdit }: { detail: FunctionDetail; onEdit: 
             Open in Run
           </Button>
         </header>
-        <CodeBlock label="json" icon={<Braces aria-hidden />} copy={template} copyLabel="Copy payload">
+        <CodeBlock language="json" icon={<Braces aria-hidden />} copy={template} copyLabel="Copy payload">
           <JsonHighlight code={template} className="snippet-json" />
         </CodeBlock>
         <TerminalSnippet functionId={detail.function_id} args={cliArgs(payload)} copy={command} />
