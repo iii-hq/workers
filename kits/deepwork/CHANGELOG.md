@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.8
+
+- **The full database suite starts on a fresh container.** The run's Postgres container lived the whole run, and every suite left one database per test behind: after a day of rounds it held 13,648 databases and 143 GB. Suites killed at their deadline had also left 18 shared-memory segments filling `/dev/shm`, so the next suite failed 46 targets with `PoolTimedOut` and `53100` while the code was fine, and the run stopped blocked. The suite's command now recreates the container (`docker rm -f -v`, the same `docker run`, `pg_isready`) before it runs.
+- **Git-ignored sources the cards cite reach the worktree.** Reviewers read only inside their worktree, and a worktree never gets ignored files, so a card citing `.planning/packages/assistant/card.md` could not be reviewed (`C215 outside jail`), and the run stopped on it. Every fresh copy (the run's worktree, each ticket worktree, every resume) now gets those files copied in at the same path.
+
 ## 0.8.7
 
 - **A run files its work in the board's projects and releases instead of making its own.** Every run without `project=` created a project such as `deepwork: failed deployment worker logs · 6ea0b7`, so a product's work was scattered across one project per run, and no run ever created a release: 40 small cards landed in one release with no division.
