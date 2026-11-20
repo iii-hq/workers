@@ -1389,12 +1389,17 @@ pub async fn search_functions(
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
     let cfg = deps.config.load_full();
+    // This search's judge route, bound to its own handle: a concurrent search
+    // that sees another catalog never reroutes this one's judge calls.
+    let deps = &Deps {
+        judge: deps.judge.in_namespace(call_namespace(
+            &tools,
+            judge_contract::FUNCTION_ID,
+            &deps.own_namespace(),
+        )),
+        ..deps.clone()
+    };
     let judge = judge_deadline(&cfg, &tools, &deps.judge);
-    deps.judge.set_namespace(call_namespace(
-        &tools,
-        judge_contract::FUNCTION_ID,
-        &deps.own_namespace(),
-    ));
     let fingerprint = tool_fingerprint(&tools);
     let function_search = async {
         let mut selected: Vec<String> = Vec::new();

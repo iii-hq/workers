@@ -160,8 +160,9 @@ pub struct JudgeSearch {
     /// with the instant it was read.
     window: Arc<Mutex<HashMap<String, (Instant, Limits)>>>,
     /// Namespace hosting the judge when this worker's own does not (`None`:
-    /// call it unqualified).
-    namespace: Arc<Mutex<Option<String>>>,
+    /// call it unqualified). Bound per search, so a concurrent search never
+    /// reroutes another's calls.
+    namespace: Option<String>,
 }
 
 /// What the judge's models advertise, read at the paired instant: the
@@ -267,18 +268,22 @@ impl JudgeSearch {
             transport,
             paused_until: Arc::default(),
             window: Arc::default(),
-            namespace: Arc::default(),
+            namespace: None,
         }
     }
 
-    /// Route the judge calls to `namespace` (`None`: this worker's own).
-    pub fn set_namespace(&self, namespace: Option<String>) {
-        *self.namespace.lock().expect("judge namespace") = namespace;
+    /// This judge with its calls routed to `namespace` (`None`: this worker's
+    /// own); pauses and cached limits stay shared.
+    pub fn in_namespace(&self, namespace: Option<String>) -> Self {
+        Self {
+            namespace,
+            ..self.clone()
+        }
     }
 
     /// `request`, sent to the judge's namespace when one is set.
     fn routed(&self, request: CallRequest) -> CallRequestWithMetadata {
-        match self.namespace.lock().expect("judge namespace").clone() {
+        match self.namespace.clone() {
             Some(namespace) => request.namespace(namespace),
             None => request.into(),
         }
@@ -1156,19 +1161,20 @@ mod tests {
     }
 
     #[test]
-    fn judge_calls_name_the_namespace_set_for_them() {
-        let judge = JudgeSearch::default();
+    fn each_judge_handle_keeps_the_namespace_bound_to_it() {
+        let shared = JudgeSearch::default();
         let request = || CallRequest {
             function_id: judge_contract::FUNCTION_ID.into(),
             payload: json!({}),
             action: None,
             timeout_ms: None,
         };
-        assert!(format!("{:?}", judge.routed(request())).contains("namespace: None"));
-        judge.set_namespace(Some("hub".into()));
-        assert!(format!("{:?}", judge.routed(request())).contains("namespace: Some(\"hub\")"));
-        judge.set_namespace(None);
-        assert!(format!("{:?}", judge.routed(request())).contains("namespace: None"));
+        // Two concurrent searches bind their own routes.
+        let a = shared.in_namespace(Some("z-hub".into()));
+        let b = shared.in_namespace(Some("a-hub".into()));
+        assert!(format!("{:?}", a.routed(request())).contains("namespace: Some(\"z-hub\")"));
+        assert!(format!("{:?}", b.routed(request())).contains("namespace: Some(\"a-hub\")"));
+        assert!(format!("{:?}", shared.routed(request())).contains("namespace: None"));
     }
 
     #[test]
