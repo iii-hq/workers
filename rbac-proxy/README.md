@@ -30,7 +30,7 @@ listener, while at the boundary it:
 - **pins identities**: a proxied worker registers as
   `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
   name>` for a session without `function_registration_prefix`), unless the
-  auth function granted that name in `worker_names` (one live session at a
+  auth function (or `loopback_auth`) granted that name in `worker_names` (one live session at a
   time, never an `rbac-proxy:` name), and an
   `engine::*` call is
   forwarded only as a direct call (a queued one is refused), so a session
@@ -136,6 +136,8 @@ expose_worker_internals: false    # strip pid/ip/metrics from engine::workers::*
 middleware_function_id: my-project::middleware-function
 rbac:
   auth_function_id: my-project::auth-function
+  # loopback_auth: {}        # a local project without an auth function: admits
+  #                          # this machine only (see Local projects: loopback_auth)
   expose_endpoints:          # nothing is served without these (see above)
     - match("/")
     - match("/ws/channels/*")
