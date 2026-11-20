@@ -21,6 +21,7 @@ fn tools() -> Vec<ToolSchema> {
         name: name.into(),
         description: description.into(),
         parameters: json!({"type": "object"}),
+        namespaces: Vec::new(),
     })
     .collect()
 }
@@ -58,7 +59,7 @@ where
 {
     let requests: Requests = Arc::default();
     let seen = requests.clone();
-    let client = JudgeSearch::from_evaluator(move |request| {
+    let client = JudgeSearch::from_evaluator(move |_, request| {
         let (delay_ms, result) = reply(&request);
         seen.lock().unwrap().push(request);
         async move {
@@ -150,6 +151,7 @@ async fn ask(deps: &Deps, capabilities: &[&str]) -> SearchFunctionsResponse {
     search_functions(
         deps,
         SearchFunctionsRequest {
+            namespace: None,
             capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
         },
     )
@@ -176,6 +178,42 @@ async fn judge_finds_nonlexical_candidates_without_a_local_model() {
     let body = bodies[0].to_string();
     assert!(!body.contains("engine::functions::list"));
     assert!(!body.contains("directory::search_functions"));
+}
+
+#[tokio::test]
+async fn search_calls_the_judge_in_the_namespace_that_hosts_it() {
+    use opentelemetry::baggage::BaggageExt;
+    let routes: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+    let seen = routes.clone();
+    let judge = JudgeSearch::from_evaluator(move |namespace, request| {
+        seen.lock().unwrap().push(namespace);
+        let result = Ok(reply(&request, 0.9));
+        async move { result }
+    });
+    // This worker runs in `default`; only `hub` hosts the judge.
+    let catalog: Vec<ToolSchema> = tools()
+        .into_iter()
+        .map(|mut tool| {
+            let ns = if tool.name == judge_contract::FUNCTION_ID {
+                "hub"
+            } else {
+                "default"
+            };
+            tool.namespaces = vec![ns.into()];
+            tool
+        })
+        .collect();
+    let deps = Deps {
+        catalog: Arc::new(RwLock::new(Arc::new(catalog))),
+        ..deps(judge)
+    };
+    // The caller's namespace; the judge route comes from this worker's own.
+    let _own = opentelemetry::Context::new()
+        .with_baggage([opentelemetry::KeyValue::new("iii.own_namespace", "default")])
+        .attach();
+    let response = ask(&deps, &["dispatch correspondence"]).await;
+    assert_eq!(response.search_mode, FunctionSearchMode::Judge);
+    assert_eq!(*routes.lock().unwrap(), [Some("hub".to_string())]);
 }
 
 #[tokio::test]
@@ -504,6 +542,7 @@ async fn judge_keeps_multiple_capabilities_within_existing_caps() {
             name: format!("worker{i}::act"),
             description: "Perform an action.".into(),
             parameters: json!({"type":"object"}),
+            namespaces: Vec::new(),
         })
         .chain(tools().into_iter().skip(4))
         .collect();

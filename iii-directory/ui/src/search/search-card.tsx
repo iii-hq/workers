@@ -165,8 +165,8 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
       ) : (
         <>
           {view.workers.map((worker) => (
-            <section key={worker.namespace}>
-              <SectionHead count={worker.functions.length}>worker · {worker.namespace}</SectionHead>
+            <section key={worker.worker}>
+              <SectionHead count={worker.functions.length}>worker · {worker.worker}</SectionHead>
               {worker.functions.map((candidate) => (
                 <CandidateBlock candidate={candidate} key={candidate.function_id} />
               ))}

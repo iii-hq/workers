@@ -1425,16 +1425,19 @@ mod tests {
                 name: "web::fetch".into(),
                 description: "Fetch a web page by URL and return its contents.".into(),
                 parameters: serde_json::json!({"type": "object", "properties": {"url": {"type": "string"}}}),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "email::send".into(),
                 description: "Send an email message to a recipient.".into(),
                 parameters: serde_json::json!({"type": "object", "properties": {"to": {"type": "string"}}}),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "calendar::list".into(),
                 description: "List calendar events in a time range.".into(),
                 parameters: serde_json::json!({"type": "object"}),
+                namespaces: Vec::new(),
             },
         ]);
         let fingerprint = tool_fingerprint(&tools);

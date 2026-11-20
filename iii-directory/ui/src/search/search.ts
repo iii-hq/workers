@@ -5,7 +5,7 @@ export interface DiscoverCandidateView {
 }
 
 export interface DiscoverWorkerView {
-  namespace: string
+  worker: string
   functions: DiscoverCandidateView[]
 }
 
@@ -134,10 +134,12 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
   const workers: DiscoverWorkerView[] = []
   for (const worker of value.workers) {
     if (!isRecord(worker)) return null
-    if (typeof worker.namespace !== 'string' || worker.namespace.length === 0) return null
+    // Transcript rows from directory versions before the rename carry `namespace`.
+    const name = typeof worker.worker === 'string' ? worker.worker : worker.namespace
+    if (typeof name !== 'string' || name.length === 0) return null
     const functions = parseCandidates(worker.functions)
     if (!functions) return null
-    workers.push({ namespace: worker.namespace, functions })
+    workers.push({ worker: name, functions })
   }
   const installable: DiscoverInstallableView[] = []
   if ('installable' in value && value.installable !== undefined) {
