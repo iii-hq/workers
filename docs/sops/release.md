@@ -10,12 +10,15 @@ The selected source commit must contain the worker's `.deploy/workers.yaml`
 entry and public `iii.worker.yaml`. Release Control owns the exact version
 being released, but the build compiles the package-manifest version into the
 bytes (Rust `CARGO_PKG_VERSION`, Go `main.version`) and Release Control does not
-compare the two. A bump publishes one past the highest published or claimed
-version, while the source manifest holds at most the last published one, so a
-worker that reports its version (sandbox-libkrun's `adapter_version`) reports
-an older one. Until Release Control refuses that mismatch, merge the manifest
-bump first (`manifest_version.py bump <manifest> --kind none --target X.Y.Z`,
-then `manifest_version.py sync-tags`), deploy that commit with the exact
+compare the two. A bump publishes one patch past the highest published version,
+so after every release
+[`sync-manifest-versions.yml`](../../.github/workflows/sync-manifest-versions.yml)
+writes that next version (`manifest_version.py sync-tags`) into every manifest
+and lock: the next default bump then builds bytes that report the version they
+are published as. A minor or major release, a version claimed by a failed
+deployment, or a prerelease does not follow that rule; for those, merge the
+manifest bump first (`manifest_version.py bump <manifest> --kind none --target
+X.Y.Z`, then `manifest_version.py sync-tags`), deploy that commit with the exact
 version `X.Y.Z`, and discard a failed deployment before deploying a fixed
 commit at the same version: a new bump while it is live claims the next one.
 `sync-tags` writes the version into every `Cargo.lock` and `uv.lock` that

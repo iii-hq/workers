@@ -12,8 +12,9 @@ Subcommands:
                            validate the target against existing git tags
     verify <path> --expected V
                            assert the file's version equals V
-    sync-tags [--remote R] write every worker's highest published tag into
-                           its manifest and the repository's lockfiles
+    sync-tags [--remote R] write the version every worker's next release
+                           publishes (one patch past its highest published
+                           tag) into its manifest and the repository's lockfiles
     deploy-mode <worker>   print the interface-collection mode
 
 Exit codes: 0 on success, 1 on parse / IO / mismatch failure.
@@ -123,15 +124,30 @@ def cmd_sync_lock(args: argparse.Namespace) -> int:
     return 0
 
 
+def next_release_version(published: str) -> str:
+    """The version Release Control publishes next after `published`.
+
+    Release Control bumps one patch past the highest published version and
+    builds the binary from the package manifest *before* it publishes, so the
+    manifest has to hold this version already for the binary (Rust
+    `CARGO_PKG_VERSION`, Go `main.version`) to report the version it ships as.
+    A prerelease's successor depends on the operator's choice, so it is kept.
+    """
+    if _lib.release_maturity(published) != "stable":
+        return published
+    return _lib.bump(published, "patch")
+
+
 def sync_manifests(
     catalog: dict[str, _lib.WorkerSpec], tags: Iterable[str], locks: Iterable[Path]
 ) -> tuple[list[str], list[str]]:
-    """Write each catalog worker's highest `<worker>/v<version>` tag into its manifest.
+    """Write each catalog worker's next release version into its manifest.
 
     Release Control mints one tag per published Registry version, so the
-    highest in-grammar tag is the newest version any channel ever received.
-    Manifests only move forward: one already at or past its tag (a hand bump
-    seeding a first publication) stays. Every lock in `locks` gets the bumped
+    highest in-grammar tag is the newest version any channel ever received,
+    and its next release is `next_release_version` of it. Manifests only move
+    forward: one already at or past that version (a hand bump seeding a minor
+    or first publication) stays. Every lock in `locks` gets the bumped
     packages' local entries, since workers lock each other through path deps.
     Returns (changes, errors); one worker's error never blocks the others.
     """
@@ -158,7 +174,7 @@ def sync_manifests(
             versions = [v for v in versions if _lib.release_maturity(v) != "experimental"]
             if not versions:
                 continue
-        target = max(versions, key=_lib.parse_semver)
+        target = next_release_version(max(versions, key=_lib.parse_semver))
         try:
             current = _lib.read_version(manifest)
             version = max(current, target, key=_lib.parse_semver)
