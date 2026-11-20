@@ -272,8 +272,13 @@ first that reads the bind; after that, the next reload checks again.
 | `iii_observers` | The session's observers with `delivery`, `state`, `buffered`, `received`, `dropped` (and `target_function_id`). Needs a session. |
 | `iii_unobserve` | Remove one observer, discarding its unread observations. Needs a session. |
 | `iii_status` | Server version, session id, the session's `active_profile` (`default-mcp` until another is activated), and `access_control`: `rbac-proxy` with its `policy` (the exposed globs), or `disabled` with a warning. |
-| `iii_list_agents`, `iii_get_agent` | Agent profiles from `directory::agents::*` (hidden ones with `include_hidden`). `iii_get_agent` without an `id` returns the `default-mcp` profile; with `activate: true` the profile becomes the session's active profile. |
-| `iii_list_skills`, `iii_get_skill` | Skills from `directory::skills::*` (`search`, `prefix`). |
+| `iii_get_agent` | Loads an agent profile from `directory::agents::get`: the `default-mcp` profile without an `id`. With `activate: true` the profile becomes the session's active profile. |
+
+Listing profiles and reading skills need no tool of their own: call
+`directory::agents::list`, `directory::skills::list` (`search`, `prefix`) and
+`directory::skills::get { id }` with `iii_call`. Skills are also MCP resources at
+`iii://<id>`. Only loading a profile keeps a tool, because `activate` changes
+this server's session.
 
 The `initialize` instructions tell the agent, in this order, to:
 

@@ -223,10 +223,7 @@ and re-initialize.
 | `iii_observers` | — | `[{ observer_id, function_id, delivery, target_function_id?, filters?, state, buffered, received, dropped }]` | yes |
 | `iii_unobserve` | `observer_id` (required) | `{ observer_id, removed: true, discarded }` | yes |
 | `iii_status` | — | `{ server, version, session_id, access_control: "rbac-proxy" \| "disabled", policy?, warning? }` | no |
-| `iii_list_agents` | `include_hidden` | profiles from `directory::agents::list` | no |
 | `iii_get_agent` | `id` (default `default-mcp`), `activate` (records the session's active profile, reported by `iii_status`) | `directory::agents::get` | no |
-| `iii_list_skills` | `search`, `prefix` | rows from `directory::skills::list` | no |
-| `iii_get_skill` | `id` (required) | the skill's markdown body | no |
 
 Rules shared by all tools:
 
