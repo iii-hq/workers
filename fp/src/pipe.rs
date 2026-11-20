@@ -412,13 +412,19 @@ pub(crate) async fn approval_gate_running(iii: &IIIClient) -> Result<bool, Strin
     }
 }
 
-/// NOT_FOUND is the ONLY answer that unlocks database writes. FORBIDDEN —
-/// the id RBAC-hidden, or the info call itself denied — means presence is
-/// unknowable from here: treat the gate as present (fail closed). Anything
-/// else is infrastructure trouble, surfaced rather than converted to policy.
+/// The engine's "no namespace holds it" answer is the ONLY one that unlocks
+/// database writes. Every other NOT_FOUND (the bare id held by two or more
+/// non-default namespaces and not by `default`: "is ambiguous ...") means a
+/// gate runs somewhere, and fp cannot see its caller's namespace: present.
+/// FORBIDDEN — the id RBAC-hidden, or the info call itself denied — means
+/// presence is unknowable from here: treat the gate as present (fail closed).
+/// Anything else is infrastructure trouble, surfaced rather than converted to
+/// policy.
 fn gate_presence_from_error(error: &iii_sdk::Error) -> Result<bool, String> {
     match error {
-        iii_sdk::Error::Remote { code, .. } if code == "NOT_FOUND" => Ok(false),
+        iii_sdk::Error::Remote { code, message, .. } if code == "NOT_FOUND" => {
+            Ok(message != "Function 'approval::gate' is not registered.")
+        }
         iii_sdk::Error::Remote { code, .. } if code == "FORBIDDEN" => Ok(true),
         e => Err(format!("could not inspect approval-gate availability: {e}")),
     }
@@ -847,19 +853,28 @@ mod tests {
         assert!(validate_with_approval_gate(&query_only, true).is_ok());
         assert!(validate_with_approval_gate(&query_only, false).is_ok());
 
-        // Only a trustworthy NOT_FOUND unlocks writes; FORBIDDEN (RBAC hides
-        // the gate, or the info call itself) fails closed as "present", and
-        // infrastructure errors surface instead of deciding policy.
-        let remote = |code: &str| iii_sdk::Error::Remote {
+        // Only the engine's "registered nowhere" NOT_FOUND unlocks writes; a
+        // NOT_FOUND naming the namespaces that hold the gate (two non-default
+        // gates, none in `default`) and FORBIDDEN (RBAC hides the gate, or the
+        // info call itself) fail closed as "present", and infrastructure
+        // errors surface instead of deciding policy.
+        let remote = |code: &str, message: &str| iii_sdk::Error::Remote {
             code: code.into(),
-            message: String::new(),
+            message: message.into(),
             stacktrace: None,
         };
-        assert!(!gate_presence_from_error(&remote("NOT_FOUND")).unwrap());
-        assert!(gate_presence_from_error(&remote("FORBIDDEN")).unwrap());
+        let not_found = |message| gate_presence_from_error(&remote("NOT_FOUND", message));
+        assert!(!not_found("Function 'approval::gate' is not registered.").unwrap());
+        assert!(not_found(
+            "Function 'approval::gate' is ambiguous: it is registered in namespace(s): proj, proj2. \
+             Pass `namespace` to select one."
+        )
+        .unwrap());
+        assert!(not_found("").unwrap());
+        assert!(gate_presence_from_error(&remote("FORBIDDEN", "")).unwrap());
         // invoke-layer "target function missing" (old engine) is its own,
         // lowercase code — it must NOT read as gate absence
-        assert!(gate_presence_from_error(&remote("function_not_found")).is_err());
+        assert!(gate_presence_from_error(&remote("function_not_found", "")).is_err());
         assert!(gate_presence_from_error(&iii_sdk::Error::Timeout).is_err());
     }
 
