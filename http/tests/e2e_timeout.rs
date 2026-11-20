@@ -1,15 +1,15 @@
 //! End-to-end coverage for request-timeout and concurrency-limit parity with
 //! the engine's `iii-http`.
 //!
-//! `http/src/server.rs` wraps the whole router in a tower `TimeoutLayer`
-//! (`StatusCode::GATEWAY_TIMEOUT`) sized from `config.default_timeout` --
-//! mirroring the engine, which relies on the same layer to 504 a slow
+//! `http/src/server.rs` bounds every request, from its arrival (the wait for
+//! a concurrency slot included), with `config.default_timeout`, answering
+//! `StatusCode::GATEWAY_TIMEOUT` -- like the engine, which 504s a slow
 //! request. `http/src/handler.rs` ALSO bounds its call of `http::on-request`
 //! (and the deliver hook its call of the target) with
 //! `CallRequest { timeout_ms: Some(default_timeout), .. }`, which on expiry
 //! surfaces an error mapped to a 500 by the handler's generic call-error arm.
-//! A slow HANDLER function must still surface as 504 (the tower layer owns the
-//! request deadline, matching the engine) -- see
+//! A slow HANDLER function must still surface as 504 (the request timeout owns
+//! the deadline, matching the engine) -- see
 //! `function_timeout_returns_504_not_500` below.
 //!
 //! Mirrors the harness used by `e2e_errors.rs` -- see that file's module doc
@@ -23,11 +23,12 @@ use common::{backend, engine, worker};
 use serial_test::serial;
 
 /// A HANDLER function that sleeps well past `default_timeout` must surface as
-/// `504 Gateway Timeout` to the client -- the tower `TimeoutLayer` owns the
-/// request deadline, exactly like the engine's `iii-http`. The handler's own
+/// `504 Gateway Timeout` to the client -- the request timeout owns the
+/// deadline, exactly like the engine's `iii-http`. The handler's own
 /// call bound (the same `default_timeout`, `CallRequest { timeout_ms, .. }`)
-/// starts later than the tower layer's, so the tower layer answers first with
-/// the engine-parity 504 rather than the generic call-error arm's 500.
+/// starts later than the request timeout's, so the request timeout answers
+/// first with the engine-parity 504 rather than the generic call-error arm's
+/// 500.
 #[tokio::test]
 #[serial]
 async fn function_timeout_returns_504_not_500() {
@@ -47,7 +48,7 @@ async fn function_timeout_returns_504_not_500() {
     assert_eq!(
         resp.status(),
         reqwest::StatusCode::GATEWAY_TIMEOUT,
-        "a slow handler must 504 (tower TimeoutLayer owns the request deadline), \
+        "a slow handler must 504 (the request timeout owns the deadline), \
          matching the engine -- got body: {:?}",
         resp.text().await
     );
@@ -79,11 +80,7 @@ async fn fast_function_is_unaffected_by_timeout_layer() {
 /// The `ConcurrencyLimitLayer` QUEUES excess requests rather than rejecting
 /// them, so correctness under a tight limit means every request still
 /// eventually succeeds -- just serialized once in-flight requests exceed the
-/// permit count. A strict "never more than N in flight" assertion isn't
-/// deterministically observable from the client side (no instrumentation
-/// hook into the tower layer), so this is a throughput smoke: fire more
-/// concurrent requests than the configured limit and assert they ALL
-/// eventually return 200.
+/// permit count: 6 requests of ~200 ms under a limit of 2 take three rounds.
 #[tokio::test]
 #[serial]
 async fn concurrency_limit_queues_excess_requests_but_all_succeed() {
@@ -104,6 +101,7 @@ async fn concurrency_limit_queues_excess_requests_but_all_succeed() {
         handles.push(tokio::spawn(async move { client.get(&url).send().await }));
     }
 
+    let started = std::time::Instant::now();
     let deadline = Duration::from_secs(10);
     let results = tokio::time::timeout(deadline, futures::future::join_all(handles))
         .await
@@ -120,15 +118,11 @@ async fn concurrency_limit_queues_excess_requests_but_all_succeed() {
         );
     }
 
-    // NOTE: this is a wired-and-doesn't-break-throughput smoke, NOT a proof of
-    // global serialization. Empirically the `ConcurrencyLimitLayer` does NOT
-    // serialize requests across separate connections here (6 reqs @ ~200ms with
-    // limit 2 complete in ~200ms, not ~600ms) -- an added elapsed>=400ms floor
-    // FAILS. The engine's iii-http uses the identical construction
-    // (`tower::limit::ConcurrencyLimitLayer::new(..)` via `Router::layer`, same
-    // `axum::serve`), so this matches its behavior (per-connection semaphore, not
-    // a global limit). A true global cap would need `GlobalConcurrencyLimitLayer`
-    // -- but that would diverge from the engine, so it's intentionally not done.
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "the limit holds across connections: {:?}",
+        started.elapsed()
+    );
 
     boot.shutdown().await;
 }
