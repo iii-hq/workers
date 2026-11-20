@@ -97,18 +97,23 @@ fn check_namespace_qualifier(
     index: usize,
 ) -> Result<(), CompileError> {
     let bad = match namespace {
-        None if pattern.starts_with('/') => Some(""),
-        Some(ns) if ns.contains(['*', '?', '[', '{']) => Some(ns),
+        None if pattern.starts_with('/') => {
+            Some(("", "drop the leading `/` to match every namespace"))
+        }
+        Some(ns) if ns.contains(['*', '?', '[', '{']) => {
+            Some((ns, "a bare pattern already matches every namespace"))
+        }
         // `laptop//x` splits to the literal id `/x`, which no call carries.
-        Some(ns) if pattern[ns.len() + 1..].starts_with('/') => Some(&pattern[..ns.len() + 2]),
+        Some(ns) if pattern[ns.len() + 1..].starts_with('/') => Some((
+            &pattern[..ns.len() + 2],
+            "put a single `/` between the namespace and the function id",
+        )),
         _ => None,
     };
     match bad {
-        Some(ns) => Err(CompileError::Rule {
+        Some((ns, hint)) => Err(CompileError::Rule {
             index,
-            message: format!(
-                "namespace qualifier must be a plain namespace, got {ns:?}; a bare pattern already matches every namespace"
-            ),
+            message: format!("namespace qualifier must be a plain namespace, got {ns:?}; {hint}"),
         }),
         None => Ok(()),
     }

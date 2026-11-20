@@ -360,7 +360,8 @@ mod tests {
         ] {
             let err = compile_rule(&spec, 0).unwrap_err().to_string();
             assert!(
-                err.contains("namespace qualifier must be a plain namespace"),
+                err.contains("namespace qualifier must be a plain namespace")
+                    && err.contains("; a bare pattern already matches every namespace"),
                 "{err}"
             );
         }
@@ -382,7 +383,9 @@ mod tests {
         ] {
             let err = compile_rule(&spec, 0).unwrap_err().to_string();
             assert!(
-                err.contains("namespace qualifier must be a plain namespace"),
+                err.contains(
+                    "namespace qualifier must be a plain namespace, got \"\"; drop the leading `/`"
+                ),
                 "{err}"
             );
         }
@@ -406,7 +409,9 @@ mod tests {
         ] {
             let err = compile_rule(&spec, 0).unwrap_err().to_string();
             assert!(
-                err.contains("namespace qualifier must be a plain namespace"),
+                err.contains(
+                    "got \"laptop//\"; put a single `/` between the namespace and the function id"
+                ),
                 "{err}"
             );
         }
