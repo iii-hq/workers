@@ -152,7 +152,10 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
   the steps. A crash, a failed flush or a failed rename between the two
   renames leaves an image without an id, which a start refuses with S508 until
   the next build (0.4.x renamed the new image beside the previous id, which a
-  start accepted). This assumes one writer per `output_dir` at a time (see
+  start accepted). On a filesystem that cannot flush a directory (a warning
+  says so) this holds only if it persists directory updates in order: else a
+  crash can leave the previous id beside the new image. This assumes one
+  writer per `output_dir` at a time (see
   Known limits). The build streams its output into `logs` and writes a
   one-byte binary frame there at least every 5 s; when the channel closes or a
   write fails, it stops the build VM, deletes the temporary image, keeps the

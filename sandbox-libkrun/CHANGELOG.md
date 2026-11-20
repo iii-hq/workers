@@ -47,7 +47,9 @@ are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
   between the two renames leaves an image without an id, which `worker::start`
   refuses with S508 until the next build. 0.4.x renamed the image beside the
   previous build's id, and a start accepted that pair. A filesystem that cannot
-  flush a directory gets a warning, as in 0.4.x, not a failed build.
+  flush a directory gets a warning, as in 0.4.x, not a failed build; there a
+  crash keeps this guarantee only if the filesystem persists directory updates
+  in order, and can otherwise leave the previous id beside the new image.
 - **A scoped token no longer writes or boots another VM's build directory.**
   A VM's build directory is the last `output_dir` (`worker::build`) or
   `build_dir` (`worker::start`) its scoped token presented, recorded in
