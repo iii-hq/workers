@@ -117,6 +117,7 @@ async fn cycle() {
         .destroy(WorkerDestroyRequest {
             auth: "t".into(),
             state_key: "e2e".into(),
+            prune: true,
         })
         .unwrap();
     assert!(destroyed.destroyed);
@@ -178,6 +179,7 @@ async fn scoped_boot(vms: &WorkerVms, source: &WorkerSource, lease_grace: Durati
         .destroy(WorkerDestroyRequest {
             auth: token,
             state_key: state_key.into(),
+            prune: true,
         })
         .unwrap();
     assert!(destroyed.destroyed);
