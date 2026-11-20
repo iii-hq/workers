@@ -722,6 +722,15 @@ fn production_minilm_ordering(
     ))
 }
 
+/// Drops the dense hits `tools` does not hold: the index covers the whole
+/// catalog, while a namespace-filtered `tools` keeps only that namespace's ids.
+fn retain_held(dense: &mut [Vec<(String, f64)>], tools: &[ToolSchema]) {
+    let held: HashSet<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    for lane in dense {
+        lane.retain(|(id, _)| held.contains(id.as_str()));
+    }
+}
+
 struct ProductionMinilmOutcome {
     rankings: Vec<Vec<(String, f64)>>,
     complete: bool,
@@ -764,12 +773,7 @@ async fn production_minilm_rankings(
     if semantic_ranked.len() != model_positions.len() {
         return None;
     }
-    // The index covers the whole catalog; a namespace-filtered `tools` keeps
-    // only the ids it holds.
-    let held: HashSet<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
-    for dense in &mut semantic_ranked {
-        dense.retain(|(id, _)| held.contains(id.as_str()));
-    }
+    retain_held(&mut semantic_ranked, tools);
     // Queries below the admission floor keep the BM25 fallback already in
     // `rankings`; only admitted queries are fused and reranked.
     let (model_positions, semantic_ranked): (Vec<usize>, Vec<Vec<(String, f64)>>) = model_positions
@@ -2961,6 +2965,16 @@ mod tests {
         );
         assert_eq!(call_namespace(&judge(&[]), "judge::evaluate", "proj"), None);
         assert_eq!(call_namespace(&[], "judge::evaluate", "proj"), None);
+    }
+
+    #[test]
+    fn dense_rankings_keep_only_ids_the_narrowed_catalog_holds() {
+        let mut dense = vec![vec![
+            ("mail::a".to_string(), 0.9),
+            ("mail::b".to_string(), 0.8),
+        ]];
+        retain_held(&mut dense, &[namespaced("mail::b", &["laptop"])]);
+        assert_eq!(dense, vec![vec![("mail::b".to_string(), 0.8)]]);
     }
 
     async fn search_as(
