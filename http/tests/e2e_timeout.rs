@@ -77,7 +77,7 @@ async fn fast_function_is_unaffected_by_timeout_layer() {
     boot.shutdown().await;
 }
 
-/// The `ConcurrencyLimitLayer` QUEUES excess requests rather than rejecting
+/// The concurrency limit QUEUES excess requests rather than rejecting
 /// them, so correctness under a tight limit means every request still
 /// eventually succeeds -- just serialized once in-flight requests exceed the
 /// permit count: 6 requests of ~200 ms under a limit of 2 take three rounds.
