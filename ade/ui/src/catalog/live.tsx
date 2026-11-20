@@ -18,7 +18,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { agoLabel, formatDuration } from './ActivityFeed'
 import { type SpanEvent, useSpanFeed } from './engine'
 
-const FEED_LENGTH = 18
+// Long enough that a filter on the overview has something to find, short
+// enough that a busy bus does not cost a re-render per span kept forever.
+const FEED_LENGTH = 60
 const PULSE_MS = 1400
 
 export interface LiveActivity {

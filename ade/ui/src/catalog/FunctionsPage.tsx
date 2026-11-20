@@ -42,13 +42,24 @@ import {
   StatusDot,
 } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { Braces, Check, CircleAlert, Copy, MessageSquare, Play, RefreshCw, SquareFunction } from 'lucide-react'
+import {
+  Braces,
+  Check,
+  CircleAlert,
+  Copy,
+  LayoutDashboard,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  SquareFunction,
+} from 'lucide-react'
 import {
   Fragment,
   type MutableRefObject,
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -85,6 +96,7 @@ import {
   DocTile,
   ErrorNote,
   FamilyIcon,
+  FoldAllButton,
   GroupHeader,
   IdText,
   LiveDot,
@@ -194,6 +206,8 @@ export function FunctionsPage({
 
   const total = functions?.length ?? 0
   const shown = groups.reduce((n, g) => n + g.items.length, 0)
+  const anyOpen = groups.some((g) => groupState.isOpen(g.label))
+  const foldAll = () => groupState.setAll(!anyOpen)
 
   // A live catalogue can remove the selected row while its document is open.
   // Returning to the list is less surprising than leaving a stale document
@@ -240,8 +254,23 @@ export function FunctionsPage({
           enabled: () => invokeRunRef.current !== null,
           run: () => invokeRunRef.current?.(),
         },
+        {
+          id: 'overview',
+          title: 'Open overview',
+          detail: 'Recent calls across every worker',
+          keywords: ['recent', 'calls', 'home', 'deselect'],
+          run: () => setSelected(null),
+        },
+        {
+          id: 'fold-all',
+          title: anyOpen ? 'Collapse all workers' : 'Expand all workers',
+          detail: anyOpen ? 'Fold every worker in the list' : 'Unfold every worker in the list',
+          keywords: ['collapse', 'expand', 'fold', 'groups'],
+          run: foldAll,
+        },
       ]),
-    [commands, catalog.reload],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [commands, catalog.reload, anyOpen],
   )
 
   const workerTotal = groups.length
@@ -290,7 +319,12 @@ export function FunctionsPage({
           aria-label="Search functions or workers"
         />
       }
-      filters={<SwitchRow label="Include internal" checked={showInternal} onChange={setShowInternal} />}
+      filters={
+        <>
+          <FoldAllButton anyOpen={anyOpen} onClick={foldAll} />
+          <SwitchRow label="Include internal" checked={showInternal} onChange={setShowInternal} />
+        </>
+      }
       sideFooter={<SideCount>{countLine}</SideCount>}
       list={
         catalog.error ? (
@@ -302,7 +336,20 @@ export function FunctionsPage({
           />
         ) : catalog.data === null ? (
           <CatalogListSkeleton label="Loading functions" />
-        ) : shown === 0 ? (
+        ) : (
+          <>
+            {/* The overview is a place, so it has a row: the way back from
+                any document without hunting for what to deselect. */}
+            <section className="console-catalog-section console-catalog-pinned" aria-label="Overview">
+              <CatalogRow
+                icon={<LayoutDashboard aria-hidden />}
+                primary={<span className="row-label">Overview</span>}
+                tooltip="Recent calls across every worker"
+                selected={selected === null}
+                onClick={() => setSelected(null)}
+              />
+            </section>
+            {shown === 0 ? (
           <EmptyState
             title={search.trim() ? 'Nothing matches' : 'No functions registered'}
             description={
@@ -338,6 +385,8 @@ export function FunctionsPage({
                   ))}
             </section>
           ))
+        )}
+          </>
         )
       }
       main={
@@ -410,41 +459,7 @@ function FunctionsOverview({
           ]}
         />
         <div className="console-fn-overview-grid">
-          <section className="console-fn-section" aria-label="Recent calls">
-            <div className="console-fn-section-head">
-              <h3>Recent calls</h3>
-              <span className="meta">Live, across every worker</span>
-            </div>
-            {feed.length === 0 ? (
-              <div className="console-fn-quiet">
-                No calls since this page opened. They show here as the engine records them.
-              </div>
-            ) : (
-              <ul className="console-fn-list">
-                {feed.map((span) => (
-                  <li key={`${span.functionId}@${span.atMs}`}>
-                    <button
-                      type="button"
-                      className="console-fn-feed-row"
-                      disabled={!known.has(span.functionId)}
-                      onClick={() => onSelect(span.functionId)}
-                    >
-                      <span className="status">
-                        {span.ok ? <StatusDot tone="ok" /> : <CircleAlert aria-hidden />}
-                        <span className="console-catalog-sr">{span.ok ? 'Succeeded' : 'Failed'}</span>
-                      </span>
-                      <span className="fn">{span.functionId}</span>
-                      <span className="worker">{span.worker}</span>
-                      <span className="duration">
-                        {span.durationMs > 0 ? formatDuration(span.durationMs) : 'running'}
-                      </span>
-                      <span className="ago">{agoLabel(span.atMs, now)}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+          <RecentCalls feed={feed} known={known} onSelect={onSelect} />
           <section className="console-fn-section" aria-label="Workers">
             <div className="console-fn-section-head">
               <h3>Workers</h3>
@@ -470,6 +485,128 @@ function FunctionsOverview({
         </div>
       </div>
     </div>
+  )
+}
+
+/** How long after the last scroll the feed resumes, pointer permitting. */
+const SCROLL_HOLD_MS = 1500
+
+/**
+ * The live call feed: newest first, every worker. Two things keep it
+ * readable on a busy bus. A filter narrows it to the function ids or
+ * workers that contain some text, and the list HOLDS STILL while it is
+ * being read: under the pointer, while it is scrolled, or while a row has
+ * focus. Spans keep arriving underneath; the held copy is swapped for the
+ * live one as soon as the operator leaves.
+ */
+function RecentCalls({
+  feed,
+  known,
+  onSelect,
+}: {
+  feed: readonly SpanEvent[]
+  known: ReadonlySet<string>
+  onSelect: (functionId: string) => void
+}) {
+  const [filter, setFilter] = useState('')
+  const [held, setHeld] = useState<readonly SpanEvent[] | null>(null)
+  const hovering = useRef(false)
+  const scrollTimer = useRef<number | null>(null)
+  const filterId = useId()
+
+  const hold = () => setHeld((prev) => prev ?? feed)
+  const release = () => setHeld(null)
+  const onScroll = () => {
+    hold()
+    if (scrollTimer.current !== null) window.clearTimeout(scrollTimer.current)
+    scrollTimer.current = window.setTimeout(() => {
+      scrollTimer.current = null
+      if (!hovering.current) release()
+    }, SCROLL_HOLD_MS)
+  }
+  useEffect(
+    () => () => {
+      if (scrollTimer.current !== null) window.clearTimeout(scrollTimer.current)
+    },
+    [],
+  )
+
+  const paused = held !== null
+  const needle = filter.trim().toLowerCase()
+  const shown = (held ?? feed).filter(
+    (span) => !needle || span.functionId.toLowerCase().includes(needle) || span.worker.toLowerCase().includes(needle),
+  )
+  const now = Date.now()
+
+  return (
+    <section className="console-fn-section" aria-label="Recent calls">
+      <div className="console-fn-section-head console-fn-feed-head">
+        <h3>Recent calls</h3>
+        <span className="meta" aria-live="polite">
+          {paused ? 'Paused while you read' : 'Live, across every worker'}
+        </span>
+        <input
+          id={filterId}
+          type="search"
+          className="console-fn-feed-filter"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Filter by function or worker"
+          aria-label="Filter recent calls by function or worker"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </div>
+      {feed.length === 0 ? (
+        <div className="console-fn-quiet">No calls since this page opened. They show here as the engine records them.</div>
+      ) : shown.length === 0 ? (
+        <div className="console-fn-quiet">
+          None of the last {feed.length} calls match that.{' '}
+          <button type="button" className="console-catalog-linkish" onClick={() => setFilter('')}>
+            Clear the filter
+          </button>
+        </div>
+      ) : (
+        <ul
+          className="console-fn-list console-fn-feed-list"
+          data-paused={paused || undefined}
+          onPointerEnter={() => {
+            hovering.current = true
+            hold()
+          }}
+          onPointerLeave={() => {
+            hovering.current = false
+            if (scrollTimer.current === null) release()
+          }}
+          onScroll={onScroll}
+          onFocus={hold}
+          onBlur={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+            if (!hovering.current && scrollTimer.current === null) release()
+          }}
+        >
+          {shown.map((span) => (
+            <li key={`${span.functionId}@${span.atMs}`}>
+              <button
+                type="button"
+                className="console-fn-feed-row"
+                disabled={!known.has(span.functionId)}
+                onClick={() => onSelect(span.functionId)}
+              >
+                <span className="status">
+                  {span.ok ? <StatusDot tone="ok" /> : <CircleAlert aria-hidden />}
+                  <span className="console-catalog-sr">{span.ok ? 'Succeeded' : 'Failed'}</span>
+                </span>
+                <span className="fn">{span.functionId}</span>
+                <span className="worker">{span.worker}</span>
+                <span className="duration">{span.durationMs > 0 ? formatDuration(span.durationMs) : 'running'}</span>
+                <span className="ago">{agoLabel(span.atMs, now)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 

@@ -41,6 +41,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Clock,
   Copy,
   Database,
@@ -69,10 +71,13 @@ import type { Family, Tone } from './observer-kinds'
 /**
  * Open/closed state for collapsible groups, stored as the set of ids whose
  * state is FLIPPED from the default, so a group that appears later follows
- * the default instead of arriving collapsed.
+ * the default instead of arriving collapsed. `setAll` replaces the default
+ * for every group, present or future, and clears the flips; a toggle after
+ * that flips from the new baseline.
  */
 export function useGroupToggle(defaultOpen: (id: string) => boolean) {
   const [flipped, setFlipped] = useState<ReadonlySet<string>>(new Set())
+  const [forced, setForced] = useState<boolean | null>(null)
   const toggle = useCallback((id: string) => {
     setFlipped((prev) => {
       const next = new Set(prev)
@@ -81,8 +86,31 @@ export function useGroupToggle(defaultOpen: (id: string) => boolean) {
       return next
     })
   }, [])
-  const isOpen = (id: string) => (flipped.has(id) ? !defaultOpen(id) : defaultOpen(id))
-  return { isOpen, toggle }
+  const setAll = useCallback((open: boolean) => {
+    setForced(open)
+    setFlipped(new Set())
+  }, [])
+  const base = (id: string) => forced ?? defaultOpen(id)
+  const isOpen = (id: string) => (flipped.has(id) ? !base(id) : base(id))
+  return { isOpen, toggle, setAll }
+}
+
+/**
+ * Fold or unfold every group in the list at once. One control that reads
+ * the list: it collapses while anything is open, and expands once all is
+ * folded.
+ */
+export function FoldAllButton({ anyOpen, onClick }: { anyOpen: boolean; onClick: () => void }) {
+  return (
+    <IconButton
+      type="button"
+      className="console-catalog-fold-all"
+      label={anyOpen ? 'Collapse all' : 'Expand all'}
+      onClick={onClick}
+    >
+      {anyOpen ? <ChevronsDownUp /> : <ChevronsUpDown />}
+    </IconButton>
+  )
 }
 
 const LIST_STOPS = '.console-catalog-row, .console-catalog-group'

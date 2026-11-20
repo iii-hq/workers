@@ -81,6 +81,7 @@ import {
   Facts,
   ChoiceFilter,
   FamilyIcon,
+  FoldAllButton,
   GroupHeader,
   IdText,
   LiveDot,
@@ -238,6 +239,8 @@ export function ObserversPage({
   // observes it.
   const observerCounts = useMemo(() => new Map(groups.map((g) => [g.source.function_id, g.observers.length])), [groups])
   const groupState = useGroupToggle((id) => (observerCounts.get(id) ?? 0) > 0)
+  const anyOpen = groups.some((g) => groupState.isOpen(g.source.function_id))
+  const foldAll = () => groupState.setAll(!anyOpen)
 
   const selectFunction = (id: string) =>
     setSelected((prev) => (prev?.kind === 'function' && prev.id === id ? null : { kind: 'function', id }))
@@ -281,8 +284,16 @@ export function ObserversPage({
           keywords: ['reload'],
           run: () => catalog.reload(),
         },
+        {
+          id: 'fold-all',
+          title: anyOpen ? 'Collapse all functions' : 'Expand all functions',
+          detail: anyOpen ? 'Fold every function in the list' : 'Unfold every function in the list',
+          keywords: ['collapse', 'expand', 'fold', 'groups'],
+          run: foldAll,
+        },
       ]),
-    [commands, catalog.reload],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [commands, catalog.reload, anyOpen],
   )
 
   const filtered = Boolean(search.trim() || worker !== null)
@@ -330,6 +341,7 @@ export function ObserversPage({
       filters={
         <>
           <ChoiceFilter label="Worker" counts={workers} selected={worker} onSelect={setWorker} />
+          <FoldAllButton anyOpen={anyOpen} onClick={foldAll} />
           <SwitchRow label="Internal" checked={showInternal} onChange={setShowInternal} />
         </>
       }

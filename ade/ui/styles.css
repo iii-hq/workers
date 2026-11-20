@@ -736,6 +736,21 @@
   margin-inline-start: 0;
   padding-inline-start: 2px;
 }
+/* Fold/unfold every group: a quiet 28px control, leading when it is the
+   first thing in the row, otherwise beside the filter menu. */
+[data-iii-ui="console"] .console-catalog-fold-all {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-fold-all svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="console"] .console-catalog-fold-all:first-child {
+  margin-inline-start: -4px;
+}
 [data-iii-ui="console"] .console-catalog-filter {
   display: inline-flex;
   align-items: center;
@@ -796,6 +811,27 @@
 }
 
 /* --- list: groups, tree rows, rows (Linear density: 32px, one line) ---- */
+/* The Overview row: pinned above the worker groups, a hairline under it. */
+[data-iii-ui="console"] .console-catalog-pinned {
+  padding-block-end: 6px;
+  margin-block-end: 6px;
+  border-block-end: 1px solid var(--color-edge);
+}
+[data-iii-ui="console"] .console-catalog-pinned .console-catalog-row {
+  padding-inline-start: 8px;
+}
+/* Outranks the generic row-icon pull (-20px) that sits later in the file. */
+[data-iii-ui="console"] .console-catalog-pinned .console-catalog-row .row-icon {
+  margin-inline-start: 0;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-pinned .row-icon svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="console"] .console-catalog-pinned .console-catalog-row[data-selected="true"] .row-icon {
+  color: var(--color-ink);
+}
 [data-iii-ui="console"] .console-catalog-section + .console-catalog-section {
   margin-block-start: 8px;
 }
@@ -2441,6 +2477,46 @@
   margin-inline-start: auto;
   font-size: 13px;
   color: var(--color-ink-faint);
+}
+/* Recent calls head: title, live/paused word, then the filter on the end.
+   The filter is 28px so the head stays one line beside the Workers head. */
+[data-iii-ui="console"] .console-fn-feed-head {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 8px;
+}
+[data-iii-ui="console"] .console-fn-feed-head .meta {
+  margin-inline-start: 0;
+}
+[data-iii-ui="console"] .console-fn-feed-filter {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 240px;
+  height: 28px;
+  margin-inline-start: auto;
+  padding: 0 10px;
+  border: 1px solid var(--color-control-edge);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--color-ink);
+  font: 400 13px/1 var(--font-sans);
+}
+[data-iii-ui="console"] .console-fn-feed-filter::placeholder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-fn-feed-filter:focus-visible {
+  border-color: var(--color-ink-faint);
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+/* The list holds still while it is read; it scrolls past this height. */
+[data-iii-ui="console"] .console-fn-feed-list {
+  max-height: 480px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+[data-iii-ui="console"] .console-fn-feed-list[data-paused] {
+  border-color: var(--color-control-edge);
 }
 [data-iii-ui="console"] .console-fn-quiet {
   padding: 16px;
