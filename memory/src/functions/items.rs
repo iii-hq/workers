@@ -19,6 +19,79 @@ fn normalize_entities(entities: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// The text bound, after redaction; a note saved or revised from a turn is short.
+fn check_text(text: &str, in_turn: bool) -> Result<(), MemoryError> {
+    // A note counts characters, so a non-English one is not cut short; the
+    // bound outside a turn keeps counting bytes, as it always has.
+    let (len, max) = if in_turn {
+        (text.chars().count(), 500)
+    } else {
+        (text.len(), 2_000)
+    };
+    if len < 3 || len > max {
+        return Err(MemoryError::InvalidInput(format!(
+            "text must be 3..{max} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// From a turn, `label` may not be added: the `user` entity puts a memory in
+/// every repository's layer, the `demoted-rule` tag changes what promotion
+/// may pick. None can be removed: a turn edits only notes that hold neither
+/// ([`a_turns_note`]).
+fn refuse_label(labels: &[String], label: &str, kind: &str) -> Result<(), MemoryError> {
+    if labels.iter().any(|l| l.trim().to_lowercase() == label) {
+        return Err(crate::scope::not_from_a_turn(format_args!(
+            "adding the `{label}` {kind}"
+        )));
+    }
+    Ok(())
+}
+
+/// A memory a turn may revise or bring back: a note saved from a turn, read
+/// only in its bank (not pinned, not about the user, not a demoted rule line).
+fn a_turns_note(memory: &Memory) -> bool {
+    let no = |labels: &[String], label: &str| !labels.iter().any(|l| l == label);
+    memory.is_agent_note()
+        && !memory.pinned
+        && no(&memory.entities, crate::scope::LAYER_ENTITY)
+        && no(&memory.tags, crate::learned::DEMOTED_TAG)
+}
+
+/// Starts the error of a write on a retired record.
+const MEMORY_RETIRED: &str = "memory_retired";
+
+/// The live record at the end of `memory`'s `superseded_by` chain, if any.
+async fn live_successor(bank: &crate::store::Bank, memory: &Memory) -> Option<Memory> {
+    let mut next = memory.superseded_by.clone();
+    // One hop per correction; the bound only stops a cycle.
+    for _ in 0..8 {
+        let m = bank.get(&next?).await?;
+        if m.is_live() {
+            return Some(m);
+        }
+        next = m.superseded_by;
+    }
+    None
+}
+
+/// What a caller refused on a retired record does with the live one instead.
+fn act_on_live(in_turn: bool) -> &'static str {
+    if in_turn {
+        "delete that memory or save a new note instead"
+    } else {
+        "update or delete that memory instead"
+    }
+}
+
+/// The refusal of a turn writing a pinned memory.
+fn pinned_from_a_turn(id: &str) -> MemoryError {
+    crate::scope::not_from_a_turn(format_args!(
+        "changing or deleting the pinned memory `{id}`"
+    ))
+}
+
 /// Inputs for one save transition (grouped: clippy arity cap, and the
 /// call sites read better named).
 #[derive(Clone)]
@@ -130,21 +203,23 @@ fn save_source(named: Option<String>, caller: crate::scope::Caller) -> Option<Pr
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveRequest {
-    /// Target bank; omitted: the calling session's bank, else the configured default.
+    /// Target bank; omitted: the calling session's bank, else the configured
+    /// default. From a turn only the turn's own bank.
     #[serde(default)]
     pub bank: Option<String>,
     /// The memory, one self-contained sentence.
     pub text: String,
     /// Entity handles (people/projects/tools) used as a retrieval signal.
     /// None into the default bank from outside a turn (the memory page, the
-    /// CLI): `user`, read under every repository's bank; a save from a turn
-    /// names `user` itself for a fact about the user.
+    /// CLI): `user`, read under every repository's bank. From a turn `user`
+    /// is refused.
     #[serde(default)]
     pub entities: Vec<String>,
     /// Topical labels for filtering within the bank (organization, not
     /// ranking).
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Refused from a turn.
     #[serde(default)]
     pub pinned: bool,
     /// Provenance session for a save made outside a turn on behalf of a
@@ -175,8 +250,13 @@ pub(crate) async fn save_in(
     req: SaveRequest,
     demoting: bool,
 ) -> Result<SaveResponse, MemoryError> {
-    let caller = crate::scope::Caller::from_baggage();
-    let in_turn = caller.session_id.is_some();
+    // A demotion is the worker's own write, whatever baggage its job carries.
+    let caller = if demoting {
+        crate::scope::Caller::default()
+    } else {
+        crate::scope::Caller::from_baggage()
+    };
+    let in_turn = caller.in_turn();
     let text = req.text.trim();
     crate::redact::reject_injection("text", text)?;
     // Redact before the fingerprint: dedup and the stored text agree, and
@@ -184,24 +264,37 @@ pub(crate) async fn save_in(
     // stripping invisible characters can shorten the text or empty it.
     let redaction = crate::redact::redact(text);
     let text = redaction.text.trim().to_string();
-    if text.len() < 3 || text.len() > 2_000 {
-        return Err(MemoryError::InvalidInput(
-            "text must be 3..2000 characters".into(),
-        ));
-    }
+    check_text(&text, in_turn)?;
     // Short fields too, before normalization lowercases them (a lowercased
     // key still leaks its material, and the key shapes are case-sensitive).
     let (mut entities, mut tags) = (req.entities, req.tags);
     let mut labels = redaction.labels;
     labels.extend(crate::redact::drop_secrets(&mut entities));
     labels.extend(crate::redact::drop_secrets(&mut tags));
-    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
+    // From a turn: a note, read only where the turn's own memories are.
+    let turn = if in_turn {
+        let Some(turn_id) = caller.turn_id.clone() else {
+            return Err(MemoryError::Forbidden(
+                "a save from inside a turn needs its turn id (`iii.message.id`)".into(),
+            ));
+        };
+        if req.pinned {
+            return Err(crate::scope::not_from_a_turn("saving a pinned memory"));
+        }
+        refuse_label(&entities, crate::scope::LAYER_ENTITY, "entity")?;
+        refuse_label(&tags, crate::learned::DEMOTED_TAG, "tag")?;
+        Some((turn_id, deps.config().await.max_memories_per_turn))
+    } else {
+        None
+    };
+    let (bank_name, _) = crate::scope::write_bank(deps, &caller, req.bank.clone(), false).await?;
     let default_bank = deps.config().await.default_bank.clone();
     if about_the_user(&entities, &bank_name, &default_bank, in_turn) {
         crate::scope::into_layer(&mut entities);
     }
     let store = deps.store().await;
-    let (bank, bank_created) = if demoting {
+    // A save from a turn never brings back a bank trashed since `write_bank`.
+    let (bank, bank_created) = if demoting || in_turn {
         store
             .ensure_extraction_bank(&bank_name, &default_bank)
             .await?
@@ -227,7 +320,24 @@ pub(crate) async fn save_in(
     let mut tries = 0;
     let (memory, event, created) = loop {
         let existing = bank.get(&input.id).await;
-        let next = save_transition(existing.clone(), input.clone());
+        // A text a newer memory replaced stays retired: never both lines live.
+        if let Some(old) = existing.as_ref().filter(|m| !m.is_live())
+            && let Some(live) = live_successor(&bank, old).await
+        {
+            return Err(MemoryError::InvalidInput(format!(
+                "{MEMORY_RETIRED}: this text was superseded by memory `{}`; {}",
+                live.id,
+                act_on_live(in_turn)
+            )));
+        }
+        if let Some((turn_id, cap)) = &turn {
+            turn_may_save(&bank, existing.as_ref(), turn_id, *cap).await?;
+        }
+        let mut next = save_transition(existing.clone(), input.clone());
+        if turn.is_some() && next.2 {
+            // Brought back from a turn: this turn's note now, under its cap.
+            next.0.source = input.source.clone();
+        }
         if bank
             .commit_expected(next.0.clone(), existing.as_ref())
             .await?
@@ -246,6 +356,34 @@ pub(crate) async fn save_in(
         .await;
     crate::embed_client::spawn_backfill(deps, &bank_name);
     Ok(SaveResponse { memory, created })
+}
+
+/// Whether a save from `turn_id` may write over `existing`: a live memory is
+/// only reinforced (its tags may grow; `user` and `demoted-rule` were
+/// refused on the request), a new line counts against the turn's `cap`, and
+/// a retired one comes back only when it is a note a turn may revise.
+async fn turn_may_save(
+    bank: &crate::store::Bank,
+    existing: Option<&Memory>,
+    turn_id: &str,
+    cap: usize,
+) -> Result<(), MemoryError> {
+    if existing.is_some_and(Memory::is_live) {
+        return Ok(());
+    }
+    if let Some(old) = existing.filter(|old| !a_turns_note(old)) {
+        return Err(crate::scope::not_from_a_turn(format_args!(
+            "bringing back the retired memory `{}`",
+            old.id
+        )));
+    }
+    // shortcut: two saves racing at the cap can both land; count under the bank lock if a turn ever saves in parallel.
+    if bank.saved_in_turn(turn_id).await >= cap {
+        return Err(MemoryError::Forbidden(format!(
+            "this turn already saved {cap} memories, the `max_memories_per_turn` cap"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -349,13 +487,49 @@ async fn update_once(
     deps: &Deps,
     req: UpdateRequest,
 ) -> Result<Option<MemoryResponse>, MemoryError> {
-    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
+    let caller = crate::scope::Caller::from_baggage();
+    let in_turn = caller.in_turn();
+    if in_turn && req.pinned.is_some() {
+        return Err(crate::scope::not_from_a_turn(
+            "pinning or unpinning a memory",
+        ));
+    }
+    let (bank_name, _) = crate::scope::write_bank(deps, &caller, req.bank.clone(), false).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let mut memory = bank
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    // An edit of a retired record would never reach recall; a record retired
+    // after this read fails the commit, and the retry lands here.
+    if !memory.is_live() {
+        return Err(MemoryError::InvalidInput(
+            match live_successor(&bank, &memory).await {
+                Some(live) => format!(
+                    "{MEMORY_RETIRED}: memory `{}` was superseded by `{}`; {}",
+                    memory.id,
+                    live.id,
+                    act_on_live(in_turn)
+                ),
+                None => format!(
+                    "{MEMORY_RETIRED}: memory `{}` is retired and no live memory replaced it; \
+                     save its text again to bring it back",
+                    memory.id
+                ),
+            },
+        ));
+    }
+    if in_turn && memory.pinned {
+        return Err(pinned_from_a_turn(&memory.id));
+    }
+    if in_turn && !a_turns_note(&memory) {
+        return Err(MemoryError::Forbidden(format!(
+            "memory `{}` is not a note saved from a turn, or it is read beyond this bank; \
+             from inside a turn, delete it and save the corrected text instead",
+            memory.id
+        )));
+    }
     let expected = memory.clone();
     let mut text_changed = false;
     let mut labels: Vec<&'static str> = Vec::new();
@@ -364,11 +538,7 @@ async fn update_once(
         // Bounded after redaction, as in `save`.
         let redaction = crate::redact::redact(text.trim());
         let text = redaction.text.trim().to_string();
-        if text.len() < 3 || text.len() > 2_000 {
-            return Err(MemoryError::InvalidInput(
-                "text must be 3..2000 characters".into(),
-            ));
-        }
+        check_text(&text, in_turn)?;
         labels.extend(redaction.labels);
         // A text edit restates the fact; pin/tag/entity edits do not.
         text_changed = memory.text != text;
@@ -380,11 +550,19 @@ async fn update_once(
     // Redacted before normalization lowercases them (see `save`).
     if let Some(mut entities) = req.entities {
         labels.extend(crate::redact::drop_secrets(&mut entities));
-        memory.entities = normalize_entities(entities);
+        let entities = normalize_entities(entities);
+        if in_turn {
+            refuse_label(&entities, crate::scope::LAYER_ENTITY, "entity")?;
+        }
+        memory.entities = entities;
     }
     if let Some(mut tags) = req.tags {
         labels.extend(crate::redact::drop_secrets(&mut tags));
-        memory.tags = normalize_entities(tags);
+        let tags = normalize_entities(tags);
+        if in_turn {
+            refuse_label(&tags, crate::learned::DEMOTED_TAG, "tag")?;
+        }
+        memory.tags = tags;
     }
     if let Some(pinned) = req.pinned {
         memory.pinned = pinned;
@@ -431,13 +609,26 @@ async fn delete_once(
     deps: &Deps,
     req: &DeleteRequest,
 ) -> Result<Option<MemoryResponse>, MemoryError> {
-    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
+    let caller = crate::scope::Caller::from_baggage();
+    let (bank_name, layer) =
+        crate::scope::write_bank(deps, &caller, req.bank.clone(), true).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let mut memory = bank
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    // From a turn: an unpinned memory the turn reads ("forget X"); the
+    // tombstone is recoverable.
+    if caller.in_turn() && memory.pinned {
+        return Err(pinned_from_a_turn(&memory.id));
+    }
+    if layer && !crate::scope::layer_keeps(&bank_name, &deps.config().await.default_bank, &memory) {
+        return Err(crate::scope::not_from_a_turn(format_args!(
+            "deleting memory `{}` of bank `{bank_name}`, which this turn does not read",
+            memory.id
+        )));
+    }
     let expected = memory.clone();
     if memory.invalid_at.is_none() {
         memory.invalid_at = Some(now_ms());
@@ -575,6 +766,7 @@ pub async fn supersede(
     deps: &Deps,
     req: SupersedeRequest,
 ) -> Result<SupersedeResponse, MemoryError> {
+    crate::scope::human_only(super::SUPERSEDE_ID)?;
     if req.id == req.superseded_by {
         return Err(MemoryError::InvalidInput(
             "a memory cannot supersede itself".into(),
@@ -850,6 +1042,671 @@ mod tests {
         let long = "ção".repeat(300); // 900 chars, multibyte
         let clamped = clamp_reason(Some(long)).unwrap();
         assert_eq!(clamped.chars().count(), 500);
+    }
+
+    fn deps(dir: &std::path::Path, max_memories_per_turn: usize) -> Deps {
+        crate::deps::offline_deps(
+            dir,
+            crate::config::WorkerConfig {
+                embeddings_enabled: false,
+                max_memories_per_turn,
+                ..crate::config::WorkerConfig::default()
+            },
+        )
+    }
+
+    /// A turn `t-<id>` of a `kind` session `s-<id>` injected with `bank`, as
+    /// the hook records both.
+    fn a_turn(id: &str, kind: &str, bank: crate::scope::Resolved) {
+        let meta = serde_json::json!({ "kind": kind });
+        crate::hooks::remember_session(&format!("s-{id}"), &meta);
+        crate::scope::remember_turn(&format!("t-{id}"), Some(bank));
+    }
+
+    fn named(bank: &str) -> crate::scope::Resolved {
+        crate::scope::Resolved::named(bank)
+    }
+
+    /// `call` made from inside the turn [`a_turn`] recorded as `id`.
+    async fn turn<T>(id: &str, call: impl Future<Output = T>) -> T {
+        crate::scope::in_turn(&format!("s-{id}"), &format!("t-{id}"), call).await
+    }
+
+    fn note(bank: Option<&str>, text: &str) -> SaveRequest {
+        SaveRequest {
+            bank: bank.map(str::to_string),
+            text: text.into(),
+            entities: vec![],
+            tags: vec![],
+            pinned: false,
+            session_id: None,
+        }
+    }
+
+    fn edit(bank: Option<&str>, id: &str) -> UpdateRequest {
+        UpdateRequest {
+            bank: bank.map(str::to_string),
+            id: id.into(),
+            text: None,
+            entities: None,
+            tags: None,
+            pinned: None,
+        }
+    }
+
+    fn forget(bank: Option<&str>, id: &str) -> DeleteRequest {
+        DeleteRequest {
+            bank: bank.map(str::to_string),
+            id: id.into(),
+        }
+    }
+
+    /// The message of a `forbidden` refusal.
+    fn forbidden<T: std::fmt::Debug>(result: Result<T, MemoryError>) -> String {
+        match result {
+            Err(MemoryError::Forbidden(message)) => message,
+            other => panic!("expected forbidden, got {other:?}"),
+        }
+    }
+
+    /// An extracted memory of `text`, committed into `bank`.
+    async fn extracted(deps: &Deps, bank: &str, text: &str) -> Memory {
+        let memory = Memory {
+            text: text.into(),
+            confidence: Confidence::Extracted,
+            ..record(&fingerprint(text), 0, true, false)
+        };
+        let (bank, _) = deps.store().await.ensure_bank(bank, None).await.unwrap();
+        bank.commit(memory.clone()).await.unwrap();
+        memory
+    }
+
+    async fn stored(deps: &Deps, bank: &str, id: &str) -> Memory {
+        let bank = deps.store().await.bank(bank).await.unwrap();
+        bank.get(id).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_save_from_a_turn_lands_only_in_the_turns_own_bank() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        // A repository's bank with an agent: `main` and `agent-x` are read under it.
+        let own = crate::scope::Resolved {
+            bank: "w-abc123".into(),
+            derived: true,
+            agent: Some("x".into()),
+        };
+        a_turn("own", "user", own);
+        for other in ["main", "agent-x", "blog"] {
+            let refused =
+                forbidden(turn("own", save(&deps, note(Some(other), "Ops owns it."))).await);
+            assert!(refused.contains(&format!("bank `{other}`")), "{refused}");
+        }
+        for bank in [None, Some("w-abc123")] {
+            let text = format!("The deploy script lives in ops/ ({bank:?}).");
+            let saved = turn("own", save(&deps, note(bank, &text)))
+                .await
+                .unwrap()
+                .memory;
+            assert!(saved.is_agent_note());
+            assert_eq!(stored(&deps, "w-abc123", &saved.id).await, saved);
+        }
+        assert!(
+            save(&deps, note(Some("main"), "Ops owns it."))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_updates_only_in_its_own_bank_and_deletes_only_what_it_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        // A repository's bank: `main`'s memories about the user, and all of
+        // `agent-x`, are read under it.
+        let derived = crate::scope::Resolved {
+            bank: "w-def456".into(),
+            derived: true,
+            agent: Some("x".into()),
+        };
+        a_turn("layer", "user", derived);
+        let about = save(&deps, note(Some("main"), "The user prefers tea."))
+            .await
+            .unwrap()
+            .memory;
+        let project = SaveRequest {
+            entities: vec!["ledger".into()],
+            ..note(Some("main"), "The ledger repository indents with tabs.")
+        };
+        let project = save(&deps, project).await.unwrap().memory;
+        let text = |id: &str| UpdateRequest {
+            text: Some("The user prefers green tea.".into()),
+            ..edit(Some("main"), id)
+        };
+        let refused = forbidden(turn("layer", update(&deps, text(&about.id))).await);
+        assert!(refused.contains("bank `main`"), "{refused}");
+        let refused =
+            forbidden(turn("layer", delete(&deps, forget(Some("main"), &project.id))).await);
+        assert!(refused.contains("does not read"), "{refused}");
+        forbidden(turn("layer", delete(&deps, forget(Some("blog"), &about.id))).await);
+        assert!(stored(&deps, "main", &project.id).await.is_live());
+
+        // "Forget that I prefer tea" from a repository: the layer's memory.
+        let forgotten = turn("layer", delete(&deps, forget(Some("main"), &about.id)))
+            .await
+            .unwrap()
+            .memory;
+        assert!(!forgotten.is_live());
+        let habit = save(&deps, note(Some("agent-x"), "Review the diff first."))
+            .await
+            .unwrap()
+            .memory;
+        let reword = UpdateRequest {
+            text: Some("Review the tests first.".into()),
+            ..edit(Some("agent-x"), &habit.id)
+        };
+        let refused = forbidden(turn("layer", update(&deps, reword)).await);
+        assert!(refused.contains("bank `agent-x`"), "{refused}");
+        let forgotten = turn("layer", delete(&deps, forget(Some("agent-x"), &habit.id)))
+            .await
+            .unwrap()
+            .memory;
+        assert!(!forgotten.is_live());
+        assert!(update(&deps, text(&project.id)).await.is_ok());
+        let deleted = delete(&deps, forget(Some("main"), &project.id))
+            .await
+            .unwrap();
+        assert!(!deleted.memory.is_live());
+    }
+
+    #[tokio::test]
+    async fn a_save_from_a_turn_never_brings_a_deleted_bank_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let store = deps.store().await;
+        store.ensure_bank("gone-abc123", None).await.unwrap();
+        store.trash_bank("gone-abc123", "main").await.unwrap();
+        a_turn("gone", "user", named("gone-abc123"));
+        for bank in [Some("gone-abc123"), None] {
+            let refused = forbidden(turn("gone", save(&deps, note(bank, "A note."))).await);
+            assert!(refused.contains("no memory bank"), "{refused}");
+            assert!(!refused.contains("pass `bank`"), "{refused}");
+        }
+        assert!(store.is_deleted("gone-abc123"));
+        save(&deps, note(Some("gone-abc123"), "A note."))
+            .await
+            .unwrap();
+        assert!(!store.is_deleted("gone-abc123"), "a human may name it");
+    }
+
+    #[tokio::test]
+    async fn a_save_from_a_turn_refuses_a_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("pin", "user", named("blog"));
+        let pinned = |bank| SaveRequest {
+            pinned: true,
+            ..note(bank, "Ship on Fridays.")
+        };
+        let refused = forbidden(turn("pin", save(&deps, pinned(None))).await);
+        assert!(refused.contains("pinned"), "{refused}");
+        assert!(deps.store().await.bank("blog").await.is_err());
+        let saved = save(&deps, pinned(Some("blog"))).await.unwrap();
+        assert!(saved.memory.pinned);
+    }
+
+    #[tokio::test]
+    async fn an_update_or_a_pin_from_a_turn_refuses_the_pin_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("unpinned", "user", named("blog"));
+        let noted = turn(
+            "unpinned",
+            save(&deps, note(None, "The staging host is blue.")),
+        )
+        .await
+        .unwrap()
+        .memory;
+        let flag = UpdateRequest {
+            pinned: Some(true),
+            ..edit(None, &noted.id)
+        };
+        forbidden(turn("unpinned", update(&deps, flag)).await);
+        let pin_it = |bank: Option<&str>| PinRequest {
+            bank: bank.map(str::to_string),
+            id: noted.id.clone(),
+            pinned: true,
+        };
+        let refused = forbidden(turn("unpinned", pin(&deps, pin_it(None))).await);
+        assert!(refused.contains("pinning"), "{refused}");
+        assert!(!stored(&deps, "blog", &noted.id).await.pinned);
+        assert!(
+            pin(&deps, pin_it(Some("blog")))
+                .await
+                .unwrap()
+                .memory
+                .pinned
+        );
+    }
+
+    #[tokio::test]
+    async fn a_save_from_a_turn_refuses_the_user_entity() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("user-entity", "user", named("blog"));
+        let about = |bank| SaveRequest {
+            entities: vec![" User ".into()],
+            ..note(bank, "The user prefers tea.")
+        };
+        let refused = forbidden(turn("user-entity", save(&deps, about(None))).await);
+        assert!(refused.contains("`user` entity"), "{refused}");
+        let saved = save(&deps, about(Some("blog"))).await.unwrap().memory;
+        assert_eq!(saved.entities, ["user"]);
+    }
+
+    #[tokio::test]
+    async fn an_update_from_a_turn_cannot_move_the_user_entity() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("move-user", "user", named("blog"));
+        let noted = turn("move-user", save(&deps, note(None, "The user drinks tea.")))
+            .await
+            .unwrap()
+            .memory;
+        let entities = |entities: &[&str]| UpdateRequest {
+            entities: Some(entities.iter().map(|e| e.to_string()).collect()),
+            ..edit(Some("blog"), &noted.id)
+        };
+        let refused = forbidden(turn("move-user", update(&deps, entities(&["user"]))).await);
+        assert!(refused.contains("`user` entity"), "{refused}");
+        let moved = update(&deps, entities(&["user"])).await.unwrap().memory;
+        assert_eq!(moved.entities, ["user"]);
+        // About the user now: no longer a turn's note to edit.
+        let refused = forbidden(turn("move-user", update(&deps, entities(&[]))).await);
+        assert!(
+            refused.contains("not a note saved from a turn"),
+            "{refused}"
+        );
+        assert!(update(&deps, entities(&[])).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_turn_cannot_add_or_remove_the_demoted_rule_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("demoted", "user", named("blog"));
+        let tagged = |bank| SaveRequest {
+            tags: vec!["demoted-rule".into()],
+            ..note(bank, "Prefer small commits.")
+        };
+        let refused = forbidden(turn("demoted", save(&deps, tagged(None))).await);
+        assert!(refused.contains("`demoted-rule` tag"), "{refused}");
+        assert!(save(&deps, tagged(Some("blog"))).await.is_ok());
+
+        let noted = turn("demoted", save(&deps, note(None, "Prefer short branches.")))
+            .await
+            .unwrap()
+            .memory;
+        let tags = |tags: &[&str]| UpdateRequest {
+            tags: Some(tags.iter().map(|t| t.to_string()).collect()),
+            ..edit(None, &noted.id)
+        };
+        let refused = forbidden(turn("demoted", update(&deps, tags(&["Demoted-Rule"]))).await);
+        assert!(refused.contains("`demoted-rule` tag"), "{refused}");
+        let human = |tags| UpdateRequest {
+            bank: Some("blog".into()),
+            ..tags
+        };
+        update(&deps, human(tags(&["demoted-rule"]))).await.unwrap();
+        let refused = forbidden(turn("demoted", update(&deps, tags(&[]))).await);
+        assert!(
+            refused.contains("not a note saved from a turn"),
+            "{refused}"
+        );
+        let cleared = update(&deps, human(tags(&[]))).await.unwrap().memory;
+        assert!(cleared.tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_note_from_a_turn_is_3_to_500_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("size", "user", named("blog"));
+        // Characters, not bytes: each `é` is two.
+        let of = |chars: usize| format!("Note {}", "é".repeat(chars - 5));
+        let too_long = turn("size", save(&deps, note(None, &of(501)))).await;
+        assert!(
+            matches!(&too_long, Err(MemoryError::InvalidInput(m)) if m.contains("3..500")),
+            "{too_long:?}"
+        );
+        let noted = turn("size", save(&deps, note(None, &of(500))))
+            .await
+            .unwrap()
+            .memory;
+        let longer = UpdateRequest {
+            text: Some(of(501)),
+            ..edit(None, &noted.id)
+        };
+        let too_long = turn("size", update(&deps, longer)).await;
+        assert!(
+            matches!(too_long, Err(MemoryError::InvalidInput(_))),
+            "{too_long:?}"
+        );
+        assert!(save(&deps, note(Some("blog"), &of(501))).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_turn_saves_at_most_max_memories_per_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 2);
+        a_turn("cap", "user", named("blog"));
+        a_turn("cap-next", "user", named("blog"));
+        for text in ["First note.", "Second note."] {
+            assert!(
+                turn("cap", save(&deps, note(None, text)))
+                    .await
+                    .unwrap()
+                    .created
+            );
+        }
+        let refused = forbidden(turn("cap", save(&deps, note(None, "Third note."))).await);
+        assert!(refused.contains("max_memories_per_turn"), "{refused}");
+        let again = turn("cap", save(&deps, note(None, "First note."))).await;
+        assert!(!again.unwrap().created, "a re-save is not a new note");
+        assert!(
+            turn("cap-next", save(&deps, note(None, "Third note.")))
+                .await
+                .is_ok()
+        );
+
+        let no_turn = iii_helpers::observability::run_with_baggage(
+            &[("iii.session.id", "s-cap")],
+            save(&deps, note(None, "A note without its turn.")),
+        )
+        .await;
+        assert!(forbidden(no_turn).contains("turn id"));
+
+        for text in ["Human one.", "Human two.", "Human three."] {
+            assert!(save(&deps, note(Some("blog"), text)).await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_automation_or_test_session_writes_nothing_from_a_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let held = extracted(&deps, "blog", "The blog runs on Hugo.").await;
+        for kind in ["automation", "e2e"] {
+            a_turn(kind, kind, named("blog"));
+            let text = UpdateRequest {
+                text: Some("The blog runs on Zola.".into()),
+                ..edit(None, &held.id)
+            };
+            for refused in [
+                forbidden(turn(kind, save(&deps, note(None, "A scripted note."))).await),
+                forbidden(turn(kind, update(&deps, text)).await),
+                forbidden(turn(kind, delete(&deps, forget(None, &held.id))).await),
+            ] {
+                assert!(refused.contains("not a user's session"), "{refused}");
+            }
+        }
+        // A sub-agent of the user's session saves its note.
+        let meta = serde_json::json!({ "kind": "user", "metadata": { "parent_session_id": "p" } });
+        crate::hooks::remember_session("s-sub", &meta);
+        crate::scope::remember_turn("t-sub", Some(named("blog")));
+        assert!(
+            turn("sub", save(&deps, note(None, "A sub-agent's note.")))
+                .await
+                .is_ok()
+        );
+        assert!(stored(&deps, "blog", &held.id).await.is_live());
+        assert!(delete(&deps, forget(Some("blog"), &held.id)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_update_from_a_turn_needs_a_note_saved_from_a_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("note-only", "user", named("blog"));
+        let read = extracted(&deps, "blog", "The office is in Lisbon.").await;
+        let typed = save(&deps, note(Some("blog"), "The team meets on Mondays."))
+            .await
+            .unwrap()
+            .memory;
+        // A line demoted from `learned` by a job that carried a turn's baggage.
+        let demoted = Memory {
+            text: "Prefer rebase over merge.".into(),
+            entities: vec!["user".into()],
+            tags: vec!["demoted-rule".into()],
+            source: Some(Provenance {
+                session_id: Some("s-job".into()),
+                turn_id: Some("t-job".into()),
+                ..Provenance::default()
+            }),
+            ..record(&fingerprint("Prefer rebase over merge."), 0, true, false)
+        };
+        assert!(demoted.is_agent_note());
+        let bank = deps.store().await.bank("blog").await.unwrap();
+        bank.commit(demoted.clone()).await.unwrap();
+        let reword = |id: &str| UpdateRequest {
+            text: Some("Reworded by the agent.".into()),
+            ..edit(None, id)
+        };
+        for id in [&read.id, &typed.id, &demoted.id] {
+            let refused = forbidden(turn("note-only", update(&deps, reword(id))).await);
+            assert!(refused.contains("delete it and save"), "{refused}");
+            assert_eq!(bank.get(id).await.unwrap().revision, 0, "{id}");
+        }
+        let noted = turn(
+            "note-only",
+            save(&deps, note(None, "The office is in Porto.")),
+        )
+        .await
+        .unwrap()
+        .memory;
+        let revised = turn("note-only", update(&deps, reword(&noted.id)))
+            .await
+            .unwrap()
+            .memory;
+        assert_eq!(revised.text, "Reworded by the agent.");
+        let human = UpdateRequest {
+            bank: Some("blog".into()),
+            text: Some("The office is in Faro.".into()),
+            ..edit(None, &read.id)
+        };
+        assert!(update(&deps, human).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_turn_deletes_an_unpinned_memory_but_not_a_pinned_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("forget", "user", named("blog"));
+        let read = extracted(&deps, "blog", "The cat is called Miso.").await;
+        let deleted = turn("forget", delete(&deps, forget(None, &read.id)))
+            .await
+            .unwrap()
+            .memory;
+        assert!(!deleted.is_live(), "forget X: a recoverable tombstone");
+
+        let pinned = SaveRequest {
+            pinned: true,
+            ..note(Some("blog"), "The release train leaves on Thursdays.")
+        };
+        let pinned = save(&deps, pinned).await.unwrap().memory;
+        let refused = forbidden(turn("forget", delete(&deps, forget(None, &pinned.id))).await);
+        assert!(refused.contains("pinned memory"), "{refused}");
+        let text = UpdateRequest {
+            text: Some("The release train leaves on Fridays.".into()),
+            ..edit(None, &pinned.id)
+        };
+        assert!(forbidden(turn("forget", update(&deps, text)).await).contains("pinned memory"));
+        assert!(stored(&deps, "blog", &pinned.id).await.is_live());
+        let deleted = delete(&deps, forget(Some("blog"), &pinned.id))
+            .await
+            .unwrap();
+        assert!(!deleted.memory.is_live());
+    }
+
+    #[tokio::test]
+    async fn a_turn_brings_back_only_a_deleted_note_of_its_own_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("revive", "user", named("blog"));
+        a_turn("revive-next", "user", named("blog"));
+        // The user's pinned fact about themselves, deleted on the memory page.
+        let fact = SaveRequest {
+            pinned: true,
+            entities: vec!["user".into()],
+            ..note(Some("blog"), "The user is allergic to nuts.")
+        };
+        let fact = save(&deps, fact).await.unwrap().memory;
+        delete(&deps, forget(Some("blog"), &fact.id)).await.unwrap();
+        let again = |bank| note(bank, "The user is allergic to nuts.");
+        let refused = forbidden(turn("revive", save(&deps, again(None))).await);
+        assert!(refused.contains("bringing back"), "{refused}");
+        assert!(!stored(&deps, "blog", &fact.id).await.is_live());
+
+        // The agent's own note, deleted, comes back as the later turn's note.
+        let noted = turn(
+            "revive",
+            save(&deps, note(None, "The build cache is in /var.")),
+        )
+        .await
+        .unwrap()
+        .memory;
+        turn("revive", delete(&deps, forget(None, &noted.id)))
+            .await
+            .unwrap();
+        let back = turn(
+            "revive-next",
+            save(&deps, note(None, "The build cache is in /var.")),
+        )
+        .await
+        .unwrap();
+        assert!(back.created);
+        let source = back.memory.source.unwrap();
+        assert_eq!(source.turn_id.as_deref(), Some("t-revive-next"));
+
+        let revived = save(&deps, again(Some("blog"))).await.unwrap();
+        assert!(revived.created && revived.memory.pinned);
+    }
+
+    async fn saved(deps: &Deps, text: &str) -> Memory {
+        save(deps, note(Some("blog"), text)).await.unwrap().memory
+    }
+
+    /// `old` retired in favor of `new`, as consolidation or a correction does.
+    async fn replace(deps: &Deps, old: &Memory, new: &Memory) {
+        let req = SupersedeRequest {
+            bank: Some("blog".into()),
+            id: old.id.clone(),
+            superseded_by: new.id.clone(),
+            expected_memory: None,
+            expected_superseded_by: None,
+            reinforce: false,
+            reason: None,
+        };
+        supersede(deps, req).await.unwrap();
+    }
+
+    /// The message of a `memory_retired` refusal.
+    fn retired<T: std::fmt::Debug>(result: Result<T, MemoryError>) -> String {
+        match result {
+            Err(MemoryError::InvalidInput(m)) if m.starts_with(MEMORY_RETIRED) => m,
+            other => panic!("expected memory_retired, got {other:?}"),
+        }
+    }
+
+    async fn live_ids(deps: &Deps) -> Vec<String> {
+        let bank = deps.store().await.bank("blog").await.unwrap();
+        let (live, _) = bank.list(10, 0, false, None).await;
+        live.into_iter().map(|m| m.id).collect()
+    }
+
+    #[tokio::test]
+    async fn an_update_on_a_retired_memory_is_refused_naming_the_live_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let a = saved(&deps, "The office is in Lisbon.").await;
+        let b = saved(&deps, "The office is in Porto.").await;
+        replace(&deps, &a, &b).await;
+        let (old, live) = (
+            stored(&deps, "blog", &a.id).await,
+            stored(&deps, "blog", &b.id).await,
+        );
+        let reword = |id: &str| UpdateRequest {
+            text: Some("The office is in Faro.".into()),
+            ..edit(Some("blog"), id)
+        };
+        let refused = retired(update(&deps, reword(&a.id)).await);
+        assert!(
+            refused.contains(&format!("superseded by `{}`", b.id)),
+            "{refused}"
+        );
+        let pinned = PinRequest {
+            bank: Some("blog".into()),
+            id: a.id.clone(),
+            pinned: true,
+        };
+        retired(pin(&deps, pinned).await);
+        assert_eq!(stored(&deps, "blog", &a.id).await, old);
+        assert_eq!(stored(&deps, "blog", &b.id).await, live);
+
+        // Corrected again: the refusal names the end of the chain.
+        let c = saved(&deps, "The office is in Braga.").await;
+        replace(&deps, &b, &c).await;
+        let refused = retired(update(&deps, reword(&a.id)).await);
+        assert!(
+            refused.contains(&format!("superseded by `{}`", c.id)),
+            "{refused}"
+        );
+        // From a turn the advice is what a turn may do.
+        a_turn("retired-update", "user", named("blog"));
+        let refused = retired(turn("retired-update", update(&deps, reword(&a.id))).await);
+        assert!(refused.contains("save a new note"), "{refused}");
+
+        let d = saved(&deps, "The office has a cat.").await;
+        delete(&deps, forget(Some("blog"), &d.id)).await.unwrap();
+        let refused = retired(update(&deps, reword(&d.id)).await);
+        assert!(refused.contains("no live memory replaced it"), "{refused}");
+
+        let revised = update(&deps, reword(&c.id)).await.unwrap().memory;
+        assert_eq!(revised.text, "The office is in Faro.");
+    }
+
+    #[tokio::test]
+    async fn a_superseded_text_saved_again_is_refused_and_one_line_stays_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let a = saved(&deps, "The deploy runs on Fridays.").await;
+        let b = saved(&deps, "The deploy runs on Thursdays.").await;
+        replace(&deps, &a, &b).await;
+        let refused = retired(save(&deps, note(Some("blog"), &a.text)).await);
+        assert!(refused.contains(&format!("memory `{}`", b.id)), "{refused}");
+        a_turn("retired-save", "user", named("blog"));
+        let refused = retired(turn("retired-save", save(&deps, note(None, &a.text))).await);
+        assert!(refused.contains("save a new note"), "{refused}");
+        assert_eq!(live_ids(&deps).await, [b.id]);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_text_saved_again_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let a = saved(&deps, "The cat is called Miso.").await;
+        delete(&deps, forget(Some("blog"), &a.id)).await.unwrap();
+        let back = save(&deps, note(Some("blog"), &a.text)).await.unwrap();
+        assert!(back.created && back.memory.is_live());
+        assert_eq!(live_ids(&deps).await, std::slice::from_ref(&a.id));
+
+        // Superseded, then its replacement deleted: no live line holds the fact.
+        let b = saved(&deps, "The cat is called Tofu.").await;
+        replace(&deps, &a, &b).await;
+        delete(&deps, forget(Some("blog"), &b.id)).await.unwrap();
+        let back = save(&deps, note(Some("blog"), &a.text)).await.unwrap();
+        assert!(back.created);
+        assert_eq!(live_ids(&deps).await, [a.id]);
     }
 }
 

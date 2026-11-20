@@ -1,5 +1,5 @@
 {
-  "description": "Delete a memory (tombstone: sets invalid_at). It leaves recall immediately but stays on disk, readable with include_superseded.",
+  "description": "Delete a memory (tombstone: sets invalid_at). It leaves recall immediately but stays on disk, readable with include_superseded. From a turn: a memory the turn reads (its bank's, or one recalled from a bank read under it); a pinned memory is refused.",
   "function_id": "memory::delete",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -43,7 +43,7 @@
             "type": "string"
           },
           {
-            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "description": "Saved explicitly through `memory::save`: by a human (console, REST, CLI), or by an agent from a turn: then `source.turn_id` is set and it is that agent's note, not a fact the user stated.",
             "enum": [
               "stated"
             ],

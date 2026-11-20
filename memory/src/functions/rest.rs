@@ -12,6 +12,7 @@
 //! | Status | `code` |
 //! |---|---|
 //! | 400 | `invalid_input` (also a body that does not fit the function's input) |
+//! | 403 | `forbidden` (a request that carries an agent turn's baggage, to a human-owned function) |
 //! | 404 | `bank_not_found`, `memory_not_found`, `not_found` (a path no function has) |
 //! | 500 | `storage` |
 //! | 503 | `sibling_unavailable` |
@@ -31,7 +32,7 @@ pub const REST_ID: &str = "memory::rest";
 pub const REST_DESC: &str = "Internal: target of the memory REST routes, the http::on-request observers with args \
      { method: POST, path: /memory/... }. Receives the HttpRequest, runs the memory::* \
      function the route's path names with the request's JSON body, and returns the \
-     HttpResponse { status_code, body }: 200 with the function's result, or 400/404/500/503 \
+     HttpResponse { status_code, body }: 200 with the function's result, or 400/403/404/500/503 \
      with { error: { code, message } }.";
 
 /// The `HttpRequest` fields the adapter reads. The http worker sends more
@@ -89,6 +90,7 @@ pub async fn handle(deps: &Deps, request: RestRequest) -> RestResponse {
 fn error_response(error: &MemoryError) -> RestResponse {
     let (status_code, code, message) = match error {
         MemoryError::InvalidInput(m) => (400, "invalid_input", m),
+        MemoryError::Forbidden(m) => (403, "forbidden", m),
         MemoryError::BankNotFound(m) => (404, "bank_not_found", m),
         MemoryError::MemoryNotFound(m) => (404, "memory_not_found", m),
         MemoryError::Storage(m) => (500, "storage", m),
@@ -267,5 +269,22 @@ mod tests {
         let no_route = handle(&deps, http_request("/memory/hook/pre-generate", json!({}))).await;
         assert_eq!(no_route.status_code, 404);
         assert_eq!(no_route.body["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn a_call_from_a_turn_answers_403_forbidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path());
+        let refused = crate::scope::in_turn(
+            "s-rest",
+            "t-rest",
+            handle(&deps, http_request("/memory/reload", json!({}))),
+        )
+        .await;
+        assert_eq!(refused.status_code, 403, "{:?}", refused.body);
+        assert_eq!(refused.body["error"]["code"], "forbidden");
+
+        let reloaded = handle(&deps, http_request("/memory/reload", json!({}))).await;
+        assert_eq!(reloaded.status_code, 200, "{:?}", reloaded.body);
     }
 }

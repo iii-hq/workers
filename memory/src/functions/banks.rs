@@ -28,6 +28,7 @@ pub async fn create(
     deps: &Deps,
     req: BankCreateRequest,
 ) -> Result<BankCreateResponse, MemoryError> {
+    crate::scope::human_only(super::BANK_CREATE_ID)?;
     let store = deps.store().await;
     let (bank, created) = store
         .ensure_bank(&req.name, req.description.as_deref())
@@ -93,6 +94,7 @@ pub async fn delete(
     deps: &Deps,
     req: BankDeleteRequest,
 ) -> Result<BankDeleteResponse, MemoryError> {
+    crate::scope::human_only(super::BANK_DELETE_ID)?;
     let store = deps.store().await;
     let trashed_to = store
         .trash_bank(&req.name, &deps.config().await.default_bank)

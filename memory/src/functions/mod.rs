@@ -42,8 +42,12 @@ pub const BANK_DELETE_DESC: &str =
 
 pub const SAVE_ID: &str = "memory::save";
 pub const SAVE_DESC: &str = "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces \
-     the existing memory instead of duplicating it. Called from a turn, it records that \
-     session and turn as the source. Needed where the `# Memory` header asks for it (a \
+     the existing memory instead of duplicating it. A text a newer memory superseded is \
+     refused with `memory_retired`, naming that memory. Called from a turn it is the agent's \
+     note: 3 to 500 characters, in the turn's own bank, at most `max_memories_per_turn` new \
+     notes per turn, with that session and turn as its source; a pin, another bank, the \
+     `user` entity and the `demoted-rule` tag are refused there, and so is a save from an \
+     automation or test session. Needed where the `# Memory` header asks for it (a \
      sub-agent, extraction off): save what a later session would need.";
 
 pub const GET_ID: &str = "memory::get";
@@ -55,15 +59,18 @@ pub const LIST_DESC: &str = "List a bank's memories page by page, newest first. 
 
 pub const UPDATE_ID: &str = "memory::update";
 pub const UPDATE_DESC: &str = "Revise a memory's text, entities, or pin flag in place (same id, bumped revision; the \
-     prior revision stays in the on-disk log).";
+     prior revision stays in the on-disk log). A retired memory is refused with \
+     `memory_retired`, naming the memory that replaced it. From a turn: only a note saved \
+     from a turn, in the turn's own bank, never a pinned one, never the pin flag.";
 
 pub const DELETE_ID: &str = "memory::delete";
 pub const DELETE_DESC: &str = "Delete a memory (tombstone: sets invalid_at). It leaves recall immediately but stays \
-     on disk, readable with include_superseded.";
+     on disk, readable with include_superseded. From a turn: a memory the turn reads (its \
+     bank's, or one recalled from a bank read under it); a pinned memory is refused.";
 
 pub const PIN_ID: &str = "memory::pin";
 pub const PIN_DESC: &str = "Pin or unpin a memory. Pinned memories rank higher in recall and are untouchable by \
-     every automatic path.";
+     every automatic path. Refused from inside a turn.";
 
 pub const SUPERSEDE_ID: &str = "memory::supersede";
 pub const SUPERSEDE_DESC: &str = "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
@@ -380,4 +387,162 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ops::DoctorRequest, ops::DoctorResponse>(DOCTOR_ID, DOCTOR_DESC),
         spec::<ops::ReloadRequest, ops::ReloadResponse>(RELOAD_ID, RELOAD_DESC),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::WorkerConfig;
+    use crate::types::Memory;
+
+    fn deps(dir: &std::path::Path) -> Deps {
+        crate::deps::offline_deps(
+            dir,
+            WorkerConfig {
+                embeddings_enabled: false,
+                ..WorkerConfig::default()
+            },
+        )
+    }
+
+    /// `call` made from inside an agent turn: refused as `forbidden`, naming `id`.
+    async fn refused<T: std::fmt::Debug>(
+        id: &str,
+        call: impl Future<Output = Result<T, MemoryError>>,
+    ) {
+        let err = crate::scope::in_turn("s-agent", "t-agent", call)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MemoryError::Forbidden(_)), "{err}");
+        assert!(err.to_string().contains(id), "{err}");
+    }
+
+    async fn saved(deps: &Deps, text: &str) -> Memory {
+        let req = items::SaveRequest {
+            bank: Some("blog".into()),
+            text: text.into(),
+            entities: vec![],
+            tags: vec![],
+            pinned: false,
+            session_id: None,
+        };
+        items::save(deps, req).await.unwrap().memory
+    }
+
+    #[tokio::test]
+    async fn bank_create_is_refused_from_a_turn_and_runs_outside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path());
+        let req = || banks::BankCreateRequest {
+            name: "blog".into(),
+            description: None,
+        };
+        refused(BANK_CREATE_ID, banks::create(&deps, req())).await;
+        assert!(deps.store().await.bank("blog").await.is_err());
+        assert!(banks::create(&deps, req()).await.unwrap().created);
+    }
+
+    #[tokio::test]
+    async fn bank_delete_is_refused_from_a_turn_and_runs_outside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path());
+        let store = deps.store().await;
+        store.ensure_bank("blog", None).await.unwrap();
+        let req = || banks::BankDeleteRequest {
+            name: "blog".into(),
+        };
+        refused(BANK_DELETE_ID, banks::delete(&deps, req())).await;
+        assert!(store.bank("blog").await.is_ok());
+        assert!(banks::delete(&deps, req()).await.unwrap().ok);
+        assert!(store.bank("blog").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rule_set_is_refused_from_a_turn_and_runs_outside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path());
+        let req = || rules::RuleSetRequest {
+            bank: Some("blog".into()),
+            name: "style".into(),
+            content: "No em-dashes.".into(),
+            expected: None,
+        };
+        refused(RULE_SET_ID, rules::set(&deps, req())).await;
+        assert!(
+            deps.store().await.bank("blog").await.is_err(),
+            "nothing written, not even the bank"
+        );
+        assert!(rules::set(&deps, req()).await.unwrap().exists);
+        let bank = deps.store().await.bank("blog").await.unwrap();
+        assert_eq!(bank.list_rules().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn supersede_is_refused_from_a_turn_and_runs_outside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path());
+        let loser = saved(&deps, "The blog deploys on Fridays.").await;
+        let winner = saved(&deps, "The blog deploys on Mondays.").await;
+        let req = || items::SupersedeRequest {
+            bank: Some("blog".into()),
+            id: loser.id.clone(),
+            superseded_by: winner.id.clone(),
+            expected_memory: None,
+            expected_superseded_by: None,
+            reinforce: false,
+            reason: None,
+        };
+        refused(SUPERSEDE_ID, items::supersede(&deps, req())).await;
+        let bank = deps.store().await.bank("blog").await.unwrap();
+        assert_eq!(bank.get(&loser.id).await, Some(loser.clone()));
+        items::supersede(&deps, req()).await.unwrap();
+        let retired = bank.get(&loser.id).await.unwrap();
+        assert_eq!(retired.superseded_by, Some(winner.id));
+    }
+
+    #[tokio::test]
+    async fn correct_is_refused_from_a_turn_and_runs_outside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path());
+        let old = saved(&deps, "Amber instruments require copper calibration.").await;
+        let req = || correct::CorrectRequest {
+            bank: Some("blog".into()),
+            id: old.id.clone(),
+            text: "Amber instruments require silver calibration.".into(),
+            reason: "the source conversation says silver".into(),
+            expected_memory: json!({
+                "id": old.id,
+                "revision": old.revision,
+                "updated_at": old.updated_at,
+                "text": old.text,
+            }),
+        };
+        refused(correct::CORRECT_ID, correct::correct(&deps, req())).await;
+        let bank = deps.store().await.bank("blog").await.unwrap();
+        assert_eq!(bank.get(&old.id).await, Some(old.clone()));
+        let fixed = correct::correct(&deps, req()).await.unwrap();
+        assert!(fixed.corrected, "{:?}", fixed.skipped);
+    }
+
+    #[tokio::test]
+    async fn transcript_is_refused_from_a_turn_and_runs_outside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path());
+        deps.store().await.ensure_bank("blog", None).await.unwrap();
+        let req = || correct::TranscriptRequest {
+            bank: Some("blog".into()),
+            id: "nope".into(),
+        };
+        refused(correct::TRANSCRIPT_ID, correct::transcript(&deps, req())).await;
+        let reply = correct::transcript(&deps, req()).await.unwrap();
+        assert_eq!(reply.missing.as_deref(), Some("not_found"));
+    }
+
+    #[tokio::test]
+    async fn reload_is_refused_from_a_turn_and_runs_outside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path());
+        refused(RELOAD_ID, ops::reload(&deps, ops::ReloadRequest {})).await;
+        assert!(ops::reload(&deps, ops::ReloadRequest {}).await.unwrap().ok);
+    }
 }

@@ -491,11 +491,13 @@ pub(crate) fn take_turn_bank(turn_id: &str) -> Option<Option<Resolved>> {
 }
 
 /// Who is calling, from the invocation baggage the harness stamps on every
-/// turn step: `iii.session.id`, and `iii.message.id` (the turn id). It is
-/// caller-supplied and unattested, which is fine here: it only picks the
-/// default bank and a save's source, both of which the caller could name in
-/// the request anyway. Read it inside the handler's future — outside it
-/// there is no invocation context.
+/// turn step: `iii.session.id`, and `iii.message.id` (the turn id). It picks
+/// the default bank and a save's source, and a call that carries it is from
+/// inside an agent turn, which a human-owned function refuses
+/// ([`human_only`]). It is caller-supplied and not attested: a call that
+/// leaves the turn without its baggage (a shell, the CLI, an HTTP request to
+/// the REST routes) arrives as a human's. Read it inside the handler's
+/// future — outside it there is no invocation context.
 #[derive(Debug, Default)]
 pub(crate) struct Caller {
     pub session_id: Option<String>,
@@ -512,6 +514,41 @@ impl Caller {
             turn_id: read("iii.message.id"),
         }
     }
+
+    /// Whether the call comes from inside an agent turn.
+    pub(crate) fn in_turn(&self) -> bool {
+        self.session_id.is_some()
+    }
+}
+
+/// The refusal of something only a human surface may do.
+pub(crate) fn not_from_a_turn(what: impl std::fmt::Display) -> MemoryError {
+    MemoryError::Forbidden(format!(
+        "{what} is not allowed from inside an agent turn; it is a console, REST or CLI action"
+    ))
+}
+
+/// Refuses `function_id`, a human-owned function, when the call comes from
+/// inside an agent turn. Call it inside the handler's future.
+pub(crate) fn human_only(function_id: &str) -> Result<(), MemoryError> {
+    if Caller::from_baggage().in_turn() {
+        return Err(not_from_a_turn(format_args!("calling `{function_id}`")));
+    }
+    Ok(())
+}
+
+/// Test fixture: `call` run with the baggage the harness stamps on a turn step.
+#[cfg(test)]
+pub(crate) async fn in_turn<T>(
+    session_id: &str,
+    turn_id: &str,
+    call: impl Future<Output = T>,
+) -> T {
+    iii_helpers::observability::run_with_baggage(
+        &[("iii.session.id", session_id), ("iii.message.id", turn_id)],
+        call,
+    )
+    .await
 }
 
 /// The bank a `memory::*` call acts on: `bank` when given, else the calling
@@ -519,6 +556,56 @@ impl Caller {
 /// for callers outside a session (CLI, console, other workers).
 pub async fn request_bank(deps: &Deps, explicit: Option<String>) -> Result<String, MemoryError> {
     Ok(request_scope(deps, explicit).await?.bank)
+}
+
+/// The bank a save, update or delete from `caller` acts on, and whether it
+/// is a layer of the turn's bank. Outside a turn: [`request_bank`]. From
+/// inside one: only for a user's session or its sub-agent, and only the
+/// turn's own bank, as a write elsewhere is read from other places; with
+/// `layers` (a delete, which only narrows what is read) also a bank read
+/// under it.
+pub(crate) async fn write_bank(
+    deps: &Deps,
+    caller: &Caller,
+    explicit: Option<String>,
+    layers: bool,
+) -> Result<(String, bool), MemoryError> {
+    let Some(session_id) = caller.session_id.as_deref() else {
+        return Ok((request_bank(deps, explicit).await?, false));
+    };
+    let capture = crate::hooks::session_capture_of(deps, session_id)
+        .await
+        .map_err(MemoryError::SiblingUnavailable)?;
+    if capture == crate::hooks::Capture::Scripted {
+        return Err(MemoryError::Forbidden(
+            "this session is not a user's session or its sub-agent (an automation or test \
+             run, or one session-manager does not know); it does not write memory"
+                .into(),
+        ));
+    }
+    let own = match request_scope(deps, None).await {
+        Err(MemoryError::InvalidInput(_)) => {
+            return Err(MemoryError::Forbidden(
+                "this session has no memory bank (its memory_bank is invalid or was deleted), \
+                 and a turn writes only to its own"
+                    .into(),
+            ));
+        }
+        own => own?,
+    };
+    match explicit {
+        Some(bank) if bank != own.bank => {
+            let default_bank = deps.config().await.default_bank.clone();
+            if layers && own.layers(&default_bank).contains(&bank) {
+                return Ok((bank, true));
+            }
+            Err(not_from_a_turn(format_args!(
+                "writing to bank `{bank}` (this turn's bank is `{}`)",
+                own.bank
+            )))
+        }
+        _ => Ok((own.bank, false)),
+    }
 }
 
 /// [`request_bank`] with its provenance, for the reads that layer
