@@ -2969,12 +2969,11 @@ mod tests {
 
     #[test]
     fn dense_rankings_keep_only_ids_the_narrowed_catalog_holds() {
-        let mut dense = vec![vec![
-            ("mail::a".to_string(), 0.9),
-            ("mail::b".to_string(), 0.8),
-        ]];
+        let lane = vec![("mail::a".to_string(), 0.9), ("mail::b".to_string(), 0.8)];
+        let mut dense = vec![lane.clone(), lane];
         retain_held(&mut dense, &[namespaced("mail::b", &["laptop"])]);
-        assert_eq!(dense, vec![vec![("mail::b".to_string(), 0.8)]]);
+        let kept = vec![("mail::b".to_string(), 0.8)];
+        assert_eq!(dense, vec![kept.clone(), kept]);
     }
 
     async fn search_as(

@@ -207,6 +207,7 @@ async fn search_calls_the_judge_in_the_namespace_that_hosts_it() {
         catalog: Arc::new(RwLock::new(Arc::new(catalog))),
         ..deps(judge)
     };
+    // The caller's namespace; the judge route comes from this worker's own.
     let _own = opentelemetry::Context::new()
         .with_baggage([opentelemetry::KeyValue::new("iii.own_namespace", "default")])
         .attach();
