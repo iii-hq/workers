@@ -130,6 +130,30 @@ impl WorkerConfig {
                 );
             }
         }
+        // `allow_function_registration: true` requires a non-empty
+        // `function_registration_prefix` (`LoopbackAuth::validate`), so
+        // `configuration::set` refuses what `from_json` would.
+        if let Some(grants) = definitions
+            .get_mut("LoopbackAuth")
+            .and_then(Value::as_object_mut)
+        {
+            grants.insert(
+                "if".into(),
+                serde_json::json!({
+                    "properties": { "allow_function_registration": { "const": true } },
+                    "required": ["allow_function_registration"]
+                }),
+            );
+            grants.insert(
+                "then".into(),
+                serde_json::json!({
+                    "properties": {
+                        "function_registration_prefix": { "type": "string", "pattern": "\\S" }
+                    },
+                    "required": ["function_registration_prefix"]
+                }),
+            );
+        }
         if let Some(obj) = schema.as_object_mut() {
             if !root.definitions.is_empty() {
                 obj.insert("definitions".into(), definitions);
@@ -279,8 +303,8 @@ mod tests {
         let grants = with.rbac.loopback_auth.as_ref().unwrap();
         assert_eq!(grants.worker_names, vec!["mcp-server"]);
         assert_eq!(grants.forbidden_functions, vec!["secrets::resolve"]);
-        // The rest takes the auth result's defaults.
-        assert!(grants.allow_function_registration);
+        // The rest takes the auth result's defaults, except registration.
+        assert!(!grants.allow_function_registration);
         assert_eq!(grants.context, json!({}));
         assert!(grants.namespaces.is_empty());
         assert!(grants.allowed_functions.is_empty());
@@ -302,6 +326,13 @@ mod tests {
             WorkerConfig::from_json(&json!({ "rbac": { "loopback_auth": { "nope": 1 } } }))
                 .is_err()
         );
+        // Registration without a prefix is a configuration error: a stored
+        // value fails to load instead of granting unprefixed registration.
+        let err = WorkerConfig::from_json(&json!({
+            "rbac": { "loopback_auth": { "allow_function_registration": true } }
+        }))
+        .unwrap_err();
+        assert!(err.contains("function_registration_prefix"), "{err}");
     }
 
     #[test]
@@ -338,8 +369,34 @@ mod tests {
         }
         assert_eq!(
             grants["properties"]["allow_function_registration"]["default"],
-            true
+            false
         );
+        // configuration::set refuses registration without a prefix.
+        assert_eq!(
+            grants["if"],
+            json!({
+                "properties": { "allow_function_registration": { "const": true } },
+                "required": ["allow_function_registration"]
+            }),
+            "{grants}"
+        );
+        assert_eq!(
+            grants["then"],
+            json!({
+                "properties": {
+                    "function_registration_prefix": { "type": "string", "pattern": "\\S" }
+                },
+                "required": ["function_registration_prefix"]
+            }),
+            "{grants}"
+        );
+        for key in [
+            "allow_function_registration",
+            "function_registration_prefix",
+        ] {
+            let doc = grants["properties"][key]["description"].as_str().unwrap();
+            assert!(doc.contains("required"), "{key}: {doc}");
+        }
         // The built-in default leaves it unset: no change unless asked for.
         assert!(schema["example"]["rbac"].get("loopback_auth").is_none());
     }

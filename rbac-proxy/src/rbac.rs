@@ -53,7 +53,11 @@ pub struct RbacConfig {
     /// where every local process is trusted: a reverse proxy on the same
     /// machine makes every client look local. `auth_function_id` wins when
     /// both are set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_loopback_auth"
+    )]
     pub loopback_auth: Option<LoopbackAuth>,
     /// Filters exposing functions for invocation/discovery; a function is
     /// exposed if **any** filter matches.
@@ -129,14 +133,16 @@ pub struct LoopbackAuth {
     #[serde(default)]
     pub forbidden_functions: Vec<String>,
     /// Whether the connection may register functions (event sources
-    /// included).
-    #[serde(default = "default_true")]
+    /// included). Default `false`, unlike an auth function's result; when
+    /// `true`, a non-empty `function_registration_prefix` is required.
+    #[serde(default)]
     pub allow_function_registration: bool,
     /// Passed to the middleware and the registration hooks.
     #[serde(default = "default_context")]
     pub context: Value,
     /// Private prefix for the connection's own registrations and worker
-    /// names.
+    /// names. Non-empty and required when `allow_function_registration` is
+    /// `true`.
     #[serde(default)]
     pub function_registration_prefix: Option<String>,
     /// Worker names the connection may declare unchanged (exact, never an
@@ -151,12 +157,45 @@ impl Default for LoopbackAuth {
             namespaces: HashMap::new(),
             allowed_functions: vec![],
             forbidden_functions: vec![],
-            allow_function_registration: true,
+            allow_function_registration: false,
             context: default_context(),
             function_registration_prefix: None,
             worker_names: vec![],
         }
     }
+}
+
+impl LoopbackAuth {
+    /// The rules serde cannot express: registration needs a non-empty
+    /// `function_registration_prefix`, so every local process's registrations
+    /// stay apart from the engine's own ids.
+    pub fn validate(&self) -> Result<(), String> {
+        let has_prefix = self
+            .function_registration_prefix
+            .as_deref()
+            .is_some_and(|prefix| !prefix.trim().is_empty());
+        if self.allow_function_registration && !has_prefix {
+            return Err(
+                "rbac.loopback_auth: allow_function_registration: true requires a \
+                        non-empty function_registration_prefix"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// `rbac.loopback_auth`, refused when [`LoopbackAuth::validate`] fails: an
+/// invalid grant is a configuration error, like an unknown key.
+fn deserialize_loopback_auth<'de, D>(deserializer: D) -> Result<Option<LoopbackAuth>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let grants = Option::<LoopbackAuth>::deserialize(deserializer)?;
+    if let Some(grants) = &grants {
+        grants.validate().map_err(serde::de::Error::custom)?;
+    }
+    Ok(grants)
 }
 
 impl From<LoopbackAuth> for AuthResult {
@@ -1796,7 +1835,8 @@ mod tests {
         assert!(grants.namespaces.is_empty());
         assert!(grants.allowed_functions.is_empty());
         assert!(grants.forbidden_functions.is_empty());
-        assert!(grants.allow_function_registration); // default true
+        // Unlike an auth function's result: registration is opt-in.
+        assert!(!grants.allow_function_registration);
         assert_eq!(grants.context, json!({}));
         assert!(grants.function_registration_prefix.is_none());
         assert!(grants.worker_names.is_empty());
@@ -1831,6 +1871,47 @@ mod tests {
         let back: RbacConfig =
             serde_json::from_value(serde_json::to_value(&rbac).unwrap()).unwrap();
         assert_eq!(back, rbac);
+    }
+
+    #[test]
+    fn loopback_registration_requires_a_prefix() {
+        let parse = |grants: Value| {
+            serde_json::from_value::<RbacConfig>(json!({ "loopback_auth": grants }))
+        };
+        for bad in [
+            json!({ "allow_function_registration": true }),
+            json!({ "allow_function_registration": true, "function_registration_prefix": null }),
+            json!({ "allow_function_registration": true, "function_registration_prefix": "" }),
+            json!({ "allow_function_registration": true, "function_registration_prefix": "  " }),
+        ] {
+            let err = parse(bad.clone()).expect_err(&bad.to_string()).to_string();
+            assert!(
+                err.contains("function_registration_prefix")
+                    && err.contains("allow_function_registration"),
+                "{bad}: {err}"
+            );
+        }
+        let ok = parse(
+            json!({ "allow_function_registration": true, "function_registration_prefix": "mcp" }),
+        )
+        .unwrap()
+        .loopback_auth
+        .unwrap();
+        assert!(ok.allow_function_registration);
+        assert_eq!(ok.function_registration_prefix.as_deref(), Some("mcp"));
+        // Without registration no prefix is needed, and a prefix alone is fine.
+        parse(json!({ "allow_function_registration": false })).unwrap();
+        parse(json!({ "function_registration_prefix": "mcp" })).unwrap();
+        // An auth function's result keeps its own defaults: registration on,
+        // no prefix required.
+        let r: AuthResult =
+            serde_json::from_value(json!({ "allow_function_registration": true })).unwrap();
+        assert!(r.allow_function_registration && r.function_registration_prefix.is_none());
+        assert!(
+            serde_json::from_value::<AuthResult>(json!({}))
+                .unwrap()
+                .allow_function_registration
+        );
     }
 
     #[test]
@@ -1904,10 +1985,9 @@ mod tests {
         assert_eq!(s.namespaces, expected.namespaces);
         assert_eq!(s.allowed_functions, expected.allowed_functions);
         assert_eq!(s.forbidden_functions, expected.forbidden_functions);
-        assert_eq!(
-            s.allow_function_registration,
-            expected.allow_function_registration
-        );
+        // The one difference: an empty loopback grant registers nothing.
+        assert!(expected.allow_function_registration);
+        assert!(!s.allow_function_registration);
         assert_eq!(s.context, expected.context);
         assert_eq!(
             s.function_registration_prefix,

@@ -207,16 +207,24 @@ rbac:
   loopback_auth:
     worker_names: [mcp-server]
     forbidden_functions: [secrets::resolve]
+    allow_function_registration: true
+    function_registration_prefix: mcp
   expose_endpoints:
     - match("/")
   expose_functions:
     - match("api::*")
 ```
 
-It takes the fields an auth function may return, with the same defaults:
-`namespaces`, `allowed_functions`, `forbidden_functions`,
-`allow_function_registration` (default `true`), `context` (default `{}`),
-`function_registration_prefix` and `worker_names`. Every other rule applies
+It takes the fields an auth function may return, with the same defaults
+except one: `namespaces`, `allowed_functions`, `forbidden_functions`,
+`allow_function_registration`, `context` (default `{}`),
+`function_registration_prefix` and `worker_names`.
+`allow_function_registration` defaults to `false` here (an auth function's
+result defaults it to `true`), and setting it to `true` requires a non-empty
+`function_registration_prefix`, so what local processes register stays apart
+from everything else: `allow_function_registration: true` without a prefix is
+a configuration error, refused by `configuration::set` and failing the load of
+a stored value. Every other rule applies
 unchanged: `expose_functions`, the registration hooks, the middleware, the
 `worker_names` rules above (one live session per granted name, never an
 `rbac-proxy:` name) and `forbidden_functions` winning over everything.
