@@ -276,6 +276,9 @@ pub(crate) fn adopt_moved_root(
         return None;
     }
     record.options.set_filesystem_root(&root);
+    // The breaker keys on the model's arguments, not the root: a failure under
+    // the old root says nothing about the same relative call under the new one.
+    record.failed_calls.clear();
     Some(previous)
 }
 
@@ -297,9 +300,12 @@ async fn mirror_moved_root_inner(session: &SessionClient, record: &TurnRecord, m
     let Some(root) = record.options.filesystem_root() else {
         return;
     };
-    // shortcut: read-merge-write on a whole-object store, a concurrent client
-    // write can drop this mirror and that client's next send then reverts the
-    // root; upgrade when session::set-meta has a revision check.
+    // shortcut: best-effort read-merge-write on a whole-object store. A failed
+    // write, a crash after the call's checkpoint (it is already Done, so
+    // nothing retries) or a concurrent client write drops this mirror, and a
+    // client that resends its old root then moves the session back; upgrade
+    // when session::set-meta has a revision check and the turn record can
+    // carry a pending mirror.
     let mirrored = async {
         let mut metadata = session
             .metadata_of(&record.session_id)
@@ -7027,6 +7033,40 @@ mod tests {
         );
         let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
         assert!(stale(Some(&frozen), &live, &all).is_none());
+    }
+
+    /// A move resets the repeated-failure breaker, keyed on the model's
+    /// arguments: the same relative call under the new root is a new call. No
+    /// move (same root, failed call) leaves it alone.
+    #[test]
+    fn a_moved_root_clears_the_repeated_failure_breaker() {
+        let tripped = || {
+            let mut record = crate::types::turn::tests::record();
+            record.options.set_filesystem_root("/repo");
+            let key = crate::call::call_digest("coder::read-file", &serde_json::json!({}));
+            record.failed_calls.insert(
+                key.unwrap(),
+                crate::types::turn::FailedCall {
+                    error_digest: "e".into(),
+                    count: 2,
+                },
+            );
+            record
+        };
+        let failed = || crate::call::ResultData {
+            is_error: true,
+            ..dispatched("boom")
+        };
+        for (root, mut data, moves) in [
+            ("/repo.feat", dispatched("ok"), true),
+            ("/repo", dispatched("ok"), false),
+            ("/repo.feat", failed(), false),
+        ] {
+            let mut record = tripped();
+            let moved = super::adopt_moved_root(&mut record, &mut data, Some(root.into()));
+            assert_eq!(moved.is_some(), moves, "{root}");
+            assert_eq!(record.failed_calls.is_empty(), moves, "{root}");
+        }
     }
 
     fn dispatched(text: &str) -> crate::call::ResultData {

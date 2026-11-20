@@ -1983,6 +1983,38 @@ async fn a_released_worktree_add_moves_the_session() {
     );
 }
 
+/// A released move is mirrored even when its next step cannot be queued: the
+/// record already holds the new root and a retried resolve finds the call
+/// settled, so nothing else would mirror it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_move_is_mirrored_when_the_next_step_cannot_be_queued() {
+    let held = json!({"call_wt": {"state": "pending", "function_id": "shell::exec",
+        "held_by": "test::gate", "held_arguments": {}}});
+    let (result, calls, turn) = run_on_faulty_engine(
+        held,
+        json!([]),
+        None,
+        moves_to("/repo.feat"),
+        |f, _| f == "harness::turn",
+        |deps| async move {
+            root_turn(&deps, Some("/repo")).await;
+            crate::deferred::resolve(&deps, resolve_request("call_wt", "execute")).await
+        },
+    )
+    .await;
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(
+        turn["options"]["metadata"]["fs_scope"]["root"],
+        "/repo.feat"
+    );
+    assert_eq!(turn["calls"]["call_wt"]["state"], "done");
+    assert_eq!(
+        meta_writes(&calls),
+        [&json!({"session_id": "s",
+            "metadata": {"fs_scope": {"root": "/repo.feat", "moved_from": "/repo"}}})]
+    );
+}
+
 fn held_call() -> Value {
     json!({"state": "pending", "function_id": "test::hold",
         "held_by": "test::gate", "held_arguments": {}})

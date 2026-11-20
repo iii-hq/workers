@@ -472,10 +472,13 @@ pub async fn resolve(
                 cp.state = CallState::Done;
                 cp.entry_id = Some(entry_id);
             }
-            let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+            // Mirror before the `?`: the result is already in the transcript,
+            // and a retried resolve skips a call that is no longer pending.
+            let resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await;
             if let Some(from) = moved_from {
                 crate::turn_loop::mirror_moved_root(&session, &record, &from).await;
             }
+            let turn_resumed = resumed?;
             Ok(FunctionResolveResponse {
                 resolved: true,
                 turn_resumed,
