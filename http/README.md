@@ -229,7 +229,7 @@ response built from `{ status_code, headers, body }`.
 | `webhook_listener` | `null` (disabled) | Optional restricted listener; only explicitly opted-in routes. |
 | `webhook_listener.host` | `127.0.0.1` | Restricted listener interface; does not inherit `host`. |
 | `webhook_listener.port` | `3112` | Restricted listener port; separate from the normal/admin listener on 3111. |
-| `default_timeout` | `30000` (ms) | Per-request timeout; on expiry the server returns `504`. |
+| `default_timeout` | `30000` (ms) | Per-request timeout, counted from the request's arrival (the wait for a slot included); on expiry the server returns `504` and stops the request's work: its call of `http::on-request` and its read of the response channel. A client that goes away stops it too. |
 | `cors.allowed_origins` | `[]` (permissive) | Allowed CORS origins. An empty list allows any origin. |
 | `cors.allowed_methods` | `[]` (permissive) | Allowed CORS methods. An empty list allows any method. |
 | `concurrency_request_limit` | `1024` | Maximum in-flight requests; requests over the limit wait for a slot. |
