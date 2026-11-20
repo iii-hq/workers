@@ -150,15 +150,18 @@ enum Transport {
     Mock(Arc<dyn Fn(EvaluateRequest) -> ReplyFuture + Send + Sync>),
 }
 
+/// Judge namespace (`None` = this worker's own) and provider (`""` = the
+/// hub's default).
+type Route = (Option<String>, String);
+
 #[derive(Clone)]
 pub struct JudgeSearch {
     transport: Transport,
     /// Pause end per judge provider (`""` = the hub's default): one
     /// session's failing provider never pauses another session's searches.
     paused_until: Arc<Mutex<HashMap<String, Instant>>>,
-    /// Advertised limits per judge provider (`""` = the hub's default), each
-    /// with the instant it was read.
-    window: Arc<Mutex<HashMap<String, (Instant, Limits)>>>,
+    /// Advertised limits per judge route, each with the instant it was read.
+    window: Arc<Mutex<HashMap<Route, (Instant, Limits)>>>,
     /// Namespace hosting the judge when this worker's own does not (`None`:
     /// call it unqualified). Bound per search, so a concurrent search never
     /// reroutes another's calls.
@@ -309,17 +312,17 @@ impl JudgeSearch {
         self.window
             .lock()
             .expect("judge window")
-            .insert(String::new(), (Instant::now(), limits));
+            .insert((None, String::new()), (Instant::now(), limits));
         self
     }
 
     /// The judge's advertised limits, read through `judge::models::list` for
     /// the provider `judge::evaluate` uses (the calling session's, else the
-    /// hub's default) and cached per provider for `WINDOW_TTL`; a failed read
-    /// means none and is retried next time.
+    /// hub's default) and cached per judge namespace and provider for
+    /// `WINDOW_TTL`; a failed read means none and is retried next time.
     async fn limits(&self, deadline: Instant) -> Limits {
         let provider = session_provider();
-        let key = provider.clone().unwrap_or_default();
+        let key = (self.namespace.clone(), provider.clone().unwrap_or_default());
         let cached = self.window.lock().expect("judge window").get(&key).copied();
         match cached {
             Some((read, limits)) if read.elapsed() < WINDOW_TTL => limits,
@@ -1821,6 +1824,14 @@ mod tests {
             )]);
         assert!(client.small_window(deadline()).await);
         assert!(!client.small_window(deadline()).with_context(semif).await);
+    }
+
+    #[tokio::test]
+    async fn limits_read_in_one_judge_namespace_never_serve_another() {
+        let own = JudgeSearch::default().with_window(Some(512));
+        assert!(own.small_window(deadline()).await);
+        let hub = own.in_namespace(Some("a-hub".into()));
+        assert!(!hub.small_window(deadline()).await);
     }
 
     #[tokio::test]
