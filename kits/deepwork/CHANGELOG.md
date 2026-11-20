@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- **A test that fails outside the batch is rerun once before it fails the batch.** Under load, the 2,737-test web suite of KAN-616 dropped one test per run, and a different one each time (`members-actions.spec.ts:116`, `deployments-worker-log.spec.ts:81`, `api-keys.spec.ts:50`). Each was in a file the batch never touched, and each passed when run alone (`deployments-worker-log` passed 90 of 90 over five repeats). The tests had run, so these were not `env:` failures, and the verifier counted each one as the batch's. Five cards that had passed review and every focused check stayed unverified for four rounds. Now, when a suite's only other failures sit outside the batch's files, the verifier reruns just those tests once, alone. A test that passes there is recorded as `flaky:` and does not fail the batch. With this rule, round 14 reran four such tests with `--last-failed`, all four passed, and the five cards landed.
+
 ## 0.9.0
 
 Deepwork can run from the board from start to finish: started by the kanban dispatcher with no chat, asking its questions on the run ticket, ending at a pull request ready for review, telling a failing machine from failing code, and keeping to a token budget with subscription models. Each part is opt-in through an argument; a run without them behaves as in 0.8.1.
