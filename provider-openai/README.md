@@ -53,7 +53,8 @@ and costs nothing).
 - **Reasoning:** `thinking_level` maps to the selected transport's reasoning
   field per model
   family (`src/reasoning.rs` — the ladders encode real 400s: o1 and
-  chat-tuned variants take no param, pro is high-only, xhigh is gpt-5.2+).
+  chat-tuned variants take no param, pro is high-only, xhigh is gpt-5.2+;
+  GPT-6.2 Sol, whose page lists no efforts, gets high for xhigh).
   Responses reasoning summaries are relayed as thinking blocks. Chat
   Completions still exposes only `completion_tokens_details.reasoning_tokens`
   as `usage.reasoning`. Luna requests with function tools on the legacy path

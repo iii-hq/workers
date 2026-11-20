@@ -51,6 +51,10 @@ fn supported_efforts(model: &str) -> &'static [&'static str] {
     if id.starts_with("gpt-6") {
         return if id.starts_with("gpt-6-sol") || id.starts_with("gpt-6-luna") {
             &["none", "low", "medium", "high", "xhigh"]
+        } else if id.starts_with("gpt-6.2-sol") {
+            // Its page lists no efforts (curated `supports_xhigh: None`): xhigh
+            // clamps to high until OpenAI documents it.
+            &["low", "medium", "high"]
         } else {
             &["low", "medium", "high", "xhigh"]
         };
@@ -173,6 +177,10 @@ mod tests {
         assert_eq!(
             reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-6.2-sol"),
             Some("low")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Xhigh), "gpt-6.2-sol"),
+            Some("high")
         );
         assert!(!can_disable("o3"));
     }

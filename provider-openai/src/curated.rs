@@ -197,6 +197,9 @@ mod tests {
         assert_eq!(m.context_window, 400_000);
         assert_eq!(m.supports_structured_output, Some(true));
         assert_eq!(m.pricing.as_ref().unwrap().input, Some(1.25));
+        for id in ["gpt-5.1", "gpt-5-mini", "gpt-5-nano"] {
+            assert_eq!(enrich(id).supports_xhigh, Some(false), "{id}");
+        }
         assert!(m.pricing.as_ref().unwrap().cache_write.is_none());
     }
 
