@@ -240,13 +240,14 @@ non-loopback address (same response, same log). Both apply to `/` and `/otel`:
 - `allowed_origins` (default `[]`): an upgrade that carries an `Origin`
   header, which a browser page adds, gets the grant only when the value is in
   this list (exact match, scheme and host compared case-insensitively, for
-  example `http://localhost:3000`). An upgrade without `Origin`, which is what
+  example `http://localhost:3000`). Every `Origin` header must match, and one
+  whose value is not text is refused. An upgrade without `Origin`, which is what
   SDK workers send, is unaffected. With the default every `Origin` is refused,
   so a web page open in a local browser cannot borrow the grant.
 - `allow_forwarded` (default `false`): an upgrade carrying any of
   `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
   `X-Real-IP` or `Via` came through a proxy and is refused unless this is
-  `true`.
+  `true`, whatever the header's value (even one that is not text).
 
 These checks catch the well-behaved cases; a forwarder that adds none of these
 headers is not detected (see the warnings below).

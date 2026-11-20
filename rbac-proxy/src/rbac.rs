@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 
+use axum::http::HeaderMap;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
@@ -264,31 +265,31 @@ pub const FORWARDING_HEADERS: [&str; 6] = [
     "via",
 ];
 
-/// The value of header `name` in an upgrade's `headers` (any case).
-fn header<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
-    headers
+/// `true` when an upgrade's raw `headers` show no sign of a non-local
+/// client that `grants` does not allow. It reads the raw headers, not the
+/// string map an auth function gets (which drops values that are not text
+/// and keeps only the last of repeated headers), so:
+/// - every `Origin` must be text and in `allowed_origins` (compared
+///   case-insensitively): one allowed value cannot hide a foreign one;
+/// - a forwarding header counts when present, whatever its value, unless
+///   `allow_forwarded`.
+fn loopback_headers_allowed(grants: &LoopbackAuth, headers: &HeaderMap) -> bool {
+    let origins_allowed = headers
+        .get_all(axum::http::header::ORIGIN)
         .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str())
-}
-
-/// `true` when an upgrade with `headers` shows no sign of a non-local client
-/// that `grants` does not allow: an `Origin` outside `allowed_origins`
-/// (compared case-insensitively), or a forwarding header without
-/// `allow_forwarded`.
-fn loopback_headers_allowed(grants: &LoopbackAuth, headers: &HashMap<String, String>) -> bool {
-    if let Some(origin) = header(headers, "origin")
-        && !grants
-            .allowed_origins
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(origin))
-    {
-        return false;
-    }
-    grants.allow_forwarded
-        || FORWARDING_HEADERS
-            .iter()
-            .all(|name| header(headers, name).is_none())
+        .all(|value| {
+            value.to_str().is_ok_and(|origin| {
+                grants
+                    .allowed_origins
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(origin))
+            })
+        });
+    origins_allowed
+        && (grants.allow_forwarded
+            || FORWARDING_HEADERS
+                .iter()
+                .all(|name| !headers.contains_key(*name)))
 }
 
 /// The session `rbac.loopback_auth` grants the peer `ip_address` whose
@@ -300,7 +301,7 @@ fn loopback_headers_allowed(grants: &LoopbackAuth, headers: &HashMap<String, Str
 pub fn loopback_session(
     rbac: &RbacConfig,
     ip_address: &str,
-    headers: &HashMap<String, String>,
+    headers: &HeaderMap,
 ) -> Option<ProxySession> {
     if rbac.auth_function_id.is_some() || !is_loopback_peer(ip_address) {
         return None;
@@ -1081,7 +1082,7 @@ pub struct AuthRejection {
 pub async fn resolve_session(
     iii: &IIIClient,
     rbac: Option<&RbacConfig>,
-    headers: HashMap<String, String>,
+    headers: &HeaderMap,
     query_params: HashMap<String, Vec<String>>,
     ip_address: String,
     endpoint: &str,
@@ -1090,7 +1091,7 @@ pub async fn resolve_session(
         // No auth function: a loopback peer gets `rbac.loopback_auth`'s
         // grants when it is set and its upgrade shows no sign of a non-local
         // client; otherwise it is refused exactly like a remote peer.
-        if let Some(session) = rbac.and_then(|c| loopback_session(c, &ip_address, &headers)) {
+        if let Some(session) = rbac.and_then(|c| loopback_session(c, &ip_address, headers)) {
             return Ok(session);
         }
         // Otherwise refuse (unlike the engine's permissive default).
@@ -1105,7 +1106,7 @@ pub async fn resolve_session(
     // `endpoint` ("/" or "/otel") lets the auth function grant an endpoint
     // per credential, for example /otel to trusted tokens only.
     let input = json!({
-        "headers": headers,
+        "headers": crate::proxy::headers_to_map(headers),
         "query_params": query_params,
         "ip_address": ip_address,
         "endpoint": endpoint,
@@ -1506,7 +1507,7 @@ mod tests {
             let refused = resolve_session(
                 &iii,
                 rbac.as_ref(),
-                HashMap::new(),
+                &HeaderMap::new(),
                 HashMap::new(),
                 "ip".into(),
                 "/",
@@ -1887,7 +1888,7 @@ mod tests {
         resolve_session(
             &iii,
             Some(rbac),
-            HashMap::new(),
+            &HeaderMap::new(),
             HashMap::new(),
             ip.to_string(),
             "/",
@@ -1955,19 +1956,14 @@ mod tests {
         headers: &[(&str, &str)],
     ) -> Result<ProxySession, AuthRejection> {
         let iii = iii_sdk::register_worker("ws://127.0.0.1:1", iii_sdk::InitOptions::default());
-        let headers = headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        resolve_session(
-            &iii,
-            Some(rbac),
-            headers,
-            HashMap::new(),
-            ip.to_string(),
-            "/",
-        )
-        .await
+        let mut map = HeaderMap::new();
+        for (k, v) in headers {
+            map.append(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        resolve_session(&iii, Some(rbac), &map, HashMap::new(), ip.to_string(), "/").await
     }
 
     /// What a non-loopback peer gets, for comparison.
@@ -2214,16 +2210,16 @@ mod tests {
     #[test]
     fn the_loopback_grant_applies_only_without_an_auth_function() {
         let mut rbac = loopback_rbac(json!({ "worker_names": ["mcp-server"] }));
-        assert!(loopback_session(&rbac, "127.0.0.1", &HashMap::new()).is_some());
-        assert!(loopback_session(&rbac, "10.0.0.5", &HashMap::new()).is_none());
+        assert!(loopback_session(&rbac, "127.0.0.1", &HeaderMap::new()).is_some());
+        assert!(loopback_session(&rbac, "10.0.0.5", &HeaderMap::new()).is_none());
         rbac.auth_function_id = Some("p::auth".to_string());
         for ip in LOOPBACK_PEERS.into_iter().chain(REMOTE_PEERS) {
             assert!(
-                loopback_session(&rbac, ip, &HashMap::new()).is_none(),
+                loopback_session(&rbac, ip, &HeaderMap::new()).is_none(),
                 "{ip}"
             );
         }
-        assert!(loopback_session(&RbacConfig::default(), "127.0.0.1", &HashMap::new()).is_none());
+        assert!(loopback_session(&RbacConfig::default(), "127.0.0.1", &HeaderMap::new()).is_none());
     }
 
     #[tokio::test]
@@ -2278,7 +2274,7 @@ mod tests {
             "worker_names": ["loopback-granted", "rbac-proxy:tenant2::queue", "rbac-proxy:x"]
         }));
         // The reserved `rbac-proxy:` names are dropped, as from an auth function.
-        let a = loopback_session(&rbac, "127.0.0.1", &HashMap::new()).unwrap();
+        let a = loopback_session(&rbac, "127.0.0.1", &HeaderMap::new()).unwrap();
         assert_eq!(a.worker_names, vec!["loopback-granted"]);
         // A granted name passes as declared; another is pinned.
         assert_eq!(
@@ -2290,7 +2286,7 @@ mod tests {
             format!("rbac-proxy:{}:queue", a.session_id)
         );
         // One live holder: a second loopback session gets its own name.
-        let b = loopback_session(&rbac, "::1", &HashMap::new()).unwrap();
+        let b = loopback_session(&rbac, "::1", &HeaderMap::new()).unwrap();
         assert_eq!(
             b.proxied_worker_name("loopback-granted"),
             format!("rbac-proxy:{}:loopback-granted", b.session_id)
@@ -2310,7 +2306,7 @@ mod tests {
             "namespaces": { "orders": ["svc::*"] }
         }));
         rbac.expose_functions = vec![FunctionFilter::match_pattern("*")];
-        let s = loopback_session(&rbac, "127.0.0.1", &HashMap::new()).unwrap();
+        let s = loopback_session(&rbac, "127.0.0.1", &HeaderMap::new()).unwrap();
         assert!(access_allowed(Some(&rbac), &s, "default", "api::x", None));
         assert!(!access_allowed(
             Some(&rbac),
@@ -2331,5 +2327,63 @@ mod tests {
             remediation(&s, "secrets::resolve"),
             "remove from rbac.forbidden_functions"
         );
+    }
+
+    /// An upgrade's raw headers, values as bytes (not all of them valid text).
+    fn raw_headers(pairs: &[(&str, &[u8])]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.append(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_bytes(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    fn open_loopback() -> RbacConfig {
+        loopback_rbac(json!({ "allowed_origins": ["http://localhost:3000"] }))
+    }
+
+    #[test]
+    fn a_forwarding_header_counts_whatever_its_value() {
+        // A value that is not valid text is dropped from the string map the
+        // auth function gets; the loopback check must still see the header.
+        let rbac = open_loopback();
+        for name in FORWARDING_HEADERS {
+            let headers = raw_headers(&[(name, b"\xff\xfe")]);
+            assert!(
+                loopback_session(&rbac, "127.0.0.1", &headers).is_none(),
+                "{name} with a non-text value was admitted"
+            );
+        }
+    }
+
+    #[test]
+    fn every_origin_must_be_allowed() {
+        // Repeated headers collapse to the last value in the string map: one
+        // allowed Origin must not hide a foreign one, in either order.
+        let rbac = open_loopback();
+        for pairs in [
+            [
+                ("origin", &b"http://localhost:3000"[..]),
+                ("origin", &b"http://evil.example"[..]),
+            ],
+            [
+                ("origin", &b"http://evil.example"[..]),
+                ("origin", &b"http://localhost:3000"[..]),
+            ],
+        ] {
+            assert!(loopback_session(&rbac, "127.0.0.1", &raw_headers(&pairs)).is_none());
+        }
+        let allowed = raw_headers(&[("origin", b"http://LOCALHOST:3000")]);
+        assert!(loopback_session(&rbac, "127.0.0.1", &allowed).is_some());
+    }
+
+    #[test]
+    fn an_origin_that_is_not_text_is_refused() {
+        let rbac = open_loopback();
+        let headers = raw_headers(&[("origin", b"http://localhost:3000\xff")]);
+        assert!(loopback_session(&rbac, "127.0.0.1", &headers).is_none());
     }
 }
