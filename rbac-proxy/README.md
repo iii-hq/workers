@@ -94,9 +94,9 @@ rbac:
 
 | Endpoint | What it carries | Leave it out and |
 |---|---|---|
-| `/` | The worker protocol. Each connection is authenticated by `auth_function_id`, then every frame is checked against the RBAC rules. | No worker can connect. |
+| `/` | The worker protocol. Each connection is authenticated by `auth_function_id`, or, when that is unset, admitted by `rbac.loopback_auth` if it comes from this machine; then every frame is checked against the RBAC rules. | No worker can connect. |
 | `/ws/channels/{id}` | Channel sockets. Relayed as is; the engine checks each channel's access key, as it does for direct connections. | Functions that stream through channels fail. |
-| `/otel` | Telemetry from the SDK. Authenticated by the same auth function as `/` before the upgrade, then relayed as is (see below). | Workers log `Failed to connect to engine WebSocket` and their telemetry is not exported. |
+| `/otel` | Telemetry from the SDK. Authenticated the same way as `/` before the upgrade, then relayed as is (see below). | Workers log `Failed to connect to engine WebSocket` and their telemetry is not exported. |
 
 Rules use the `expose_functions` wildcard syntax over the request path:
 `match("/otel")` or `{ match: "/otel" }`, where `*` matches any run of
