@@ -469,7 +469,7 @@ async fn rebuild(
                 .into(),
         ));
     }
-    let messages = window(prefix)?;
+    let messages = window(session_id, prefix)?;
     if messages.is_empty() {
         return Err(EvalError::Conflict(format!(
             "the model saw no message before {decision_point}"
@@ -480,7 +480,7 @@ async fn rebuild(
     let first_step = first_step_of(decision_point).and_then(|first| {
         let index = entries.iter().position(|entry| entry.entry_id == first)?;
         let recorded = recorded_tokens(&raw[index]["message"]["usage"])?;
-        Some((window(&entries[..index]).ok()?, recorded))
+        Some((window(session_id, &entries[..index]).ok()?, recorded))
     });
 
     let model = options["model"]
@@ -532,9 +532,10 @@ async fn rebuild(
     })
 }
 
-/// The model-facing window the Harness derives from these entries.
-fn window(entries: &[LoadedEntry]) -> Result<Vec<(String, Value)>, EvalError> {
-    harness::window::build(entries, 0, None, None)
+/// The model-facing window the Harness derives from these entries of `session_id`
+/// (its own attachments are the ones the model saw as files).
+fn window(session_id: &str, entries: &[LoadedEntry]) -> Result<Vec<(String, Value)>, EvalError> {
+    harness::window::build(session_id, entries, 0, None, None)
         .candidate
         .into_iter()
         .map(|(id, message)| Ok((id, serde_json::to_value(message)?)))
