@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.3
+
+- **A resume runs Setup in the run worktree again.** A run's branch was rebased onto `main` between sessions, and `main` had added a Node dependency (`@iii-dev/traces-ui`). The resumed run kept the old install: web typecheck and build failed on a missing module, a validation round was spent, and no card had a defect.
+- **Cargo test commands carry `--no-fail-fast`.** With three known red tests at base, `cargo test --workspace` stopped at their binary, and every binary after it went unchecked.
+- **A batch repaired after a deadline gets twice the check deadline.** The same full suite (database, Rust, web) was killed at the same 40-minute mark round after round; a repair whose last validation lost a check to its deadline now runs with `2 × verify_deadline_min`.
+
 ## 0.8.2
 
 - **Every item a discovery or a check returns becomes a card in the same turn.** The rule did not say when. A run's discovery returned 32 items, and the orchestrator created 4, keeping the other 28 "in discovery evidence until dependency-ready cards are created". Nothing created them later: they reached no round and no report, and the run stopped with most of the release never planned on the board. Readiness is already Step B's job: a card waits in To do until its `Depends on:` keys are done.
