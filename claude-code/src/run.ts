@@ -182,9 +182,20 @@ const SESSIONS_RESPONSE_FORMAT = jsonSchema(z.object({ sessions: z.array(Session
 type LiveRun = { interrupt: () => Promise<void>; stopped?: boolean };
 const live = new Map<string, LiveRun>();
 
-/** Whether this worker is running a turn in `sessionId` right now. */
-export function isRunLive(sessionId: string): boolean {
-  return live.has(sessionId);
+/** Sessions this worker has run a turn in since it started, kept until the
+ *  startup scan ends: that scan must not settle any of them. */
+const ranSinceBoot = new Set<string>();
+let trackingSinceBoot = true;
+
+/** Whether this worker has run (or is running) a turn in `sessionId` since it started. */
+export function ranSinceStart(sessionId: string): boolean {
+  return live.has(sessionId) || ranSinceBoot.has(sessionId);
+}
+
+/** The startup scan is over: stop remembering. */
+export function startupScanDone(): void {
+  trackingSinceBoot = false;
+  ranSinceBoot.clear();
 }
 
 /** Best-effort: flip a session record to `error` so a failed background run
@@ -264,6 +275,7 @@ export async function executeRun(
     },
   };
   live.set(session_id, handle);
+  if (trackingSinceBoot) ranSinceBoot.add(session_id);
 
   try {
     // A run that names a parent is a sub-agent: give it a linked session first,
@@ -529,9 +541,9 @@ async function runReserved(
         stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
         // A failed result may carry its reason only in `errors`.
         resultText =
-          'result' in msg && typeof msg.result === 'string'
+          'result' in msg && typeof msg.result === 'string' && msg.result
             ? msg.result
-            : 'errors' in msg && Array.isArray(msg.errors)
+            : 'errors' in msg && Array.isArray(msg.errors) && msg.errors.length
               ? msg.errors.map(String).join('; ')
               : '';
       }

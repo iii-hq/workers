@@ -22,7 +22,7 @@ import {
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
 import { resolveClaudeExecutable } from './executable.js';
-import { isRunLive, register } from './run.js';
+import { ranSinceStart, register, startupScanDone } from './run.js';
 import { settleStaleSessions } from './session-link.js';
 import { registerActivity } from './terminal/activity.js';
 import { registerAuth } from './terminal/auth.js';
@@ -123,9 +123,11 @@ const emitRaw = feeds.raw.emit;
 register(iii, () => holder.current, emit, emitRaw);
 // A session this worker left `working` (a lost final status, or a restart
 // mid-run) is settled now: nothing of ours can be running yet.
-void settleStaleSessions(iii, isRunLive).then((n) => {
-  if (n > 0) console.info(`claude-code: marked ${n} session(s) left working as error`);
-});
+void settleStaleSessions(iii, ranSinceStart)
+  .then((n) => {
+    if (n > 0) console.info(`claude-code: marked ${n} session(s) left working as error`);
+  })
+  .finally(startupScanDone);
 
 // The terminal half: the hook sink, what a session runs, who pays for it, and
 // the console page that opens it.

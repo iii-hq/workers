@@ -5,8 +5,14 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { registerAgentFeeds } from '../src/agent-feed.js';
 import { type Config, loadConfig } from '../src/config.js';
-import { executeRun, RunPayloadSchema, register } from '../src/run.js';
-import { statusRetry, toSessionMessage } from '../src/session-link.js';
+import { executeRun, RunPayloadSchema, ranSinceStart, register } from '../src/run.js';
+import {
+  RESTART_REASON,
+  setSessionStatus,
+  settleStaleSessions,
+  statusRetry,
+  toSessionMessage,
+} from '../src/session-link.js';
 import { streamTiming } from '../src/session-writer.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 import {
@@ -859,41 +865,190 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     expect(statusesOf(fake, 'lost-2')).toEqual(['working', 'working', 'done']);
   });
 
-  it('a replay in flight never overwrites a newer status of the same session', async () => {
-    const fake = fakeIii();
-    failStatus(fake, 'done', 3);
-    await run(fake, { prompt: 'x', session_id: 'race-1', parent_session_id: 'p-1' });
-    // Hold the replay of race-1's lost `done` before it commits, and record
-    // the order in which race-1's statuses actually commit.
-    const committed: unknown[] = ['working'];
+  /** Holds race-1's first `done` before it commits; records what commits for it. */
+  function holdReplay(fake: FakeIii, sessionId: string) {
+    const committed: unknown[] = [];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    let held = false;
+    const state = { held: false };
     const real = fake.iii.call.bind(fake.iii);
     (fake.iii as { call: unknown }).call = async (req: {
       function_id: string;
       payload: { session_id?: string; status?: string };
     }) => {
-      const ours = req.function_id === 'session::set-status' && req.payload.session_id === 'race-1';
-      if (ours && req.payload.status === 'done' && !held) {
-        held = true;
+      const ours =
+        req.function_id === 'session::set-status' && req.payload.session_id === sessionId;
+      if (ours && req.payload.status === 'done' && !state.held) {
+        state.held = true;
         await gate;
       }
       const out = await real(req as never);
       if (ours) committed.push(req.payload.status);
       return out;
     };
+    return { committed, release, state };
+  }
+
+  it('a replay in flight never overwrites a newer status of the same session', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'done', 3);
+    await run(fake, { prompt: 'x', session_id: 'race-1', parent_session_id: 'p-1' });
+    const hold = holdReplay(fake, 'race-1');
     // Another session's write succeeds: the replay starts and is held.
-    await run(fake, { prompt: 'y', session_id: 'other-3', parent_session_id: 'p-1' });
+    await setSessionStatus(fake.iii, 'other-3', 'working');
+    await vi.waitFor(() => expect(hold.state.held).toBe(true));
+    // The newer write is requested while the replay is in flight: it queues.
+    const newer = setSessionStatus(fake.iii, 'race-1', 'working');
+    hold.release();
+    expect(await newer).toBe(true);
+    expect(hold.committed).toEqual(['done', 'working']);
+  });
+
+  it('a success during a sweep runs the sweep again for what was lost meanwhile', async () => {
+    const fake = fakeIii();
+    // `done` fails for the sessions in `down`; sweep-a's replay is then held.
+    const down = new Set(['sweep-a', 'sweep-c']);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = false;
+    let holding = false;
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const id = String(req.payload.session_id);
+      if (req.function_id === 'session::set-status' && req.payload.status === 'done') {
+        if (holding && id === 'sweep-a' && !held) {
+          held = true;
+          await gate;
+        } else if (down.has(id)) {
+          throw new Error('timeout');
+        }
+      }
+      return real(req as never);
+    };
+    const { settleSessionStatus } = await import('../src/session-link.js');
+    expect(await settleSessionStatus(fake.iii, 'sweep-a', 'done')).toBe(false);
+    // A success starts a sweep, held on sweep-a's replay.
+    holding = true;
+    down.delete('sweep-a');
+    await setSessionStatus(fake.iii, 'other-4', 'working');
     await vi.waitFor(() => expect(held).toBe(true));
-    // A follow-up turn on race-1 starts while the replay is in flight.
-    const followUp = run(fake, { prompt: 'again', session_id: 'race-1' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // During the sweep, sweep-c loses its `done`, then a write succeeds.
+    expect(await settleSessionStatus(fake.iii, 'sweep-c', 'done')).toBe(false);
+    down.delete('sweep-c');
+    await setSessionStatus(fake.iii, 'other-5', 'working');
     release();
-    await followUp;
-    await vi.waitFor(() => expect(committed).toEqual(['working', 'done', 'working', 'done']));
+    // The pass that was running took its list before sweep-c was lost: only
+    // a second pass writes it.
+    await vi.waitFor(() => {
+      const done = fake.calls.filter(
+        (c) =>
+          c.function_id === 'session::set-status' &&
+          c.payload.session_id === 'sweep-c' &&
+          c.payload.status === 'done',
+      );
+      expect(done.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('a replay that fails does not stop the sweep for the others', async () => {
+    const fake = fakeIii();
+    // Both lose their `done`; first-bad keeps failing, second-ok recovers.
+    const down = new Set(['first-bad', 'second-ok']);
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      if (
+        req.function_id === 'session::set-status' &&
+        req.payload.status === 'done' &&
+        down.has(String(req.payload.session_id))
+      ) {
+        throw new Error('timeout');
+      }
+      return real(req as never);
+    };
+    await run(fake, { prompt: 'x', session_id: 'first-bad', parent_session_id: 'p-1' });
+    await run(fake, { prompt: 'x', session_id: 'second-ok', parent_session_id: 'p-1' });
+    down.delete('second-ok');
+    await setSessionStatus(fake.iii, 'other-6', 'working');
+    await vi.waitFor(() => expect(statusesOf(fake, 'second-ok')).toEqual(['working', 'done']));
+  });
+
+  it('the startup scan never settles a session this worker ran since it started', async () => {
+    // The scan lists `ran-b` as working, a turn on it then starts AND finishes
+    // while the scan is still busy with an earlier session: `done` must stay.
+    const fake = fakeIii();
+    seedSession(fake, 'stale-a', { agent: 'claude-code' });
+    seedSession(fake, 'ran-b', { agent: 'claude-code' });
+    for (const id of ['stale-a', 'ran-b']) {
+      const meta = fake.state.get(`session-manager/${id}`) as Record<string, unknown>;
+      fake.state.set(`session-manager/${id}`, { ...meta, status: 'working' });
+    }
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let listed = false;
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const out = await real(req as never);
+      if (req.function_id === 'session::list') listed = true;
+      if (req.function_id === 'session::set-status' && req.payload.session_id === 'stale-a') {
+        await gate;
+      }
+      return out;
+    };
+    const scan = settleStaleSessions(fake.iii, ranSinceStart);
+    await vi.waitFor(() => expect(listed).toBe(true));
+    await run(fake, { prompt: 'x', session_id: 'ran-b' });
+    release();
+    await scan;
+    const meta = (id: string) => fake.state.get(`session-manager/${id}`) as Record<string, unknown>;
+    expect(meta('ran-b').status).toBe('done');
+    expect(meta('stale-a')).toMatchObject({ status: 'error', status_reason: RESTART_REASON });
+  });
+
+  it('a restart error that could not be written is replayed once the store answers', async () => {
+    const fake = fakeIii();
+    seedSession(fake, 'stale-c', { agent: 'claude-code' });
+    const meta = fake.state.get('session-manager/stale-c') as Record<string, unknown>;
+    fake.state.set('session-manager/stale-c', { ...meta, status: 'working' });
+    failStatus(fake, 'error', 1);
+    expect(await settleStaleSessions(fake.iii, () => false)).toBe(0);
+    await setSessionStatus(fake.iii, 'other-7', 'working');
+    await vi.waitFor(() =>
+      expect(fake.state.get('session-manager/stale-c')).toMatchObject({
+        status: 'error',
+        status_reason: RESTART_REASON,
+      }),
+    );
+  });
+
+  it('uses the SDK errors when a failed result has empty result text', async () => {
+    const fake = fakeIii();
+    const turn = [
+      initMsg,
+      {
+        ...resultMsg,
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: '',
+        errors: ['quota exceeded'],
+      },
+    ];
+    const out = (await run(fake, { prompt: 'x' }, turn)) as { result?: string };
+    expect(out.result).toBe('quota exceeded');
   });
 
   it('never rewrites an entry whose content and usage are already stored', async () => {
@@ -1009,6 +1164,49 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     );
     const [message] = await runCutOff(fake, 'cut-2');
     expect(message.content).toEqual([{ type: 'text', text: 'Done part' }]);
+  });
+
+  it('keeps a completed block whose SDK message never arrived, without duplicating others', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_k', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'Plan' },
+        });
+        yield stream({ type: 'content_block_stop', index: 0 });
+        yield {
+          type: 'assistant',
+          message: { id: 'msg_k', model: 'm', content: [{ type: 'thinking', thinking: 'Plan' }] },
+        };
+        yield stream({
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'text', text: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'text_delta', text: 'Complete answer' },
+        });
+        yield stream({ type: 'content_block_stop', index: 1 });
+        // The SDK fails before it reports block 1 as an assistant message.
+        throw new Error('connection reset');
+      },
+      interrupt: async () => {},
+    })) as never);
+    const [message] = await runCutOff(fake, 'cut-4');
+    const texts = JSON.stringify(message.content);
+    expect(texts).toContain('Complete answer');
+    expect(texts.match(/Plan/g)).toHaveLength(1);
   });
 
   it('clears a cut-off tool call that was the only block, even after it was shown live', async () => {

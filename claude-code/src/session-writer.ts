@@ -68,6 +68,10 @@ type Draft = {
   /** Stream indexes that reached `content_block_stop`: the SDK reports each of
    *  those as a complete block. One that never stopped was cut off. */
   stopped: Set<number>;
+  /** Stopped stream indexes the SDK has reported as complete blocks. Matched
+   *  by event order: the SDK reports a block after its `content_block_stop`,
+   *  so each reported block is the oldest stopped one not yet matched. */
+  supplied: Set<number>;
   /** Blocks from the SDK's complete assistant messages — authoritative once streaming ends. */
   final: ContentBlock[];
   streaming: boolean;
@@ -185,6 +189,13 @@ export class ChildTranscript implements TurnSink {
   ): void {
     const draft = this.draft(id, model);
     draft.final.push(...content);
+    for (let n = 0; n < content.length; n++) {
+      const next = [...draft.stopped]
+        .sort((a, b) => a - b)
+        .find((index) => !draft.supplied.has(index));
+      if (next === undefined) break;
+      draft.supplied.add(next);
+    }
     if (usage) draft.usage = usage;
     if (model) draft.model = model;
     this.refresh(draft);
@@ -244,6 +255,7 @@ export class ChildTranscript implements TurnSink {
         streamed: [],
         partialJson: new Map(),
         stopped: new Set(),
+        supplied: new Set(),
         final: [],
         streaming: false,
       };
@@ -263,17 +275,18 @@ export class ChildTranscript implements TurnSink {
   private display(draft: Draft): ContentBlock[] {
     const streamed = draft.streamed.filter(visible).map((b) => ({ ...b }));
     if (draft.streaming) return streamed.length ? streamed : [...draft.final];
-    const blocks = draft.streamed
+    // After the stream: the SDK's complete blocks, then every streamed text or
+    // thinking block it never reported (completed or cut off), in order. An
+    // unreported tool call is dropped: a tool runs only after the SDK reports
+    // its block, so it never ran.
+    const unreported = draft.streamed
       .map((block, index) => ({ block, index }))
-      .filter(({ block }) => visible(block));
-    const cutOff = ({ index }: { index: number }) => !draft.stopped.has(index);
-    const notACall = ({ block }: { block: ContentBlock | undefined }) =>
-      block?.type !== 'function_call';
-    // No complete block: the stream is all there is, minus a cut-off call.
-    const kept = draft.final.length
-      ? blocks.filter((b) => cutOff(b) && notACall(b))
-      : blocks.filter((b) => !cutOff(b) || notACall(b));
-    return [...draft.final, ...kept.map(({ block }) => ({ ...block }) as ContentBlock)];
+      .filter(
+        ({ block, index }) =>
+          visible(block) && block.type !== 'function_call' && !draft.supplied.has(index),
+      )
+      .map(({ block }) => ({ ...block }) as ContentBlock);
+    return [...draft.final, ...unreported];
   }
 
   private refresh(draft: Draft, schedule = true): void {

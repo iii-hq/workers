@@ -73,6 +73,8 @@ export const statusRetry = { delaysMs: [500, 2_000] };
  */
 const unsettled = new Map<string, { status: 'done' | 'error'; reason?: string }>();
 let reconciling = false;
+/** A success arrived during a sweep: run another pass once it ends. */
+let reconcileRequested = false;
 
 /** Each session's status writes, replays included, go out one at a time, in order. */
 const statusQueues = new Map<string, Promise<unknown>>();
@@ -101,22 +103,30 @@ async function writeStatus(
 }
 
 async function reconcileUnsettled(iii: IIIClient): Promise<void> {
-  if (reconciling || unsettled.size === 0) return;
+  if (unsettled.size === 0) return;
+  if (reconciling) {
+    // Only a successful write asks, so a store that keeps failing never loops.
+    reconcileRequested = true;
+    return;
+  }
   reconciling = true;
   try {
-    for (const [sessionId, pending] of [...unsettled]) {
-      try {
-        await inOrder(sessionId, async () => {
-          // A newer write for this session was requested meanwhile: it wins,
-          // and this replay is never sent.
-          if (unsettled.get(sessionId) !== pending) return;
-          await writeStatus(iii, sessionId, pending.status, pending.reason);
-          if (unsettled.get(sessionId) === pending) unsettled.delete(sessionId);
-        });
-      } catch {
-        return; // still unreachable: the next success tries again
+    do {
+      reconcileRequested = false;
+      for (const [sessionId, pending] of [...unsettled]) {
+        try {
+          await inOrder(sessionId, async () => {
+            // A newer write for this session was requested meanwhile: it wins,
+            // and this replay is never sent.
+            if (unsettled.get(sessionId) !== pending) return;
+            await writeStatus(iii, sessionId, pending.status, pending.reason);
+            if (unsettled.get(sessionId) === pending) unsettled.delete(sessionId);
+          });
+        } catch {
+          // Still failing: it stays pending for the next success; try the rest.
+        }
       }
-    }
+    } while (reconcileRequested && unsettled.size > 0);
   } finally {
     reconciling = false;
   }
@@ -153,13 +163,14 @@ export const RESTART_REASON = 'claude-code restarted while this run was active';
  * status (a write that never landed, or a worker that died mid-run). Each
  * namespace has at most one claude-code, and its calls reach only its own
  * namespace's session-manager, so every `agent: claude-code` session listed
- * here is this worker's. `isLive` spares a run that started meanwhile. Every
+ * here is this worker's. `ranHere` spares every session this worker has run a turn in since it started,
+ * so a turn that starts and finishes during the scan keeps its own status. Every
  * page is read before anything is written: a write moves a session out of the
  * `working` filter under the cursor. Returns how many were settled.
  */
 export async function settleStaleSessions(
   iii: IIIClient,
-  isLive: (sessionId: string) => boolean,
+  ranHere: (sessionId: string) => boolean,
 ): Promise<number> {
   const stale: string[] = [];
   try {
@@ -189,8 +200,11 @@ export async function settleStaleSessions(
   }
   let settled = 0;
   for (const sessionId of stale) {
-    if (isLive(sessionId)) continue;
+    if (ranHere(sessionId)) continue;
     if (await setSessionStatus(iii, sessionId, 'error', RESTART_REASON)) settled++;
+    // Not written: replayed once the store answers, unless a run on this
+    // session writes its own status first (which drops the replay).
+    else unsettled.set(sessionId, { status: 'error', reason: RESTART_REASON });
   }
   return settled;
 }
