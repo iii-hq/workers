@@ -186,6 +186,15 @@ export function ModelsStep({
     choice: Extract<ProviderChoice, { kind: 'key' }>
     key?: KeyInput
   }[]
+  // A Connect that got some providers working and failed on others: going
+  // on with the working ones is the expected move.
+  const preferContinue = failed && anyReady && changes > 0
+  const continueRef = useRef<HTMLButtonElement>(null)
+  // The clicked Connect button was disabled while it ran, so the focus is
+  // nowhere: hand it to Continue so Enter moves on.
+  useEffect(() => {
+    if (preferContinue && !busy) continueRef.current?.focus()
+  }, [preferContinue, busy])
 
   // Once the changes land, setup moves on; a failure stays here with its log.
   const apply = async () => {
@@ -222,30 +231,50 @@ export function ModelsStep({
             Back
           </Button>
           <span className="flex items-center gap-2">
-            {(changes === 0 && !anyReady) || (failed && changes > 0) ? (
-              <Button variant="ghost" onClick={onNext} disabled={busy}>
-                {anyReady ? 'Continue' : 'Skip for now'}
-              </Button>
-            ) : null}
-            {changes === 0 && anyReady ? (
-              <Button onClick={onNext} disabled={busy}>
-                Continue
-              </Button>
+            {preferContinue ? (
+              // At least one provider connected and another failed: setup
+              // can go on with what works, so Continue is the primary
+              // action (Enter takes it) and retrying is the secondary one.
+              <>
+                <Button
+                  variant="ghost"
+                  onClick={() => void apply()}
+                  disabled={busy || incomplete}
+                >
+                  Try again
+                </Button>
+                <Button ref={continueRef} onClick={onNext} disabled={busy}>
+                  Continue
+                </Button>
+              </>
             ) : (
-              <Button
-                onClick={() => void apply()}
-                disabled={busy || changes === 0 || incomplete}
-              >
-                {running === 'models' ? (
-                  <LoaderCircle
-                    className="animate-spin motion-reduce:animate-none"
-                    aria-hidden
-                  />
+              <>
+                {(changes === 0 && !anyReady) || (failed && changes > 0) ? (
+                  <Button variant="ghost" onClick={onNext} disabled={busy}>
+                    Skip for now
+                  </Button>
                 ) : null}
-                {running === 'models'
-                  ? 'Connecting…'
-                  : connectLabel(selections.length, removals.length)}
-              </Button>
+                {changes === 0 && anyReady ? (
+                  <Button onClick={onNext} disabled={busy}>
+                    Continue
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={() => void apply()}
+                    disabled={busy || changes === 0 || incomplete}
+                  >
+                    {running === 'models' ? (
+                      <LoaderCircle
+                        className="animate-spin motion-reduce:animate-none"
+                        aria-hidden
+                      />
+                    ) : null}
+                    {running === 'models'
+                      ? 'Connecting…'
+                      : connectLabel(selections.length, removals.length)}
+                  </Button>
+                )}
+              </>
             )}
           </span>
         </>

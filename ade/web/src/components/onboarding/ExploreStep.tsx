@@ -61,8 +61,8 @@ function promptIcon(
 /*
  * Both screens here are a choice, made in two moves: pick one of the
  * options, then confirm it with the footer's button, which names what it
- * will do; with nothing picked (no model yet) it is Close setup, and closes
- * setup. With a model connected the tour starts out picked. The
+ * will do. Explore on my own starts out picked, so the button closes setup
+ * into a chat until another option is picked. The
  * options are a single-choice group (radio semantics), so arrow keys move
  * the pick and Space or a click sets it. Drawn as checkboxes, like every
  * choice list in the ADE (single choice ticks one): the picked one carries
@@ -414,9 +414,9 @@ export function ExploreStep({
   // A pick that has since gone out of reach (the model left, the examples
   // emptied) counts as no pick: the button goes back to Close setup. While
   // the tour gets ready its row stays ticked and every row holds still.
-  // Until something is picked the tour is, when it can start: the primary
-  // button gets the focus, so Enter from the last setup step starts it.
-  const wanted = picked ?? 'tour'
+  // Until something is picked, exploring alone is: the primary button gets
+  // the focus, so Enter from the last setup step closes setup into a chat.
+  const wanted = picked ?? 'own'
   const choice = available[wanted] ? wanted : null
   const can = (id: ChoiceId) => available[id] && !preparing
   const group = usePickGroup(

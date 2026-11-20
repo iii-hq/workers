@@ -333,6 +333,44 @@ describe('ModelsStep after Connect failed', () => {
     expect(onNext).toHaveBeenCalledTimes(1)
   })
 
+  it('makes Continue the primary, focused action when another provider works', async () => {
+    const onNext = vi.fn()
+    act(() =>
+      root.render(
+        <ModelsStep
+          onboarding={controller(
+            {
+              providers: [
+                {
+                  id: 'claude-code',
+                  title: 'Claude Code',
+                  configured: false,
+                  available: true,
+                  ownsAuthentication: true,
+                  modelCount: 13,
+                },
+              ],
+              installed: new Set(['llm-router', 'provider-claude-code']),
+            },
+            undefined,
+            { activity: [FAILED] },
+          )}
+          onBack={() => undefined}
+          onNext={onNext}
+        />,
+      ),
+    )
+    // Codex is still ticked from the Connect that failed on it.
+    act(() => checkbox('Codex').click())
+    const footer = [...container.querySelectorAll('footer button')]
+    const primary = footer.at(-1) as HTMLButtonElement
+    expect(primary.textContent).toBe('Continue')
+    expect(document.activeElement).toBe(primary)
+    expect(button(/^Try again$/).disabled).toBe(false)
+    await act(async () => primary.click())
+    expect(onNext).toHaveBeenCalledTimes(1)
+  })
+
   it('offers the Codex sign-in from here once Codex rejected the local one', async () => {
     const run = vi.fn(
       async (_group: string, _steps: readonly PlanStep[]) => true,

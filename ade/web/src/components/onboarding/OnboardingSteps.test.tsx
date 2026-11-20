@@ -285,20 +285,18 @@ describe('ExploreStep', () => {
     expect(html).toContain('Build an example project')
     expect(html).toContain('Take the learn-iii tour')
     expect(html).toContain('Explore on my own')
-    // A single-choice group with the tour ticked while a model is
-    // connected; the footer's button says what it does, and nothing is
-    // disabled.
+    // A single-choice group with Explore on my own ticked; the footer's
+    // button says what it does, and nothing is disabled.
     expect(html.match(/role="radio"/g)).toHaveLength(3)
     expect(html.match(/aria-checked="false"/g)).toHaveLength(2)
     expect(html.match(/aria-checked="true"/g)).toHaveLength(1)
-    expect(html).toContain('Start the tour')
+    expect(html).toMatch(/<footer[\s\S]*Explore on my own[\s\S]*<\/footer>/)
     expect(html).not.toContain('Finish')
     expect(html).not.toContain('disabled=""')
-    // Without a model nothing can be picked but exploring alone, and the
-    // button closes setup.
+    // Without a model exploring alone is the only pick, and it is ticked.
     const offline = explore(false)
-    expect(offline.match(/aria-checked="true"/g)).toBeNull()
-    expect(offline).toContain('Close setup')
+    expect(offline.match(/aria-checked="true"/g)).toHaveLength(1)
+    expect(offline).toMatch(/<footer[\s\S]*Explore on my own[\s\S]*<\/footer>/)
   })
 
   // QA 2026-11-16 F6: the picks drew round radio dots while Models and
