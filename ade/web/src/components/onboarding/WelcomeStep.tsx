@@ -1,24 +1,6 @@
-import type { LucideIcon } from 'lucide-react'
-import {
-  Activity,
-  ArrowRight,
-  Boxes,
-  Puzzle,
-  ScanSearch,
-  Zap,
-} from 'lucide-react'
-import { PILLARS, type PillarId } from '@/lib/onboarding/catalog'
+import { ArrowRight } from 'lucide-react'
 import { Button } from './controls'
-import { Rows, StepLayout } from './parts'
-
-export const PILLAR_ICONS: Record<PillarId, LucideIcon> = {
-  extensible: Puzzle,
-  discoverable: ScanSearch,
-  observable: Activity,
-  composable: Boxes,
-  reactive: Zap,
-}
-
+import { StepLayout } from './parts'
 export function WelcomeStep({
   onStart,
   onSkip,
@@ -51,35 +33,11 @@ export function WelcomeStep({
           </abbr>
         </h2>
         <p className="max-w-[56ch] text-pretty text-sm leading-5 text-muted-foreground">
-          Your agentic development environment. Connect a model and give your
-          agent access to everything your backend can do.
+          Your agentic development environment, built on iii. Everything you add
+          is composable, observable, discoverable, extensible, and reactive.
+          Connect a model to give your agent access to all of it.
         </p>
       </header>
-      <Rows as="ul">
-        {PILLARS.map((pillar) => {
-          const Icon = PILLAR_ICONS[pillar.id]
-          return (
-            <li
-              key={pillar.id}
-              className="flex items-start gap-3 px-3.5 py-2.5"
-            >
-              <Icon
-                className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                strokeWidth={1.75}
-                aria-hidden
-              />
-              <span className="flex min-w-0 flex-col gap-px">
-                <span className="text-sm font-medium leading-5 text-ink">
-                  {pillar.title}
-                </span>
-                <span className="text-pretty text-body leading-5 text-muted-foreground">
-                  {pillar.line}
-                </span>
-              </span>
-            </li>
-          )
-        })}
-      </Rows>
     </StepLayout>
   )
 }

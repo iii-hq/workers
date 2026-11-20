@@ -5,8 +5,8 @@ import { Stepper, type StepperStep } from './Stepper'
 const STEPS: StepperStep[] = [
   { id: 'welcome', title: 'Welcome' },
   { id: 'models', title: 'Models' },
-  { id: 'judge', title: 'Judge', optional: true },
-  { id: 'ready', title: 'Ready' },
+  { id: 'browser', title: 'Browser', optional: true },
+  { id: 'explore', title: 'Explore iii' },
 ]
 
 const noop = () => undefined
@@ -16,16 +16,16 @@ describe('Stepper', () => {
     const html = renderToStaticMarkup(
       <Stepper
         steps={STEPS}
-        current="judge"
+        current="browser"
         reachable={new Set(['welcome', 'models'])}
         onSelect={noop}
       />,
     )
     expect(html.match(/aria-current="step"/g)).toHaveLength(1)
-    expect(html).toMatch(/Judge<[^>]*>optional<\/span><[^>]*>, current step/)
+    expect(html).toMatch(/Browser<[^>]*>optional<\/span><[^>]*>, current step/)
     expect(html).toMatch(/Welcome<[^>]*>, completed/)
     expect(html).toMatch(/Models<[^>]*>, completed/)
-    expect(html).not.toMatch(/Ready<[^>]*>, completed/)
+    expect(html).not.toMatch(/Explore iii<[^>]*>, completed/)
   })
 
   it('only makes a button of a step the person can go back to', () => {
@@ -46,7 +46,7 @@ describe('Stepper', () => {
     const html = renderToStaticMarkup(
       <Stepper
         steps={STEPS}
-        current="ready"
+        current="explore"
         reachable={new Set()}
         onSelect={noop}
       />,
@@ -60,13 +60,15 @@ describe('Stepper', () => {
     const html = renderToStaticMarkup(
       <Stepper
         steps={STEPS}
-        current="ready"
+        current="explore"
         reachable={new Set()}
         onSelect={noop}
       />,
     )
-    expect(html).toMatch(/aria-current="step"[\s\S]*Ready<[^>]*>, current step/)
-    expect(html).not.toMatch(/Ready<[^>]*>, completed/)
+    expect(html).toMatch(
+      /aria-current="step"[\s\S]*Explore iii<[^>]*>, current step/,
+    )
+    expect(html).not.toMatch(/Explore iii<[^>]*>, completed/)
     expect(html.match(/, completed/g)).toHaveLength(3)
   })
 
@@ -74,7 +76,7 @@ describe('Stepper', () => {
   // the step, so every dot moved along the row; on a phone it cut "Judge"
   // to "J…". Every inline title folds alike, and a caption names the step.
   it('folds every horizontal title alike and names the current step under the dots', () => {
-    for (const current of ['welcome', 'ready'] as const) {
+    for (const current of ['welcome', 'explore'] as const) {
       const html = renderToStaticMarkup(
         <Stepper
           steps={STEPS}
@@ -90,13 +92,13 @@ describe('Stepper', () => {
     const html = renderToStaticMarkup(
       <Stepper
         steps={STEPS}
-        current="judge"
+        current="browser"
         reachable={new Set()}
         onSelect={noop}
       />,
     )
     expect(html).toMatch(
-      /data-stepper-caption[^>]*>Step 3 of 4 · <span[^>]*>Judge<\/span>/,
+      /data-stepper-caption[^>]*>Step 3 of 4 · <span[^>]*>Browser<\/span>/,
     )
   })
 
@@ -104,7 +106,7 @@ describe('Stepper', () => {
     const html = renderToStaticMarkup(
       <Stepper
         steps={STEPS}
-        current="judge"
+        current="browser"
         reachable={new Set(['welcome', 'models'])}
         onSelect={noop}
       />,

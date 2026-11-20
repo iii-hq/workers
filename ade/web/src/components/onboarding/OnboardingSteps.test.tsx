@@ -4,7 +4,6 @@ import type { ToolScan } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { ExampleList, ExploreStep } from './ExploreStep'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep } from './ReadyStep'
 import {
   type ActivityEntry,
   type MachineSnapshot,
@@ -257,39 +256,6 @@ describe('ModelsStep', () => {
   })
 })
 
-const CONNECTED: MachineSnapshot['providers'] = [
-  {
-    id: 'claude-code',
-    title: 'Claude Code',
-    configured: false,
-    available: true,
-    ownsAuthentication: true,
-    modelCount: 11,
-  },
-  {
-    id: 'anthropic',
-    title: 'Anthropic',
-    configured: true,
-    available: true,
-    modelCount: 9,
-    credentialRef: 'secret://ANTHROPIC_API_KEY',
-  },
-]
-
-function ready(
-  snapshot: Partial<MachineSnapshot>,
-  activity: ActivityEntry[] = [],
-) {
-  return renderToStaticMarkup(
-    <ReadyStep
-      onboarding={controller(snapshot, activity)}
-      judges={[]}
-      onNext={noop}
-      onBack={noop}
-    />,
-  )
-}
-
 function examples(prompts: readonly ExamplePrompt[] | null) {
   return renderToStaticMarkup(
     <ExampleList prompts={prompts} picked={null} onPick={noop} />,
@@ -313,97 +279,6 @@ function explore(
     />,
   )
 }
-
-describe('ReadyStep', () => {
-  it('shows each template kit with its install status and way forward', () => {
-    const html = renderToStaticMarkup(
-      <ReadyStep
-        onboarding={controller({ providers: CONNECTED })}
-        judges={[]}
-        onNext={noop}
-        onBack={noop}
-        kits={[
-          { kit: 'iii/deepwork', state: 'installing' },
-          { kit: 'iii/done', state: 'installed' },
-          {
-            kit: 'iii/review',
-            state: 'review',
-            message: 'Not applied automatically: the plan needs review.',
-          },
-          {
-            kit: 'iii/broken',
-            state: 'failed',
-            message: 'could not reach the registry',
-          },
-        ]}
-        onRetryKit={noop}
-        onReviewKit={noop}
-      />,
-    )
-    expect(html).toContain('Installing iii/deepwork')
-    expect(html).toContain('in the background; you can keep going')
-    expect(html).toContain('iii/done installed')
-    expect(html).toContain('iii/review needs a review')
-    expect(html).toContain('Not applied automatically: the plan needs review.')
-    expect(html).toContain('>Review<')
-    expect(html).toContain('iii/broken did not install')
-    expect(html).toContain('could not reach the registry')
-    expect(html).toContain('Try again')
-  })
-
-  it('shows no kit rows when the template names none', () => {
-    expect(ready({ providers: CONNECTED })).not.toContain('Installing')
-  })
-
-  it('sums up what is connected and every worker setup added', () => {
-    const html = ready({ providers: CONNECTED }, [
-      {
-        id: 1,
-        group: 'models',
-        title: 'Add 2 workers',
-        detail: 'compose::add secrets provider-claude-code',
-        status: 'done',
-        workers: ['secrets', 'provider-claude-code'],
-      },
-    ])
-    expect(html).toContain('Your harness is ready')
-    expect(html).toContain('Claude Code connected')
-    expect(html).toContain('11 models')
-    // Where the keys live is not a summary line: it reads as jargon here.
-    expect(html).not.toContain('secret://')
-    expect(html).not.toContain('Your keys stay out of git')
-    expect(html).not.toContain('configuration holds only')
-    expect(html).toContain('Workers added')
-    expect(html).toContain('provider-claude-code')
-    expect(html).not.toContain('ready in every chat')
-  })
-
-  it('says where the keys are when one stays an environment variable', () => {
-    const html = ready({
-      providers: [
-        ...(CONNECTED ?? []),
-        {
-          id: 'openai',
-          title: 'OpenAI',
-          configured: true,
-          available: true,
-          modelCount: 4,
-          credentialRef: 'env://OPENAI_API_KEY',
-        },
-      ],
-    })
-    expect(html).toContain('OpenAI connected')
-    expect(html).toContain('4 models')
-    expect(html).not.toContain('env://')
-  })
-
-  it('moves on to Explore iii, or back, with or without a model', () => {
-    expect(ready({ providers: CONNECTED })).toContain('Next')
-    expect(ready({ providers: CONNECTED })).toContain('Back')
-    expect(ready({ providers: [] })).toContain('Next')
-    expect(ready({ providers: CONNECTED })).not.toContain('Try an example')
-  })
-})
 
 describe('ExploreStep', () => {
   it('offers the examples, the tour and exploring alone as one pick', () => {
@@ -521,43 +396,5 @@ describe('withWorkerPresence', () => {
     // Unknown worker name: the router's word stands.
     expect(cursor.modelCount).toBe(2)
     expect(withWorkerPresence(providers, null)[0].modelCount).toBe(11)
-  })
-})
-
-describe('JudgeStep', () => {
-  it('says what Judge does and what to do, with the recommended strategy ticked', async () => {
-    const { JudgeStep } = await import('./JudgeStep')
-    const html = renderToStaticMarkup(
-      <JudgeStep onboarding={controller({})} onBack={noop} onNext={noop} />,
-    )
-    expect(html).toContain('What Judge does')
-    expect(html).toContain('Function search')
-    expect(html).toContain('Chooses what to click on a page')
-    expect(html).toContain('Choose who answers')
-    expect(html).toContain('the first answers by default')
-    expect(html).toContain('Recommended')
-    expect(html).toMatch(
-      /aria-label="Answer with Jev by TypeSafe"[^>]*checked=""/,
-    )
-    expect(html).toContain('Set up Judge')
-    expect(html).toContain('Skip')
-  })
-
-  it('shows running strategies as running and offers to apply changes', async () => {
-    const { JudgeStep } = await import('./JudgeStep')
-    const html = renderToStaticMarkup(
-      <JudgeStep
-        onboarding={controller({
-          installed: new Set(['judge', 'judge-typesafe']),
-          judgeProvider: 'typesafe',
-        })}
-        onBack={noop}
-        onNext={noop}
-      />,
-    )
-    expect(html).toContain('Running')
-    expect(html).not.toContain('Recommended')
-    expect(html).toContain('tick to add, untick to remove')
-    expect(html).toContain('Continue')
   })
 })

@@ -261,49 +261,6 @@ export const JUDGE_USES: readonly {
   },
 ]
 
-export type PillarId =
-  | 'extensible'
-  | 'discoverable'
-  | 'observable'
-  | 'composable'
-  | 'reactive'
-
-export interface Pillar {
-  id: PillarId
-  title: string
-  /** One line for the welcome step. */
-  line: string
-}
-
-/** In CODER order: Composable, Observable, Discoverable, Extensible, Reactive. */
-export const PILLARS: readonly Pillar[] = [
-  {
-    id: 'composable',
-    title: 'Composable',
-    line: 'Add ready-made workers from the registry at workers.iii.dev.',
-  },
-  {
-    id: 'observable',
-    title: 'Observable',
-    line: 'Follow every model turn, function call, and observer in one place.',
-  },
-  {
-    id: 'discoverable',
-    title: 'Discoverable',
-    line: 'Every function in your backend is a tool your agent can find and use.',
-  },
-  {
-    id: 'extensible',
-    title: 'Extensible',
-    line: 'Your agent builds the tools it needs, from kanban boards to UI previews.',
-  },
-  {
-    id: 'reactive',
-    title: 'Reactive',
-    line: 'Agents respond to events as they happen, without polling loops.',
-  },
-]
-
 /**
  * The guided tour that follows setup: the `learn-iii` worker's card walks
  * through the ADE stage by stage, with the models just connected. The tour
