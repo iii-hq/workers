@@ -86,6 +86,32 @@ export async function resolveSource(env = process.env, repoUrl = PLUGIN_REPO) {
   }
 }
 
+/** `./name.js` imports and re-exports of one module, as source file names. */
+function localImports(content) {
+  const names = new Set();
+  for (const m of content.matchAll(/\bfrom\s+['"]\.\/([\w.-]+)\.js['"]/g)) names.add(`${m[1]}.ts`);
+  return [...names];
+}
+
+/**
+ * SHARED_MODULES and every module they import from `src/`, however deep: the
+ * plugin's modules import one another (mcp.ts imports troubleshoot.ts), and a
+ * list of names would miss the next one it adds. A missing import fails the
+ * build, naming it.
+ */
+async function sharedModules(dir) {
+  const shared = new Map();
+  const queue = [...SHARED_MODULES];
+  while (queue.length) {
+    const name = queue.shift();
+    if (shared.has(name)) continue;
+    const content = await read(dir, `src/${name}`);
+    shared.set(name, content);
+    queue.push(...localImports(content));
+  }
+  return [...shared];
+}
+
 const read = (dir, path) =>
   readFile(join(dir, path), 'utf8').catch(() => {
     throw new Error(`${path} is missing from the plugin source ${dir}`);
@@ -96,8 +122,7 @@ export async function generate({ dir, commit }, root) {
   const files = [];
   for (const path of PLUGIN_FILES)
     files.push({ path, content: await read(dir, `plugins/iii/${path}`) });
-  const shared = [];
-  for (const name of SHARED_MODULES) shared.push([name, await read(dir, `src/${name}`)]);
+  const shared = await sharedModules(dir);
 
   const source = { repo: PLUGIN_REPO, commit };
   await mkdir(join(root, 'src/iii-plugin'), { recursive: true });

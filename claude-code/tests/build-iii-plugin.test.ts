@@ -110,6 +110,37 @@ describe('generate', () => {
     await expect(readFile(join(root, 'src/iii-plugin/shared/gone.ts'))).rejects.toThrow();
   });
 
+  it('also vendors every module the shared ones import, however deep', async () => {
+    // The plugin's mcp.ts imports troubleshoot.ts, which no list named; a
+    // module it imports in turn comes along too.
+    const dir = await fixture();
+    await writeFile(
+      join(dir, 'src/mcp.ts'),
+      "import type { X } from './directory.js';\nimport { help } from './troubleshoot.js';\nexport const name = help;\n",
+    );
+    await writeFile(
+      join(dir, 'src/troubleshoot.ts'),
+      "export { deep } from './deep.js';\nexport const help = 'h';\n",
+    );
+    await writeFile(join(dir, 'src/deep.ts'), "export const deep = 'd';\n");
+    await writeFile(join(dir, 'src/unused.ts'), "export const unused = 'u';\n");
+    const root = await out();
+    await generate({ dir, commit: 'abc123' }, root);
+    const shared = join(root, 'src/iii-plugin/shared');
+    for (const name of ['troubleshoot.ts', 'deep.ts'])
+      expect(await readFile(join(shared, name), 'utf8'), name).toContain('export const');
+    // Only what the shared modules reach: the plugin's other files stay out.
+    await expect(readFile(join(shared, 'unused.ts'))).rejects.toThrow();
+  });
+
+  it('refuses a shared module whose local import is missing, naming it', async () => {
+    const dir = await fixture();
+    await writeFile(join(dir, 'src/mcp.ts'), "import { help } from './troubleshoot.js';\n");
+    await expect(generate({ dir, commit: 'abc123' }, await out())).rejects.toThrow(
+      /src\/troubleshoot\.ts/,
+    );
+  });
+
   it('refuses a checkout without the plugin, naming the missing file', async () => {
     const dir = await fixture();
     await rm(join(dir, 'plugins/iii/hooks/hooks.json'));

@@ -348,7 +348,8 @@ describe('the iii agent and the mcp-server fallback', () => {
       { ...base, mcp: mcp(true), defaultProfile: { ...profile, skills: ['ide'] } },
       embedded,
     );
-    const line = 'read each of its skills with `iii_get_skill`: `ide`.';
+    const line =
+      'read each of its skills with `iii_call` (`directory::skills::get`, `{ id }`): `ide`.';
     expect(r.mode).toContain('You are an iii agent. Use iii_call.');
     expect(r.mode).toContain(line);
     expect(m.disk['/w/p/default-mcp.md']).toContain(line);
