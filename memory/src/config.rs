@@ -72,8 +72,11 @@ pub struct WorkerConfig {
     #[serde(default = "default_true")]
     pub extraction_enabled: bool,
 
-    /// Model for the extraction call. Empty picks the first model in the
-    /// router catalog (logged); pin this in production.
+    /// Model for the extraction call, as `provider::id`. Empty is automatic:
+    /// the default model of the first usable provider by id, else the first
+    /// listed chat model of a usable provider. A usable provider is
+    /// available and signed in, or owns its sign-in. The pick is logged when
+    /// it changes; `memory::doctor` names it.
     #[serde(default)]
     pub extraction_model: String,
 

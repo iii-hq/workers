@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { ProviderListEntry } from '@/lib/models-catalog'
 import type { ModelOption } from '@/types/chat'
-import { ModelPickerPanel } from './ModelPicker'
+import { ModelPicker, ModelPickerPanel } from './ModelPicker'
 
 const MARK =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/></svg>'
@@ -71,7 +71,7 @@ describe('ModelPickerPanel', () => {
     expect(html).toContain('data-provider-group="openai"')
   })
 
-  it('marks the selection with the stronger wash and never draws a ring on rows', () => {
+  it('marks the selection with the stronger wash, not a ring; keyboard focus gets the house ring', () => {
     const html = render(
       <ModelPickerPanel
         value="openai::gpt-5"
@@ -93,6 +93,7 @@ describe('ModelPickerPanel', () => {
       )
       expect(row.includes('bg-surface-selected')).toBe(selected)
       expect(row).not.toContain('ring-rule-focus')
+      expect(row).toContain('focus-visible:ring-2')
     }
   })
 
@@ -154,5 +155,99 @@ describe('ModelPickerPanel', () => {
     expect(html).toContain('Add one from the registry')
     expect(html).toContain('aria-label="Add a provider"')
     expect(html).toContain('Choose a model to adjust')
+  })
+
+  it('without the prop the list and trigger are unchanged', () => {
+    const panel = render(
+      <ModelPickerPanel
+        value={null}
+        options={OPTIONS}
+        providers={PROVIDERS}
+        thinkingLevel="default"
+        onChange={() => {}}
+        onThinkingLevelChange={() => {}}
+      />,
+    )
+    const rows = panel.match(/<button[^>]*data-model-option=[^>]*>/g) ?? []
+    expect(rows).toHaveLength(3)
+    expect(panel).not.toContain('Automatic')
+    const trigger = (options: ModelOption[], loading?: boolean) =>
+      render(
+        <ModelPicker
+          value={null}
+          options={options}
+          providers={PROVIDERS}
+          thinkingLevel="default"
+          onChange={() => {}}
+          onThinkingLevelChange={() => {}}
+          loading={loading}
+          placeholder="Chat default"
+        />,
+      )
+    expect(trigger([])).toContain('No models')
+    expect(trigger(OPTIONS)).toContain('Chat default')
+    expect(trigger([], true)).toContain('Loading…')
+  })
+})
+
+describe('ModelPicker automatic choice', () => {
+  const automatic = { label: 'Automatic · no usable model', onSelect: () => {} }
+
+  it('the trigger names the automatic choice with an empty catalog', () => {
+    for (const loading of [false, true]) {
+      const html = render(
+        <ModelPicker
+          value={null}
+          options={[]}
+          providers={[]}
+          thinkingLevel="default"
+          onChange={() => {}}
+          onThinkingLevelChange={() => {}}
+          loading={loading}
+          automatic={automatic}
+        />,
+      )
+      expect(html).toContain('Automatic · no usable model')
+      expect(html).not.toContain('No models')
+      expect(html).not.toContain('Loading…')
+    }
+    // A stored model wins over the automatic label.
+    const pinned = render(
+      <ModelPicker
+        value="openai::gpt-5"
+        options={OPTIONS}
+        providers={PROVIDERS}
+        thinkingLevel="default"
+        onChange={() => {}}
+        onThinkingLevelChange={() => {}}
+        automatic={automatic}
+      />,
+    )
+    expect(pinned).not.toContain('Automatic')
+  })
+
+  it('leads the panel list, selected only while no model is stored', () => {
+    const panel = (value: string | null) =>
+      render(
+        <ModelPickerPanel
+          value={value}
+          options={OPTIONS}
+          providers={PROVIDERS}
+          thinkingLevel="default"
+          onChange={() => {}}
+          onThinkingLevelChange={() => {}}
+          automatic={{ label: 'Automatic · gpt-5', onSelect: () => {} }}
+        />,
+      )
+    const rows = (html: string) =>
+      html.match(/<button[^>]*data-model-option=[^>]*>/g) ?? []
+    const unset = rows(panel(null))
+    expect(unset).toHaveLength(4)
+    expect(unset[0]).toContain('data-model-option=":automatic"')
+    expect(unset[0]).toContain('aria-pressed="true"')
+    // The sheet does not trap Tab the way the menu does, so a tabbed-to row needs the ring.
+    expect(unset[0]).toContain('focus-visible:ring-2')
+    const pinned = rows(panel('openai::gpt-5'))
+    expect(pinned[0]).toContain('aria-pressed="false"')
   })
 })

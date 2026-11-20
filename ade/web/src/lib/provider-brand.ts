@@ -11,7 +11,7 @@ const BRAND_COLORS: Record<string, string> = {
   'openai-codex': 'var(--color-glyph-purple)',
   'github-copilot': 'var(--color-glyph-blue)',
   deepseek: '#4d6bfe',
-  google: 'var(--color-glyph-blue)',
+  gemini: 'var(--color-glyph-blue)',
   kimi: 'var(--color-glyph-teal)',
   openrouter: 'var(--color-glyph-purple)',
   zai: 'var(--color-glyph-rose)',

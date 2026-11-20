@@ -50,6 +50,17 @@ Each observer stays `pending` until its function registers, so the cron, configu
 
 All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass), `max_llm_calls_per_run` (200: `router::complete` calls per pass, the judge, semantic and verify tiers of every bank together; the rest waits for the next pass with a `deferred` note; 0 = no model calls), `verify_enabled` (off by default) and `verify_max_per_run` (20), see the verify tier below.
 
+### The model
+
+`llm_model` serves the judge, semantic and verify tiers. A pinned `provider::id` is used as written, and the router is not asked. Left empty, the model is automatic, by the same rule as memory's `extraction_model`:
+
+1. A provider is usable when it is available and signed in, or owns its sign-in (no credential env var).
+2. Tier 1: the default model of the first usable provider, by provider id.
+3. Tier 2, only when no usable provider declares a chat default: the first chat model `router::models::list` lists for a usable provider, by provider and then model id.
+4. An id that contains `embed` or `rerank` is never picked. With nothing left, the tier stops with a note that names each provider and why it was skipped.
+
+The pick is kept for 60 s, so a pass does not ask the router before every model call. It is logged at INFO when it changes, as `automatic consolidation model model=<provider::id> reason=<provider_default|first_listed_model>`. A failed `router::complete` call and a provider error reply both end in `(model <id>)`, so the pass notes name the model. On the judge tier, such an error is noted as `llm tier skipped`. The pick can change shortly after a restart, until every provider has finished its first model refresh, and a provider whose sign-in has expired can still be picked. Pin `llm_model` to rule this out.
+
 ## The LLM tier (optional)
 
 `llm_assist_enabled` (off by default) adds one `router::complete` judge call per bank after the deterministic pass:

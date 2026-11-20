@@ -18,6 +18,7 @@ export function TicketRows({
   canOpenPane,
   label,
   limit = 8,
+  onOpen,
 }: {
   host: Host
   tickets: TicketSummary[]
@@ -27,6 +28,8 @@ export function TicketRows({
   canOpenPane: boolean
   label: string
   limit?: number
+  /** Where a row opens its ticket (the hub's dialog); a pane of its own when absent. */
+  onOpen?: (key: string) => void
 }) {
   const [all, setAll] = useState(false)
   const shown = all ? tickets : tickets.slice(0, limit)
@@ -37,8 +40,8 @@ export function TicketRows({
           <li key={ticket.id}>
             <button
               className="kb-plan-trow"
-              disabled={!canOpenPane}
-              onClick={() => openPane(host, TICKET_PAGE_ID, { id: ticket.key })}
+              disabled={!onOpen && !canOpenPane}
+              onClick={() => (onOpen ? onOpen(ticket.key) : openPane(host, TICKET_PAGE_ID, { id: ticket.key }))}
               type="button"
             >
               <PriorityIcon priorities={data.priorities} priority={ticket.priority} />

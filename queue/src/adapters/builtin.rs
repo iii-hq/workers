@@ -255,6 +255,19 @@ impl BuiltinAdapter {
             consumer_counter: AtomicU64::new(1),
         }
     }
+
+    /// The store queues a topic name covers: one per subscription, plus the
+    /// bare name, which holds a function queue of the same name and what was
+    /// published while the topic had no subscriber.
+    async fn store_queues(&self, topic: &str) -> Vec<String> {
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        subscription_ids
+            .unwrap_or_default()
+            .iter()
+            .map(|subscription_id| internal_queue_name(topic, subscription_id))
+            .chain(std::iter::once(topic.to_string()))
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -426,96 +439,52 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
-        match subscription_ids {
-            Some(subscription_ids) if !subscription_ids.is_empty() => {
-                let mut total = 0u64;
-                for subscription_id in &subscription_ids {
-                    let queue_name = internal_queue_name(topic, subscription_id);
-                    total += self.store.redrive_dlq(&queue_name).await?;
-                }
-                Ok(total)
-            }
-            _ => self.store.redrive_dlq(topic).await,
+        let mut total = 0u64;
+        for queue_name in self.store_queues(topic).await {
+            total += self.store.redrive_dlq(&queue_name).await?;
         }
+        Ok(total)
     }
 
     async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
-        match subscription_ids {
-            Some(subscription_ids) if !subscription_ids.is_empty() => {
-                for subscription_id in &subscription_ids {
-                    let queue_name = internal_queue_name(topic, subscription_id);
-                    if self
-                        .store
-                        .redrive_dlq_message(&queue_name, message_id)
-                        .await?
-                    {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+        for queue_name in self.store_queues(topic).await {
+            if self
+                .store
+                .redrive_dlq_message(&queue_name, message_id)
+                .await?
+            {
+                return Ok(true);
             }
-            _ => self.store.redrive_dlq_message(topic, message_id).await,
         }
+        Ok(false)
     }
 
     async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
-        match subscription_ids {
-            Some(subscription_ids) if !subscription_ids.is_empty() => {
-                for subscription_id in &subscription_ids {
-                    let queue_name = internal_queue_name(topic, subscription_id);
-                    if self
-                        .store
-                        .discard_dlq_message(&queue_name, message_id)
-                        .await?
-                    {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+        for queue_name in self.store_queues(topic).await {
+            if self
+                .store
+                .discard_dlq_message(&queue_name, message_id)
+                .await?
+            {
+                return Ok(true);
             }
-            _ => self.store.discard_dlq_message(topic, message_id).await,
         }
+        Ok(false)
     }
 
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
-        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
-        match subscription_ids {
-            Some(subscription_ids) if !subscription_ids.is_empty() => {
-                let mut total = 0u64;
-                for subscription_id in &subscription_ids {
-                    let queue_name = internal_queue_name(topic, subscription_id);
-                    total += self.store.topic_stats(&queue_name).await.dlq_depth;
-                }
-                Ok(total)
-            }
-            _ => Ok(self.store.topic_stats(topic).await.dlq_depth),
-        }
+        Ok(self.topic_stats(topic).await?.dlq_depth)
     }
 
     async fn dlq_peek(&self, topic: &str, offset: u64, limit: u64) -> anyhow::Result<Vec<Value>> {
-        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
-        let jobs: Vec<Job> = match subscription_ids {
-            Some(subscription_ids) if !subscription_ids.is_empty() => {
-                let mut all = Vec::new();
-                for subscription_id in &subscription_ids {
-                    let queue_name = internal_queue_name(topic, subscription_id);
-                    all.extend(
-                        self.store
-                            .dlq_messages(&queue_name, offset.saturating_add(limit))
-                            .await,
-                    );
-                }
-                all
-            }
-            _ => {
+        let mut jobs: Vec<Job> = Vec::new();
+        for queue_name in self.store_queues(topic).await {
+            jobs.extend(
                 self.store
-                    .dlq_messages(topic, offset.saturating_add(limit))
-                    .await
-            }
-        };
+                    .dlq_messages(&queue_name, offset.saturating_add(limit))
+                    .await,
+            );
+        }
         Ok(jobs
             .into_iter()
             .skip(offset as usize)
@@ -530,7 +499,8 @@ impl QueueAdapter for BuiltinAdapter {
         let topic_subscriptions = self.topic_subscriptions.lock().await.clone();
         let mut infos = Vec::with_capacity(topic_subscriptions.len());
         for (topic, subscription_ids) in &topic_subscriptions {
-            let mut depth = 0u64;
+            // The bare name counts too: a same-named function queue is not listed apart.
+            let mut depth = self.store.topic_stats(topic).await.depth;
             for subscription_id in subscription_ids {
                 let queue_name = internal_queue_name(topic, subscription_id);
                 depth += self.store.topic_stats(&queue_name).await.depth;
@@ -564,22 +534,15 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn topic_stats(&self, topic: &str) -> anyhow::Result<TopicStats> {
-        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
-        match subscription_ids {
-            Some(subscription_ids) if !subscription_ids.is_empty() => {
-                let mut aggregate = TopicStats::default();
-                for subscription_id in &subscription_ids {
-                    let queue_name = internal_queue_name(topic, subscription_id);
-                    let stats = self.store.topic_stats(&queue_name).await;
-                    aggregate.depth += stats.depth;
-                    aggregate.dlq_depth += stats.dlq_depth;
-                    aggregate.delivered += stats.delivered;
-                    aggregate.failed += stats.failed;
-                }
-                Ok(aggregate)
-            }
-            _ => Ok(self.store.topic_stats(topic).await),
+        let mut aggregate = TopicStats::default();
+        for queue_name in self.store_queues(topic).await {
+            let stats = self.store.topic_stats(&queue_name).await;
+            aggregate.depth += stats.depth;
+            aggregate.dlq_depth += stats.dlq_depth;
+            aggregate.delivered += stats.delivered;
+            aggregate.failed += stats.failed;
         }
+        Ok(aggregate)
     }
 
     async fn shutdown(&self) {
@@ -3113,5 +3076,120 @@ mod tests {
         assert_eq!(peeked.len(), 1);
         assert_eq!(peeked[0]["payload"], json!("job"));
         assert_eq!(peeked[0]["attempts"], json!(1));
+    }
+
+    /// A topic `q` with a subscription and a function queue also named `q`,
+    /// holding one dead-lettered function-queue job. Returns that job's id.
+    async fn subscribed_function_queue_with_one_dead_letter(
+        store: &Arc<dyn QueueStore>,
+        adapter: &BuiltinAdapter,
+    ) -> String {
+        adapter
+            .subscribe("q", "sub1", Subscriber::new("backend"), None)
+            .await;
+        adapter
+            .setup_function_queue("q", &function_queue_config())
+            .await
+            .unwrap();
+        adapter
+            .publish_to_function_queue(
+                "q",
+                "harness::turn",
+                Value::Null,
+                "receipt-1",
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let job = store.dequeue("q").await.unwrap().unwrap();
+        let job_id = job.id.clone();
+        store.nack("q", job, 1, 1).await.unwrap();
+        job_id
+    }
+
+    #[tokio::test]
+    async fn topic_stats_counts_a_function_queue_sharing_a_subscribed_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        subscribed_function_queue_with_one_dead_letter(&store, &adapter).await;
+
+        assert_eq!(adapter.topic_stats("q").await.unwrap().dlq_depth, 1);
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dlq_count_counts_a_function_queue_sharing_a_subscribed_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        subscribed_function_queue_with_one_dead_letter(&store, &adapter).await;
+
+        assert_eq!(adapter.dlq_count("q").await.unwrap(), 1);
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dlq_peek_shows_a_function_queue_sharing_a_subscribed_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        let job_id = subscribed_function_queue_with_one_dead_letter(&store, &adapter).await;
+
+        let peeked = adapter.dlq_peek("q", 0, 10).await.unwrap();
+        assert_eq!(peeked.len(), 1);
+        assert_eq!(peeked[0]["id"], json!(job_id));
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn redrive_dlq_reaches_a_function_queue_sharing_a_subscribed_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        subscribed_function_queue_with_one_dead_letter(&store, &adapter).await;
+
+        assert_eq!(adapter.redrive_dlq("q").await.unwrap(), 1);
+        let stats = store.topic_stats("q").await;
+        assert_eq!((stats.depth, stats.dlq_depth), (1, 0));
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn redrive_dlq_message_reaches_a_function_queue_sharing_a_subscribed_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        let job_id = subscribed_function_queue_with_one_dead_letter(&store, &adapter).await;
+
+        assert!(adapter.redrive_dlq_message("q", &job_id).await.unwrap());
+        let stats = store.topic_stats("q").await;
+        assert_eq!((stats.depth, stats.dlq_depth), (1, 0));
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn discard_dlq_message_reaches_a_function_queue_sharing_a_subscribed_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        let job_id = subscribed_function_queue_with_one_dead_letter(&store, &adapter).await;
+
+        assert!(adapter.discard_dlq_message("q", &job_id).await.unwrap());
+        let stats = store.topic_stats("q").await;
+        assert_eq!((stats.depth, stats.dlq_depth), (0, 0));
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn list_topics_counts_a_function_queue_sharing_a_subscribed_topic() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        subscribed_function_queue_with_one_dead_letter(&store, &adapter).await;
+        adapter.redrive_dlq("q").await.unwrap();
+
+        let topics = adapter.list_topics().await.unwrap();
+        assert_eq!(topics.len(), 1);
+        assert_eq!((topics[0].name.as_str(), topics[0].depth), ("q", 1));
+        adapter.shutdown().await;
     }
 }

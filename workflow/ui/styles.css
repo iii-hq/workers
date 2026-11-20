@@ -1,0 +1,307 @@
+/* The workflow worker's injected stylesheet. Every rule is scoped under
+   [data-iii-ui="workflow"]; colors and fonts are console tokens. */
+
+/* ── function-call cards ── */
+[data-iii-ui="workflow"] .wf-card {
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-bg);
+}
+[data-iii-ui="workflow"] .wf-meta {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-num {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="workflow"] .wf-faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-ghost {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="workflow"] .wf-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="workflow"] .wf-ink {
+  color: var(--color-ink);
+}
+[data-iii-ui="workflow"] .wf-alert {
+  color: var(--color-alert);
+}
+/* The badge's own tracking at its 12px, not the 14px card text's. */
+[data-iii-ui="workflow"] .wf-pill {
+  letter-spacing: -0.025em;
+}
+[data-iii-ui="workflow"] .wf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-2);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-chip.wf-chip-output {
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+}
+[data-iii-ui="workflow"] .wf-chip.wf-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="workflow"] .wf-chip.wf-alert {
+  color: var(--color-alert);
+}
+[data-iii-ui="workflow"] .wf-break {
+  word-break: break-all;
+}
+[data-iii-ui="workflow"] .wf-run-id {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-paper-2);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  word-break: break-all;
+}
+[data-iii-ui="workflow"] .wf-run-id-label {
+  margin-right: 4px;
+}
+[data-iii-ui="workflow"] .wf-run-id-value {
+  color: var(--color-ink);
+  user-select: all;
+}
+[data-iii-ui="workflow"] .wf-dag {
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="workflow"] .wf-dag-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--color-paper-2);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="workflow"] .wf-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="workflow"] .wf-rows > li + li {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="workflow"] .wf-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 12px;
+}
+[data-iii-ui="workflow"] .wf-row-body {
+  min-width: 0;
+  flex: 1;
+}
+[data-iii-ui="workflow"] .wf-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="workflow"] .wf-dot {
+  flex-shrink: 0;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="workflow"] .wf-dot[data-node-state="done"],
+[data-iii-ui="workflow"] .wf-dot[data-node-state="running"] {
+  color: var(--color-accent);
+}
+[data-iii-ui="workflow"] .wf-dot[data-node-state="failed"] {
+  color: var(--color-alert);
+}
+[data-iii-ui="workflow"] .wf-dot[data-node-state="cancelled"] {
+  color: var(--color-warn);
+}
+[data-iii-ui="workflow"] .wf-node-id {
+  font-size: 12.5px;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+[data-iii-ui="workflow"] .wf-dag .wf-node-id {
+  font-weight: 500;
+}
+[data-iii-ui="workflow"] .wf-edges {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  word-break: break-all;
+}
+[data-iii-ui="workflow"] .wf-edges > span + span {
+  margin-left: 8px;
+}
+[data-iii-ui="workflow"] .wf-node-error {
+  color: var(--color-warn);
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+[data-iii-ui="workflow"] .wf-error {
+  font-size: 12.5px;
+  color: var(--color-warn);
+  overflow-wrap: break-word;
+}
+[data-iii-ui="workflow"] .wf-progress {
+  display: flex;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+[data-iii-ui="workflow"] .wf-progress > [data-part="done"] {
+  background: var(--color-accent);
+}
+[data-iii-ui="workflow"] .wf-progress > [data-part="running"] {
+  background: var(--color-accent);
+  opacity: 0.4;
+}
+[data-iii-ui="workflow"] .wf-progress > [data-part="failed"] {
+  background: var(--color-alert);
+}
+[data-iii-ui="workflow"] .wf-ghost-row {
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="workflow"] .wf-pane {
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="workflow"] .wf-pane-head {
+  padding: 8px 12px 4px;
+  background: var(--color-paper-2);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="workflow"] .wf-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* ── context section ── */
+/* The Workflow section of the chat's Context panel: rows on the console's
+   tree recipe (`uiClasses.tree*`), the panel's type scale and tones. */
+[data-iii-ui="workflow"] .wf-ctx-row-label {
+  color: var(--color-ink);
+}
+[data-iii-ui="workflow"] .wf-ctx-row-text {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+  min-width: 0;
+}
+[data-iii-ui="workflow"] .wf-ctx-row-line {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+/* The row's end without the recipe's trailing slot, which hides on hover
+   to make room for actions these rows have none of. */
+[data-iii-ui="workflow"] .wf-ctx-row-meta {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: auto;
+  padding-left: 0.5rem;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="workflow"] .wf-ctx-more-label {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+[data-iii-ui="workflow"] .wf-ctx-more-caret {
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="workflow"] .wf-ctx-more-caret.wf-ctx-open {
+  transform: rotate(180deg);
+}
+[data-iii-ui="workflow"] .wf-ctx-chevron {
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="workflow"] .wf-ctx-chevron.wf-ctx-open {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="workflow"] .wf-ctx-chevron {
+    transition: none;
+  }
+}
+[data-iii-ui="workflow"] .wf-ctx-note {
+  margin: 0;
+  padding: 4px 12px;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-ctx-note-nested {
+  padding-left: 24px;
+}
+/* A mark or count in ink: a live node's time, the current phase's done/total. */
+[data-iii-ui="workflow"] .wf-ctx-mark {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  color: var(--color-ink);
+}
+[data-iii-ui="workflow"] .wf-ctx-num {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="workflow"] .wf-ctx-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A loop pass or fanout item: the suffix stays out of the label's ellipsis. */
+[data-iii-ui="workflow"] .wf-ctx-suffixed {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+[data-iii-ui="workflow"] .wf-ctx-suffix {
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="workflow"] .wf-ctx-faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-ctx-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="workflow"] .wf-ctx-alert {
+  color: var(--color-alert);
+}
+[data-iii-ui="workflow"] .wf-ctx-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="workflow"] .wf-ctx-ok {
+  color: var(--color-ok);
+}

@@ -1,0 +1,624 @@
+/* The Tree view (src/tree/tree-view.tsx): an org chart of a project's work. The root and any single line under it
+ * run down the middle; the first fan-out spreads into a row of columns hung off one rounded bus; below that each
+ * column stacks its descendants with elbows. Cards are fixed-width so every connector lands on a known x. */
+
+[data-iii-ui="kanban"] .kb-tree-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The camera's viewport: nothing scrolls, the stage inside is moved (src/tree/use-camera.ts). */
+[data-iii-ui="kanban"] .kb-chart-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  touch-action: none;
+  cursor: grab;
+}
+
+[data-iii-ui="kanban"] .kb-chart-stage {
+  /* The wire colour lives here, where both the wire layer and the chart inherit it. Opaque, so where stems
+     overlap the line does not darken. */
+  --kb-wire: color-mix(in srgb, var(--color-glyph-blue) 55%, var(--kb-ground));
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  transform-origin: 0 0;
+}
+
+/* Until the camera has placed it (the same frame it is laid out), the stage is not shown at the top left. */
+[data-iii-ui="kanban"] .kb-chart-stage:not([data-placed]) {
+  visibility: hidden;
+}
+
+[data-iii-ui="kanban"] .kb-chart-empty {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-iii-ui="kanban"] .kb-chart-scroll[data-panning="true"] {
+  cursor: grabbing;
+  user-select: none;
+}
+
+[data-iii-ui="kanban"] .kb-chart {
+  /* A chart, not a document: dragging pans and a click opens a chat, so nothing on it selects as text. */
+  user-select: none;
+  /* The card and the connector geometry: the stack spine runs under the card's tile. */
+  --kb-node-w: 248px;
+  --kb-node-mid: calc(var(--kb-node-w) / 2);
+  --kb-drop: 16px;
+  --kb-stack-x: 25px;
+  --kb-stack-indent: 36px;
+  --kb-stack-elbow: 25px;
+  --kb-col-gap: 24px;
+  /* Motion: a strong ease-out for things arriving, a short stagger between siblings. */
+  --kb-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --kb-enter: 220ms;
+  --kb-stagger: 40ms;
+  /* A new card waits for the wire drawing out of its parent (240ms) to be halfway. */
+  --kb-enter-delay: 120ms;
+  display: flex;
+  flex: none;
+  justify-content: center;
+  width: max-content;
+  padding: var(--kb-space-6) var(--kb-space-6) 48px;
+  outline: none;
+  cursor: auto;
+}
+
+[data-iii-ui="kanban"] .kb-chart__item {
+  position: relative;
+  outline: none;
+}
+
+[data-iii-ui="kanban"] .kb-chart__card {
+  position: relative;
+  width: var(--kb-node-w);
+}
+
+/* --- down the middle: the root and a single line under it -------------- */
+
+[data-iii-ui="kanban"] .kb-chart__item[data-spine="true"] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="single"] {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: calc(var(--kb-drop) * 2);
+}
+
+
+/* --- across: the first fan-out, one column per child on a rounded bus ---- */
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  padding-top: var(--kb-drop);
+}
+
+
+/* Each column: its card at the left, the gap to the next column inside it so the bus runs on through. */
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item {
+  padding-top: var(--kb-drop);
+  padding-right: var(--kb-col-gap);
+}
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:last-child {
+  padding-right: 0;
+}
+
+
+
+
+
+
+/* --- stacked: everything below a column, indented with elbows ---------- */
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 0 var(--kb-stack-indent);
+}
+
+/* --- the wires: one SVG under the cards, routed by src/tree/use-chart-motion.ts --------------- */
+
+[data-iii-ui="kanban"] .kb-chart__wires {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* Cards above the wires. */
+[data-iii-ui="kanban"] .kb-chart {
+  position: relative;
+}
+
+[data-iii-ui="kanban"] .kb-chart__wire {
+  fill: none;
+  stroke: var(--kb-wire);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Where lines leave a card. */
+[data-iii-ui="kanban"] .kb-chart__ring {
+  fill: var(--kb-ground);
+  stroke: var(--kb-wire);
+  stroke-width: 1.5;
+}
+
+/* --- the card ------------------------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-node {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--color-card-edge);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
+  cursor: pointer;
+  transition: border-color var(--motion-duration-fast) ease;
+}
+
+/* A press dips the card; pointer-fine only, so a tap on a phone never leaves it stuck small. */
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="kanban"] .kb-node {
+    transition:
+      border-color var(--motion-duration-fast) ease,
+      transform var(--motion-duration-control) var(--kb-ease-out);
+  }
+
+  [data-iii-ui="kanban"] .kb-node:active {
+    transform: scale(0.985);
+  }
+}
+
+[data-iii-ui="kanban"] .kb-node:is([data-theme="dark"] *) {
+  border-color: color-mix(in srgb, var(--color-ink) 12%, transparent);
+  background: color-mix(in srgb, var(--color-ink) 5%, black);
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kb-node:hover {
+    border-color: color-mix(in srgb, var(--color-ink) 22%, transparent);
+  }
+}
+
+[data-iii-ui="kanban"] .kb-chart__item:focus-visible > .kb-chart__card > .kb-node {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="kanban"] .kb-node__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kb-node__tile {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--color-card-edge);
+  border-radius: var(--radius-md);
+  color: var(--kb-tone, var(--color-ink-faint));
+  background: color-mix(in srgb, var(--kb-tone, var(--color-ink)) 8%, transparent);
+}
+
+[data-iii-ui="kanban"] .kb-node__tile svg {
+  width: 15px;
+  height: 15px;
+}
+
+[data-iii-ui="kanban"] .kb-node__names {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kb-node__name {
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__sub {
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kb-node__desc,
+[data-iii-ui="kanban"] .kb-node__note {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: var(--kb-text);
+  line-height: 18px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+[data-iii-ui="kanban"] .kb-node__desc:is([data-theme="dark"] *) {
+  color: color-mix(in srgb, var(--color-ink) 82%, transparent);
+}
+
+[data-iii-ui="kanban"] .kb-node__note {
+  color: var(--color-alert);
+  -webkit-line-clamp: 1;
+}
+
+[data-iii-ui="kanban"] .kb-node__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 22px;
+}
+
+[data-iii-ui="kanban"] .kb-node__facts {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__toggle {
+  height: 22px;
+  gap: 2px;
+  margin-right: -6px;
+  padding: 0 6px;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__toggle svg {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+[data-iii-ui="kanban"] .kb-node__toggle[data-open="true"] svg {
+  transform: none;
+}
+
+/* --- the state badge: Running / Pending / Done / Failed, or a column ------- */
+
+[data-iii-ui="kanban"] .kb-node__badge {
+  --kb-badge: var(--color-ink-faint);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  color: var(--kb-badge);
+  background: color-mix(in srgb, var(--kb-badge) 12%, transparent);
+  font-size: var(--kb-text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  /* Running → Done blends instead of flipping in one frame. */
+  transition:
+    color var(--motion-duration-control) ease,
+    background-color var(--motion-duration-control) ease;
+}
+
+[data-iii-ui="kanban"] .kb-node__badge svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* A ticket's badge is its column's colour (data-step, as the status glyph); a session's is its live state. */
+[data-iii-ui="kanban"] .kb-node__badge[data-step="start"],
+[data-iii-ui="kanban"] .kb-node__badge[data-step="unknown"] {
+  --kb-badge: var(--kb-status-backlog);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-step="ready"] {
+  --kb-badge: var(--kb-status-todo);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-step="progress"] {
+  --kb-badge: var(--kb-status-progress);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-step="review"] {
+  --kb-badge: var(--kb-status-review);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-step="done"],
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="done"] {
+  --kb-badge: var(--kb-status-done);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-step="canceled"] {
+  --kb-badge: var(--kb-status-canceled);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="active"] {
+  --kb-badge: var(--kb-status-running);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="pending"] {
+  --kb-badge: var(--kb-status-pending);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="failed"] {
+  --kb-badge: var(--kb-status-failed);
+}
+
+/* Blocked on the person's answer: the review green, as on its "Waiting for your answer" line. */
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="waiting"] {
+  --kb-badge: var(--kb-status-review);
+}
+
+/* A ticket's column badge leads with a dot of its colour (the glyph on the left says the shape). */
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="column"]::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+/* The running mark: a ring with one bright quarter, turned by the shared spin recipe. */
+[data-iii-ui="kanban"] .kb-node__spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+}
+
+/* --- loading ------------------------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-chart--skeleton {
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+[data-iii-ui="kanban"] .kb-chart__sk {
+  width: var(--kb-node-w);
+  height: 112px;
+  border-radius: var(--radius-lg);
+}
+
+[data-iii-ui="kanban"] .kb-chart__sk-row {
+  display: flex;
+  gap: var(--kb-col-gap);
+}
+
+/* --- zoom ----------------------------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: var(--kb-space-2);
+  margin-right: var(--kb-space-1);
+  border-right: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="kanban"] .kb-zoom__value {
+  min-width: 44px;
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--color-ink-faint);
+  background: transparent;
+  font: inherit;
+  font-size: var(--kb-text-sm);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kb-zoom__value:hover {
+    color: var(--color-ink);
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui="kanban"] .kb-zoom__value:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+
+/* --- arriving: unfolded children and live sessions grow in ---------------- */
+
+/* @starting-style applies to any card newly in the tree: a fold opened, a session just spawned. Siblings cascade
+   40ms apart, capped at eight so a wide fan-out never takes more than about half a second, and nothing waits on
+   it: every card is clickable from its first frame. Folding away stays instant. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="kanban"] .kb-chart__group > .kb-chart__item {
+    /* It grows from where its wire arrives: the top middle of a column, the top left of a stacked card. */
+    transform-origin: 50% 0;
+    transition:
+      opacity var(--kb-enter) var(--kb-ease-out),
+      transform var(--kb-enter) var(--kb-ease-out);
+    transition-delay: calc(var(--kb-enter-delay) + min(var(--i, 0), 8) * var(--kb-stagger));
+
+    @starting-style {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.97);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item {
+    transform-origin: 0 0;
+  }
+}
+
+/* Reduced motion keeps the arrival legible, without the movement. */
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="kanban"] .kb-chart__group > .kb-chart__item {
+    transition: opacity var(--kb-enter) ease;
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
+}
+
+/* Fit is holding: the button says so. */
+[data-iii-ui="kanban"] .kb-zoom__fit {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+
+/* The last fact gives way with an ellipsis, never a clipped word. */
+[data-iii-ui="kanban"] .kb-node__facts > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- live work: what agents are doing, visible without opening anything --------------------------------- */
+
+/* The line under a card's description: a beating dot and the phase ("Thinking · 12s", "2 agents working"). */
+[data-iii-ui="kanban"] .kb-node__live {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  color: var(--kb-status-running);
+  font-size: var(--kb-text-sm);
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__live > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-iii-ui="kanban"] .kb-node__pulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* A prompt just reached it: the pending cyan; a question waits on you: the review green, still. */
+[data-iii-ui="kanban"] .kb-node__live:has(> .kb-node__pulse[data-tone="prompt"]) {
+  color: var(--kb-status-pending);
+}
+
+[data-iii-ui="kanban"] .kb-node__live:has(> .kb-node__pulse[data-tone="waiting"]) {
+  color: var(--kb-status-review);
+}
+
+/* A card with a question waiting on the person at or under it wears the review green on its edge; its wire too
+   (still: nothing is moving, someone is needed). */
+[data-iii-ui="kanban"] .kb-chart__item[data-waiting="true"] > .kb-chart__card > .kb-node {
+  border-color: color-mix(in srgb, var(--kb-status-review) 45%, transparent);
+}
+
+[data-iii-ui="kanban"] .kb-chart__wire[data-waiting] {
+  stroke: var(--kb-status-review);
+}
+
+[data-iii-ui="kanban"] .kb-tree-waiting {
+  flex-shrink: 0;
+  font-weight: 500;
+  color: var(--kb-status-review);
+}
+
+/* A card with an agent at work at or under it wears the running colour on its edge. */
+[data-iii-ui="kanban"] .kb-chart__item[data-live="true"] > .kb-chart__card > .kb-node {
+  border-color: color-mix(in srgb, var(--kb-status-running) 45%, transparent);
+}
+
+/* The wire into live work flows toward it. */
+[data-iii-ui="kanban"] .kb-chart__wire[data-live] {
+  stroke: var(--kb-status-running);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="kanban"] .kb-chart__wire[data-live] {
+    --kb-flow-ms: 900ms;
+    stroke-dasharray: 5 5;
+    animation: kanban-wire-flow var(--kb-flow-ms) linear infinite;
+  }
+}
+
+@keyframes kanban-wire-flow {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
+/* --- the card whose chat is open beside the tree ------------------------------------------------------ */
+
+[data-iii-ui="kanban"] .kb-chart__item[data-selected="true"] > .kb-chart__card > .kb-node {
+  border-color: color-mix(in srgb, var(--color-ink) 45%, transparent);
+  background: var(--color-surface-selected);
+}
+
+/* The details action stays quiet until the card is hovered, focused or selected (its chat is open beside). */
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="kanban"] .kb-node .kb-node__action {
+    opacity: 0;
+    transition: opacity var(--motion-duration-fast) ease;
+  }
+
+  [data-iii-ui="kanban"] .kb-node:hover .kb-node__action,
+  [data-iii-ui="kanban"] .kb-chart__item[data-selected="true"] > .kb-chart__card .kb-node__action,
+  [data-iii-ui="kanban"] .kb-chart__item:focus-visible > .kb-chart__card .kb-node__action,
+  [data-iii-ui="kanban"] .kb-node .kb-node__action:focus-visible {
+    opacity: 1;
+  }
+}

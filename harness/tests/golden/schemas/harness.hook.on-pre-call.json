@@ -94,6 +94,13 @@
         "description": "The function call a call hook runs around.",
         "properties": {
           "arguments": true,
+          "description": {
+            "description": "on-pre-call only: the `agent_call` wrapper's display-only `description` of this call, when the model gave one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "function_id": {
             "type": "string"
           },
@@ -164,6 +171,13 @@
         "description": "The function call a call hook runs around.",
         "properties": {
           "arguments": true,
+          "description": {
+            "description": "on-pre-call only: the `agent_call` wrapper's display-only `description` of this call, when the model gave one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "function_id": {
             "type": "string"
           },

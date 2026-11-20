@@ -14,12 +14,14 @@ pub const STATUS_ID: &str = "judge-openai::status";
 pub const SECRET_CHANGED_ID: &str = "judge-openai::on-secret-change";
 pub mod client;
 pub use client::DecisionsClient;
+pub mod codex;
+pub use codex::CodexSource;
 pub use judge_provider::{DEFAULT_RETRY, ExecutionLimits, RetryPolicy};
 pub mod config;
 pub mod configuration;
 mod decisions;
 pub mod register;
-pub use config::OpenAiConfig;
+pub use config::{Auth, OpenAiConfig};
 pub use configuration::SharedConfig;
 pub use register::register;
 #[cfg(feature = "console-ui")]

@@ -233,7 +233,7 @@ fn origin(turn_id: &str) -> Value {
 /// Cautions: mutations are silent; annotations record what ran).
 /// The `description` the model gave an `agent_call` call (dropped by
 /// `plan_calls`): the call's stated purpose, used as reconciliation intent.
-fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+pub(crate) fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
     content.iter().find_map(|block| match block {
         // Only the wrapper's field: in native exposure `description` would
         // be one of the target's own parameters.
@@ -724,6 +724,7 @@ async fn generate_step(
     // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
     let anchor = compaction_anchor(&record.session_id, &entries);
     let mut window = crate::window::build(
+        &record.session_id,
         &entries,
         anchor.window_start,
         prev_watermark.as_deref(),
@@ -1264,11 +1265,11 @@ async fn generate_step(
     // repair. Persisted pruning happens with the normal pre-generation write.
     call::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
-    // The router client strips file blocks again (hook appends are not covered
-    // by assembly): fingerprint a stripped copy so it is of what it sends,
-    // without changing what the rest of the step sees.
+    // The router client rewrites file blocks again (hook appends are not
+    // covered by assembly): fingerprint a rewritten copy so it is of what it
+    // sends, without changing what the rest of the step sees.
     let mut sent_messages = gen_messages.clone();
-    crate::clients::router::strip_file_blocks(&mut sent_messages);
+    crate::clients::router::strip_file_blocks(&mut sent_messages, Some(&record.session_id));
     let assistant_origin = generate_origin(
         &record.turn_id,
         &gen_annotations,
@@ -2149,6 +2150,7 @@ async fn finish_step(
                     &call.id,
                     &call.function_id,
                     &trusted_call_args,
+                    call_description(&outcome.message.content, &call.id),
                     None,
                 )
                 .await

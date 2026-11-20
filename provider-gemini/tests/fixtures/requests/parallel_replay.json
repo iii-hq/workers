@@ -1,0 +1,57 @@
+{
+  "input": [
+    {
+      "type": "user_input",
+      "content": [
+        {
+          "type": "text",
+          "text": "Get the weather in Lisbon and in Porto. Call the tool for both cities in this same turn, as two parallel calls."
+        }
+      ]
+    },
+    {
+      "type": "thought",
+      "signature": "EtQDCtEDAWkUfRNIAxujskNB+SBaiLL6SDSCJnM0Mtq5jaFfRYtx+/+00iOa5TPs2D3Oy4azGP6IO/T4mCgtOGIPtKyT3gzrLkWLNKIiVHP34efhcz5wvYXz5OmjtCFAnHLPWysQbg8xS0ec5CPx0V7DjXPQXLL5ViSAWUD9FIPSOF6iNtfJSjmxwVuPXxpIbFzN0Ttr/+8RIWA4smpyiPvGxuBHmEOd6XlULTvN611XpUqr06BpfkssrpHRIeJpwZjIKaJ9RwUTkgR2BdC/AEv4bkuZsAwTBjQiCUxHmnYIrmCpd12sZ3NZxQkFAUhfeaiVdj43rlndYuCn07M6tgFRQIjsuaRveiAeD5L7zflEq+QlNLwsZ4Q242EaWn0qrdPlY//iiVxppXbvQbHQ4qIaysUtuPCcsoQxsa/QYALuohvEOo3O5keW6O2tlUmwZwzYSKv9D+asuaJweIF8Y4NGhs2sImyEJkBcAdup8SNOaYdwoD4wrtGXCvDCjXiBkD51iAvxB1smtF4Vmlyz6yNeGRMDHbW5xG7gBazyVdciTuVupNw9F4ye9wLn3JR0TfkFjGc9AukZz5wIQs8igdTTxoG6KoyqW5xt+C84gvdGGv+xv62V"
+    },
+    {
+      "type": "function_call",
+      "id": "call_15652254846631736128",
+      "name": "get_weather",
+      "arguments": {
+        "city": "Lisbon"
+      }
+    },
+    {
+      "type": "function_call",
+      "id": "call_15652254846631735505",
+      "name": "get_weather",
+      "arguments": {
+        "city": "Porto"
+      }
+    },
+    {
+      "type": "function_result",
+      "call_id": "call_15652254846631736128",
+      "name": "get_weather",
+      "result": [
+        {
+          "type": "text",
+          "text": "18 C, sunny"
+        }
+      ],
+      "is_error": false
+    },
+    {
+      "type": "function_result",
+      "call_id": "call_15652254846631735505",
+      "name": "get_weather",
+      "result": [
+        {
+          "type": "text",
+          "text": "16 C, rain"
+        }
+      ],
+      "is_error": false
+    }
+  ]
+}

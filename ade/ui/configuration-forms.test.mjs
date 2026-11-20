@@ -412,6 +412,152 @@ test('the stored model stays selectable when the catalog does not list it', asyn
   ])
 })
 
+// The automatic model rule. memory/tests/fixtures/automatic-model-cases.json is
+// the one case table; `automatic_model` in memory/src/extract.rs and
+// memory-consolidate/src/llm.rs runs it too. Change the rule there first.
+test('the automatic model follows the shared case table', async () => {
+  const catalog = await loadModelCatalog()
+  const cases = JSON.parse(
+    await readFile(new URL('../../memory/tests/fixtures/automatic-model-cases.json', import.meta.url), 'utf8'),
+  )
+  assert.ok(cases.length > 0)
+  for (const c of cases) {
+    const pick = catalog.automaticModel(
+      catalog.providerRowsFromList({ providers: c.providers }),
+      catalog.modelOptionsFromCatalog({ models: c.models }),
+    )
+    // The Rust twins name each skip; this copy only needs to know nothing is usable.
+    assert.deepEqual(pick, c.expect.error ? null : { id: c.expect.model, reason: c.expect.reason }, c.name)
+  }
+})
+
+test('an unreadable provider list has no rows', async () => {
+  const catalog = await loadModelCatalog()
+  for (const unreadable of [undefined, null, {}, { providers: 'nope' }, { providers: [null, { id: ' ' }] }]) {
+    assert.deepEqual(catalog.providerRowsFromList(unreadable), [])
+  }
+})
+
+test('a model field shows each catalog state', async () => {
+  const catalog = await loadModelCatalog()
+  const providers = catalog.providerRowsFromList({
+    providers: [{ id: 'anthropic', available: true, configured: true, credential_env_var: null, default_model: 'sonnet' }],
+  })
+  const options = [
+    { id: 'anthropic::sonnet', label: 'Claude Sonnet' },
+    { id: 'anthropic::opus', label: 'Claude Opus' },
+  ]
+  const settled = { options, providers, loading: false, failed: false, automatic: true }
+  const state = (overrides) => catalog.modelFieldState({ ...settled, stored: null, ...overrides })
+
+  // Loading: no pick yet; the stored model stays selectable.
+  const loading = { options: [], providers: [], loading: true }
+  assert.deepEqual(state(loading), {
+    value: null,
+    options: [],
+    automaticLabel: 'Automatic',
+    notice: 'none',
+    meta: undefined,
+  })
+  assert.deepEqual(state({ ...loading, stored: 'openai::gpt' }).options, [
+    { id: 'openai::gpt', label: 'openai::gpt', supportsThinking: true },
+  ])
+  assert.equal(state({ ...loading, stored: 'openai::gpt' }).meta, undefined)
+
+  // Unset, resolved: the row and the trigger name the model.
+  assert.equal(state({}).automaticLabel, 'Automatic · Claude Sonnet')
+  assert.equal(state({}).notice, 'none')
+
+  // Unset, nothing usable: a warning, but only where unset means automatic.
+  const nothing = state({ providers: [] })
+  assert.equal(nothing.automaticLabel, catalog.NO_USABLE_MODEL_LABEL)
+  assert.equal(nothing.notice, 'no-usable-model')
+  assert.equal(state({ providers: [], automatic: false }).notice, 'none')
+  assert.equal(state({ providers: [], stored: 'anthropic::opus' }).notice, 'none')
+
+  // Pinned and listed.
+  assert.deepEqual(state({ stored: 'anthropic::opus' }), {
+    value: 'anthropic::opus',
+    options,
+    automaticLabel: 'Automatic · Claude Sonnet',
+    notice: 'none',
+    meta: undefined,
+  })
+
+  // A bare id with one owner reads as that option; with two it stays bare and says why.
+  assert.equal(state({ stored: 'opus' }).value, 'anthropic::opus')
+  assert.equal(state({ stored: 'opus' }).meta, undefined)
+  const twoOwners = [...options, { id: 'bedrock::opus', label: 'Opus' }]
+  assert.equal(state({ options: twoOwners, stored: 'opus' }).value, 'opus')
+  assert.equal(state({ options: twoOwners, stored: 'opus' }).meta, 'Listed by more than one provider')
+
+  // Pinned but not listed: kept and selected.
+  const gone = state({ stored: 'openai::gone' })
+  assert.equal(gone.value, 'openai::gone')
+  assert.equal(gone.options.at(-1).id, 'openai::gone')
+  assert.equal(gone.meta, 'Not in the router catalog')
+
+  // Router unreachable: nothing is known, so nothing is called missing.
+  const down = state({ options: [], providers: [], failed: true, stored: 'openai::gone' })
+  assert.equal(down.notice, 'unreachable')
+  assert.equal(down.automaticLabel, 'Automatic')
+  assert.equal(down.meta, undefined)
+  assert.equal(down.value, 'openai::gone')
+  // A retry keeps the notice, and the focused Retry button in it, until the router answers.
+  assert.equal(state({ options: [], providers: [], failed: true, loading: true }).notice, 'unreachable')
+})
+
+test('memory and memory-consolidate model fields are automatic pickers', async () => {
+  const manifest = await loadManifest()
+  const fieldOf = (id, path) =>
+    manifest.workerConfigurationSpecs
+      .get(id)
+      .sections.flatMap((section) => section.fields)
+      .find((field) => field.path.join('.') === path)
+  for (const [id, path] of [
+    ['memory', 'extraction_model'],
+    ['memory-consolidate', 'llm_model'],
+  ]) {
+    const field = fieldOf(id, path)
+    assert.equal(field.kind, 'model', `${id}.${path}`)
+    assert.equal(field.automatic, true, `${id}.${path}`)
+    assert.equal(field.thinkingKey, undefined, `${id}.${path} declares one leaf`)
+    assert.match(field.description, /Automatic uses the default model of the first usable provider\./)
+  }
+  assert.doesNotMatch(JSON.stringify(manifest.workerConfigurationManifest), /first router model/)
+})
+
+test('memory-consolidate groups schedule, scope and model', async () => {
+  const manifest = await loadManifest()
+  const spec = manifest.workerConfigurationSpecs.get('memory-consolidate')
+  assert.deepEqual(
+    spec.sections.map((section) => [section.title, section.fields.map((field) => field.path.join('.'))]),
+    [
+      ['Schedule', ['enabled', 'interval_hours', 'dry_run']],
+      ['Scope and limits', ['banks', 'max_supersedes_per_run', 'max_llm_calls_per_run']],
+      ['Model assistance', ['llm_model', 'llm_assist_enabled', 'promote_corroboration_threshold', 'semantic_enabled', 'verify_enabled']],
+    ],
+  )
+  const fields = spec.sections.flatMap((section) => section.fields)
+  const byPath = (path) => fields.find((field) => field.path.join('.') === path)
+  assert.equal(byPath('max_llm_calls_per_run').min, 0)
+  // Rust defaults: the semantic tier is on, the verify tier is off.
+  assert.equal(byPath('semantic_enabled').defaultValue, true)
+  assert.equal(byPath('verify_enabled').defaultValue, undefined)
+})
+
+test('banks says what an empty list means', async () => {
+  const manifest = await loadManifest()
+  const banks = manifest.workerConfigurationSpecs
+    .get('memory-consolidate')
+    .sections.flatMap((section) => section.fields)
+    .find((field) => field.path.join('.') === 'banks')
+  assert.equal(banks.kind, 'string-list')
+  assert.equal(banks.emptyLabel, 'Every bank')
+  assert.equal(banks.addLabel, 'Add bank')
+  assert.equal(banks.description, 'Only these banks are consolidated.')
+})
+
 test('queue declares explicit controls for every known adapter', async () => {
   const manifest = await loadManifest()
   const queue = manifest.workerConfigurationSpecs.get('queue')

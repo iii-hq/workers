@@ -2,6 +2,8 @@
 //! (README § Content blocks). Wire-identical to `llm-router` and
 //! `session-manager` so messages round-trip across the bus untouched.
 
+use std::collections::HashSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -26,8 +28,9 @@ pub enum ContentBlock {
     },
     /// Reference to an original upload in the session-manager attachment
     /// store (resolvable with `session::get-attachment`). A REFERENCE ONLY:
-    /// the bytes are never inline. Persisted verbatim on user messages and
-    /// stripped from every model-bound copy (see [`ContentBlock::strip_files`]).
+    /// the bytes are never inline. Persisted verbatim on user messages; every
+    /// model-bound copy replaces it with an `<attachment>` text block naming
+    /// the call that reads it (see [`ContentBlock::strip_files`]).
     File {
         attachment_id: String,
         name: String,
@@ -56,9 +59,71 @@ pub enum ContentBlock {
     },
 }
 
-/// Placeholder text a model-bound message falls back to when stripping its
-/// `file` references would otherwise leave it with no content at all.
-pub const ATTACHMENT_PLACEHOLDER: &str = "(attachment)";
+/// The function the `<attachment>` block tells the model to call.
+pub const READ_ATTACHMENT_FUNCTION: &str = "session::read-attachment";
+
+/// `value` escaped for an XML attribute: `& < > " '` and every control
+/// character become character references, so a file name can never close
+/// the attribute or the tag.
+pub fn escape_xml_attribute(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c if c.is_control() => out.push_str(&format!("&#{};", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The text that stands in for a `file` block in the model-bound copy:
+///
+/// ```text
+/// <attachment id="a_…" name="report.pdf" mime="application/pdf" size="1234567">
+/// Read it with session::read-attachment {"session_id":"<sid>","attachment_id":"a_…"}
+/// </attachment>
+/// ```
+///
+/// Attribute values are escaped as XML attributes; the body is one line that
+/// names the exact call (without `session_id` when the session is unknown:
+/// the id alone finds the file). When the message also carries the file's
+/// picture (`image_twin`), the body says so before the call.
+pub fn attachment_text(
+    attachment_id: &str,
+    name: &str,
+    mime: &str,
+    size: u64,
+    session_id: Option<&str>,
+    image_twin: bool,
+) -> String {
+    let quoted = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string());
+    let args = match session_id {
+        Some(sid) => format!(
+            "{{\"session_id\":{},\"attachment_id\":{}}}",
+            quoted(sid),
+            quoted(attachment_id)
+        ),
+        None => format!("{{\"attachment_id\":{}}}", quoted(attachment_id)),
+    };
+    let body = if image_twin {
+        format!(
+            "The picture is in this message; read the file with {READ_ATTACHMENT_FUNCTION} {args}"
+        )
+    } else {
+        format!("Read it with {READ_ATTACHMENT_FUNCTION} {args}")
+    };
+    format!(
+        "<attachment id=\"{}\" name=\"{}\" mime=\"{}\" size=\"{size}\">\n{body}\n</attachment>",
+        escape_xml_attribute(attachment_id),
+        escape_xml_attribute(name),
+        escape_xml_attribute(mime),
+    )
+}
 
 impl ContentBlock {
     /// A single text block (the common case for user/system content).
@@ -91,10 +156,11 @@ impl ContentBlock {
     }
 
     /// Whether `blocks` carries any attachment reference a model-bound copy
-    /// must lose — a `File` block or an `Image` linked to its stored original
-    /// — including nested inside a `FunctionResult`. The cheap pre-check that
-    /// lets [`crate::types::message::AgentMessage::strip_file_blocks`] skip
-    /// the clone for the common reference-free message.
+    /// must rewrite — a `File` block or an `Image` linked to its stored
+    /// original — including nested inside a `FunctionResult`. The cheap
+    /// pre-check that lets
+    /// [`crate::types::message::AgentMessage::strip_file_blocks`] skip the
+    /// clone for the common reference-free message.
     pub fn contains_attachment_refs(blocks: &[ContentBlock]) -> bool {
         blocks.iter().any(|b| match b {
             ContentBlock::File { .. } => true,
@@ -104,42 +170,80 @@ impl ContentBlock {
         })
     }
 
-    /// The model-bound copy of `blocks`: every attachment reference removed —
-    /// `File` blocks dropped, `Image` blocks kept (mime + data) but unlinked
-    /// from their stored original (`attachment_id: None`) — recursing into
-    /// `FunctionResult.content`. The persisted transcript keeps its
-    /// references; only the copy handed to context assembly and the router
-    /// is stripped. A non-empty input never strips to nothing — an
-    /// all-file list becomes a single [`ATTACHMENT_PLACEHOLDER`] text block so
-    /// providers never see an empty content array.
-    pub fn strip_files(blocks: &[ContentBlock]) -> Vec<ContentBlock> {
-        let mut out = Vec::with_capacity(blocks.len());
+    /// The `attachment_id` of every linked `Image` in `blocks` (recursing into
+    /// `FunctionResult`): the files whose picture the message already carries.
+    fn image_twins(blocks: &[ContentBlock]) -> HashSet<String> {
+        let mut twins = HashSet::new();
         for b in blocks {
             match b {
-                ContentBlock::File { .. } => {}
+                ContentBlock::Image {
+                    attachment_id: Some(id),
+                    ..
+                } => {
+                    twins.insert(id.clone());
+                }
+                ContentBlock::FunctionResult { content, .. } => {
+                    twins.extend(Self::image_twins(content))
+                }
+                _ => {}
+            }
+        }
+        twins
+    }
+
+    /// The model-bound copy of one message's `blocks`: every `File` block
+    /// replaced, in place, by its `<attachment>` text block
+    /// ([`attachment_text`], naming `session::read-attachment` for
+    /// `session_id`), and every `Image` kept (mime + data) but unlinked from
+    /// its stored original (`attachment_id: None`) — recursing into
+    /// `FunctionResult.content`. A file whose picture the same message
+    /// carries says so. The persisted transcript keeps its references; only
+    /// the copy handed to context assembly and the router is rewritten.
+    /// Nothing is dropped, so a non-empty list never becomes empty.
+    pub fn strip_files(blocks: &[ContentBlock], session_id: Option<&str>) -> Vec<ContentBlock> {
+        Self::rewrite_files(blocks, session_id, &Self::image_twins(blocks))
+    }
+
+    fn rewrite_files(
+        blocks: &[ContentBlock],
+        session_id: Option<&str>,
+        twins: &HashSet<String>,
+    ) -> Vec<ContentBlock> {
+        blocks
+            .iter()
+            .map(|b| match b {
+                ContentBlock::File {
+                    attachment_id,
+                    name,
+                    mime,
+                    size,
+                } => ContentBlock::text(attachment_text(
+                    attachment_id,
+                    name,
+                    mime,
+                    *size,
+                    session_id,
+                    twins.contains(attachment_id),
+                )),
                 // The link is transcript bookkeeping for lazy readers; the
                 // model only needs the inline bytes.
-                ContentBlock::Image { mime, data, .. } => out.push(ContentBlock::Image {
+                ContentBlock::Image { mime, data, .. } => ContentBlock::Image {
                     mime: mime.clone(),
                     data: data.clone(),
                     attachment_id: None,
-                }),
+                },
                 ContentBlock::FunctionResult {
                     function_call_id,
                     content,
                     is_error,
-                } => out.push(ContentBlock::FunctionResult {
+                } => ContentBlock::FunctionResult {
                     function_call_id: function_call_id.clone(),
-                    content: Self::strip_files(content),
+                    content: Self::rewrite_files(content, session_id, twins),
                     is_error: *is_error,
-                }),
-                other => out.push(other.clone()),
-            }
-        }
-        if out.is_empty() && !blocks.is_empty() {
-            out.push(ContentBlock::text(ATTACHMENT_PLACEHOLDER));
-        }
-        out
+                },
+                other => other.clone(),
+            })
+            .collect()
     }
 }
 
@@ -156,6 +260,8 @@ mod tests {
             size: 12345,
         }
     }
+
+    const REPORT_BLOCK: &str = "<attachment id=\"a_3f2e\" name=\"report.pdf\" mime=\"application/pdf\" size=\"12345\">\nRead it with session::read-attachment {\"session_id\":\"s_1\",\"attachment_id\":\"a_3f2e\"}\n</attachment>";
 
     #[test]
     fn file_block_round_trips_through_serde_with_the_wire_shape() {
@@ -218,7 +324,54 @@ mod tests {
     }
 
     #[test]
-    fn strip_files_keeps_text_and_image_and_recurses_into_results() {
+    fn the_attachment_block_names_the_read_call() {
+        assert_eq!(
+            attachment_text(
+                "a_3f2e",
+                "report.pdf",
+                "application/pdf",
+                12345,
+                Some("s_1"),
+                false
+            ),
+            REPORT_BLOCK
+        );
+        // Without a session the id alone is the call.
+        assert_eq!(
+            attachment_text("a_1", "n.md", "text/markdown", 3, None, false),
+            "<attachment id=\"a_1\" name=\"n.md\" mime=\"text/markdown\" size=\"3\">\nRead it with session::read-attachment {\"attachment_id\":\"a_1\"}\n</attachment>"
+        );
+    }
+
+    #[test]
+    fn attribute_values_are_escaped_and_the_call_stays_valid_json() {
+        let text = attachment_text(
+            "a_1",
+            "q\"&<x>'\n.txt",
+            "text/plain",
+            1,
+            Some("s \"odd\""),
+            false,
+        );
+        let first = text.lines().next().unwrap();
+        assert_eq!(
+            first,
+            "<attachment id=\"a_1\" name=\"q&quot;&amp;&lt;x&gt;&apos;&#10;.txt\" mime=\"text/plain\" size=\"1\">"
+        );
+        assert_eq!(text.lines().count(), 3);
+        let call = text.lines().nth(1).unwrap();
+        let args = call
+            .strip_prefix("Read it with session::read-attachment ")
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(args).unwrap();
+        assert_eq!(
+            parsed,
+            json!({ "session_id": "s \"odd\"", "attachment_id": "a_1" })
+        );
+    }
+
+    #[test]
+    fn strip_files_replaces_files_in_place_unlinks_images_and_recurses() {
         let image = ContentBlock::Image {
             mime: "image/png".into(),
             data: "AAAA".into(),
@@ -242,15 +395,16 @@ mod tests {
         ];
         assert!(ContentBlock::contains_file(&blocks));
         assert!(ContentBlock::contains_attachment_refs(&blocks));
-        let stripped = ContentBlock::strip_files(&blocks);
+        let stripped = ContentBlock::strip_files(&blocks, Some("s_1"));
         assert_eq!(
             stripped,
             vec![
                 ContentBlock::text("see attached"),
+                ContentBlock::text(REPORT_BLOCK),
                 unlinked_image,
                 ContentBlock::FunctionResult {
                     function_call_id: "c1".into(),
-                    content: vec![ContentBlock::text("ok")],
+                    content: vec![ContentBlock::text(REPORT_BLOCK), ContentBlock::text("ok")],
                     is_error: None,
                 },
             ]
@@ -264,6 +418,41 @@ mod tests {
     }
 
     #[test]
+    fn a_file_whose_picture_is_in_the_message_says_so() {
+        let photo = ContentBlock::File {
+            attachment_id: "a_77".into(),
+            name: "photo.jpg".into(),
+            mime: "image/jpeg".into(),
+            size: 2048,
+        };
+        let twin = ContentBlock::Image {
+            mime: "image/jpeg".into(),
+            data: "/9j/".into(),
+            attachment_id: Some("a_77".into()),
+        };
+        let stripped = ContentBlock::strip_files(
+            &[ContentBlock::text("look"), photo, file_block(), twin],
+            Some("s_1"),
+        );
+        assert_eq!(
+            stripped[1],
+            ContentBlock::text(
+                "<attachment id=\"a_77\" name=\"photo.jpg\" mime=\"image/jpeg\" size=\"2048\">\nThe picture is in this message; read the file with session::read-attachment {\"session_id\":\"s_1\",\"attachment_id\":\"a_77\"}\n</attachment>"
+            )
+        );
+        // A file without a picture in the message keeps the plain body.
+        assert_eq!(stripped[2], ContentBlock::text(REPORT_BLOCK));
+        assert_eq!(
+            stripped[3],
+            ContentBlock::Image {
+                mime: "image/jpeg".into(),
+                data: "/9j/".into(),
+                attachment_id: None,
+            }
+        );
+    }
+
+    #[test]
     fn linked_image_alone_counts_as_an_attachment_reference_but_not_a_file() {
         let linked = ContentBlock::Image {
             mime: "image/jpeg".into(),
@@ -273,7 +462,7 @@ mod tests {
         let blocks = vec![ContentBlock::text("look"), linked];
         assert!(!ContentBlock::contains_file(&blocks));
         assert!(ContentBlock::contains_attachment_refs(&blocks));
-        let stripped = ContentBlock::strip_files(&blocks);
+        let stripped = ContentBlock::strip_files(&blocks, None);
         assert_eq!(stripped.len(), 2);
         assert_eq!(
             stripped[1],
@@ -291,17 +480,17 @@ mod tests {
         }];
         assert!(ContentBlock::contains_attachment_refs(&nested));
         assert!(!ContentBlock::contains_attachment_refs(
-            &ContentBlock::strip_files(&nested)
+            &ContentBlock::strip_files(&nested, None)
         ));
     }
 
     #[test]
-    fn strip_files_never_yields_an_empty_content_array() {
+    fn a_message_of_files_only_becomes_their_attachment_blocks() {
         assert_eq!(
-            ContentBlock::strip_files(&[file_block()]),
-            vec![ContentBlock::text(ATTACHMENT_PLACEHOLDER)]
+            ContentBlock::strip_files(&[file_block()], Some("s_1")),
+            vec![ContentBlock::text(REPORT_BLOCK)]
         );
         // An already-empty list stays empty (e.g. the streaming assistant placeholder).
-        assert!(ContentBlock::strip_files(&[]).is_empty());
+        assert!(ContentBlock::strip_files(&[], Some("s_1")).is_empty());
     }
 }

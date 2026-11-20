@@ -11,6 +11,7 @@
 //! - [`agents`] — assignable profiles via iii-directory or the agents folder.
 //! - [`dispatch`] — opt-in: start the agent assigned to a To do card.
 //! - [`mentions`] — the `@kanban(id=…)` chat mention provider.
+//! - [`session_links`] — the agent session behind each change, and ticket ↔ session links.
 //! - [`ui`] — the injected console UI; [`native_ui`] — the app for the iii app.
 
 pub mod agents;
@@ -23,5 +24,6 @@ pub mod functions;
 pub mod mentions;
 pub mod native_ui;
 pub mod plan;
+pub mod session_links;
 pub mod store;
 pub mod ui;

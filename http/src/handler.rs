@@ -46,7 +46,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tracing::Instrument;
 
 use crate::configuration::ConfigCell;
@@ -77,6 +77,31 @@ const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Buffer of the frames forwarded off the response channel.
 const FRAME_BUFFER: usize = 64;
+
+/// A task of a request, stopped when the request goes away before it ends:
+/// the client left, the request timed out, or its response body was dropped.
+/// A dropped `JoinHandle` only detaches its task, which then keeps the call,
+/// its channel connections and their memory until it ends by itself.
+struct RequestTask(Option<AbortHandle>);
+
+impl RequestTask {
+    fn new<T>(task: &JoinHandle<T>) -> Self {
+        Self(Some(task.abort_handle()))
+    }
+
+    /// Lets the task finish by itself: the response is complete.
+    fn release(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for RequestTask {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
 
 /// Map an HTTP response status code to an OTel span status string.
 ///
@@ -423,6 +448,10 @@ async fn respond(
         let otel_cx = tracing::Span::current().context();
         tokio::spawn(async move { iii.call(request).await }.with_context(otel_cx))
     };
+    // With the call dispatched in-process (the engine confirms it for this
+    // worker's own function), stopping it stops the deliver hook too: its
+    // middleware and its call of the target.
+    let call_task = RequestTask::new(&call);
 
     // The hook either answers the call itself (no route, filters, middleware)
     // or hands over the response channel's reader just before it calls the
@@ -474,6 +503,8 @@ async fn respond(
             }
         }
     });
+    // Stopping the reader closes the channel's connection to the engine.
+    let forward_task = RequestTask::new(&forward);
 
     // Overall bound for the streaming drain. The engine bounds an open response
     // channel via `channel_mgr.remove_channel` (drops the origin sender, forcing
@@ -509,12 +540,9 @@ async fn respond(
         result = &mut call => {
             match result {
                 Ok(Ok(value)) if value.is_null() => Race::Streamed,
-                other => {
-                    // Buffered response or a failed call: abort the (idle)
-                    // reader task.
-                    forward.abort();
-                    return buffered(other, &path);
-                }
+                // Buffered response or a failed call: returning stops the
+                // (idle) reader task.
+                other => return buffered(other, &path),
             }
         }
     };
@@ -542,32 +570,35 @@ async fn respond(
         },
     };
 
-    // Streaming response. The invocation handle is left to complete on its own
-    // (the function's return value is irrelevant once it streams); the forward
-    // task keeps feeding `rx` until the function closes the channel. Snapshot
-    // status/headers now -- all control preceding `first_chunk` is applied.
+    // Streaming response. The body owns the call and the forward task: the
+    // forward task keeps feeding `rx` until the function closes the channel,
+    // and the call is left to complete on its own then (the function's return
+    // value is irrelevant once it streams). A body dropped before (the client
+    // left, or an idle timeout) stops both. Snapshot status/headers now -- all
+    // control preceding `first_chunk` is applied.
     let (status_code, response_headers) = {
         let guard = control.lock().expect("control mutex poisoned");
         (guard.0, guard.1.clone())
     };
 
-    // Abort handle so the unfold can stop the forward task on idle timeout (the
-    // forward task may be parked in `next_binary` and would not observe `rx`
-    // being dropped). Dropping the `forward` JoinHandle itself does not abort it.
-    let forward_abort = forward.abort_handle();
     let stream = futures::stream::unfold(
-        (first_chunk, rx, forward_abort),
-        move |(pending, mut rx, abort)| async move {
+        (first_chunk, rx, forward_task, call_task),
+        move |(pending, mut rx, forward_task, call_task)| async move {
             if let Some(chunk) = pending {
-                return Some((Ok::<Vec<u8>, Infallible>(chunk), (None, rx, abort)));
+                return Some((
+                    Ok::<Vec<u8>, Infallible>(chunk),
+                    (None, rx, forward_task, call_task),
+                ));
             }
             // Idle-bound each subsequent frame wait.
             match tokio::time::timeout(stream_timeout, rx.recv()).await {
-                Ok(Some(data)) => Some((Ok(data), (None, rx, abort))),
-                Ok(None) => None,
+                Ok(Some(data)) => Some((Ok(data), (None, rx, forward_task, call_task))),
+                Ok(None) => {
+                    call_task.release();
+                    None
+                }
                 Err(_) => {
                     tracing::warn!("Streaming drain idle timeout; ending stream");
-                    abort.abort();
                     None
                 }
             }

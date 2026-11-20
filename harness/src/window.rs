@@ -197,8 +197,9 @@ fn move_anchor(list: &[(String, AgentMessage)]) -> Option<usize> {
     (last > 0 && complete).then_some(last)
 }
 
-/// Build the window: every message entry (and replayed notice) in log order,
-/// `file` references stripped, every persisted [`MESSAGE_ORDER`] applied —
+/// Build the window of `session_id`: every message entry (and replayed notice)
+/// in log order, `file` references rewritten as `<attachment>` blocks that
+/// name `session::read-attachment` for this session, every persisted [`MESSAGE_ORDER`] applied —
 /// the order the model saw them in — then cut at `tail_start` (compaction
 /// records its tail in that same order). User messages logged after
 /// `prev_watermark` (while the last reply generated) but before that reply or
@@ -210,6 +211,7 @@ fn move_anchor(list: &[(String, AgentMessage)]) -> Option<usize> {
 /// generation overwrites. A reply whose calls already ran stays, so the model
 /// sees what executed instead of re-issuing it.
 pub fn build(
+    session_id: &str,
     entries: &[LoadedEntry],
     window_start: usize,
     prev_watermark: Option<&str>,
@@ -233,9 +235,9 @@ pub fn build(
             (Some(AgentMessage::Assistant(reply)), _) if !reply.has_content() => None,
             (Some(message), _) => {
                 let mut message = message.clone();
-                // The console also sends the <attached-file> text expansion;
-                // persisted entries keep the refs.
-                message.strip_file_blocks();
+                // Each stored file becomes an <attachment> block that names
+                // the read call; persisted entries keep the refs.
+                message.strip_file_blocks(Some(session_id));
                 if past_watermark && matches!(message, AgentMessage::User(_)) {
                     arrived.insert(entry.entry_id.as_str());
                 }
@@ -422,9 +424,36 @@ mod tests {
             msg("followup", user("continue")),
         ];
         assert_eq!(
-            ids(&build(&entries, 0, None, None)),
+            ids(&build("s_test", &entries, 0, None, None)),
             ["question", "call", "result", "followup"]
         );
+    }
+
+    #[test]
+    fn file_blocks_reach_the_window_as_attachment_blocks_for_the_session() {
+        let with_file: AgentMessage = serde_json::from_value(json!({
+            "role": "user", "timestamp": 1, "content": [
+                { "type": "text", "text": "What is in @attachment(id=\"a_1\")?" },
+                { "type": "file", "attachment_id": "a_1", "name": "notes.md", "mime": "text/markdown", "size": 42 }
+            ]
+        }))
+        .unwrap();
+        let entries = vec![msg("u1", with_file.clone())];
+        let w = build("s_42", &entries, 0, None, None);
+        match &w.candidate[0].1 {
+            AgentMessage::User(u) => assert_eq!(
+                u.content,
+                vec![
+                    ContentBlock::text("What is in @attachment(id=\"a_1\")?"),
+                    ContentBlock::text(
+                        "<attachment id=\"a_1\" name=\"notes.md\" mime=\"text/markdown\" size=\"42\">\nRead it with session::read-attachment {\"session_id\":\"s_42\",\"attachment_id\":\"a_1\"}\n</attachment>"
+                    ),
+                ]
+            ),
+            other => panic!("{other:?}"),
+        }
+        // The persisted entry keeps its file block.
+        assert_eq!(entries[0].message.as_ref(), Some(&with_file));
     }
 
     #[test]
@@ -435,7 +464,7 @@ mod tests {
             custom("n1", MODEL_NOTICE, notice_data("registry-changed", &notice)),
             msg("a1", reply("done")),
         ];
-        let w = build(&entries, 0, None, None);
+        let w = build("s_test", &entries, 0, None, None);
         assert_eq!(ids(&w), ["u1", "n1", "a1"]);
         match &w.candidate[1].1 {
             AgentMessage::User(u) => assert_eq!(
@@ -450,7 +479,7 @@ mod tests {
             Some("[harness] registry changed")
         );
         // Summarized away (the window opens after it): no longer told.
-        let compacted = build(&entries, 2, None, None);
+        let compacted = build("s_test", &entries, 2, None, None);
         assert_eq!(
             latest_notice_text(&entries, &compacted, "registry-changed"),
             None
@@ -466,7 +495,7 @@ mod tests {
             msg("u2", user("steer")),
             msg("a1", reply("ok")),
         ];
-        let first = build(&entries, 0, Some("u1"), None);
+        let first = build("s_test", &entries, 0, Some("u1"), None);
         assert_eq!(ids(&first), ["u1", "a1", "u2"]);
         let order = first.new_order.clone().expect("a move is decided");
         assert_eq!(
@@ -481,7 +510,7 @@ mod tests {
         let mut later = entries.clone();
         later.push(custom("o1", MESSAGE_ORDER, order.to_data()));
         later.push(msg("a2", reply("answer")));
-        let next = build(&later, 0, Some("a1"), None);
+        let next = build("s_test", &later, 0, Some("a1"), None);
         assert_eq!(ids(&next), ["u1", "a1", "u2", "a2"]);
         assert!(next.new_order.is_none());
     }
@@ -496,7 +525,7 @@ mod tests {
             msg("a1", reply("ok")),
         ];
         // The notice was logged after the watermark but was sent before a1.
-        let w = build(&entries, 0, Some("u1"), None);
+        let w = build("s_test", &entries, 0, Some("u1"), None);
         assert_eq!(ids(&w), ["u1", "n1", "a1"]);
         assert!(w.new_order.is_none());
     }
@@ -518,12 +547,19 @@ mod tests {
         // before a1); a tail from u2 drops a1 (summarized before it); a
         // window opening after o1 (a null boundary) starts at a2.
         assert_eq!(
-            ids(&build(&entries, 2, Some("a1"), None)),
+            ids(&build("s_test", &entries, 2, Some("a1"), None)),
             ["a1", "u2", "a2"]
         );
-        assert_eq!(ids(&build(&entries, 1, Some("a1"), None)), ["u2", "a2"]);
-        assert_eq!(ids(&build(&entries, 4, Some("a1"), None)), ["a2"]);
-        assert!(build(&entries, 5, Some("a1"), None).candidate.is_empty());
+        assert_eq!(
+            ids(&build("s_test", &entries, 1, Some("a1"), None)),
+            ["u2", "a2"]
+        );
+        assert_eq!(ids(&build("s_test", &entries, 4, Some("a1"), None)), ["a2"]);
+        assert!(
+            build("s_test", &entries, 5, Some("a1"), None)
+                .candidate
+                .is_empty()
+        );
     }
 
     fn call(tag: &str) -> AgentMessage {
@@ -557,7 +593,7 @@ mod tests {
             msg("a2", reply("a2")),
         ];
         assert_eq!(
-            ids(&build(&entries, 0, Some("a1"), None)),
+            ids(&build("s_test", &entries, 0, Some("a1"), None)),
             ["u", "a1", "a2", "n"]
         );
     }
@@ -570,7 +606,7 @@ mod tests {
             msg("n", user("notif")),
             msg("a1", call("a1")),
         ];
-        let w = build(&pending, 0, Some("u"), None);
+        let w = build("s_test", &pending, 0, Some("u"), None);
         assert_eq!(ids(&w), ["u", "n", "a1"]);
         assert!(w.new_order.is_none());
         // A call answered after the arrival: it moves after the result.
@@ -581,7 +617,7 @@ mod tests {
             msg("r1", result("r1")),
         ];
         assert_eq!(
-            ids(&build(&answered, 0, Some("u"), None)),
+            ids(&build("s_test", &answered, 0, Some("u"), None)),
             ["u", "a1", "r1", "n"]
         );
         // Only the user message moves; the call/result pairing stays intact.
@@ -593,7 +629,7 @@ mod tests {
             msg("a2", reply("a2")),
         ];
         assert_eq!(
-            ids(&build(&paired, 0, Some("a1"), None)),
+            ids(&build("s_test", &paired, 0, Some("a1"), None)),
             ["u", "a1", "r1", "a2", "n"]
         );
         // Already ending on the user: nothing to do.
@@ -602,7 +638,11 @@ mod tests {
             msg("a1", reply("a1")),
             msg("s", user("steer")),
         ];
-        assert!(build(&steer, 0, Some("u"), None).new_order.is_none());
+        assert!(
+            build("s_test", &steer, 0, Some("u"), None)
+                .new_order
+                .is_none()
+        );
     }
 
     /// A redelivered step whose first attempt left its reply entry (a2)
@@ -620,13 +660,13 @@ mod tests {
             msg("a2", AgentMessage::Assistant(empty)),
         ];
         // Redelivered with the old watermark: n counts as arrived.
-        let redelivered = build(&entries, 0, Some("u"), Some("a2"));
+        let redelivered = build("s_test", &entries, 0, Some("u"), Some("a2"));
         assert_eq!(ids(&redelivered), ["u", "a1", "n"]);
         assert!(redelivered.new_order.is_none());
 
         entries[3] = msg("a2", call("a2"));
         entries.push(msg("r2", result("r2")));
-        let next = build(&entries, 0, Some("a2"), Some("a3"));
+        let next = build("s_test", &entries, 0, Some("a2"), Some("a3"));
         assert_eq!(ids(&next), ["u", "a1", "n", "a2", "r2"]);
         assert!(next.new_order.is_none());
         assert_eq!(
@@ -638,7 +678,7 @@ mod tests {
         // would orphan r2 and re-issue the side effect); n, logged while it
         // generated, moves after it and its result.
         assert_eq!(
-            ids(&build(&entries, 0, Some("u"), Some("a2"))),
+            ids(&build("s_test", &entries, 0, Some("u"), Some("a2"))),
             ["u", "a1", "a2", "r2", "n"]
         );
     }
@@ -654,7 +694,7 @@ mod tests {
             msg("a2", call("a2")),
         ];
         assert_eq!(
-            ids(&build(&entries, 0, Some("r1"), Some("a2"))),
+            ids(&build("s_test", &entries, 0, Some("r1"), Some("a2"))),
             ["u", "a1", "r1"]
         );
     }
@@ -696,7 +736,10 @@ mod tests {
             ),
             custom("o2", MESSAGE_ORDER, json!({"after": "u1", "moved": ["u1"]})),
         ];
-        assert_eq!(ids(&build(&entries, 0, None, None)), ["u1", "a1", "u2"]);
+        assert_eq!(
+            ids(&build("s_test", &entries, 0, None, None)),
+            ["u1", "a1", "u2"]
+        );
     }
 
     #[test]
@@ -723,7 +766,7 @@ mod tests {
             ),
             msg("a2", thought("after the summary")),
         ];
-        let mut w = build(&entries, 0, None, None);
+        let mut w = build("s_test", &entries, 0, None, None);
         strip_thinking_logged_before(&mut w, &entries[..2]);
         let blocks = |i: usize| match &w.candidate[i].1 {
             AgentMessage::Assistant(a) => a.content.clone(),
@@ -758,7 +801,8 @@ mod tests {
             msg("u1", user("go")),
             custom("n1", MODEL_NOTICE, notice_data("hook", &sent)),
         ];
-        let replay = serde_json::to_value(&build(&entries, 0, None, None).candidate[1].1).unwrap();
+        let replay =
+            serde_json::to_value(&build("s_test", &entries, 0, None, None).candidate[1].1).unwrap();
         assert_eq!(replay, sent);
         // No text to show: never sent, rather than sent as an empty block.
         assert!(replayed(&json!({"role": "assistant", "content": []})).is_none());

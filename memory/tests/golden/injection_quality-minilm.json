@@ -18,11 +18,11 @@
           "duplicate_queries": 1,
           "expected_injected": 0.7714,
           "injection_loss": [],
-          "irrelevant_injected": 196,
+          "irrelevant_injected": 197,
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
-          "stale_with_current": 6
+          "stale_with_current": 5
         }
       },
       "category:dated-event": {
@@ -90,11 +90,11 @@
           "duplicate_queries": 0,
           "expected_injected": 0.9091,
           "injection_loss": [],
-          "irrelevant_injected": 22,
+          "irrelevant_injected": 23,
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
-          "stale_with_current": 6
+          "stale_with_current": 5
         }
       },
       "kind:chatter": {
@@ -148,11 +148,11 @@
           "duplicate_queries": 1,
           "expected_injected": 0.9167,
           "injection_loss": [],
-          "irrelevant_injected": 48,
+          "irrelevant_injected": 49,
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
-          "stale_with_current": 1
+          "stale_with_current": 0
         }
       },
       "lang:pt": {
@@ -196,11 +196,11 @@
           "duplicate_queries": 0,
           "expected_injected": 0.8,
           "injection_loss": [],
-          "irrelevant_injected": 69,
+          "irrelevant_injected": 70,
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
-          "stale_with_current": 2
+          "stale_with_current": 1
         }
       }
     },
@@ -224,7 +224,7 @@
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
-          "stale_with_current": 5
+          "stale_with_current": 4
         }
       },
       "category:dated-event": {
@@ -301,7 +301,7 @@
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
-          "stale_with_current": 5
+          "stale_with_current": 4
         }
       },
       "kind:chatter": {
@@ -363,7 +363,7 @@
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
-          "stale_with_current": 1
+          "stale_with_current": 0
         }
       },
       "lang:pt": {
@@ -415,7 +415,7 @@
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
-          "stale_with_current": 2
+          "stale_with_current": 1
         }
       }
     }

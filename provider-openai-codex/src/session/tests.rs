@@ -2,8 +2,8 @@ use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Default)]
-struct MemoryStore {
-    value: Mutex<Option<SessionRecord>>,
+pub(crate) struct MemoryStore {
+    pub(crate) value: Mutex<Option<SessionRecord>>,
     fail: AtomicBool,
     fail_write: AtomicBool,
     conflict_next_write: AtomicBool,
@@ -44,8 +44,8 @@ impl SessionStore for MemoryStore {
 }
 
 #[derive(Default)]
-struct FakeOAuth {
-    refreshes: AtomicUsize,
+pub(crate) struct FakeOAuth {
+    pub(crate) refreshes: AtomicUsize,
     polled: AtomicUsize,
     deny_refresh: AtomicBool,
     refresh_started: tokio::sync::Notify,
@@ -57,7 +57,7 @@ struct FakeOAuth {
     malformed_refresh: AtomicBool,
 }
 
-fn credential(account: &str, ttl: i64) -> Credential {
+pub(crate) fn credential(account: &str, ttl: i64) -> Credential {
     Credential {
         access_token: format!("secret-{account}"),
         refresh_token: Some("refresh-secret".into()),
@@ -134,8 +134,8 @@ impl OAuthTransport for FakeOAuth {
 }
 
 #[derive(Default)]
-struct FakeLegacy {
-    reads: AtomicUsize,
+pub(crate) struct FakeLegacy {
+    pub(crate) reads: AtomicUsize,
     /// `codex login` ran again: the CLI file holds another token.
     signed_in_again: AtomicBool,
 }
@@ -155,7 +155,7 @@ impl LegacySource for FakeLegacy {
     }
 }
 
-fn setup() -> (
+pub(crate) fn setup() -> (
     Arc<AuthManager>,
     Arc<MemoryStore>,
     Arc<FakeOAuth>,

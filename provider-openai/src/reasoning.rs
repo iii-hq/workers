@@ -46,8 +46,8 @@ fn supported_efforts(model: &str) -> &'static [&'static str] {
     if id.contains("pro") {
         return &["high"];
     }
-    // gpt-6 family (api/docs/models/gpt-6-*): Sol and Luna take `none`;
-    // 6.1 Sol and Astra 400 on it. Unknown gpt-6 ids stay on the safe side.
+    // gpt-6 family (api/docs/models/gpt-6-*): 6 Sol and 6 Luna take `none`;
+    // 6.1 Sol, 6.2 Sol and Astra 400 on it. Unknown gpt-6 ids stay on the safe side.
     if id.starts_with("gpt-6") {
         return if id.starts_with("gpt-6-sol") || id.starts_with("gpt-6-luna") {
             &["none", "low", "medium", "high", "xhigh"]
@@ -164,6 +164,16 @@ mod tests {
         );
         assert!(can_disable("gpt-6-sol"));
         assert!(!can_disable("gpt-6.1-sol"));
+        // GPT-6.2 Sol rejects `none`; its migration guide moves `minimal` to `low`.
+        assert!(!can_disable("gpt-6.2-sol"));
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "gpt-6.2-sol"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-6.2-sol"),
+            Some("low")
+        );
         assert!(!can_disable("o3"));
     }
 

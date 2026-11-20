@@ -289,11 +289,21 @@ export function ConversationsProvider({
         requestChatShown(id)
         conversationRequestedRef.current?.(id)
       },
-      openDraft(draft) {
+      openConversation: openConversationInPanel,
+      openDraft(draft, options) {
+        const previous = activeIdRef.current
         const id = createNewRef.current(draft)
+        // `show: false`: the caller places the draft itself (a side chat beside its page), so the main chat
+        // keeps the conversation it was showing.
+        if (options?.show === false) {
+          if (previous && previous !== id)
+            selectConversationRef.current(previous)
+          return id
+        }
         requestChatShown(id)
         conversationRequestedRef.current?.(id)
         window.requestAnimationFrame(requestComposerFocus)
+        return id
       },
       composerModel(conversationId) {
         const requested = conversationId?.trim()

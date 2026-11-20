@@ -120,6 +120,20 @@ export interface ScreenOpenRequest {
   /** Widths of the tab the screen is placed in, one positive number per
    *  column; ignored when the screen is reused or the count does not match. */
   sizes?: number[]
+  /** A screen this one takes the place of, where the tab on screen shows it:
+   *  the caller's own earlier screen (a side chat swapping one conversation
+   *  for the next, so columns never pile up). Absent there, or ignored by an
+   *  older console, the screen is placed as usual. */
+  replaces?: string
+  /** The column directly on `direction`'s side of `relativeTo` takes the
+   *  screen when it shows a session chat (`chat:<id>`): a page's side chat
+   *  found from the shared layout, whichever browser opened it. The
+   *  workspace's own chat column is never taken. */
+  reuseBeside?: boolean
+  /** `screen` is an unsent chat draft (`chat:<id>` from `chat.openDraft`):
+   *  its title and text are kept with the layout, so a reload or another
+   *  browser opens the same draft instead of a missing chat. */
+  draft?: { title?: string; text: string }
 }
 
 /** Props the host passes to every registered page render component. */
@@ -510,6 +524,8 @@ export interface ContextSectionSummary {
   tone?: 'accent' | 'alert' | 'warn' | 'ok'
   /** Nothing to show: the section is left out until this turns false. */
   empty?: boolean
+  /** Work under way (`2 running`), with a pulsing dot, folded or not. */
+  live?: string
 }
 
 /** Props a worker's section in the chat's Context panel receives. */
@@ -519,6 +535,8 @@ export interface ContextSectionProps {
   workingDir?: string
   /** The panel is open: read only while it is. */
   active: boolean
+  /** The section is unfolded; absent (older consoles) means it is. */
+  open?: boolean
   /** A turn is running; read again when it ends. */
   isStreaming: boolean
   /** The header's count and brief; `empty` leaves the section out. */
@@ -527,10 +545,10 @@ export interface ContextSectionProps {
 
 /**
  * A section of the chat's Context side panel. The console draws its header
- * (title, worker, count, brief, fold and drag handle) and keeps where the
- * user put it, folded or hidden; the render draws the body, and stays
- * mounted while folded so its summary keeps up. Duplicate `id`: last
- * registration wins.
+ * (title, worker unless it reads the same, count, brief, live mark, fold and
+ * drag handle) and keeps where the user put it, folded or hidden; the
+ * render draws the body, and stays mounted while folded so its summary
+ * keeps up. Duplicate `id`: last registration wins.
  */
 export interface ContextSectionRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
@@ -538,7 +556,7 @@ export interface ContextSectionRegistration {
   title: string
   /**
    * Its first place among the panel's sections, whose own run from 100
-   * (Project) to 700 (Links) in steps of 100; 1000 when left out. The
+   * (Project) to 800 (Tracking) in steps of 100; 1000 when left out. The
    * order the user drags wins.
    */
   order?: number
@@ -795,8 +813,18 @@ export interface Host {
     registerRenderer(renderer: MentionRendererRegistration): () => void
   }
   chat: {
-    /** Open a new, editable human chat draft without sending or creating a session. */
-    openDraft(draft: { text: string; title?: string }): void
+    /**
+     * Open a new, editable human chat draft without sending or creating a
+     * session. Returns the draft's conversation id (older consoles return
+     * nothing). With `show: false` it is not brought up in the main chat:
+     * the caller shows it itself (e.g. `panels.openScreen({ screen:
+     * 'chat:<id>' })` beside its page).
+     */
+    openDraft(
+      draft: { text: string; title?: string },
+      options?: { show?: boolean },
+      // biome-ignore lint/suspicious/noConfusingVoidType: an older console's openDraft returns nothing
+    ): string | void
     /**
      * Hand text and files to a chat's composer, the way a drop or a paste
      * would, and put the caret there: the only chat open, else the one used
@@ -846,6 +874,13 @@ export interface Host {
     registerComposerControl(control: ComposerControlRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
     selectConversation?(sessionId: string): void
+    /**
+     * Open or reuse a pane pinned to this session, the way a sub-agent row
+     * does: a workspace tab already showing it is activated, otherwise a pane
+     * opens beside the chat. A host without workspace panes selects the
+     * session instead. Feature-detect on older consoles.
+     */
+    openConversation?(sessionId: string): void
     /**
      * Ask the mounted conversation to adopt a validated working directory.
      * Call this only from an explicit user action, such as the user picking

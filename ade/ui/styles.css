@@ -110,11 +110,18 @@
 
 /* ── declarative worker configuration forms ─────────────────────────── */
 
+/* Spacing scale, in px: 4 label to description; 8 between adjacent
+ * controls and between list items; 12 nested insets where rows have side
+ * padding; 20 row padding and heading to list; 24 label to control; 48
+ * between sections. The settings page sets the surface values through
+ * --settings-section-gap, --settings-row-inset and --settings-sublist-fill;
+ * the fallbacks here are the values everywhere else. */
+
 [data-iii-ui="console"] .console-worker-config {
   container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--settings-section-gap, 24px);
   min-width: 0;
   font-family: var(--font-sans);
   color: var(--color-ink);
@@ -218,6 +225,12 @@
   border-radius: 6px;
   background: var(--color-surface);
 }
+/* Square under a divider: a one-sided border on a rounded box bends at the corners. */
+[data-iii-ui="console"]
+  .iii-ui-settings-list[data-dividers="all"]
+  > .console-worker-config-nested {
+  border-radius: 0;
+}
 [data-iii-ui="console"] .console-worker-config-composite {
   display: flex;
   flex-direction: column;
@@ -225,7 +238,7 @@
 }
 /* A status under its row, aligned with the row's own padding. */
 [data-iii-ui="console"] .console-worker-config-notice {
-  padding: 0 16px 14px;
+  padding: 0 var(--settings-row-inset, 16px) 14px;
 }
 [data-iii-ui="console"] .console-worker-config-command {
   display: block;
@@ -244,8 +257,12 @@
 }
 [data-iii-ui="console"] .console-worker-config-sublist,
 [data-iii-ui="console"] .console-worker-config-map-list {
-  margin: 0 12px 12px;
-  background: var(--color-panel);
+  margin: 0 var(--settings-row-inset, 12px) 12px;
+  background: var(--settings-sublist-fill, var(--color-panel));
+}
+/* What an empty list means, in the slot its first item would take. */
+[data-iii-ui="console"] .console-worker-config-empty-value {
+  color: var(--color-ink-faint);
 }
 [data-iii-ui="console"] .console-worker-config-visually-hidden {
   position: absolute;
@@ -268,6 +285,19 @@
   .iii-ui-settings-row__control {
   width: 100%;
   justify-content: flex-start;
+}
+/* Items are one value each: tight rows, no hairlines between them. */
+[data-iii-ui="console"]
+  .console-worker-config-string-list-row
+  .iii-ui-settings-row__inner {
+  min-height: 0;
+  padding-block: 4px;
+}
+[data-iii-ui="console"]
+  .console-worker-config-string-list
+  > .iii-ui-settings-row
+  + .iii-ui-settings-row {
+  border-top: 0;
 }
 [data-iii-ui="console"] .console-worker-config-string-list-input {
   flex: 1;
@@ -535,6 +565,20 @@
   [data-iii-ui="console"] .console-worker-config-collection-list [role="listitem"],
   [data-iii-ui="console"] .console-worker-config-detail-actions {
     min-height: 44px;
+  }
+}
+
+/* One control column: every row-level value control has the same width, so
+ * their leading edges line up. A definite width, not min(100%, …): an auto
+ * grid track would collapse that to the control's intrinsic width. After the
+ * 679px block on purpose; the control goes full width only once rows stack. */
+[data-iii-ui="console"] .console-worker-config-value {
+  width: 280px;
+  max-width: 100%;
+}
+@container (max-width: 30rem) {
+  [data-iii-ui="console"] .console-worker-config-value {
+    width: 100%;
   }
 }
 

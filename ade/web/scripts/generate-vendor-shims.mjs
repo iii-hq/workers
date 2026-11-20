@@ -12,7 +12,7 @@
  * build copies it into dist/ and rust-embed ships it.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -49,6 +49,14 @@ const HEADER = (specifier) =>
   `// (boot contract: iii/tech-specs/2026-07-17-injectable-ui/slots-and-api.md).\n`
 
 await mkdir(outDir, { recursive: true })
+
+// An unchanged shim keeps its mtime: public/ is an input of ade/build.rs's
+// freshness check, which a rewrite on every build would defeat.
+async function writeShim(file, content) {
+  const path = join(outDir, file)
+  const old = await readFile(path, 'utf8').catch(() => null)
+  if (old !== content) await writeFile(path, content)
+}
 
 // Node's CJS-ESM interop can synthesize namespace keys that are not valid
 // identifiers (react ships a literal `module.exports` key) — emitting one
@@ -147,7 +155,7 @@ for (const shim of SHIMS) {
     `export default M.default ?? M\n` +
     `export const {\n  ${names.join(',\n  ')},\n} = M\n`
   await validateShim(shim.file, content)
-  await writeFile(join(outDir, shim.file), content)
+  await writeShim(shim.file, content)
   console.log(`vendor/${shim.file}: ${names.length} named exports`)
 }
 
@@ -176,7 +184,7 @@ const consoleUi =
   `export const {\n  ${componentNames.join(',\n  ')},\n} = api.components\n` +
   `export default api\n`
 await validateShim('console-ui.js', consoleUi)
-await writeFile(join(outDir, 'console-ui.js'), consoleUi)
+await writeShim('console-ui.js', consoleUi)
 console.log(
   `vendor/console-ui.js: api shim + ${componentNames.length} components`,
 )

@@ -7,6 +7,19 @@ use std::collections::HashSet;
 const ORPHAN_TOOL_PLACEHOLDER: &str =
     "Tool call was interrupted before completing. Continue without its output.";
 
+/// Providers whose thinking signatures the Anthropic Messages API verifies.
+const SIGNED_THINKING_PROVIDERS: [&str; 3] = ["anthropic", "claude-code", "command-code"];
+
+/// Thinking from any other provider (e.g. a Gemini thought signature) fails
+/// Anthropic's signature verification, so it is dropped before mapping.
+fn replayable(provider: &str, block: &ContentBlock) -> bool {
+    SIGNED_THINKING_PROVIDERS.contains(&provider)
+        || !matches!(
+            block,
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+        )
+}
+
 fn result_text(message: &FunctionResultMessage) -> String {
     let body = message
         .content
@@ -306,6 +319,7 @@ pub fn anthropic_messages(messages: &[AgentMessage], warnings: &mut Vec<String>)
                 let mut content = assistant
                     .content
                     .iter()
+                    .filter(|block| replayable(&assistant.provider, block))
                     .filter_map(anthropic_content)
                     .collect::<Vec<_>>();
                 while matches!(
@@ -414,17 +428,22 @@ mod tests {
         );
     }
 
+    fn call(id: &str) -> ContentBlock {
+        ContentBlock::FunctionCall {
+            id: id.into(),
+            function_id: "shell::exec".into(),
+            arguments: json!({ "cmd": "pwd" }),
+        }
+    }
+
     fn assistant_calls(ids: &[&str]) -> AgentMessage {
+        assistant_from("command-code", ids.iter().map(|id| call(id)).collect())
+    }
+
+    fn assistant_from(provider: &str, content: Vec<ContentBlock>) -> AgentMessage {
         AgentMessage::Assistant(AssistantMessage {
             role: AssistantRoleTag::Assistant,
-            content: ids
-                .iter()
-                .map(|id| ContentBlock::FunctionCall {
-                    id: (*id).into(),
-                    function_id: "shell::exec".into(),
-                    arguments: json!({ "cmd": "pwd" }),
-                })
-                .collect(),
+            content,
             stop_reason: StopReason::FunctionCall,
             native_stop_reason: None,
             error_message: None,
@@ -432,7 +451,7 @@ mod tests {
             warnings: None,
             usage: None,
             model: "m".into(),
-            provider: "p".into(),
+            provider: provider.into(),
             timestamp: 1,
         })
     }
@@ -482,6 +501,38 @@ mod tests {
         assert_eq!(messages[0]["content"][0]["type"], "tool_use");
         assert_eq!(messages[0]["content"][0]["name"], "shell__exec");
         assert_eq!(messages[1]["content"][0]["type"], "tool_result");
+    }
+
+    fn anthropic_wire(messages: &[AgentMessage]) -> Vec<Value> {
+        anthropic_messages(messages, &mut Vec::new())
+    }
+
+    #[test]
+    fn thinking_from_a_non_anthropic_provider_is_not_replayed() {
+        let thought = || ContentBlock::Thinking {
+            text: "plan".into(),
+            signature: Some("sig".into()),
+        };
+        // Own family (and its Anthropic-wire siblings) replays thinking.
+        for provider in ["command-code", "anthropic"] {
+            let wire = anthropic_wire(&[assistant_from(provider, vec![thought(), call("t1")])]);
+            assert_eq!(wire[0]["content"][0]["type"], "thinking", "{provider}");
+            assert_eq!(wire[0]["content"][1]["type"], "tool_use", "{provider}");
+        }
+        // A foreign signature would fail verification: only the tool_use stays.
+        let wire = anthropic_wire(&[assistant_from("gemini", vec![thought(), call("t1")])]);
+        let content = wire[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "tool_use");
+        // Foreign thinking-only turns leave no assistant row.
+        for block in [
+            thought(),
+            ContentBlock::RedactedThinking {
+                data: "opaque".into(),
+            },
+        ] {
+            assert!(anthropic_wire(&[assistant_from("gemini", vec![block])]).is_empty());
+        }
     }
 
     #[test]

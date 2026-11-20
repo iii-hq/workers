@@ -304,7 +304,10 @@ export function SpawnActivityCard({
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border pt-3 @xl:flex @xl:flex-col @xl:items-stretch @xl:border-t-0 @xl:pt-0">
         <SubagentStatus status={status} activityAge={activityAge} />
         {onOpen ? (
-          <OpenDetailsAffordance className="group-hover/subagent:bg-surface-hover">
+          <OpenDetailsAffordance
+            className="group-hover/subagent:bg-surface-hover"
+            data-subagent-open=""
+          >
             Open chat
           </OpenDetailsAffordance>
         ) : null}

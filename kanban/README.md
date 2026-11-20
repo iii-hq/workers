@@ -120,6 +120,22 @@ iii call kanban::ticket::move --json '{"id":"KAN-1","status":"in_review","actor"
 tickets that mention it, found by key (`KAN-12`) in titles, descriptions and
 comments.
 
+Every change also records **which agent session made it**. The harness runs
+each agent turn with `iii.session.id` (and the turn id, `iii.message.id`) in
+the call's baggage; the activity entry a write appends carries them as
+`session_id` and `turn_id`. A change made outside an agent turn — a person on
+the console board, cron, a workflow — carries neither.
+`kanban::sessions::links` turns that into one row per ticket and session
+(first and latest change, how many, the latest kind, actor and turn),
+filtered by `project_id` (id or name; `""` = no project), `ticket_id` or
+`session_id`. The console's Tree view uses it to put every session that worked
+a ticket under that ticket, whatever the session is called:
+
+```bash
+iii call kanban::sessions::links project_id="Usage-based billing"
+iii call kanban::sessions::links ticket_id=KAN-45
+```
+
  Pass `actor` on writes and `author` on comments: the timeline
 reads honestly, and the comment filters key on exactly that string. Deleting
 a ticket (`kanban::ticket::delete`) is a soft delete — the row stays in the

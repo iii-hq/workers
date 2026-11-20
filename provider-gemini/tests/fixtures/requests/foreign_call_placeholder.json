@@ -1,0 +1,46 @@
+{
+  "input": [
+    {
+      "type": "user_input",
+      "content": [
+        {
+          "type": "text",
+          "text": "What is the weather in Lisbon? Use the tool."
+        }
+      ]
+    },
+    {
+      "type": "thought",
+      "signature": "skip_thought_signature_validator"
+    },
+    {
+      "type": "model_output",
+      "content": [
+        {
+          "type": "text",
+          "text": "I'll check."
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "id": "toolu_01abc",
+      "name": "get_weather",
+      "arguments": {
+        "city": "Lisbon"
+      }
+    },
+    {
+      "type": "function_result",
+      "call_id": "toolu_01abc",
+      "name": "get_weather",
+      "result": [
+        {
+          "type": "text",
+          "text": "18 C, sunny"
+        }
+      ],
+      "is_error": false
+    }
+  ]
+}

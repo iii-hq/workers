@@ -30,7 +30,7 @@ functions (`<ns>::…`).
 | Piece | Path |
 |---|---|
 | The app project (four pages, a `List` with templates, a `ListDetail`, a `RemoteScreen`) | `browser/native-ui/` |
-| `build.rs` with both frontends (`ui/` and `native-ui/`) | `browser/build.rs` (the `FRONTENDS` table) |
+| `build.rs` with both frontends (`ui/` and `native-ui/`) | `browser/build.rs` |
 | Registering with the crate, and its three tests | `browser/src/native_ui.rs` |
 | The boot line | `browser/src/main.rs` (`browser::native_ui::register(&iii)`, after the console UI) |
 | App tests: one build for the suite, a fake worker | `browser/native-ui/test/global-setup.ts`, `browser/native-ui/test/fake.ts` |
@@ -185,24 +185,37 @@ is not written. The app refuses bundles above 1 MiB.
 
 The Rust worker embeds the bundle with `include_str!`, so its `build.rs`
 must guarantee `native-ui/dist/native.js` exists and is current, exactly as
-it does for `ui/dist`. Copy `browser/build.rs`: one `Frontend` entry per
-embedded project (its directory, its outputs, the files and directories
-that make them stale), the same loop for both.
+it does for `ui/dist`. Copy `browser/build.rs`: next to the console UI call,
+one call to the shared helper (`crates/console-ui/src/ui_build.rs`) for the
+app:
 
-- `rerun-if-changed` for `native-ui/src`, `native-ui/build.mjs`,
-  `native-ui/package.json`, `native-ui/tsconfig.json`, the root lockfile
-  (`native-ui/../../pnpm-lock.yaml`) **and the SDK the bundle includes**
-  (`native-ui/../../packages/native-ui/src`,
-  `native-ui/../../packages/native-ui/catalog.json`: unlike the console
-  UI's import map, the SDK is bundled in); plus anything else the app
-  imports from outside (`browser` imports `ui/src/lib/address.ts`); never
-  `native-ui/dist`;
-- return early when the bundle is at least as new as every source;
-- otherwise `pnpm install` then `pnpm build` inside `native-ui/`, and panic
-  if `dist/native.js` is still missing;
-- honour `SKIP_UI_BUILD` (any value: use the existing `dist/` as-is, and
-  panic if it is missing) and `PNPM=<path>`, the same switches as the
-  console UI.
+```rust
+ui_build::ensure_built(&ui_build::Frontend {
+    dir: "native-ui",
+    assets: &["dist/native.js"],
+    // The SDK is bundled in, unlike the console UI's import map.
+    packages: &["packages/native-ui"],
+    // Anything else the app imports from outside its project.
+    extra: &["ui/src/lib/address.ts"],
+    skip_env: "SKIP_UI_BUILD",
+});
+```
+
+- inputs are the top-level files of `native-ui/` and its `src/` tree, the
+  same for each `packages` entry, the root lockfile and workspace manifest
+  and each `extra` path (a directory is walked), each with
+  `rerun-if-changed`, as is `dist/native.js`; `node_modules`, `dist` and dot
+  directories are never entered;
+- return early when the bundle exists and the `native-ui/.ui-build` marker
+  of the last successful build lists the current inputs and is newer than
+  them (without a marker, when the bundle is newer than every input);
+- otherwise mark the build as running, `pnpm install` then `pnpm build`
+  inside `native-ui/`, and write the marker; a failed build keeps
+  `dist/native.js` with the marker saying "building", so it is rebuilt next
+  time, and a missing one after success panics;
+- honour `SKIP_UI_BUILD` (any non-empty value: use the last written `dist/`
+  as-is, and panic if it is missing) and `PNPM=<path>`, the same switches
+  as the console UI.
 
 The CI finds `native-ui/` like `web/` and `ui/`: the `rust` job and the
 binary build set up pnpm and Node and pre-build it, also for the projects of
@@ -350,8 +363,8 @@ character outside `[A-Z0-9]` as `_` (`III_IOS_SIMULATOR_NATIVE_UI_WATCH`).
 - `defineApp({ catalog })` and the builder's `.catalog(n)` say the same
   version (both 1 unless the app uses catalogue 2).
 - `Cargo.toml` links `iii-native-ui` by path; `build.rs` builds
-  `native-ui/`, reruns on the SDK's sources too, and honours
-  `SKIP_UI_BUILD`.
+  `native-ui/` with `ui_build::ensure_built`, `packages/native-ui` among
+  its packages.
 - `src/native_ui.rs` embeds `native-ui/dist/native.js`; boot calls
   `native_ui::register` after the functions; its tests pass.
 - With `III_<NS>_NATIVE_UI_WATCH=1`, a rebuild reaches an open page of the

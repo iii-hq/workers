@@ -51,6 +51,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::openai-codex::login::cancel",
             "provider::openai-codex::auth::status",
             "provider::openai-codex::auth::logout",
+            "provider::openai-codex::auth::token",
         ]
     );
 }
