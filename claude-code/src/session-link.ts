@@ -63,23 +63,50 @@ export async function linkChildSession(
 }
 
 /** Move the session's coarse status, so a tree shows working / done / error. */
+/** Waits before each retry of a terminal status write. `[0, 0]` in tests. */
+export const statusRetry = { delaysMs: [500, 2_000] };
+
 export async function setSessionStatus(
   iii: IIIClient,
   sessionId: string,
   status: 'working' | 'done' | 'error',
   reason?: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await iii.call({
       function_id: 'session::set-status',
       payload: { session_id: sessionId, status, ...(reason ? { reason } : {}) },
       timeoutMs: TIMEOUT_MS,
     });
+    return true;
   } catch (err) {
     console.warn(
       `claude-code: session::set-status ${status} failed for ${sessionId}: ${String(err)}`,
     );
+    return false;
   }
+}
+
+/**
+ * A run's last status write: retried, since nothing writes this session's
+ * status again until its next run, and a lost `done` or `error` would leave it
+ * reporting `working` with no run behind it.
+ */
+export async function settleSessionStatus(
+  iii: IIIClient,
+  sessionId: string,
+  status: 'done' | 'error',
+  reason?: string,
+): Promise<boolean> {
+  if (await setSessionStatus(iii, sessionId, status, reason)) return true;
+  for (const delay of statusRetry.delaysMs) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (await setSessionStatus(iii, sessionId, status, reason)) return true;
+  }
+  console.error(
+    `claude-code: session ${sessionId} may still show working: its ${status} status could not be written`,
+  );
+  return false;
 }
 
 /**
@@ -154,6 +181,8 @@ const STOP_REASONS = new Set(['end', 'length', 'function_call', 'aborted', 'erro
 function sessionStopReason(raw: unknown): string {
   const reason = String(raw ?? 'end');
   if (STOP_REASONS.has(reason)) return reason;
+  // A `claude::stop` that ended the turn: stopped by request, not failed.
+  if (reason === 'interrupted') return 'aborted';
   // SDK result subtypes: `error_max_turns`, `error_max_budget_usd`, … hit a
   // cap; every other subtype (`error_during_execution`) is a failure.
   return reason.startsWith('error_max') ? 'length' : 'error';

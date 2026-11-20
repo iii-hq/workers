@@ -26,9 +26,10 @@ import { listSessions, loadSession, saveSession } from './state.js';
 import {
   childSessionOwnership,
   linkChildSession,
-  type Ownership,
   recordTaskOutcome,
   setSessionStatus,
+  settleSessionStatus,
+  type Ownership,
 } from './session-link.js';
 import { ChildTranscript, type TurnSink } from './session-writer.js';
 import { runTurnSpan } from './trace.js';
@@ -157,7 +158,13 @@ const RUN_RESPONSE_FORMAT = jsonSchema(
   }),
 );
 const START_RESPONSE_FORMAT = jsonSchema(
-  z.object({ session_id: z.string(), started: z.boolean() }),
+  z.object({
+    session_id: z.string(),
+    started: z.boolean(),
+    // A follow-up while the previous run is still saving: not started.
+    busy: z.boolean().optional(),
+    reason: z.string().optional(),
+  }),
 );
 const STOP_RESPONSE_FORMAT = jsonSchema(
   z.object({ session_id: z.string(), stopped: z.boolean(), reason: z.string().optional() }),
@@ -293,9 +300,9 @@ export async function executeRun(
       if (!written.write) return;
       // Transcript first, status second: the console opens a child on `done`,
       // and a transcript that could not be written whole is never `done`.
-      if (written.complete) await setSessionStatus(iii, session_id, status, reason);
+      if (written.complete) await settleSessionStatus(iii, session_id, status, reason);
       else {
-        await setSessionStatus(
+        await settleSessionStatus(
           iii,
           session_id,
           'error',
@@ -515,7 +522,13 @@ async function runReserved(
         record.usage = mapUsage(msg.usage);
         isError = msg.is_error === true;
         stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
-        resultText = 'result' in msg && typeof msg.result === 'string' ? msg.result : '';
+        // A failed result may carry its reason only in `errors`.
+        resultText =
+          'result' in msg && typeof msg.result === 'string'
+            ? msg.result
+            : 'errors' in msg && Array.isArray(msg.errors)
+              ? msg.errors.map(String).join('; ')
+              : '';
       }
     }
   } catch (err) {

@@ -6,7 +6,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { registerAgentFeeds } from '../src/agent-feed.js';
 import { type Config, loadConfig } from '../src/config.js';
 import { executeRun, RunPayloadSchema, register } from '../src/run.js';
-import { toSessionMessage } from '../src/session-link.js';
+import { statusRetry, toSessionMessage } from '../src/session-link.js';
 import { streamTiming } from '../src/session-writer.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 import {
@@ -767,5 +767,238 @@ describe('append retry race', () => {
       },
     ]);
     expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+});
+
+describe('review: terminal status, settled entries, partial blocks, stop and errors', () => {
+  const defaultDelays = statusRetry.delaysMs;
+  beforeEach(() => {
+    statusRetry.delaysMs = [0, 0];
+  });
+  afterEach(() => {
+    statusRetry.delaysMs = defaultDelays;
+  });
+
+  async function worker(): Promise<FakeIii> {
+    const fake = fakeIii();
+    const config = await cfg();
+    const feeds = registerAgentFeeds(fake.iii);
+    register(fake.iii, () => config, feeds.agent.emit, feeds.raw.emit);
+    return fake;
+  }
+
+  /** Fails the first `times` set-status writes of `status`, without recording them. */
+  function failStatus(fake: FakeIii, status: string, times: number) {
+    const real = fake.iii.call.bind(fake.iii);
+    let n = 0;
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { status?: string };
+    }) => {
+      if (
+        req.function_id === 'session::set-status' &&
+        req.payload.status === status &&
+        n++ < times
+      ) {
+        throw new Error('timeout');
+      }
+      return real(req as never);
+    };
+  }
+
+  it('retries the terminal done status when its first write fails', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'done', 1);
+    await run(fake, { prompt: 'x', session_id: 'st-1', parent_session_id: 'p-1' });
+    expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+
+  it('retries the terminal error status of an incomplete transcript', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'error', 2);
+    const real = fake.iii.call.bind(fake.iii);
+    let appends = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::append' && ++appends > 1) throw new Error('down');
+      return real(req as never);
+    };
+    await run(fake, { prompt: 'x', session_id: 'st-2', parent_session_id: 'p-1' });
+    expect(statuses(fake)).toEqual(['working', 'error']);
+  });
+
+  it('never rewrites an entry whose content and usage are already stored', async () => {
+    // A rewrite of a settled entry is a write that can fail twice and turn a
+    // complete transcript into an `error` session; refuse every such no-op.
+    const fake = fakeIii();
+    const real = fake.iii.call.bind(fake.iii);
+    const stored = new Map<string, string>();
+    let noops = 0;
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: Record<string, unknown>;
+    }) => {
+      const p = req.payload;
+      if (req.function_id === 'session::append') {
+        const m = p.message as Record<string, unknown>;
+        const out = await real(req as never);
+        stored.set(String(p.entry_id), JSON.stringify([m.content, m.usage ?? null]));
+        return out;
+      }
+      if (req.function_id === 'session::update-message') {
+        const now = JSON.stringify([p.content, p.usage ?? null]);
+        if (stored.get(String(p.entry_id)) === now) {
+          noops++;
+          throw new Error('timeout');
+        }
+        const out = await real(req as never);
+        stored.set(String(p.entry_id), now);
+        return out;
+      }
+      return real(req as never);
+    };
+    await run(
+      fake,
+      { prompt: 'x', session_id: 'settled-1', parent_session_id: 'p-1' },
+      streamedTurn,
+    );
+    expect(noops).toBe(0);
+    expect(statuses(fake)).toEqual(['working', 'done']);
+    const assistant = appended(fake, 'settled-1').find((m) => m.role === 'assistant');
+    expect(assistant?.content).toEqual([
+      { type: 'text', text: 'Hello' },
+      {
+        type: 'function_call',
+        id: 'toolu_1',
+        function_id: expect.any(String),
+        arguments: { command: 'ls' },
+      },
+    ]);
+  });
+
+  /** One block completes, the next is cut off mid-stream by a failure. */
+  function cutOffTurn(second: Record<string, unknown>, delta: Record<string, unknown>) {
+    return (() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_c', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Done part' },
+        });
+        yield stream({ type: 'content_block_stop', index: 0 });
+        yield {
+          type: 'assistant',
+          message: { id: 'msg_c', model: 'm', content: [{ type: 'text', text: 'Done part' }] },
+        };
+        yield stream({ type: 'content_block_start', index: 1, content_block: second });
+        yield stream({ type: 'content_block_delta', index: 1, delta });
+        throw new Error('connection reset');
+      },
+      interrupt: async () => {},
+    })) as never;
+  }
+
+  async function runCutOff(fake: FakeIii, sessionId: string) {
+    const feeds = registerAgentFeeds(fake.iii);
+    await executeRun(
+      fake.iii,
+      await cfg(),
+      feeds.agent.emit,
+      feeds.raw.emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: sessionId, parent_session_id: 'p-1' }),
+    );
+    return appended(fake, sessionId).filter((m) => m.role === 'assistant');
+  }
+
+  it('keeps a streamed block that was cut off before it completed, after the completed ones', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation(
+      cutOffTurn({ type: 'text', text: '' }, { type: 'text_delta', text: 'Half wri' }),
+    );
+    const [message, note] = await runCutOff(fake, 'cut-1');
+    expect(message.content).toEqual([
+      { type: 'text', text: 'Done part' },
+      { type: 'text', text: 'Half wri' },
+    ]);
+    expect(JSON.stringify(note.content)).toContain('connection reset');
+  });
+
+  it('drops a tool call that was cut off: it never ran and its arguments are incomplete', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation(
+      cutOffTurn(
+        { type: 'tool_use', id: 'toolu_cut', name: 'Bash', input: {} },
+        { type: 'input_json_delta', partial_json: '{"comm' },
+      ),
+    );
+    const [message] = await runCutOff(fake, 'cut-2');
+    expect(message.content).toEqual([{ type: 'text', text: 'Done part' }]);
+  });
+
+  it('stores a stop before the query exists as aborted, not error', () => {
+    const msg = toSessionMessage({ role: 'assistant', content: [], stop_reason: 'interrupted' });
+    expect(msg.stop_reason).toBe('aborted');
+  });
+
+  it('carries the SDK errors text when a failed result has no result field', async () => {
+    const fake = await worker();
+    const { result: _drop, ...failed } = resultMsg;
+    queryMock.mockImplementation(
+      scriptedQuery(
+        [
+          initMsg,
+          {
+            ...failed,
+            subtype: 'error_during_execution',
+            is_error: true,
+            errors: ['API quota exceeded', 'retry later'],
+          },
+        ],
+        { interrupted: false },
+      ) as never,
+    );
+    await fake.registered.get('claude::task')?.({
+      task: 'review',
+      session_id: 'err-1',
+      parent_session_id: 'p-1',
+    });
+    await vi.waitFor(() => {
+      expect(fake.state.get('agent_tasks/err-1')).toMatchObject({ status: 'error' });
+    });
+    const outcome = fake.state.get('agent_tasks/err-1') as { error: string };
+    expect(outcome.error).toContain('API quota exceeded');
+    expect(outcome.error).toContain('retry later');
+  });
+
+  it('keeps preferring the result text over errors', async () => {
+    const fake = fakeIii();
+    const turn = [
+      initMsg,
+      {
+        ...resultMsg,
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'own words',
+        errors: ['raw'],
+      },
+    ];
+    const out = (await run(fake, { prompt: 'x' }, turn)) as { result?: string };
+    expect(out.result).toBe('own words');
+  });
+
+  it('publishes the busy fields in the claude::start response format', async () => {
+    const fake = await worker();
+    const format = fake.functions.get('claude::start')?.options.response_format as {
+      properties: Record<string, unknown>;
+    };
+    for (const key of ['session_id', 'started', 'busy', 'reason']) {
+      expect(format.properties, key).toHaveProperty(key);
+    }
   });
 });

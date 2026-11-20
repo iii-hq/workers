@@ -65,6 +65,9 @@ type Draft = {
   /** Blocks as the stream builds them, by block index. */
   streamed: Array<ContentBlock | undefined>;
   partialJson: Map<number, string>;
+  /** Stream indexes that reached `content_block_stop`: the SDK reports each of
+   *  those as a complete block. One that never stopped was cut off. */
+  stopped: Set<number>;
   /** Blocks from the SDK's complete assistant messages — authoritative once streaming ends. */
   final: ContentBlock[];
   streaming: boolean;
@@ -154,6 +157,7 @@ export class ChildTranscript implements TurnSink {
         return; // arguments render once they parse, at block stop
       } else return;
     } else if (event.type === 'content_block_stop') {
+      draft.stopped.add(index);
       const block = draft.streamed[index];
       const json = draft.partialJson.get(index);
       if (block?.type === 'function_call' && json) {
@@ -239,6 +243,7 @@ export class ChildTranscript implements TurnSink {
         usage: null,
         streamed: [],
         partialJson: new Map(),
+        stopped: new Set(),
         final: [],
         streaming: false,
       };
@@ -247,11 +252,26 @@ export class ChildTranscript implements TurnSink {
     return draft;
   }
 
-  /** What a draft shows: the live stream while it runs, the SDK's complete blocks after. */
+  /**
+   * What a draft shows: the live stream while it runs, the SDK's complete
+   * blocks after. A turn that ended mid-stream also keeps the block it was
+   * streaming, after the complete ones: blocks stream one at a time, in order,
+   * so a block that never reached `content_block_stop` has no complete
+   * counterpart and follows every block that does. A cut-off tool call is
+   * dropped: it never ran, and its arguments are incomplete.
+   */
   private display(draft: Draft): ContentBlock[] {
     const streamed = draft.streamed.filter(visible).map((b) => ({ ...b }));
     if (draft.streaming) return streamed.length ? streamed : [...draft.final];
-    return draft.final.length ? [...draft.final] : streamed;
+    if (!draft.final.length) return streamed;
+    const cutOff = draft.streamed
+      .map((block, index) => ({ block, index }))
+      .filter(
+        ({ block, index }) =>
+          visible(block) && block.type !== 'function_call' && !draft.stopped.has(index),
+      )
+      .map(({ block }) => ({ ...block }) as ContentBlock);
+    return [...draft.final, ...cutOff];
   }
 
   private refresh(draft: Draft, schedule = true): void {
@@ -268,7 +288,16 @@ export class ChildTranscript implements TurnSink {
       draft.entry = this.add(message);
       return;
     }
-    draft.entry.message = { ...draft.entry.message, content, usage: message.usage };
+    // Unchanged content and usage: nothing to write. A rewrite of a settled
+    // entry is one more write that could fail and fail a whole transcript.
+    const before = draft.entry.message;
+    if (
+      JSON.stringify([before.content, before.usage ?? null]) ===
+      JSON.stringify([content, message.usage ?? null])
+    ) {
+      return;
+    }
+    draft.entry.message = { ...before, content, usage: message.usage };
     draft.entry.dirty = true;
     if (schedule) this.schedule();
   }
