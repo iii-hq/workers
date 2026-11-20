@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.6
+
+- **A check runs its Cargo and Node chains side by side.** One job per worktree chained every command: fmt, clippy, the Rust workspace tests and the database suite, then Biome, typecheck, the build and 2,737 Playwright tests, about 40 minutes per batch, while each card took about 5 minutes to code. Chains that share no build directory now run as separate jobs at once, and a batch takes the time of the longer one (the web suite, about 25 minutes). Commands that share a build directory stay chained.
+
 ## 0.8.5
 
 - **A long check first stops the servers an earlier killed run left behind.** Playwright starts its web servers in their own process group. Each time a check job was killed at its deadline, its `vite preview` and Prism mock kept listening, and the next attempt either reused a console built from old code or failed with `http://127.0.0.1:4298 is already used`, which cost a whole attempt. Before a long job, and after killing one, the recipe stops every process listening from the worktree.
