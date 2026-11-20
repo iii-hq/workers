@@ -96,8 +96,8 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
     }
 
     // Idempotency: a redelivered post_call step re-holds the same call
-    // without re-counting an attempt or re-emitting — mirrors gate.rs's
-    // hold(). This only applies when the existing record is a redelivery of
+    // without re-counting an attempt or re-emitting, like gate.rs's hold()
+    // (which does not compare namespaces). This only applies when the existing record is a redelivery of
     // THIS SAME failure (its access_request matches `hint`); a record left
     // behind for a different failure (e.g. an orphan from a delete that
     // failed after resolve — see resolve.rs's "retry or purge will collect
@@ -105,7 +105,8 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
     // or the attempt cap (step 7) and the console never learn about it.
     // A post_call naming a namespace the record does not hold is not a
     // redelivery either: it goes the stale way, so a record held without
-    // one (older harness) costs one extra attempt and pending_created.
+    // one (older harness) costs one extra attempt and pending_created, and
+    // at the re-ask cap the watch stands down with the record gone.
     match pending::get(iii, &input.session_id, &call.id).await {
         Ok(Some(existing))
             if existing.access_request.as_ref() == Some(&hint)
@@ -838,7 +839,17 @@ mod tests {
             let out = handle(&stack.deps, carries_laptop("c_3", "/a/b")).await;
             assert_eq!(out.unwrap(), HookOutput::Hold);
 
-            for call_id in ["c_1", "c_2", "c_3"] {
+            // Same-hint arm, implicit half: held local for (laptop, laptop),
+            // redelivered by a harness whose own namespace is now `default`.
+            let mut first = jail_input("s_1", "c_4", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("laptop".into());
+            call.implicit_namespace = Some("laptop".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+            let out = handle(&stack.deps, carries_laptop("c_4", "/a/b")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            for call_id in ["c_1", "c_2", "c_3", "c_4"] {
                 let key = format!("s_1/{call_id}");
                 let current = state_get(&stack.iii, PENDING_SCOPE, &key).await;
                 assert_eq!(current["kind"], json!("filesystem_access"), "{call_id}");
