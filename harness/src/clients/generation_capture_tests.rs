@@ -1822,11 +1822,19 @@ async fn actual_sdk_final_payload_private_registration_and_retry_binding() {
     for i in 0..3 {
         let payload = &dispatches[i]["data"];
         assert_eq!(payload["request_id"], "opaque:same-retry");
-        assert_eq!(
-            payload["messages"][0]["content"].as_array().unwrap().len(),
-            2
+        // The file block reaches the router as its <attachment> text block,
+        // in place; the image keeps its bytes but loses its stored-original link.
+        let content = payload["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "text");
+        assert!(
+            content[0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("<attachment id=\"never-in-witness\"")
         );
-        assert!(payload["messages"][0]["content"][1]["attachment_id"].is_null());
+        assert!(content.iter().all(|b| b["type"] != "file"));
+        assert!(content[2]["attachment_id"].is_null());
         let request_position = calls.iter().position(|c| c == requests[i]).unwrap();
         let dispatch_position = calls.iter().position(|c| c == dispatches[i]).unwrap();
         let terminal_position = calls.iter().position(|c| c == terminals[i]).unwrap();
@@ -1843,12 +1851,10 @@ async fn actual_sdk_final_payload_private_registration_and_retry_binding() {
         // Independent expected hashes, directly from exact final SDK bytes;
         // do not merely compare the implementation against itself.
         let raw_system = payload["system_prompt"].as_str().unwrap();
-        let raw_message = payload["messages"][0]["content"][0]["text"]
-            .as_str()
-            .unwrap();
+        let raw_message: Vec<&str> = content.iter().filter_map(|b| b["text"].as_str()).collect();
         let expected: Vec<String> = raw_system
             .lines()
-            .chain(raw_message.lines())
+            .chain(raw_message.iter().flat_map(|t| t.lines()))
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.trim().trim_start_matches("- ").trim_start_matches("* "))
             .map(|s| format!("{:x}", Sha256::digest(s.as_bytes())))
@@ -1872,7 +1878,10 @@ async fn actual_sdk_final_payload_private_registration_and_retry_binding() {
             request.message_count,
             payload["messages"].as_array().unwrap().len()
         );
-        assert_eq!(request.text_bytes, raw_system.len() + raw_message.len());
+        assert_eq!(
+            request.text_bytes,
+            raw_system.len() + raw_message.iter().map(|t| t.len()).sum::<usize>()
+        );
         for field in requests[i]["data"].as_object().unwrap().keys() {
             let mut missing = requests[i]["data"].clone();
             missing.as_object_mut().unwrap().remove(field);
