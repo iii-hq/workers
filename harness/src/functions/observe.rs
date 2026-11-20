@@ -288,6 +288,7 @@ pub async fn invoke(
     engine: &EngineClient,
     policy: &CompiledPolicy,
     function_id: &str,
+    namespace: Option<&str>,
     arguments: &Value,
     session_id: &str,
     caller_holds_session_lock: bool,
@@ -295,6 +296,27 @@ pub async fn invoke(
 ) -> ResultData {
     if agent_call_forbidden(function_id) {
         return call::denied_result(function_id);
+    }
+    // A control this harness answers itself, named in another namespace, would
+    // reach that namespace's harness without this one's guards (a spawn there
+    // seeds a parentless child): refuse it. The ones answered past here then
+    // all run in the implicit namespace.
+    let implicit = crate::clients::engine::resolve_namespace(function_id, None);
+    if let Some(ns) = namespace.filter(|ns| *ns != implicit)
+        && (matches!(
+            function_id,
+            crate::functions::SPAWN_ID | crate::functions::ASK_ID
+        ) || is_locally_intercepted(
+            function_id,
+            arguments,
+            session_id,
+            caller_holds_session_lock,
+        ))
+    {
+        return error_result(format!(
+            "harness controls run only in this harness's namespace ({implicit}); \
+             {function_id} was called in namespace {ns}"
+        ));
     }
     if function_id == OBSERVE_ID {
         return intercept_observe(deps, arguments, session_id, caller, policy).await;
@@ -341,16 +363,19 @@ pub async fn invoke(
                 // In-turn controls always target their caller. External console
                 // calls bypass this chokepoint and continue supplying session_id.
                 let args = with_caller_session_id(arguments, session_id);
-                call::invoke_target_classified(engine, policy, function_id, &args).await
+                call::invoke_target_classified(engine, policy, function_id, namespace, &args).await
             }
             // Tag the job with its owner so `harness::stop` can reap it
             // (`shell::kill-session-jobs`); the stamp overwrites a forged one.
             "shell::exec_bg" => {
                 let args = with_caller_session_id(arguments, session_id);
-                call::invoke_target_classified(engine, policy, function_id, &args).await
+                call::invoke_target_classified(engine, policy, function_id, namespace, &args).await
             }
             internal if agent_call_forbidden(internal) => (call::denied_result(internal), false),
-            _ => call::invoke_target_classified(engine, policy, function_id, arguments).await,
+            _ => {
+                call::invoke_target_classified(engine, policy, function_id, namespace, arguments)
+                    .await
+            }
         }
     };
     // A timeout or broken transport does not cancel the remote invocation.
@@ -1119,6 +1144,7 @@ async fn reject_settled_compose_operation(
         .await
         .dispatch(
             "compose::operation",
+            None,
             json!({ "operation_id": operation_id }),
         )
         .await
@@ -1725,11 +1751,16 @@ fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> 
 /// The function a starting `coder::scaffold-worker` runs inside the ide.
 pub(crate) const COMPOSE_ADD_ID: &str = "compose::add";
 
+/// An observer-delivered call runs with no namespace, so both namespace fields
+/// are its implicit one: a grant stored with a namespace still matches.
 fn approval_probe_payload(session_id: &str, target: &str, arguments: &Value) -> Value {
+    let namespace = crate::clients::engine::resolve_namespace(target, None);
     json!({
         "session_id": session_id,
         "function_id": target,
         "arguments": arguments,
+        "namespace": namespace,
+        "implicit_namespace": namespace,
     })
 }
 
@@ -2818,6 +2849,7 @@ pub(crate) mod tests {
                     &engine,
                     &policy,
                     id,
+                    None,
                     &json!({}),
                     "owner",
                     false,
@@ -2838,6 +2870,7 @@ pub(crate) mod tests {
                     &engine,
                     &policy,
                     OBSERVE_ID,
+                    None,
                     &json!({ "function_id": id }),
                     "owner",
                     false,
@@ -2851,6 +2884,93 @@ pub(crate) mod tests {
                 error.contains("not available to agents")
                     || error.contains("cannot observe harness function"),
                 "{id} must not be observable by agents: {error}"
+            );
+        }
+    }
+
+    /// A control this harness answers itself is answered only in its own
+    /// namespace. Named in another, it is refused: dispatching it would reach
+    /// that namespace's harness without this one's guards.
+    #[tokio::test]
+    async fn a_harness_control_named_in_another_namespace_is_refused() {
+        let deps = disconnected_deps();
+        let engine = deps.engine().await;
+        let policy = policy_allowing(&["*"]);
+        let wait = std::time::Duration::from_millis(100);
+        let observe = json!({ "function_id": AGENT_FORBIDDEN_CALLS[0] });
+        let implicit = crate::clients::engine::resolve_namespace(OBSERVE_ID, None);
+        let local = |r: &ResultData| {
+            let e = r.details["error"].as_str().unwrap_or_default();
+            e.contains("not available to agents") || e.contains("cannot observe harness function")
+        };
+        for here in [None, Some(implicit.as_str())] {
+            let result = tokio::time::timeout(
+                wait,
+                invoke(
+                    &deps, &engine, &policy, OBSERVE_ID, here, &observe, "owner", false, None,
+                ),
+            )
+            .await;
+            assert!(local(&result.expect("the own copy answers locally")));
+        }
+        let refusal = |id: &str| {
+            format!(
+                "harness controls run only in this harness's namespace ({implicit}); \
+                 {id} was called in namespace zz-a"
+            )
+        };
+        let self_send = json!({ "session_id": "owner", "message": "hi" });
+        for (id, args) in [
+            (OBSERVE_ID, &observe),
+            (UNOBSERVE_ID, &observe),
+            (crate::functions::SEND_ID, &self_send),
+            (crate::functions::SPAWN_ID, &observe),
+            (crate::functions::ASK_ID, &observe),
+        ] {
+            // No engine is connected: a dispatched call would wait or fail in transport.
+            let result = tokio::time::timeout(
+                wait,
+                invoke(
+                    &deps,
+                    &engine,
+                    &policy,
+                    id,
+                    Some("zz-a"),
+                    args,
+                    "owner",
+                    true,
+                    None,
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{id} in zz-a was dispatched"));
+            assert_eq!(result.details["error"], refusal(id));
+        }
+        // Any other harness function, and a send to another session, is an
+        // ordinary call there.
+        let other_send = json!({ "session_id": "other", "message": "hi" });
+        for (id, args) in [
+            ("harness::status", &observe),
+            (crate::functions::SEND_ID, &other_send),
+        ] {
+            let result = tokio::time::timeout(
+                wait,
+                invoke(
+                    &deps,
+                    &engine,
+                    &policy,
+                    id,
+                    Some("zz-a"),
+                    args,
+                    "owner",
+                    true,
+                    None,
+                ),
+            )
+            .await;
+            assert!(
+                result.map_or(true, |r| r.details["error"] != refusal(id)),
+                "{id} was refused"
             );
         }
     }
@@ -2934,6 +3054,7 @@ pub(crate) mod tests {
                 &engine,
                 &policy,
                 OBSERVE_ID,
+                None,
                 &json!({
                     "function_id": crate::hooks::ON_POST_TURN_FN,
                     "target": { "function_id": id }
@@ -2961,6 +3082,7 @@ pub(crate) mod tests {
                 &engine,
                 &policy_allowing(&[OBSERVE_ID]),
                 OBSERVE_ID,
+                None,
                 &json!({ "function_id": "router::provider::stream" }),
                 "owner",
                 false,
@@ -2986,6 +3108,7 @@ pub(crate) mod tests {
             &engine,
             &policy_allowing(&["*"]),
             OBSERVE_ID,
+            None,
             &json!({ "function_id": crate::hooks::ON_POST_TURN_FN }),
             "owner",
             false,
@@ -3014,7 +3137,17 @@ pub(crate) mod tests {
         let policy = policy_allowing(&["*"]);
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            invoke(&deps, &engine, &policy, id, &json!({}), "owner", true, None),
+            invoke(
+                &deps,
+                &engine,
+                &policy,
+                id,
+                None,
+                &json!({}),
+                "owner",
+                true,
+                None,
+            ),
         )
         .await
         .expect("the denial completes locally without taking the session lock");
@@ -3305,6 +3438,9 @@ pub(crate) mod tests {
         assert_eq!(payload["session_id"], "s_1");
         assert_eq!(payload["function_id"], "shell::exec");
         assert_eq!(payload["arguments"], arguments);
+        let implicit = crate::clients::engine::resolve_namespace("shell::exec", None);
+        assert_eq!(payload["namespace"], implicit);
+        assert_eq!(payload["implicit_namespace"], implicit);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! (harness.md § Functions). The allow/deny globs are structural and final —
 //! hooks run only after they pass.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -132,13 +132,30 @@ pub(crate) fn sandbox_op_aliases(function_id: &str) -> Vec<String> {
     }
 }
 
+/// Splits a policy pattern into its engine namespace and id parts:
+/// `laptop/shell::*` → `(Some("laptop"), "shell::*")`. Only a non-empty prefix
+/// without `:` counts, so an id that holds a `/` (`api::get/x`) stays whole.
+/// Same rule as approval-gate's.
+pub fn split_namespace_pattern(pattern: &str) -> (Option<&str>, &str) {
+    match pattern.split_once('/') {
+        Some((namespace, id)) if !namespace.is_empty() && !namespace.contains(':') => {
+            (Some(namespace), id)
+        }
+        _ => (None, pattern),
+    }
+}
+
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
 /// matches an `allow` glob and no `deny` glob; an absent or empty allow-list
-/// denies everything.
+/// denies everything. A `<namespace>/<glob>` pattern holds only in that
+/// namespace; a bare glob holds in every namespace.
 #[derive(Clone)]
 pub struct CompiledPolicy {
     allow: GlobSet,
     deny: GlobSet,
+    /// The namespace qualifier of each glob, by its index in the set.
+    allow_ns: Vec<Option<String>>,
+    deny_ns: Vec<Option<String>>,
     allow_empty: bool,
 }
 
@@ -146,9 +163,11 @@ impl CompiledPolicy {
     pub fn from(policy: Option<&FunctionPolicy>) -> Self {
         match policy {
             Some(p) => match (build_set(&p.allow), build_set(&p.deny)) {
-                (Some(allow), Some(deny)) => CompiledPolicy {
+                (Some((allow, allow_ns)), Some((deny, deny_ns))) => CompiledPolicy {
                     allow,
                     deny,
+                    allow_ns,
+                    deny_ns,
                     allow_empty: p.allow.is_empty(),
                 },
                 _ => CompiledPolicy::deny_all(),
@@ -161,21 +180,37 @@ impl CompiledPolicy {
         CompiledPolicy {
             allow: GlobSet::empty(),
             deny: GlobSet::empty(),
+            allow_ns: Vec::new(),
+            deny_ns: Vec::new(),
             allow_empty: true,
         }
     }
 
-    /// Whether `function_id` may be dispatched (fail-closed).
+    /// Whether `function_id` may be dispatched in its implicit namespace
+    /// (fail-closed).
     pub fn allows(&self, function_id: &str) -> bool {
+        self.allows_in(
+            &crate::clients::engine::resolve_namespace(function_id, None),
+            function_id,
+        )
+    }
+
+    /// Whether `function_id` may be dispatched in `namespace` (fail-closed).
+    pub fn allows_in(&self, namespace: &str, function_id: &str) -> bool {
         if self.allow_empty {
             return false;
         }
+        let hit = |set: &GlobSet, qualifiers: &[Option<String>], id: &str| {
+            set.matches(id)
+                .into_iter()
+                .any(|i| qualifiers[i].as_deref().is_none_or(|ns| ns == namespace))
+        };
         // Only deny crosses over: an allow on `sandbox::*` grants no adapter id.
-        self.allow.is_match(function_id)
-            && !self.deny.is_match(function_id)
+        hit(&self.allow, &self.allow_ns, function_id)
+            && !hit(&self.deny, &self.deny_ns, function_id)
             && !sandbox_op_aliases(function_id)
                 .iter()
-                .any(|alias| self.deny.is_match(alias))
+                .any(|alias| hit(&self.deny, &self.deny_ns, alias))
     }
 }
 
@@ -211,21 +246,53 @@ pub fn subset_policy(
     })
 }
 
-/// Is a child allow glob covered by the parent's allow set? Conservative: an
-/// exact match, a parent `*`, or a parent `<prefix>::*` covering the child.
+/// Is a child allow glob covered by the parent's allow set? Conservative: a
+/// parent without a namespace covers the child in any namespace, a qualified
+/// parent only in the same one; then an exact match, a parent `*`, or a parent
+/// `<prefix>::*` covering the child's id.
 /// Also used by `subagent::child_functions` to skip redundant (or dead — an
 /// exotic deny glob it cannot see stays authoritative at dispatch) discovery
 /// entries before unioning [`CHILD_DISCOVERY_ALLOW`].
 pub(crate) fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
+    let (child_ns, child) = split_namespace_pattern(child);
     parent_globs.iter().any(|p| {
-        p == child || p == "*" || (p.ends_with("::*") && child.starts_with(&p[..p.len() - 1]))
+        let (ns, p) = split_namespace_pattern(p);
+        (ns.is_none() || ns == child_ns)
+            && (p == child
+                || p == "*"
+                || (p.ends_with("::*") && child.starts_with(&p[..p.len() - 1])))
     })
 }
 
-fn build_set(patterns: &[String]) -> Option<GlobSet> {
+/// The globs of `patterns`' id parts, with each one's namespace qualifier at
+/// its index in the set.
+fn build_set(patterns: &[String]) -> Option<(GlobSet, Vec<Option<String>>)> {
     let mut builder = GlobSetBuilder::new();
+    let mut qualifiers = Vec::with_capacity(patterns.len());
     for p in patterns {
-        let glob = match Glob::new(p) {
+        let (namespace, id) = split_namespace_pattern(p);
+        // An empty qualifier (`/shell::exec`) stays in the id and matches no call.
+        let bad_qualifier = match namespace {
+            None if p.starts_with('/') => Some(""),
+            ns => ns.filter(|ns| ns.contains(['*', '?', '[', '{'])),
+        };
+        if let Some(ns) = bad_qualifier {
+            tracing::warn!(
+                pattern = %p,
+                "rejecting policy: namespace qualifier must be a plain namespace, got {ns:?}; a bare pattern already matches every namespace"
+            );
+            return None;
+        }
+        // A doubled `/` (`laptop//shell::exec`) leaves a leading `/` in the id, which matches no call.
+        if namespace.is_some() && (id.is_empty() || id.starts_with('/')) {
+            tracing::warn!(
+                pattern = %p,
+                "rejecting policy: pattern {p} must name a function id right after the namespace qualifier"
+            );
+            return None;
+        }
+        qualifiers.push(namespace.map(str::to_string));
+        let glob = match Glob::new(id) {
             Ok(glob) => glob,
             Err(error) => {
                 tracing::warn!(pattern = %p, error = %error, "rejecting policy with invalid function glob");
@@ -235,7 +302,7 @@ fn build_set(patterns: &[String]) -> Option<GlobSet> {
         builder.add(glob);
     }
     match builder.build() {
-        Ok(set) => Some(set),
+        Ok(set) => Some((set, qualifiers)),
         Err(error) => {
             tracing::warn!(error = %error, "rejecting policy whose function globs did not compile");
             None
@@ -244,7 +311,7 @@ fn build_set(patterns: &[String]) -> Option<GlobSet> {
 }
 
 /// The single `agent_call` schema attached by default — the model calls
-/// any allowed function via `{ function, description, payload }`. The
+/// any allowed function via `{ function, namespace?, description, payload }`. The
 /// `description` label names the session's response language (unknown: the
 /// one the session context names), so a model never guesses one.
 pub fn agent_call_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
@@ -263,6 +330,10 @@ pub fn agent_call_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
             "type": "object",
             "properties": {
                 "function": { "type": "string", "description": "Target iii function id." },
+                "namespace": {
+                    "type": "string",
+                    "description": "Engine namespace to call the function in. Omit it to call in your own namespace."
+                },
                 "description": {
                     "type": "string",
                     "minLength": 1,
@@ -312,12 +383,17 @@ pub struct PlannedCall {
     pub function_id: String,
     pub arguments: Value,
     pub kind: CallKind,
+    /// The `agent_call` envelope's `namespace`; `None` when absent or blank,
+    /// for native calls and for `submit_result`. Always `None` for an
+    /// `engine::functions::info` call: the envelope's namespace fills the
+    /// payload's when the payload names none, and is dropped otherwise.
+    pub namespace: Option<String>,
 }
 
 /// Extract the planned calls from an assistant message in content order. In
-/// `agent_call` exposure the wrapper carries `{ function, description,
-/// payload }`; in
-/// native exposure the block's `function_id` is the target directly.
+/// `agent_call` exposure the wrapper carries `{ function, namespace?,
+/// description, payload }`; in native exposure the block's `function_id` is
+/// the target directly.
 pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<PlannedCall> {
     let mut out = Vec::new();
     for block in &message.content {
@@ -333,16 +409,22 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                     function_id: SUBMIT_RESULT_NAME.to_string(),
                     arguments: arguments.clone(),
                     kind: CallKind::SubmitResult,
+                    namespace: None,
                 });
                 continue;
             }
-            let (target, mut payload) =
+            let (target, mut payload, mut namespace) =
                 if is_agent_call_name(function_id) || expose == ExposeMode::AgentCall {
-                    let target = arguments
-                        .get("function")
+                    // Only a real wrapper (a string `function`) has an envelope
+                    // `namespace`; a native-shaped call keeps its own argument.
+                    let wrapper = arguments.get("function").and_then(Value::as_str);
+                    let namespace = wrapper
+                        .and(arguments.get("namespace"))
                         .and_then(Value::as_str)
-                        .unwrap_or(function_id)
-                        .to_string();
+                        .map(str::trim)
+                        .filter(|ns| !ns.is_empty())
+                        .map(str::to_string);
+                    let target = wrapper.unwrap_or(function_id).to_string();
                     let payload = match arguments.get("payload") {
                         // A stringified payload is always wrong (the schema says
                         // object): recover the object when the text is one.
@@ -369,13 +451,27 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                             // recovery logic hoists flattened target args, so
                             // explicitly strip the new display-only field.
                             map.remove("description");
+                            if wrapper.is_some() {
+                                map.remove("namespace");
+                            }
                             Value::Object(map)
                         }
                     };
-                    (target, payload)
+                    (target, payload, namespace)
                 } else {
-                    (function_id.clone(), arguments.clone())
+                    (function_id.clone(), arguments.clone(), None)
                 };
+            // `engine::*` ids exist only in `default`, so a namespace beside a
+            // contract lookup never routes it: it names the namespace to look
+            // up, unless the payload already names one.
+            if target == "engine::functions::info"
+                && let Some(ns) = namespace.take()
+                && let Value::Object(p) = &mut payload
+                && p.get("namespace")
+                    .is_none_or(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()))
+            {
+                p.insert("namespace".to_string(), Value::String(ns));
+            }
             // Degradation markers on the wrapper must survive the unwrap: a
             // max_tokens cut landing after a complete `payload` salvages to
             // `{function, payload, _partial: true}`, and arguments that were
@@ -397,10 +493,25 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 function_id: target,
                 arguments: payload,
                 kind: CallKind::Call,
+                namespace,
             });
         }
     }
     out
+}
+
+/// Native tool name to the `(namespace, id)` it calls, for every tool not
+/// named by its bare id. Built per turn step; names are never decoded.
+pub type NativeNames = BTreeMap<String, (String, String)>;
+
+/// Points each native call made under a table name at its `(namespace, id)`.
+pub fn resolve_native_names(calls: &mut [PlannedCall], names: &NativeNames) {
+    for call in calls.iter_mut().filter(|call| call.kind == CallKind::Call) {
+        if let Some((namespace, id)) = names.get(&call.function_id) {
+            call.function_id = id.clone();
+            call.namespace = Some(namespace.clone());
+        }
+    }
 }
 
 /// The object a stringified `payload` holds. Anything after it but JSON
@@ -612,6 +723,7 @@ mod tests {
             &cell,
             vec![crate::clients::FunctionDescriptor {
                 function_id: "listed-spoof::adapter::info".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             }],
@@ -671,6 +783,90 @@ mod tests {
         assert!(!CompiledPolicy::from(Some(&policy(&["*"], &["["]))).allows(id));
     }
 
+    #[test]
+    fn namespace_patterns_split_on_the_first_slash_before_any_colon() {
+        assert_eq!(
+            split_namespace_pattern("laptop/shell::*"),
+            (Some("laptop"), "shell::*")
+        );
+        assert_eq!(split_namespace_pattern("shell::*"), (None, "shell::*"));
+        assert_eq!(split_namespace_pattern("api::get/x"), (None, "api::get/x"));
+        assert_eq!(split_namespace_pattern("/shell::*"), (None, "/shell::*"));
+    }
+
+    #[test]
+    fn a_qualified_rule_holds_only_in_its_namespace() {
+        let p = CompiledPolicy::from(Some(&policy(
+            &["laptop/shell::*", "state::*"],
+            &["desk/state::set"],
+        )));
+        assert!(p.allows_in("laptop", "shell::exec") && !p.allows_in("desk", "shell::exec"));
+        assert!(p.allows_in("desk", "state::get") && !p.allows_in("desk", "state::set"));
+        assert!(p.allows_in("laptop", "state::set"));
+        let adapter = CompiledPolicy::from(Some(&policy(&["*"], &["desk/sandbox::fs::rm"])));
+        assert!(!adapter.allows_in("desk", "sandbox-libkrun::fs::rm"));
+        assert!(adapter.allows_in("laptop", "sandbox-libkrun::fs::rm"));
+    }
+
+    // Same rule as approval-gate: a glob in the qualifier is an error, so the
+    // whole policy fails closed.
+    #[test]
+    fn a_glob_namespace_qualifier_denies_everything() {
+        let p = CompiledPolicy::from(Some(&policy(&["*", "lap*/shell::*"], &[])));
+        assert!(!p.allows_in("laptop", "shell::exec") && !p.allows_in("desk", "state::get"));
+    }
+
+    #[test]
+    fn an_empty_id_after_a_namespace_qualifier_denies_everything() {
+        let allow = CompiledPolicy::from(Some(&policy(&["*", "laptop/"], &[])));
+        assert!(
+            !allow.allows_in("laptop", "shell::exec") && !allow.allows_in("desk", "state::get")
+        );
+        let deny = CompiledPolicy::from(Some(&policy(&["*"], &["laptop/"])));
+        assert!(!deny.allows_in("laptop", "shell::exec") && !deny.allows_in("desk", "state::get"));
+    }
+
+    // Same rule as approval-gate: `/shell::exec` would match no id, so a deny
+    // of it would deny nothing.
+    #[test]
+    fn an_empty_namespace_qualifier_denies_everything() {
+        let allow = CompiledPolicy::from(Some(&policy(&["*", "/shell::exec"], &[])));
+        assert!(
+            !allow.allows_in("laptop", "shell::exec") && !allow.allows_in("desk", "state::get")
+        );
+        let deny = CompiledPolicy::from(Some(&policy(&["*"], &["/shell::exec"])));
+        assert!(!deny.allows_in("laptop", "shell::exec") && !deny.allows_in("desk", "state::get"));
+        // A `/` inside the id part is no qualifier.
+        let id = CompiledPolicy::from(Some(&policy(&["openai-codex::codex/gpt"], &[])));
+        assert!(id.allows_in("desk", "openai-codex::codex/gpt"));
+    }
+
+    // `laptop//shell::exec` leaves `/shell::exec` as the id, which matches no call.
+    #[test]
+    fn a_doubled_slash_after_a_namespace_qualifier_denies_everything() {
+        let allow = CompiledPolicy::from(Some(&policy(&["*", "laptop//shell::exec"], &[])));
+        assert!(
+            !allow.allows_in("laptop", "shell::exec") && !allow.allows_in("desk", "state::get")
+        );
+        let deny = CompiledPolicy::from(Some(&policy(&["*"], &["laptop//shell::exec"])));
+        assert!(!deny.allows_in("laptop", "shell::exec") && !deny.allows_in("desk", "state::get"));
+    }
+
+    #[test]
+    fn a_qualified_child_glob_is_covered_by_its_namespace_or_a_bare_parent() {
+        assert!(glob_covered("laptop/shell::exec", &["shell::*".into()]));
+        assert!(glob_covered(
+            "laptop/shell::exec",
+            &["laptop/shell::*".into()]
+        ));
+        assert!(!glob_covered(
+            "desk/shell::exec",
+            &["laptop/shell::*".into()]
+        ));
+        assert!(!glob_covered("shell::exec", &["laptop/shell::*".into()]));
+        assert!(glob_covered("laptop/*", &["*".into()]));
+    }
+
     use crate::types::content::ContentBlock;
     use crate::types::message::{AssistantMessage, empty_assistant};
     use serde_json::json;
@@ -693,6 +889,37 @@ mod tests {
         assert_eq!(calls[0].function_id, "shell::run");
         assert_eq!(calls[0].kind, CallKind::Call);
         assert_eq!(calls[0].arguments, json!({ "cmd": "ls" }));
+    }
+
+    #[test]
+    fn native_calls_resolve_qualified_tool_names_through_the_table() {
+        let names = NativeNames::from([(
+            "zz-a::shell::exec".to_string(),
+            ("zz-a".to_string(), "shell::exec".to_string()),
+        )]);
+        let msg = assistant_with(vec![
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "zz-a::shell::exec".into(),
+                arguments: json!({ "command": "ls" }),
+            },
+            ContentBlock::FunctionCall {
+                id: "c2".into(),
+                function_id: "shell::exec".into(),
+                arguments: json!({}),
+            },
+        ]);
+        let mut calls = plan_calls(&msg, ExposeMode::Native);
+        resolve_native_names(&mut calls, &names);
+        assert_eq!(
+            (calls[0].function_id.as_str(), calls[0].namespace.as_deref()),
+            ("shell::exec", Some("zz-a"))
+        );
+        assert_eq!(calls[0].arguments, json!({ "command": "ls" }));
+        assert_eq!(
+            (calls[1].function_id.as_str(), calls[1].namespace.as_deref()),
+            ("shell::exec", None)
+        );
     }
 
     // A wrapper call whose arguments carry no resolvable `function` (null —
@@ -761,6 +988,96 @@ mod tests {
         assert_eq!(
             calls[0].arguments,
             json!({ "function_id": "state::on-changed", "filters": { "input.key": { "$eq": "k" } } })
+        );
+    }
+
+    fn planned(args: Value) -> PlannedCall {
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_CALL_NAME.into(),
+            arguments: args,
+        }]);
+        plan_calls(&msg, ExposeMode::AgentCall).remove(0)
+    }
+
+    #[test]
+    fn agent_call_namespace_is_planned_beside_the_target_never_in_the_payload() {
+        let call = planned(
+            json!({ "function": "shell::exec", "namespace": "laptop", "description": "d", "payload": { "cmd": "ls" } }),
+        );
+        assert_eq!(
+            (call.namespace.as_deref(), call.arguments),
+            (Some("laptop"), json!({ "cmd": "ls" }))
+        );
+        let flat = planned(
+            json!({ "function": "shell::exec", "namespace": "laptop", "description": "d", "cmd": "ls" }),
+        );
+        assert_eq!(
+            (flat.namespace.as_deref(), flat.arguments),
+            (Some("laptop"), json!({ "cmd": "ls" }))
+        );
+        assert_eq!(
+            planned(json!({ "function": "shell::exec", "namespace": "  ", "payload": {} }))
+                .namespace,
+            None
+        );
+        // A native-shaped call (the tool name is the target, no `function`
+        // key) keeps its own `namespace` argument and runs as today.
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: "directory::search_functions".into(),
+            arguments: json!({ "query": "q", "namespace": "laptop" }),
+        }]);
+        let native = plan_calls(&msg, ExposeMode::AgentCall).remove(0);
+        assert_eq!(
+            (native.namespace, native.arguments),
+            (None, json!({ "query": "q", "namespace": "laptop" }))
+        );
+    }
+
+    #[test]
+    fn a_namespace_beside_a_contract_lookup_is_the_lookup_namespace() {
+        for args in [
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"] } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "function_ids": ["shell::exec"] }),
+            json!({ "function": "engine::functions::info", "payload": { "function_ids": ["shell::exec"], "namespace": "laptop" } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": "laptop" } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": null } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": " " } }),
+        ] {
+            let call = planned(args);
+            assert_eq!(
+                (call.namespace, call.arguments),
+                (
+                    None,
+                    json!({ "function_ids": ["shell::exec"], "namespace": "laptop" })
+                )
+            );
+        }
+        // The payload's namespace wins; the wrapper's never routes the lookup.
+        let both = planned(
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_id": "a::b", "namespace": "hub" } }),
+        );
+        assert_eq!(
+            (
+                both.namespace.as_deref(),
+                both.arguments["namespace"].clone()
+            ),
+            (None, json!("hub"))
+        );
+    }
+
+    #[test]
+    fn agent_call_schema_offers_an_optional_namespace() {
+        let schema = agent_call_schema(None);
+        assert_eq!(
+            schema.parameters["properties"]["namespace"],
+            json!({ "type": "string",
+                "description": "Engine namespace to call the function in. Omit it to call in your own namespace." })
+        );
+        assert_eq!(
+            schema.parameters["required"],
+            json!(["function", "description"])
         );
     }
 

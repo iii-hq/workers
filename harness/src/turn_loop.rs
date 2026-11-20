@@ -922,17 +922,20 @@ async fn generate_step(
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
     let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
-    let decision_tools = concrete_allowed_tools(
-        &policy,
-        &functions.functions,
-        &record.dispatch_only_functions,
-    );
     let expose = record
         .options
         .functions
         .as_ref()
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
+    // Stored by the pre-generate turn write below, so a replayed reply resolves the same.
+    let (decision_tools, native_names) = concrete_allowed_tools(
+        &policy,
+        &functions.functions,
+        &record.dispatch_only_functions,
+        expose,
+    );
+    record.native_names = native_names;
     if expose == ExposeMode::Native && decision_tools.is_empty() {
         tracing::warn!(
             session_id = %record.session_id,
@@ -1980,7 +1983,12 @@ async fn finish_step(
         .as_ref()
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
-    let planned = policy::plan_calls(&outcome.message, expose);
+    let mut planned = policy::plan_calls(&outcome.message, expose);
+    if expose == ExposeMode::Native {
+        // The table the model was shown: a name depends on the other tools, so
+        // a newer registry can hand it to another namespace's copy.
+        policy::resolve_native_names(&mut planned, &record.native_names);
+    }
     let dispatch_calls: Vec<_> = planned
         .iter()
         .filter(|c| c.kind == CallKind::Call)
@@ -2083,13 +2091,25 @@ async fn finish_step(
                 continue;
             }
 
+            // Where the call runs, and where a call without `namespace` would:
+            // the harness answers its own controls only when the two agree.
+            let namespace = crate::clients::engine::resolve_namespace(
+                &call.function_id,
+                call.namespace.as_deref(),
+            );
+            let implicit = crate::clients::engine::resolve_namespace(&call.function_id, None);
+
             // Fail-closed glob policy first — structural and final. Hooks run
             // only after it passes (a denial never reaches a hook).
-            if !policy.allows(&call.function_id) {
+            if !policy.allows_in(&namespace, &call.function_id) {
                 let functions = deps.functions().await;
-                let did_you_mean = call::closest_permitted(&call.function_id, &policy, &functions);
-                let data =
-                    call::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
+                let did_you_mean =
+                    call::closest_permitted(&namespace, &call.function_id, &policy, &functions);
+                let data = call::denied_result_with_hint(
+                    &call.function_id,
+                    did_you_mean.as_deref(),
+                    &call::permitted_namespaces(&call.function_id, &policy, &functions),
+                );
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -2113,7 +2133,7 @@ async fn finish_step(
             // A call that already failed identically this turn is answered
             // locally before any hook or approval runs: re-running it would
             // only return the error the model has already seen.
-            let failure_key = call::call_digest(&call.function_id, &call.arguments);
+            let failure_key = call::call_digest(&namespace, &call.function_id, &call.arguments);
             if let Some(data) = failure_key.as_deref().and_then(|key| {
                 call::repeated_failure_result(&record.failed_calls, key, &call.function_id)
             }) {
@@ -2146,6 +2166,7 @@ async fn finish_step(
             let reconciled = crate::reconcile::reconcile(
                 deps,
                 &cfg,
+                &namespace,
                 &call.function_id,
                 &call.arguments,
                 call_description(&outcome.message.content, &call.id),
@@ -2165,7 +2186,7 @@ async fn finish_step(
             // one per step, shape, limits), record the awaiting-answer result
             // or the refusal, and mark it Done. Never parks; refusals leave the
             // turn running so the model can react.
-            if call.function_id == crate::functions::ASK_ID {
+            if call.function_id == crate::functions::ASK_ID && namespace == implicit {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 // One ask per step, persisted on the record so a redelivered
                 // step still refuses a second ask and still ends on the first.
@@ -2185,9 +2206,10 @@ async fn finish_step(
                     &mut data,
                     &mut ask_annotations,
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &namespace,
                     &call.function_id,
                     call_args,
-                    crate::reconcile::contract_in_context(&record, &call.function_id),
+                    crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -2197,6 +2219,42 @@ async fn finish_step(
                     &data,
                     &entry_id,
                     &origin_with(&record.turn_id, &ask_annotations),
+                )
+                .await?;
+                call::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
+            // A bound approval gate too old to show a namespace could approve a
+            // call in another one unseen: refuse it before any hook runs.
+            let gate = if namespace != implicit
+                && deps
+                    .hooks
+                    .bindings(crate::hooks::HookPoint::PreCall)
+                    .iter()
+                    .any(|b| b.target == crate::hooks::APPROVAL_GATE_ID)
+            {
+                Some(engine.approval_gate_calls_namespaces().await)
+            } else {
+                None
+            };
+            if let Some(data) =
+                call::old_gate_refusal(&call.function_id, &namespace, &implicit, gate)
+            {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
                 )
                 .await?;
                 call::apply_contract_updates_after_append(
@@ -2228,6 +2286,7 @@ async fn finish_step(
                     payload.step,
                     &call.id,
                     &call.function_id,
+                    &namespace,
                     &trusted_call_args,
                     call_description(&outcome.message.content, &call.id),
                     None,
@@ -2303,7 +2362,7 @@ async fn finish_step(
             // ids immediately (never invoke a target, never park). The child's
             // result reaches consumers only through observers and state.
             // Guard failures skip post_call.
-            if call.function_id == crate::functions::SPAWN_ID {
+            if call.function_id == crate::functions::SPAWN_ID && namespace == implicit {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 let (mut data, child) = match Box::pin(crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
@@ -2320,9 +2379,10 @@ async fn finish_step(
                     &mut data,
                     &mut spawn_annotations,
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &namespace,
                     &call.function_id,
                     call_args,
-                    crate::reconcile::contract_in_context(&record, &call.function_id),
+                    crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -2357,6 +2417,7 @@ async fn finish_step(
                         reconciled: None,
                         pending_timeout_ms: None,
                         pending_at: None,
+                        namespace: call.namespace.clone(),
                     },
                 );
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -2378,6 +2439,7 @@ async fn finish_step(
                     reconciled: None,
                     pending_timeout_ms: None,
                     pending_at: None,
+                    namespace: call.namespace.clone(),
                 },
             );
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -2391,17 +2453,19 @@ async fn finish_step(
             // session lock `harness::stop` waits on, until the dispatch
             // timeout. Interceptions are short and not drop-safe, so they run
             // uninterrupted.
-            let raw = if crate::functions::observe::is_locally_intercepted(
-                &call.function_id,
-                &eff_args,
-                &record.session_id,
-                true,
-            ) {
+            let raw = if namespace == implicit
+                && crate::functions::observe::is_locally_intercepted(
+                    &call.function_id,
+                    &eff_args,
+                    &record.session_id,
+                    true,
+                ) {
                 Box::pin(crate::functions::observe::invoke(
                     deps,
                     &engine,
                     &policy,
                     &call.function_id,
+                    call.namespace.as_deref(),
                     &eff_args,
                     &record.session_id,
                     true, // run_step holds this session's lock
@@ -2415,12 +2479,14 @@ async fn finish_step(
                     let (deps, engine, policy) = (deps.clone(), engine.clone(), policy.clone());
                     let (function_id, args) = (call.function_id.clone(), eff_args.clone());
                     let (session_id, options) = (record.session_id.clone(), record.options.clone());
+                    let call_namespace = call.namespace.clone();
                     async move {
                         crate::functions::observe::invoke(
                             &deps,
                             &engine,
                             &policy,
                             &function_id,
+                            call_namespace.as_deref(),
                             &args,
                             &session_id,
                             true, // as inline: only interceptions read it
@@ -2462,6 +2528,7 @@ async fn finish_step(
                     payload.step,
                     &call.id,
                     &call.function_id,
+                    &namespace,
                     &eff_args,
                     raw,
                 )
@@ -2516,9 +2583,10 @@ async fn finish_step(
                 &mut data,
                 &mut annotations,
                 reconciled.as_ref().map(|r| r.changes.as_slice()),
+                &namespace,
                 &call.function_id,
                 call_args,
-                crate::reconcile::contract_in_context(&record, &call.function_id),
+                crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
             )
             .await;
             let moved_from = adopt_moved_root(&mut record, &mut data, moved_root);
@@ -3883,6 +3951,7 @@ fn checkpoint_pending(
             reconciled: info.reconciled.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
+            namespace: call.namespace.clone(),
         },
     );
 }
@@ -3905,6 +3974,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
+            namespace: record.calls.get(call_id).and_then(|c| c.namespace.clone()),
         },
     );
 }
@@ -5003,33 +5073,116 @@ pub(crate) fn preloaded_stale_notice(
 /// does not list). This is the decision surface hooks reason over,
 /// independent of how tools reach the provider. `hidden` are the spawn's
 /// dispatch-only grants (`TurnRecord::dispatch_only_functions`): still
-/// callable by id, never a tool.
+/// callable by id, never a tool. The copy a bare call reaches is named by its
+/// id. In native exposure every other copy gets its own name
+/// ([`native_tool_name`]), listed in the returned table; other modes keep one
+/// tool per id.
 fn concrete_allowed_tools(
     policy: &CompiledPolicy,
     descriptors: &[crate::clients::FunctionDescriptor],
     hidden: &[String],
-) -> Vec<crate::types::model::AgentFunction> {
+    expose: ExposeMode,
+) -> (Vec<AgentFunction>, policy::NativeNames) {
     let mut tools = crate::functions::observe::native_control_tools(policy);
-    for descriptor in descriptors {
-        if !policy.allows(&descriptor.function_id)
-            || hidden.iter().any(|id| id == &descriptor.function_id)
-            || tools.iter().any(|tool| tool.name == descriptor.function_id)
-        {
-            continue;
-        }
-        tools.push(crate::types::model::AgentFunction {
-            name: descriptor.function_id.clone(),
-            description: descriptor.description.clone().unwrap_or_default(),
-            parameters: descriptor
+    // A hidden grant is still called by its id, so no other copy takes that name.
+    let mut taken: std::collections::BTreeSet<String> = tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .chain(hidden.iter().cloned())
+        .collect();
+    let mut names = policy::NativeNames::new();
+    let (own, mut other): (Vec<_>, Vec<_>) = descriptors
+        .iter()
+        .filter(|d| {
+            policy.allows_in(&d.namespace, &d.function_id) && !hidden.contains(&d.function_id)
+        })
+        .partition(|d| {
+            d.namespace == crate::clients::engine::resolve_namespace(&d.function_id, None)
+        });
+    other.sort_by(|a, b| (&a.namespace, &a.function_id).cmp(&(&b.namespace, &b.function_id)));
+    let tool =
+        |name: String, description: String, d: &crate::clients::FunctionDescriptor| AgentFunction {
+            name,
+            description,
+            parameters: d
                 .parameters
                 .clone()
                 .unwrap_or_else(|| json!({ "type": "object" })),
             label: None,
             execution_mode: Some("sequential".to_string()),
-        });
+        };
+    for d in own {
+        if taken.insert(d.function_id.clone()) {
+            let description = d.description.clone().unwrap_or_default();
+            tools.push(tool(d.function_id.clone(), description, d));
+        }
+    }
+    for d in other {
+        let (ns, id) = (&d.namespace, &d.function_id);
+        let name = match expose {
+            ExposeMode::Native => {
+                let name = native_tool_name(ns, id, &taken);
+                names.insert(name.clone(), (ns.clone(), id.clone()));
+                name
+            }
+            ExposeMode::AgentCall if taken.contains(id) => continue,
+            ExposeMode::AgentCall => id.clone(),
+        };
+        taken.insert(name.clone());
+        let description = format!(
+            "Runs in namespace `{ns}`. {}",
+            d.description.as_deref().unwrap_or_default()
+        );
+        tools.push(tool(name, description, d));
     }
     tools.sort_by(|a, b| a.name.cmp(&b.name));
-    tools
+    (tools, names)
+}
+
+/// The native tool name of `function_id` in a namespace other than its
+/// implicit one: `<namespace>::<id>`, or a head of it plus a hash of the pair
+/// when that is too long or already taken; the hash is salted and retried
+/// until the name is free.
+fn native_tool_name(
+    namespace: &str,
+    function_id: &str,
+    taken: &std::collections::BTreeSet<String>,
+) -> String {
+    // 64 = strictest provider tool-name limit. llm-router sends `::` as `__` (same length) and maps it back,
+    // so a name is free only when no other tool has its wire form. `ns2` has no `_`; an id holding `__`
+    // still decodes wrong (llm-router names.rs).
+    let wire = |name: &str| name.replace("::", "__");
+    let ns2: String = namespace
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let free = |name: &str| {
+        let name = wire(name);
+        !taken.iter().any(|t| wire(t) == name)
+    };
+    let base = format!("{ns2}::{function_id}");
+    if base.len() <= 64 && free(&base) {
+        return base;
+    }
+    let head = base[..base.floor_char_boundary(55)].trim_end_matches(':');
+    // Salt 0 hashes the bare pair, so a name that was free before stays the same.
+    (0u32..)
+        .map(|salt| {
+            let seed = match salt {
+                0 => format!("{namespace}/{function_id}"),
+                n => format!("{namespace}/{function_id}/{n}"),
+            };
+            let hash = format!("{:x}", Sha256::digest(seed.as_bytes()));
+            format!("{head}-{}", &hash[..8])
+        })
+        .find(|name| free(name))
+        .expect("`taken` is finite")
 }
 
 /// The invocation-schema surface attached to the generate request
@@ -5332,9 +5485,9 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{
-        call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
-        dispatch_unless_stopped, retryable_function_result_append_error, transient_resume_allowed,
-        turn_step_matches,
+        ExposeMode, call_description, cancel_requested, concrete_allowed_tools,
+        count_model_visible, dispatch_unless_stopped, retryable_function_result_append_error,
+        transient_resume_allowed, turn_step_matches,
     };
 
     #[test]
@@ -5697,20 +5850,24 @@ mod tests {
         let descriptors = vec![
             crate::clients::FunctionDescriptor {
                 function_id: "db::x".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
             crate::clients::FunctionDescriptor {
                 function_id: "directory::skills::get".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
         ];
         let hidden = vec!["directory::skills::get".to_string()];
-        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &hidden)
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect();
+        let names: Vec<_> =
+            concrete_allowed_tools(&policy, &descriptors, &hidden, ExposeMode::AgentCall)
+                .0
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect();
         assert_eq!(names, vec!["db::x"], "the grant is not a tool");
         assert!(
             policy.allows("directory::skills::get"),
@@ -5771,11 +5928,13 @@ mod tests {
         let descriptors = ["sandbox-libkrun::fs::rm", "sandbox-libkrun::fs::ls"].map(|id| {
             crate::clients::FunctionDescriptor {
                 function_id: id.into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             }
         });
-        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[])
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[], ExposeMode::Native)
+            .0
             .into_iter()
             .map(|tool| tool.name)
             .collect();
@@ -5794,23 +5953,208 @@ mod tests {
         let descriptors = vec![
             crate::clients::FunctionDescriptor {
                 function_id: "z::last".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
             crate::clients::FunctionDescriptor {
                 function_id: "a::first".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
         ];
 
-        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[])
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[], ExposeMode::Native)
+            .0
             .into_iter()
             .map(|tool| tool.name)
             .collect();
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn native_tools_name_other_namespace_copies_apart() {
+        use sha2::{Digest, Sha256};
+        let own = crate::clients::engine::own_namespace();
+        // `*shell::exec` keeps the harness control tools out of the list.
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*shell::exec".into()],
+                deny: vec![],
+                expose: ExposeMode::Native,
+            }));
+        let d = |ns: &str, id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: Some("run".into()),
+            parameters: None,
+        };
+        let hash = |s: &str| format!("{:x}", Sha256::digest(s.as_bytes()))[..8].to_string();
+        let long = "n".repeat(70);
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[
+                d(&own, "shell::exec"),
+                d("zz-a", "shell::exec"),
+                d("my.box_1", "shell::exec"),
+                d(&own, "zz-a::shell::exec"),
+                d(&long, "shell::exec"),
+            ],
+            &[],
+            ExposeMode::Native,
+        );
+        let collided = format!("zz-a::shell::exec-{}", hash("zz-a/shell::exec"));
+        let shortened = format!(
+            "{}-{}",
+            "n".repeat(55),
+            hash(&format!("{long}/shell::exec"))
+        );
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            tool_names,
+            vec![
+                "my-box-1::shell::exec",
+                shortened.as_str(),
+                "shell::exec",
+                "zz-a::shell::exec",
+                collided.as_str()
+            ]
+        );
+        assert_eq!(
+            names.get(&collided),
+            Some(&("zz-a".to_string(), "shell::exec".to_string()))
+        );
+        assert_eq!(
+            names.get("my-box-1::shell::exec"),
+            Some(&("my.box_1".to_string(), "shell::exec".to_string()))
+        );
+        assert_eq!(names.len(), 3);
+        assert!(
+            tools
+                .iter()
+                .find(|t| t.name == collided)
+                .unwrap()
+                .description
+                .starts_with("Runs in namespace `zz-a`. ")
+        );
+    }
+
+    #[test]
+    fn native_names_stay_apart_in_their_wire_form() {
+        let own = crate::clients::engine::own_namespace();
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*b::exec".into()],
+                deny: vec![],
+                expose: ExposeMode::Native,
+            }));
+        let d = |ns: &str, id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: None,
+            parameters: None,
+        };
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[d(&own, "zz__b::exec"), d("zz", "b::exec")],
+            &[],
+            ExposeMode::Native,
+        );
+        // llm-router sends `::` as `__`, so `zz::b::exec` would reach the provider as the own tool's name.
+        let wire: std::collections::BTreeSet<String> =
+            tools.iter().map(|t| t.name.replace("::", "__")).collect();
+        assert_eq!(wire.len(), 2);
+        // A reply for the own tool decodes to `zz::b::exec`; it must not reach zz's copy.
+        assert_eq!(names.get("zz::b::exec"), None);
+        assert_eq!(
+            names.values().collect::<Vec<_>>(),
+            vec![&("zz".to_string(), "b::exec".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_taken_hashed_native_name_is_not_reused() {
+        use sha2::{Digest, Sha256};
+        let own = crate::clients::engine::own_namespace();
+        // The own namespace already holds zz's hashed fallback name.
+        let reserved = format!(
+            "zz::b::exec-{}",
+            &format!("{:x}", Sha256::digest(b"zz/b::exec"))[..8]
+        );
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*b::exec".into(), reserved.clone()],
+                deny: vec![],
+                expose: ExposeMode::Native,
+            }));
+        let d = |ns: &str, id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: None,
+            parameters: None,
+        };
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[
+                d(&own, "zz__b::exec"),
+                d(&own, &reserved),
+                d("zz", "b::exec"),
+            ],
+            &[],
+            ExposeMode::Native,
+        );
+        let wire: std::collections::BTreeSet<String> =
+            tools.iter().map(|t| t.name.replace("::", "__")).collect();
+        assert_eq!(wire.len(), 3);
+        // A call to the own `reserved` tool must not be sent to zz.
+        assert_eq!(names.get(&reserved), None);
+        assert_eq!(
+            names.values().collect::<Vec<_>>(),
+            vec![&("zz".to_string(), "b::exec".to_string())]
+        );
+        assert!(tools.iter().all(|t| t.name.len() <= 64));
+    }
+
+    #[test]
+    fn other_modes_keep_one_tool_per_id_own_copy_first() {
+        let own = crate::clients::engine::own_namespace();
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*shell::exec".into(), "only::there".into()],
+                deny: vec![],
+                expose: ExposeMode::AgentCall,
+            }));
+        let d = |ns: &str, id: &str, description: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: Some(description.into()),
+            parameters: None,
+        };
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[
+                d("zz-a", "shell::exec", "theirs"),
+                d(&own, "shell::exec", "ours"),
+                d("zz-a", "only::there", "theirs"),
+            ],
+            &[],
+            ExposeMode::AgentCall,
+        );
+        let tools: Vec<(&str, &str)> = tools
+            .iter()
+            .map(|t| (t.name.as_str(), t.description.as_str()))
+            .collect();
+        assert_eq!(
+            tools,
+            vec![
+                ("only::there", "Runs in namespace `zz-a`. theirs"),
+                ("shell::exec", "ours")
+            ]
+        );
+        assert!(names.is_empty());
     }
 
     #[test]
@@ -6093,7 +6437,8 @@ mod tests {
                 expose: crate::types::turn::ExposeMode::Native,
             }));
         let public_catalog = crate::discovery::snapshot_of(vec![]);
-        let tools = concrete_allowed_tools(&policy, &public_catalog.functions, &[]);
+        let (tools, _) =
+            concrete_allowed_tools(&policy, &public_catalog.functions, &[], ExposeMode::Native);
         assert_eq!(tools.len(), 2, "both controls are effectively offered");
         let frozen = tools
             .iter()
@@ -6128,6 +6473,7 @@ mod tests {
         let descriptor =
             |id: &str, desc: &str, params: Option<serde_json::Value>| FunctionDescriptor {
                 function_id: id.into(),
+                namespace: "default".into(),
                 description: Some(desc.into()),
                 parameters: params,
             };
@@ -6516,6 +6862,7 @@ mod tests {
     fn exec_fn(id: &str, schema: serde_json::Value) -> crate::clients::FunctionDescriptor {
         crate::clients::FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: Some("Run one command".into()),
             parameters: Some(schema),
         }
@@ -6552,6 +6899,7 @@ mod tests {
             }));
         let other = crate::clients::FunctionDescriptor {
             function_id: "other::worker".into(),
+            namespace: "default".into(),
             description: None,
             parameters: None,
         };
@@ -6890,6 +7238,7 @@ mod tests {
         }));
         let desc = |id: &str, schema| FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: Some("real internal".into()),
             parameters: schema,
         };
@@ -7017,6 +7366,7 @@ mod tests {
         let id = "x::fn";
         let live = snap(&[FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: Some("d".into()),
             parameters: Some(schema.clone()),
         }]);
@@ -7043,7 +7393,8 @@ mod tests {
         let tripped = || {
             let mut record = crate::types::turn::tests::record();
             record.options.set_filesystem_root("/repo");
-            let key = crate::call::call_digest("coder::read-file", &serde_json::json!({}));
+            let key =
+                crate::call::call_digest("default", "coder::read-file", &serde_json::json!({}));
             record.failed_calls.insert(
                 key.unwrap(),
                 crate::types::turn::FailedCall {

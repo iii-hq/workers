@@ -281,7 +281,8 @@ fn hook_inputs_validate_against_their_published_formats() {
     use harness::hooks::HookPoint;
     use serde_json::{Value, json};
 
-    let call = json!({ "id": "c_1", "function_id": "shell::run", "arguments": { "cmd": "ls" } });
+    let call = json!({ "id": "c_1", "function_id": "shell::run", "namespace": "laptop",
+        "implicit_namespace": "default", "arguments": { "cmd": "ls" } });
     let cases: [(HookPoint, Value); 6] = [
         (HookPoint::PreTurn, json!({})),
         (
@@ -326,6 +327,7 @@ fn hook_inputs_validate_against_their_published_formats() {
             "step": 2,
             "depth": 1,
             "metadata": { "tenant": "acme" },
+            "own_namespace": "default",
         });
         input
             .as_object_mut()

@@ -312,8 +312,10 @@ fn task_function_ids(task: &str) -> Vec<String> {
 /// Only ids the public registry lists, or the intercepted session controls,
 /// are resolved — an internal-only id (a config-change handler, a console
 /// watch), a Rust path, a harness-native id or a typo is dropped without a
-/// lookup, never seeded as "pre-verified". Best effort: nothing resolvable
-/// seeds nothing.
+/// lookup, never seeded as "pre-verified". An id listed in another namespace
+/// too is dropped as well: the seeded block names no namespace, so it must be
+/// the only copy, the one a bare call reaches. Best effort: nothing
+/// resolvable seeds nothing.
 async fn seed_contracts(
     deps: &Deps,
     ids: Vec<String>,
@@ -326,9 +328,16 @@ async fn seed_contracts(
     let listed: Vec<String> = ids
         .into_iter()
         .filter(|id| {
+            let implicit = crate::clients::engine::resolve_namespace(id, None);
+            let holders: Vec<&str> = snapshot
+                .functions
+                .iter()
+                .filter(|d| d.function_id == *id)
+                .map(|d| d.namespace.as_str())
+                .collect();
             policy.allows(id)
                 && (crate::functions::observe::control_contract(id).is_some()
-                    || snapshot.functions.iter().any(|d| d.function_id == *id))
+                    || holders == [implicit.as_str()])
         })
         .collect();
     if listed.is_empty() {
@@ -1159,6 +1168,7 @@ mod tests {
             stop_reason: None,
             failure: None,
             dispatch_only_functions: Vec::new(),
+            native_names: Default::default(),
             validation_retries: 0,
             transient_resumes: 0,
             ask_step: None,
@@ -2175,5 +2185,45 @@ mod tests {
         .await
         .expect("an internal-only id is dropped without a lookup");
         assert_eq!(seeded, (None, BTreeMap::new()));
+    }
+
+    fn d(ns: &str, id: &str) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: Some("d".into()),
+            parameters: Some(json!({ "type": "object" })),
+        }
+    }
+
+    #[tokio::test]
+    async fn seeding_skips_ids_held_in_several_namespaces() {
+        let deps = crate::functions::observe::tests::disconnected_deps();
+        let own = crate::clients::engine::own_namespace();
+        crate::discovery::apply(
+            &deps.functions,
+            vec![
+                d(&own, "shell::exec"),
+                d("zz-a", "shell::exec"),
+                d(&own, "state::get"),
+                d("zz-a", "fs::read"),
+            ],
+        )
+        .await;
+        let all = crate::policy::CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let ids = vec!["shell::exec".into(), "state::get".into(), "fs::read".into()];
+        let (seed, digests) = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            seed_contracts(&deps, ids, &all),
+        )
+        .await
+        .expect("no engine lookup");
+        let seed = seed.unwrap();
+        assert!(seed.contains("### `state::get`"));
+        assert!(!seed.contains("### `shell::exec`") && !seed.contains("### `fs::read`"));
+        assert_eq!(digests.keys().collect::<Vec<_>>(), vec!["state::get"]);
     }
 }

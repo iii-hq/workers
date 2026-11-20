@@ -672,6 +672,22 @@ async fn a_released_call_held_again_stops_claiming_to_run_tools() {
     );
 }
 
+/// A person approved the call for one namespace: the release must run it there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_runs_in_the_namespace_it_was_held_for() {
+    let mut held = held_call();
+    held["namespace"] = json!("zz-a");
+    let hooks =
+        json!({"harness::hook::on-post-call": {"decision": "hold", "held_by": "test::gate"}});
+    let (_, calls, _) = release(json!({"call_hold": held}), hooks).await;
+    let post = calls
+        .iter()
+        .find(|(function, _)| function == "harness::hook::on-post-call")
+        .expect("post_call ran");
+    assert_eq!(post.1["call"]["namespace"], "zz-a");
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
+}
+
 /// The hooks after the holder see the wrapper's description on release, as
 /// they would have without the hold: it lives only in the transcript.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -719,6 +735,219 @@ async fn a_released_call_with_a_held_sibling_stops_claiming_to_run_tools() {
     assert_eq!(
         phases(&calls),
         ["running tools", "test::hold", "waiting for pending calls"]
+    );
+}
+
+/// The namespace the invoke frame of `function` named.
+fn sent_namespace<'a>(calls: &'a [(String, Value)], function: &str) -> &'a Value {
+    let key = format!("namespace of {function}");
+    &calls
+        .iter()
+        .find(|(f, _)| *f == key)
+        .unwrap_or_else(|| panic!("{function} was not invoked: {calls:?}"))
+        .1
+}
+
+fn hold_reply_in(namespace: &str) -> Value {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["arguments"]["namespace"] = json!(namespace);
+    reply
+}
+
+/// Whether this harness answered `function`, named in namespace `zz-a`, with
+/// the refusal its own controls get there, and sent no frame for it.
+fn refused_in_zz_a(calls: &[(String, Value)], function: &str) -> bool {
+    let refusal = format!("{function} was called in namespace zz-a");
+    !calls.iter().any(|(f, _)| f == function)
+        && calls
+            .iter()
+            .any(|(f, data)| f == "session::append" && data.to_string().contains(&refusal))
+}
+
+/// The model named a namespace: the call goes out in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_runs_in_the_namespace_the_model_named() {
+    let (_, calls, _) = generate(hold_reply_in("zz-a")).await;
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
+}
+
+fn hold_in(namespace: &str) -> crate::clients::engine::FunctionDescriptor {
+    crate::clients::engine::FunctionDescriptor {
+        function_id: "test::hold".into(),
+        namespace: namespace.into(),
+        description: None,
+        parameters: None,
+    }
+}
+
+/// The stored turn switched to native exposure, with `native_names` set.
+async fn go_native(deps: &Deps, native_names: Value) -> Result<(), HarnessError> {
+    let record = crate::state::get_turn_unhydrated(&deps.iii, "s", 2_000).await?;
+    let mut record = serde_json::to_value(record.expect("the turn is stored")).unwrap();
+    record["options"]["functions"]["expose"] = json!("native");
+    record["native_names"] = native_names;
+    let record = serde_json::from_value(record).unwrap();
+    crate::state::put_turn(&deps.iii, &record, 2_000).await
+}
+
+/// The model's native call `zz-a::test::hold` named the `zz_a` copy, the only
+/// one when the request went out. `zz-a` registering meanwhile sorts first
+/// and takes that name in a newer table: the call must still run in `zz_a`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_call_runs_where_its_generation_named_it() {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["function_id"] = json!("zz-a::test::hold");
+    reply["content"][0]["arguments"] = json!({});
+    for joins in [false, true] {
+        let (_, calls, _) = run_on_fake_engine(
+            json!({}),
+            json!([]),
+            Some(reply.clone()),
+            json!({}),
+            |deps| async move {
+                go_native(&deps, json!({})).await?;
+                crate::discovery::apply(&deps.functions, vec![hold_in("zz_a")]).await;
+                let payload =
+                    serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 1}))
+                        .unwrap();
+                let PreparedStep::Generated(generated) =
+                    Box::pin(generate_step(&deps, payload)).await?
+                else {
+                    panic!("the step generates");
+                };
+                if joins {
+                    let both = vec![hold_in("zz-a"), hold_in("zz_a")];
+                    crate::discovery::apply(&deps.functions, both).await;
+                }
+                Box::pin(finish_step(&deps, generated)).await
+            },
+        )
+        .await;
+        assert_eq!(
+            sent_namespace(&calls, "test::hold"),
+            "zz_a",
+            "joins: {joins}"
+        );
+    }
+}
+
+/// A redelivered step replays its stored reply with the table its generation
+/// stored, whatever registered since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replayed_native_call_runs_where_its_generation_named_it() {
+    let mut stored = hold_reply();
+    let mut next = stored["message"]["content"][0].clone();
+    next["id"] = json!("call_next");
+    stored["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(next);
+    for call in stored["message"]["content"].as_array_mut().unwrap() {
+        call["function_id"] = json!("zz-a::test::hold");
+        call["arguments"] = json!({});
+    }
+    let dispatched = json!({"call_hold": {"state": "dispatched", "function_id": "test::hold",
+        "namespace": "zz_a"}});
+    let (_, calls, _) = run_on_fake_engine(
+        dispatched,
+        json!([stored]),
+        None,
+        json!({}),
+        |deps| async move {
+            go_native(&deps, json!({"zz-a::test::hold": ["zz_a", "test::hold"]})).await?;
+            let both = vec![hold_in("zz-a"), hold_in("zz_a")];
+            crate::discovery::apply(&deps.functions, both).await;
+            step_one(deps).await
+        },
+    )
+    .await;
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz_a");
+}
+
+/// A deny qualified with the namespace the model named stops the call there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_denied_in_the_namespace_it_named_is_not_dispatched() {
+    let (_, calls, turn) = generate(hold_reply_in("zz-denied")).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert_eq!(turn["calls"]["call_hold"]["state"], "done", "{turn}");
+}
+
+/// A held call is released later, from its checkpoint: the namespace must be
+/// on it, or an approval for another namespace runs in the implicit one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_call_keeps_the_namespace_the_model_named() {
+    let (_, _, turn) = generate_observed(
+        hold_reply_in("zz-a"),
+        json!({"harness::hook::on-pre-call": {"decision": "hold", "held_by": "test::gate"}}),
+    )
+    .await;
+    assert_eq!(turn["calls"]["call_hold"]["namespace"], "zz-a");
+}
+
+/// An old approval gate cannot show a namespace: the call is refused before it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_in_another_namespace_is_refused_under_an_old_gate() {
+    let hooks =
+        json!({"harness::hook::on-pre-call": {"decision": "continue", "target": "approval::gate"}});
+    let (_, calls, _) = generate_observed(hold_reply_in("zz-a"), hooks).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert!(
+        calls.iter().any(|(f, data)| f == "session::append"
+            && data.to_string().contains("approval_gate_too_old")),
+        "{calls:?}"
+    );
+}
+
+/// A call held for another namespace before a gate rollback: the old gate
+/// releases it unseen, so the release refuses it before it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_in_another_namespace_is_refused_under_an_old_gate() {
+    let mut held = held_call();
+    held["namespace"] = json!("zz-a");
+    held["held_by"] = json!("approval::gate");
+    let hooks =
+        json!({"harness::hook::on-pre-call": {"decision": "continue", "target": "approval::gate"}});
+    let (_, calls, _) = release(json!({"call_hold": held}), hooks).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert!(
+        calls.iter().any(|(f, data)| f == "session::append"
+            && data.to_string().contains("approval_gate_too_old")),
+        "{calls:?}"
+    );
+}
+
+/// A control this harness answers itself, named in another namespace, is
+/// refused: neither answered here nor dispatched to that namespace's harness.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_control_the_model_named_in_another_namespace_is_refused() {
+    for control in [crate::functions::ASK_ID, crate::functions::SPAWN_ID] {
+        let mut reply = hold_reply_in("zz-a");
+        reply["content"][0]["arguments"]["function"] = json!(control);
+        let (_, calls, turn) = generate(reply).await;
+        assert!(refused_in_zz_a(&calls, control), "{control}: {calls:?}");
+        assert!(
+            turn["calls"]["call_hold"]["child_session_id"].is_null(),
+            "{turn}"
+        );
+    }
+}
+
+/// A spawn approved for another namespace is refused: the generic release
+/// path would dispatch it to that namespace's harness, which seeds a child
+/// with none of this turn's guards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_spawn_named_in_another_namespace_is_refused() {
+    let mut held = held_call();
+    held["function_id"] = json!(crate::functions::SPAWN_ID);
+    held["namespace"] = json!("zz-a");
+    let (_, calls, turn) = release(json!({"call_hold": held}), json!({})).await;
+    assert!(
+        refused_in_zz_a(&calls, crate::functions::SPAWN_ID),
+        "{calls:?}"
+    );
+    assert!(
+        turn["calls"]["call_hold"]["child_session_id"].is_null(),
+        "{turn}"
     );
 }
 
@@ -2184,7 +2413,7 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
         "session_id": "s", "turn_id": "t1", "status": "running",
         "step": 1, "turn_count": 2, "depth": 0,
         "options": {"model": "fake", "max_turns": 16,
-            "functions": {"allow": ["*"], "deny": [], "expose": "agent_call"}},
+            "functions": {"allow": ["*"], "deny": ["zz-denied/test::hold"], "expose": "agent_call"}},
         "calls": checkpoints,
         "created_at": 1, "updated_at": 1
     })));
@@ -2257,10 +2486,14 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 .and_then(|id| id.split('#').next())
                 .map_or(function, str::to_string);
             let data = message["data"].clone();
-            observed
-                .lock()
-                .unwrap()
-                .push((function.clone(), data.clone()));
+            {
+                let mut observed = observed.lock().unwrap();
+                observed.push((function.clone(), data.clone()));
+                observed.push((
+                    format!("namespace of {function}"),
+                    message["namespace"].clone(),
+                ));
+            }
             if refuse(&function, &data) {
                 if lands(&function, &data) {
                     *stored_turn.lock().unwrap() = data["value"].clone();

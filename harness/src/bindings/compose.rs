@@ -235,6 +235,7 @@ async fn recover(deps: &Deps, binding_id: &str, operation_id: &str) {
             .await
             .dispatch(
                 "compose::operation",
+                None,
                 json!({ "operation_id": operation_id }),
             )
             .await
