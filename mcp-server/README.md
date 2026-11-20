@@ -276,7 +276,10 @@ first that reads the bind; after that, the next reload checks again.
 
 Listing profiles and reading skills need no tool of their own: call
 `directory::agents::list`, `directory::skills::list` (`search`, `prefix`) and
-`directory::skills::get { id }` with `iii_call`. Skills are also MCP resources at
+`directory::skills::get { id }` with `iii_call`. `directory::agents::list`
+returns every profile, hidden helper profiles included, each row with `hidden`.
+The removed `iii_list_agents` left those out, so a client that shows profiles
+filters them itself (the iii Claude plugin does). Skills are also MCP resources at
 `iii://<id>`. Only loading a profile keeps a tool, because `activate` changes
 this server's session.
 
