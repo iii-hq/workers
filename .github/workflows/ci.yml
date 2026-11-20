@@ -166,6 +166,39 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      # prompts/default-mcp.md is generated from prompts/default.md by
+      # scripts/derive-default-mcp.py; --check fails when the committed file
+      # is stale or an edit anchor no longer matches default.md. It runs only
+      # when a change touches prompts/ or the generator.
+      - name: Detect prompt or generator changes (iii-directory)
+        id: derive-paths
+        if: matrix.worker == 'iii-directory'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PUSH_BEFORE: ${{ github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          elif [[ "$PUSH_BEFORE" =~ ^[0-9a-f]{40}$ && ! "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            base="$PUSH_BEFORE"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$base"
+          touched="$(git diff --name-only "$base" HEAD -- prompts scripts/derive-default-mcp.py)"
+          if [[ -n "$touched" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check default-mcp.md is up to date (iii-directory)
+        if: matrix.worker == 'iii-directory' && steps.derive-paths.outputs.changed == 'true'
+        run: python3 scripts/derive-default-mcp.py --check
+
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
