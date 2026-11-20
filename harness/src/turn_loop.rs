@@ -5074,7 +5074,8 @@ fn native_tool_name(
         })
         .collect();
     let base = format!("{ns2}::{function_id}");
-    if base.len() <= 64 && !taken.iter().any(|t| wire(t) == wire(&base)) {
+    let base_wire = wire(&base);
+    if base.len() <= 64 && !taken.iter().any(|t| wire(t) == base_wire) {
         return base;
     }
     let head = base[..base.floor_char_boundary(55)].trim_end_matches(':');
