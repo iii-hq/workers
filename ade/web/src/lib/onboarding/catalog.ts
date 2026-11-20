@@ -1,8 +1,7 @@
 /**
  * What the setup wizard knows before it asks the engine anything: the
- * subscription providers a local CLI sign-in unlocks, the API-key env var
- * each key provider declares, the judge strategies, and the five things the
- * harness should show a new user as early as possible.
+ * subscription providers a local CLI sign-in unlocks and the API-key env var
+ * each key provider declares.
  *
  * Worker names are registry slugs — what `compose::add` resolves. A
  * development checkout can point any of them at a local directory through
@@ -161,105 +160,9 @@ export const KEY_PROVIDERS: readonly KeyProvider[] = [
   },
 ]
 
-/** One way the `judge` hub can answer. */
-export interface JudgeOption {
-  /** The hub's `provider` setting. */
-  id: string
-  worker: string
-  title: string
-  summary: string
-  /** Where it runs and what it costs the machine. */
-  runs: string
-  /** A hosted judge needs a key; local judges download a model instead. */
-  envVar?: string
-  /** Who issues that key, as the user knows them (`TypeSafe`). */
-  keyOwner?: string
-  keysUrl?: string
-  recommended?: boolean
-}
-
-export const JUDGE_OPTIONS: readonly JudgeOption[] = [
-  {
-    id: 'typesafe',
-    worker: 'judge-typesafe',
-    title: 'Jev by TypeSafe',
-    summary:
-      'A model trained only to make typed decisions. Fast and the most accurate option.',
-    runs: 'Hosted · needs a TypeSafe API key',
-    envVar: 'TYPESAFE_API_KEY',
-    keyOwner: 'TypeSafe',
-    keysUrl: 'https://typesafe.ai',
-    recommended: true,
-  },
-  {
-    id: 'openai',
-    worker: 'judge-openai',
-    title: 'Decisions by OpenAI',
-    summary:
-      "OpenAI's hosted Decisions API: a choice or a score with its probabilities, in one call.",
-    runs: 'Hosted · needs an OpenAI API key',
-    envVar: 'OPENAI_API_KEY',
-    keyOwner: 'OpenAI',
-    keysUrl: 'https://platform.openai.com/api-keys',
-  },
-  {
-    id: 'clef',
-    worker: 'judge-clef',
-    title: 'Clef by Cloudflare',
-    summary:
-      "Cloudflare's decision model. Decides every question of a call in one pass, on this machine.",
-    runs: 'Runs on this machine · a GPU is recommended · downloads its 6.5 GB model once',
-  },
-  {
-    id: 'laya',
-    worker: 'judge-laya',
-    title: 'Laya',
-    summary: 'Small decision models that run on this machine.',
-    runs: 'Runs on this machine · CPU is enough · downloads its models once',
-  },
-  {
-    id: 'decider',
-    worker: 'judge-decider',
-    title: 'Decider',
-    summary: 'A larger decision model that runs on this machine.',
-    runs: 'Runs on this machine · a GPU is recommended · downloads its model once',
-  },
-]
-
-export const JUDGE_HUB_WORKER = 'judge'
 export { SECRETS_WORKER } from '@/lib/secrets'
 /** The router entry provider references are written into. */
 export const ROUTER_CONFIGURATION = 'llm-router'
-
-/** Where Judge already works for the harness once it is installed. */
-export type JudgeUseId = 'search' | 'repair' | 'browser'
-
-export const JUDGE_USES: readonly {
-  id: JudgeUseId
-  where: string
-  /** The one-line version, for the setup step. */
-  short: string
-  what: string
-}[] = [
-  {
-    id: 'search',
-    where: 'Function search',
-    short: 'Picks the right function for a call',
-    what: 'picks the right function among everything your backend registers, instead of stuffing every schema into the prompt',
-  },
-  {
-    id: 'repair',
-    where: 'Argument repair',
-    short: 'Fixes a broken function call before it fails',
-    what: 'fixes a malformed function call before it fails, without another round trip to the model',
-  },
-  {
-    id: 'browser',
-    where: 'Browser actions',
-    short: 'Chooses what to click on a page',
-    what: 'chooses which element on a page an agent should act on',
-  },
-]
 
 /**
  * The guided tour that follows setup: the `learn-iii` worker's card walks

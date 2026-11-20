@@ -87,12 +87,39 @@ describe('ExploreStep focus', () => {
     expect(document.activeElement).toBe(button(/^Back$/))
   })
 
-  it('highlights no row on arrival, and the first arrow key picks the first', async () => {
+  it('ticks the tour on arrival and leaves the focus to the primary button', async () => {
     const noop = () => undefined
     act(() =>
       root.render(
         <ExploreStep
           connected
+          prompts={PROMPTS}
+          onPrompt={noop}
+          tour={{ kind: 'idle' }}
+          onTour={noop}
+          onOwn={noop}
+          onFinish={noop}
+          onBack={noop}
+        />,
+      ),
+    )
+    await frames()
+    const tour = button(/Take the learn-iii tour/)
+    expect(tour.getAttribute('aria-checked')).toBe('true')
+    // The ticked row does not pull the focus in: setup's own move to the
+    // footer button stands, so Enter starts the tour.
+    expect(document.activeElement).not.toBe(tour)
+    expect(
+      (document.activeElement as HTMLElement).getAttribute('role'),
+    ).not.toBe('radiogroup')
+  })
+
+  it('highlights no row on arrival without a model, and the first arrow key picks the first open one', async () => {
+    const noop = () => undefined
+    act(() =>
+      root.render(
+        <ExploreStep
+          connected={false}
           prompts={PROMPTS}
           onPrompt={noop}
           tour={{ kind: 'idle' }}
@@ -111,9 +138,9 @@ describe('ExploreStep focus', () => {
         new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
       )
     })
-    const first = button(/Build an example project/)
-    expect(document.activeElement).toBe(first)
-    expect(first.getAttribute('aria-checked')).toBe('true')
+    const own = button(/Explore on my own/)
+    expect(document.activeElement).toBe(own)
+    expect(own.getAttribute('aria-checked')).toBe('true')
   })
 
   // QA 2026-11-16 F5: with nothing picked the button read Finish beside a
@@ -138,9 +165,7 @@ describe('ExploreStep focus', () => {
     await frames()
     const footer = () =>
       [...container.querySelectorAll('footer button')].at(-1) as HTMLElement
-    expect(footer().textContent).toBe('Close setup')
-    expect(footer().querySelector('svg')).toBeNull()
-    act(() => button(/Take the learn-iii tour/).click())
+    // The tour starts out ticked, so the button starts it.
     expect(footer().textContent).toBe('Start the tour')
     act(() => button(/Explore on my own/).click())
     expect(footer().textContent).toBe('Explore on my own')

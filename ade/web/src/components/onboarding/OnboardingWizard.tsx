@@ -189,7 +189,10 @@ export function OnboardingWizardHost() {
   useEffect(
     () =>
       onOnboardingWizardRequest((target) => {
-        const next = target ?? 'welcome'
+        // Someone who finished setup has read the welcome: reopening goes
+        // straight to Models.
+        const next =
+          target ?? (status.current === 'completed' ? 'models' : 'welcome')
         if (next === 'browser') setBrowserListed(true)
         setStep(next)
         setVisited((current) => new Set([...current, next]))

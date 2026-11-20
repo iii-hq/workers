@@ -53,7 +53,6 @@ function controller(
       envFile: '.env',
       installed,
       consoleConfig: null,
-      judgeProvider: null,
       browser: null,
       browserError: null,
       ...snapshot,
@@ -65,7 +64,6 @@ function controller(
     run: async () => true,
     signInNeeded: new Set(),
     skipStep: () => undefined,
-    judgeInstalled: installed.has('judge'),
     checkChromium: async () => null,
     installChromium: async () => ({ ok: true as const }),
     chromiumProgress: null,
@@ -287,13 +285,20 @@ describe('ExploreStep', () => {
     expect(html).toContain('Build an example project')
     expect(html).toContain('Take the learn-iii tour')
     expect(html).toContain('Explore on my own')
-    // A single-choice group with nothing picked yet; the footer's button
-    // then says what it does — Close setup — and nothing is disabled.
+    // A single-choice group with the tour ticked while a model is
+    // connected; the footer's button says what it does, and nothing is
+    // disabled.
     expect(html.match(/role="radio"/g)).toHaveLength(3)
-    expect(html.match(/aria-checked="false"/g)).toHaveLength(3)
-    expect(html).toContain('Close setup')
+    expect(html.match(/aria-checked="false"/g)).toHaveLength(2)
+    expect(html.match(/aria-checked="true"/g)).toHaveLength(1)
+    expect(html).toContain('Start the tour')
     expect(html).not.toContain('Finish')
     expect(html).not.toContain('disabled=""')
+    // Without a model nothing can be picked but exploring alone, and the
+    // button closes setup.
+    const offline = explore(false)
+    expect(offline.match(/aria-checked="true"/g)).toBeNull()
+    expect(offline).toContain('Close setup')
   })
 
   // QA 2026-11-16 F6: the picks drew round radio dots while Models and

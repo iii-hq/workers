@@ -4,15 +4,12 @@ import {
   installedWorkerNames,
   readableError,
   readConsoleConfig,
-  readJudgeProvider,
   readProviderStates,
   runStep,
   SignInRequiredError,
   scanMachine,
 } from '@/lib/onboarding/api'
 import {
-  JUDGE_HUB_WORKER,
-  JUDGE_OPTIONS,
   KEY_PROVIDERS,
   SECRETS_WORKER,
   SUBSCRIPTION_PROVIDERS,
@@ -41,7 +38,7 @@ import {
 import { envFileName, getSecretsStatus } from '@/lib/secrets'
 
 /** Which part of setup an action belongs to; each step shows its own. */
-export type ActivityGroup = 'models' | 'browser' | 'judge'
+export type ActivityGroup = 'models' | 'browser'
 
 export interface ActivityEntry {
   id: number
@@ -96,8 +93,6 @@ export interface MachineSnapshot {
   /** The secrets worker's env file, by name (`.env` unless configured). */
   envFile: string
   installed: ReadonlySet<string>
-  /** The judge hub's `provider`, `null` when Judge is not set up or unread. */
-  judgeProvider: string | null
   consoleConfig: Record<string, unknown> | null
   /**
    * Chromium where the browser worker runs; `null` when no browser worker
@@ -115,7 +110,6 @@ const EMPTY: MachineSnapshot = {
   detections: null,
   envFile: envFileName(null),
   installed: new Set(),
-  judgeProvider: null,
   consoleConfig: null,
   browser: null,
   browserError: null,
@@ -164,11 +158,10 @@ export async function connectedModelCount(): Promise<number> {
     .reduce((sum, provider) => sum + provider.modelCount, 0)
 }
 
-/** Every env var the wizard can reuse: provider keys and the hosted judge's. */
-export const DETECTED_KEY_NAMES = [
-  ...KEY_PROVIDERS.map((provider) => provider.envVar),
-  ...JUDGE_OPTIONS.flatMap((option) => (option.envVar ? [option.envVar] : [])),
-]
+/** Every env var the wizard can reuse: the provider keys. */
+export const DETECTED_KEY_NAMES = KEY_PROVIDERS.map(
+  (provider) => provider.envVar,
+)
 
 function without(set: ReadonlySet<string>, value: string): ReadonlySet<string> {
   if (!set.has(value)) return set
@@ -227,7 +220,7 @@ export function useOnboarding(
       readConsoleConfig(),
     ])
     const names = installed.value ?? new Set<string>()
-    const [detections, secrets, browser, judgeProvider] = await Promise.all([
+    const [detections, secrets, browser] = await Promise.all([
       names.has(SECRETS_WORKER)
         ? settle(detectKeys(DETECTED_KEY_NAMES))
         : { value: null, error: null },
@@ -237,7 +230,6 @@ export function useOnboarding(
       names.has(BROWSER_WORKER)
         ? settle(readChromiumState())
         : { value: null, error: null },
-      names.has(JUDGE_HUB_WORKER) ? readJudgeProvider() : null,
     ])
     if (browser.value) setChromiumMissing(chromiumMissing(browser.value))
     const next: MachineSnapshot = {
@@ -250,7 +242,6 @@ export function useOnboarding(
       detections: detections.value,
       envFile: envFileName(secrets.value?.env_file),
       installed: names,
-      judgeProvider,
       consoleConfig,
       browser: browser.value,
       browserError: browser.error,
@@ -489,8 +480,6 @@ export function useOnboarding(
       return outcome
     }, [checkChromium, patch])
 
-  const judgeInstalled = snapshot.installed.has(JUDGE_HUB_WORKER)
-
   return {
     snapshot,
     scanning,
@@ -500,7 +489,6 @@ export function useOnboarding(
     run,
     signInNeeded,
     skipStep,
-    judgeInstalled,
     checkChromium,
     installChromium,
     chromiumProgress,
