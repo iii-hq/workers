@@ -25,7 +25,7 @@ use super::search::baggage_own_namespace;
 pub struct FunctionInfoInput {
     /// Fully-qualified function id on the bus (e.g. `sandbox::create`).
     pub function_id: String,
-    /// Engine namespace to read the function in. Omitted: where a call without one goes (the caller's namespace; default for engine::, configuration:: and sandbox:: ids; for compose:: ids, the Compose namespace this directory runs under, which is the caller's when both run under one Compose daemon).
+    /// Engine namespace to read the function in. Omitted: where a call without one goes (the caller's namespace; default for engine::, configuration:: and sandbox:: ids; for compose:: ids, the Compose namespace this directory runs under, which is the caller's when both run under one Compose daemon, or the caller's namespace when the directory runs under no Compose daemon).
     #[serde(default)]
     pub namespace: Option<String>,
 }
