@@ -1075,3 +1075,84 @@ async fn a_request_the_client_left_stops_its_call() {
     boot.shutdown().await;
     engine.shutdown().await;
 }
+
+/// Boots on the fake engine with `concurrency_request_limit: 1` and a slow
+/// target (`delay`) on `paths`.
+async fn start_with_one_slot(paths: &[&str], delay: Duration) -> (FakeEngine, BootHandle) {
+    let engine = FakeEngine::start().await;
+    let config = RestApiConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        concurrency_request_limit: 1,
+        ..Default::default()
+    };
+    let boot = boot::start(engine.iii.clone(), config).await.unwrap();
+    register_slow(&engine, "test::slow", delay);
+    for (n, path) in paths.iter().enumerate() {
+        assert!(
+            observe(
+                &engine,
+                &format!("obs-slow-{n}"),
+                "test::slow",
+                json!({"method": "GET", "path": path}),
+                json!({}),
+            )
+            .await
+            .is_none()
+        );
+    }
+    (engine, boot)
+}
+
+#[tokio::test]
+async fn one_limit_holds_for_every_path() {
+    let delay = Duration::from_millis(300);
+    let (engine, boot) = start_with_one_slot(&["/", "/new/slow"], delay).await;
+    let url = |path: &str| format!("http://{}{path}", boot.local_addr);
+    let http = client();
+    let started = std::time::Instant::now();
+    let (root, other) = tokio::join!(http.get(url("/")).send(), http.get(url("/new/slow")).send());
+    assert_eq!(root.unwrap().status(), 200);
+    assert_eq!(other.unwrap().status(), 200);
+    // `/` and every other path take turns on the one slot.
+    assert!(started.elapsed() >= delay * 2 - Duration::from_millis(50));
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reload_keeps_the_slots_in_use_until_the_limit_changes() {
+    let delay = Duration::from_millis(600);
+    let (engine, boot) = start_with_one_slot(&["/new/slow"], delay).await;
+    let url = format!("http://{}/new/slow", boot.local_addr);
+    let http = client();
+
+    // A reload that leaves the limit alone: the request holding the slot
+    // still holds it for the requests after the reload.
+    let first = tokio::spawn(http.get(&url).send());
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let mut next = (**boot.config.read().await).clone();
+    next.default_timeout = 29_000;
+    iii_http::server::rebuild_layers(&boot.router, &next).await;
+    let started = std::time::Instant::now();
+    assert_eq!(http.get(&url).send().await.unwrap().status(), 200);
+    assert!(
+        started.elapsed() >= delay + Duration::from_millis(250),
+        "the second request waited for the first: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(first.await.unwrap().unwrap().status(), 200);
+
+    // A new limit applies at once.
+    next.concurrency_request_limit = 2;
+    iii_http::server::rebuild_layers(&boot.router, &next).await;
+    let started = std::time::Instant::now();
+    let (a, b) = tokio::join!(http.get(&url).send(), http.get(&url).send());
+    assert_eq!(a.unwrap().status(), 200);
+    assert_eq!(b.unwrap().status(), 200);
+    assert!(started.elapsed() < delay * 2 - Duration::from_millis(100));
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
