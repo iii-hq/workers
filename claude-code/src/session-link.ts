@@ -92,8 +92,12 @@ function retainForReplay(
   successesBefore: number,
 ): void {
   unsettled.set(sessionId, pending);
+  pendingChanged?.();
   if (successes !== successesBefore) void reconcileUnsettled(iii);
 }
+
+/** Set by {@link startStatusRecovery}: called whenever something becomes pending. */
+let pendingChanged: (() => void) | null = null;
 
 /** Each session's status writes, replays included, go out one at a time, in order. */
 const statusQueues = new Map<string, Promise<unknown>>();
@@ -148,6 +152,7 @@ async function reconcileUnsettled(iii: IIIClient): Promise<void> {
     } while (reconcileRequested && unsettled.size > 0);
   } finally {
     reconciling = false;
+    pendingChanged?.();
   }
 }
 
@@ -257,6 +262,10 @@ export async function settleStaleSessions(
 
 /** The internal function engine::on-functions-changed calls (see {@link startStatusRecovery}). */
 export const RECOVERY_FN_ID = 'claude::on-functions-changed';
+/** The internal function session-manager's commit events call while anything is pending. */
+export const ACTIVITY_FN_ID = 'claude::on-session-activity';
+/** session-manager calls these only after a write commits, for any caller. */
+const COMMIT_EVENTS = ['session::on-status-changed', 'session::on-message-added'];
 
 /**
  * Start the recovery of statuses this worker could not write, driven by
@@ -285,9 +294,46 @@ export function startStatusRecovery(
       onScanned();
     })().finally(() => {
       scanning = null;
+      syncWatch();
     });
     return scanning;
   };
+  // While a status is pending or the scan has not listed, watch
+  // session-manager's commit events: the first commit after its store
+  // recovers (from any caller) is the signal, with no registration event
+  // needed. Nothing pending: no observers at all.
+  let watching: Array<{ dispose: () => Promise<void> }> = [];
+  const syncWatch = (): void => {
+    const needed = unsettled.size > 0 || !scanned;
+    if (needed && watching.length === 0) {
+      watching = COMMIT_EVENTS.map((function_id) =>
+        iii.observe({ function_id, capture: [] }, ACTIVITY_FN_ID),
+      );
+    } else if (!needed && watching.length > 0) {
+      const handles = watching;
+      watching = [];
+      for (const handle of handles) void handle.dispose().catch(() => undefined);
+    }
+  };
+  const recover = async (): Promise<void> => {
+    await Promise.all([reconcileUnsettled(iii), tryScan()]);
+    syncWatch();
+  };
+  pendingChanged = syncWatch;
+  iii.registerFunction(
+    ACTIVITY_FN_ID,
+    async () => {
+      await recover();
+      return null;
+    },
+    {
+      description:
+        'Internal: session-manager committed a write, so its store answers: write the statuses claude-code could not write.',
+      metadata: { internal: true },
+      request_format: { type: 'object' },
+      response_format: { type: 'null' },
+    },
+  );
   iii.registerFunction(
     RECOVERY_FN_ID,
     async (event: unknown) => {
@@ -295,7 +341,7 @@ export function startStatusRecovery(
         (event as { input?: { functions?: Array<{ function_id?: string }> } } | null)?.input
           ?.functions ?? [];
       if (!functions.some((f) => f.function_id === 'session::set-status')) return null;
-      await Promise.all([reconcileUnsettled(iii), tryScan()]);
+      await recover();
       return null;
     },
     {
