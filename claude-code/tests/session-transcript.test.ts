@@ -841,7 +841,8 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     // The next status write that succeeds, for any session, proves the
     // store is back: the lost `done` is written then.
     await run(fake, { prompt: 'y', session_id: 'other-1', parent_session_id: 'p-1' });
-    expect(statusesOf(fake, 'lost-1')).toEqual(['working', 'done']);
+    // The replay runs in the background, without holding that run.
+    await vi.waitFor(() => expect(statusesOf(fake, 'lost-1')).toEqual(['working', 'done']));
     expect(statusesOf(fake, 'other-1')).toEqual(['working', 'done']);
     // Written once: a later success does not repeat it.
     await run(fake, { prompt: 'z', session_id: 'other-2', parent_session_id: 'p-1' });
@@ -856,6 +857,43 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     // after its `working`.
     await run(fake, { prompt: 'again', session_id: 'lost-2' });
     expect(statusesOf(fake, 'lost-2')).toEqual(['working', 'working', 'done']);
+  });
+
+  it('a replay in flight never overwrites a newer status of the same session', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'done', 3);
+    await run(fake, { prompt: 'x', session_id: 'race-1', parent_session_id: 'p-1' });
+    // Hold the replay of race-1's lost `done` before it commits, and record
+    // the order in which race-1's statuses actually commit.
+    const committed: unknown[] = ['working'];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = false;
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const ours = req.function_id === 'session::set-status' && req.payload.session_id === 'race-1';
+      if (ours && req.payload.status === 'done' && !held) {
+        held = true;
+        await gate;
+      }
+      const out = await real(req as never);
+      if (ours) committed.push(req.payload.status);
+      return out;
+    };
+    // Another session's write succeeds: the replay starts and is held.
+    await run(fake, { prompt: 'y', session_id: 'other-3', parent_session_id: 'p-1' });
+    await vi.waitFor(() => expect(held).toBe(true));
+    // A follow-up turn on race-1 starts while the replay is in flight.
+    const followUp = run(fake, { prompt: 'again', session_id: 'race-1' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await followUp;
+    await vi.waitFor(() => expect(committed).toEqual(['working', 'done', 'working', 'done']));
   });
 
   it('never rewrites an entry whose content and usage are already stored', async () => {

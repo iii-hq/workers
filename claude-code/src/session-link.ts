@@ -74,6 +74,19 @@ export const statusRetry = { delaysMs: [500, 2_000] };
 const unsettled = new Map<string, { status: 'done' | 'error'; reason?: string }>();
 let reconciling = false;
 
+/** Each session's status writes, replays included, go out one at a time, in order. */
+const statusQueues = new Map<string, Promise<unknown>>();
+
+function inOrder<T>(sessionId: string, op: () => Promise<T>): Promise<T> {
+  const next = (statusQueues.get(sessionId) ?? Promise.resolve()).then(op, op);
+  const settled = next.catch(() => undefined);
+  statusQueues.set(sessionId, settled);
+  void settled.then(() => {
+    if (statusQueues.get(sessionId) === settled) statusQueues.delete(sessionId);
+  });
+  return next;
+}
+
 async function writeStatus(
   iii: IIIClient,
   sessionId: string,
@@ -93,9 +106,13 @@ async function reconcileUnsettled(iii: IIIClient): Promise<void> {
   try {
     for (const [sessionId, pending] of [...unsettled]) {
       try {
-        await writeStatus(iii, sessionId, pending.status, pending.reason);
-        // A newer write for this session may have replaced it meanwhile.
-        if (unsettled.get(sessionId) === pending) unsettled.delete(sessionId);
+        await inOrder(sessionId, async () => {
+          // A newer write for this session was requested meanwhile: it wins,
+          // and this replay is never sent.
+          if (unsettled.get(sessionId) !== pending) return;
+          await writeStatus(iii, sessionId, pending.status, pending.reason);
+          if (unsettled.get(sessionId) === pending) unsettled.delete(sessionId);
+        });
       } catch {
         return; // still unreachable: the next success tries again
       }
@@ -111,12 +128,14 @@ export async function setSessionStatus(
   status: 'working' | 'done' | 'error',
   reason?: string,
 ): Promise<boolean> {
+  // A newer status for this session replaces a lost one at once, so a replay
+  // not yet sent is skipped; one already sent finishes first (in order).
+  unsettled.delete(sessionId);
   try {
-    await writeStatus(iii, sessionId, status, reason);
-    // This session's status is current again, and the store answers: write
-    // any other session's status that was lost.
-    unsettled.delete(sessionId);
-    await reconcileUnsettled(iii);
+    await inOrder(sessionId, () => writeStatus(iii, sessionId, status, reason));
+    // The store answers again: write any other session's lost status, in the
+    // background, without holding this caller.
+    void reconcileUnsettled(iii);
     return true;
   } catch (err) {
     console.warn(
