@@ -263,20 +263,24 @@ export class ChildTranscript implements TurnSink {
   private display(draft: Draft): ContentBlock[] {
     const streamed = draft.streamed.filter(visible).map((b) => ({ ...b }));
     if (draft.streaming) return streamed.length ? streamed : [...draft.final];
-    if (!draft.final.length) return streamed;
-    const cutOff = draft.streamed
+    const blocks = draft.streamed
       .map((block, index) => ({ block, index }))
-      .filter(
-        ({ block, index }) =>
-          visible(block) && block.type !== 'function_call' && !draft.stopped.has(index),
-      )
-      .map(({ block }) => ({ ...block }) as ContentBlock);
-    return [...draft.final, ...cutOff];
+      .filter(({ block }) => visible(block));
+    const cutOff = ({ index }: { index: number }) => !draft.stopped.has(index);
+    const notACall = ({ block }: { block: ContentBlock | undefined }) =>
+      block?.type !== 'function_call';
+    // No complete block: the stream is all there is, minus a cut-off call.
+    const kept = draft.final.length
+      ? blocks.filter((b) => cutOff(b) && notACall(b))
+      : blocks.filter((b) => !cutOff(b) || notACall(b));
+    return [...draft.final, ...kept.map(({ block }) => ({ ...block }) as ContentBlock)];
   }
 
   private refresh(draft: Draft, schedule = true): void {
     const content = this.display(draft);
-    if (content.length === 0) return;
+    // Nothing to show: write nothing new, but empty an entry already written
+    // (a cut-off tool call shown live).
+    if (content.length === 0 && !draft.entry) return;
     const usage: Usage | null =
       draft.outputTokens === undefined
         ? draft.usage

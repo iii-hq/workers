@@ -826,6 +826,38 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     expect(statuses(fake)).toEqual(['working', 'error']);
   });
 
+  function statusesOf(fake: FakeIii, sessionId: string) {
+    return fake.calls
+      .filter((c) => c.function_id === 'session::set-status' && c.payload.session_id === sessionId)
+      .map((c) => c.payload.status);
+  }
+
+  it('writes a status that exhausted its retries once session-manager answers again', async () => {
+    const fake = fakeIii();
+    // Every attempt at `done` fails during the first run: retries exhausted.
+    failStatus(fake, 'done', 3);
+    await run(fake, { prompt: 'x', session_id: 'lost-1', parent_session_id: 'p-1' });
+    expect(statusesOf(fake, 'lost-1')).toEqual(['working']);
+    // The next status write that succeeds, for any session, proves the
+    // store is back: the lost `done` is written then.
+    await run(fake, { prompt: 'y', session_id: 'other-1', parent_session_id: 'p-1' });
+    expect(statusesOf(fake, 'lost-1')).toEqual(['working', 'done']);
+    expect(statusesOf(fake, 'other-1')).toEqual(['working', 'done']);
+    // Written once: a later success does not repeat it.
+    await run(fake, { prompt: 'z', session_id: 'other-2', parent_session_id: 'p-1' });
+    expect(statusesOf(fake, 'lost-1')).toEqual(['working', 'done']);
+  });
+
+  it('a new run on the same session replaces a status that was never written', async () => {
+    const fake = fakeIii();
+    failStatus(fake, 'done', 3);
+    await run(fake, { prompt: 'x', session_id: 'lost-2', parent_session_id: 'p-1' });
+    // The follow-up turn owns the status now: the old `done` must not land
+    // after its `working`.
+    await run(fake, { prompt: 'again', session_id: 'lost-2' });
+    expect(statusesOf(fake, 'lost-2')).toEqual(['working', 'working', 'done']);
+  });
+
   it('never rewrites an entry whose content and usage are already stored', async () => {
     // A rewrite of a settled entry is a write that can fail twice and turn a
     // complete transcript into an `error` session; refuse every such no-op.
@@ -939,6 +971,32 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     );
     const [message] = await runCutOff(fake, 'cut-2');
     expect(message.content).toEqual([{ type: 'text', text: 'Done part' }]);
+  });
+
+  it('clears a cut-off tool call that was the only block, even after it was shown live', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield stream({ type: 'message_start', message: { id: 'msg_t', model: 'm' } });
+        yield stream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_first', name: 'Bash', input: {} },
+        });
+        yield stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"comm' },
+        });
+        throw new Error('connection reset');
+      },
+      interrupt: async () => {},
+    })) as never);
+    const assistants = await runCutOff(fake, 'cut-3');
+    // Shown live while it streamed, so an entry exists: it ends empty.
+    expect(JSON.stringify(assistants)).not.toContain('toolu_first');
+    expect(JSON.stringify(assistants[assistants.length - 1].content)).toContain('connection reset');
   });
 
   it('stores a stop before the query exists as aborted, not error', () => {

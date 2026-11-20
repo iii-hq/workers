@@ -66,6 +66,45 @@ export async function linkChildSession(
 /** Waits before each retry of a terminal status write. `[0, 0]` in tests. */
 export const statusRetry = { delaysMs: [500, 2_000] };
 
+/**
+ * Terminal statuses whose every retry failed, by session. Written the next
+ * time any status write of this worker succeeds (session-manager answers
+ * again), with no timer; a session's own next write replaces its entry.
+ */
+const unsettled = new Map<string, { status: 'done' | 'error'; reason?: string }>();
+let reconciling = false;
+
+async function writeStatus(
+  iii: IIIClient,
+  sessionId: string,
+  status: 'working' | 'done' | 'error',
+  reason?: string,
+): Promise<void> {
+  await iii.call({
+    function_id: 'session::set-status',
+    payload: { session_id: sessionId, status, ...(reason ? { reason } : {}) },
+    timeoutMs: TIMEOUT_MS,
+  });
+}
+
+async function reconcileUnsettled(iii: IIIClient): Promise<void> {
+  if (reconciling || unsettled.size === 0) return;
+  reconciling = true;
+  try {
+    for (const [sessionId, pending] of [...unsettled]) {
+      try {
+        await writeStatus(iii, sessionId, pending.status, pending.reason);
+        // A newer write for this session may have replaced it meanwhile.
+        if (unsettled.get(sessionId) === pending) unsettled.delete(sessionId);
+      } catch {
+        return; // still unreachable: the next success tries again
+      }
+    }
+  } finally {
+    reconciling = false;
+  }
+}
+
 export async function setSessionStatus(
   iii: IIIClient,
   sessionId: string,
@@ -73,11 +112,11 @@ export async function setSessionStatus(
   reason?: string,
 ): Promise<boolean> {
   try {
-    await iii.call({
-      function_id: 'session::set-status',
-      payload: { session_id: sessionId, status, ...(reason ? { reason } : {}) },
-      timeoutMs: TIMEOUT_MS,
-    });
+    await writeStatus(iii, sessionId, status, reason);
+    // This session's status is current again, and the store answers: write
+    // any other session's status that was lost.
+    unsettled.delete(sessionId);
+    await reconcileUnsettled(iii);
     return true;
   } catch (err) {
     console.warn(
@@ -104,8 +143,9 @@ export async function settleSessionStatus(
     if (await setSessionStatus(iii, sessionId, status, reason)) return true;
   }
   console.error(
-    `claude-code: session ${sessionId} may still show working: its ${status} status could not be written`,
+    `claude-code: session ${sessionId} still shows working: its ${status} status could not be written; it is written once session-manager answers again`,
   );
+  unsettled.set(sessionId, { status, ...(reason ? { reason } : {}) });
   return false;
 }
 
