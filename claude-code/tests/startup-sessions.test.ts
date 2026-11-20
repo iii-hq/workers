@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  RECOVERY_FN_ID,
   RESTART_REASON,
+  settleSessionStatus,
   settleStaleSessions,
   settleStaleSessionsWithRetry,
+  startStatusRecovery,
   startupRetry,
+  statusRetry,
 } from '../src/session-link.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 
@@ -110,5 +114,124 @@ describe('settling stale sessions at startup', () => {
       startupRetry.delaysMs = saved;
     }
     expect(lists).toBe(3);
+  });
+});
+
+/**
+ * Recovery that waits for nothing but session-manager itself: claude-code
+ * observes engine::on-functions-changed, and when the event lists
+ * `session::set-status` (session-manager registered, e.g. after it restarted)
+ * it writes every status still pending and runs a startup scan that has not
+ * succeeded yet. No timer and no other status write is needed.
+ */
+describe('recovery when session-manager registers', () => {
+  const saved = { status: statusRetry.delaysMs, startup: startupRetry.delaysMs };
+  beforeEach(() => {
+    statusRetry.delaysMs = [0, 0];
+    // Long enough that the timer retry never fires during a test.
+    startupRetry.delaysMs = [60_000];
+  });
+  afterEach(() => {
+    statusRetry.delaysMs = saved.status;
+    startupRetry.delaysMs = saved.startup;
+  });
+
+  function functionsChanged(ids: string[]) {
+    return {
+      observer_id: 'o',
+      activation_id: 'a',
+      function_id: 'engine::on-functions-changed',
+      namespace: 'default',
+      invocation_id: 'i',
+      status: 'success',
+      started_at_ms: 0,
+      duration_ms: 0,
+      input: {
+        event: 'functions_changed',
+        functions: ids.map((function_id) => ({
+          function_id,
+          namespace: 'default',
+          worker_name: 'session-manager',
+          observer_count: 0,
+        })),
+      },
+    };
+  }
+
+  it('observes engine::on-functions-changed with its input', async () => {
+    const fake = fakeIii();
+    startStatusRecovery(
+      fake.iii,
+      () => false,
+      () => {},
+    );
+    expect(fake.functions.has(RECOVERY_FN_ID)).toBe(true);
+    expect(fake.observed).toContainEqual(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          function_id: 'engine::on-functions-changed',
+          capture: ['input'],
+        }),
+        target: RECOVERY_FN_ID,
+      }),
+    );
+  });
+
+  it('writes a status that exhausted its retries when session-manager registers, with no other write', async () => {
+    const fake = fakeIii();
+    startStatusRecovery(
+      fake.iii,
+      () => false,
+      () => {},
+    );
+    const real = fake.iii.call.bind(fake.iii);
+    let down = true;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::set-status' && down) throw new Error('function_not_found');
+      return real(req as never);
+    };
+    seed(fake, 'lost-sm', 'working', { agent: 'claude-code' });
+    expect(await settleSessionStatus(fake.iii, 'lost-sm', 'done')).toBe(false);
+    // An unrelated registration changes nothing while session-manager is away.
+    await fake.registered.get(RECOVERY_FN_ID)?.(functionsChanged(['other::fn']));
+    expect(status(fake, 'lost-sm').status).toBe('working');
+    down = false;
+    await fake.registered.get(RECOVERY_FN_ID)?.(functionsChanged(['session::set-status']));
+    await vi.waitFor(() => expect(status(fake, 'lost-sm').status).toBe('done'));
+  });
+
+  it('runs a startup scan whose listing failed once session-manager registers', async () => {
+    const fake = fakeIii();
+    seed(fake, 'stale-sm', 'working', { agent: 'claude-code' });
+    const real = fake.iii.call.bind(fake.iii);
+    let down = true;
+    let lists = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::list') {
+        lists++;
+        if (down) throw new Error('function_not_found');
+      }
+      return real(req as never);
+    };
+    let scanned = 0;
+    startStatusRecovery(
+      fake.iii,
+      () => false,
+      () => {
+        scanned++;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(status(fake, 'stale-sm').status).toBe('working');
+    expect(scanned).toBe(0);
+    down = false;
+    await fake.registered.get(RECOVERY_FN_ID)?.(functionsChanged(['session::set-status']));
+    await vi.waitFor(() =>
+      expect(status(fake, 'stale-sm')).toEqual({ status: 'error', reason: RESTART_REASON }),
+    );
+    expect(scanned).toBe(1);
+    // Scanned once: a later registration does not scan again.
+    await fake.registered.get(RECOVERY_FN_ID)?.(functionsChanged(['session::set-status']));
+    expect(lists).toBe(2);
   });
 });

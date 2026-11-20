@@ -255,6 +255,73 @@ export async function settleStaleSessions(
   return settled;
 }
 
+/** The internal function engine::on-functions-changed calls (see {@link startStatusRecovery}). */
+export const RECOVERY_FN_ID = 'claude::on-functions-changed';
+
+/**
+ * Start the recovery of statuses this worker could not write, driven by
+ * session-manager itself rather than by another status write:
+ * - the startup scan ({@link settleStaleSessions}) runs now, again at the
+ *   bounded `startupRetry` delays while its listing fails, and
+ * - claude-code observes engine::on-functions-changed: when the event lists
+ *   `session::set-status` (session-manager registered, e.g. after a restart),
+ *   every pending status is written and a scan that has not succeeded runs.
+ * `onScanned` runs once, after the first scan that listed successfully.
+ */
+export function startStatusRecovery(
+  iii: IIIClient,
+  ranHere: (sessionId: string) => boolean,
+  onScanned: () => void,
+): void {
+  let scanned = false;
+  let scanning: Promise<void> | null = null;
+  const tryScan = (): Promise<void> => {
+    if (scanned) return Promise.resolve();
+    scanning ??= (async () => {
+      const n = await settleStaleSessions(iii, ranHere);
+      if (n === null) return;
+      scanned = true;
+      if (n > 0) console.info(`claude-code: marked ${n} session(s) left working as error`);
+      onScanned();
+    })().finally(() => {
+      scanning = null;
+    });
+    return scanning;
+  };
+  iii.registerFunction(
+    RECOVERY_FN_ID,
+    async (event: unknown) => {
+      const functions =
+        (event as { input?: { functions?: Array<{ function_id?: string }> } } | null)?.input
+          ?.functions ?? [];
+      if (!functions.some((f) => f.function_id === 'session::set-status')) return null;
+      await Promise.all([reconcileUnsettled(iii), tryScan()]);
+      return null;
+    },
+    {
+      description:
+        'Internal: write the session statuses claude-code could not write, once session-manager registers.',
+      metadata: { internal: true },
+      request_format: { type: 'object' },
+      response_format: { type: 'null' },
+    },
+  );
+  iii.observe({ function_id: 'engine::on-functions-changed', capture: ['input'] }, RECOVERY_FN_ID);
+  void (async () => {
+    await tryScan();
+    for (const delay of startupRetry.delaysMs) {
+      if (scanned) return;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      await tryScan();
+    }
+    if (!scanned) {
+      console.warn(
+        'claude-code: could not list sessions left working yet; it runs when session-manager registers',
+      );
+    }
+  })();
+}
+
 /**
  * A run's last status write: retried, since nothing writes this session's
  * status again until its next run, and a lost `done` or `error` would leave it
