@@ -144,10 +144,19 @@ fn moved_root(snap: &Snap, exec: &Exec, cfg: &ShellConfig) -> Option<String> {
     let main = snap.common.parent()?;
     // A new admin id, or the session's own worktree at a new path; another
     // worktree moved (`git worktree move`/`repair`) was not created here.
-    // The name is required even for a single entry, so a failed add never
-    // adopts a worktree another session created meanwhile.
-    // shortcut: a directory named only through a shell variable or a script
-    // does not move the session, upgrade if agents rely on that.
+    // The name is required even for a single entry, so a failed add does not
+    // adopt a worktree another session created meanwhile under another name.
+    // The name is the last component of a whole word, never a substring:
+    // `git worktree list` does not name a worktree called `tree`.
+    // shortcut: a directory named only through a shell variable, a script or
+    // a name with whitespace does not move the session, and another session's
+    // worktree named like a whole word of this line (`list`) does, upgrade if
+    // agents rely on either.
+    let words: Vec<&str> = exec
+        .line
+        .split(|c: char| c.is_whitespace() || "'\"`;&|()<>=$".contains(c))
+        .filter_map(|w| w.trim_end_matches('/').rsplit('/').next())
+        .collect();
     let named: Vec<PathBuf> = linked_worktrees(&snap.common)
         .into_iter()
         .filter(|(id, t)| {
@@ -158,7 +167,8 @@ fn moved_root(snap: &Snap, exec: &Exec, cfg: &ShellConfig) -> Option<String> {
         .map(|(_, t)| t)
         .filter(|t| {
             t.file_name()
-                .is_some_and(|n| exec.line.contains(&*n.to_string_lossy()))
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| words.contains(&n))
         })
         .collect();
     let top = match named.as_slice() {
@@ -300,9 +310,10 @@ mod tests {
             follow(&main, &["git", "worktree", "add", "-q", "../a"]).await,
             s(dir.join("a"))
         );
-        // Through a shell, and a failing second half still follows.
+        // Through a shell with a quoted path, and a failing second half still
+        // follows.
         assert_eq!(
-            follow(&main, &["sh", "-c", "git worktree add -q ../b && false"]).await,
+            follow(&main, &["sh", "-c", "git worktree add -q '../b' && false"]).await,
             s(dir.join("b"))
         );
         let c = dir.join("c");
@@ -390,6 +401,36 @@ mod tests {
             f.on_post(&hook, Arc::new(ShellConfig::default())).await,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_worktree_is_not_named_by_a_substring() {
+        let (tmp, main) = repo();
+        let dir = tmp.path().canonicalize().unwrap();
+        let cfg = Arc::new(ShellConfig::default());
+        // This session lists; another adds `../tree` in the same window.
+        let f = WorktreeFollow::default();
+        let argv = ["git", "worktree", "list"];
+        let hook = input("c_1", "t_1", &main, &argv, json!({}));
+        f.on_pre(&hook).await;
+        run(&main, &argv);
+        git(
+            &main,
+            &["worktree", "add", "-q", dir.join("tree").to_str().unwrap()],
+        );
+        let listed = f.on_post(&hook, cfg.clone()).await;
+        // This session's add fails; another adds `../feat` meanwhile.
+        std::fs::create_dir_all(dir.join("feat-login/x")).unwrap();
+        let argv = ["git", "worktree", "add", "-q", "../feat-login"];
+        let hook = input("c_2", "t_1", &main, &argv, json!({}));
+        f.on_pre(&hook).await;
+        run(&main, &argv);
+        git(
+            &main,
+            &["worktree", "add", "-q", dir.join("feat").to_str().unwrap()],
+        );
+        let failed = f.on_post(&hook, cfg).await;
+        assert_eq!((listed, failed), (None, None));
     }
 
     #[tokio::test]
