@@ -272,6 +272,17 @@ async fn one(
     }
 }
 
+/// The gate state for a batch only the gate's answer splits. An unknown state
+/// refuses either way: a batch that passes without the gate (a call in another
+/// namespace) gets that call's refusal, while one that needs the gate (a
+/// database write) keeps the lookup error, so no write runs on a guess.
+fn split_gate(passes_without_gate: bool, lookup: Result<bool, String>) -> Result<bool, String> {
+    match lookup {
+        Err(_) if passes_without_gate => Ok(true),
+        lookup => lookup,
+    }
+}
+
 pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse, String> {
     let own = iii.namespace().unwrap_or_else(|| "default".into());
     let warnings = match (
@@ -294,7 +305,10 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
             };
             validate_with_approval_gate(&req, gate, &own)?
         }
-        _ => validate_with_approval_gate(&req, pipe::approval_gate_running(&iii).await?, &own)?,
+        (off, _) => {
+            let gate = split_gate(off.is_ok(), pipe::approval_gate_running(&iii).await)?;
+            validate_with_approval_gate(&req, gate, &own)?
+        }
     };
     let default_timeout = req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
     let max_bytes = req
@@ -422,6 +436,19 @@ mod tests {
             "fs_scope": { "root": "/work/session-7" },
             "calls": [{ "function": "shell::exec", "namespace": namespace }],
         }))
+    }
+
+    #[test]
+    fn an_unknown_gate_state_refuses_a_split_batch() {
+        let lost = || Err("could not inspect approval-gate availability".to_string());
+        // A call in another namespace passes only without the gate: refuse it.
+        assert_eq!(split_gate(true, lost()), Ok(true));
+        let err = validate_with_approval_gate(&call_in(Some("other")), true, "own").unwrap_err();
+        assert!(err.contains("must be approved in that namespace"), "{err}");
+        // A database write passes only with the gate: keep the lookup error.
+        assert!(split_gate(false, lost()).is_err());
+        assert_eq!(split_gate(false, Ok(false)), Ok(false));
+        assert_eq!(split_gate(true, Ok(false)), Ok(false));
     }
 
     #[test]
