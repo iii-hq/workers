@@ -74,9 +74,6 @@
     }
   },
   "src/components/chat/ChatContextPanel.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 5
-    },
     "shadcn/no-raw-colors": {
       "count": 2
     },
@@ -499,19 +496,6 @@
     },
     "shadcn/no-restyle": {
       "count": 8
-    }
-  },
-  "src/components/chat/workflow/StatusView.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    }
-  },
-  "src/components/chat/workflow/shared.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
-    "shadcn/no-inline-styles": {
-      "count": 3
     }
   },
   "src/components/function-call/FunctionCallCard.tsx": {
