@@ -163,7 +163,7 @@ impl ExecOverrides {
 /// `HostFsBackend::try_new` does, so the confinement helpers see the identical
 /// inputs. An unreachable root is an operator config error (surfaced S216); a
 /// non-existent denylist entry can't be escaped through, so it is kept as-is.
-fn jail_inputs(cfg: &ShellConfig) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ExecError> {
+pub(crate) fn jail_inputs(cfg: &ShellConfig) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ExecError> {
     let mut host_roots_canon = Vec::new();
     for root in cfg.fs.roots() {
         let canon = std::fs::canonicalize(&root).map_err(|e| {
