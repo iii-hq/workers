@@ -9,7 +9,11 @@ listener, while at the boundary it:
 - **serves only the engine endpoints you list** in `rbac.expose_endpoints`
   (`/`, `/ws/channels/*`, `/otel`; `/` alone without the key, nothing with an
   empty list), and no other path at all,
-- **authenticates** each connection (the operator's `auth_function_id`),
+- **authenticates** each worker (`/`) and telemetry (`/otel`) connection
+  (the operator's `auth_function_id`, or, on a local project without one, the
+  built-in [`loopback_auth`](#local-projects-loopback_auth)); channel sockets
+  (`/ws/channels/*`) are relayed to the engine, which checks their access
+  keys,
 - **gates** every invocation in the namespace it is made in (vendored
   `is_function_allowed`: forbidden > scoped grant > allowed > infrastructure
   carve-out > `expose_functions` > deny), and the namespace a connection may
@@ -26,7 +30,7 @@ listener, while at the boundary it:
 - **pins identities**: a proxied worker registers as
   `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
   name>` for a session without `function_registration_prefix`), unless the
-  auth function granted that name in `worker_names` (one live session at a
+  auth function (or `loopback_auth`) granted that name in `worker_names` (one live session at a
   time, never an `rbac-proxy:` name), and an
   `engine::*` call is
   forwarded only as a direct call (a queued one is refused), so a session
@@ -90,9 +94,9 @@ rbac:
 
 | Endpoint | What it carries | Leave it out and |
 |---|---|---|
-| `/` | The worker protocol. Each connection is authenticated by `auth_function_id`, then every frame is checked against the RBAC rules. | No worker can connect. |
+| `/` | The worker protocol. Each connection is authenticated by `auth_function_id`, or, when that is unset, admitted by `rbac.loopback_auth` if it comes from this machine; then every frame is checked against the RBAC rules. | No worker can connect. |
 | `/ws/channels/{id}` | Channel sockets. Relayed as is; the engine checks each channel's access key, as it does for direct connections. | Functions that stream through channels fail. |
-| `/otel` | Telemetry from the SDK. Authenticated by the same auth function as `/` before the upgrade, then relayed as is (see below). | Workers log `Failed to connect to engine WebSocket` and their telemetry is not exported. |
+| `/otel` | Telemetry from the SDK. Authenticated the same way as `/` before the upgrade, then relayed as is (see below). | Workers log `Failed to connect to engine WebSocket` and their telemetry is not exported. |
 
 Rules use the `expose_functions` wildcard syntax over the request path:
 `match("/otel")` or `{ match: "/otel" }`, where `*` matches any run of
@@ -132,6 +136,8 @@ expose_worker_internals: false    # strip pid/ip/metrics from engine::workers::*
 middleware_function_id: my-project::middleware-function
 rbac:
   auth_function_id: my-project::auth-function
+  # loopback_auth: {}        # a local project without an auth function: admits
+  #                          # this machine only (see Local projects: loopback_auth)
   expose_endpoints:          # nothing is served without these (see above)
     - match("/")
     - match("/ws/channels/*")
@@ -187,6 +193,109 @@ function registration is dropped, as the engine drops it, and a denied
 observer is refused with `FORBIDDEN`. Hooks see bare ids (before the session
 prefix). `rbac` keys of entries stored before 0.26 are ignored with one
 `warn` each, naming the setting to use, so such an entry loads.
+
+### Local projects: `loopback_auth`
+
+Without `auth_function_id` every worker (`/`) and telemetry (`/otel`)
+connection is refused. A local project that
+wants rbac-proxy (for example in front of `mcp-server`) without writing an
+auth function or minting a per-project secret can set `rbac.loopback_auth`
+instead: a connection whose peer address is loopback gets these grants,
+exactly as if an auth function had returned them; a connection from any other
+address is refused, as without the key. Loopback means exactly `127.0.0.1`,
+`::1` or `::ffff:127.0.0.1`, not the rest of `127.0.0.0/8`: a service-mesh
+sidecar such as Istio's connects from `127.0.0.6` on behalf of remote
+clients.
+
+```yaml
+rbac:
+  loopback_auth:
+    worker_names: [mcp-server]
+    forbidden_functions: [secrets::resolve]
+    allow_function_registration: true
+    function_registration_prefix: mcp
+  expose_endpoints:
+    - match("/")
+  expose_functions:
+    - match("api::*")
+```
+
+It takes the fields an auth function may return, with the same defaults
+except one: `namespaces`, `allowed_functions`, `forbidden_functions`,
+`allow_function_registration`, `context` (default `{}`),
+`function_registration_prefix` and `worker_names`.
+`allow_function_registration` defaults to `false` here (an auth function's
+result defaults it to `true`), and setting it to `true` requires a non-empty
+`function_registration_prefix`, so what local processes register stays apart
+from everything else: `allow_function_registration: true` without a prefix is
+a configuration error, refused by `configuration::set` and failing the load of
+a stored value. Every other rule applies
+unchanged: `expose_functions`, the registration hooks, the middleware, the
+`worker_names` rules above (one live session per granted name, never an
+`rbac-proxy:` name) and `forbidden_functions` winning over everything.
+Unknown keys are refused, so a typo cannot drop a restriction.
+
+Two more keys refuse the grant to a loopback peer whose upgrade shows signs of
+a non-local client; such an upgrade is refused exactly like one from a
+non-loopback address (same response, same log). Both apply to `/` and `/otel`:
+
+- `allowed_origins` (default `[]`): an upgrade that carries an `Origin`
+  header, which a browser page adds, gets the grant only when the value is in
+  this list (exact match, scheme and host compared case-insensitively, for
+  example `http://localhost:3000`). Every `Origin` header must match, and one
+  whose value is not text is refused. An upgrade without `Origin`, which is what
+  SDK workers send, is unaffected. With the default every `Origin` is refused,
+  so a web page open in a local browser cannot borrow the grant.
+- `allow_forwarded` (default `false`): an upgrade carrying any of
+  `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
+  `X-Real-IP` or `Via` came through a proxy and is refused unless this is
+  `true`, whatever the header's value (even one that is not text).
+
+These checks catch the well-behaved cases; a forwarder that adds none of these
+headers is not detected (see the warnings below).
+
+- **It applies only without `auth_function_id`.** When both are set the auth
+  function authenticates every worker and telemetry connection,
+  `loopback_auth` is ignored, and a
+  warning naming both keys is logged each time such a configuration is
+  applied.
+- **Only use it where every local process is trusted.** On such a machine any
+  local process can already reach the engine port directly, so admitting
+  loopback connections gives away nothing a shared token would protect. Do
+  not use it on a shared host.
+- **Anything that forwards to a local port makes its clients look local.** A
+  tunnel, an ingress or nginx forwarding to rbac-proxy connects from
+  `127.0.0.1`, so every client behind it gets the loopback grants. Front such
+  a setup with an `auth_function_id`.
+
+In the iii ecosystem, for example (these are examples, not an exhaustive
+list):
+
+- **`sandbox-libkrun` VMs with networking.** A VM reaches host loopback ports
+  through its gateway, and `iii-network` rewrites the gateway address to
+  `127.0.0.1`, so code running in a sandbox (for example through
+  `sandbox-code-runner`) is a loopback peer.
+- **`tailscale::serve::add` (and Funnel)** publishes a local port to the
+  tailnet (or, with Funnel, to the internet).
+- **`quick-tunnel`** publishes a local port through a cloudflared Quick
+  Tunnel.
+- **`kubectl port-forward` and service-mesh sidecars** deliver remote
+  clients from a local address.
+
+The `Origin` and forwarding-header checks above catch some of these, not all:
+a forwarder that adds no such header, or a sandbox that connects directly, is
+indistinguishable from a local process. "Every local process is trusted" stops
+holding as soon as any such path is in play; use an `auth_function_id` then.
+
+`rbac-proxy::status` reports which authentication is in force as `auth`:
+`"function"`, `"loopback"` or `"none"` (every worker and telemetry
+connection refused), next to `rbac_enabled` (still: an `auth_function_id` is
+set). The mode governs `/` and `/otel` only: in every mode, `/ws/channels/*`
+sockets go to the engine without the proxy authenticating them, and the engine
+checks each channel's access key, so `none` does not refuse channel sockets. The session probe a
+client sends through the proxy (`rbac-proxy::session`, used by mcp-server's
+`iii_status`) reports the same `auth` in its `policy`. Like the other
+`rbac.*` keys, a change applies to new connections.
 
 A call through the middleware waits up to 610 s for it (a middleware that
 forwards with its own timeout should use 600 s or less), and a connection that
@@ -289,13 +398,15 @@ them with `observable: false`. Details:
 
 | Function | Input | Output |
 |---|---|---|
-| `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, expose_endpoints, active_connections, version }` |
-| `rbac-proxy::session` | `{}` | `{ proxied: true, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, expose_endpoints } }` |
+| `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, auth, expose_endpoints, active_connections, version }` |
+| `rbac-proxy::session` | `{}` | `{ proxied: true, session_id, function_registration_prefix, worker_names, policy: { auth_function, auth, expose_functions, expose_endpoints } }` |
 
 `rbac-proxy::status` is a read-only health and identity probe: the bound
 host and port, the upstream engine URL with any `user:pass@` redacted,
-whether an auth function is configured, the live connection count and the
-worker version.
+whether an auth function is configured, which authentication is in force
+for worker and telemetry connections (`auth`: `"function"`, `"loopback"` or
+`"none"`; channel sockets are checked by the engine in every mode), the live
+connection count and the worker version.
 
 `rbac-proxy::session` answers "is **this** connection behind rbac-proxy?",
 while `rbac-proxy::status` reports on the proxy as a whole. The proxy's
@@ -305,7 +416,8 @@ forwards it, so a worker connected straight to the engine gets
 the engine), but `forbidden_functions` does: an auth function that lists
 `rbac-proxy::session` denies it with `FORBIDDEN`. `policy` is the
 configuration the session runs under: whether an auth function is
-configured, the `expose_functions` rules as written (they apply to every
+configured, which authentication admitted it (`auth`: `"function"` or
+`"loopback"`), the `expose_functions` rules as written (they apply to every
 session, in every namespace) and the endpoint rules in force. A client reads
 the globs to decide what to warn its users about, for example a `match("*")`
 without an auth function.

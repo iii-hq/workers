@@ -1231,6 +1231,7 @@ impl Interceptor {
                 "worker_names": self.session.worker_names,
                 "policy": {
                     "auth_function": rbac.auth_function_id.is_some(),
+                    "auth": rbac.auth_mode(),
                     "expose_functions": rbac.expose_functions,
                     "expose_endpoints": rbac.endpoints(),
                 },
@@ -3687,6 +3688,46 @@ mod tests {
         assert_eq!(res["worker_names"], json!([]));
         assert_eq!(res["policy"]["auth_function"], true);
         assert_eq!(res["policy"]["expose_functions"], json!(["match(\"*\")"]));
+    }
+
+    #[tokio::test]
+    async fn session_probe_reports_the_auth_in_force() {
+        let probe = |rbac: RbacConfig| async move {
+            let i = interceptor(config_with(rbac, None), session(None));
+            reply(i.handle_downstream(&probe_frame().to_string()).await)["result"]["policy"].clone()
+        };
+        let mut rbac = expose(&["api::*"]);
+        rbac.loopback_auth = Some(rbac::LoopbackAuth {
+            worker_names: vec!["mcp-server".to_string()],
+            forbidden_functions: vec!["secrets::resolve".to_string()],
+            context: json!({ "tenant": "local" }),
+            ..rbac::LoopbackAuth::default()
+        });
+        let loopback = probe(rbac.clone()).await;
+        assert_eq!(loopback["auth"], "loopback");
+        assert_eq!(loopback["auth_function"], false);
+        // Nothing else new: not the grants, not the context.
+        let mut keys: Vec<_> = loopback.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "auth",
+                "auth_function",
+                "expose_endpoints",
+                "expose_functions"
+            ]
+        );
+        for leaked in ["secrets::resolve", "tenant", "loopback_auth"] {
+            assert!(!loopback.to_string().contains(leaked), "{loopback}");
+        }
+
+        rbac.auth_function_id = Some("my-project::auth".to_string());
+        let function = probe(rbac.clone()).await;
+        assert_eq!(function["auth"], "function");
+        assert_eq!(function["auth_function"], true);
+
+        assert_eq!(probe(expose(&["api::*"])).await["auth"], "none");
     }
 
     #[tokio::test]
