@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.4
+
+- **A long check prints a short record.** The full suite (Rust, database, 2,737 Playwright tests) printed everything to the job's stdout. The job finished inside its deadline, but its record passed the 256 KB a function result carries: `shell::status` could not return it, and the batch was left without a verdict for a round. The long-run recipe now sends each command's output to its own log and prints only the exit code and the last 40 lines.
+
 ## 0.8.3
 
 - **A resume runs Setup in the run worktree again.** A run's branch was rebased onto `main` between sessions, and `main` had added a Node dependency (`@iii-dev/traces-ui`). The resumed run kept the old install: web typecheck and build failed on a missing module, a validation round was spent, and no card had a defect.
