@@ -152,9 +152,17 @@ fn moved_root(snap: &Snap, exec: &Exec, cfg: &ShellConfig) -> Option<String> {
     // a name with whitespace does not move the session, and another session's
     // worktree named like a whole word of this line (`list`) does, upgrade if
     // agents rely on either.
+    // Words split on whitespace only (keeps `../topic=login`) and on shell
+    // metacharacters too (finds `../b` inside `'../b';`).
+    let quotes: &[char] = &['\'', '"', '`'];
     let words: Vec<&str> = exec
         .line
-        .split(|c: char| c.is_whitespace() || "'\"`;&|()<>=$".contains(c))
+        .split_whitespace()
+        .map(|w| w.trim_matches(quotes))
+        .chain(
+            exec.line
+                .split(|c: char| c.is_whitespace() || "'\"`;&|()<>=$".contains(c)),
+        )
         .filter_map(|w| w.trim_end_matches('/').rsplit('/').next())
         .collect();
     let named: Vec<PathBuf> = linked_worktrees(&snap.common)
@@ -315,6 +323,11 @@ mod tests {
         assert_eq!(
             follow(&main, &["sh", "-c", "git worktree add -q '../b' && false"]).await,
             s(dir.join("b"))
+        );
+        // Punctuation inside a direct argument stays part of the name.
+        assert_eq!(
+            follow(&main, &["git", "worktree", "add", "-q", "../topic=login"]).await,
+            s(dir.join("topic=login"))
         );
         let c = dir.join("c");
         let c_arg = c.to_str().unwrap();
