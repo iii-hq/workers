@@ -298,6 +298,12 @@ Two races of a build are accepted:
   its build id. A caller that gave up (its `build.json` still names the older
   build) then gets S508 on its next start, and builds again.
 
+A destroy without `prune` tells a legacy rootfs clone from an overlay
+trampoline by its `root/bin` or `root/usr`, the test a legacy start applies
+before it clones again. A legacy guest that deleted both leaves a `root/` that
+counts as runtime state: such a destroy removes it, with whatever the guest kept
+there.
+
 A scoped token takes any build directory that no VM of the same project token
 has recorded now:
 
