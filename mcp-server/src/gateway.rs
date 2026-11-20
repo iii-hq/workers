@@ -10,7 +10,11 @@
 //!   iii_observers          this session's observers
 //!   iii_unobserve          remove one
 //!   iii_status             this server, and the access control in force
-//!   iii_list_agents, iii_get_agent, iii_list_skills, iii_get_skill
+//!   iii_get_agent          load (and activate) an agent profile
+//!
+//! Listing profiles and reading skills go through iii_call
+//! (directory::agents::list, directory::skills::list / get); skills are also
+//! resources at iii://<id>.
 //!
 //! What a call may reach is decided by RBAC (rbac-proxy) on the connection,
 //! not here; the only local rule is that `mcp-server::` internals are refused.
@@ -22,7 +26,7 @@ use crate::directory_bridge;
 use crate::rbac_guard::RbacMode;
 use crate::sessions::{Delivery, Observe, ObserveRequest, Sessions};
 
-pub const TOOL_NAMES: [&str; 12] = [
+pub const TOOL_NAMES: [&str; 9] = [
     "iii_call",
     "iii_secret_store",
     "iii_observe",
@@ -31,10 +35,7 @@ pub const TOOL_NAMES: [&str; 12] = [
     "iii_observers",
     "iii_unobserve",
     "iii_status",
-    "iii_list_agents",
     "iii_get_agent",
-    "iii_list_skills",
-    "iii_get_skill",
 ];
 
 const DEFAULT_MAX_CHARS: usize = 100_000;
@@ -60,7 +61,7 @@ pub struct Ctx<'a, B> {
 /// `default` identity, written for MCP clients.
 pub const DEFAULT_PROFILE: &str = "default-mcp";
 
-const INSTRUCTIONS: &str = "Start by loading the default agent profile with iii_get_agent { activate: true } (no id means \"default-mcp\"; it reads directory::agents::get from iii-directory) and follow it. To switch, load another profile the same way with its id; iii_status reports the session's active_profile. Everything on the running iii engine is a function, called by id with iii_call (a function id and a JSON payload) instead of the `iii call` CLI or curl; never use a function id from memory. Discover what this system can do with iii_call: directory::search_functions { capabilities: [...] } returns candidate function ids for what you need, engine::functions::list ({ prefix } or { search }) the functions registered now, engine::workers::list the workers connected now, directory::skills::index the skills relevant to this system (guidance documents, not one per worker; use it sparingly), and engine::functions::info { function_id } a function's contract, which you read before its first call. Some functions are higher-order: they call other functions for you, so their payload names function ids and payloads. fp::pipe runs a chain of calls worker-side, each result passed to the next, so a large value moves between other functions without passing through you; fp::batch runs independent calls at once. Call them with iii_call like any other function. React to the engine with iii_observe instead of polling functions: each matching invocation becomes an observation, buffered for this session and read with iii_observations_poll, or handed to a target_function_id the engine runs; iii_observations_sse streams observations on this session's GET stream instead. List observers with iii_observers and remove each one with iii_unobserve when done. This server cannot register functions: to add one, create or change a worker you control and register it with the iii-sdk. Agent profiles: iii_list_agents / iii_get_agent. Skills: iii_list_skills / iii_get_skill (also resources at iii://<id>). iii_status reports the access control in force. Never put a credential in an iii_call payload: store it with iii_secret_store and pass the secret://NAME reference it returns.";
+const INSTRUCTIONS: &str = "Start by loading the default agent profile with iii_get_agent { activate: true } (no id means \"default-mcp\"; it reads directory::agents::get from iii-directory) and follow it. To switch, load another profile the same way with its id; iii_status reports the session's active_profile. Everything on the running iii engine is a function, called by id with iii_call (a function id and a JSON payload) instead of the `iii call` CLI or curl; never use a function id from memory. Discover what this system can do with iii_call: directory::search_functions { capabilities: [...] } returns candidate function ids for what you need, engine::functions::list ({ prefix } or { search }) the functions registered now, engine::workers::list the workers connected now, directory::skills::index the skills relevant to this system (guidance documents, not one per worker; use it sparingly), and engine::functions::info { function_id } a function's contract, which you read before its first call. Some functions are higher-order: they call other functions for you, so their payload names function ids and payloads. fp::pipe runs a chain of calls worker-side, each result passed to the next, so a large value moves between other functions without passing through you; fp::batch runs independent calls at once. Call them with iii_call like any other function. React to the engine with iii_observe instead of polling functions: each matching invocation becomes an observation, buffered for this session and read with iii_observations_poll, or handed to a target_function_id the engine runs; iii_observations_sse streams observations on this session's GET stream instead. List observers with iii_observers and remove each one with iii_unobserve when done. This server cannot register functions: to add one, create or change a worker you control and register it with the iii-sdk. Agent profiles: list them with iii_call directory::agents::list (every profile, each row with hidden: leave hidden helper profiles out unless asked), and load or switch one with iii_get_agent. Skills: iii_call directory::skills::list ({ search } or { prefix }) and directory::skills::get { id } (also resources at iii://<id>). iii_status reports the access control in force. Never put a credential in an iii_call payload: store it with iii_secret_store and pass the secret://NAME reference it returns.";
 
 /// The server instructions MCP clients show the model.
 pub fn instructions(mode: &RbacMode) -> String {
@@ -75,7 +76,6 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 }
 
 pub fn tools_list() -> Value {
-    let id_only = |what: &str| json!({ "type": "object", "properties": { "id": { "type": "string", "description": what } }, "required": ["id"] });
     json!({ "tools": [
         tool("iii_call", "Call any function on the iii engine by id and return its result: the way to act on the engine, instead of the `iii call` CLI. Find ids with directory::search_functions (by capability) or engine::functions::list, and read a contract with engine::functions::info before the first call. Some functions are higher-order and call other functions for you: fp::pipe chains calls worker-side, each result passed to the next; fp::batch runs independent calls at once.", json!({
             "type": "object",
@@ -112,9 +112,6 @@ pub fn tools_list() -> Value {
             "type": "object", "properties": { "observer_id": { "type": "string" } }, "required": ["observer_id"]
         })),
         tool("iii_status", "This MCP server: version, session, the session's active profile (active_profile: default-mcp until another is loaded with activate: true), and access_control: rbac-proxy (with the rules in force) or disabled.", json!({ "type": "object", "properties": {} })),
-        tool("iii_list_agents", "List the agent profiles installed in the iii engine (id, name, description, model, counts).", json!({
-            "type": "object", "properties": { "include_hidden": { "type": "boolean", "description": "Include hidden helper profiles." } }
-        })),
         tool("iii_get_agent", "Fetch an agent profile: its full system prompt (resolved through extends), preloaded skills and functions. Without an id, the default profile (default-mcp), which every session loads first. Pass activate: true when you adopt the profile: it becomes this session's active profile, which iii_status reports.", json!({
             "type": "object",
             "properties": {
@@ -122,10 +119,6 @@ pub fn tools_list() -> Value {
                 "activate": { "type": "boolean", "description": "Make it this session's active profile. Default: false (only read it)." }
             }
         })),
-        tool("iii_list_skills", "List skills installed in the iii engine. Filter with search (substring) or prefix (worker namespace).", json!({
-            "type": "object", "properties": { "search": { "type": "string" }, "prefix": { "type": "string" } }
-        })),
-        tool("iii_get_skill", "Fetch one skill by id and return its markdown body.", id_only("Skill id, e.g. kanban")),
     ]})
 }
 
@@ -454,31 +447,7 @@ pub async fn call_tool<B: Bus + Observe>(
             }
             text(&v)
         }
-        "iii_list_agents" => {
-            let hidden = args.get("include_hidden").and_then(Value::as_bool) == Some(true);
-            match directory_bridge::list_agents(ctx.bus, hidden).await {
-                Ok(v) => text(&v),
-                Err(e) => error(e.to_string()),
-            }
-        }
         "iii_get_agent" => iii_get_agent(ctx, args).await,
-        "iii_list_skills" => match directory_bridge::list_skills(
-            ctx.bus,
-            str_arg(args, "search"),
-            str_arg(args, "prefix"),
-        )
-        .await
-        {
-            Ok(v) => text(&v),
-            Err(e) => error(e.to_string()),
-        },
-        "iii_get_skill" => match str_arg(args, "id") {
-            None => error("id is required"),
-            Some(id) => match directory_bridge::get_skill_body(ctx.bus, id).await {
-                Ok(body) => text(&Value::String(body)),
-                Err(e) => error(e.to_string()),
-            },
-        },
         _ => return None,
     };
     Some(result)
@@ -547,10 +516,7 @@ mod tests {
                 "iii_observers",
                 "iii_unobserve",
                 "iii_status",
-                "iii_list_agents",
                 "iii_get_agent",
-                "iii_list_skills",
-                "iii_get_skill",
             ]
         );
         let required = |n: &str| {
@@ -1313,67 +1279,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn profile_and_skill_tools_read_the_directory() {
-        let e = Engine::new(
-            FakeBus::new()
-                .on("directory::agents::list", |_| {
-                    Ok(json!({ "agents": [{ "id": "writer" }, { "id": "h", "hidden": true }] }))
-                })
-                .on("directory::agents::get", |p| {
-                    Ok(json!({ "id": p["id"], "system_prompt": "Be." }))
-                })
-                .on("directory::skills::list", |_| {
-                    Ok(json!({ "skills": [{ "id": "kanban" }] }))
-                })
-                .on("directory::skills::get", |_| {
-                    Ok(json!({ "body": "# kanban" }))
-                }),
-        );
+    async fn get_agent_reads_the_directory_and_the_other_directory_tools_are_gone() {
+        // Listing profiles and reading skills go through iii_call
+        // (directory::agents::list, directory::skills::list / get); only
+        // loading a profile, which can activate it, keeps a tool.
+        let e = Engine::new(FakeBus::new().on("directory::agents::get", |p| {
+            Ok(json!({ "id": p["id"], "system_prompt": "Be." }))
+        }));
         let s = sessions();
-        assert_eq!(
-            tool(&e, &s, None, "iii_list_agents", json!({}))
-                .await
-                .1
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            tool(
-                &e,
-                &s,
-                None,
-                "iii_list_agents",
-                json!({ "include_hidden": true })
-            )
-            .await
-            .1
-            .as_array()
-            .unwrap()
-            .len(),
-            2
-        );
         assert_eq!(
             tool(&e, &s, None, "iii_get_agent", json!({ "id": "writer" }))
                 .await
                 .1["system_prompt"],
             "Be."
         );
-        assert_eq!(
-            tool(&e, &s, None, "iii_list_skills", json!({ "search": "kan" }))
-                .await
-                .1[0]["id"],
-            "kanban"
-        );
-        assert_eq!(
-            tool(&e, &s, None, "iii_get_skill", json!({ "id": "kanban" }))
-                .await
-                .1,
-            json!("# kanban")
-        );
         let (err, v) = tool(&e, &s, None, "iii_get_agent", json!({ "id": 3 })).await;
         assert!(err && v.as_str().unwrap().contains("id"), "{v}");
+        let ctx = Ctx {
+            bus: &e,
+            sessions: &s,
+            session_id: None,
+            mode: &proxied(),
+            sink: "mcp-server::observed",
+        };
+        for gone in ["iii_list_agents", "iii_list_skills", "iii_get_skill"] {
+            assert!(
+                call_tool(&ctx, gone, &json!({ "id": "kanban" }))
+                    .await
+                    .is_none(),
+                "{gone} is still a gateway tool"
+            );
+            assert!(!TOOL_NAMES.contains(&gone), "{gone}");
+        }
+    }
+
+    #[test]
+    fn the_instructions_send_profile_listing_and_skills_through_iii_call() {
+        for gone in ["iii_list_agents", "iii_list_skills", "iii_get_skill"] {
+            assert!(
+                !INSTRUCTIONS.contains(gone),
+                "instructions still name {gone}"
+            );
+        }
+        for id in [
+            "directory::agents::list",
+            "directory::skills::list",
+            "directory::skills::get",
+        ] {
+            assert!(INSTRUCTIONS.contains(id), "instructions do not name {id}");
+        }
+        // directory::agents::list returns every profile, hidden helper ones
+        // included, each row with `hidden`; the removed tool filtered them.
+        assert!(
+            INSTRUCTIONS.contains("hidden"),
+            "instructions do not say to leave out hidden profiles"
+        );
     }
 
     #[tokio::test]
