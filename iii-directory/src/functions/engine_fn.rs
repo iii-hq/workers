@@ -25,7 +25,7 @@ use super::search::baggage_own_namespace;
 pub struct FunctionInfoInput {
     /// Fully-qualified function id on the bus (e.g. `sandbox::create`).
     pub function_id: String,
-    /// Engine namespace to read the function in. Omitted: where a call without one goes (the caller's namespace; default for engine::, configuration:: and sandbox:: ids; the Compose namespace for compose:: ids).
+    /// Engine namespace to read the function in. Omitted: where a call without one goes (the caller's namespace; default for engine::, configuration:: and sandbox:: ids; for compose:: ids, the Compose namespace this directory runs under, which is the caller's when both run under one Compose daemon).
     #[serde(default)]
     pub namespace: Option<String>,
 }
@@ -85,7 +85,7 @@ async fn function_info(
         return Err("function_id must be non-empty".into());
     }
 
-    // shortcut: III_COMPOSE_NAMESPACE is read from this worker's environment, which matches the caller only inside one Compose project.
+    // shortcut: III_COMPOSE_NAMESPACE is read from this worker's environment, which matches the caller only under one Compose daemon; read it from caller baggage before machines become namespaces (stage 2).
     let compose = std::env::var("III_COMPOSE_NAMESPACE")
         .ok()
         .filter(|v| !v.trim().is_empty());
