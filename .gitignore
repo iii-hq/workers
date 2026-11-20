@@ -1,6 +1,9 @@
 # Build artifacts
 target/
 dist/
+# ui_build.rs: a frontend's build marker and the checkout's build lock
+.ui-build
+.ui-build.lock
 # Console page assets compiled into a Node worker (see <worker>/ui/build.mjs)
 */src/ui-assets.generated.ts
 .next/

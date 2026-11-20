@@ -138,14 +138,23 @@ SHARED_TEST_SUPPORT = {
 # Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's
 # binary: the worker's build.rs builds a sub-project that bundles the package
 # (packages/native-ui → <worker>/native-ui/dist/native.js, embedded with
-# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed).
-# A source change there fans out, like a crate's, to every
-# worker with a sub-project whose package.json depends on the package (found
-# by name, so a new native app needs no edit here). packages/console-ui is
-# deliberately absent: worker UIs keep it external (the console serves the
-# real module), so its changes do not change a worker's artifact.
+# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed;
+# packages/console-ui's /format, /hooks and /ui-classes subpaths, and its
+# shared builder, → <worker>/ui/dist/page.js; its root module stays external,
+# served by the console; packages/editor-prefs and packages/terminal-font →
+# the ade, ide and tmux ui/dist bundles; packages/agent-terminal-ui → the
+# claude-code and pi ui/dist bundles). A source change there fans out, like a
+# crate's, to every worker with a sub-project whose package.json depends on the
+# package (found by name, so a new worker needs no edit here).
 PACKAGES_DIR = "packages"
-BUNDLED_PACKAGES = ("native-ui", "traces-ui")
+BUNDLED_PACKAGES = (
+    "native-ui",
+    "traces-ui",
+    "console-ui",
+    "editor-prefs",
+    "terminal-font",
+    "agent-terminal-ui",
+)
 
 # The native-ui job (ci.yml) runs the @iii-dev/native-ui SDK's suite and every
 # <worker>/native-ui app's suite. It runs when the SDK, an app, the crate that

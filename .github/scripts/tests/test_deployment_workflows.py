@@ -153,6 +153,7 @@ def test_release_build_restores_frontends_with_a_portable_copy():
     steps = yaml.safe_load(text)["jobs"]["build"]["steps"]
     build = next(step for step in steps if step.get("name") == "Build immutable artifact")
     assert build["env"]["SKIP_UI_BUILD"] == "1"
+    assert build["env"]["SKIP_WEB_BUILD"] == "1"
     # rsync is not guaranteed on the Windows and macOS release runners: it may
     # be named only in comments, never invoked.
     for line in text.splitlines():
