@@ -2118,6 +2118,20 @@ async fn run_on_faulty_engine<T, F: std::future::Future<Output = T>>(
     .await
 }
 
+/// The hook points a test's `hooks` map observes. Any other key
+/// (`session::get`) only answers that function. Kept out of
+/// `run_on_misleading_engine`, whose debug poll frame sits near the 2 MiB
+/// test-thread stack.
+fn observed_hook_points(hooks: &Value) -> Vec<String> {
+    hooks
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|id| id.starts_with("harness::hook::"))
+        .cloned()
+        .collect()
+}
+
 /// [`run_on_faulty_engine`], storing a refused turn write that `lands` matches all
 /// the same: the error does not tell whether the write happened.
 async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
@@ -2143,15 +2157,7 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
         "created_at": 1, "updated_at": 1
     })));
     let stored_turn = turn.clone();
-    // A `hooks` key that is not a hook point (`session::get`) only answers
-    // that function: nothing observes it.
-    let observed_hooks: Vec<String> = hooks
-        .as_object()
-        .unwrap()
-        .keys()
-        .filter(|id| id.starts_with("harness::hook::"))
-        .cloned()
-        .collect();
+    let observed_hooks = observed_hook_points(&hooks);
     let server = tokio::spawn(async move {
         let mut queue = serde_json::Map::new();
         let mut prompts = serde_json::Map::new();
