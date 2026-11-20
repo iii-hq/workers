@@ -1,0 +1,209 @@
+{
+  "function_id": "session::read-attachment",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "attachment_id": {
+        "description": "The attachment's id (`a_…`), from an `@attachment(id=\"a_…\")` mention or an `<attachment id=\"a_…\">` block.",
+        "type": "string"
+      },
+      "max_chars": {
+        "default": null,
+        "description": "Characters in the text window: default 20000, at most 100000.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "offset": {
+        "default": null,
+        "description": "First character of the text window (text files only). Default 0.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "session_id": {
+        "default": null,
+        "description": "The session holding it. Optional: the id alone finds it.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "attachment_id"
+    ],
+    "title": "ReadAttachmentRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/ReadAttachmentResponse"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "AttachmentKind": {
+        "description": "What `session::read-attachment` makes of a stored file.",
+        "oneOf": [
+          {
+            "description": "UTF-8 text, returned in character windows.",
+            "enum": [
+              "text"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A picture.",
+            "enum": [
+              "image"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A PDF, read through `pdf::to-markdown`.",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An office document (Word, Excel, PowerPoint, OpenDocument, RTF, EPUB, CSV), read through `document::to-markdown`.",
+            "enum": [
+              "document"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Anything else: saved into the working folder and opened with the agent's own tools.",
+            "enum": [
+              "binary"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "AttachmentMeta": {
+        "description": "Metadata of one stored attachment. The bytes live in the session's attachment store (`session::get-attachment`), never inline in the transcript: a message references them through a [`ContentBlock::File`] block carrying the same `attachment_id`.",
+        "properties": {
+          "attachment_id": {
+            "description": "Store-generated id (`a_<uuid>`), unique within the session.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mime": {
+            "description": "MIME type, as uploaded (`application/octet-stream` when unknown).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Original filename, as uploaded.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the bytes.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Decoded byte length.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "created_at",
+          "mime",
+          "name",
+          "session_id",
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      },
+      "ReadAttachmentResponse": {
+        "description": "`null` when no session holds the attachment.",
+        "properties": {
+          "attachment": {
+            "$ref": "#/definitions/AttachmentMeta"
+          },
+          "how_to_read": {
+            "description": "Every kind but text: the exact calls that read or save the file on this engine (or the worker to install).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AttachmentKind"
+              }
+            ],
+            "description": "From the mime type and the extension; a text file that is not UTF-8 is `binary`."
+          },
+          "next_offset": {
+            "description": "The `offset` of the next window; `null` at the end of the text and for the other kinds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "description": "Where `text` starts (0 for the other kinds).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "`kind: \"text\"` only: the characters `[offset, offset + max_chars)`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_chars": {
+            "description": "Characters in the whole text; `null` for the other kinds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "Text remains after this window.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attachment",
+          "kind",
+          "offset",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "Nullable_ReadAttachmentResponse"
+  }
+}

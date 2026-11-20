@@ -97,7 +97,7 @@ Streaming an assistant reply uses the same primitives: append an
 as tokens arrive — each update calls `session::on-message-updated` with an
 incremented `revision`.
 
-The full function surface (21 `session::*` functions: lifecycle,
+The full function surface (22 `session::*` functions: lifecycle,
 messages, branching/fork, attachments) is documented in the spec and on each
 function's registered schema — see `iii call engine::workers::info name=session-manager`.
 `session::messages` items carry the entry `origin` (hook annotations —
@@ -111,6 +111,20 @@ sessions by title words or id (top-level chats before sub-agents, e2e
 sessions and the asking session left out) and `session::mention::get`
 returns the pill, preview card and agent summary — never the parked
 draft — and declares the provider, whose details call is `session::get`.
+
+A file attached to a chat is mentioned as `@attachment(id="a_…")`, its
+stored attachment id. `session::attachments::mention::search` lists only the
+asking chat's attachments (`context.session_id`), newest first, then by name;
+`session::attachments::mention::get` resolves an id alone to the pill (name,
+size), the card (type, size, added) and the summary, and names
+`session::read-attachment` as the details call. That function is how an agent
+reads any attachment by id (`session_id` optional): a text file comes back in
+character windows (`offset`, `max_chars`, `next_offset`); a PDF, an office
+document, an image or any other file comes back with `how_to_read`, the exact
+`fp::pipe` calls that convert it (`pdf::to-markdown`, `document::to-markdown`)
+or save it into the agent's working folder, checked against the functions the
+engine has (a missing worker is named instead). Agents may call it without
+approval; the two mention functions are denied to them.
 
 ## Event functions
 

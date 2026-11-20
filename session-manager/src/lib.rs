@@ -43,6 +43,7 @@ pub mod functions;
 pub mod manifest;
 pub mod observed;
 pub mod pagination;
+pub mod reading;
 pub mod resync;
 pub mod runtime;
 pub mod service;

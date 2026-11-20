@@ -24,10 +24,10 @@ use crate::events::{
     SessionCreatedEvent, SessionDeletedEvent, StatusChangedEvent, WithSessionMetadata,
 };
 use crate::functions::{
-    append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
-    get_message, list, list_attachments, mention, messages, messages_range, messages_tail,
-    put_attachment, set_active_leaf, set_draft, set_meta, set_status, store_protocol,
-    update_message,
+    append, append_many, attachment_mention, create, delete, delete_attachment, ensure, fork, get,
+    get_attachment, get_message, list, list_attachments, mention, messages, messages_range,
+    messages_tail, put_attachment, read_attachment, set_active_leaf, set_draft, set_meta,
+    set_status, store_protocol, update_message,
 };
 use crate::types::{SessionEntry, SessionMeta};
 use mention_contract::{
@@ -141,8 +141,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
             delete_attachment::DeleteAttachmentRequest,
             delete_attachment::DeleteAttachmentResponse,
         >("session::delete-attachment"),
+        spec::<
+            read_attachment::ReadAttachmentRequest,
+            Option<read_attachment::ReadAttachmentResponse>,
+        >(read_attachment::FUNCTION_ID),
         spec::<MentionSearchRequest, MentionSearchResponse>(mention::SEARCH_FN),
         spec::<MentionGetRequest, Option<MentionView>>(mention::GET_FN),
+        spec::<MentionSearchRequest, MentionSearchResponse>(attachment_mention::SEARCH_FN),
+        spec::<MentionGetRequest, Option<MentionView>>(attachment_mention::GET_FN),
         // 3. configuration handlers (register_config_observer, then register_config_status)
         spec::<OnConfigChangeEvent, OnConfigChangeResponse>("session::on-config-change"),
         spec::<ConfigStatusRequest, ReloadStatus>("session::config-status"),
