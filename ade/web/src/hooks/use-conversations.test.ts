@@ -677,6 +677,29 @@ describe('working directory moved by the harness', () => {
 
     expect(metadataForWrite(next).fs_scope).toEqual({ root: '/repo.feat' })
   })
+
+  it('follows a late earlier move only when the newer move continues it', () => {
+    const late = movedEvent({ root: '/repo.one', moved_from: '/repo' }, 2_000)
+    const reversed = applyConversationMetadataEvent(
+      applyConversationMetadataEvent(open, {
+        ...movedEvent({ root: '/repo.two', moved_from: '/repo.one' }, 3_000),
+        title: 'new',
+      }),
+      late,
+    )
+    expect(reversed.workingDir).toBe('/repo.two')
+    expect(reversed.title).toBe('new')
+
+    // A console echo (no moved_from) newer than the move keeps the chat put.
+    const afterEcho = applyConversationMetadataEvent(
+      applyConversationMetadataEvent(
+        open,
+        movedEvent({ root: '/repo' }, 3_000),
+      ),
+      late,
+    )
+    expect(afterEcho.workingDir).toBe('/repo')
+  })
 })
 
 describe('reconnect hydration', () => {

@@ -863,7 +863,15 @@ export function applyConversationMetadataEvent(
     conversation.serverMetadataUpdatedAt !== undefined &&
     event.timestamp < conversation.serverMetadataUpdatedAt
   ) {
-    return conversation
+    // A late earlier move is followed only when the newer move this chat
+    // already holds continues from it, so it lands on the newest root.
+    // shortcut: bridges one missing move and adds no 'moved' row, so three
+    // or more moves delivered fully reversed leave the chat behind until a
+    // re-list; upgrade if chained moves become common.
+    const via = movedWorkingDir(conversation.workingDir, event.metadata ?? {})
+    const newest =
+      via && movedWorkingDir(via, conversation.sessionMetadata ?? {})
+    return newest ? { ...conversation, workingDir: newest } : conversation
   }
   const md = event.metadata ?? {}
   const { systemPrompt, agentProfile, skills, legacySkillMigration } =
@@ -2216,15 +2224,19 @@ export function useConversations(
             (conversation) => conversation.id === event.session_id,
           )
           const known = current !== undefined
+          const next = current && applyConversationMetadataEvent(current, event)
+          // Like editMeta: an edit before the next render builds on this event.
+          if (next)
+            conversationsRef.current = conversationsRef.current.map((c) =>
+              c === current ? next : c,
+            )
           patchConversation(event.session_id, (conversation) =>
             applyConversationMetadataEvent(conversation, event),
           )
           // A harness move re-roots the chat without going through
           // setWorkingDir: that would write the root back and make the
           // agent's worktree the folder for new chats.
-          const movedTo = current
-            ? applyConversationMetadataEvent(current, event).workingDir
-            : null
+          const movedTo = next?.workingDir
           if (movedTo && movedTo !== current?.workingDir)
             void releaseConsoleClaimIfAny(event.session_id, {
               keepPath: movedTo,

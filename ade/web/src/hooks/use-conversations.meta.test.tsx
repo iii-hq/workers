@@ -249,4 +249,25 @@ describe('working directory moved by the harness', () => {
     expect(releaseWorktree).toHaveBeenCalledWith('wt-1', id)
     expect(setSessionMeta).not.toHaveBeenCalled()
   })
+
+  it('keeps the moved folder when a metadata edit lands before render', async () => {
+    await act(async () => root.unmount())
+    localStorage.clear()
+    const rooted = {
+      ...meta,
+      metadata: { ...meta.metadata, fs_scope: { root: '/repo' } },
+    }
+    vi.mocked(listSessions).mockResolvedValue([rooted])
+    vi.mocked(getSession).mockResolvedValue(rooted)
+    root = createRoot(host)
+    await act(async () => root.render(<Probe />))
+
+    // A non-click editor (a worker control) writes in the same task as the move.
+    await act(async () => {
+      moved('/repo', 11)
+      api.setSessionMetadata(id, { judge_provider: 'semif' })
+    })
+    await vi.waitFor(() => expect(setSessionMeta).toHaveBeenCalledTimes(1))
+    expect(lastMetadata()).toMatchObject({ fs_scope: { root: '/repo.feat' } })
+  })
 })
