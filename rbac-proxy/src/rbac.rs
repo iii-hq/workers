@@ -48,7 +48,7 @@ pub struct RbacConfig {
     pub auth_function_id: Option<String>,
     /// Built-in authentication for local projects, used only when
     /// `auth_function_id` is not set: a connection whose peer address is
-    /// loopback (127.0.0.0/8, ::1, ::ffff:127.x) gets these grants, as if an
+    /// loopback (exactly 127.0.0.1, ::1 or ::ffff:127.0.0.1) gets these grants, as if an
     /// auth function had returned them; any other peer is refused. Only safe
     /// where every local process is trusted: a reverse proxy on the same
     /// machine makes every client look local. `auth_function_id` wins when
@@ -174,12 +174,17 @@ impl From<LoopbackAuth> for AuthResult {
 }
 
 /// `true` when `ip_address`, the peer address passed to auth, is loopback:
-/// 127.0.0.0/8, `::1`, or an IPv4-mapped `::ffff:127.x`. Anything that does
-/// not parse as an address is not.
+/// exactly `127.0.0.1`, `::1` or the IPv4-mapped `::ffff:127.0.0.1`. The rest
+/// of 127.0.0.0/8 is not: a service-mesh sidecar (Istio connects from
+/// `127.0.0.6`) forwards remote clients from such an address. Anything that
+/// does not parse as an address is not loopback either.
 pub fn is_loopback_peer(ip_address: &str) -> bool {
     ip_address
         .parse::<std::net::IpAddr>()
-        .is_ok_and(|ip| ip.to_canonical().is_loopback())
+        .is_ok_and(|ip| match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => v4 == std::net::Ipv4Addr::LOCALHOST,
+            std::net::IpAddr::V6(v6) => v6 == std::net::Ipv6Addr::LOCALHOST,
+        })
 }
 
 /// The session `rbac.loopback_auth` grants the peer `ip_address`, built as
@@ -1734,15 +1739,18 @@ mod tests {
 
     // --- loopback_auth -----------------------------------------------------
 
-    const LOOPBACK_PEERS: [&str; 6] = [
-        "127.0.0.1",
+    /// The only addresses that count as loopback.
+    const LOOPBACK_PEERS: [&str; 3] = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+    const REMOTE_PEERS: [&str; 17] = [
+        // The rest of 127.0.0.0/8 is not loopback here: an Istio sidecar
+        // connects from 127.0.0.6 on behalf of remote clients.
+        "127.0.0.6",
         "127.5.5.5",
         "127.255.255.254",
-        "::1",
-        "::ffff:127.0.0.1",
+        "127.0.0.0",
+        "::ffff:127.0.0.2",
         "::ffff:127.9.9.9",
-    ];
-    const REMOTE_PEERS: [&str; 10] = [
+        "0:0:0:0:0:0:0:2",
         "10.0.0.5",
         "192.168.1.2",
         "::ffff:10.0.0.1",
@@ -1868,7 +1876,7 @@ mod tests {
             "worker_names": ["mcp-server"]
         }));
         let mut ids = std::collections::HashSet::new();
-        for ip in ["127.0.0.1", "127.5.5.5", "::1", "::ffff:127.0.0.1"] {
+        for ip in LOOPBACK_PEERS {
             let s = resolve_from(&rbac, ip)
                 .await
                 .unwrap_or_else(|e| panic!("{ip} refused: {}", e.message));

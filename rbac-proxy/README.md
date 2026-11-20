@@ -195,10 +195,12 @@ prefix). `rbac` keys of entries stored before 0.26 are ignored with one
 Without `auth_function_id` every connection is refused. A local project that
 wants rbac-proxy (for example in front of `mcp-server`) without writing an
 auth function or minting a per-project secret can set `rbac.loopback_auth`
-instead: a connection whose peer address is loopback (`127.0.0.0/8`, `::1`,
-`::ffff:127.x`) gets these grants, exactly as if an auth function had
-returned them; a connection from any other address is refused, as without
-the key.
+instead: a connection whose peer address is loopback gets these grants,
+exactly as if an auth function had returned them; a connection from any other
+address is refused, as without the key. Loopback means exactly `127.0.0.1`,
+`::1` or `::ffff:127.0.0.1`, not the rest of `127.0.0.0/8`: a service-mesh
+sidecar such as Istio's connects from `127.0.0.6` on behalf of remote
+clients.
 
 ```yaml
 rbac:
