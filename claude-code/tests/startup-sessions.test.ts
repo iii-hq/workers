@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { RESTART_REASON, settleStaleSessions } from '../src/session-link.js';
+import {
+  RESTART_REASON,
+  settleStaleSessions,
+  settleStaleSessionsWithRetry,
+  startupRetry,
+} from '../src/session-link.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 
 /**
@@ -65,6 +70,45 @@ describe('settling stale sessions at startup', () => {
     (fake.iii as { call: unknown }).call = async () => {
       throw new Error('function_not_found');
     };
-    await expect(settleStaleSessions(fake.iii, () => false)).resolves.toBe(0);
+    // null, not 0: a listing that failed is not a scan that found nothing.
+    await expect(settleStaleSessions(fake.iii, () => false)).resolves.toBeNull();
+  });
+
+  it('retries a failed listing in the background until one succeeds', async () => {
+    const fake = fakeIii();
+    seed(fake, 'late-1', 'working', { agent: 'claude-code' });
+    const real = fake.iii.call.bind(fake.iii);
+    let lists = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::list' && ++lists <= 2)
+        throw new Error('function_not_found');
+      return real(req as never);
+    };
+    const saved = startupRetry.delaysMs;
+    startupRetry.delaysMs = [0, 0, 0];
+    try {
+      expect(await settleStaleSessionsWithRetry(fake.iii, () => false)).toBe(1);
+    } finally {
+      startupRetry.delaysMs = saved;
+    }
+    expect(lists).toBe(3);
+    expect(status(fake, 'late-1').status).toBe('error');
+  });
+
+  it('gives up after its bounded retries', async () => {
+    const fake = fakeIii();
+    let lists = 0;
+    (fake.iii as { call: unknown }).call = async () => {
+      lists++;
+      throw new Error('function_not_found');
+    };
+    const saved = startupRetry.delaysMs;
+    startupRetry.delaysMs = [0, 0];
+    try {
+      expect(await settleStaleSessionsWithRetry(fake.iii, () => false)).toBeNull();
+    } finally {
+      startupRetry.delaysMs = saved;
+    }
+    expect(lists).toBe(3);
   });
 });

@@ -75,6 +75,25 @@ const unsettled = new Map<string, { status: 'done' | 'error'; reason?: string }>
 let reconciling = false;
 /** A success arrived during a sweep: run another pass once it ends. */
 let reconcileRequested = false;
+/** Counts successful status writes, so a write that fails can tell whether
+ *  the store answered while it was pending. */
+let successes = 0;
+
+/**
+ * Keep a status that could not be written for replay. If a write succeeded
+ * while this one was pending, the store answers again and no later success
+ * may come: replay now. A store that keeps failing records no success, so
+ * this never loops.
+ */
+function retainForReplay(
+  iii: IIIClient,
+  sessionId: string,
+  pending: { status: 'done' | 'error'; reason?: string },
+  successesBefore: number,
+): void {
+  unsettled.set(sessionId, pending);
+  if (successes !== successesBefore) void reconcileUnsettled(iii);
+}
 
 /** Each session's status writes, replays included, go out one at a time, in order. */
 const statusQueues = new Map<string, Promise<unknown>>();
@@ -143,6 +162,7 @@ export async function setSessionStatus(
   unsettled.delete(sessionId);
   try {
     await inOrder(sessionId, () => writeStatus(iii, sessionId, status, reason));
+    successes++;
     // The store answers again: write any other session's lost status, in the
     // background, without holding this caller.
     void reconcileUnsettled(iii);
@@ -157,13 +177,35 @@ export async function setSessionStatus(
 
 export const RESTART_REASON = 'claude-code restarted while this run was active';
 
+/** Waits before each retry of a startup listing that failed. Bounded. */
+export const startupRetry = { delaysMs: [2_000, 5_000, 10_000, 30_000, 60_000] };
+
+/**
+ * {@link settleStaleSessions}, retried after a failed listing (session-manager
+ * not up yet) at the bounded `startupRetry` delays. Runs in the background, so
+ * it never delays the worker's functions. `null` when every attempt failed.
+ */
+export async function settleStaleSessionsWithRetry(
+  iii: IIIClient,
+  ranHere: (sessionId: string) => boolean,
+): Promise<number | null> {
+  let settled = await settleStaleSessions(iii, ranHere);
+  for (const delay of startupRetry.delaysMs) {
+    if (settled !== null) return settled;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    settled = await settleStaleSessions(iii, ranHere);
+  }
+  return settled;
+}
+
 /**
  * At startup, settle every session this worker created that still says
  * `working`: no run of its own can be live yet, so each one lost its final
  * status (a write that never landed, or a worker that died mid-run). Each
  * namespace has at most one claude-code, and its calls reach only its own
  * namespace's session-manager, so every `agent: claude-code` session listed
- * here is this worker's. `ranHere` spares every session this worker has run a turn in since it started,
+ * here is this worker's. `null` when the listing failed (nothing written).
+ * `ranHere` spares every session this worker has run a turn in since it started,
  * so a turn that starts and finishes during the scan keeps its own status. Every
  * page is read before anything is written: a write moves a session out of the
  * `working` filter under the cursor. Returns how many were settled.
@@ -171,7 +213,7 @@ export const RESTART_REASON = 'claude-code restarted while this run was active';
 export async function settleStaleSessions(
   iii: IIIClient,
   ranHere: (sessionId: string) => boolean,
-): Promise<number> {
+): Promise<number | null> {
   const stale: string[] = [];
   try {
     let cursor: string | null | undefined;
@@ -196,15 +238,19 @@ export async function settleStaleSessions(
     } while (cursor);
   } catch (err) {
     console.warn(`claude-code: could not list sessions left working: ${String(err)}`);
-    return 0;
+    return null;
   }
   let settled = 0;
   for (const sessionId of stale) {
     if (ranHere(sessionId)) continue;
+    const before = successes;
     if (await setSessionStatus(iii, sessionId, 'error', RESTART_REASON)) settled++;
-    // Not written: replayed once the store answers, unless a run on this
-    // session writes its own status first (which drops the replay).
-    else unsettled.set(sessionId, { status: 'error', reason: RESTART_REASON });
+    // Not written: replayed once the store answers, unless a turn started on
+    // this session while the write was pending (checked in the same step as
+    // the save, so a replay can never land on a running turn).
+    else if (!ranHere(sessionId)) {
+      retainForReplay(iii, sessionId, { status: 'error', reason: RESTART_REASON }, before);
+    }
   }
   return settled;
 }
@@ -220,6 +266,7 @@ export async function settleSessionStatus(
   status: 'done' | 'error',
   reason?: string,
 ): Promise<boolean> {
+  const before = successes;
   if (await setSessionStatus(iii, sessionId, status, reason)) return true;
   for (const delay of statusRetry.delaysMs) {
     await new Promise((resolve) => setTimeout(resolve, delay));
@@ -228,7 +275,7 @@ export async function settleSessionStatus(
   console.error(
     `claude-code: session ${sessionId} still shows working: its ${status} status could not be written; it is written once session-manager answers again`,
   );
-  unsettled.set(sessionId, { status, ...(reason ? { reason } : {}) });
+  retainForReplay(iii, sessionId, { status, ...(reason ? { reason } : {}) }, before);
   return false;
 }
 

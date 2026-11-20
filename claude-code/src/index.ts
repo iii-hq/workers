@@ -23,7 +23,7 @@ import {
 import { registerAgentFeeds } from './agent-feed.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { ranSinceStart, register, startupScanDone } from './run.js';
-import { settleStaleSessions } from './session-link.js';
+import { settleStaleSessionsWithRetry } from './session-link.js';
 import { registerActivity } from './terminal/activity.js';
 import { registerAuth } from './terminal/auth.js';
 import { registerTerminal } from './terminal/terminal.js';
@@ -123,9 +123,12 @@ const emitRaw = feeds.raw.emit;
 register(iii, () => holder.current, emit, emitRaw);
 // A session this worker left `working` (a lost final status, or a restart
 // mid-run) is settled now: nothing of ours can be running yet.
-void settleStaleSessions(iii, ranSinceStart)
+// A listing that fails (session-manager not up yet) is retried, bounded, in
+// the background; runs since startup stay tracked until it ends.
+void settleStaleSessionsWithRetry(iii, ranSinceStart)
   .then((n) => {
-    if (n > 0) console.info(`claude-code: marked ${n} session(s) left working as error`);
+    if (n === null) console.warn('claude-code: gave up listing sessions left working');
+    else if (n > 0) console.info(`claude-code: marked ${n} session(s) left working as error`);
   })
   .finally(startupScanDone);
 

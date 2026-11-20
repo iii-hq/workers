@@ -982,6 +982,102 @@ describe('review: terminal status, settled entries, partial blocks, stop and err
     await vi.waitFor(() => expect(statusesOf(fake, 'second-ok')).toEqual(['working', 'done']));
   });
 
+  /** A session-manager record for `id`, owned by claude-code and `working`. */
+  function staleSession(fake: FakeIii, id: string) {
+    seedSession(fake, id, { agent: 'claude-code' });
+    const meta = fake.state.get(`session-manager/${id}`) as Record<string, unknown>;
+    fake.state.set(`session-manager/${id}`, { ...meta, status: 'working' });
+  }
+
+  /** Holds the first restart `error` write for `id`, then fails it. */
+  function holdThenFailRestart(fake: FakeIii, id: string) {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const state = { held: false };
+    const committed: unknown[] = [];
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: { session_id?: string; status?: string };
+    }) => {
+      const ours = req.function_id === 'session::set-status' && req.payload.session_id === id;
+      if (ours && req.payload.status === 'error' && !state.held) {
+        state.held = true;
+        await gate;
+        throw new Error('timeout');
+      }
+      const out = await real(req as never);
+      if (ours) committed.push(req.payload.status);
+      return out;
+    };
+    return { release, state, committed };
+  }
+
+  it('a restart error that fails after a success meanwhile is replayed at once', async () => {
+    const fake = fakeIii();
+    staleSession(fake, 'pend-1');
+    const hold = holdThenFailRestart(fake, 'pend-1');
+    const scan = settleStaleSessions(fake.iii, () => false);
+    await vi.waitFor(() => expect(hold.state.held).toBe(true));
+    // The store answers while the restart write is pending...
+    await setSessionStatus(fake.iii, 'other-8', 'working');
+    hold.release();
+    await scan;
+    // ...so the failed write is replayed without waiting for another success.
+    await vi.waitFor(() => expect(hold.committed).toEqual(['error']));
+  });
+
+  it('never saves a restart replay for a session a turn started in meanwhile', async () => {
+    const fake = fakeIii();
+    staleSession(fake, 'pend-2');
+    const hold = holdThenFailRestart(fake, 'pend-2');
+    const scan = settleStaleSessions(fake.iii, ranSinceStart);
+    await vi.waitFor(() => expect(hold.state.held).toBe(true));
+    // A turn starts on that session while its restart write is pending.
+    const turn = run(fake, { prompt: 'x', session_id: 'pend-2' });
+    await vi.waitFor(() => expect(ranSinceStart('pend-2')).toBe(true));
+    hold.release();
+    await scan;
+    await turn;
+    await setSessionStatus(fake.iii, 'other-9', 'working');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(hold.committed).toEqual(['working', 'done']);
+  });
+
+  it('a stop that arrives after an SDK error result does not hide the failure', async () => {
+    const fake = await worker();
+    let release: () => void = () => {};
+    const after = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let resultSeen = false;
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          session_id: 'cs-1',
+          num_turns: 1,
+          errors: ['real failure'],
+        };
+        resultSeen = true;
+        // The stop lands after the error result was received.
+        await after;
+      },
+      interrupt: async () => release(),
+    })) as never);
+    const started = fake.registered.get('claude::run')?.({ prompt: 'x', session_id: 'late-stop' });
+    await vi.waitFor(() => expect(resultSeen).toBe(true));
+    await fake.registered.get('claude::stop')?.({ session_id: 'late-stop' });
+    const out = (await started) as { stop_reason?: string; is_error?: boolean; result?: string };
+    expect(out).toMatchObject({ is_error: true, stop_reason: 'error_during_execution' });
+    expect(out.result).toBe('real failure');
+  });
+
   it('the startup scan never settles a session this worker ran since it started', async () => {
     // The scan lists `ran-b` as working, a turn on it then starts AND finishes
     // while the scan is still busy with an earlier session: `done` must stay.

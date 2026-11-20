@@ -471,6 +471,9 @@ async function runReserved(
   let resultText = '';
   let stopReason = 'end';
   let isError = false;
+  /** Whether a claude::stop had landed when the turn's outcome arrived: a
+   *  stop after an SDK error result must not hide that failure. */
+  let stoppedAtOutcome = false;
 
   if (stoppedEarly) {
     stopReason = 'interrupted';
@@ -481,6 +484,7 @@ async function runReserved(
       // The child transcript sees every event before the feeds or the record
       // do, so neither failing can lose what the turn produced.
       if (msg.type === 'stream_event') sink?.streamEvent((msg as { event?: unknown }).event);
+      if (msg.type === 'result') stoppedAtOutcome = handle.stopped === true;
       await rawFeed(session_id, msg);
       if (msg.type === 'system' && msg.subtype === 'init') {
         record.claude_session_id = msg.session_id;
@@ -549,6 +553,7 @@ async function runReserved(
       }
     }
   } catch (err) {
+    stoppedAtOutcome = handle.stopped === true;
     isError = true;
     stopReason = 'error';
     resultText = String(err);
@@ -556,7 +561,7 @@ async function runReserved(
   // A requested stop: the interrupted query answers with an error result (or
   // throws), which is how it was stopped, not a failure. A turn that finished
   // before the stop landed keeps its own outcome.
-  if (handle.stopped && !stoppedEarly && (isError || stopReason !== 'end')) {
+  if (stoppedAtOutcome && !stoppedEarly && (isError || stopReason !== 'end')) {
     isError = false;
     stopReason = 'interrupted';
     resultText = 'Stopped by claude::stop.';
