@@ -6,6 +6,7 @@ color: blue
 extends: deepwork-worker
 hidden: true
 reasoning_effort: high
+skills_index: false
 functions:
   - coder::update-file
   - coder::create-file

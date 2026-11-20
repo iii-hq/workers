@@ -6,6 +6,7 @@ color: rose
 extends: default
 hidden: true
 reasoning_effort: high
+skills_index: false
 functions:
   - kanban::ticket::get
   - state::get

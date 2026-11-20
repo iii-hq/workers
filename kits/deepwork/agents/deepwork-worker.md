@@ -6,6 +6,7 @@ color: blue
 extends: default
 hidden: true
 reasoning_effort: medium
+skills_index: false
 functions:
   - kanban::ticket::get
   - state::get

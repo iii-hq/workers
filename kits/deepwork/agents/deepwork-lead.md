@@ -36,7 +36,7 @@ At the start and on every wake of an aggregate task, `state::get {"scope":"<Poin
 - Never post comments. Return evidence and questions in state; the orchestrator consolidates the handoff.
 - Child deny list D, passed as `options.functions.deny` unless a shape below says `allow`:
   ```json
-  ["kanban::comment::create","kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::stop","harness::ask","directory::skills::get","kanban::project::*","kanban::release::*","kanban::label::convert","code-runner::*","sandbox-code-runner::*","workflow::*"]
+  ["kanban::comment::create","kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::stop","harness::ask","kanban::project::*","kanban::release::*","kanban::label::convert","code-runner::*","sandbox-code-runner::*","workflow::*"]
   ```
 - Every dev child gets `"filesystem_root":"<Worktree>"` in `options`.
 - With a `Child model: <provider>::<model>` line in your task, every child spawn except a judge (which names its own model) passes that `"model"` and `"provider"`: you may run on a lighter model than the phases you relay. With a `Verify model: <provider>::<model>` line, the aggregate verify child passes that one instead; review and judges never take it.
