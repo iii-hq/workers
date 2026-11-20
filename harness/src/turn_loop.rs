@@ -248,6 +248,71 @@ pub(crate) fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -
     })
 }
 
+/// Make `proposed`, the working directory a post_call hook moved the session
+/// to (the ide after a `git worktree add`), the record's root. Returns the root
+/// it replaced. A failed call, a relative path or an unscoped session never
+/// moves.
+pub(crate) fn adopt_moved_root(
+    record: &mut TurnRecord,
+    data: &mut call::ResultData,
+    proposed: Option<String>,
+) -> Option<String> {
+    let root = proposed?;
+    let previous = record.options.filesystem_root()?.to_string();
+    if data.is_error || !std::path::Path::new(&root).is_absolute() || root == previous {
+        return None;
+    }
+    // A held call's release is stamped with the record's root: its approver
+    // would have reviewed the old one.
+    let held = record
+        .calls
+        .values()
+        .any(|c| c.state == CallState::Pending && c.held_by.is_some());
+    if held {
+        data.content.push(ContentBlock::text(format!(
+            "The session's working directory did not move to {root}: another call of this \
+             turn is awaiting approval. Use absolute paths or `cwd` to work there."
+        )));
+        return None;
+    }
+    record.options.set_filesystem_root(&root);
+    Some(previous)
+}
+
+/// Mirror a moved root into the session's metadata with the root it left
+/// (`moved_from`), the guard a client compares with the folder it shows
+/// before following. The turn record stays the source of truth.
+pub(crate) async fn mirror_moved_root(
+    session: &SessionClient,
+    record: &TurnRecord,
+    moved_from: &str,
+) {
+    let Some(root) = record.options.filesystem_root() else {
+        return;
+    };
+    // shortcut: read-merge-write on a whole-object store, a concurrent client
+    // write can drop this mirror and that client's next send then reverts the
+    // root; upgrade when session::set-meta has a revision check.
+    let mirrored = async {
+        let mut metadata = session
+            .metadata_of(&record.session_id)
+            .await?
+            .unwrap_or_default();
+        metadata.insert(
+            crate::types::turn::FS_SCOPE_KEY.into(),
+            json!({ "root": root, "moved_from": moved_from }),
+        );
+        session.set_metadata(&record.session_id, metadata).await
+    };
+    if let Err(error) = mirrored.await {
+        tracing::warn!(
+            session_id = %record.session_id,
+            %error,
+            "could not mirror the moved working directory into session metadata"
+        );
+    }
+}
+
 fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("turn_id".to_string(), json!(turn_id));
@@ -1916,7 +1981,8 @@ async fn finish_step(
         let session_grants =
             crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
                 .await?;
-        let filesystem_root = record.options.filesystem_root().map(str::to_string);
+        // A post_call hook can move the root mid-step: later calls take it.
+        let mut filesystem_root = record.options.filesystem_root().map(str::to_string);
         for call in dispatch_calls.iter().copied() {
             // Cancel check between tool calls. Only the in-process signal can
             // be observed here: this phase holds the session lock, so the
@@ -2388,11 +2454,12 @@ async fn finish_step(
                 )
                 .await;
             let mut annotations = pre_ann;
-            let (data, post_ann) = match post_outcome {
+            let (data, post_ann, moved_root) = match post_outcome {
                 crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
-                } => (result, annotations),
+                    fs_scope_root,
+                } => (result, annotations, fs_scope_root),
                 crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
@@ -2441,6 +2508,10 @@ async fn finish_step(
                 crate::reconcile::contract_in_context(&record, &call.function_id),
             )
             .await;
+            let moved_from = adopt_moved_root(&mut record, &mut data, moved_root);
+            if moved_from.is_some() {
+                filesystem_root = record.options.filesystem_root().map(str::to_string);
+            }
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
@@ -2452,6 +2523,9 @@ async fn finish_step(
             );
             mark_done(&mut record, &call.id, &entry_id);
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+            if let Some(from) = moved_from {
+                mirror_moved_root(&session, &record, &from).await;
+            }
         }
     }
 

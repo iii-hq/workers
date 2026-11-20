@@ -740,6 +740,11 @@ async fn seed_child(
     } else {
         None
     };
+    // A re-tasked child keeps its own working directory (it may have moved
+    // into a worktree it created): `send` inherits it from the child's turn.
+    if keeps_own_root(explicit_root, previous_child.as_ref()) {
+        options.metadata = None;
+    }
     // A sub-agent of a live turn keeps the folders its parent was granted, or
     // it could not reach them under a `workspace` boundary.
     if let Some(from) = grants_source(parent, previous_child.as_ref()) {
@@ -1003,7 +1008,8 @@ fn child_filesystem_scope(
             return Err(HarnessError::InvalidRequest(format!(
                 "spawn filesystem_root {root:?} is outside this session's folder and grants \
                  ({}); under the `workspace` filesystem boundary a child is rooted inside them — \
-                 pick a folder there, or omit filesystem_root to inherit the parent's root",
+                 pick a folder there, or omit filesystem_root (a new child inherits the \
+                 parent's root, a reused child keeps its own)",
                 allowed.join(", ")
             )));
         }
@@ -1043,6 +1049,14 @@ fn grants_source<'a>(
     parent
         .filter(|_| previous_child.is_none())
         .map(|p| p.session_id.as_str())
+}
+
+/// Whether a spawn leaves the child's root to the child: it named none, and
+/// the child already ran a scoped turn. The child's metadata holds only
+/// `fs_scope`, so dropping it is what keeps the root.
+fn keeps_own_root(explicit_root: Option<&str>, previous_child: Option<&TurnRecord>) -> bool {
+    explicit_root.is_none()
+        && previous_child.is_some_and(|child| child.options.filesystem_root().is_some())
 }
 
 /// Reuse guard for an in-turn spawn that named an EXISTING session. Reuse is
@@ -1585,6 +1599,16 @@ mod tests {
         let ran = parent_record(None);
         assert_eq!(grants_source(Some(&parent), Some(&ran)), None);
         assert_eq!(grants_source(None, None), None);
+    }
+
+    #[test]
+    fn a_retasked_child_keeps_its_own_root_unless_the_spawn_names_one() {
+        let moved = parent_record(Some(json!({ "fs_scope": { "root": "/repo.feat" } })));
+        assert!(keeps_own_root(None, Some(&moved)));
+        assert!(!keeps_own_root(Some("/elsewhere"), Some(&moved)));
+        // A first spawn, or a child that never ran scoped, takes the parent's.
+        assert!(!keeps_own_root(None, None));
+        assert!(!keeps_own_root(None, Some(&parent_record(None))));
     }
 
     fn broad_policy() -> FunctionPolicy {
