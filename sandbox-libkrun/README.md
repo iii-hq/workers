@@ -206,7 +206,8 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
   seal included. Every such destroy first moves the disk of a start without
   `build` (`root/upper.ext4`, a 0.26 disk among them) or a legacy rootfs clone
   (`root/`) to the next free pre-build name, so it never deletes what a guest
-  wrote. A later start with `build` of the same `state_key` boots on the kept
+  wrote, but for a legacy `root/` with neither `bin` nor `usr` (see Known
+  limits). A later start with `build` of the same `state_key` boots on the kept
   data disk; a start without `build` begins with a new disk, and what the
   previous one held stays under the pre-build names. The reply lists in `kept`
   the absolute paths it kept; `destroyed` is false when the directory held data
@@ -298,11 +299,11 @@ Two races of a build are accepted:
   its build id. A caller that gave up (its `build.json` still names the older
   build) then gets S508 on its next start, and builds again.
 
-A destroy without `prune` tells a legacy rootfs clone from an overlay
-trampoline by its `root/bin` or `root/usr`, the test a legacy start applies
-before it clones again. A legacy guest that deleted both leaves a `root/` that
-counts as runtime state: such a destroy removes it, with whatever the guest kept
-there.
+A destroy without `prune` takes `root/` for a legacy rootfs clone when it has
+a `bin` or a `usr`, and for an overlay trampoline otherwise (a legacy start
+checks only `bin`, and clones again without it). A legacy guest that deleted
+both leaves a `root/` that counts as runtime state: such a destroy removes it,
+with whatever the guest kept there.
 
 A scoped token takes any build directory that no VM of the same project token
 has recorded now:

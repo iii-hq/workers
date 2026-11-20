@@ -29,7 +29,8 @@ are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
   keeps its data disk and the pre-build copies, and keeps or writes the seal; a
   VM with no data goes whole, seal included. It first moves the disk of a start
   without `build`, or a legacy rootfs clone, to the next free pre-build name,
-  so it never deletes what a guest wrote. A later start with `build` of the
+  so it never deletes what a guest wrote (but for a legacy `root/` with neither
+  `bin` nor `usr`, see the README's Known limits). A later start with `build` of the
   same `state_key` boots on the kept data disk; a start without `build` begins
   with a new disk, and what the previous one held stays under the pre-build
   names. The reply lists what stayed in `kept`; `destroyed` is false when only
