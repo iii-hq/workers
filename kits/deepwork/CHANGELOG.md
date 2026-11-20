@@ -1,8 +1,69 @@
 # Changelog
 
-## 0.7.4
+## 0.9.1
 
 - **A one-line description in the agent picker.** The `deepwork` profile's description explained the whole run (tickets, leads, waves, rounds, the dev flow) and filled the composer's agent picker with a truncated paragraph. It now says when to pick it: "Use for big goals: plans tickets, runs agents in parallel, reviews the work." The kit's own description and the README keep the full explanation.
+
+## 0.9.0
+
+Deepwork can run from the board from start to finish: started by the kanban dispatcher with no chat, asking its questions on the run ticket, ending at a pull request ready for review, telling a failing machine from failing code, and keeping to a token budget with subscription models. Each part is opt-in through an argument; a run without them behaves as in 0.8.1.
+
+- **Questions on the board (`ask=board`).** A session started from the CLI, the board or another worker has no chat: its `harness::ask` card was accepted and waited forever, unseen. With `ask=board` every card the run would show in the chat (design, plan and finish with `approve=on`, a consequential ambiguity) becomes one `⛔ Needs you` comment on the run ticket, with the options as lines and the recommended one first, and the run ticket gets the `needs you` pill. The orchestrator waits on `kanban::on-comment` for that ticket, excluding its own comments, and goes on from the step that asked when a person replies: an option's label, a yes for the recommended one, or free text. No answer within `ask_wait_min` (default three days) finishes the run `blocked`.
+- **A pull request at the end (`finish=pr`, `finish=pr-merge`).** They are the Finish answers "Push and open a PR" and "Open a PR and merge when CI is green", given when the run starts, so no Finish card is asked. They act only on a run that completes: an aborted, blocked, unverified or unfinished run, or one over budget, pushes nothing and keeps its branch. The run rebases its branch on the current base first (a resumed run whose PR is open merges the base instead, so it never rewrites a pushed branch); a conflict stops it `blocked`, with nothing pushed. The PR opens ready for review, and the CI watch first waits up to five minutes for a new PR's checks to appear (right after `gh pr create`, GitHub still reports none). `pr-merge` removes the worktree once the PR is merged.
+- **In review.** A run whose PR waits for review moves its run ticket to In review, when the board has that column, with a `PR #<n>` pill.
+- **Commits that read like the repository's.** The PR title is the commit a squash merge keeps: `<type>(<scope>): <what changed>`, in the repository's style, never `deepwork: …`. Batch test commits use the cards' scope (`test(<scope>): cover …`) instead of `test(deepwork)`.
+- **No renames to satisfy a grep.** Cards' grep checks match whole words, and review fails a rename no card asks for whose only effect is that a grep stops matching (KAN-29 renamed `TierNotSupported` because `NotSupported\b` matched it).
+- **`env:` failures.** A check that could not judge the code because of the machine (no space left, a port in use, a server or database that did not start before any test ran, a tool timeout while the tests passed) is `unsure` with an `env:` reason. The batch lead runs it once more, on the same commit, in a scope of its own, with no repair and without spending a phase. A second `env:` result stops the run `blocked: environment: …` with a `⛔ Needs you`; a resume re-runs only the checks. Before, KAN-592 spent two of its three rounds repairing a batch whose code was already right.
+- **Repository rules first.** In the dev flow the orchestrator reads the repository's `AGENTS.md` or `CLAUDE.md` and copies its build, test and environment rules into every phase's `Functions:`. An environment rule a person gives during a run becomes a Follow-ups line to add it to that file.
+- **`budget_tokens`.** A soft cap on the run's input plus output tokens, checked before each wave. Subscription models have no price, so `budget_usd` never tripped for them; reports show tokens beside the cost (`cost unknown, 412k tokens`).
+- **Resume.** A run that stopped before its plan (a design question nobody answered) starts over from its run ticket, reading the comments after its last `⛔ Needs you` as the answer. A resume clears the run ticket's last outcome label even when the ticket is already In progress, as it is when the board dispatcher resumes it.
+- **A run files its work in the board's projects and releases instead of making its own.** Every run without `project=` created a project such as `deepwork: failed deployment worker logs · 6ea0b7`, so a product's work was scattered across one project per run, and no run ever created a release: 40 small cards landed in one release with no division.
+  - Project: the goal ticket's, else the existing project that covers what the goal changes; a new one only for a new product area, named for it.
+  - Release: the goal ticket's, else an active or planned release that covers the goal, else a new one in the project's series (`<prefix> · R<next> — <outcome>`).
+  - A plan of more than 8 items with deliverables a person could ship apart gets one release per deliverable (`<prefix> · R<n>.<k> — <deliverable>`); R, shared foundations and adopted cards keep the run's release. New items take the release of the deliverable they serve.
+  - The orchestrator may call `kanban::project::list`, `kanban::release::list` and `kanban::release::create`. A project it creates keeps `lead: deepwork`, so the repository rule `deepwork-run-project` still allows it; those rules deny `kanban::release::create`, and a refused release is noted and the run goes on.
+
+Checks that ran on real repositories (from 0.8.2 to 0.8.6, never published on their own):
+
+- **A check runs its Cargo and Node chains side by side.** One job per worktree chained every command: fmt, clippy, the Rust workspace tests and the database suite, then Biome, typecheck, the build and 2,737 Playwright tests, about 40 minutes per batch, while each card took about 5 minutes to code. Chains that share no build directory now run as separate jobs at once, and a batch takes the time of the longer one (the web suite, about 25 minutes). Commands that share a build directory stay chained.
+- **A long check first stops the servers an earlier killed run left behind.** Playwright starts its web servers in their own process group. Each time a check job was killed at its deadline, its `vite preview` and Prism mock kept listening, and the next attempt either reused a console built from old code or failed with `http://127.0.0.1:4298 is already used`, which cost a whole attempt. Before a long job, and after killing one, the recipe stops every process listening from the worktree.
+- **A long check prints a short record.** The full suite (Rust, database, 2,737 Playwright tests) printed everything to the job's stdout. The job finished inside its deadline, but its record passed the 256 KB a function result carries: `shell::status` could not return it, and the batch was left without a verdict for a round. The long-run recipe now sends each command's output to its own log and prints only the exit code and the last 40 lines.
+- **A resume runs Setup in the run worktree again.** A run's branch was rebased onto `main` between sessions, and `main` had added a Node dependency (`@iii-dev/traces-ui`). The resumed run kept the old install: web typecheck and build failed on a missing module, a validation round was spent, and no card had a defect.
+- **Cargo test commands carry `--no-fail-fast`.** With three known red tests at base, `cargo test --workspace` stopped at their binary, and every binary after it went unchecked.
+- **A batch repaired after a deadline gets twice the check deadline.** The same full suite (database, Rust, web) was killed at the same 40-minute mark round after round; a repair whose last validation lost a check to its deadline now runs with `2 × verify_deadline_min`.
+- **Every item a discovery or a check returns becomes a card in the same turn.** The rule did not say when. A run's discovery returned 32 items, and the orchestrator created 4, keeping the other 28 "in discovery evidence until dependency-ready cards are created". Nothing created them later: they reached no round and no report, and the run stopped with most of the release never planned on the board. Readiness is already Step B's job: a card waits in To do until its `Depends on:` keys are done.
+- **A database container started for the checks gets `--shm-size=1g`.** A run started `postgres:16-alpine` with Docker's 64 MiB `/dev/shm`: the DB suite crashed the server (`could not resize shared memory segment … No space left on device`), put it in recovery mode, and broke the baseline and two validation rounds. With 1 GB the same suite passes in under 9 minutes.
+
+- **Phases can read a skill their task names.** Since 0.2.0 every lead and phase was spawned with `directory::skills::get` denied, so it started without the skills index. A task that names a skill (the Canvas and Console UI authoring guides of an application build) then stopped at `directory::skills::get is denied by policy`: in the E2E `form_flow_build`, 6 of 6 runs on Codex, on 0.8.1 and on this branch alike, ended `task_incomplete` with scores of 0 to 10. The deny lists no longer carry it, and the phase profiles set `skills_index: false` instead, so a phase still starts with no index and can fetch a skill by id.
+- **Compatibility.** Every profile changed. Install between runs: a running run's leads and phases load the new profiles at their next spawn. Older orchestrators ignore `env:` reasons and repair as before.
+
+## 0.8.1
+
+- **A dev run starts from the remote's default branch, not from the branch you are on.** Before, the base was the branch `git status` named. A run started on a branch already merged five days earlier built on code 30 commits behind `main`: its research read an email path `main` had already replaced, and its commits conflicted when moved onto `main` for the PR.
+  - The base is `git symbolic-ref refs/remotes/origin/HEAD` (e.g. `origin/main`), else `origin/main` when it exists, else (no `origin`) the branch `git status` names.
+  - It is fetched to `refs/remotes/<base>` with an explicit refspec right before the worktree is created, so a narrow `remote.origin.fetch` can't leave it stale; the run branch doesn't track it (`--no-track`).
+  - The PR targets, and the merge option merges into, the base without its `origin/` prefix (`main`).
+  - The Plan card, or the run ticket, says when your uncommitted changes are left out; the run ticket says when commits of your checkout (unpushed, or on an unmerged branch) are.
+  - The merge option says it merges into your `main` checkout, and asks you to check it out when root is on another branch.
+  - A run from before 0.8.1 resumes on the `Base:` its ticket names.
+
+## 0.8.0
+
+The board is for the people following the run. Before, a run ticket carried comments such as `r1: done 0 · retry 0 · parked 0 · new 0 · loose 0 · cost unknown`, and its evidence was a `state::get` reference nobody could open. A card that stayed In progress for three rounds while its validation was repaired looked the same as one being coded.
+
+- **Comments say something a person needs to know, with evidence they can open.**
+  - What remains: a card's outcome, once (`✅ Verified — <what changed>`, then `Evidence` bullets with each command and its result, the commit, and a last `Raw:` state reference); `⛔ Needs you — …` with a recommendation; the Progress thread; a base branch that already fails; plan changes, cancellations, CI and merge results; and the final report.
+  - No comment for a retry, a deferral, a resume re-queue, a green base check or a tier fallback. Retries and fallbacks go in the report.
+  - Comments, titles and pills never use the run's own words (wave, batch `r<N>w<b>`, parked, loose end, critic, scope, tree).
+- **Bookkeeping moved from comments to state.** The run pointer gets a `progress` document with the rounds, the branch review passes, the base check, the landed commits and the Progress thread id. Resume and cleanup read it instead of counting `r<n>: done`, `critic pass`, `baseline:` and `landed:` comments. A run from before 0.8.0 is read from its comments once, and resume writes the document.
+- **One Progress thread on the run ticket.** A round that changed something a person wants to know adds one reply, `Round <N>/<limit> — <what changed> · next: <what happens next>`. A round that only retried for the same cause adds nothing, and the last round leaves it to the report.
+- **Pills show what a card is doing now**: `working`, `validating`, `fixing validation`, `retry queued`, `needs you` (blocked, stuck, unverified or pending). The run ticket shows `round N/M`. Cards go In progress with `kanban::ticket::update`, because `kanban::ticket::move` takes no pills.
+- **Tickets read from the top.**
+  - The run ticket opens with the goal and the design. Args, sessions, models, base, branch and worktree move to the end under `## Run details`. Resume still finds them by their line names.
+  - Every card opens with one or two plain sentences on what changes and why, before its contract lines.
+  - The final report runs Result, Cards, Needs you, How to continue, Evidence, Plan, Run details.
+- **Resume before the baseline.** A run stopped before its base check (a full disk) now hands its run pointer to the resuming session before running the check, so the check's wake reaches it. Before, the old owner kept the pointer and the resumed session ended on `adopted by <old>`.
+- **Compatibility.** No other profile changed. Comments written by older runs stay as they are.
 
 ## 0.7.3
 

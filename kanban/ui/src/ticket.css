@@ -900,3 +900,121 @@
 [data-iii-ui="kanban"] .kb-shell[data-narrow="true"] .kb-row__main {
   height: 44px;
 }
+
+/* --- the ticket dialog (board card click) ------------------------------- */
+
+/* Linear's issue modal: wide, tall, over the board. The ticket screen inside keeps its two columns down to
+   760px of dialog (its container query), then stacks; on a phone the dialog is nearly the whole screen. */
+[data-iii-ui="kanban"] .kb-ticket-dialog {
+  --dialog-max-width: 72rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: min(calc(100dvh - 48px), 920px);
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--kb-dialog-bg);
+}
+
+/* What the dialog focuses as it opens (see ticket-dialog.tsx); it carries the frame's flex column through. */
+[data-iii-ui="kanban"] .kb-ticket-dialog__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  outline: none;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--kb-dialog-bg);
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--kb-space-2);
+  height: 48px;
+  padding: 0 var(--kb-space-2) 0 var(--kb-space-5);
+  border-bottom: 1px solid var(--color-dialog-edge, var(--color-edge));
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__title {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--kb-space-2);
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__icon {
+  display: inline-flex;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--kb-space-1);
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame .kb-ticket {
+  padding-top: var(--kb-space-5);
+}
+
+/* Previous / next in the ticket dialog's head: the position, then the two arrows, set apart from the actions. */
+[data-iii-ui="kanban"] .kb-ticket-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: var(--kb-space-1);
+  padding-right: var(--kb-space-2);
+  border-right: 1px solid var(--color-dialog-edge, var(--color-edge));
+}
+
+[data-iii-ui="kanban"] .kb-ticket-nav__pos {
+  min-width: 44px;
+  margin-right: 2px;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The dialog never scrolls sideways: a too-wide line wraps or truncates, it does not widen the sheet. */
+[data-iii-ui="kanban"] .kb-ticket-frame .kb-ticket {
+  overflow-x: clip;
+}
+
+/* The board behind the ticket dialog is dimmed 10 points less than the shared dialog scrim (black/60 dark,
+   black/40 light): the cards stay legible as context while the ticket is read. Only this dialog's scrim — its
+   portal holds the overlay and the popup side by side. */
+[data-iii-ui="kanban"]:has(> .kb-ticket-dialog) > [data-slot="dialog-overlay"] {
+  background-color: color-mix(in srgb, black 30%, transparent);
+}
+
+[data-iii-ui="kanban"]:is([data-theme="dark"] *):has(> .kb-ticket-dialog) > [data-slot="dialog-overlay"] {
+  background-color: color-mix(in srgb, black 50%, transparent);
+}

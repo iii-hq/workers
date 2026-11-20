@@ -48,7 +48,7 @@ pub const CRON_ON_TICK_FN: &str = "cron::on-tick";
 /// The harness's turn completion; `workflow::wake` observes it.
 pub const TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
 /// The harness hook point around a function call; `workflow::stamp-reply`
-/// observes it scoped to `workflow::start`.
+/// observes it scoped to the functions of [`pre_call_hook_args`].
 pub const PRE_CALL_HOOK_FN: &str = "harness::hook::on-pre-call";
 /// The harness hook point before generation; the guidance observer.
 pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
@@ -208,18 +208,24 @@ fn observe_turn_completed(iii: &IIIClient) -> ObserverHandle {
 /// `on_error: fail_closed`: the hook replaces any agent-supplied
 /// `caller_fs_root` with the caller turn's folder, so a call that skipped it
 /// would run its nodes in a folder the agent chose. A hook timeout/error
-/// therefore refuses `workflow::start` for an agent caller.
+/// therefore refuses `workflow::start` for an agent caller, and
+/// `workflow::list`, whose `caller_session_id` the hook overwrites with the
+/// agent's own session.
 pub fn pre_call_hook_args() -> Value {
     json!({
-        "functions": ["workflow::start", crate::functions::submit::SUBMIT_ID],
+        "functions": [
+            "workflow::start",
+            crate::functions::list::LIST_ID,
+            crate::functions::submit::SUBMIT_ID
+        ],
         "on_error": "fail_closed",
         "timeout_ms": 30000
     })
 }
 
 /// Observe `harness::hook::on-pre-call` with `workflow::stamp-reply`, scoped
-/// to `workflow::start`. The harness calls the target with the hook input and
-/// applies its decision.
+/// to the functions of [`pre_call_hook_args`]. The harness calls the target
+/// with the hook input and applies its decision.
 fn observe_pre_call_hook(iii: &IIIClient) -> ObserverHandle {
     iii.observe(
         Source::function(PRE_CALL_HOOK_FN).args(pre_call_hook_args()),
@@ -382,7 +388,7 @@ mod tests {
         assert_eq!(
             pre_call_hook_args(),
             json!({
-                "functions": ["workflow::start", "workflow-result::submit"],
+                "functions": ["workflow::start", "workflow::list", "workflow-result::submit"],
                 "on_error": "fail_closed",
                 "timeout_ms": 30000
             })

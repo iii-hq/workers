@@ -1,0 +1,30 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"EtACCs0CAWkUfRO+becK8aUemaVw0Yv5fTMN3UOficydClVNcf6qPleYeOqV7vbmNVZoeGoh6eg1J/DYFAwgwQnmNAIgufrsAwLHPP2ex1arvTyu3hWh0yKAjA+2JplZw7jLqfc+NfplFv8/QiV4ReCj6oOMTVps43ikXAr+hc9Za4VFXA4HSoNYhFZ9NfylL7KGECDilZZKTJmVIQZBsjdoySc+H0/o/l35tc55COcKGENHwcjwgLf6MAApwthsx/KRPO+sNGpUQrEdQP/faRv6E+CZ+P5vP8/U9W0BT6ljbCTteXO0H841M2ZigWRXL3rWku2arUE/lDQGSTdoOJyXAWfOgpUuyDzgmovjHS2cBxm9VS6IB89jJHexEcoskpPcb3gk0mBscji1lGusBE+5BMXERLVH+0kC6UvbC8X8LsURZLCYNN9j4y8ZmRKf83Q/","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"id":"call_7524469628901675686","type":"function_call","name":"lookup_population","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"arguments":"{\"city\":\"Lisbon\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"requires_action","usage":{"total_tokens":142,"total_input_tokens":83,"input_tokens_by_modality":[{"modality":"text","tokens":83}],"total_cached_tokens":0,"total_output_tokens":17,"total_tool_use_tokens":0,"total_thought_tokens":42,"initial_input_tokens":83},"created":"2026-11-19T17:19:35Z","updated":"2026-11-19T17:19:35Z","service_tier":"standard","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

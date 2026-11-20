@@ -127,24 +127,34 @@ CRATE_FIXTURE_PREFIXES = {
     "judge-provider": ("judge-typesafe/tests/support/",),
 }
 
-# Worker test support that other workers' suites compile through #[path]: a
-# change under the prefix also runs those workers' lint+test (as forced picks,
-# never source_changed).
+# Worker test support or fixtures that other workers' code compiles through
+# #[path] or include_str!: a change under the prefix (or to the exact file)
+# also runs those workers' lint+test (as forced picks, never source_changed).
 SHARED_TEST_SUPPORT = {
     "judge-typesafe/tests/support/": ("judge", "judge-openai"),
+    "memory/tests/fixtures/automatic-model-cases.json": ("memory-consolidate",),
 }
 
 # Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's
 # binary: the worker's build.rs builds a sub-project that bundles the package
 # (packages/native-ui → <worker>/native-ui/dist/native.js, embedded with
-# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed).
-# A source change there fans out, like a crate's, to every
-# worker with a sub-project whose package.json depends on the package (found
-# by name, so a new native app needs no edit here). packages/console-ui is
-# deliberately absent: worker UIs keep it external (the console serves the
-# real module), so its changes do not change a worker's artifact.
+# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed;
+# packages/console-ui's /format, /hooks and /ui-classes subpaths, and its
+# shared builder, → <worker>/ui/dist/page.js; its root module stays external,
+# served by the console; packages/editor-prefs and packages/terminal-font →
+# the ade, ide and tmux ui/dist bundles; packages/agent-terminal-ui → the
+# claude-code and pi ui/dist bundles). A source change there fans out, like a
+# crate's, to every worker with a sub-project whose package.json depends on the
+# package (found by name, so a new worker needs no edit here).
 PACKAGES_DIR = "packages"
-BUNDLED_PACKAGES = ("native-ui", "traces-ui")
+BUNDLED_PACKAGES = (
+    "native-ui",
+    "traces-ui",
+    "console-ui",
+    "editor-prefs",
+    "terminal-font",
+    "agent-terminal-ui",
+)
 
 # The native-ui job (ci.yml) runs the @iii-dev/native-ui SDK's suite and every
 # <worker>/native-ui app's suite. It runs when the SDK, an app, the crate that
@@ -178,7 +188,7 @@ ADE_WEB_PREFIXES = (
     "packages/terminal-font/",
     "crates/mention-contract/fixtures/",
 )
-ADE_WEB_PATHS = {"workflow/tests/fixtures/flat_start_cases.json", "cursor/src/provider-icon.ts"}
+ADE_WEB_PATHS = {"cursor/src/provider-icon.ts"}
 
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a

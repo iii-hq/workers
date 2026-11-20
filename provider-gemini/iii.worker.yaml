@@ -1,0 +1,14 @@
+iii: v1
+name: provider-gemini
+language: rust
+deploy: binary
+iii_engine_version: ">=0.26.0"
+manifest: Cargo.toml
+license: Apache-2.0
+bin: provider-gemini
+tags: [llm, gemini, google, provider]
+description: Google Gemini Interactions API provider worker; implements provider::gemini::stream and provider::gemini::refresh_models behind llm-router.
+
+dependencies:
+  state: "latest"
+  llm-router: "latest"

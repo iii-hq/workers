@@ -219,6 +219,16 @@ to resemble the Console, and never render a raw JSON textarea.
   border, radius, height, chevron, focus, disabled, or type styles.
 - Put `data-settings-narrow-action` on standalone empty-state actions so
   they use the shared narrow target rule.
+- In the declarative worker forms (`ade/ui`), a `model` field with
+  `automatic: true` belongs to a worker that resolves an unset model
+  itself. The picker lists "Automatic · <model>" first, choosing it
+  removes the key, and the form never writes `null`. Its description
+  states the rule the worker applies.
+- A `string-list` takes `emptyLabel` for what an empty list means
+  ("Every bank"); it sits beside the Add button until the first item.
+- Row-level text, number, select, model and judge controls carry
+  `console-worker-config-value`: one 280px column, so their leading edges
+  line up. It goes full width once rows stack.
 
 For a collection whose item opens a meaningful sub-form, use `SettingsDeck`.
 Its `overview` composes `Panel` + `List`/`ListItem`; its `detail` holds the

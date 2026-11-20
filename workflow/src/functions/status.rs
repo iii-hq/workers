@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,9 @@ pub struct StatusRequest {
 pub struct StatusResponse {
     pub run_id: String,
     pub status: RunStatus,
+    /// The run's display title, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Per-node state keyed by node uid. Definition nodes that have not started
     /// are `pending`; an unexpanded fanout is listed once under its node id.
     pub nodes: BTreeMap<String, NodeState>,
@@ -59,8 +62,8 @@ pub struct StatusResponse {
     pub result_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// Node uid counts per definition `phase` (`failed` includes cancelled); nodes
-    /// without a phase are left out. Omitted when empty.
+    /// Node uid counts per definition `phase` (`failed` includes `cancelled`);
+    /// nodes without a phase are left out. Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub phases: BTreeMap<String, PhaseCounts>,
     /// Only with `details: true`: per-node detail keyed by node uid.
@@ -75,7 +78,10 @@ pub struct StatusResponse {
 pub struct PhaseCounts {
     pub total: u32,
     pub done: u32,
+    /// Failed and cancelled nodes.
     pub failed: u32,
+    /// The cancelled ones among `failed`.
+    pub cancelled: u32,
     pub running: u32,
 }
 
@@ -114,6 +120,10 @@ pub struct NodeDetail {
     /// `harness::status` turn status; running nodes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_status: Option<String>,
+    /// Epoch ms the continue of the node's transient provider failure is due;
+    /// while set, `harness_status` reads the failed turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<i64>,
     /// The session waits on an armed wake; running nodes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expects_wake: Option<bool>,
@@ -124,6 +134,10 @@ pub struct NodeDetail {
     /// `complete`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Value>,
+    /// The longest `depends_on` path from a source to the node in the definition:
+    /// 0 for a node with no dependencies, and without the definition.
+    #[serde(default)]
+    pub depth: u32,
 }
 
 /// What the live harness reads gave for one node session.
@@ -144,6 +158,45 @@ pub struct LiveNode {
 /// `<id>#it<k>` maps to `<id>`).
 fn node_def<'a>(def: Option<&'a WorkflowDef>, uid: &str) -> Option<&'a NodeDef> {
     def?.nodes.get(uid.split('#').next()?)
+}
+
+/// The longest `depends_on` path from a source to each definition node (a source
+/// is 0). A dependency missing from the definition counts as a source, and a cycle
+/// (refused at start) ends the walk. Pure; an explicit stack, since a valid chain
+/// can be as deep as the node cap.
+fn node_depths(def: &WorkflowDef) -> BTreeMap<&str, u32> {
+    let mut memo: BTreeMap<&str, u32> = BTreeMap::new();
+    let mut on_path: BTreeSet<&str> = BTreeSet::new();
+    // (node, next dependency index, deepest dependency so far + 1)
+    let mut stack: Vec<(&str, usize, u32)> = Vec::new();
+    for root in def.nodes.keys() {
+        if memo.contains_key(root.as_str()) {
+            continue;
+        }
+        on_path.insert(root);
+        stack.push((root, 0, 0));
+        while let Some(&(id, i, depth)) = stack.last() {
+            let Some(dep) = def.nodes[id].depends_on.get(i).map(String::as_str) else {
+                stack.pop();
+                on_path.remove(id);
+                memo.insert(id, depth);
+                if let Some(parent) = stack.last_mut() {
+                    parent.2 = parent.2.max(depth + 1);
+                }
+                continue;
+            };
+            let top = stack.last_mut().expect("non-empty");
+            top.1 += 1;
+            if let Some(&d) = memo.get(dep) {
+                top.2 = top.2.max(d + 1);
+            } else if def.nodes.contains_key(dep) && on_path.insert(dep) {
+                stack.push((dep, 0, 0));
+            } else {
+                top.2 = top.2.max(1);
+            }
+        }
+    }
+    memo
 }
 
 /// Every checkpoint's state, plus each definition node with no checkpoint as
@@ -179,7 +232,11 @@ fn phase_counts(
         c.total += 1;
         match state {
             NodeState::Done => c.done += 1,
-            NodeState::Failed | NodeState::Cancelled => c.failed += 1,
+            NodeState::Failed => c.failed += 1,
+            NodeState::Cancelled => {
+                c.failed += 1;
+                c.cancelled += 1;
+            }
             NodeState::Running => c.running += 1,
             NodeState::Pending => {}
         }
@@ -210,6 +267,7 @@ fn node_detail(
     record: &WorkflowRunRecord,
     def: Option<&WorkflowDef>,
     live: Option<&LiveNode>,
+    depth: u32,
     now: i64,
 ) -> NodeDetail {
     let node = node_def(def, uid);
@@ -235,9 +293,13 @@ fn node_detail(
             .filter(|_| state != NodeState::Pending)
             .and_then(|cp| Some((cp.finished_at.unwrap_or(now) - cp.pending_at?).max(0))),
         harness_status: live.harness_status,
+        retry_at: cp
+            .filter(|_| state == NodeState::Running)
+            .and_then(|cp| cp.retry_at),
         expects_wake: live.expects_wake,
         last_generate_at: live.last_generate_at,
         usage: live.usage,
+        depth,
     }
 }
 
@@ -254,7 +316,12 @@ pub(crate) fn build_status(
     let phases = phase_counts(&nodes, def);
     let (node_details, details_truncated) = if details {
         let (uids, truncated) = detail_uids(&nodes);
-        let detail = |uid: &String| node_detail(uid, nodes[uid], &record, def, live.get(uid), now);
+        let depths = def.map(node_depths).unwrap_or_default();
+        let detail = |uid: &String| {
+            let depth = uid.split('#').next().and_then(|id| depths.get(id));
+            let depth = depth.copied().unwrap_or(0);
+            node_detail(uid, nodes[uid], &record, def, live.get(uid), depth, now)
+        };
         (
             uids.into_iter()
                 .map(|uid| (uid.clone(), detail(uid)))
@@ -278,6 +345,7 @@ pub(crate) fn build_status(
     StatusResponse {
         run_id: record.run_id,
         status: record.status,
+        title: record.title,
         nodes,
         node_errors,
         node_results,
@@ -447,6 +515,7 @@ mod tests {
         StatusResponse {
             run_id: "r_xyz".to_string(),
             status: RunStatus::Running,
+            title: Some("Writing tests".to_string()),
             nodes,
             node_errors: BTreeMap::new(),
             node_results: BTreeMap::new(),
@@ -482,6 +551,7 @@ mod tests {
                 total: 2,
                 done: 1,
                 failed: 0,
+                cancelled: 0,
                 running: 1,
             },
         );
@@ -613,6 +683,7 @@ mod tests {
                 total: 4,
                 done: 1,
                 failed: 1,
+                cancelled: 1,
                 running: 1
             }
         );
@@ -642,6 +713,7 @@ mod tests {
                 total: 3,
                 done: 1,
                 failed: 1,
+                cancelled: 0,
                 running: 1
             }
         );
@@ -699,6 +771,132 @@ mod tests {
         assert_eq!(sum.state, NodeState::Pending);
         assert_eq!((sum.session_id.as_ref(), sum.attempt), (None, None));
         assert!(!resp.details_truncated);
+    }
+
+    /// A definition of `(id, depends_on)` nodes.
+    fn deps_def(nodes: &[(&str, &[&str])]) -> WorkflowDef {
+        WorkflowDef {
+            version: 1,
+            nodes: nodes
+                .iter()
+                .map(|(id, deps)| {
+                    let node = NodeDef {
+                        depends_on: deps.iter().map(|d| d.to_string()).collect(),
+                        ..Default::default()
+                    };
+                    (id.to_string(), node)
+                })
+                .collect(),
+            output: crate::types::OutputRef {
+                from: nodes[0].0.into(),
+            },
+            default_functions: None,
+            max_concurrency: None,
+        }
+    }
+
+    #[test]
+    fn node_depths_count_the_longest_path_from_a_source() {
+        // work ⇄ verify (a loop), then plan → map (a fanout) → critic (also reads
+        // verify) → a_report, as `add_read_dependencies` stores them.
+        let def = deps_def(&[
+            ("work", &[]),
+            ("verify", &["work"]),
+            ("plan", &["verify"]),
+            ("map", &["plan"]),
+            ("critic", &["map", "verify"]),
+            ("a_report", &["critic"]),
+        ]);
+        assert_eq!(
+            node_depths(&def),
+            BTreeMap::from([
+                ("work", 0),
+                ("verify", 1),
+                ("plan", 2),
+                ("map", 3),
+                ("critic", 4),
+                ("a_report", 5)
+            ])
+        );
+    }
+
+    #[test]
+    fn node_depths_survive_a_cycle_and_a_missing_node() {
+        let def = deps_def(&[("a", &["b"]), ("b", &["a"]), ("c", &["gone"])]);
+        let depths = node_depths(&def);
+        assert_eq!(depths.keys().copied().collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(depths["c"], 1);
+    }
+
+    #[test]
+    fn node_depths_walk_a_chain_as_long_as_the_node_cap_on_a_small_stack() {
+        let n = 10_000; // the node cap `workflow::start` enforces
+        // n00000 → n00001 → … → n09999: the first key walked is the deep end.
+        let mut def = deps_def(&[(&format!("n{:05}", n - 1), &[])]);
+        for i in 0..n - 1 {
+            let node = NodeDef {
+                depends_on: vec![format!("n{:05}", i + 1)],
+                ..Default::default()
+            };
+            def.nodes.insert(format!("n{i:05}"), node);
+        }
+        let deepest = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || node_depths(&def)["n00000"])
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(deepest as usize, n - 1);
+    }
+
+    #[test]
+    fn node_details_carry_the_depth_of_their_definition_node() {
+        let mut rec = record(json!({
+            "plan": {"state": "done"},
+            "plan#it1": {"state": "running", "session_id": "s"},
+            "read#0": {"state": "pending"}
+        }));
+        rec.fanout_src.insert("read".into(), vec![json!(0)]);
+        let resp = build_status(rec.clone(), Some(&def()), &BTreeMap::new(), true, 100);
+        let depth = |uid: &str| resp.node_details[uid].depth;
+        assert_eq!(
+            [
+                depth("plan"),
+                depth("plan#it1"),
+                depth("read#0"),
+                depth("sum")
+            ],
+            [0, 0, 1, 2]
+        );
+        assert_eq!(
+            serde_json::to_value(&resp.node_details["sum"]).unwrap()["depth"],
+            json!(2)
+        );
+        // Without the definition every node reads 0.
+        let resp = build_status(rec, None, &BTreeMap::new(), true, 100);
+        assert!(resp.node_details.values().all(|d| d.depth == 0));
+    }
+
+    #[test]
+    fn a_node_waiting_for_its_transient_retry_runs_without_an_error() {
+        let rec = record(json!({
+            "plan": {"state": "running", "session_id": "wf_r_1_plan@r0", "pending_at": 5,
+                     "transient_retries": 1, "retry_at": 60_005}
+        }));
+        let live = BTreeMap::from([(
+            "plan".to_string(),
+            LiveNode {
+                harness_status: Some("failed".into()),
+                ..Default::default()
+            },
+        )]);
+        let resp = build_status(rec, Some(&def()), &live, true, 100);
+        assert_eq!(resp.nodes["plan"], NodeState::Running);
+        assert_eq!(resp.phases["code"].running, 1);
+        assert!(resp.node_errors.is_empty(), "{:?}", resp.node_errors);
+        let plan = &resp.node_details["plan"];
+        assert_eq!(plan.retry_at, Some(60_005));
+        assert_eq!(plan.harness_status.as_deref(), Some("failed"));
     }
 
     #[test]

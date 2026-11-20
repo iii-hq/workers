@@ -29,6 +29,7 @@ const MAX_WORKFLOW_DEPTH: usize = 8;
 const MIN_NODE_TIMEOUT_MS: u64 = 1000;
 const MAX_NODE_RETRIES: u32 = 10;
 const MAX_LABEL_CHARS: usize = 80;
+const MAX_TITLE_CHARS: usize = 80;
 // One digit in `#it<k>`, so every listing sorts passes in order.
 const MAX_LOOP_REPEATS: u32 = 9;
 
@@ -47,6 +48,8 @@ pub struct StartRequest {
     pub notify: Option<NotifySpec>,
     pub caller_session_id: Option<String>,
     pub caller_fs_root: Option<String>,
+    /// Trimmed, at most [`MAX_TITLE_CHARS`] characters, never empty.
+    pub title: Option<String>,
 }
 
 // No `deny_unknown_fields` on the wire structs: a closed published schema lets the
@@ -90,6 +93,10 @@ struct RequestWire {
     /// since both skip that hook. Every node session runs in it. Omit it to use
     /// the harness default folder.
     caller_fs_root: Option<String>,
+    /// Display title of the run, trimmed and cut to 80 characters. Omitted on a
+    /// call from an agent turn, the `workflow::stamp-reply` hook fills it from
+    /// the call's description.
+    title: Option<String>,
 }
 
 /// One sub-agent session. Its opening message is `task`, followed by its input
@@ -165,10 +172,17 @@ struct Node {
     /// defaults to the worker's `default_pending_timeout_ms`. Fanout copies use
     /// the node's value.
     timeout_ms: Option<u64>,
-    /// Refires after a timeout, each in a new session; a failed turn is never
-    /// retried. At most 10; the default refires once, and a refire repeats the
-    /// node's side effects. `0` fails the node at its first timeout.
+    /// Refires after a timeout, each in a new session; a failed turn is not
+    /// refired (see `read_only`). At most 10; the default refires once, and a
+    /// refire repeats the node's side effects. `0` fails the node at its first
+    /// timeout.
     retries: Option<u32>,
+    /// `true`: the node has no side effects, so a turn that fails on a
+    /// transient provider failure is continued once, in the same session, a
+    /// minute later, within what is left of `timeout_ms`. The worker neither
+    /// checks nor enforces it (`functions` still decides what the node may
+    /// call). Default `false`: such a turn fails the node.
+    read_only: Option<bool>,
     /// `"fail"` (default): a failed or cancelled node fails the run when the
     /// output needs it. `"continue"`: it counts as finished with a `null`
     /// result, so readers still run and the run can complete; the error stays in
@@ -215,9 +229,9 @@ impl JsonSchema for StartRequest {
 const SHAPE_HINT: &str = "Shape: {\"nodes\":{\"a\":{\"task\":\"<what a does>\"},\"b\":{\"task\":\"<what b \
     does>\",\"reads\":\"a\"}},\"input\":<any JSON>}.\n\
     Node keys: task (required), reads, fanout, schema, model, profile, provider, system_prompt, \
-    functions, filesystem_root, loop, label, phase, timeout_ms, retries, on_error.\n\
+    functions, filesystem_root, loop, label, phase, timeout_ms, retries, read_only, on_error.\n\
     Top-level keys: nodes (required), input, output, max_concurrency, default_functions, \
-    idempotency_key, notify.\n\
+    idempotency_key, notify, title.\n\
     Omit `model` to run a node on your own model. Omit `output` to return every node no other \
     node reads.";
 
@@ -232,6 +246,7 @@ const TOP_KEYS: &[&str] = &[
     "notify",
     "caller_session_id",
     "caller_fs_root",
+    "title",
 ];
 const NODE_KEYS: &[&str] = &[
     "task",
@@ -249,6 +264,7 @@ const NODE_KEYS: &[&str] = &[
     "phase",
     "timeout_ms",
     "retries",
+    "read_only",
     "on_error",
 ];
 const MAX_LISTED_IDS: usize = 20;
@@ -286,11 +302,11 @@ fn key_type(key: &str) -> Option<(&'static [&'static str], &'static str)> {
     const POLICY: &[&str] = &["a string", "an array", "an object"];
     const OBJECT: &[&str] = &["an object"];
     const NUMBER: &[&str] = &["a number"];
+    const BOOL: &[&str] = &["a boolean"];
     Some(match key {
         "task" | "model" | "provider" | "profile" | "system_prompt" | "filesystem_root"
-        | "label" | "phase" | "idempotency_key" | "caller_session_id" | "caller_fs_root" => {
-            (STRING, "a string")
-        }
+        | "label" | "phase" | "idempotency_key" | "caller_session_id" | "caller_fs_root"
+        | "title" => (STRING, "a string"),
         "reads" | "output" => (IDS, "a node id or an array of ids"),
         "fanout" => (IDS, "\"<id>.<path to an array>\" or an array of values"),
         "schema" => (OBJECT, "a JSON Schema object"),
@@ -301,6 +317,7 @@ fn key_type(key: &str) -> Option<(&'static [&'static str], &'static str)> {
         "loop" | "notify" => (OBJECT, "an object"),
         "timeout_ms" | "retries" | "max_concurrency" => (NUMBER, "a non-negative integer"),
         "on_error" => (STRING, "\"fail\" or \"continue\""),
+        "read_only" => (BOOL, "true or false"),
         _ => return None,
     })
 }
@@ -782,6 +799,7 @@ fn lower(w: RequestWire) -> StartRequest {
                 fanout,
                 timeout_ms: n.timeout_ms,
                 retries: n.retries,
+                read_only: n.read_only.unwrap_or(false),
                 on_error: n.on_error.unwrap_or_default(),
                 label: n.label,
                 phase: n.phase,
@@ -806,6 +824,17 @@ fn lower(w: RequestWire) -> StartRequest {
         notify: w.notify,
         caller_session_id: w.caller_session_id,
         caller_fs_root: w.caller_fs_root,
+        title: w
+            .title
+            .map(|t| {
+                t.trim()
+                    .chars()
+                    .take(MAX_TITLE_CHARS)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .filter(|t| !t.is_empty()),
     }
 }
 
@@ -1938,6 +1967,7 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
         notify: req.notify,
         caller_session_id,
         caller_fs_root: req.caller_fs_root,
+        title: req.title,
         idem_key,
         created_at: now,
         updated_at: now,
@@ -2660,13 +2690,15 @@ mod tests {
     #[test]
     fn accepts_node_options_keys() {
         let req = serde_json::from_value::<StartRequest>(json!({
-            "nodes": { "n": { "task": "t", "model": "m", "timeout_ms": 120000, "retries": 0 } },
+            "nodes": { "n": { "task": "t", "model": "m", "timeout_ms": 120000, "retries": 0,
+                              "read_only": true } },
             "max_concurrency": 2
         }))
         .expect("node options parse");
         assert_eq!(req.definition.max_concurrency, Some(2));
         assert_eq!(req.definition.nodes["n"].timeout_ms, Some(120_000));
         assert_eq!(req.definition.nodes["n"].retries, Some(0));
+        assert!(req.definition.nodes["n"].read_only);
         assert!(validate_def(&req.definition).is_ok());
     }
 
@@ -3589,6 +3621,10 @@ mod tests {
                 "node `a`: `timeout_ms` must be a non-negative integer, not 1.5",
             ),
             (
+                node(json!({"read_only": "yes"})),
+                "node `a`: `read_only` must be true or false, not a string",
+            ),
+            (
                 node(json!({"reads": []})),
                 "node `a`: `reads` is an empty array",
             ),
@@ -3732,18 +3768,31 @@ mod tests {
     }
 
     #[test]
+    fn title_is_trimmed_cut_at_80_chars_and_dropped_when_blank() {
+        let title = |t: Value| parse(json!({"nodes": {"a": {"task": "t"}}, "title": t})).title;
+        assert_eq!(
+            title(json!("  Writing tests \n")).as_deref(),
+            Some("Writing tests")
+        );
+        let long = format!("{}  b", "é".repeat(79));
+        assert_eq!(title(json!(long)), Some("é".repeat(79)));
+        assert_eq!(title(json!("   ")), None);
+        assert_eq!(title(Value::Null), None);
+    }
+
+    #[test]
     fn null_means_omitted() {
         let req = parse(json!({
             "nodes": {"a": {
                 "task": "t", "reads": null, "fanout": ["x", "y"], "schema": null, "model": null,
                 "provider": null, "profile": null, "system_prompt": null, "functions": null,
                 "filesystem_root": null, "loop": null, "label": null, "phase": null,
-                "timeout_ms": null, "retries": null, "on_error": null, "agent": null,
+                "timeout_ms": null, "retries": null, "read_only": null, "on_error": null, "agent": null,
                 "input": null, "depends_on": null
             }},
             "input": null, "output": null, "max_concurrency": null, "default_functions": null,
             "idempotency_key": null, "notify": null, "caller_session_id": null,
-            "caller_fs_root": null, "definition": null, "version": null
+            "caller_fs_root": null, "title": null, "definition": null, "version": null
         }));
         let a = &req.definition.nodes["a"];
         assert!(
@@ -3751,6 +3800,11 @@ mod tests {
             "the copy receives its bare element"
         );
         assert_eq!(a.on_error, crate::types::OnError::Fail);
+        assert!(!a.read_only);
+        assert!(
+            serde_json::to_value(a).unwrap().get("read_only").is_none(),
+            "an omitted read_only is not stored"
+        );
         assert_eq!(a.agent, AgentSpec::default());
         assert_eq!(req.definition.output.from, OutputFrom::One("node:a".into()));
         assert_eq!(req.input, Value::Null);

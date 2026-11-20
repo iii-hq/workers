@@ -46,7 +46,7 @@ impl SessionError {
             "The Codex session changed. Retry the operation.",
         )
     }
-    fn new(code: &str, message: &str) -> Self {
+    pub(crate) fn new(code: &str, message: &str) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
@@ -618,4 +618,4 @@ fn account_id(value: &Value) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

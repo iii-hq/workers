@@ -192,7 +192,11 @@ pub fn author(
 }
 
 /// Trimmed text; blank is absent.
-fn text(field: &str, value: Option<&str>, max: usize) -> Result<Option<String>, EvalError> {
+pub(crate) fn text(
+    field: &str,
+    value: Option<&str>,
+    max: usize,
+) -> Result<Option<String>, EvalError> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };

@@ -152,8 +152,8 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
 /**
  * The send key sends from anywhere in the draft, structure or not; which key
  * that is, and so which one breaks the line, is the Settings choice (see
- * `lib/send-key`: Enter by default, with Shift+Enter the new line; ⌘↵ or
- * Shift+Enter instead, with a bare Enter the new line). ⌘↵ always sends.
+ * `lib/send-key`: Enter by default, with Shift+Enter the new line; ⌘↵, ⌥↵
+ * or Shift+Enter instead, with a bare Enter the new line). ⌘↵ always sends.
  *
  * The message is markdown with lists and code blocks, so the new-line key
  * makes the new line the caret's block expects. In order: "```" alone on a
@@ -161,7 +161,8 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
  * blank line at the end leaves the block — see `$insertCodeLine`); inside a
  * list, the next item (ListPlugin; on an empty item it leaves the list); in
  * prose, a new paragraph, a line of its own, so "- " or "```" typed on it
- * still start a block. Any other chord (Alt+Enter, Ctrl+Enter on a Mac)
+ * still start a block. Any other chord (Alt+Enter when it isn't the send
+ * key, Ctrl+Enter on a Mac)
  * stays Lexical's default rather than sending by accident. Every newline
  * shape exports as one `\n`.
  *

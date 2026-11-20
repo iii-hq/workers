@@ -172,6 +172,32 @@
   transform: translateY(calc(var(--chat-text-distance) * -1));
 }
 
+/* A sub-agent's card inside the group sits 6px in from the group's edge, so it takes the rows' radius (nested
+   inside the card's corners) and their surface instead of a second outline: a card-in-card with the same radius
+   and its own ring read as two borders running into each other. */
+.chat-tool-group [data-subagent-status] {
+  border-radius: var(--tool-row-radius);
+  background: var(--color-surface);
+  box-shadow: none;
+}
+
+@media (hover: hover) {
+  .chat-tool-group button[data-subagent-status]:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+/* Its neutral pill and Open chat sit on the group's own panel, so they still read on the card's surface. */
+.chat-tool-group [data-subagent-status]
+  :is([data-badge-variant="default"], [data-subagent-open]) {
+  background: var(--color-panel-raised);
+}
+
+.chat-tool-group button[data-subagent-status]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
 /* ── one call ───────────────────────────────────────────────────────── */
 
 .chat-tool-row {

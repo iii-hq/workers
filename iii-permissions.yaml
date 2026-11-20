@@ -137,6 +137,15 @@ rules:
   # stay at the needs_approval default.
   - '!session::put-attachment'
   - '!session::delete-attachment'
+  # The @attachment chat mention provider is console/app plumbing (like
+  # database's below); agents read a mentioned or attached file through
+  # session::read-attachment, its details call. That read is an explicit
+  # allow, so an approval gate does not stop every look at an attachment the
+  # user handed the agent: it is read-only and answers only text windows and
+  # recipes, never the bytes (those stay at get-attachment's needs_approval).
+  - '!session::attachments::mention::search'
+  - '!session::attachments::mention::get'
+  - session::read-attachment
   # Operator/automation health signal, not an agent tool: it can surface a
   # build-error string (e.g. a data_dir path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
@@ -230,6 +239,7 @@ rules:
   # project). Any other create matches no rule and waits for a person.
   - '!kanban::ui-content'
   - '!kanban::on-config-change'
+  - '!kanban::dispatch::on-turn-completed'
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
   - function: kanban::project::create

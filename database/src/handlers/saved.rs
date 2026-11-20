@@ -13,7 +13,10 @@
 //! (`history_max_entries` / `history_max_bytes`) — an unbounded value grows
 //! until the `state` worker can no longer serve it over its engine
 //! connection, which takes `state::*` down for everyone. History is a
-//! convenience, not an audit log — for an audit trail, observe
+//! convenience, not an audit log. It is off by default (`history_max_entries`
+//! is `0`) because each recorded query costs a `state::get` and a
+//! `state::set`, often more than the query itself; set it above `0` to turn
+//! it on — for an audit trail, observe
 //! `database::on-row-changed` instead.
 
 use super::query::err_to_str;
@@ -309,11 +312,11 @@ pub fn record(
     tokio::spawn(async move {
         let (max_entries, max_bytes) = {
             let cfg = config.read().await;
+            if !cfg.records_history() {
+                return;
+            }
             (cfg.history_max_entries, cfg.history_max_bytes)
         };
-        if max_entries == 0 || max_bytes == 0 {
-            return;
-        }
         let key = history_key(&db);
         let mut items = if reset_pending(&db) {
             Vec::new()

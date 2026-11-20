@@ -451,8 +451,8 @@ async fn otel_exported_span_without_a_route_keeps_the_path() {
     boot.shutdown().await;
 }
 
-/// A matched request that times out never reaches `record_status`: the tower
-/// `TimeoutLayer` answers 504 and drops the handler future. The span is named
+/// A matched request that times out never reaches `record_status`: the
+/// request timeout answers 504 and drops the handler future. The span is named
 /// when the route matches, so it still exports the route template, once.
 #[tokio::test]
 #[serial]

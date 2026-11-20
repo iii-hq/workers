@@ -59,7 +59,8 @@ fn wire_examples_round_trip() {
     let fixture: serde_json::Map<String, Value> = serde_json::from_str(FIXTURE).unwrap();
     let mut seen = Vec::new();
     for (name, example) in &fixture {
-        match name.as_str() {
+        // `<Type>@<version>`: an older peer's message, read and written as `<Type>`.
+        match name.split('@').next().unwrap_or(name) {
             "RouterInfo" => continue,
             "ContractVersion" => round_trips::<ContractVersion>(name, example),
             "AdapterInfoRequest" => round_trips::<AdapterInfoRequest>(name, example),
@@ -89,6 +90,15 @@ fn wire_examples_round_trip() {
     }
     for name in COPIED {
         assert!(seen.contains(name), "fixture has no example for {name}");
+    }
+    // A 1.3 peer's messages, without the fields 1.4 added: they must still read
+    // (`serde(default)`) and write back unchanged (`skip_serializing_if`).
+    for name in [
+        "WorkerBuildRequest@1.3",
+        "WorkerDestroyRequest@1.3",
+        "WorkerDestroyResponse@1.3",
+    ] {
+        assert!(seen.contains(&name), "fixture has no example for {name}");
     }
 }
 
@@ -334,17 +344,23 @@ fn constants_match_the_contract() {
     let fixture: serde_json::Map<String, Value> = serde_json::from_str(FIXTURE).unwrap();
     let version = serde_json::to_value(ContractVersion::CURRENT).unwrap();
     assert_eq!(version, fixture["ContractVersion"]);
-    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 3));
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 4));
     assert_eq!(
         fixture["AdapterInfo"]["features"],
         json!([
             FEATURE_SCOPED_AUTH,
             FEATURE_LEASE,
             FEATURE_LOGS_FROM_END,
-            FEATURE_BUILD
+            FEATURE_BUILD,
+            FEATURE_BINARY,
+            FEATURE_PRUNE
         ])
     );
     assert_eq!(FEATURE_BUILD, "worker.build");
+    assert_eq!(
+        (FEATURE_BINARY, FEATURE_PRUNE),
+        ("worker.binary", "worker.prune")
+    );
     assert_eq!(
         [
             WORKER_PREPARE,

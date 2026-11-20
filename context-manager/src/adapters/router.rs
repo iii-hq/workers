@@ -284,14 +284,17 @@ impl Summarizer for RouterSummarizer {
             Err(e) if is_unroutable(&e) => {
                 return Err(SummarizeError::Unavailable(e.to_string()));
             }
-            Err(e) => return Err(SummarizeError::Failed(e.to_string())),
+            Err(e) => {
+                let detail = e.to_string();
+                return Err(if detail.contains(CONTEXT_OVERFLOW_CODE) {
+                    SummarizeError::ContextOverflow(detail)
+                } else {
+                    SummarizeError::Failed(detail)
+                });
+            }
         };
         if response.get("ok").and_then(Value::as_bool) == Some(false) {
-            let detail = response
-                .get("error")
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown router error".to_string());
-            return Err(SummarizeError::Failed(detail));
+            return Err(router_error(response.get("error")));
         }
 
         let mut frames: Vec<String> = text_frames
@@ -305,6 +308,24 @@ impl Summarizer for RouterSummarizer {
             return Err(SummarizeError::Empty);
         }
         Ok(summary)
+    }
+}
+
+/// The router's error code for a request larger than the model's window.
+const CONTEXT_OVERFLOW_CODE: &str = "router/context_overflow";
+
+/// A `router::chat` `{ ok: false, error }` reply as a summariser error: an
+/// overflow stays distinguishable so the pipeline can retry a smaller fragment.
+fn router_error(error: Option<&Value>) -> SummarizeError {
+    let Some(error) = error else {
+        return SummarizeError::Failed("unknown router error".to_string());
+    };
+    let overflow = error.get("code").and_then(Value::as_str) == Some(CONTEXT_OVERFLOW_CODE)
+        || error.get("kind").and_then(Value::as_str) == Some("context_overflow");
+    if overflow {
+        SummarizeError::ContextOverflow(error.to_string())
+    } else {
+        SummarizeError::Failed(error.to_string())
     }
 }
 
@@ -418,6 +439,27 @@ mod tests {
             frame(json!({ "type": "ping" })),
         ];
         assert_eq!(extract_summary(&frames).unwrap(), "ab");
+    }
+
+    #[test]
+    fn router_overflow_reply_is_a_context_overflow() {
+        // The reply a 1M-token Claude window gave a 1.45M-token fragment.
+        let error = json!({
+            "code": "router/context_overflow",
+            "kind": "context_overflow",
+            "message": "This conversation is too large for model \"claude-opus-5-5\".",
+            "retryable": false
+        });
+        assert!(matches!(
+            router_error(Some(&error)),
+            SummarizeError::ContextOverflow(detail) if detail.contains("too large")
+        ));
+        let other = json!({ "code": "router/rate_limited", "kind": "rate_limited" });
+        assert!(matches!(
+            router_error(Some(&other)),
+            SummarizeError::Failed(_)
+        ));
+        assert!(matches!(router_error(None), SummarizeError::Failed(_)));
     }
 
     #[test]

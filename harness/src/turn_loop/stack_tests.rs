@@ -672,6 +672,40 @@ async fn a_released_call_held_again_stops_claiming_to_run_tools() {
     );
 }
 
+/// The hooks after the holder see the wrapper's description on release, as
+/// they would have without the hold: it lives only in the transcript.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_shows_later_hooks_its_description() {
+    let stored = json!([{"entry_id": "e_t1_1_assistant", "message": {
+        "role": "assistant", "stop_reason": "function_call",
+        "model": "fake", "provider": "fake", "timestamp": 2,
+        "usage": {"input": 10, "output": 2, "cost_usd": 0.1},
+        "content": [{"type": "function_call", "id": "call_hold",
+            "function_id": "agent_call",
+            "arguments": {"function": "test::hold", "arguments": {},
+                "description": "Writing tests"}}]}}]);
+    let hooks = json!({"harness::hook::on-pre-call": {
+        "decision": "continue", "targets": ["test::gate", "test::stamp"]}});
+    let (result, calls, _) = run_on_fake_engine(
+        json!({"call_hold": held_call()}),
+        stored,
+        None,
+        hooks,
+        |deps| async move {
+            crate::deferred::resolve(&deps, resolve_request("call_hold", "execute")).await
+        },
+    )
+    .await;
+    assert!(result.unwrap().turn_resumed);
+    let resumed: Vec<&Value> = calls
+        .iter()
+        .filter(|(function, _)| function == "harness::hook::on-pre-call")
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(resumed.len(), 1, "only the hook after the holder runs");
+    assert_eq!(resumed[0]["call"]["description"], "Writing tests");
+}
+
 /// The released call finished and a sibling still waits on a person, for
 /// hours maybe: `running tools` would stay up with nothing running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1948,8 +1982,16 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 let id = message["id"].as_str().unwrap();
                 if !hooks[id].is_null() {
                     let target = hooks[id]["target"].as_str().unwrap_or("test::gate");
+                    // `targets` observes the point once per target, in chain order.
+                    let observers: Vec<Value> = match hooks[id]["targets"].as_array() {
+                        Some(targets) => targets
+                            .iter()
+                            .map(|t| json!({"id": format!("o_{id}#{}", t.as_str().unwrap()), "target": t}))
+                            .collect(),
+                        None => vec![json!({"id": format!("o_{id}"), "target": target})],
+                    };
                     let registered = json!({"type": "functionregistered", "id": id, "revision": 1,
-                        "observers": [{"id": format!("o_{id}"), "target": target}]});
+                        "observers": observers});
                     let frame = tokio_tungstenite::tungstenite::Message::Text(
                         registered.to_string().into(),
                     );
@@ -1967,6 +2009,7 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
             let function = message["activation"]["observer_id"]
                 .as_str()
                 .and_then(|id| id.strip_prefix("o_"))
+                .and_then(|id| id.split('#').next())
                 .map_or(function, str::to_string);
             let data = message["data"].clone();
             observed

@@ -2779,6 +2779,21 @@ export function ChatView({
     ? 'px-3 pb-3 pt-2 @2xl:px-4 @2xl:pb-4'
     : 'px-3 pb-3 pt-2 @2xl:px-6 @2xl:pb-5 @5xl:px-9 @5xl:pb-6'
 
+  // Model-switch progress belongs to the composer column, like every other
+  // footer notice; outside it, the panel spanned the whole pane.
+  const modelSwitchPanel =
+    modelSwitch.error || modelSwitch.notice ? (
+      <StatusPanel
+        role={modelSwitch.error ? 'alert' : 'status'}
+        variant={modelSwitch.error ? 'alert' : 'info'}
+        className="mb-2"
+        headline={
+          modelSwitch.error ? 'Model switch not completed' : 'Switching models'
+        }
+        detail={modelSwitch.error ?? modelSwitch.notice}
+      />
+    ) : null
+
   // Resolve the working directory to its managed worktree so landed /
   // land-blocked events can be scoped to this conversation.
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
@@ -3376,21 +3391,10 @@ export function ChatView({
         </ChatFileNavigation>
         <LiveRegion announcement={announcer.announcement} />
         {modelSwitch.dialog}
-        {modelSwitch.error || modelSwitch.notice ? (
-          <StatusPanel
-            role={modelSwitch.error ? 'alert' : 'status'}
-            variant={modelSwitch.error ? 'alert' : 'info'}
-            headline={
-              modelSwitch.error
-                ? 'Model switch not completed'
-                : 'Switching models'
-            }
-            detail={modelSwitch.error ?? modelSwitch.notice}
-          />
-        ) : null}
         {readOnly ? (
           <footer className={footerPad}>
             <div className="mx-auto max-w-[760px]">
+              {modelSwitchPanel}
               <p className="text-sm text-ink-faint">
                 This conversation is read-only.
               </p>
@@ -3407,6 +3411,7 @@ export function ChatView({
               </p>
             ) : null}
             <div className="mx-auto max-w-[760px]">
+              {modelSwitchPanel}
               {conversationsCtx ? (
                 <ActiveSubagentChips
                   className="mb-1 px-1"

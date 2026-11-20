@@ -11,18 +11,17 @@
 //! fields it consumes hot-reload without a restart:
 //!
 //! - `middleware` — the global middleware chain.
-//! - `default_timeout` — the per-request invocation, middleware, and
-//!   streaming-drain timeouts read inside the handler and `http::on-request`'s
-//!   deliver hook.
+//! - `default_timeout` — the request timeout (the 504, read by the
+//!   [`crate::server::HotRouter`]), and the per-request invocation,
+//!   middleware, and streaming-drain timeouts read inside the handler and
+//!   `http::on-request`'s deliver hook.
 //!
-//! The CORS layer, the outer tower `TimeoutLayer` (the 504 wrapper, built from
-//! `default_timeout`), and the `ConcurrencyLimitLayer` are baked into the axum
+//! The CORS layer and the `ConcurrencyLimitLayer` are baked into the axum
 //! `Router` at build time, but the server holds it behind a swappable
 //! [`crate::server::HotRouter`] (Phase A). On a **same-address** config change,
 //! [`on_config_change`] rebuilds those layers via
-//! [`crate::server::rebuild_layers`], so `cors` / `default_timeout` /
-//! `concurrency_request_limit` also take effect live without dropping the
-//! listener.
+//! [`crate::server::rebuild_layers`], so `cors` / `concurrency_request_limit`
+//! also take effect live without dropping the listener.
 //!
 //! A `host` / `port` change **rebinds** the listener live (Phase B): the new
 //! address is bound first (a failed bind keeps the old server), the new server

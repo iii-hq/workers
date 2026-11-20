@@ -23,7 +23,8 @@ pub const MAX_BUNDLE_MANIFEST_BYTES: u64 = 64 * 1024;
 /// Environment variable that disables the bundle worker install/start
 /// pipeline entirely. Operators who don't trust the registry CDN can
 /// set `III_BUNDLE_WORKERS_DISABLED=1` to refuse every bundle worker
-/// install and start attempt.
+/// install and start attempt. Bundle sources only: a binary package, which
+/// Compose otherwise runs as a host process, is not refused.
 pub const ENV_BUNDLE_WORKERS_DISABLED: &str = "III_BUNDLE_WORKERS_DISABLED";
 
 /// Returns true when the operator has disabled bundle workers via the
@@ -45,7 +46,9 @@ pub fn bundle_workers_disabled() -> bool {
 /// a host file or to a device such as /dev/zero: it is opened without
 /// following links, must be a regular file, and the read itself stops past
 /// the cap rather than trusting a size checked beforehand.
-fn read_bundle_manifest(manifest_dir: &std::path::Path) -> Result<String, WorkerOpError> {
+pub(crate) fn read_bundle_manifest(
+    manifest_dir: &std::path::Path,
+) -> Result<String, WorkerOpError> {
     use std::io::Read;
 
     let name = std::path::Path::new("iii.worker.yaml");
@@ -80,6 +83,23 @@ fn read_bundle_manifest(manifest_dir: &std::path::Path) -> Result<String, Worker
     }
     String::from_utf8(bytes)
         .map_err(|e| io_error(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
+/// Why a package manifest's `runtime.base_image` is refused.
+pub(crate) const IMPLAUSIBLE_BASE_IMAGE: &str = "runtime.base_image must be a plausible OCI \
+     image reference (alphanumerics and `._-/:@+`), e.g. \"oven/bun:1\"";
+
+/// Whether a package manifest's `runtime.base_image`, when it names one, is a
+/// plausible OCI image reference: a gate of a bundle's manifest and of a
+/// binary package's.
+pub(crate) fn manifest_base_image_plausible(doc: &serde_yaml_ng::Value) -> bool {
+    doc.get("runtime")
+        .and_then(|r| r.get("base_image"))
+        .is_none_or(|img| {
+            img.as_str()
+                .map(str::trim)
+                .is_some_and(super::project::is_plausible_image_ref)
+        })
 }
 
 pub fn validate_bundle_manifest(
@@ -124,20 +144,11 @@ pub fn validate_bundle_manifest(
     // already execute). First-gate the characters here so a bad ref
     // fails here instead of silently falling back to the kind default
     // (see project.rs::load_from_manifest).
-    if let Some(img) = doc.get("runtime").and_then(|r| r.get("base_image")) {
-        let plausible = img
-            .as_str()
-            .map(str::trim)
-            .is_some_and(super::project::is_plausible_image_ref);
-        if !plausible {
-            return Err(WorkerOpError::BundleManifestRejected {
-                field: "runtime.base_image".into(),
-                reason: "runtime.base_image must be a plausible OCI image \
-                         reference (alphanumerics and `._-/:@+`), e.g. \
-                         \"oven/bun:1\""
-                    .into(),
-            });
-        }
+    if !manifest_base_image_plausible(&doc) {
+        return Err(WorkerOpError::BundleManifestRejected {
+            field: "runtime.base_image".into(),
+            reason: IMPLAUSIBLE_BASE_IMAGE.into(),
+        });
     }
 
     // Reject scripts.setup (OS provisioning belongs in the preset image).

@@ -96,4 +96,34 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<bool, StoreError>;
     /// Remove every attachment of the session.
     async fn delete_attachments(&self, session_id: &str) -> Result<(), StoreError>;
+
+    /// Every session holding `attachment_id`, in a stable order; empty when
+    /// no session does. Ids are store-generated and unique per upload, but
+    /// `session::fork` copies the attachments its path references under the
+    /// SAME id, so one id can live (byte-identical) in several sessions.
+    ///
+    /// The default walks every session (`list_metas` + `list_attachments`,
+    /// oldest session first): O(sessions), what a bridged instance pays per
+    /// lookup. [`FsStore`] answers from an index built by one walk of its
+    /// attachment folders and kept by put/delete.
+    async fn attachment_owners(&self, attachment_id: &str) -> Result<Vec<String>, StoreError> {
+        let mut metas = self.list_metas().await?;
+        metas.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.session_id.cmp(&b.session_id))
+        });
+        let mut owners = Vec::new();
+        for meta in metas {
+            let held = self
+                .list_attachments(&meta.session_id)
+                .await?
+                .iter()
+                .any(|a| a.attachment_id == attachment_id);
+            if held {
+                owners.push(meta.session_id);
+            }
+        }
+        Ok(owners)
+    }
 }

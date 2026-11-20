@@ -2,7 +2,7 @@ import type { JsonValue } from '@iii-dev/console-ui'
 
 export type Driver = 'postgres' | 'mysql' | 'sqlite' | 'unknown'
 
-export const DEFAULT_HISTORY_MAX_ENTRIES = 200
+export const DEFAULT_HISTORY_MAX_ENTRIES = 0
 export const DEFAULT_HISTORY_MAX_BYTES = 262_144
 
 const ENVIRONMENT_VALUE_PATTERN = /^\$\{([^}:]+)(?::([^}]*))?\}$/

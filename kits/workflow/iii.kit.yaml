@@ -1,6 +1,6 @@
 iii: v1
 name: iii/workflow
-version: 0.1.5
+version: 0.1.7
 iii_engine_version: ">=0.26.0"
 description: "Multi-agent work on the kanban board, one workflow run per wave: the ticket strategy of iii/deepwork (a run ticket, subtask cards, bounded rounds, independent verification) with every phase as a workflow node, each one with its own profile and model, retried by the run's check loop. Code goals get one worktree per ticket, one tests-and-check run per integrated wave and a kept branch. Installs beside iii/deepwork."
 license: Apache-2.0
@@ -11,11 +11,14 @@ workers:
   # worker refuses every run), node options (profile, model, label, phase, loop,
   # filesystem_root), an `output` naming a loop body node, the caller folder, workflow::status
   # details and the run-end observe (`next` + replay of workflow::on-run-completed): 0.3.0 is
-  # the first release with all of them. No caret, like state and ide.
-  workflow: ">=0.3.0"
+  # the first release with all of them. 0.3.4: the `read_only` node key (an older worker
+  # refuses every run that sets it) and the transient-failure continue. No caret, like state
+  # and ide.
+  workflow: ">=0.3.4"
   # 1.9.9: a parked node keeps waiting while its wake is delivered, and every exchange ends
   # with its terminal completion (a reseeded turn, a failed reseed, a crashed finalize).
-  harness: ^1.9.9
+  # 1.9.13: `failure.retryable` on harness::status, which the transient-failure continue reads.
+  harness: ^1.9.13
   # iii-directory, state, kanban and ide: their first releases on iii-sdk 0.26 (observe v2),
   # the same floors as iii/deepwork, so the two kits install side by side.
   # No caret: harness pulls iii-directory@latest.
@@ -31,3 +34,8 @@ workers:
   # fp::pipe + fp::get read node_errors when a workflow::status reply is too large to return.
   # No caret: harness pulls fp@latest.
   fp: ">=0.3.0"
+  # Not listed, on purpose: `browser` is optional. A run calls browser::chromium::status once (the
+  # newest call a page check needs, so an older browser worker reads as absent). When it finds a
+  # Chromium, a card that changes a web page is verified in a tab; otherwise the run says pages
+  # were not checked. Listing it would install the worker, and maybe a Chromium, for every run
+  # that never opens a page.

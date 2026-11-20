@@ -337,6 +337,47 @@ describe('composer send key preference', () => {
     })
   })
 
+  describe('Alt + Enter', () => {
+    beforeEach(() => saveSendKey('alt-enter'))
+
+    it.each([
+      ['Alt+Enter', { altKey: true }],
+      ['Cmd+Enter', { metaKey: true }],
+    ] as const)(
+      '%s submits without inserting a newline',
+      async (_, modifiers) => {
+        const { editor, editable, onSubmit } = await renderComposer()
+        const event = await pressEnter(editable, modifiers)
+
+        expect(onSubmit).toHaveBeenCalledTimes(1)
+        expect(event.defaultPrevented).toBe(true)
+        expect(markdown(editor)).toBe('hello')
+      },
+    )
+
+    it.each([
+      ['Enter', {}],
+      ['Shift+Enter', { shiftKey: true }],
+    ] as const)(
+      '%s inserts a newline and never submits',
+      async (_, modifiers) => {
+        const { editor, editable, onSubmit } = await renderComposer()
+        await pressEnter(editable, modifiers)
+
+        expect(onSubmit).not.toHaveBeenCalled()
+        expect(markdown(editor)).toBe('hello\n')
+      },
+    )
+
+    it('Alt+Enter submits on Windows and Linux', async () => {
+      setUserAgent(WINDOWS_UA)
+      const { editable, onSubmit } = await renderComposer()
+      await pressEnter(editable, { altKey: true })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('Shift + Enter', () => {
     beforeEach(() => saveSendKey('shift-enter'))
 
