@@ -10,15 +10,16 @@
   },
   "packageManager": "pnpm@11.13.1",
   "scripts": {
-    "build": "npm run build:ui && tsc -b",
-    "build:bundle": "npm run build:ui && node scripts/build-bundle.mjs",
-    "typecheck": "npm run build:ui && tsc -b --noEmit",
+    "build": "npm run build:ui && npm run build:iii-plugin && tsc -b",
+    "build:bundle": "npm run build:ui && npm run build:iii-plugin && node scripts/build-bundle.mjs",
+    "typecheck": "npm run build:ui && npm run build:iii-plugin && tsc -b --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "test": "vitest run",
+    "test": "npm run build:iii-plugin && vitest run",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
-    "build:ui": "pnpm --dir .. --filter @iii-workers/claude-code-ui... install --frozen-lockfile && pnpm --dir .. --filter @iii-workers/claude-code-ui run build"
+    "dev": "npm run build:ui && npm run build:iii-plugin && tsx src/index.ts",
+    "build:ui": "pnpm --dir .. --filter @iii-workers/claude-code-ui... install --frozen-lockfile && pnpm --dir .. --filter @iii-workers/claude-code-ui run build",
+    "build:iii-plugin": "node scripts/build-iii-plugin.mjs"
   },
   "bin": {
     "claude-code": "./dist/index.js"
