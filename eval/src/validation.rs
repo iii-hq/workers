@@ -105,11 +105,29 @@ pub async fn start_validation(
         .map_err(|error| EvalError::State(format!("git did not finish: {error}")))??
     };
     if request.dry_run {
+        // A named stack is read, as a start reads it, so the dry run warns as
+        // the start would; the console's dry run never names one, and stays git-only.
+        let installed = match stack_id.as_deref() {
+            Some(id) => {
+                let ((_, baseline), (_, candidate)) = pin_stacks(
+                    deps,
+                    &repository,
+                    Some(id.into()),
+                    &resolution.baseline.commit,
+                    &resolution.candidate.commit,
+                )
+                .await?;
+                Some((baseline, candidate))
+            }
+            None => None,
+        };
         resolution.warnings.extend(kit_warnings(
             stack_id.as_deref(),
             agent.is_some(),
             &changed_kits,
-            None,
+            installed
+                .as_ref()
+                .map(|(baseline, candidate)| [baseline.as_slice(), candidate.as_slice()]),
         ));
         return Ok(StartValidationResponseV1::Resolved(resolution));
     }
@@ -126,26 +144,14 @@ pub async fn start_validation(
         deps.host_user.as_deref(),
         request.caller_worker_id.as_deref(),
     )?;
-    let base = base_stack(deps, stack_id.as_deref()).await?;
-    // The kits each commit holds, so a prompt change is measured as code is.
-    let (baseline_kits, candidate_kits) = {
-        let (repository, b, c) = (
-            repository.clone(),
-            baseline_commit.clone(),
-            candidate_commit.clone(),
-        );
-        tokio::task::spawn_blocking(move || {
-            Ok::<_, EvalError>((
-                repository_kits(&repository, &b)?,
-                repository_kits(&repository, &c)?,
-            ))
-        })
-        .await
-        .map_err(|error| EvalError::State(format!("git did not finish: {error}")))??
-    };
-    let (baseline_yaml, baseline_installed) = stack_yaml(&base, &baseline_commit, &baseline_kits)?;
-    let (candidate_yaml, candidate_installed) =
-        stack_yaml(&base, &candidate_commit, &candidate_kits)?;
+    let ((baseline_yaml, baseline_installed), (candidate_yaml, candidate_installed)) = pin_stacks(
+        deps,
+        &repository,
+        stack_id.clone(),
+        &baseline_commit,
+        &candidate_commit,
+    )
+    .await?;
     // A real start answers with the row, so what it would not measure is kept there.
     let warnings = kit_warnings(
         stack_id.as_deref(),
@@ -305,6 +311,36 @@ pub async fn start_validation(
              {candidate} were started"
             ))
         })
+}
+
+/// Both sides' stacks: the E2E's stack `id` (or the default one) pinned to
+/// each commit, with the kit folders each installs from its commit.
+async fn pin_stacks(
+    deps: &Deps,
+    repository: &str,
+    id: Option<String>,
+    baseline: &str,
+    candidate: &str,
+) -> Result<((String, Vec<String>), (String, Vec<String>)), EvalError> {
+    let base = base_stack(deps, id.as_deref()).await?;
+    // The kits each commit holds, so a prompt change is measured as code is.
+    let (repository, b, c) = (
+        repository.to_string(),
+        baseline.to_string(),
+        candidate.to_string(),
+    );
+    let (baseline_kits, candidate_kits) = tokio::task::spawn_blocking(move || {
+        Ok::<_, EvalError>((
+            repository_kits(&repository, &b)?,
+            repository_kits(&repository, &c)?,
+        ))
+    })
+    .await
+    .map_err(|error| EvalError::State(format!("git did not finish: {error}")))??;
+    Ok((
+        stack_yaml(&base, baseline, &baseline_kits)?,
+        stack_yaml(&base, candidate, &candidate_kits)?,
+    ))
 }
 
 /// Changes the suggestion's run under the analysis lock, only while it is
@@ -604,17 +640,15 @@ fn changed_kits(
 /// What the validation would not measure about the kits: a changed kit the
 /// stack does not install from the commits, changed kits installed with no
 /// `agent` to run them, a kit only one side's commit holds. `installed` is
-/// each side's kit folders taken from its commit; `None` before the stack is
-/// read (a dry run), when a named stack is taken to install what changed and
-/// the default one to install none.
+/// each side's kit folders taken from its commit; `None` is the default
+/// stack in a dry run, which reads no stack and takes it to install none.
 fn kit_warnings(
     stack: Option<&str>,
     agent: bool,
     changed: &[String],
     installed: Option<[&[String]; 2]>,
 ) -> Vec<String> {
-    let assumed: &[String] = if stack.is_some() { changed } else { &[] };
-    let [baseline, candidate] = installed.unwrap_or([assumed, assumed]);
+    let [baseline, candidate] = installed.unwrap_or([&[], &[]]);
     let named = stack.map_or("the default stack".to_string(), |id| {
         format!("stack `{id}`")
     });
@@ -1032,12 +1066,14 @@ mod tests {
         let changed = ["kits/deepwork".to_string()];
         let none: [String; 0] = [];
         let warns = |stack, agent, installed| kit_warnings(stack, agent, &changed, installed);
-        // Dry runs: the default stack installs no kit; a named one is trusted.
+        // The default stack's dry run reads no stack: it installs no kit.
         assert!(warns(None, true, None)[0].contains("the default stack does not install"));
-        assert!(warns(Some("deepwork-source"), true, None).is_empty());
-        assert!(warns(Some("deepwork-source"), false, None)[0].contains("no `agent`"));
-        // Starts: what each side's stack installed from its commit.
+        // Otherwise what each side's stack installed from its commit.
         assert!(warns(Some("deepwork-source"), true, Some([&changed, &changed])).is_empty());
+        assert!(
+            warns(Some("deepwork-source"), false, Some([&changed, &changed]))[0]
+                .contains("no `agent`")
+        );
         assert!(
             warns(Some("harness-template"), true, Some([&none, &none]))[0]
                 .contains("stack `harness-template` does not install")

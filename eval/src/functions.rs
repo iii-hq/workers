@@ -227,7 +227,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              Spends model tokens, and never runs unless called. With dry_run: true it only \
              resolves and checks the refs, scenario and runs and answers with the resolved \
              commits (`baseline`, `candidate`, `warnings`); it registers nothing and calls no \
-             E2E function.",
+             E2E function but stacks-list when `stack` is named.",
         ),
     );
 

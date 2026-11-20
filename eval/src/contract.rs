@@ -1475,7 +1475,8 @@ pub struct StartValidationRequestV1 {
     pub by: Option<String>,
     /// Resolve and check the refs, the scenario and the runs exactly as a
     /// start does, and answer with the commits they resolve to. Registers
-    /// nothing, calls no E2E function and spends nothing.
+    /// nothing, calls no E2E function but `stacks-list` when `stack` is
+    /// named, and spends nothing.
     #[serde(default)]
     pub dry_run: bool,
     /// Stamped by the engine on every invocation; callers omit it.

@@ -3259,7 +3259,11 @@ async fn a_named_stack_installs_each_sides_kit_from_its_commit_under_the_agent()
     world.stacks = Some(listed);
     pair_world(&mut world);
     let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    h.configure_code(Some(&repo.path())).await.unwrap();
+    // A subdirectory of the clone reads the repository's kits/, not its own.
+    std::fs::create_dir_all(repo.dir.join("sub/kits/decoy")).unwrap();
+    h.configure_code(Some(&repo.dir.join("sub").to_string_lossy()))
+        .await
+        .unwrap();
 
     // Without a stack, a kit change is said to go unmeasured.
     let resolved = dry_run(&h, &evaluation_id, |_| {}).await.unwrap();
@@ -3288,6 +3292,28 @@ async fn a_named_stack_installs_each_sides_kit_from_its_commit_under_the_agent()
     .await
     .unwrap();
     assert!(named.warnings.is_empty(), "{:?}", named.warnings);
+    // A dry run on a named stack reads it: one that installs no kit says so,
+    // and one the E2E lacks is refused.
+    let template = dry_run(&h, &evaluation_id, |request| {
+        request["stack"] = json!("harness-template");
+        request["agent"] = json!("deepwork-e2e");
+    })
+    .await
+    .unwrap();
+    assert!(
+        template.warnings[0].contains("stack `harness-template` does not install"),
+        "{:?}",
+        template.warnings
+    );
+    let missing = dry_run(&h, &evaluation_id, |request| {
+        request["stack"] = json!("nowhere");
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        missing.to_string().contains("stack_not_found:"),
+        "{missing}"
+    );
 
     // A start that skipped the dry run keeps the warning on the run it records.
     let unmeasured = start(&h, &evaluation_id, |_| {})

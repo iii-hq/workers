@@ -560,7 +560,8 @@ is sent; `model`, `provider` and `criterion` are otherwise only required for a
 real start). It answers `{baseline, candidate, warnings}`, each side
 `{commit, short, branch}` (`short` is 12 characters, `branch` a remote branch
 that holds the commit, the one named like the ref when several do), and
-registers nothing, records no run and calls no E2E function. A baseline given
+registers nothing, records no run and calls no E2E function but, when `stack`
+is named, `e2e::dashboard::stacks-list` to read it. A baseline given
 that is not an ancestor of the candidate is a warning, not an error. The
 console asks it 400 ms after the last keystroke and when a field loses focus,
 shows `Resolved · <sha> · pushed to <branch>` or the refusal under each field,
@@ -597,8 +598,9 @@ refs, scenario and runs.
    changed `kits/<kit>` the stack does not install from the commits (the
    default stack installs none), changed kits installed with no `agent`, and
    a kit only one of the two commits holds (that side installs the stack's
-   published one). A dry run lists them in `warnings`, taking a named stack
-   to install what changed; a start records them in `run.warnings`.
+   published one). A dry run lists them in `warnings` (without `stack` it
+   reads no stack and takes the default one to install no kit); a start
+   records them in `run.warnings`.
 3. Nothing changed so far; now the criterion is registered and the run recorded
    as `starting` (`run` in the row: both commits, scenario, runs, model,
    provider, `stack` and `agent` when given, `warnings`, `started_at`), and two
