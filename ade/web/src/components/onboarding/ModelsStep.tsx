@@ -186,15 +186,21 @@ export function ModelsStep({
     choice: Extract<ProviderChoice, { kind: 'key' }>
     key?: KeyInput
   }[]
-  // A Connect that got some providers working and failed on others: going
-  // on with the working ones is the expected move.
-  const preferContinue = failed && anyReady && changes > 0
+  // A provider serves models and nothing new waits to be connected (or the
+  // last Connect failed on the rest): going on is the expected move.
+  const continuePrimary = anyReady && (changes === 0 || failed)
   const continueRef = useRef<HTMLButtonElement>(null)
-  // The clicked Connect button was disabled while it ran, so the focus is
-  // nowhere: hand it to Continue so Enter moves on.
+  // When Continue becomes the primary action, or a run ends with it there,
+  // it takes the focus so Enter moves on: the Connect button that had it
+  // was disabled while it ran, or is gone. Never pulled out of a text field.
   useEffect(() => {
-    if (preferContinue && !busy) continueRef.current?.focus()
-  }, [preferContinue, busy])
+    if (!continuePrimary || busy) return
+    const active = document.activeElement
+    if (active?.matches('input, textarea, select, [contenteditable="true"]')) {
+      return
+    }
+    continueRef.current?.focus()
+  }, [continuePrimary, busy])
 
   // Once the changes land, setup moves on; a failure stays here with its log.
   const apply = async () => {
@@ -231,18 +237,20 @@ export function ModelsStep({
             Back
           </Button>
           <span className="flex items-center gap-2">
-            {preferContinue ? (
-              // At least one provider connected and another failed: setup
-              // can go on with what works, so Continue is the primary
-              // action (Enter takes it) and retrying is the secondary one.
+            {continuePrimary ? (
+              // A provider already serves models: Continue is the primary
+              // action and Enter takes it. After a Connect that failed on
+              // another provider, retrying sits beside it.
               <>
-                <Button
-                  variant="ghost"
-                  onClick={() => void apply()}
-                  disabled={busy || incomplete}
-                >
-                  Try again
-                </Button>
+                {changes > 0 ? (
+                  <Button
+                    variant="ghost"
+                    onClick={() => void apply()}
+                    disabled={busy || incomplete}
+                  >
+                    Try again
+                  </Button>
+                ) : null}
                 <Button ref={continueRef} onClick={onNext} disabled={busy}>
                   Continue
                 </Button>
@@ -254,26 +262,20 @@ export function ModelsStep({
                     Skip for now
                   </Button>
                 ) : null}
-                {changes === 0 && anyReady ? (
-                  <Button onClick={onNext} disabled={busy}>
-                    Continue
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={() => void apply()}
-                    disabled={busy || changes === 0 || incomplete}
-                  >
-                    {running === 'models' ? (
-                      <LoaderCircle
-                        className="animate-spin motion-reduce:animate-none"
-                        aria-hidden
-                      />
-                    ) : null}
-                    {running === 'models'
-                      ? 'Connecting…'
-                      : connectLabel(selections.length, removals.length)}
-                  </Button>
-                )}
+                <Button
+                  onClick={() => void apply()}
+                  disabled={busy || changes === 0 || incomplete}
+                >
+                  {running === 'models' ? (
+                    <LoaderCircle
+                      className="animate-spin motion-reduce:animate-none"
+                      aria-hidden
+                    />
+                  ) : null}
+                  {running === 'models'
+                    ? 'Connecting…'
+                    : connectLabel(selections.length, removals.length)}
+                </Button>
               </>
             )}
           </span>

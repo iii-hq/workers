@@ -333,6 +333,47 @@ describe('ModelsStep after Connect failed', () => {
     expect(onNext).toHaveBeenCalledTimes(1)
   })
 
+  it('hands the focus to Continue when a run ends with a provider working', async () => {
+    const ready = {
+      providers: [
+        {
+          id: 'claude-code',
+          title: 'Claude Code',
+          configured: false,
+          available: true,
+          ownsAuthentication: true,
+          modelCount: 13,
+        },
+      ],
+      installed: new Set(['llm-router', 'provider-claude-code']),
+    }
+    const onNext = vi.fn()
+    const render = (running: OnboardingController['running']) =>
+      act(() =>
+        root.render(
+          <ModelsStep
+            onboarding={controller(ready, undefined, {
+              running,
+              activity: [FAILED],
+              signInNeeded: new Set(['openai-codex']),
+            })}
+            onBack={() => undefined}
+            onNext={onNext}
+          />,
+        ),
+      )
+    render('models')
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    render(null)
+    const primary = [...container.querySelectorAll('footer button')].at(
+      -1,
+    ) as HTMLButtonElement
+    expect(primary.textContent).toBe('Continue')
+    expect(document.activeElement).toBe(primary)
+    await act(async () => primary.click())
+    expect(onNext).toHaveBeenCalledTimes(1)
+  })
+
   it('makes Continue the primary, focused action when another provider works', async () => {
     const onNext = vi.fn()
     act(() =>

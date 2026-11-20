@@ -425,6 +425,44 @@ export function OnboardingWizardHost() {
     return () => window.cancelAnimationFrame(frame)
   }, [open, step])
 
+  // Enter with the focus on nothing in particular (the body, the dialog,
+  // plain text) takes the step's primary action. A button that had the focus
+  // and was then disabled or removed (Connect while it runs) leaves the focus
+  // there, and Enter must still move setup on. Controls keep their own Enter.
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key !== 'Enter' ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return
+      }
+      const target = event.target instanceof Element ? event.target : null
+      const popup = popupRef.current
+      if (!popup) return
+      if (target && target !== document.body && !popup.contains(target)) return
+      if (
+        target?.closest(
+          'input, textarea, select, button, a[href], [role="radio"], [role="checkbox"], [role="option"], [contenteditable="true"]',
+        )
+      ) {
+        return
+      }
+      const primary = primaryAction(content.current)
+      if (!primary) return
+      event.preventDefault()
+      primary.click()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
   // Finished steps stay a click away throughout, Explore iii included: setup
   // is recorded on reaching Explore, and going back after that only
   // re-records it on the way forward.
