@@ -321,7 +321,8 @@ pub fn warn_auth_conflict(rbac: &RbacConfig) -> bool {
     if conflict {
         tracing::warn!(
             "rbac.auth_function_id and rbac.loopback_auth are both set; \
-             rbac.auth_function_id authenticates every connection and rbac.loopback_auth is ignored"
+             rbac.auth_function_id authenticates worker (/) and telemetry (/otel) connections \
+             and rbac.loopback_auth is ignored"
         );
     }
     conflict
