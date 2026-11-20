@@ -378,24 +378,34 @@ pub async fn handle(
 async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Result<(), String>) {
     match binding.target.function_id.as_str() {
         crate::functions::SEND_ID => (event.clone(), wake_target(deps, binding, event).await),
-        other => call_target(deps, binding, other, project(binding, event)).await,
+        other => match project(binding, event) {
+            Ok(payload) => call_target(deps, binding, other, payload).await,
+            // The template alone is not the call the owner asked for: fail the
+            // fire with the reason instead of calling the target without its event.
+            Err(e) => (binding.target.payload.clone().unwrap_or_default(), Err(e)),
+        },
     }
 }
 
 /// The target's payload template with the delivered event injected at its
 /// pointer.
-fn project(binding: &Binding, event: &Value) -> Value {
+fn project(binding: &Binding, event: &Value) -> Result<Value, String> {
     let base = binding.target.payload.clone().unwrap_or_else(|| json!({}));
-    inject_at(base, binding.target.event_pointer(), event.clone())
+    let pointer = binding.target.event_pointer();
+    inject_at(base, pointer, event.clone())
+        .map_err(|e| format!("`event_into` `{pointer}` cannot be written into the payload: {e}"))
 }
 
-/// Set `value` at `pointer` inside `payload`, creating intermediate objects.
-/// A pointer that cannot be created leaves the payload untouched — the target
-/// still gets its template rather than nothing. Also reused by the turn
-/// loop's functional validation (`options.validation.result_into`).
-pub(crate) fn inject_at(payload: Value, pointer: &str, value: Value) -> Value {
+/// Set `value` at `pointer` inside `payload`. An object is walked by key, and a
+/// missing key is created; an array is walked by the index of an item it
+/// already has, which is what lets an event seed a pipe
+/// (`/through/0/payload/value`). A pointer that cannot land is an error naming
+/// where it stopped: a payload sent without its value fails at the target on
+/// every fire, with a message about something else. Also reused by the
+/// post-turn validators (`args.result_into`).
+pub(crate) fn inject_at(payload: Value, pointer: &str, value: Value) -> Result<Value, String> {
     if pointer.is_empty() {
-        return value;
+        return Ok(value);
     }
     let mut root = match payload {
         Value::Object(_) => payload,
@@ -407,17 +417,43 @@ pub(crate) fn inject_at(payload: Value, pointer: &str, value: Value) -> Value {
         .map(|s| s.replace("~1", "/").replace("~0", "~"))
         .collect();
     let mut cursor = &mut root;
-    for segment in &segments[..segments.len() - 1] {
-        let map = match cursor.as_object_mut() {
-            Some(m) => m,
-            None => return root,
+    for (depth, segment) in segments.iter().enumerate() {
+        let last = depth + 1 == segments.len();
+        let stopped = |what: String| {
+            let at = match depth {
+                0 => "the payload".to_string(),
+                _ => format!("`/{}`", segments[..depth].join("/")),
+            };
+            format!("{at} {what}")
         };
-        cursor = map.entry(segment.clone()).or_insert_with(|| json!({}));
+        cursor = match cursor {
+            Value::Object(map) if last => {
+                map.insert(segment.clone(), value);
+                return Ok(root);
+            }
+            Value::Object(map) => map.entry(segment.clone()).or_insert_with(|| json!({})),
+            Value::Array(items) => {
+                let len = items.len();
+                let Some(item) = segment.parse::<usize>().ok().and_then(|i| items.get_mut(i))
+                else {
+                    return Err(stopped(format!(
+                        "is an array of {len} item(s), and `{segment}` is not the index of one"
+                    )));
+                };
+                if last {
+                    *item = value;
+                    return Ok(root);
+                }
+                item
+            }
+            _ => {
+                return Err(stopped(
+                    "is neither an object nor an array, so nothing can be set inside it".into(),
+                ));
+            }
+        };
     }
-    if let Some(map) = cursor.as_object_mut() {
-        map.insert(segments[segments.len() - 1].clone(), value);
-    }
-    root
+    Ok(root)
 }
 
 /// A wake: the event becomes a message in the owner's session. Routed through
@@ -935,14 +971,14 @@ mod tests {
 
     #[test]
     fn injection_creates_missing_objects_along_the_pointer() {
-        let out = inject_at(json!({ "db": "primary" }), "/args/event", json!({ "n": 1 }));
+        let out = inject_at(json!({ "db": "primary" }), "/args/event", json!({ "n": 1 })).unwrap();
         assert_eq!(out["db"], json!("primary"));
         assert_eq!(out["args"]["event"], json!({ "n": 1 }));
     }
 
     #[test]
     fn an_empty_pointer_replaces_the_whole_payload() {
-        let out = inject_at(json!({ "ignored": true }), "", json!([1, 2]));
+        let out = inject_at(json!({ "ignored": true }), "", json!([1, 2])).unwrap();
         assert_eq!(out, json!([1, 2]));
     }
 
@@ -950,15 +986,58 @@ mod tests {
     fn a_non_object_template_is_preserved_under_a_key() {
         // Nothing can be injected INTO a scalar; keeping the template under a
         // known key beats dropping either side silently.
-        let out = inject_at(json!("literal"), "/event", json!({ "n": 1 }));
+        let out = inject_at(json!("literal"), "/event", json!({ "n": 1 })).unwrap();
         assert_eq!(out["_payload"], json!("literal"));
         assert_eq!(out["event"], json!({ "n": 1 }));
     }
 
     #[test]
     fn escaped_pointer_segments_round_trip() {
-        let out = inject_at(json!({}), "/a~1b/c", json!(1));
+        let out = inject_at(json!({}), "/a~1b/c", json!(1)).unwrap();
         assert_eq!(out["a/b"]["c"], json!(1));
+    }
+
+    /// Prevents: an event aimed at a pipe's first step being dropped. The
+    /// pointer walks into `through`, an array, and the pipe then refused every
+    /// fire with "step 1 receives no threaded input" (1,192 failed fires in 11
+    /// minutes on one session).
+    #[test]
+    fn injection_walks_into_an_array_by_index() {
+        let pipe = json!({ "through": [
+            { "function": "fp::get", "payload": { "path": "/sessions" } },
+            { "function": "fp::flatten" },
+        ] });
+        let out = inject_at(pipe.clone(), "/through/0/payload/value", json!({ "n": 1 })).unwrap();
+        assert_eq!(
+            out["through"][0]["payload"],
+            json!({ "path": "/sessions", "value": { "n": 1 } })
+        );
+        // A step without a payload gets one; an item is replaced whole.
+        let out = inject_at(pipe.clone(), "/through/1/payload/value", json!(2)).unwrap();
+        assert_eq!(out["through"][1]["payload"], json!({ "value": 2 }));
+        let out = inject_at(pipe, "/through/1", json!("x")).unwrap();
+        assert_eq!(
+            out["through"],
+            json!([{ "function": "fp::get", "payload": { "path": "/sessions" } }, "x"])
+        );
+    }
+
+    #[test]
+    fn a_pointer_that_cannot_land_says_where_it_stopped() {
+        let pipe = json!({ "through": [{ "function": "fp::get" }], "n": 1 });
+        for (pointer, stopped_at) in [
+            (
+                "/through/1/payload/value",
+                "`/through` is an array of 1 item(s)",
+            ),
+            ("/through/first/payload", "`first` is not the index of one"),
+            ("/through/-", "`-` is not the index of one"),
+            ("/n/value", "`/n` is neither an object nor an array"),
+            ("/through/0/function/x", "`/through/0/function` is neither"),
+        ] {
+            let err = inject_at(pipe.clone(), pointer, json!(1)).unwrap_err();
+            assert!(err.contains(stopped_at), "{pointer}: {err}");
+        }
     }
 
     #[test]
@@ -1492,19 +1571,29 @@ mod tests {
         let event = json!({ "db": "primary", "table": "courier_status", "op": "update" });
 
         // No template, default pointer: the event lands under `/event`.
-        assert_eq!(project(&b, &event), json!({ "event": event }));
+        assert_eq!(project(&b, &event).unwrap(), json!({ "event": event }));
 
         // A template is preserved and the pointer is honoured.
         b.target.payload = Some(json!({ "run_id": "r1", "args": {} }));
         b.target.event_into = Some("/args/change".into());
         assert_eq!(
-            project(&b, &event),
+            project(&b, &event).unwrap(),
             json!({ "run_id": "r1", "args": { "change": event } })
         );
 
         // An empty pointer replaces the whole payload with the raw event.
         b.target.event_into = Some(String::new());
-        assert_eq!(project(&b, &event), event);
+        assert_eq!(project(&b, &event).unwrap(), event);
+
+        // A pointer the template cannot take fails the fire by name; the
+        // target is never called with the template alone.
+        b.target.payload = Some(json!({ "through": [] }));
+        b.target.event_into = Some("/through/0/payload/value".into());
+        let err = project(&b, &event).unwrap_err();
+        assert!(
+            err.starts_with("`event_into` `/through/0/payload/value` cannot"),
+            "{err}"
+        );
     }
 
     /// The event is the observed call's output — for an event source, the

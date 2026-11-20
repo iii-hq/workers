@@ -1229,6 +1229,11 @@ async fn resolve_target(
             validate_call_target(&requested.function_id, policy)
                 .map_err(HarnessError::InvalidRequest)?;
             validate_event_into(requested.event_into.as_deref())?;
+            pointer_lands(
+                "event_into",
+                requested.event_pointer(),
+                requested.payload.as_ref(),
+            )?;
             let target = requested.clone();
             let arguments = target.payload.clone().unwrap_or_else(|| json!({}));
             approval_allows_unattended(deps, &target.function_id, session_id, &arguments)
@@ -1306,6 +1311,20 @@ fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
         )));
     }
     Ok(())
+}
+
+/// Refuse a pointer the payload template cannot take while the caller is still
+/// there to fix it. At delivery the same pointer fails every fire, for as long
+/// as the observer stands, in a session that may have ended its turn.
+fn pointer_lands(field: &str, pointer: &str, template: Option<&Value>) -> Result<(), HarnessError> {
+    let template = template.cloned().unwrap_or_else(|| json!({}));
+    super::observer_deliver::inject_at(template, pointer, Value::Null)
+        .map(|_| ())
+        .map_err(|e| {
+            HarnessError::InvalidRequest(format!(
+                "`{field}` `{pointer}` cannot be written into the payload: {e}. A pointer walks                  objects by key (missing keys are created) and arrays by the index of an                  existing item, e.g. `/through/0/payload/value` for a pipe's first step."
+            ))
+        })
 }
 
 /// The deadline a one-shot wake gets when it asked for none. `once` bounds
@@ -1442,6 +1461,10 @@ async fn observe_post_turn(
         validate_post_turn_scope(session_id, args.sessions.take())
             .map_err(HarnessError::InvalidRequest)?,
     );
+    if let Some(template) = &args.payload {
+        let pointer = args.result_into.as_deref().unwrap_or("/value");
+        pointer_lands("result_into", pointer, Some(template))?;
+    }
     let args = serde_json::to_value(&args)
         .map_err(|e| HarnessError::InvalidRequest(format!("hook args serialize: {e}")))?;
     let topology = deps.topology.lock().await;
@@ -3231,6 +3254,25 @@ pub(crate) mod tests {
         }))
         .unwrap();
         assert!(validate_event_into(explicit.event_into.as_deref()).is_err());
+    }
+
+    /// Prevents: an observer that can never deliver being created. A pipe
+    /// target seeded at its first step is accepted; a pointer the template
+    /// cannot take is refused at observe time, naming where it stopped.
+    #[test]
+    fn a_pointer_the_payload_cannot_take_is_refused_at_observe_time() {
+        let pipe = json!({ "through": [{ "function": "fp::get", "payload": { "path": "/a" } }] });
+        assert!(pointer_lands("event_into", "/through/0/payload/value", Some(&pipe)).is_ok());
+        assert!(pointer_lands("event_into", "/event", None).is_ok());
+        assert!(pointer_lands("event_into", "", Some(&pipe)).is_ok());
+        let err = pointer_lands("event_into", "/through/1/payload/value", Some(&pipe))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`event_into` `/through/1/payload/value`"),
+            "{err}"
+        );
+        assert!(err.contains("`/through` is an array of 1 item(s)"), "{err}");
     }
 
     #[test]
