@@ -264,8 +264,20 @@ export async function settleStaleSessions(
 export const RECOVERY_FN_ID = 'claude::on-functions-changed';
 /** The internal function session-manager's commit events call while anything is pending. */
 export const ACTIVITY_FN_ID = 'claude::on-session-activity';
-/** session-manager calls these only after a write commits, for any caller. */
-const COMMIT_EVENTS = ['session::on-status-changed', 'session::on-message-added'];
+/**
+ * What shows session-manager's store answers again, for any caller: its
+ * commit events (emitted only after a write commits) and the reads that show
+ * a session to anyone (the console opening its list or a chat). A status
+ * nobody writes past and nobody reads cannot be seen as stale; the first read
+ * writes it.
+ */
+const ACTIVITY_SOURCES = [
+  'session::on-status-changed',
+  'session::on-message-added',
+  'session::list',
+  'session::get',
+  'session::messages-tail',
+];
 
 /**
  * Start the recovery of statuses this worker could not write, driven by
@@ -299,14 +311,14 @@ export function startStatusRecovery(
     return scanning;
   };
   // While a status is pending or the scan has not listed, watch
-  // session-manager's commit events: the first commit after its store
-  // recovers (from any caller) is the signal, with no registration event
-  // needed. Nothing pending: no observers at all.
+  // session-manager's activity (ACTIVITY_SOURCES): the first commit or read
+  // after its store recovers, by any caller, is the signal, with no
+  // registration event needed. Nothing pending: no observers at all.
   let watching: Array<{ dispose: () => Promise<void> }> = [];
   const syncWatch = (): void => {
     const needed = unsettled.size > 0 || !scanned;
     if (needed && watching.length === 0) {
-      watching = COMMIT_EVENTS.map((function_id) =>
+      watching = ACTIVITY_SOURCES.map((function_id) =>
         iii.observe({ function_id, capture: [] }, ACTIVITY_FN_ID),
       );
     } else if (!needed && watching.length > 0) {

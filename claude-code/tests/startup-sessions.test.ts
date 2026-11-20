@@ -255,7 +255,14 @@ describe('recovery on session-manager activity', () => {
     startupRetry.delaysMs = saved.startup;
   });
 
-  const ACTIVITY = ['session::on-status-changed', 'session::on-message-added'];
+  // Commits by any caller, and the reads that show a session to anyone.
+  const ACTIVITY = [
+    'session::on-status-changed',
+    'session::on-message-added',
+    'session::list',
+    'session::get',
+    'session::messages-tail',
+  ];
 
   /** Observers of session-manager's commit events, and whether each is disposed. */
   function activityWatch(fake: FakeIii) {
@@ -332,6 +339,35 @@ describe('recovery on session-manager activity', () => {
     await vi.waitFor(() => expect(activityWatch(fake).filter((w) => w.live)).toEqual([]));
   });
 
+  it('writes a lost status on the first read once the store answers, with no commit or registration', async () => {
+    const fake = fakeIii();
+    let scanned = false;
+    startStatusRecovery(
+      fake.iii,
+      () => false,
+      () => {
+        scanned = true;
+      },
+    );
+    await vi.waitFor(() => expect(scanned).toBe(true));
+    const real = fake.iii.call.bind(fake.iii);
+    let storeDown = true;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::set-status' && storeDown)
+        throw new Error('store unavailable');
+      return real(req as never);
+    };
+    seed(fake, 'idle-1', 'working', { agent: 'claude-code' });
+    expect(await settleSessionStatus(fake.iii, 'idle-1', 'done')).toBe(false);
+    // The store recovers; nobody commits and nothing re-registers. The first
+    // time anyone reads sessions (the console opening its list), it is written.
+    storeDown = false;
+    expect(status(fake, 'idle-1').status).toBe('working');
+    await fake.registered.get(ACTIVITY_FN_ID)?.({ ...activity, function_id: 'session::list' });
+    await vi.waitFor(() => expect(status(fake, 'idle-1').status).toBe('done'));
+    await vi.waitFor(() => expect(activityWatch(fake).filter((w) => w.live)).toEqual([]));
+  });
+
   it('runs a startup scan that could not list once the store commits anything', async () => {
     const fake = fakeIii();
     seed(fake, 'store-2', 'working', { agent: 'claude-code' });
@@ -349,7 +385,9 @@ describe('recovery on session-manager activity', () => {
         scanned++;
       },
     );
-    await vi.waitFor(() => expect(activityWatch(fake).filter((w) => w.live).length).toBe(2));
+    await vi.waitFor(() =>
+      expect(activityWatch(fake).filter((w) => w.live).length).toBe(ACTIVITY.length),
+    );
     storeDown = false;
     await fake.registered.get(ACTIVITY_FN_ID)?.(activity);
     await vi.waitFor(() =>
