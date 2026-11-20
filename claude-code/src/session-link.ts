@@ -145,6 +145,56 @@ export async function setSessionStatus(
   }
 }
 
+export const RESTART_REASON = 'claude-code restarted while this run was active';
+
+/**
+ * At startup, settle every session this worker created that still says
+ * `working`: no run of its own can be live yet, so each one lost its final
+ * status (a write that never landed, or a worker that died mid-run). Each
+ * namespace has at most one claude-code, and its calls reach only its own
+ * namespace's session-manager, so every `agent: claude-code` session listed
+ * here is this worker's. `isLive` spares a run that started meanwhile. Every
+ * page is read before anything is written: a write moves a session out of the
+ * `working` filter under the cursor. Returns how many were settled.
+ */
+export async function settleStaleSessions(
+  iii: IIIClient,
+  isLive: (sessionId: string) => boolean,
+): Promise<number> {
+  const stale: string[] = [];
+  try {
+    let cursor: string | null | undefined;
+    do {
+      const page = await iii.call<
+        unknown,
+        { sessions?: Array<{ session_id?: string }>; next_cursor?: string | null } | null
+      >({
+        function_id: 'session::list',
+        payload: {
+          status: 'working',
+          metadata: { agent: 'claude-code' },
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        },
+        timeoutMs: TIMEOUT_MS,
+      });
+      for (const s of page?.sessions ?? []) {
+        if (typeof s.session_id === 'string') stale.push(s.session_id);
+      }
+      cursor = page?.next_cursor;
+    } while (cursor);
+  } catch (err) {
+    console.warn(`claude-code: could not list sessions left working: ${String(err)}`);
+    return 0;
+  }
+  let settled = 0;
+  for (const sessionId of stale) {
+    if (isLive(sessionId)) continue;
+    if (await setSessionStatus(iii, sessionId, 'error', RESTART_REASON)) settled++;
+  }
+  return settled;
+}
+
 /**
  * A run's last status write: retried, since nothing writes this session's
  * status again until its next run, and a lost `done` or `error` would leave it

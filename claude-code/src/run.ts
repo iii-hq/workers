@@ -182,6 +182,11 @@ const SESSIONS_RESPONSE_FORMAT = jsonSchema(z.object({ sessions: z.array(Session
 type LiveRun = { interrupt: () => Promise<void>; stopped?: boolean };
 const live = new Map<string, LiveRun>();
 
+/** Whether this worker is running a turn in `sessionId` right now. */
+export function isRunLive(sessionId: string): boolean {
+  return live.has(sessionId);
+}
+
 /** Best-effort: flip a session record to `error` so a failed background run
  *  never leaves it stuck in `working`. Swallows its own failure. */
 async function markSessionError(iii: IIIClient, session_id: string): Promise<void> {

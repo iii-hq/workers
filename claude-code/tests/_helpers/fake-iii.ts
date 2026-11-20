@@ -266,6 +266,36 @@ export function fakeIii(): FakeIii {
         entry.revision += 1;
         return { updated: true, revision: entry.revision };
       }
+      // Status lives on the session record; `list` filters on status and on
+      // metadata equality, paged by an opaque cursor, as session-manager does.
+      if (req.function_id === 'session::set-status') {
+        const sessionKey = `session-manager/${String(payload.session_id)}`;
+        const meta = state.get(sessionKey) as Record<string, unknown> | undefined;
+        if (meta) {
+          state.set(sessionKey, {
+            ...meta,
+            status: payload.status,
+            ...(payload.reason ? { status_reason: payload.reason } : {}),
+          });
+        }
+        return null;
+      }
+      if (req.function_id === 'session::list') {
+        const wanted = (payload.metadata ?? {}) as Record<string, unknown>;
+        const all = [...state.entries()]
+          .filter(([k]) => k.startsWith('session-manager/'))
+          .map(([, v]) => v as Record<string, unknown>)
+          .filter((m) => payload.status == null || (m.status ?? 'idle') === payload.status)
+          .filter((m) => {
+            const md = (m.metadata ?? {}) as Record<string, unknown>;
+            return Object.entries(wanted).every(([k, v]) => md[k] === v);
+          });
+        const start = typeof payload.cursor === 'string' ? Number(payload.cursor) : 0;
+        const limit = typeof payload.limit === 'number' ? payload.limit : 50;
+        const page = all.slice(start, start + limit);
+        const next = start + limit < all.length ? String(start + limit) : null;
+        return { sessions: page, next_cursor: next };
+      }
       if (req.function_id === 'session::get') {
         const meta = state.get(`session-manager/${String(payload.session_id)}`);
         return meta ? { meta } : null;
