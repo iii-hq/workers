@@ -1,0 +1,33 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"content":{"text":"**Counting Reference Lines**\n\nI've determined the need to count the reference lines. The labels start at \"Reference line 00000:\" and increment sequentially. I need to figure out the last reference line to find the number of reference lines.\n\n\n","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"EpwFCpkFAWkUfRMXwqVd+bb9oUSZGr4yhT42jhldx5oWxC7I23xihBdeIPBowuZWT9UgCeCNurTdKpYb4KLyw1qwrm4/dodh4zByLipItEzv227ZWqKa6iQnEL2H3m7LeyfkkOBY8xTiICKcNRycbEeAS64LULG/+LpPnpFKQoWv8If27o+6Aa3bVsNuQHRlYp3Fh9+Gke56XtdPDnDkDIhRqJnZ9zCRmjTYTEPczi07PZ8PoLcJbFNBDmQUq7Xj2XnV67HSOIzrLvtn/spp0fSjCgghBeB0u7MVbtRkIAVC71E/PLH18ldeR+rvRB8Z/46BsZP4kGiVpxo2E2UxI+PIY0C88CQKo3KjFNlQ4p0Ps8CXnzUoDIkftr9ecFAoSDOIxT9FLFKTH54g1ANciYDz1iPS32PLd3kDBmgMAZpgP/X6I0AWUwiUHMT8XIPZ3q09pFxY7ahlUau7Y9o4Ok7G1w10sit15erg5elOXjm1S9vVY50cLPdWCP7jFbotVnhzRDa9aadnYudeeHR332Q3wHk1hK9r43ZPSQNL2dPG7t2QzvqbkS97Xr04GkwHWQpE/pwp+tJKAgJHml/BItpVKIKVsrCA2p35meeIJtdU/nVGL31csJIb+5zpAlwP7+MtWwOaShMB+kIhcs9yFJzU7SgMTN1pcquFQvFAfRBpxQpg4N60PanICy9Il5Bj5ORnQ5AGAJ5gU7MMyDl3AVpE7RUw9VURlIOsmZPrxvot7oyqx9V7XdDW89Ay12KtCt5NT/Avege3GOEun228SYVNoR1KoEbZIMwyeekrPjZRNDcnbELGGxGuIHr+7oDPfTPjWuIYSWhSYVe16eEy7gbEimTzFdOZid6kT/K8/JMxhw0rFDtg8/Apz3k9F7Y=","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"type":"model_output"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"text":"1500","type":"text"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"completed","usage":{"total_tokens":36559,"total_input_tokens":36402,"input_tokens_by_modality":[{"modality":"text","tokens":36402}],"total_cached_tokens":34348,"cached_tokens_by_modality":[{"modality":"text","tokens":34348}],"total_output_tokens":4,"total_tool_use_tokens":0,"total_thought_tokens":153,"initial_input_tokens":36402},"created":"2026-11-19T17:22:19Z","updated":"2026-11-19T17:22:19Z","service_tier":"standard","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

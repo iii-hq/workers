@@ -49,8 +49,11 @@ import { AddProviderPanel } from './AddProviderPanel'
 import { ModelLibraryDialog } from './ModelLibraryDialog'
 import { ModelMark } from './ModelMark'
 import {
+  AUTOMATIC_ROW,
+  automaticMatches,
   buildProviderGroups,
   filterWordsOf,
+  type ModelPickerAutomatic,
   modellessCandidates,
   providerGroupState,
   useModellessProviders,
@@ -99,6 +102,12 @@ export interface ModelPickerProps {
   showReasoningEffort?: boolean
   /** Providers declared to the router; defaults to the chat context's list. */
   providers?: ProviderListEntry[]
+  /**
+   * A choice that stores no model (a worker resolves one itself). It leads
+   * the list, is selected while `value` is null, and its label is the
+   * trigger whenever `value` is null, loading and empty catalogs included.
+   */
+  automatic?: ModelPickerAutomatic
   className?: string
   /** Styling hook for compact placements such as the chat composer. */
   triggerClassName?: string
@@ -249,6 +258,7 @@ export function ModelPicker({
   showProviderConfiguration = true,
   showReasoningEffort = true,
   providers,
+  automatic,
   className,
   triggerClassName,
   triggerAppearance = 'default',
@@ -300,13 +310,16 @@ export function ModelPicker({
   // Who serves it: the worker's own name and mark, so an Anthropic API key
   // and a Claude Code subscription read differently on the same model.
   const provider = providerPresentationFor(safeValue, presentProviders)
+  const automaticShown = automatic !== undefined && value == null
   const triggerLabel = selected
     ? formatModelLabel(selected.label)
-    : loading
-      ? 'Loading…'
-      : options.length > 0
-        ? placeholder
-        : 'No models'
+    : automaticShown
+      ? automatic.label
+      : loading
+        ? 'Loading…'
+        : options.length > 0
+          ? placeholder
+          : 'No models'
 
   useEffect(() => {
     if (
@@ -423,7 +436,9 @@ export function ModelPicker({
           ? 'model (loading catalog)'
           : selected
             ? `model: ${selected.label}${provider.label ? ` via ${provider.label}` : ''}, reasoning effort: ${thinkingLevel}`
-            : 'model'
+            : automaticShown
+              ? `model: ${automatic.label}`
+              : 'model'
       }
       aria-busy={loading || undefined}
       aria-haspopup={mobileSheet ? 'dialog' : 'menu'}
@@ -431,7 +446,9 @@ export function ModelPicker({
       data-state={open ? 'open' : 'closed'}
       disabled={pickerDisabled}
       onClick={mobileSheet ? () => handleOpenChange(!open) : undefined}
-      title={selected ? selected.label : undefined}
+      title={
+        selected ? selected.label : automaticShown ? automatic.label : undefined
+      }
       className={cn(
         subtle
           ? // Quiet text that reads as part of the composer surface; the
@@ -456,7 +473,7 @@ export function ModelPicker({
         <span
           className={cn(
             'min-w-0 truncate',
-            !selected && 'text-ink-faint',
+            !selected && !automaticShown && 'text-ink-faint',
             selected && subtle && 'font-medium',
           )}
         >
@@ -495,6 +512,17 @@ export function ModelPicker({
       }
       onAddProvider={showProviderConfiguration ? openAddProvider : undefined}
       showReasoningEffort={showReasoningEffort}
+      automatic={
+        automatic && {
+          label: automatic.label,
+          onSelect: () => {
+            playUiSound('switch')
+            automatic.onSelect()
+            // No effort to adjust after this choice, so the sheet is done.
+            setOpen(false)
+          },
+        }
+      }
       disabled={disabled}
       loading={loading}
       autoFocusFilter={false}
@@ -502,6 +530,7 @@ export function ModelPicker({
   ) : (
     <PinnedModelMenu
       value={safeValue ?? null}
+      automaticSelected={value == null}
       options={options}
       providers={presentProviders}
       pinned={pinned}
@@ -535,6 +564,16 @@ export function ModelPicker({
         }
       }}
       onPinnedChange={savePinnedModels}
+      automatic={
+        automatic && {
+          label: automatic.label,
+          onSelect: () => {
+            playUiSound('switch')
+            automatic.onSelect()
+            setOpen(false)
+          },
+        }
+      }
       onConfigureProvider={
         showProviderConfiguration ? openProviderConfiguration : undefined
       }
@@ -717,6 +756,8 @@ interface ModelPickerPanelProps {
   showReasoningEffort?: boolean
   /** Providers declared to the router; defaults to the chat context. */
   providers?: ProviderListEntry[]
+  /** The row that stores no model; see `ModelPickerProps.automatic`. */
+  automatic?: ModelPickerAutomatic
   disabled?: boolean
   loading?: boolean
   className?: string
@@ -741,6 +782,7 @@ export function ModelPickerPanel({
   onAddProvider,
   showReasoningEffort = true,
   providers,
+  automatic,
   disabled,
   loading,
   className,
@@ -779,9 +821,15 @@ export function ModelPickerPanel({
     modelless,
     words: filterWords,
   })
-  const visibleIds = groups.flatMap((group) =>
-    group.options.map((option) => option.id),
-  )
+  const automaticRow =
+    automatic && !loading && automaticMatches(automatic, filterWords)
+      ? automatic
+      : undefined
+  const automaticSelected = automaticRow !== undefined && value == null
+  const visibleIds = [
+    ...(automaticRow ? [AUTOMATIC_ROW] : []),
+    ...groups.flatMap((group) => group.options.map((option) => option.id)),
+  ]
   const resolvedActiveIndex =
     activeIndex ?? Math.max(0, safeValue ? visibleIds.indexOf(safeValue) : 0)
   const activeId =
@@ -818,7 +866,8 @@ export function ModelPickerPanel({
     event.preventDefault()
     event.stopPropagation()
     if (event.key === 'Enter') {
-      if (activeId) selectModel(activeId)
+      if (activeId === AUTOMATIC_ROW) selectAutomatic()
+      else if (activeId) selectModel(activeId)
       return
     }
     if (event.key === 'Home' || event.key === 'End') {
@@ -833,6 +882,10 @@ export function ModelPickerPanel({
         visibleIds.length) %
         visibleIds.length,
     )
+  }
+
+  function selectAutomatic() {
+    if (!disabled && !loading) automaticRow?.onSelect()
   }
 
   function selectModel(next: ModelId) {
@@ -890,18 +943,45 @@ export function ModelPickerPanel({
           contentClassName,
         )}
       >
+        {automaticRow ? (
+          <button
+            id={`model-option-${AUTOMATIC_ROW}`}
+            data-model-option={AUTOMATIC_ROW}
+            type="button"
+            disabled={disabled}
+            onClick={selectAutomatic}
+            onMouseEnter={() => setActiveIndex(0)}
+            aria-pressed={automaticSelected}
+            className={cn(
+              'flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md px-2 py-1.5 text-left font-inter text-base text-ink hover:bg-surface-hover active:bg-surface-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 sm:min-h-8 sm:text-sm',
+              automaticSelected
+                ? 'bg-surface-selected hover:bg-surface-selected'
+                : activeId === AUTOMATIC_ROW && 'bg-surface-hover',
+              groups.length > 0 && 'mb-2',
+            )}
+          >
+            <span className="min-w-0 flex-1 truncate">
+              {automaticRow.label}
+            </span>
+            {automaticSelected ? (
+              <Check className="size-4 shrink-0 text-ink" aria-hidden />
+            ) : null}
+          </button>
+        ) : null}
         {loading ? (
           <div className="px-2 py-3 font-inter text-sm text-ink-faint">
             Loading model catalog…
           </div>
         ) : groups.length === 0 ? (
-          <div className="px-2 py-3 font-inter text-sm text-ink-faint">
-            {filterWords.length > 0
-              ? `No model matches "${filter.trim()}".`
-              : onAddProvider
-                ? 'No providers yet. Add one from the registry to get models.'
-                : 'No models are configured.'}
-          </div>
+          automaticRow && filterWords.length > 0 ? null : (
+            <div className="px-2 py-3 font-inter text-sm text-ink-faint">
+              {filterWords.length > 0
+                ? `No model matches "${filter.trim()}".`
+                : onAddProvider
+                  ? 'No providers yet. Add one from the registry to get models.'
+                  : 'No models are configured.'}
+            </div>
+          )
         ) : (
           groups.map((group) => {
             const provider = providerById.get(group.label)
@@ -982,7 +1062,7 @@ export function ModelPickerPanel({
                           // Hover and keyboard focus share the lighter wash;
                           // the selected row keeps the stronger one, so the
                           // choice stays legible while the pointer roams.
-                          'flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md px-2 py-1.5 text-left font-inter text-base text-ink hover:bg-surface-hover active:bg-surface-active focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 sm:min-h-8 sm:text-sm',
+                          'flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md px-2 py-1.5 text-left font-inter text-base text-ink hover:bg-surface-hover active:bg-surface-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 sm:min-h-8 sm:text-sm',
                           selectedOption
                             ? 'bg-surface-selected hover:bg-surface-selected'
                             : highlighted && 'bg-surface-hover',

@@ -1,0 +1,39 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"EsYDCsMDAWkUfROmSD19BiscZm1LzRUjaA/X9TN2KhlfUliHzcAlrDvBE9BcYPQwnbvZTqTOdv4+A25bR4E5e46bYvvMfwlq3KOLz3Fl+rSdxQccYoOVT8hTSaEfjmNF5/iLomgawnQgKZaQgf6k+ZanjECJem537F3vyLyzSwX66das2TQcrGz4nuVTZzKmEvHnb49ZXaBO591nD2VuBau9jtdqFl34st0O9AUZw2h4XkZmjgJko5ZpLnfPd4VbTf8RhrLqBcMKdIpBXLOgYqgf0JpmWYAAxKSNEwW4uHCJqNiVJ+f3uQWu/O70vDED5lmClOyll9Vt4t9Z/IZSSaidbfGnLhAk7HFn3PlcmZJze5oer3Yn8jiVAQPAUFiWqkEodQwF/PxeBpMAvbHzJo5kXZ4XqqMz1qdY1qmqxq4VgmJg4PSLa312iwqgryFT4Ksisdxg5JZ3fWjvqVP+T3jyxFUS8hAzXL/dVdyCHtP/9knAwwqA7+Qv6wnWgKhE/eBRu0S0KU75upJFlY2WifWduf05211koWtPY3sNNm42VY0zkUg7gs0cx7O/0A8xSgAb7sjMFWnbVI1+HcybsvB6Rqqo6LfoRQ==","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"type":"model_output"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"text":"Here are the populations for each city:\n\n* **Lisbon:** 5","type":"text"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":1,"delta":{"text":"45,000\n* **Porto:** 232,000\n* **Br","type":"text"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":1,"delta":{"text":"aga:** 193,000\n\n**Sum:** 545,000 + 232,","type":"text"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":1,"delta":{"text":"000 + 193,000 = **970,000**","type":"text"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"completed","usage":{"total_tokens":466,"total_input_tokens":242,"input_tokens_by_modality":[{"modality":"text","tokens":242}],"total_cached_tokens":0,"total_output_tokens":90,"total_tool_use_tokens":0,"total_thought_tokens":134,"initial_input_tokens":242},"created":"2026-11-19T17:19:43Z","updated":"2026-11-19T17:19:43Z","service_tier":"standard","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

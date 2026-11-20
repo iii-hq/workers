@@ -1322,6 +1322,69 @@ impl SessionService {
         Ok(ListAttachmentsResponse { attachments })
     }
 
+    /// The session holding `attachment_id`: `session_hint` when it holds it,
+    /// else the first holder (a fork's copy under the same id is
+    /// byte-identical). `None` when no session does. O(1) on the fs store
+    /// once its index is warm.
+    async fn attachment_owner(
+        &self,
+        attachment_id: &str,
+        session_hint: Option<&str>,
+    ) -> Result<Option<String>, SessionError> {
+        let owners = self.store.attachment_owners(attachment_id).await?;
+        if let Some(hint) = session_hint
+            && owners.iter().any(|s| s == hint)
+        {
+            return Ok(Some(hint.to_string()));
+        }
+        Ok(owners.into_iter().next())
+    }
+
+    /// One attachment's metadata by id alone (`session_hint` picks among a
+    /// fork's copies); `None` when unknown. Never loads the bytes.
+    pub async fn find_attachment_meta(
+        &self,
+        attachment_id: &str,
+        session_hint: Option<&str>,
+    ) -> Result<Option<AttachmentMeta>, SessionError> {
+        let Some(owner) = self.attachment_owner(attachment_id, session_hint).await? else {
+            return Ok(None);
+        };
+        Ok(self
+            .store
+            .list_attachments(&owner)
+            .await?
+            .into_iter()
+            .find(|m| m.attachment_id == attachment_id))
+    }
+
+    /// One attachment's metadata and bytes by id alone; `None` when unknown.
+    pub async fn find_attachment(
+        &self,
+        attachment_id: &str,
+        session_hint: Option<&str>,
+    ) -> Result<Option<(AttachmentMeta, Vec<u8>)>, SessionError> {
+        let Some(owner) = self.attachment_owner(attachment_id, session_hint).await? else {
+            return Ok(None);
+        };
+        Ok(self.store.get_attachment(&owner, attachment_id).await?)
+    }
+
+    /// A session's attachments, newest first; empty for an unknown session
+    /// (the `@attachment` menu of a chat that has none yet).
+    pub async fn session_attachments(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<AttachmentMeta>, SessionError> {
+        let mut attachments = self.store.list_attachments(session_id).await?;
+        attachments.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.attachment_id.cmp(&a.attachment_id))
+        });
+        Ok(attachments)
+    }
+
     // -----------------------------------------------------------------
     // Branching
     // -----------------------------------------------------------------

@@ -697,6 +697,10 @@ mod productive {
         session_bank: Option<String>,
         // `session::messages` reads the path as ending at `from_entry_id`.
         from_entry: bool,
+        // The `router::provider::list` reply; unset, the call is denied.
+        providers: Option<Value>,
+        // The model `router::complete` expects; unset, the pinned fixture's.
+        model: Option<String>,
     }
     impl Script {
         fn answer(&mut self, function: &str, data: &Value) -> Reply {
@@ -815,8 +819,14 @@ mod productive {
                     assert!(self.observe_events);
                     Ok(Value::Null)
                 }
+                "router::provider::list" if self.providers.is_some() => {
+                    Ok(self.providers.clone().unwrap())
+                }
                 "router::complete" => {
-                    assert_eq!(data["model"], "fixture-only");
+                    assert_eq!(
+                        data["model"],
+                        self.model.as_deref().unwrap_or("fixture-only")
+                    );
                     if self.model_failures > 0 {
                         self.model_failures -= 1;
                         return Ok(
@@ -1104,6 +1114,7 @@ mod productive {
                             | "session::get"
                             | "session::messages"
                             | "session::list"
+                            | "router::provider::list"
                             | "router::complete"
                             | "memory::on-item-changed"
                             | "memory::on-bank-changed"
@@ -5369,5 +5380,125 @@ mod productive {
             assert_eq!(s.count("state::set"), 1);
             assert_eq!(stack.commits(), 0);
         }
+    }
+
+    /// Every log line of this binary since [`capture_logs`] first ran.
+    static LOGS: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    struct Logs;
+    impl std::io::Write for Logs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            LOGS.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    /// Installs the capturing subscriber once. It is process-global, so
+    /// other tests of this binary write into it too: a test matches its
+    /// lines by an id no other test uses.
+    fn capture_logs() {
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(|| Logs)
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber).unwrap();
+        });
+    }
+    fn logged(needle: &str) -> Vec<String> {
+        String::from_utf8_lossy(&LOGS.lock().unwrap())
+            .lines()
+            .filter(|line| line.contains(needle))
+            .map(String::from)
+            .collect()
+    }
+    fn one_line_span(model: Option<&str>) -> Script {
+        Script {
+            path: vec![
+                message("anchor", "old"),
+                message("end", "a durable synthetic line for extraction"),
+            ],
+            cursor: Some("anchor".into()),
+            model: model.map(String::from),
+            model_items: VecDeque::from([fact("Amber instruments require copper calibration.")]),
+            ..Script::default()
+        }
+    }
+    async fn pin(stack: &Boundary, model: &str) {
+        let mut cfg = (*stack.deps.config().await).clone();
+        cfg.extraction_model = model.into();
+        *stack.deps.config.write().await = Arc::new(cfg);
+    }
+
+    #[tokio::test]
+    async fn an_unset_model_extracts_with_the_automatic_model_and_logs_it() {
+        capture_logs();
+        let stack = Boundary::new(Script {
+            providers: Some(json!({"providers": [
+                {"id":"openai","available":true,"configured":false,
+                    "credential_env_var":"OPENAI_API_KEY","default_model":"gpt-fixture"},
+                {"id":"fixture-local","available":true,"configured":true,
+                    "credential_env_var":null,"default_model":"automatic-only-fixture"},
+                {"id":"anthropic","available":false,"configured":true,
+                    "credential_env_var":"ANTHROPIC_API_KEY","default_model":"claude-fixture"},
+            ]})),
+            ..one_line_span(Some("fixture-local::automatic-only-fixture"))
+        })
+        .await;
+        pin(&stack, "").await;
+        stack.run(&job("end")).await.unwrap();
+        {
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::provider::list"), 1);
+            assert_eq!(s.count("router::complete"), 1);
+        }
+        assert_eq!(stack.commits(), 1);
+        let lines = logged("model=fixture-local::automatic-only-fixture");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("INFO"), "{}", lines[0]);
+        assert!(lines[0].contains("reason=provider_default"), "{}", lines[0]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_pass_warns_with_session_model_and_error() {
+        capture_logs();
+        let stack = Boundary::new(Script {
+            model_failures: 1,
+            ..one_line_span(Some("warn-only-fixture"))
+        })
+        .await;
+        pin(&stack, "warn-only-fixture").await;
+        let error = stack.run(&job("end")).await.unwrap_err();
+        assert!(
+            error.contains("retry required (model warn-only-fixture)"),
+            "{error}"
+        );
+        let lines = logged("(model warn-only-fixture)");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let line = &lines[0];
+        assert!(line.contains("WARN"), "{line}");
+        assert!(line.contains("extraction pass failed"), "{line}");
+        assert!(line.contains("session_id=incremental-fixture"), "{line}");
+        assert!(
+            line.contains("provider error fixture: retry required"),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pinned_model_never_asks_the_router_for_providers() {
+        // No provider at all: the automatic path would fail the pass.
+        let stack = Boundary::new(Script {
+            providers: Some(json!({"providers": []})),
+            ..one_line_span(None)
+        })
+        .await;
+        stack.run(&job("end")).await.unwrap();
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::provider::list"), 0);
+        assert_eq!(s.count("router::complete"), 1);
     }
 }

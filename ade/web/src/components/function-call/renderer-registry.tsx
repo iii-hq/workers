@@ -25,20 +25,16 @@ import {
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
-import {
-  WorkflowFunctionIdLabel,
-  WorkflowToolView,
-} from '@/components/chat/workflow'
 import { ExtErrorChip, ScopedExtension } from '@/lib/ui-loader'
 import { type RegisteredRenderer, useExtRenderers } from '@/lib/ui-slots'
 import type { FunctionCallMessage } from '@/types/chat'
 import type { FunctionCallRenderer } from '@/types/injectable-ui'
 
 /**
- * The first-party families (directory, browser, shell, and sandbox moved
- * into their workers' injected UI), in the exact order of the old `??`
- * chains. Each family's `tryRender*` already gates on its own function ids,
- * so an entry returning `null` falls through to the next.
+ * The first-party families (directory, browser, shell, sandbox and
+ * workflow moved into their workers' injected UI), in the exact order of
+ * the old `??` chains. Each family's `tryRender*` already gates on its own
+ * function ids, so an entry returning `null` falls through to the next.
  */
 export const FIRST_PARTY_RENDERERS: readonly FunctionCallRenderer[] = [
   // sandbox::* rendering is no longer first-party: the sandbox-code-runner
@@ -79,14 +75,8 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionCallRenderer[] = [
   },
   // shell::* rendering is no longer first-party: the shell worker ships
   // it as injected UI (ide/ui/src/function-call).
-  {
-    id: 'first-party/workflow',
-    isMatch: WorkflowToolView.isWorkflowFunction,
-    tryRender: WorkflowToolView.tryRender,
-    tryRenderRunning: WorkflowToolView.tryRenderRunning,
-    tryRenderPreview: WorkflowToolView.tryRenderPreview,
-    FunctionIdLabel: WorkflowFunctionIdLabel,
-  },
+  // workflow::* rendering is no longer first-party: the workflow worker
+  // ships it as injected UI (workflow/ui/src/function-call-message).
   {
     id: 'first-party/router',
     isMatch: RouterToolView.isRouterFunction,

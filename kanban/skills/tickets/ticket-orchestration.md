@@ -26,8 +26,7 @@ only wire between you and them. Everything below exists to keep that wire honest
 
 ## The ticket is the only channel
 
-`engine::functions::list { prefix: "harness::" }` shows **no `harness::send`** on this
-engine. Combined with the spawn contract — "the child's outcome reaches you only through
+Agents cannot call `harness::send`: it is internal, and denied to agents by policy. Combined with the spawn contract — "the child's outcome reaches you only through
 whatever destination its task names" — that leaves exactly one wire:
 
 1. **The task text is the child's whole brief.** It cannot infer a path, a function id, a

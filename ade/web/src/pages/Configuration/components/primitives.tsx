@@ -119,7 +119,7 @@ export function SettingsSection({
       <h2
         id={titleId}
         className={cn(
-          'rounded-sm text-base font-medium leading-6 text-foreground',
+          'rounded-sm text-base font-semibold leading-6 text-foreground',
           SEARCH_FLASH,
           '[[data-search-flash]>&]:bg-(--search-flash) [[data-search-flash]>&]:shadow-[-8px_0_0_var(--search-flash),8px_0_0_var(--search-flash)]',
         )}

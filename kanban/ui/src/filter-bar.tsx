@@ -775,10 +775,10 @@ export function LayoutToggle({ layout, onChange }: { layout: 'board' | 'list'; o
   return (
     <ShadcnTabs className="kb-layout" onValueChange={(next) => onChange(next === 'list' ? 'list' : 'board')} value={layout}>
       <ShadcnTabsList aria-label="Layout">
-        <ShadcnTabsTrigger aria-label="Board" title="Board" value="board">
+        <ShadcnTabsTrigger aria-label="Show as columns" title="Show as columns" value="board">
           <Columns3 size={16} />
         </ShadcnTabsTrigger>
-        <ShadcnTabsTrigger aria-label="List" title="List" value="list">
+        <ShadcnTabsTrigger aria-label="Show as list" title="Show as list" value="list">
           <ListIcon size={16} />
         </ShadcnTabsTrigger>
       </ShadcnTabsList>

@@ -32,8 +32,11 @@ import type {
 } from '@/types/chat'
 import { ModelMark } from './ModelMark'
 import {
+  AUTOMATIC_ROW,
+  automaticMatches,
   buildProviderGroups,
   filterWordsOf,
+  type ModelPickerAutomatic,
   modellessCandidates,
   providerGroupState,
   useModellessProviders,
@@ -67,6 +70,11 @@ interface PinnedModelMenuProps {
   onSelect: (id: ModelId, effort: ThinkingLevel | undefined) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
   onPinnedChange: (next: PinnedModel[]) => void
+  /** The row that stores no model, ahead of the favorites and the search results. */
+  automatic?: ModelPickerAutomatic
+  /** Whether the Automatic row is the selection; defaults to `value == null`. A stored id the
+   *  options do not list reaches the menu as a null `value` but is not automatic. */
+  automaticSelected?: boolean
   /** Open a provider's configuration; absent hides the Configure links. */
   onConfigureProvider?: (providerId: string) => void
   /** Open the registry page; absent hides the footer's Add provider. */
@@ -211,6 +219,8 @@ export function PinnedModelMenu({
   onSelect,
   onThinkingLevelChange,
   onPinnedChange,
+  automatic,
+  automaticSelected,
   onConfigureProvider,
   onAddProvider,
   onEdit,
@@ -289,6 +299,13 @@ export function PinnedModelMenu({
   const [allModelsOpen, setAllModelsOpen] = useState(favoritesEmpty)
   const showAllModels = !showCatalog && allGroups.length > 0
 
+  const automaticRow = automaticMatches(automatic, words)
+    ? automatic
+    : undefined
+  const automaticRows: NavRow[] = automaticRow
+    ? [{ key: AUTOMATIC_ROW, id: '', effort: undefined }]
+    : []
+
   const catalogRows = (list: typeof groups, prefix: string): NavRow[] =>
     list.flatMap((group) =>
       providerGroupState(group, providerById.get(group.label)).catalogIsUsable
@@ -300,8 +317,9 @@ export function PinnedModelMenu({
         : [],
     )
   const navRows: NavRow[] = showCatalog
-    ? catalogRows(groups, '')
+    ? [...automaticRows, ...catalogRows(groups, '')]
     : [
+        ...automaticRows,
         ...favoriteRows.map((row) => ({
           key: `fav:${row.id}`,
           id: row.id,
@@ -347,6 +365,11 @@ export function PinnedModelMenu({
     onSelect(id, effort)
   }
 
+  const pickRow = (row: NavRow) => {
+    if (row.key !== AUTOMATIC_ROW) pick(row.id, row.effort)
+    else if (!disabled && !loading) automaticRow?.onSelect()
+  }
+
   const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (!NAV_KEYS.includes(event.key)) return
     if (event.key === 'Escape') {
@@ -360,7 +383,7 @@ export function PinnedModelMenu({
     event.preventDefault()
     event.stopPropagation()
     if (event.key === 'Enter') {
-      if (activeRow) pick(activeRow.id, activeRow.effort)
+      if (activeRow) pickRow(activeRow)
       return
     }
     if (event.key === 'Home' || event.key === 'End') {
@@ -526,6 +549,43 @@ export function PinnedModelMenu({
   const effortFixed = efforts.length < 2
   const catalogEmpty = groups.length === 0
 
+  /** The Automatic row: selected while no model is stored. `inset` lines it up with the favorites' grip column. */
+  const renderAutomatic = (inset: boolean) => {
+    if (!automaticRow) return null
+    const current = automaticSelected ?? value == null
+    return (
+      <div
+        className={cn(
+          'flex h-10 shrink-0 items-center rounded-lg transition-colors duration-100',
+          inset ? 'pr-2' : 'px-2',
+          current
+            ? 'bg-surface-selected'
+            : activeKey === AUTOMATIC_ROW
+              ? 'bg-surface-hover/50'
+              : undefined,
+        )}
+      >
+        {inset ? <span className="size-8 shrink-0" aria-hidden /> : null}
+        <button
+          type="button"
+          id={`model-option-${AUTOMATIC_ROW}`}
+          data-model-option={AUTOMATIC_ROW}
+          data-model-row={AUTOMATIC_ROW}
+          disabled={disabled}
+          aria-pressed={current}
+          onClick={() => pickRow(automaticRows[0])}
+          onMouseEnter={() => setActiveIndex(0)}
+          className="flex h-10 min-w-0 flex-1 items-center gap-2.5 rounded-md text-left focus-visible:outline-none disabled:opacity-40"
+        >
+          <span className="truncate">{automaticRow.label}</span>
+          <span className="ml-auto flex size-6 shrink-0 items-center justify-center">
+            {current ? <Check className="size-4 text-ink" aria-hidden /> : null}
+          </span>
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col font-inter text-sm text-ink">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-edge px-3">
@@ -565,7 +625,7 @@ export function PinnedModelMenu({
         {loading ? (
           <div className="px-2 py-3 text-ink-faint">Loading model catalog…</div>
         ) : showCatalog ? (
-          catalogEmpty ? (
+          catalogEmpty && !automaticRow ? (
             <div className="px-2 py-3 text-ink-faint">
               {searching
                 ? `No model matches "${filter.trim()}".`
@@ -574,10 +634,14 @@ export function PinnedModelMenu({
                   : 'No models are configured.'}
             </div>
           ) : (
-            renderGroups(groups, '')
+            <>
+              {renderAutomatic(false)}
+              {renderGroups(groups, '')}
+            </>
           )
         ) : (
           <>
+            {renderAutomatic(true)}
             {favoritesEmpty ? (
               <div className="px-2 py-3 text-ink-faint">
                 {options.length === 0

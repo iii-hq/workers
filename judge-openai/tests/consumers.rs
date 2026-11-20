@@ -97,8 +97,12 @@ fn browser_accepts(answer: &Value, keys: &[&str]) {
     assert!(probabilities[choice].as_f64().unwrap() >= top - 1e-6);
 }
 
+/// The expected body: these small object states travel as one JSON part.
 fn body(input: &Value, questions: Value) -> Value {
-    json!({"model": "gpt-6-luna", "input": input.to_string(), "questions": questions})
+    assert!(input.is_object(), "{input}");
+    json!({"model": "gpt-6-luna",
+           "input": [{"role": "user", "content": [{"type": "input_json", "data": input}]}],
+           "questions": questions})
 }
 
 #[tokio::test]

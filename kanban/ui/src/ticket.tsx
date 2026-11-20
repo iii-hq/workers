@@ -3,11 +3,13 @@ import {
   type Host,
   Markdown,
   PageHeader,
+  type PageHeaderProps,
   PageMain,
   type PageRenderProps,
   PageShell,
   ShadcnBadge,
   ShadcnButton,
+  ShadcnDialogTitle,
   ShadcnDropdownMenu,
   ShadcnDropdownMenuContent,
   ShadcnDropdownMenuGroup,
@@ -46,7 +48,7 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react'
-import { Fragment, memo, type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { type ComponentProps, Fragment, memo, type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { statusStep } from './board-state'
 import { allLabels } from './filters'
 import { type LinkedTicket, linkTicketKeys, TICKET_HREF } from './links'
@@ -306,10 +308,18 @@ type ComposerProps = {
   /** Resolves true once the comment is saved: a failed one keeps what was typed. */
   onSubmit: (body: string) => Promise<boolean>
   onCancelReply: () => void
+  /** Whether the box holds an unsent comment: part of the screen's unsaved work. */
+  onDraft?: (has: boolean) => void
 }
 
-function Composer({ inputId, replyTo, busy, onSubmit, onCancelReply }: ComposerProps) {
+function Composer({ inputId, replyTo, busy, onSubmit, onCancelReply, onDraft }: ComposerProps) {
   const [body, setBody] = useState('')
+  const hasDraft = body.trim().length > 0
+  useEffect(() => {
+    onDraft?.(hasDraft)
+  }, [hasDraft, onDraft])
+  // A deleted ticket drops the box, and what it held with it.
+  useEffect(() => () => onDraft?.(false), [onDraft])
   // Another comment to reply to starts a fresh box. Not when the reply is sent: the target resets to null then,
   // and the box may already hold the next comment.
   useEffect(() => {
@@ -344,6 +354,8 @@ function Composer({ inputId, replyTo, busy, onSubmit, onCancelReply }: ComposerP
         onChange={(event) => setBody(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Escape' && replyTo) {
+            // The reply is what Escape cancels here, not the ticket dialog around it.
+            event.stopPropagation()
             cancelReply()
             return
           }
@@ -383,6 +395,42 @@ type TicketScreenProps = {
   onDeleted?: (deleted: boolean) => void
   setDirty?: (dirty: boolean | string) => void
   commands?: PageRenderProps['commands']
+  /** `dialog`: drawn inside the board's ticket dialog (its own head, no pane chrome); `onBack` closes it. */
+  variant?: 'page' | 'dialog'
+  /** In the dialog: the previous / next ticket controls, drawn in its head before the actions. */
+  dialogNav?: ReactNode
+}
+
+/* The ticket dialog's frame: the same slots as the pane's PageShell / PageHeader / PageMain. */
+function DialogShell({ className, ...rest }: ComponentProps<'div'>) {
+  return <div className={`${className ?? ''} kb-ticket-frame`} data-variant="dialog" {...rest} />
+}
+
+function DialogMain({ className, ...rest }: ComponentProps<'div'>) {
+  return <div className={`kb-ticket-frame__main ${className ?? ''}`} {...rest} />
+}
+
+/** The dialog's head: the ticket glyph and key as its title, previous / next, the actions, and Close. */
+function DialogHead({ icon, description, actions, onClose, children }: PageHeaderProps) {
+  return (
+    <header className="kb-ticket-frame__head">
+      <ShadcnDialogTitle className="kb-ticket-frame__title">
+        <span aria-hidden="true" className="kb-ticket-frame__icon">
+          {icon}
+        </span>
+        {description ?? 'Ticket'}
+      </ShadcnDialogTitle>
+      <span className="kb-ticket-frame__actions">
+        {children}
+        {actions}
+        {onClose ? (
+          <IconAction label="Close" onClick={onClose}>
+            <X size={16} />
+          </IconAction>
+        ) : null}
+      </span>
+    </header>
+  )
 }
 
 export function TicketScreen({
@@ -399,7 +447,17 @@ export function TicketScreen({
   onDeleted,
   setDirty,
   commands,
+  variant = 'page',
+  dialogNav,
 }: TicketScreenProps) {
+  const inDialog = variant === 'dialog'
+  const Shell = inDialog ? DialogShell : PageShell
+  const Header = inDialog ? DialogHead : PageHeader
+  const Main = inDialog ? DialogMain : PageMain
+  // The dialog's ✕ closes the dialog; in a pane it closes the pane.
+  const closeFrame = inDialog ? onBack : onRequestClose
+  // Previous / next stay in the head while a ticket loads or fails, so walking the board never dead-ends.
+  const nav = inDialog ? dialogNav : null
   const [ticket, setTicket] = useState<Ticket | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -611,12 +669,14 @@ export function TicketScreen({
     titleRef.current?.focus()
   }, [shownId])
 
+  // An unsent comment counts too: the screen is keyed by ticket, so moving to another drops it.
+  const [commentDraft, setCommentDraft] = useState(false)
   useEffect(() => {
     if (!setDirty) return
     const descriptionDirty = editingDescription && draft !== (ticket?.description ?? '')
     const titleDirty = editingTitle && titleDraft.trim() !== (ticket?.title ?? '')
-    setDirty(descriptionDirty || titleDirty)
-  }, [editingDescription, draft, ticket?.description, editingTitle, titleDraft, ticket?.title, setDirty])
+    setDirty(descriptionDirty || titleDirty || commentDraft)
+  }, [editingDescription, draft, ticket?.description, editingTitle, titleDraft, ticket?.title, commentDraft, setDirty])
 
   const composerId = useId()
   const linksTitleId = useId()
@@ -801,10 +861,11 @@ export function TicketScreen({
   const openTicket = useCallback(
     (key: string) => {
       focusTitleBefore = Date.now() + 3000
-      if (hasPanels) host.panels?.open({ pageId: TICKET_PAGE_ID, context: { id: key } })
-      else onOpenTicket?.(key)
+      // In the dialog a linked ticket takes its place; in a pane it opens beside.
+      if (onOpenTicket && (inDialog || !hasPanels)) onOpenTicket(key)
+      else host.panels?.open({ pageId: TICKET_PAGE_ID, context: { id: key } })
     },
-    [hasPanels, host, onOpenTicket],
+    [hasPanels, host, onOpenTicket, inDialog],
   )
 
   const linkedTickets = useMemo<LinkedTicket[]>(
@@ -839,9 +900,11 @@ export function TicketScreen({
 
   if (loading && !ticket) {
     return (
-      <PageShell {...shell}>
-        <PageHeader icon={<TicketIcon size={16} />} onClose={onRequestClose} title="Ticket" />
-        <PageMain>
+      <Shell {...shell}>
+        <Header icon={<TicketIcon size={16} />} onClose={closeFrame} title="Ticket">
+          {nav}
+        </Header>
+        <Main>
           <div aria-busy="true" aria-label="Loading the ticket" className="kb-ticket">
             <div className="kb-ticket__layout">
               <div className="kb-ticket__main">
@@ -854,27 +917,29 @@ export function TicketScreen({
               </div>
             </div>
           </div>
-        </PageMain>
-      </PageShell>
+        </Main>
+      </Shell>
     )
   }
 
   if (error || !ticket) {
     return (
-      <PageShell {...shell}>
-        <PageHeader
+      <Shell {...shell}>
+        <Header
           actions={
-            onBack ? (
+            onBack && !inDialog ? (
               <IconAction label="Back to the board" onClick={onBack}>
                 <ArrowLeft size={16} />
               </IconAction>
             ) : null
           }
           icon={<TicketIcon size={16} />}
-          onClose={onRequestClose}
+          onClose={closeFrame}
           title="Ticket"
-        />
-        <PageMain>
+        >
+          {nav}
+        </Header>
+        <Main>
           <div className="kb-ticket">
             <Notice
               actionLabel="Retry"
@@ -883,8 +948,8 @@ export function TicketScreen({
               title="That ticket could not be opened"
             />
           </div>
-        </PageMain>
-      </PageShell>
+        </Main>
+      </Shell>
     )
   }
 
@@ -922,11 +987,11 @@ export function TicketScreen({
   }
 
   return (
-    <PageShell {...shell}>
-      <PageHeader
+    <Shell {...shell}>
+      <Header
         actions={
           <>
-            {onBack ? (
+            {onBack && !inDialog ? (
               <IconAction label="Back to the board" onClick={onBack}>
                 <ArrowLeft size={16} />
               </IconAction>
@@ -976,11 +1041,14 @@ export function TicketScreen({
         }
         description={<span className="kb-header-key">{ticket.key}</span>}
         icon={<TicketIcon size={16} />}
-        onClose={onRequestClose}
+        onClose={closeFrame}
         title="Ticket"
-      />
-      <PageMain>
+      >
+        {nav}
+      </Header>
+      <Main>
         <div className="kb-ticket" data-autofocus="" tabIndex={-1}>
+{inDialog ? null : (
           <nav aria-label="Breadcrumb" className="kb-crumbs">
             {openBoard ? (
               <button aria-label="Back to the board" className="kb-crumbs__link kb-crumbs__back" onClick={openBoard} type="button">
@@ -1013,6 +1081,7 @@ export function TicketScreen({
               </ShadcnBadge>
             ) : null}
           </nav>
+          )}
 
           <div className="kb-ticket__layout">
             <div className="kb-ticket__main">
@@ -1068,7 +1137,9 @@ export function TicketScreen({
                         event.preventDefault()
                         void saveTitle()
                       } else if (event.key === 'Escape') {
+                        // The edit is what Escape cancels here, not the ticket dialog around it.
                         event.preventDefault()
+                        event.stopPropagation()
                         setEditingTitle(false)
                       }
                     }}
@@ -1113,6 +1184,7 @@ export function TicketScreen({
                         void saveDescription()
                       } else if (event.key === 'Escape') {
                         event.preventDefault()
+                        event.stopPropagation()
                         setEditingDescription(false)
                         setDraft(ticket.description)
                       }
@@ -1321,6 +1393,7 @@ export function TicketScreen({
                     busy={busy}
                     inputId={composerId}
                     onCancelReply={() => setReplyTo(null)}
+                    onDraft={setCommentDraft}
                     onSubmit={submitComment}
                     replyTo={replyTo}
                   />
@@ -1497,7 +1570,7 @@ export function TicketScreen({
             </aside>
           </div>
         </div>
-      </PageMain>
+      </Main>
       <ConfirmDialog
         confirmLabel={deleted ? 'Restore' : 'Delete'}
         description={
@@ -1512,7 +1585,7 @@ export function TicketScreen({
         title={deleted ? 'Restore this ticket?' : 'Delete this ticket?'}
       />
       {confirmDialog}
-    </PageShell>
+    </Shell>
   )
 }
 
@@ -1521,8 +1594,9 @@ export function TicketScreen({
 const FAINT = 'tw:text-neutral-500 tw:dark:text-neutral-400'
 const SIDE = [
   'tw:flex tw:flex-col tw:gap-6 tw:pt-1',
-  // The pickers' quiet buttons become full-width rows: 32px, left aligned, 14px.
-  'tw:[&_.kb-prop]:border-transparent tw:[&_.kb-prop]:bg-transparent tw:[&_.kb-prop]:shadow-none tw:[&_.kb-prop:hover]:bg-neutral-100 tw:dark:[&_.kb-prop:hover]:bg-neutral-900 tw:[&_.kb-prop]:h-8 tw:[&_.kb-prop]:w-full tw:[&_.kb-prop]:max-w-none tw:[&_.kb-prop]:justify-start tw:[&_.kb-prop]:gap-2.5 tw:[&_.kb-prop]:px-2 tw:[&_.kb-prop]:text-sm tw:[&_.kb-prop]:font-normal',
+  // The pickers' quiet buttons become full-width rows: 32px, left aligned, 14px — and they shrink (min-w-0), so the
+  // hover action beside one (open the project, detach from the parent) fits in the row instead of overflowing it.
+  'tw:[&_.kb-prop]:border-transparent tw:[&_.kb-prop]:bg-transparent tw:[&_.kb-prop]:shadow-none tw:[&_.kb-prop:hover]:bg-neutral-100 tw:dark:[&_.kb-prop:hover]:bg-neutral-900 tw:[&_.kb-prop]:h-8 tw:[&_.kb-prop]:w-full tw:[&_.kb-prop]:min-w-0 tw:[&_.kb-prop]:flex-1 tw:[&_.kb-prop]:max-w-none tw:[&_.kb-prop]:justify-start tw:[&_.kb-prop]:gap-2.5 tw:[&_.kb-prop]:px-2 tw:[&_.kb-prop]:text-sm tw:[&_.kb-prop]:font-normal',
 ].join(' ')
 /** The open/detach action that appears beside a row on hover. */
 const OPEN = 'tw:opacity-0 tw:group-hover/row:opacity-100 tw:focus-visible:opacity-100 tw:pointer-coarse:opacity-100'

@@ -1,5 +1,8 @@
 //! Atomic OpenAI Decisions calls with worker-wide concurrency and cancellation.
-use crate::decisions::{self, Decoded};
+use crate::{
+    codex::CodexSource,
+    decisions::{self, Decoded},
+};
 use judge_contract::{
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
     EvaluationResult, ModelsRequest, ModelsResponse, ProviderError, RequestOptions, Stats, Usage,
@@ -35,6 +38,7 @@ pub struct DecisionsClient {
     endpoint: Arc<str>,
     models_endpoint: Arc<str>,
     api_key: Option<Arc<str>>,
+    codex: Option<Arc<CodexSource>>,
     permits: Arc<Semaphore>,
     limits: ExecutionLimits,
     retry: RetryPolicy,
@@ -104,6 +108,7 @@ impl DecisionsClient {
             endpoint: Arc::from(endpoint),
             models_endpoint: Arc::from(models_endpoint),
             api_key: normalized_key(api_key.as_deref()),
+            codex: None,
             permits: Arc::new(Semaphore::new(CONCURRENCY)),
             limits: ExecutionLimits::default(),
             retry: DEFAULT_RETRY,
@@ -121,9 +126,25 @@ impl DecisionsClient {
         }
     }
 
+    /// Bind `auth: codex`: every attempt sends this source's latest token, never
+    /// an api_key or the boot key; a 401 renews it once.
+    pub fn with_codex(&self, source: Arc<CodexSource>) -> Self {
+        Self {
+            codex: Some(source),
+            ..self.clone()
+        }
+    }
+
     /// Whether a call could authenticate: this snapshot holds a key.
     pub fn has_key(&self) -> bool {
-        self.api_key.is_some()
+        self.key().is_some()
+    }
+
+    fn key(&self) -> Option<Arc<str>> {
+        match &self.codex {
+            Some(codex) => codex.latest(),
+            None => self.api_key.clone(),
+        }
     }
 
     /// Bind operator limits without replacing the shared transport/permit pool.
@@ -285,7 +306,7 @@ impl DecisionsClient {
             tokio::task::yield_now().await;
         }
         // Also before local answers: a keyless worker fails every request alike.
-        self.api_key.as_ref().ok_or(ErrorCode::MissingKey)?;
+        self.require_key().await?;
         let (remote, local): (Vec<_>, Vec<_>) =
             request.evaluations.into_iter().partition(decisions::remote);
         for evaluation in local {
@@ -411,8 +432,14 @@ impl DecisionsClient {
             _ = guard.cancelled() => Err(ErrorCode::Cancelled.into()),
             result = timeout_at(deadline, async {
                 transport::validate_options(&call.options, self.limits)?;
-                let bytes = self.send_http(&call, || Ok(self.http.get(self.models_endpoint.as_ref()))).await?;
-                let models = decisions::model_cards(&bytes)?;
+                // The Codex token lacks the scope GET /v1/models needs.
+                let models = if self.codex.is_some() {
+                    self.require_key().await?;
+                    decisions::supported_cards()
+                } else {
+                    let bytes = self.send_http(&call, || Ok(self.http.get(self.models_endpoint.as_ref()))).await?;
+                    decisions::model_cards(&bytes)?
+                };
                 check_deadline(deadline)?;
                 Ok::<_, Failure>(models)
             }) => result.unwrap_or_else(|_| Err(ErrorCode::Deadline.into())),
@@ -420,7 +447,7 @@ impl DecisionsClient {
         // Listing models performs no inference and claims no token usage.
         let stats = Stats {
             attempts: call.attempts.load(Ordering::SeqCst),
-            requests: usize::from(result.is_ok()),
+            requests: usize::from(result.is_ok() && self.codex.is_none()),
             elapsed_ms: started.elapsed().as_millis() as u64,
             usage_complete: result.is_ok(),
             ..Stats::default()
@@ -442,12 +469,49 @@ impl DecisionsClient {
         }
     }
 
+    /// With `auth: codex`, ask for the current token here, inside the call's
+    /// deadline and cancellation.
+    async fn require_key(&self) -> Result<(), Failure> {
+        if let Some(codex) = &self.codex {
+            codex.current().await.map_err(|reason| Failure {
+                provider_error: Some(credential_error(reason)),
+                ..ErrorCode::MissingKey.into()
+            })?;
+        }
+        self.key()
+            .map(drop)
+            .ok_or_else(|| ErrorCode::MissingKey.into())
+    }
+
     async fn send_http(
         &self,
         call: &CallContext,
         build: impl Fn() -> Result<reqwest::RequestBuilder, Failure>,
     ) -> Result<Vec<u8>, Failure> {
-        let key = self.api_key.as_deref().ok_or(ErrorCode::MissingKey)?;
+        let key = self.key().ok_or(ErrorCode::MissingKey)?;
+        let sent = self.send_with(call, &key, &build).await;
+        let result = match (&self.codex, sent) {
+            (Some(codex), Err(failure)) if failure.http_status == Some(401) => {
+                match codex.renew(&key).await {
+                    Ok(Some(renewed)) => self.send_with(call, &renewed, &build).await,
+                    Ok(None) => Err(failure),
+                    Err(reason) => Err(Failure {
+                        provider_error: Some(credential_error(reason)),
+                        ..ErrorCode::MissingKey.into()
+                    }),
+                }
+            }
+            (_, sent) => sent,
+        };
+        result.map_err(without_auth_message)
+    }
+
+    async fn send_with(
+        &self,
+        call: &CallContext,
+        key: &str,
+        build: impl Fn() -> Result<reqwest::RequestBuilder, Failure>,
+    ) -> Result<Vec<u8>, Failure> {
         transport::send_http(
             &self.http,
             &self.permits,
@@ -461,7 +525,14 @@ impl DecisionsClient {
             build,
         )
         .await
-        .map_err(without_auth_message)
+    }
+}
+/// `missing_key` diagnostics: the reason names the fix, never a value.
+pub(crate) fn credential_error(reason: String) -> ProviderError {
+    ProviderError {
+        detail: None,
+        message: Some(reason),
+        truncated: false,
     }
 }
 fn normalized_key(key: Option<&str>) -> Option<Arc<str>> {

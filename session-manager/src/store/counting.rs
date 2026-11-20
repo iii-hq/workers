@@ -108,4 +108,7 @@ impl SessionStore for CountingStore {
     async fn delete_attachments(&self, session_id: &str) -> Result<(), StoreError> {
         self.inner.delete_attachments(session_id).await
     }
+    async fn attachment_owners(&self, attachment_id: &str) -> Result<Vec<String>, StoreError> {
+        self.inner.attachment_owners(attachment_id).await
+    }
 }

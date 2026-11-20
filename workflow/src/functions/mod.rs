@@ -8,6 +8,7 @@ use crate::config::WorkerConfig;
 use crate::locks::WorkflowLocks;
 
 pub mod inject_guidance;
+pub mod list;
 pub mod node_result;
 pub mod stamp_reply;
 pub mod start;
@@ -77,14 +78,7 @@ where
     Fut: std::future::Future<Output = Result<serde_json::Value, Error>>,
 {
     // Tree first: a session a finishing spawn adds later is not flagged by the stop, so disposing its wake starts a turn.
-    let tree = serde_json::json!({ "root_session_id": session_id });
-    let sessions = match call("harness::session-tree", tree).await {
-        Ok(resp) => listed_ids(&resp, "sessions", "session_id"),
-        Err(error) => {
-            tracing::warn!(session_id, %error, "harness::session-tree failed; root only");
-            vec![session_id.to_string()]
-        }
-    };
+    let sessions = session_tree(session_id, call).await;
     let stop = serde_json::json!({ "session_id": session_id, "quiet_deadlines": true });
     if let Err(error) = call("harness::stop", stop).await {
         // A wake disposed from a session the stop did not flag wakes it with a new turn.
@@ -92,6 +86,23 @@ where
         return None;
     }
     Some(sessions)
+}
+
+/// The sessions of `harness::session-tree` under `session_id`, or the root alone when
+/// the read fails.
+async fn session_tree<F, Fut>(session_id: &str, call: &F) -> Vec<String>
+where
+    F: Fn(&'static str, serde_json::Value) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, Error>>,
+{
+    let tree = serde_json::json!({ "root_session_id": session_id });
+    match call("harness::session-tree", tree).await {
+        Ok(resp) => listed_ids(&resp, "sessions", "session_id"),
+        Err(error) => {
+            tracing::warn!(session_id, %error, "harness::session-tree failed; root only");
+            vec![session_id.to_string()]
+        }
+    }
 }
 
 /// Dispose every observer of `sessions` (read before the stop), then stop the root again.
@@ -178,11 +189,12 @@ pub struct TickResponse {
 // register_all
 // ---------------------------------------------------------------------------
 
-/// Boot gate of `workflow::start`. The function is registered before anything
-/// that needs another worker, so the published function list has it when the
-/// worker boots alone. Calls are refused, not held, until boot settles the
-/// `workflow::stamp-reply` hook: a call that arrived before the hook was bound
-/// is unstamped and would run in a folder the agent chose.
+/// Boot gate of `workflow::start` and `workflow::list`, the functions whose
+/// caller the `workflow::stamp-reply` hook stamps. They are registered before
+/// anything that needs another worker, so the published function list has them
+/// when the worker boots alone. Calls are refused, not held, until boot settles
+/// the hook: an unstamped call runs in a folder the agent chose, or lists the
+/// runs of a session the agent named.
 #[derive(Clone, Default)]
 pub struct StartGate(Arc<std::sync::Mutex<Option<Result<(), String>>>>);
 
@@ -203,41 +215,41 @@ impl StartGate {
         if !matches!(*slot, Some(Err(_))) {
             tracing::error!(
                 error = %why,
-                "workflow::stamp-reply hook refused; workflow::start refuses every call until \
-                 the harness accepts the hook and the worker restarts"
+                "workflow::stamp-reply hook refused; workflow::start and workflow::list refuse \
+                 every call until the harness accepts the hook and the worker restarts"
             );
             *slot = Some(Err(why));
         }
     }
 
-    fn check(&self) -> Result<(), String> {
+    fn check(&self, function_id: &str) -> Result<(), String> {
         match &*self.slot() {
             Some(Ok(())) => Ok(()),
-            None => Err(
-                "workflow::start is not ready: the workflow worker is still starting. Retry in \
-                 a few seconds."
-                    .into(),
-            ),
+            None => Err(format!(
+                "{function_id} is not ready: the workflow worker is still starting. Retry in a \
+                 few seconds."
+            )),
             Some(Err(why)) => Err(format!(
-                "workflow::start is disabled: the harness refused the workflow::stamp-reply \
+                "{function_id} is disabled: the harness refused the workflow::stamp-reply \
                  pre-call hook ({why}). Fix the hook, then restart the workflow worker."
             )),
         }
     }
 }
 
-/// Register `workflow::start` behind `gate`, which boot opens once the
-/// `workflow::stamp-reply` observer is active or a bounded wait ran out, and
-/// which a refusal of the hook closes for good (see [`StartGate`]).
+/// Register `workflow::start` and `workflow::list` behind `gate`, which boot
+/// opens once the `workflow::stamp-reply` observer is active or a bounded wait
+/// ran out, and which a refusal of the hook closes for good (see [`StartGate`]).
 pub fn register_start(iii: &Arc<IIIClient>, deps: &Deps, gate: StartGate) {
     let d = deps.clone();
+    let list_gate = gate.clone();
     iii.register_function(
         "workflow::start",
         RegisterFunction::new_async(move |req: start::StartRequest| {
             let d = d.clone();
             let gate = gate.clone();
             async move {
-                gate.check().map_err(Error::Handler)?;
+                gate.check("workflow::start").map_err(Error::Handler)?;
                 start::handle(&d, req).await.map_err(Error::from)
             }
         })
@@ -250,9 +262,22 @@ pub fn register_start(iii: &Arc<IIIClient>, deps: &Deps, gate: StartGate) {
              run ends; workers pass `notify`. Never poll workflow::status in a loop.",
         ),
     );
+    let d = deps.clone();
+    iii.register_function(
+        list::LIST_ID,
+        RegisterFunction::new_async(move |req: list::ListRequest| {
+            let d = d.clone();
+            let gate = list_gate.clone();
+            async move {
+                gate.check(list::LIST_ID).map_err(Error::Handler)?;
+                list::handle(&d, req).await.map_err(Error::from)
+            }
+        })
+        .description(list::LIST_DESC),
+    );
 }
 
-/// Register every function but `workflow::start` (see [`register_start`]).
+/// Register every function but the gated ones (see [`register_start`]).
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let d = deps.clone();
     iii.register_function(
@@ -279,7 +304,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              `notify` to workflow::start, to be pushed the outcome.",
         ),
     );
-
     let d = deps.clone();
     iii.register_function(
         "workflow::node-result",
@@ -332,8 +356,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             stamp_reply::handle(event).await
         })
         .description(
-            "Internal pre_call hook on workflow::start: stamps the caller's session and folder \
-             into the arguments. Always continues; not called directly.",
+            "Internal pre_call hook on workflow::start, workflow::list and workflow-result::submit: \
+             stamps the caller's session and folder into the arguments. Always continues; not \
+             called directly.",
         ),
     );
 
@@ -376,10 +401,16 @@ mod tests {
     #[test]
     fn start_gate_refuses_until_boot_decides() {
         let gate = StartGate::default();
-        let refused = gate.check().unwrap_err();
-        assert!(refused.contains("Retry"), "{refused}");
+        for id in ["workflow::start", "workflow::list"] {
+            let refused = gate.check(id).unwrap_err();
+            assert!(
+                refused.starts_with(id) && refused.contains("Retry"),
+                "{refused}"
+            );
+        }
         gate.open();
-        assert_eq!(gate.check(), Ok(()));
+        assert_eq!(gate.check("workflow::start"), Ok(()));
+        assert_eq!(gate.check("workflow::list"), Ok(()));
     }
 
     #[test]
@@ -388,9 +419,11 @@ mod tests {
         gate.refuse("INVALID_ARGS".into());
         gate.open();
         gate.refuse("LATER".into());
-        let refused = gate.check().unwrap_err();
-        for part in ["workflow::stamp-reply", "INVALID_ARGS", "restart"] {
-            assert!(refused.contains(part), "{refused}");
+        for id in ["workflow::start", "workflow::list"] {
+            let refused = gate.check(id).unwrap_err();
+            for part in [id, "workflow::stamp-reply", "INVALID_ARGS", "restart"] {
+                assert!(refused.contains(part), "{refused}");
+            }
         }
     }
 
@@ -399,7 +432,16 @@ mod tests {
         let gate = StartGate::default();
         gate.open();
         gate.refuse("INVALID_ARGS".into());
-        assert!(gate.check().unwrap_err().contains("INVALID_ARGS"));
+        assert!(
+            gate.check("workflow::start")
+                .unwrap_err()
+                .contains("INVALID_ARGS")
+        );
+        assert!(
+            gate.check("workflow::list")
+                .unwrap_err()
+                .contains("INVALID_ARGS")
+        );
     }
 
     #[test]

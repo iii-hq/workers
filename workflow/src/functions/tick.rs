@@ -946,6 +946,7 @@ mod tests {
             notify: None,
             caller_session_id: None,
             caller_fs_root: None,
+            title: None,
             idem_key: None,
             created_at: 0,
             updated_at: 0,
@@ -1698,6 +1699,7 @@ mod tests {
     fn node_send_payload_sends_caller_fs_root_as_metadata() {
         let record = WorkflowRunRecord {
             caller_fs_root: Some("/home/u/proj".to_string()),
+            title: None,
             ..chat_record()
         };
         let payload = node_send_payload(
@@ -1718,6 +1720,7 @@ mod tests {
     fn node_send_payload_node_filesystem_root_wins() {
         let record = WorkflowRunRecord {
             caller_fs_root: Some("/home/u/proj".to_string()),
+            title: None,
             ..chat_record()
         };
         let mut node = node_with(None);

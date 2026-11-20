@@ -143,6 +143,24 @@ pub enum PostCallOutcome {
     },
 }
 
+/// The `call` of a `pre_call` input: `description` only when the model gave one.
+fn pre_call_call(
+    call_id: &str,
+    function_id: &str,
+    arguments: &Value,
+    description: Option<&str>,
+) -> Value {
+    let mut call = serde_json::json!({
+        "id": call_id,
+        "function_id": function_id,
+        "arguments": arguments,
+    });
+    if let Some(description) = description {
+        call["description"] = Value::String(description.to_string());
+    }
+    call
+}
+
 impl HookRegistry {
     pub(super) fn envelope(&self, point: HookPoint, record: &TurnRecord, step: u64) -> Value {
         let mut v = serde_json::json!({
@@ -330,6 +348,9 @@ impl HookRegistry {
     /// `resume_after` is the hook-held release path (harness.md §
     /// `function::resolve`): the chain resumes AFTER the named holder (see
     /// [`chain_slice`]), over the checkpointed arguments it already mutated.
+    /// `description` is the `agent_call` wrapper's display-only description,
+    /// sent as `call.description` when present.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_pre_call(
         &self,
         record: &TurnRecord,
@@ -337,14 +358,11 @@ impl HookRegistry {
         call_id: &str,
         function_id: &str,
         arguments: &Value,
+        description: Option<&str>,
         resume_after: Option<&str>,
     ) -> PreCallOutcome {
         let mut input = self.envelope(HookPoint::PreCall, record, step);
-        input["call"] = serde_json::json!({
-            "id": call_id,
-            "function_id": function_id,
-            "arguments": arguments,
-        });
+        input["call"] = pre_call_call(call_id, function_id, arguments, description);
         if let Some(holder) = resume_after {
             input[RESUME_AFTER] = Value::String(holder.to_string());
         }
@@ -1679,6 +1697,26 @@ mod tests {
         let calls = invoker.calls();
         assert_eq!(calls.len(), 2, "audit never runs after the hold");
         assert_eq!(calls[1].1["call"]["arguments"], json!({ "x": 2 }));
+    }
+
+    /// The pre_call `call` carries the wrapper's description only when given.
+    #[test]
+    fn pre_call_call_carries_the_description_when_given() {
+        let args = json!({ "x": 1 });
+        assert_eq!(
+            pre_call_call("c_1", "workflow::start", &args, Some("Writing tests")),
+            json!({
+                "id": "c_1",
+                "function_id": "workflow::start",
+                "arguments": { "x": 1 },
+                "description": "Writing tests",
+            })
+        );
+        assert!(
+            pre_call_call("c_1", "workflow::start", &args, None)
+                .get("description")
+                .is_none()
+        );
     }
 
     /// A released hold resumes after the holder, and the resume marker never

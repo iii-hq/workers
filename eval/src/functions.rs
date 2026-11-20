@@ -218,13 +218,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             "Explicitly start a baseline and a candidate E2E execution for one suggestion. Both \
              commits (candidate_ref, and baseline_ref or the merge base with origin/main) are \
              resolved with git in the configured code_repository and must be on a remote branch; \
-             each stack is the E2E's `harness` template with only the Harness pinned to its commit, \
-             run in Docker (runs 1-20, default 5). The criterion is registered before anything \
+             each stack is an E2E stack (`stack`, default the one on the `harness` template) with \
+             the Harness pinned to its commit and each of its kits that kits/ holds installed from \
+             that commit, run in Docker (runs 1-20, default 5) under `agent` when given (a kit's \
+             profiles run only under an agent that uses them, e.g. stack deepwork-source with \
+             agent deepwork-e2e). The criterion is registered before anything \
              starts; the sweep attaches the pair when both finish and computes the evidence. \
              Spends model tokens, and never runs unless called. With dry_run: true it only \
              resolves and checks the refs, scenario and runs and answers with the resolved \
              commits (`baseline`, `candidate`, `warnings`); it registers nothing and calls no \
-             E2E function.",
+             E2E function but stacks-list when `stack` is named.",
         ),
     );
 

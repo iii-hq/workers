@@ -51,8 +51,11 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub llm_assist_enabled: bool,
 
-    /// Model for the judge call. Empty picks the first model in the
-    /// router catalog.
+    /// Model for the judge, semantic and verify tiers, as `provider::id`.
+    /// Empty is automatic: the default model of the first usable provider
+    /// by id, else the first listed chat model of a usable provider. A
+    /// usable provider is available and signed in, or owns its sign-in. The
+    /// pick is kept for 60 s and logged when it changes.
     #[serde(default)]
     pub llm_model: String,
 

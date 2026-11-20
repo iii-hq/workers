@@ -1403,9 +1403,12 @@ async fn extraction_eval() {
     let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
     let model = match std::env::var("EXTRACTION_MODEL") {
         Ok(m) if !m.is_empty() => m,
-        _ => resolve_model(&iii, "")
-            .await
-            .expect("no model (engine up? router running? III_NAMESPACE set?)"),
+        _ => {
+            resolve_model(&iii, "", 5_000)
+                .await
+                .expect("no model (engine up? router running? III_NAMESPACE set?)")
+                .0
+        }
     };
     let cfg = WorkerConfig::default();
     // `0`: the prompt `default_bank` and named-bank sessions get.

@@ -2690,6 +2690,12 @@ impl Repo {
     /// `origin_main: false` leaves the clone without the branch the default
     /// baseline is taken from.
     fn new(origin_main: bool) -> Self {
+        Self::build(origin_main, false)
+    }
+
+    /// With `kit`, every commit also holds `kits/deepwork` (`iii/deepwork`),
+    /// its prompt naming the commit.
+    fn build(origin_main: bool, kit: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("eval-git-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         // The first commit's branch is neither `main` nor `feat`, whatever
@@ -2697,6 +2703,16 @@ impl Repo {
         git_in(&dir, &["init", "-q", "-b", "trunk"]);
         let commit = |name: &str| {
             std::fs::write(dir.join("file.txt"), name).unwrap();
+            if kit {
+                let folder = dir.join("kits/deepwork/agents");
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::write(
+                    dir.join("kits/deepwork/iii.kit.yaml"),
+                    "name: iii/deepwork\nversion: 0.9.0\n",
+                )
+                .unwrap();
+                std::fs::write(folder.join("deepwork.md"), name).unwrap();
+            }
             git_in(&dir, &["add", "."]);
             git_in(&dir, &["commit", "-q", "-m", name]);
             git_in(&dir, &["rev-parse", "HEAD"])
@@ -3225,6 +3241,143 @@ async fn a_validation_that_cannot_start_is_refused_before_anything_is_spent() {
     h.world().start_failure = None;
     let again = start(&h, &evaluation_id, |_| {}).await.unwrap();
     assert_eq!(again.run.unwrap().state, ValidationRunStateV1::Running);
+}
+
+const DEEPWORK_STACK: &str = "iii: latest\nkits:\n  - iii/deepwork@0.4.3\ncontainers:\n  \
+    harness:\n    worker: package://harness\n    version: latest\n    config_override:\n      \
+    filesystem_boundary: workspace\n  kanban:\n    worker: package://kanban\n";
+
+#[tokio::test]
+async fn a_named_stack_installs_each_sides_kit_from_its_commit_under_the_agent() {
+    let repo = Repo::build(true, true);
+    let mut world = World::new();
+    let mut listed = stacks();
+    listed["stacks"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": "deepwork-source", "template": null, "yaml": DEEPWORK_STACK}));
+    world.stacks = Some(listed);
+    pair_world(&mut world);
+    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
+    // A subdirectory of the clone reads the repository's kits/, not its own.
+    std::fs::create_dir_all(repo.dir.join("sub/kits/decoy")).unwrap();
+    h.configure_code(Some(&repo.dir.join("sub").to_string_lossy()))
+        .await
+        .unwrap();
+
+    // Without a stack, a kit change is said to go unmeasured.
+    let resolved = dry_run(&h, &evaluation_id, |_| {}).await.unwrap();
+    assert!(
+        resolved
+            .warnings
+            .iter()
+            .any(|w| w.contains("kits/deepwork") && w.contains("`stack`")),
+        "{:?}",
+        resolved.warnings
+    );
+    let no_agent = dry_run(&h, &evaluation_id, |request| {
+        request["stack"] = json!("deepwork-source");
+    })
+    .await
+    .unwrap();
+    assert!(
+        no_agent.warnings.iter().any(|w| w.contains("no `agent`")),
+        "{:?}",
+        no_agent.warnings
+    );
+    let named = dry_run(&h, &evaluation_id, |request| {
+        request["stack"] = json!("deepwork-source");
+        request["agent"] = json!("deepwork-e2e");
+    })
+    .await
+    .unwrap();
+    assert!(named.warnings.is_empty(), "{:?}", named.warnings);
+    // A dry run on a named stack reads it: one that installs no kit says so,
+    // and one the E2E lacks is refused.
+    let template = dry_run(&h, &evaluation_id, |request| {
+        request["stack"] = json!("harness-template");
+        request["agent"] = json!("deepwork-e2e");
+    })
+    .await
+    .unwrap();
+    assert!(
+        template.warnings[0].contains("stack `harness-template` does not install"),
+        "{:?}",
+        template.warnings
+    );
+    let missing = dry_run(&h, &evaluation_id, |request| {
+        request["stack"] = json!("nowhere");
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        missing.to_string().contains("stack_not_found:"),
+        "{missing}"
+    );
+
+    // A start that skipped the dry run keeps the warning on the run it records.
+    let unmeasured = start(&h, &evaluation_id, |_| {})
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+    assert!(
+        unmeasured
+            .warnings
+            .iter()
+            .any(|w| w.contains("kits/deepwork")),
+        "{:?}",
+        unmeasured.warnings
+    );
+    assert_eq!((unmeasured.stack, unmeasured.agent), (None, None));
+    h.world().calls.clear();
+    h.world()
+        .state
+        .retain(|(scope, _), _| scope != state::REVIEW_SCOPE);
+
+    let error = start(&h, &evaluation_id, |request| {
+        request["stack"] = json!("nowhere");
+    })
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("stack_not_found:"), "{error}");
+    assert!(
+        h.world()
+            .calls_to("e2e::dashboard::execution-start")
+            .is_empty()
+    );
+
+    let run = start(&h, &evaluation_id, |request| {
+        request["stack"] = json!("deepwork-source");
+        request["agent"] = json!("deepwork-e2e");
+    })
+    .await
+    .unwrap()
+    .run
+    .unwrap();
+    assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    assert_eq!(run.stack.as_deref(), Some("deepwork-source"));
+    assert_eq!(run.agent.as_deref(), Some("deepwork-e2e"));
+    let world = h.world();
+    let calls = world.calls_to("e2e::dashboard::execution-start");
+    assert_eq!(calls.len(), 2);
+    for (call, commit) in [(&calls[0], &repo.base), (&calls[1], &repo.feat)] {
+        let parameters = &call["parameters"];
+        assert_eq!(parameters["agent"], "deepwork-e2e");
+        let yaml: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(parameters["stack"]["yaml"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            yaml["kits"][0],
+            format!("commit:iii-hq/workers/kits/deepwork@{commit}").as_str()
+        );
+        let harness = &yaml["containers"]["harness"];
+        assert_eq!(harness["commit"], commit.as_str());
+        assert_eq!(
+            harness["config_override"]["filesystem_boundary"],
+            "workspace"
+        );
+        assert_eq!(yaml["containers"]["kanban"]["worker"], "package://kanban");
+    }
 }
 
 /// What the dialog sends while the person is still typing: the refs, the
@@ -3879,6 +4032,9 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
             runs: 3,
             model: "deepseek-flash".into(),
             provider: "deepseek".into(),
+            stack: None,
+            agent: None,
+            warnings: Vec::new(),
             started_at,
             finished_at: None,
             state,

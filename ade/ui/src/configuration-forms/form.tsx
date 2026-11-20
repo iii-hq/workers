@@ -38,7 +38,8 @@ export function DeclarativeWorkerConfigurationForm({
       {leading}
       {spec.sections.map((section) => (
         <SettingsSection key={section.title} title={section.title} description={section.description}>
-          <SettingsList>
+          {/* Every child is a field, so every one gets the hairline, composites included. */}
+          <SettingsList data-dividers="all">
             {section.fields.map((field, index) => (
               <FieldRenderer
                 key={`${field.kind}-${field.path.join('.')}-${index}`}

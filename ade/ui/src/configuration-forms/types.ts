@@ -68,6 +68,12 @@ export interface ModelFieldSpec extends FieldBase {
   thinkingDefault?: string
   /** Shown while no model is set. Defaults to `Chat default`. */
   placeholder?: string
+  /**
+   * Unset resolves to the worker's automatic model (the default of the first
+   * usable provider). The picker lists "Automatic · <model>" first and
+   * choosing it removes the key; it never stores `null`.
+   */
+  automatic?: boolean
 }
 
 /**
@@ -91,6 +97,8 @@ export interface StringListFieldSpec extends FieldBase {
   kind: 'string-list'
   itemLabel?: string
   addLabel?: string
+  /** Muted text beside the Add button while the list is empty: what an empty list means. */
+  emptyLabel?: string
   placeholder?: string
   options?: readonly Choice[]
 }

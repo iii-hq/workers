@@ -38,7 +38,7 @@ const limitFields = [
     description: 'Maximum caller timeout, including queue waits and response reading. Clear to use 300000 (5 minutes).',
   },
 ]
-const knownFields = ['api_key', 'model', ...limitFields.map(({ field }) => field)]
+const knownFields = ['auth', 'api_key', 'model', ...limitFields.map(({ field }) => field)]
 
 export interface ModelCard {
   name: string
@@ -48,9 +48,21 @@ export interface ModelCard {
 type ModelsReply = { status: 'ok'; models: ModelCard[] } | { status: 'error'; code: string }
 type Engine = Pick<ExtensionIii, 'call'> & Partial<Pick<ExtensionIii, 'on' | 'observe' | 'browserId'>>
 
+const authOptions: SelectOption[] = [
+  { value: 'api_key', label: 'API key', description: 'api_key, a secret:// reference or OPENAI_API_KEY' },
+  {
+    value: 'codex',
+    label: 'ChatGPT sign-in via provider-openai-codex (experimental)',
+    description: 'The Codex session; api_key and OPENAI_API_KEY are ignored',
+  },
+]
+
 /** Lets the worker reload a saved entry before the status asks it again. */
 const SAVE_SETTLE_MS = 300
 let liveSeq = 0
+const SAVE_TO_CHECK = 'Save to check this credential source'
+const authOf = (value: unknown) =>
+  value !== null && typeof value === 'object' && (value as { auth?: unknown }).auth === 'codex' ? 'codex' : 'api_key'
 
 /** The supported models the running worker sees with its saved credentials. */
 export async function listModels(iii: Engine): Promise<ModelCard[]> {
@@ -82,16 +94,31 @@ export function OpenAiConfigForm({
   // null = a listing is in flight, so an empty catalog always comes from a reply.
   const [catalog, setCatalog] = useState<ModelCard[] | null>(null)
   const [catalogError, setCatalogError] = useState<string | null>(null)
-  const refresh = useCallback(() => {
+  // The listing reads the saved entry: track the saved credential source, which
+  // only mount and a save change (a Refresh still lists the saved source).
+  const authNow = useRef(authOf(props.value))
+  authNow.current = authOf(props.value)
+  const [checkedAuth, setCheckedAuth] = useState(authNow.current)
+  // Only the latest listing may land: a save drops any reply still in flight.
+  const listing = useRef(0)
+  const invalidate = useCallback(() => {
+    listing.current++
     setCatalog(null)
     setCatalogError(null)
+  }, [])
+  const refresh = useCallback(() => {
+    invalidate()
+    const seq = listing.current
     listModels(iii)
-      .then(setCatalog)
+      .then((models) => {
+        if (seq === listing.current) setCatalog(models)
+      })
       .catch((error: unknown) => {
+        if (seq !== listing.current) return
         setCatalogError(error instanceof Error ? error.message : String(error))
         setCatalog([])
       })
-  }, [iii])
+  }, [iii, invalidate])
   useEffect(() => {
     refresh()
   }, [refresh])
@@ -108,6 +135,8 @@ export function OpenAiConfigForm({
     const offHandler = iii.on<{ id?: unknown }>(handler, (event) => {
       if (event?.id !== configurationId) return
       clearTimeout(timer)
+      invalidate()
+      setCheckedAuth(authNow.current)
       timer = setTimeout(refresh, SAVE_SETTLE_MS)
     })
     let offObserver = () => {}
@@ -129,7 +158,7 @@ export function OpenAiConfigForm({
         }
       }
     }
-  }, [iii, configurationId, refresh])
+  }, [iii, configurationId, refresh, invalidate])
 
   const focusField = props.focusField?.[0]
   useEffect(() => {
@@ -200,8 +229,46 @@ export function OpenAiConfigForm({
   if (storedModel && !modelOptions.some((option) => option.value === storedModel)) {
     modelOptions.push({ value: storedModel, label: storedModel, description: 'Not in the current catalog' })
   }
-  const keyStatus =
-    catalog === null ? (
+  const codex = value.auth === 'codex'
+  const sourceChanged = checkedAuth !== authOf(value)
+  const codexStatus = sourceChanged ? (
+    <Chip tone="neutral">{SAVE_TO_CHECK}</Chip>
+  ) : catalog === null ? (
+      <Chip tone="neutral">Checking the worker…</Chip>
+    ) : catalogError === 'missing_key' ? (
+      <Chip tone="warning">No Codex session reaches the worker</Chip>
+    ) : catalogError ? (
+      <Chip tone="warning">Listing failed · {catalogError}</Chip>
+    ) : (
+    <Chip tone="success">Codex session active</Chip>
+  )
+  // api_key stays stored while codex is selected, so switching back restores it.
+  const authField = (
+    <SettingsField
+      id="judge-openai-cfg-auth"
+      field="auth"
+      label="Credential source"
+      description={
+        codex
+          ? 'judge-openai sends the access token of the ChatGPT sign-in held by provider-openai-codex, which must be running and signed in. There is no fallback to an API key. Experimental: whether OpenAI bills or permits this use outside Codex is unverified.'
+          : 'judge-openai sends an OpenAI API key.'
+      }
+      error={props.errors?.get('/auth')}
+      meta={codex ? codexStatus : undefined}
+      renderControl={(controlProps) => (
+        <Select
+          {...controlProps}
+          value={codex ? 'codex' : 'api_key'}
+          options={authOptions}
+          onChange={(next) => setString('auth', next)}
+          aria-label="Credential source"
+        />
+      )}
+    />
+  )
+  const keyStatus = sourceChanged ? (
+    <Chip tone="neutral">{SAVE_TO_CHECK}</Chip>
+  ) : catalog === null ? (
       <Chip tone="neutral">Checking the worker…</Chip>
     ) : catalogError === 'missing_key' ? (
       <Chip tone="warning">No key reaches the worker</Chip>
@@ -215,38 +282,19 @@ export function OpenAiConfigForm({
 
   return (
     <div className="openai-ui-form" ref={rootRef}>
-      {SecretField ? (
-        <SettingsSection title="Credentials" description="The key judge-openai sends to OpenAI. Save to apply it.">
-          <div id="judge-openai-cfg-api_key" data-field="api_key">
-            <SecretField
-              name="OPENAI_API_KEY"
-              label="API key"
-              value={storedKey}
-              onChange={(next) => setString('api_key', next)}
-              consumers={['judge-openai']}
-              keysUrl="https://platform.openai.com/api-keys"
-              status={{
-                checking: catalog === null,
-                connected: catalog !== null && !catalogError && !notVisible,
-                error:
-                  catalogError === 'missing_key'
-                    ? 'No key reaches the worker.'
-                    : catalogError
-                      ? `Listing failed · ${catalogError}`
-                      : notVisible
-                        ? NOT_VISIBLE
-                        : undefined,
-                detail: catalog && !catalogError && !notVisible ? `${catalog.length} models` : undefined,
-              }}
-            />
-          </div>
-        </SettingsSection>
-      ) : (
-        <SettingsSection
-          title="Credentials"
-          description="The key judge-openai sends to OpenAI for decisions and model listing. Saved changes apply to new calls without restarting."
-        >
-          <SettingsList>
+      <SettingsSection
+        title="Credentials"
+        description={
+          codex
+            ? 'Where judge-openai gets the credential it sends to OpenAI. Save to apply it.'
+            : SecretField
+              ? 'The key judge-openai sends to OpenAI. Save to apply it.'
+              : 'The key judge-openai sends to OpenAI for decisions and model listing. Saved changes apply to new calls without restarting.'
+        }
+      >
+        <SettingsList>
+          {authField}
+          {codex || SecretField ? null : (
             <SettingsField
               id="judge-openai-cfg-api_key"
               field="api_key"
@@ -276,12 +324,42 @@ export function OpenAiConfigForm({
                 />
               )}
             />
-          </SettingsList>
-        </SettingsSection>
-      )}
+          )}
+        </SettingsList>
+        {SecretField && !codex ? (
+          <div id="judge-openai-cfg-api_key" data-field="api_key">
+            <SecretField
+              name="OPENAI_API_KEY"
+              label="API key"
+              value={storedKey}
+              onChange={(next) => setString('api_key', next)}
+              consumers={['judge-openai']}
+              keysUrl="https://platform.openai.com/api-keys"
+              status={{
+                checking: catalog === null,
+                connected: !sourceChanged && catalog !== null && !catalogError && !notVisible,
+                error: sourceChanged
+                  ? `${SAVE_TO_CHECK}.`
+                  : catalogError === 'missing_key'
+                    ? 'No key reaches the worker.'
+                    : catalogError
+                      ? `Listing failed · ${catalogError}`
+                      : notVisible
+                        ? NOT_VISIBLE
+                        : undefined,
+                detail: !sourceChanged && catalog && !catalogError && !notVisible ? `${catalog.length} models` : undefined,
+              }}
+            />
+          </div>
+        ) : null}
+      </SettingsSection>
       <SettingsSection
         title="Model"
-        description="Supported models as answered by judge-openai::models::list with the saved credentials."
+        description={
+          codex
+            ? 'The built-in catalog: the Codex token cannot list models, so a listing here does not prove OpenAI accepts the session.'
+            : 'Supported models as answered by judge-openai::models::list with the saved credentials.'
+        }
         action={
           <Button type="button" variant="ghost" size="sm" onClick={refresh} disabled={catalog === null}>
             Refresh
@@ -341,7 +419,13 @@ export function OpenAiConfigForm({
           ))}
         </SettingsList>
       </SettingsSection>
-      {catalogError === 'missing_key' ? (
+      {catalogError === 'missing_key' && codex ? (
+        <StatusPanel
+          variant="warn"
+          headline="No Codex session reaches the worker"
+          detail="Start provider-openai-codex and sign in with ChatGPT in its settings, or switch the credential source to API key. Evaluations and model listing answer missing_key until then."
+        />
+      ) : catalogError === 'missing_key' ? (
         <StatusPanel
           variant="warn"
           headline="No API key reaches the worker"

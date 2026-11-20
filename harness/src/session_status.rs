@@ -117,10 +117,32 @@ async fn repair_locked(deps: &Deps, session_id: &str) -> Result<bool, HarnessErr
         // left alone; a queue-aware check is the upgrade path.
         Some(_) => Ok(false),
         None => {
+            // No harness turn is expected for a session another agent worker
+            // runs (a claude-code sub-agent streams its own transcript and
+            // owns its own status): leave it alone. Writing `idle` there flips
+            // a live `working` under the console while the agent keeps
+            // writing. An unreadable session errors here rather than guessing.
+            if session
+                .metadata_of(session_id)
+                .await?
+                .is_some_and(|metadata| run_by_another_agent(&metadata))
+            {
+                return Ok(false);
+            }
             write(&session, session_id, "idle", None).await;
             Ok(true)
         }
     }
+}
+
+/// Whether a session's status belongs to another agent worker. Agent workers
+/// that run their own turns (claude-code, pi, ...) stamp `metadata.agent` on
+/// the sessions they create; the harness never sets it on its own.
+pub fn run_by_another_agent(metadata: &serde_json::Map<String, serde_json::Value>) -> bool {
+    metadata
+        .get("agent")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|agent| !agent.trim().is_empty())
 }
 
 /// [`repair`] guarded by the store: only a session still marked `working` is
@@ -234,6 +256,28 @@ pub async fn sweep(deps: &Deps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_named_agent_marks_a_session_as_run_elsewhere() {
+        let of = |value: serde_json::Value| value.as_object().unwrap().clone();
+        assert!(run_by_another_agent(&of(
+            serde_json::json!({ "agent": "claude-code", "parent_session_id": "p" })
+        )));
+        assert!(!run_by_another_agent(&of(serde_json::json!({}))));
+        assert!(!run_by_another_agent(&of(
+            serde_json::json!({ "surface": "console", "spawned_by": "agent" })
+        )));
+        // The harness's own sessions carry `agent_profile`, not `agent`.
+        assert!(!run_by_another_agent(&of(
+            serde_json::json!({ "agent_profile": { "id": "default" } })
+        )));
+        assert!(!run_by_another_agent(&of(
+            serde_json::json!({ "agent": "" })
+        )));
+        assert!(!run_by_another_agent(&of(
+            serde_json::json!({ "agent": null })
+        )));
+    }
 
     #[test]
     fn terminal_statuses_project_and_live_ones_do_not() {

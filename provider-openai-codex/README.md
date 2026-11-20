@@ -94,9 +94,11 @@ with a direct engine connection or host filesystem access.
 | `login::cancel` | `{login_id}` | `{ok: true}`; idempotent, keeps the active account |
 | `auth::status` | `{}` | `status`: `signed_out`, `authenticated`, or `expired`; `source`, `account_id`, pending `login` |
 | `auth::logout` | `{}` | `{ok: true}` after disconnect is persisted |
+| `auth::token` | `{rejected_token?}` | `{access_token}` (null when signed out). Only `judge-openai` in this namespace may call it, others get `provider/forbidden`; never returns the refresh or id token |
 
 Unknown or pre-restart login IDs return `canceled`. Storage failures return an
-error instead of a success acknowledgment. Tokens stay entirely in the backend.
+error instead of a success acknowledgment. Apart from `auth::token`, tokens stay
+entirely in the backend.
 
 API-key credentials are rejected — they belong on `provider-openai` under
 provider id `openai`.

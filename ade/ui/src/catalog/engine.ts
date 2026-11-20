@@ -188,21 +188,34 @@ export interface InvokeOutcome {
   error?: string
 }
 
+/**
+ * How long a call from the Run panel waits for an answer. The bus client's
+ * own default is five minutes, which is right for a background job and
+ * wrong for a button: a worker handed a body it cannot read may never
+ * reply, and the panel must come back and say so.
+ */
+export const INVOKE_TIMEOUT_MS = 30_000
+
 /** Call a function the way any bus client would; never throws. */
 export async function invoke(
   host: Host,
   functionId: string,
   payload: Record<string, unknown>,
+  options: { timeoutMs?: number } = {},
 ): Promise<InvokeOutcome> {
   const started = performance.now()
+  const timeoutMs = options.timeoutMs ?? INVOKE_TIMEOUT_MS
   try {
-    const data = await host.iii.call(functionId, payload)
+    const data = await host.iii.call(functionId, payload, { timeoutMs })
     return { ok: true, durationMs: performance.now() - started, data }
   } catch (err) {
+    const message = errorMessage(err)
     return {
       ok: false,
       durationMs: performance.now() - started,
-      error: errorMessage(err),
+      error: /timed out/i.test(message)
+        ? `No answer after ${Math.round(timeoutMs / 1000)}s. The worker may still be running it, or it may have dropped a body it could not read; check the Calls tab.`
+        : message,
     }
   }
 }

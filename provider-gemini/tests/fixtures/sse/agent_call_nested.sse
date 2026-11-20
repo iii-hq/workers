@@ -1,0 +1,33 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-4-hydrogen"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"content":{"text":"**Initiating Configuration Update**\n\nI'm initiating an agent call to `config::set`. The payload is precisely this JSON object: `{\"scope\": {\"project\": \"alpha\", \"env\": \"staging\"}, \"values\": {\"retries\": 3, \"flags\": [\"fast\", \"safe\"]}}`. The plan is to execute only one call to implement this configuration change.\n\n\n","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"EuQGCuEGAWkUfRMpf5Oqlw0/HUcUlWABRVw9idL+ZGn8wiGYTZAued4sNER0at/Rz96dhbvI8uHRyMHmJQmYkUAx5Dt90RzOu9PVofod1hem+oTQltkpH/Az7q2/YlfTVOVMkdSMwA0NXPzzkKU5fiyXtpMxV2sGaJm+YznhTZQjWHHeL3pKJRA9mrHYVWYUtIoBtDxW5REniBmLwJdT8qdE/nAjmj27U8bEQILGhVX/8y7RE8PTS4YBg4hIwG/Qts06tpQwIjlzK7moyf17/Y8spkaQ7O7av9gyARLKSvITYdCKKVsqGeMDtqTCZ1Xg3F/nWL6dYVrJiaWdQmKCSvyJPiA/wClF4IbRTGpzTQiRD5uezSR5eezvDN50BB85gC0RWEiDIfrULMJwrfGA1Na6qIpWTE2nokN2yK7aPOrqrBTR0BXOA1SByreKI+1eRcuZVqnZrwxIRHI8WWnNtk/NJNN4cGK5+M0gIvq/df4oPG7eoin/Hmao+R1B0trki2Ibmv4/AQwILOWJmwfjdhX0Kwk9ARU/sWlCVpv6pncrILotA5qu3chFy3WfVI54hIVOBHKfG8AyqjBpwGhtUd+qepoaLPIl/bTr3ZLMqA8Obid6t3TFwT+4J7IvgKx2VqmCAlN5ltaV8UwU1MYTbThSSVHjMXpABcFIVVMIR719qew2X/NlMQ9XOAvSuAMHGN1n2hgkkB/zJhrzhgfMLe3e7+VB7FzdjNBqEOZKSQtnm8D705w4bRwednCBb1Ehn5beM9YQ157MAYXmrWPTNuB3oDrmkrFDg5iLzLYyKKvHzVTgpVpMv235xeTBchoN+xa2WeU2MTk2bC/l3TZNbwI7hKt95hlR0uOFHlRoSplwbbI3S1hdczIlv8vJ2YjkCOkbtQR3FODOcwbBF5GnYRpPG/9fVcYX8JKwRnApifsu7pk0pWj7dOqNmuCnG/0FpwqG0dSGVtgjAXcfnWKZwOyFWAts6T2g7X/nYBBAhq509QIGOJ6obc3lgBNu6Bib6s67wxsc3k7/JbLsAbfEYuNevgJtrRVmVvVYtd5a1KNbFATM+CDWWWDD73UOPuJjujoJS1b9uGMGXOMoTjFiHUAo07uRRjNJgnkU2RPl0ox3EfaK0OVaTnc5qiOuQvCqK1fQP9uPxg==","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"id":"call_14789093046068049430","type":"function_call","name":"agent_call","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"arguments":"{\"description\":\"Update staging configuration values for project alpha\",\"function\":\"config::set\",\"payload\":{\"scope\":{\"env\":\"staging\",\"project\":\"alpha\"},\"values\":{\"flags\":[\"fast\",\"safe\"],\"retries\":3}}}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"requires_action","usage":{"total_tokens":566,"total_input_tokens":351,"input_tokens_by_modality":[{"modality":"text","tokens":351}],"total_cached_tokens":0,"total_output_tokens":68,"output_tokens_by_modality":[{"modality":"text","tokens":68}],"total_tool_use_tokens":0,"total_thought_tokens":147,"initial_input_tokens":351},"created":"2026-11-19T17:17:04Z","updated":"2026-11-19T17:17:04Z","service_tier":"standard","object":"interaction","model":"gemini-4-hydrogen"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

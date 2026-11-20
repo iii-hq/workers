@@ -163,8 +163,6 @@ export function ObserverActivityCard({
     activity,
     (renderer) => renderer.tryRenderDetails?.(activity) ?? null,
   )
-  // The label is an id for the agent (`dw KAN-38 r1 w2`); people read what
-  // the observer listened for instead.
   const eventText = activityEventText(activity)
   // A condition that answered "not yet" is the observer waiting, not a failure.
   const fireStatus = isConditionWait(activity)
@@ -511,66 +509,14 @@ function ObserverTarget({
   )
 }
 
-/** Human-readable event copy. `action` describes what happened; without one,
- * a sentence derived from what the observer listens for. The `label` is an id
- * the agent matches notifications by (`dw KAN-38 r1 w2`), not copy. */
+/** Human-readable event copy: the `action` the observer was armed with,
+ * which says what it waits for in the caller's own words. The host knows no
+ * observed function or condition, so without one it falls back to the
+ * `label`, then the observed function id. */
 export function activityEventText(activity: ObserverActivityMessage): string {
-  const action = activity.action?.trim()
-  if (action) return action
-  const described = describeObservedEvent(activity)
-  if (described) return described
-  // Last resort for a worker-defined observer with no action: its label.
-  return activity.label?.trim() || activity.functionId
-}
-
-/** What the observer listens for, in words, for the observed functions and
- * conditions the harness ships. Undefined when nothing better than the label
- * can be said. */
-function describeObservedEvent(
-  activity: ObserverActivityMessage,
-): string | undefined {
-  const expected = barrierKeys(activity.conditions)
-  if (expected) {
-    // A barrier that answered "not yet" is still waiting on its keys.
-    const lead = isConditionWait(activity) ? 'Waiting for' : 'Results in from'
-    if (expected.length <= 3) return `${lead} ${expected.join(', ')}`
-    return isConditionWait(activity)
-      ? `Waiting for ${expected.length} results`
-      : `All ${expected.length} results in`
-  }
-  switch (activity.functionId) {
-    case 'shell::on-job-finished':
-      return 'Background job finished'
-    case 'harness::on-timer':
-      return 'Timer went off'
-    case 'cron::on-tick':
-      return 'Scheduled run'
-    case 'state::on-changed':
-      return 'State updated'
-    default:
-      return undefined
-  }
-}
-
-/** The keys a `state::barrier` condition waits for. */
-function barrierKeys(
-  conditions: readonly unknown[] | undefined,
-): string[] | undefined {
-  for (const condition of conditions ?? []) {
-    if (!condition || typeof condition !== 'object') continue
-    const { function_id: functionId, config } = condition as {
-      function_id?: unknown
-      config?: { expect?: unknown }
-    }
-    if (functionId !== 'state::barrier') continue
-    const expect = config?.expect
-    if (!Array.isArray(expect)) continue
-    const keys = expect.filter(
-      (key): key is string => typeof key === 'string' && key.length > 0,
-    )
-    if (keys.length > 0) return keys
-  }
-  return undefined
+  return (
+    activity.action?.trim() || activity.label?.trim() || activity.functionId
+  )
 }
 
 function activityTitle(activity: ObserverActivityMessage): string {

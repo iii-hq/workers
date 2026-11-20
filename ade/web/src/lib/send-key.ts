@@ -11,12 +11,13 @@ import {
  *
  *   - `enter`       — Enter sends, Shift+Enter breaks the line.
  *   - `mod-enter`   — ⌘↵ (Ctrl+Enter off a Mac) sends; Enter breaks the line.
+ *   - `alt-enter`   — ⌥↵ (Alt+Enter off a Mac) sends; Enter breaks the line.
  *   - `shift-enter` — Shift+Enter sends; Enter breaks the line.
  *
  * Mod+Enter sends whatever the choice, so it is never a stray newline for
  * anyone with the habit. Per browser, like the theme; Enter is the default.
  */
-export type SendKey = 'enter' | 'mod-enter' | 'shift-enter'
+export type SendKey = 'enter' | 'mod-enter' | 'alt-enter' | 'shift-enter'
 
 export const DEFAULT_SEND_KEY: SendKey = 'enter'
 
@@ -29,14 +30,16 @@ const CHANGE_EVENT = 'iii:send-key'
 const SEND_BINDINGS: Record<SendKey, string> = {
   enter: 'Enter',
   'mod-enter': 'Mod+Enter',
+  'alt-enter': 'Alt+Enter',
   'shift-enter': 'Shift+Enter',
 }
 
 function isSendKey(value: unknown): value is SendKey {
-  return value === 'enter' || value === 'mod-enter' || value === 'shift-enter'
+  return typeof value === 'string' && Object.hasOwn(SEND_BINDINGS, value)
 }
 
-/** The chosen send key as a binding (`Enter`, `Mod+Enter`, `Shift+Enter`). */
+/** The chosen send key as a binding (`Enter`, `Mod+Enter`, `Alt+Enter`,
+ * `Shift+Enter`). */
 export function sendBinding(sendKey: SendKey): string {
   return SEND_BINDINGS[sendKey]
 }
@@ -55,8 +58,9 @@ export function isSendEvent(
 
 /**
  * True for an Enter that breaks the line under `sendKey`: Shift+Enter when
- * Enter sends, otherwise a bare Enter (and Shift+Enter too while ⌘↵ sends).
- * Any other chord (Alt+Enter, Ctrl+Enter on a Mac) is neither.
+ * Enter sends, otherwise a bare Enter (and Shift+Enter too while ⌘↵ or ⌥↵
+ * sends). Any other chord (Alt+Enter unless it sends, Ctrl+Enter on a Mac)
+ * is neither.
  */
 export function isNewLineEvent(
   sendKey: SendKey,

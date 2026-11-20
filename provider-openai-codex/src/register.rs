@@ -285,6 +285,7 @@ pub async fn register_provider_with_auth(
     observe_router_ready(&iii, surface::ON_ROUTER_READY_ID);
 
     crate::login::register(&iii, auth.clone());
+    crate::token::register(&iii, auth.clone());
     {
         let mut changed = auth.subscribe();
         let (iii, http, refresh_state, auth) = (
