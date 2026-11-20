@@ -161,6 +161,7 @@ const AUTH_FUNCTION_RBAC: &str = "rbac:\n  auth_function_id: test::auth\n  \
 const LOOPBACK_RBAC: &str = "rbac:\n  loopback_auth:\n    \
      worker_names: [rbac-proxy-itest-loopback]\n    \
      forbidden_functions: [secret::echo]\n  \
+     expose_endpoints:\n    - match(\"/\")\n    - match(\"/otel\")\n  \
      expose_functions:\n    - match(\"api::*\")\n    - match(\"secret::*\")\n";
 
 async fn boot() -> Option<Harness> {
@@ -795,6 +796,77 @@ async fn loopback_auth_child() {
         .expect("rbac-proxy::status");
     assert_eq!(status["auth"], "loopback", "got {status}");
     assert_eq!(status["rbac_enabled"], false, "got {status}");
+
+    // Signs of a non-local client: a browser's Origin, a proxy's forwarding
+    // header. Refused as a non-loopback peer; the same upgrade without them
+    // is admitted.
+    for header in [
+        ("origin", "http://evil.example"),
+        ("x-forwarded-for", "1.2.3.4"),
+    ] {
+        let mut ws = raw_upgrade(proxy_port, "/", &[header])
+            .await
+            .expect("/ upgrades before authenticating");
+        let first = timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("no refusal in time");
+        let Some(Ok(Message::Text(t))) = first else {
+            panic!("{header:?}: expected an error frame, got {first:?}");
+        };
+        let frame: Value = serde_json::from_str(t.as_str()).expect("json frame");
+        assert_eq!(frame["type"], "error", "{header:?}: {frame}");
+        assert_eq!(frame["error"]["code"], "AUTH_ERROR", "{header:?}: {frame}");
+        assert_eq!(
+            frame["error"]["message"], "rbac.auth_function_id is not set",
+            "{header:?}: {frame}"
+        );
+        assert!(
+            raw_upgrade(proxy_port, "/otel", &[header]).await.is_err(),
+            "{header:?}: /otel admitted"
+        );
+    }
+    let mut ws = raw_upgrade(proxy_port, "/", &[("user-agent", "iii-sdk")])
+        .await
+        .expect("plain upgrade");
+    let probe = request(
+        &mut ws,
+        json!({
+            "type": "invokefunction",
+            "invocation_id": "55555555-5555-4555-8555-555555555555",
+            "function_id": "rbac-proxy::session",
+            "data": {}
+        }),
+        |v| v["type"] == "invocationresult",
+    )
+    .await;
+    assert_eq!(probe["result"]["policy"]["auth"], "loopback", "got {probe}");
+    let _ = ws.close(None).await;
+    let otel = raw_upgrade(proxy_port, "/otel", &[])
+        .await
+        .expect("a plain /otel upgrade is admitted");
+    drop(otel);
+}
+
+/// A WebSocket upgrade of `path` carrying exactly `headers`.
+async fn raw_upgrade(
+    proxy_port: u16,
+    path: &str,
+    headers: &[(&'static str, &str)],
+) -> Result<RawClient, tokio_tungstenite::tungstenite::Error> {
+    let url = format!("ws://127.0.0.1:{proxy_port}{path}");
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+            url.as_str(),
+        )
+        .expect("request");
+    for (name, value) in headers {
+        request
+            .headers_mut()
+            .insert(*name, value.parse().expect("header"));
+    }
+    tokio_tungstenite::connect_async(request)
+        .await
+        .map(|(ws, _)| ws)
 }
 
 type RawClient =

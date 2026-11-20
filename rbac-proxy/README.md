@@ -230,6 +230,24 @@ unchanged: `expose_functions`, the registration hooks, the middleware, the
 `rbac-proxy:` name) and `forbidden_functions` winning over everything.
 Unknown keys are refused, so a typo cannot drop a restriction.
 
+Two more keys refuse the grant to a loopback peer whose upgrade shows signs of
+a non-local client; such an upgrade is refused exactly like one from a
+non-loopback address (same response, same log). Both apply to `/` and `/otel`:
+
+- `allowed_origins` (default `[]`): an upgrade that carries an `Origin`
+  header, which a browser page adds, gets the grant only when the value is in
+  this list (exact match, scheme and host compared case-insensitively, for
+  example `http://localhost:3000`). An upgrade without `Origin`, which is what
+  SDK workers send, is unaffected. With the default every `Origin` is refused,
+  so a web page open in a local browser cannot borrow the grant.
+- `allow_forwarded` (default `false`): an upgrade carrying any of
+  `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
+  `X-Real-IP` or `Via` came through a proxy and is refused unless this is
+  `true`.
+
+These checks catch the well-behaved cases; a forwarder that adds none of these
+headers is not detected (see the warnings below).
+
 - **It applies only without `auth_function_id`.** When both are set the auth
   function authenticates every connection, `loopback_auth` is ignored, and a
   warning naming both keys is logged each time such a configuration is

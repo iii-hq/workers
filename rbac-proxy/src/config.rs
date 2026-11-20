@@ -361,6 +361,8 @@ mod tests {
             "context",
             "function_registration_prefix",
             "worker_names",
+            "allowed_origins",
+            "allow_forwarded",
         ] {
             assert!(
                 grants["properties"][key]["description"].is_string(),
@@ -370,6 +372,11 @@ mod tests {
         assert_eq!(
             grants["properties"]["allow_function_registration"]["default"],
             false
+        );
+        assert_eq!(grants["properties"]["allow_forwarded"]["default"], false);
+        assert_eq!(
+            grants["properties"]["allowed_origins"]["default"],
+            json!([])
         );
         // configuration::set refuses registration without a prefix.
         assert_eq!(
