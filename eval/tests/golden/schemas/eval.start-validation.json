@@ -75,11 +75,19 @@
         "type": "string"
       }
     },
-    "description": "`eval::start-validation`: builds a baseline and a candidate stack from the E2E's `harness` template pinned to two pushed commits and starts both executions in Docker. Spends model tokens, so it only ever runs on an explicit request. With `dry_run` it only resolves and checks the refs.",
+    "description": "`eval::start-validation`: builds a baseline and a candidate stack from an E2E stack (by default the one on the `harness` template) pinned to two pushed commits, the Harness and the stack's kits that the workers repository holds, and starts both executions in Docker. Spends model tokens, so it only ever runs on an explicit request. With `dry_run` it only resolves and checks the refs.",
     "properties": {
       "_caller_worker_id": {
         "default": null,
         "description": "Stamped by the engine on every invocation; callers omit it.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "agent": {
+        "default": null,
+        "description": "The agent profile the scenario runs under (`deepwork-e2e` for the deepwork kit); the E2E's default when absent.",
         "type": [
           "string",
           "null"
@@ -148,6 +156,14 @@
       "scenario_id": {
         "description": "The harness-e2e scenario to run.",
         "type": "string"
+      },
+      "stack": {
+        "default": null,
+        "description": "The E2E stack both sides start from, by its `e2e::dashboard::stacks-list` id (`deepwork-source` to measure deepwork's prompts); defaults to the one built on the `harness` template. Each Registry kit it installs that `kits/` of the workers repository holds comes from each side's commit.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "suggestion_index": {
         "format": "uint",

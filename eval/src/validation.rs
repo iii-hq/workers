@@ -1,8 +1,10 @@
 //! Starting a validation from a suggestion: two pushed commits of the Harness
-//! become two Docker stacks and two E2E executions of one scenario; the sweep
+//! (and of the kits the stack installs) become two Docker stacks and two E2E
+//! executions of one scenario; the sweep
 //! waits for both, attaches the pair and computes its evidence. Nothing here
 //! runs unless a person asks for it: every execution spends model tokens.
 
+use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
@@ -63,6 +65,8 @@ pub async fn start_validation(
         )));
     }
     let scenario_id = review::required("scenario_id", Some(&request.scenario_id), 200)?;
+    let stack_id = review::text("stack", request.stack.as_deref(), 200)?;
+    let agent = review::text("agent", request.agent.as_deref(), 200)?;
     if let Some(criterion) = request.criterion.as_ref().filter(|c| c.min_runs > runs) {
         return Err(invalid(format!(
             "the criterion needs {} completed runs on each side but only {runs} are requested",
@@ -88,8 +92,18 @@ pub async fn start_validation(
     let (candidate_ref, baseline_ref) = (request.candidate_ref, request.baseline_ref);
     let resolution = {
         let repository = repository.clone();
+        let default_stack = stack_id.is_none();
         tokio::task::spawn_blocking(move || {
-            resolve_commits(&repository, &candidate_ref, baseline_ref.as_deref())
+            let mut resolution =
+                resolve_commits(&repository, &candidate_ref, baseline_ref.as_deref())?;
+            if default_stack {
+                resolution.warnings.extend(unmeasured_kits(
+                    &repository,
+                    &resolution.baseline.commit,
+                    &resolution.candidate.commit,
+                )?);
+            }
+            Ok::<_, EvalError>(resolution)
         })
         .await
         .map_err(|error| EvalError::State(format!("git did not finish: {error}")))??
@@ -110,16 +124,38 @@ pub async fn start_validation(
         deps.host_user.as_deref(),
         request.caller_worker_id.as_deref(),
     )?;
-    let base = base_stack(deps).await?;
-    let stack = |side: &str, commit: &str| -> Result<Value, EvalError> {
+    let base = base_stack(deps, stack_id.as_deref()).await?;
+    // The kits each commit holds, so a prompt change is measured as code is.
+    let (baseline_kits, candidate_kits) = {
+        let (repository, b, c) = (
+            repository.clone(),
+            baseline_commit.clone(),
+            candidate_commit.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            Ok::<_, EvalError>((
+                repository_kits(&repository, &b)?,
+                repository_kits(&repository, &c)?,
+            ))
+        })
+        .await
+        .map_err(|error| EvalError::State(format!("git did not finish: {error}")))??
+    };
+    let stack = |side: &str, commit: &str, kits| -> Result<Value, EvalError> {
         Ok(json!({
             "name": stack_name(evaluation_id, index, side, commit),
-            "yaml": stack_yaml(&base, commit)?,
+            "yaml": stack_yaml(&base, commit, kits)?,
         }))
     };
     let stacks = [
-        ("baseline", stack("baseline", &baseline_commit)?),
-        ("candidate", stack("candidate", &candidate_commit)?),
+        (
+            "baseline",
+            stack("baseline", &baseline_commit, &baseline_kits)?,
+        ),
+        (
+            "candidate",
+            stack("candidate", &candidate_commit, &candidate_kits)?,
+        ),
     ];
 
     // The criterion is registered, and the run recorded, before any
@@ -182,7 +218,7 @@ pub async fn start_validation(
 
     let mut started: Vec<String> = Vec::new();
     for (side, stack) in stacks {
-        let parameters = json!({
+        let mut parameters = json!({
             "scenarios": [scenario_id],
             "runs": runs,
             "technical_retries": TECHNICAL_RETRIES,
@@ -191,6 +227,9 @@ pub async fn start_validation(
             "where": "docker",
             "stack": stack,
         });
+        if let Some(agent) = &agent {
+            parameters["agent"] = json!(agent);
+        }
         // The label tells whose execution it is in the E2E's own list.
         let label = format!("eval {evaluation_id} S{} {side}", index + 1);
         match start_execution(deps, &label, parameters).await {
@@ -482,8 +521,68 @@ fn remote_branch(repository: &str, sha: &str, named: &str) -> Result<Option<Stri
         .map(|branch| (*branch).to_string()))
 }
 
-/// The YAML of the E2E's stack built on the `harness` template.
-async fn base_stack(deps: &Deps) -> Result<String, EvalError> {
+/// The kits `kits/` of the repository holds at `commit`, by the name their
+/// `iii.kit.yaml` gives (`iii/deepwork`), each with its folder.
+fn repository_kits(repository: &str, commit: &str) -> Result<BTreeMap<String, String>, EvalError> {
+    let listing = git(
+        repository,
+        &["ls-tree", "-d", "--name-only", commit, "kits/"],
+    )?
+    .unwrap_or_default();
+    let mut kits = BTreeMap::new();
+    for folder in listing
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let manifest = git(
+            repository,
+            &["show", &format!("{commit}:{folder}/iii.kit.yaml")],
+        )?;
+        let name = manifest
+            .and_then(|text| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text).ok())
+            .and_then(|manifest| manifest.get("name")?.as_str().map(str::to_string));
+        if let Some(name) = name {
+            kits.insert(name, folder.to_string());
+        }
+    }
+    Ok(kits)
+}
+
+/// A warning when the candidate changes a kit and no `stack` was named: the
+/// default stack installs no kit, so that change would go unmeasured.
+fn unmeasured_kits(
+    repository: &str,
+    baseline: &str,
+    candidate: &str,
+) -> Result<Option<String>, EvalError> {
+    let changed = git(
+        repository,
+        &["diff", "--name-only", baseline, candidate, "--", "kits/"],
+    )?
+    .unwrap_or_default();
+    let mut folders: Vec<&str> = changed
+        .lines()
+        // `kits/<kit>/<file>`; a file of `kits/` itself is no kit.
+        .filter_map(|path| {
+            let parts: Vec<&str> = path.splitn(3, '/').collect();
+            (parts.len() == 3).then(|| parts[1])
+        })
+        .collect();
+    folders.dedup();
+    Ok((!folders.is_empty()).then(|| {
+        format!(
+            "the candidate changes kits/{}, which the default stack does not install: pass \
+             `stack` (one that installs the kit, such as `deepwork-source`) and `agent` to \
+             measure it",
+            folders.join(", kits/")
+        )
+    }))
+}
+
+/// The YAML of the E2E's stack `id`, or of the one built on the `harness`
+/// template.
+async fn base_stack(deps: &Deps, id: Option<&str>) -> Result<String, EvalError> {
     let list: Value = call(
         deps,
         "e2e::dashboard::stacks-list",
@@ -496,44 +595,74 @@ async fn base_stack(deps: &Deps) -> Result<String, EvalError> {
             "e2e_unavailable: the E2E service could not list its stacks: {error}"
         ))
     })?;
-    list["stacks"]
+    let found = list["stacks"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|stack| stack["template"] == BASE_TEMPLATE)
-        .and_then(|stack| stack["yaml"].as_str())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            EvalError::Dependency(format!(
-                "e2e_unavailable: no E2E stack is built on the `{BASE_TEMPLATE}` template"
-            ))
+        .find(|stack| match id {
+            Some(id) => stack["id"] == id,
+            None => stack["template"] == BASE_TEMPLATE,
         })
+        .and_then(|stack| stack["yaml"].as_str())
+        .map(str::to_string);
+    match (found, id) {
+        (Some(yaml), _) => Ok(yaml),
+        (None, Some(id)) => Err(invalid(format!(
+            "stack_not_found: the E2E has no stack `{id}`"
+        ))),
+        (None, None) => Err(EvalError::Dependency(format!(
+            "e2e_unavailable: no E2E stack is built on the `{BASE_TEMPLATE}` template"
+        ))),
+    }
 }
 
-/// `yaml` with only its `harness` container replaced by the Harness built
-/// from `commit` of the workers repository.
-fn stack_yaml(yaml: &str, commit: &str) -> Result<String, EvalError> {
+/// `yaml` with its `harness` container built from `commit` of the workers
+/// repository (its own settings, such as `config_override`, kept) and each
+/// Registry kit that `kits` names (what the repository holds at `commit`)
+/// installed from that commit.
+fn stack_yaml(
+    yaml: &str,
+    commit: &str,
+    kits: &BTreeMap<String, String>,
+) -> Result<String, EvalError> {
+    use serde_yaml_ng::Value as Yaml;
     let broken = |why: String| {
         EvalError::Dependency(format!(
-            "e2e_unavailable: the E2E's `{BASE_TEMPLATE}` stack cannot be pinned: {why}"
+            "e2e_unavailable: the E2E stack cannot be pinned: {why}"
         ))
     };
-    let mut stack: serde_yaml_ng::Value =
+    let mut stack: Yaml =
         serde_yaml_ng::from_str(yaml).map_err(|error| broken(error.to_string()))?;
-    let containers = stack
+    let harness = stack
         .get_mut("containers")
-        .and_then(serde_yaml_ng::Value::as_mapping_mut)
-        .filter(|containers| containers.contains_key("harness"))
+        .and_then(Yaml::as_mapping_mut)
+        .and_then(|containers| containers.get_mut("harness"))
         .ok_or_else(|| broken("it declares no `harness` container".into()))?;
-    containers.insert(
-        "harness".into(),
-        serde_yaml_ng::to_value(json!({
-            "worker": "package://harness",
-            "commit": commit,
-            "repository": REPOSITORY,
-        }))
-        .map_err(|error| broken(error.to_string()))?,
-    );
+    if !harness.is_mapping() {
+        *harness = Yaml::Mapping(Default::default());
+    }
+    let harness = harness.as_mapping_mut().expect("a mapping");
+    // What only says where a release comes from goes; the pin replaces it.
+    for key in ["version", "path"] {
+        harness.remove(key);
+    }
+    harness.insert("worker".into(), "package://harness".into());
+    harness.insert("commit".into(), commit.into());
+    harness.insert("repository".into(), REPOSITORY.into());
+    for entry in stack
+        .get_mut("kits")
+        .and_then(Yaml::as_sequence_mut)
+        .into_iter()
+        .flatten()
+    {
+        let folder = entry
+            .as_str()
+            .filter(|kit| !kit.contains(':'))
+            .and_then(|kit| kits.get(kit.split('@').next().unwrap_or(kit)));
+        if let Some(folder) = folder {
+            *entry = format!("commit:{REPOSITORY}/{folder}@{commit}").into();
+        }
+    }
     serde_yaml_ng::to_string(&stack).map_err(|error| broken(error.to_string()))
 }
 
@@ -758,7 +887,7 @@ mod tests {
         let base = "# header\niii: latest\ntemplate: harness\ncontainers:\n  harness:\n    worker: \
                     package://harness\n    version: latest\n  harness-e2e:\n    worker: \
                     package://harness-e2e\n    version: latest\nstartup_timeout: 5m\n";
-        let pinned = stack_yaml(base, &"a".repeat(40)).unwrap();
+        let pinned = stack_yaml(base, &"a".repeat(40), &BTreeMap::new()).unwrap();
         let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&pinned).unwrap();
         assert_eq!(parsed["iii"], "latest");
         assert_eq!(parsed["template"], "harness");
@@ -778,9 +907,39 @@ mod tests {
             "not: [valid",
             "containers: []",
         ] {
-            let error = stack_yaml(broken, &"a".repeat(40)).unwrap_err();
+            let error = stack_yaml(broken, &"a".repeat(40), &BTreeMap::new()).unwrap_err();
             assert!(error.to_string().contains("e2e_unavailable:"), "{error}");
         }
+    }
+
+    #[test]
+    fn the_stack_keeps_its_harness_settings_and_takes_repository_kits_from_the_commit() {
+        let base = "iii: latest\nkits:\n  - iii/deepwork@0.4.3\n  - iii/workflow\n  - \
+                    other/deepwork\n  - path:/kits/x\ncontainers:\n  harness:\n    worker: \
+                    package://harness\n    version: latest\n    config_override:\n      \
+                    filesystem_boundary: workspace\n  kanban:\n    worker: package://kanban\n";
+        let kits = BTreeMap::from([("iii/deepwork".to_string(), "kits/deepwork".to_string())]);
+        let sha = "b".repeat(40);
+        let parsed: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&stack_yaml(base, &sha, &kits).unwrap()).unwrap();
+        let harness = &parsed["containers"]["harness"];
+        assert_eq!(
+            harness["config_override"]["filesystem_boundary"],
+            "workspace"
+        );
+        assert_eq!(harness["commit"], sha.as_str());
+        assert!(harness.get("version").is_none());
+        assert_eq!(parsed["containers"]["kanban"]["worker"], "package://kanban");
+        assert_eq!(
+            parsed["kits"],
+            serde_yaml_ng::to_value(json!([
+                format!("commit:iii-hq/workers/kits/deepwork@{sha}"),
+                "iii/workflow",
+                "other/deepwork",
+                "path:/kits/x"
+            ]))
+            .unwrap()
+        );
     }
 
     #[test]

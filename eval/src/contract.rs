@@ -1418,10 +1418,12 @@ pub struct ReviewsResponseV1 {
     pub summaries: Vec<ReviewSummaryV1>,
 }
 
-/// `eval::start-validation`: builds a baseline and a candidate stack from the
-/// E2E's `harness` template pinned to two pushed commits and starts both
-/// executions in Docker. Spends model tokens, so it only ever runs on an
-/// explicit request. With `dry_run` it only resolves and checks the refs.
+/// `eval::start-validation`: builds a baseline and a candidate stack from an
+/// E2E stack (by default the one on the `harness` template) pinned to two
+/// pushed commits, the Harness and the stack's kits that the workers
+/// repository holds, and starts both executions in Docker. Spends model
+/// tokens, so it only ever runs on an explicit request. With `dry_run` it
+/// only resolves and checks the refs.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct StartValidationRequestV1 {
     pub evaluation_id: String,
@@ -1437,6 +1439,16 @@ pub struct StartValidationRequestV1 {
     /// Runs of the scenario for each side; defaults to 5 (1-20).
     #[serde(default)]
     pub runs: Option<u32>,
+    /// The E2E stack both sides start from, by its `e2e::dashboard::stacks-list`
+    /// id (`deepwork-source` to measure deepwork's prompts); defaults to the
+    /// one built on the `harness` template. Each Registry kit it installs that
+    /// `kits/` of the workers repository holds comes from each side's commit.
+    #[serde(default)]
+    pub stack: Option<String>,
+    /// The agent profile the scenario runs under (`deepwork-e2e` for the
+    /// deepwork kit); the E2E's default when absent.
+    #[serde(default)]
+    pub agent: Option<String>,
     /// Required unless `dry_run`.
     #[serde(default)]
     pub model: String,
