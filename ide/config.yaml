@@ -20,7 +20,9 @@ env:
   # worker's own identity (III_WORKER_NAME, III_NAMESPACE) is always stripped
   # so an `iii` CLI or SDK script started from here connects as itself.
   inherit: true
-  # When `inherit` is false, ONLY these keys are forwarded to children. Has
+  # When `inherit` is false, ONLY these keys (plus the engine's telemetry
+  # opt-outs: III_TELEMETRY_ENABLED, III_TELEMETRY_DEV and the CI markers, when
+  # set) are forwarded to children. Has
   # no effect on per-call `env` (deny-only, see line 16 above) — this list
   # governs forwarding only, never what a caller may override per call.
   # git fetch/push over SSH needs the agent socket (SSH_AUTH_SOCK), but every

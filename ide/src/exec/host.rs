@@ -24,6 +24,27 @@ pub fn parse_argv(command: &str, args: Option<&Vec<String>>) -> Result<Vec<Strin
     }
 }
 
+/// The engine's telemetry opt-outs: `III_TELEMETRY_*` and every CI marker it
+/// checks (`CI_ENV_VARS` in the engine's `workers/telemetry/environment.rs`).
+/// Forwarded even with `env.inherit: false`, so an `iii` a command starts does
+/// not report for a user or a CI run that opted out.
+const TELEMETRY_ENV_KEYS: &[&str] = &[
+    "III_TELEMETRY_ENABLED",
+    "III_TELEMETRY_DEV",
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "CIRCLECI",
+    "JENKINS_URL",
+    "TRAVIS",
+    "BUILDKITE",
+    "TF_BUILD",
+    "CODEBUILD_BUILD_ID",
+    "BITBUCKET_BUILD_NUMBER",
+    "DRONE",
+    "TEAMCITY_VERSION",
+];
+
 /// Build the host `Command`. `overrides` carries the already-validated per-call
 /// `cwd`/`env` (see `crate::exec::policy`): when both are `None` (the common
 /// case) this is byte-for-byte the prior behaviour. Per-call values are applied
@@ -42,7 +63,8 @@ pub fn build_command(
     }
     if !cfg.env.inherit {
         cmd.env_clear();
-        for k in &cfg.env.allow {
+        let allow = cfg.env.allow.iter().map(String::as_str);
+        for k in allow.chain(TELEMETRY_ENV_KEYS.iter().copied()) {
             if let Ok(v) = std::env::var(k) {
                 cmd.env(k, v);
             }
@@ -526,8 +548,8 @@ mod tests {
         }
     }
 
-    /// With `env.inherit: false`, the child env is scrubbed to exactly the
-    /// `env.allow` keys: an allowed worker var round-trips, a non-allowed one
+    /// With `env.inherit: false`, the child env is scrubbed to the `env.allow`
+    /// keys (plus [`TELEMETRY_ENV_KEYS`]): an allowed worker var round-trips, a non-allowed one
     /// never reaches the child. (Unit twin of the e2e scrub/passthrough cases.)
     #[tokio::test]
     async fn inherit_false_forwards_only_allow_keys() {
@@ -563,6 +585,38 @@ mod tests {
             "non-allowed key scrubbed: {}",
             out.stdout
         );
+    }
+
+    /// The engine's telemetry opt-outs reach a scrubbed child even when
+    /// `env.allow` does not list them.
+    #[tokio::test]
+    async fn inherit_false_still_forwards_the_telemetry_opt_outs() {
+        const KEYS: &[&str] = &["III_TELEMETRY_ENABLED", "TEAMCITY_VERSION"];
+        let _guard = EnvVarGuard::new(KEYS);
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("III_TELEMETRY_ENABLED", "false") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("TEAMCITY_VERSION", "2026.1") };
+
+        let mut cfg = test_cfg();
+        cfg.env.inherit = false;
+        cfg.env.allow = vec!["PATH".into()];
+
+        let out = run_to_completion(
+            &["env".into()],
+            &cfg,
+            5000,
+            &crate::exec::policy::ExecOverrides::default(),
+        )
+        .await
+        .unwrap();
+        for line in ["III_TELEMETRY_ENABLED=false", "TEAMCITY_VERSION=2026.1"] {
+            assert!(
+                out.stdout.lines().any(|l| l == line),
+                "{line} forwarded: {}",
+                out.stdout
+            );
+        }
     }
 
     /// The worker's own identity never reaches a child even with the

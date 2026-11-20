@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **An `iii` started in a pane sees the user's telemetry opt-out again.** Leaving the
+  worker's `III_*` variables out of the tmux server also dropped `III_TELEMETRY_ENABLED` and
+  `III_TELEMETRY_DEV`, so an `iii compose --up` or `iii project init` run in a pane reported
+  telemetry the user had turned off. Both now reach the server and its panes; the rest of
+  `III_*` stays out. A server started earlier lacks them until it restarts.
 - **A tmux server the worker starts no longer hands its `III_*` variables to every pane.**
   tmux copies the environment of the command that starts its server into its global one, so
   a server started by the worker (`new-session`, or a Console terminal's `attach`) gave each

@@ -245,6 +245,12 @@
 
 ### Fixed
 
+- **A scrubbed `shell::exec` environment keeps the telemetry opt-outs.** With
+  `env.inherit: false`, a command got only the `env.allow` keys, so an `iii`
+  it started saw neither `III_TELEMETRY_ENABLED`/`III_TELEMETRY_DEV` nor the
+  CI markers (`CI`, `GITHUB_ACTIONS`, …) and reported telemetry for a user or
+  CI run that had opted out. `shell::exec` and `shell::exec_bg` now forward
+  those keys whenever they are set, whatever `env.allow` lists.
 - **Turn snapshots no longer copy the stack's own state, or fill the disk.**
   A session without a workspace root gets the stack's launch folder (the
   harness default), and the turn history photographs that root before and
