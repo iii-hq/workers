@@ -194,6 +194,11 @@ import {
 } from './system-prompt-selection'
 import { deriveTurnVisualState } from './turn-visual-state'
 import { useModelSwitch } from './use-model-switch'
+import {
+  type KeptReason,
+  type QueuedEditPayload,
+  useQueuedEdits,
+} from './use-queued-edits'
 import { WelcomeHandoff } from './WelcomeHandoff'
 
 /**
@@ -681,23 +686,88 @@ export function ChatView({
   // was taken back out of the harness's queue when browsing began, so the
   // composer is the only copy; the strip hides its row meanwhile.
   const [browsedQueuedId, setBrowsedQueuedId] = useState<string | null>(null)
+  // Bumped to remount the composer so it picks up a draft written for it.
+  // The Composer clears itself as soon as it hands a payload over, but an imported session is
+  // only checked after that: a send it turns away goes back into the draft, and the Composer
+  // remounts to pick the text and chips up again.
+  const [composerGeneration, setComposerGeneration] = useState(0)
+  const queuedDraftsRef = useRef(queuedDrafts)
+  queuedDraftsRef.current = queuedDrafts
+  // The send path is defined further down (it needs the turn machinery);
+  // queued edits reach it through this ref.
+  const sendQueuedEditRef = useRef<(payload: QueuedEditPayload) => void>(
+    () => {},
+  )
+  const conversationIdRef = useRef(conversation.id)
+  conversationIdRef.current = conversation.id
+  const keepQueuedAsDraft = useCallback(
+    (
+      conversationId: string,
+      payload: QueuedEditPayload,
+      reason: KeptReason,
+    ) => {
+      if (!conversationsCtx) return
+      conversationsCtx.setDraftText(
+        conversationId,
+        draftWithPulledBack(conversationsCtx.getDraftText(conversationId), [
+          { id: 'queued-edit', text: payload.text },
+        ]),
+      )
+      if (payload.attachments.length > 0) {
+        conversationsCtx.setDraftAttachments(conversationId, [
+          ...(conversationsCtx.getDraftAttachments(conversationId) ?? []),
+          ...payload.attachments,
+        ])
+      }
+      if (conversationIdRef.current === conversationId) {
+        setComposerGeneration((generation) => generation + 1)
+      }
+      onAppendMessage(
+        conversationId,
+        makeSystemNotice(
+          reason === 'edit'
+            ? 'Your edit was not sent. It is back in the composer.'
+            : pulledBackNotice(1),
+        ),
+      )
+    },
+    [conversationsCtx, onAppendMessage],
+  )
+  const queuedEdits = useQueuedEdits({
+    conversationId: conversation.id,
+    removeQueued: backend.removeQueued,
+    queuedDraftsRef,
+    setQueuedDrafts,
+    send: useCallback(
+      (payload: QueuedEditPayload) => sendQueuedEditRef.current(payload),
+      [],
+    ),
+    canSend: useCallback(() => !submitBlockedRef.current, []),
+    keepAsDraft: keepQueuedAsDraft,
+    warn: useCallback(
+      (conversationId: string, text: string) =>
+        onAppendMessage(conversationId, makeSystemNotice(text, 'warn')),
+      [onAppendMessage],
+    ),
+  })
+  const heldQueued = queuedEdits.held
 
   // Safety flush: the turn ended (the harness's finalize drain already
   // appended any leftovers server-side), so surviving drafts become
   // optimistic transcript rows that reconcile in place when events land.
-  // The one being edited was unqueued and never drained: it stays in the
-  // composer as a draft to send, not in the transcript.
+  // A message the composer holds (being edited, or its edit settling) was
+  // taken out of the queue and never drained: its row stays until the edit
+  // settles, and it is not shown as sent.
   useEffect(() => {
-    if (streamingIndicator || queuedDrafts.length === 0) return
-    setQueuedDrafts([])
-    for (const draft of queuedDrafts) {
-      if (draft.id === browsedQueuedId) continue
-      onAppendMessage(conversation.id, draft)
-    }
+    if (streamingIndicator) return
+    const leaving = queuedDrafts.filter((d) => !heldQueued.has(d.id))
+    if (leaving.length === 0) return
+    setQueuedDrafts((drafts) => drafts.filter((d) => heldQueued.has(d.id)))
+    for (const draft of leaving) onAppendMessage(conversation.id, draft)
   }, [
     streamingIndicator,
     queuedDrafts,
-    browsedQueuedId,
+    heldQueued,
     conversation.id,
     onAppendMessage,
   ])
@@ -876,18 +946,22 @@ export function ChatView({
   stopPullBackRef.current = useMemo(() => {
     const seen = new Set<string>(queuedDrafts.map((d) => d.id))
     for (const m of conversation.messages) seen.add(m.id)
+    // A message the composer holds is no longer queued; the composer keeps
+    // it (a remount moves it into the draft), so Stop does not pull it back.
     return [
-      ...queuedDrafts.map((d) => ({
-        id: d.id,
-        text: d.content,
-        draft: d,
-        attachments: d.attachments,
-      })),
+      ...queuedDrafts
+        .filter((d) => !heldQueued.has(d.id))
+        .map((d) => ({
+          id: d.id,
+          text: d.content,
+          draft: d,
+          attachments: d.attachments,
+        })),
       ...serverQueued
         .filter((row) => isPersonQueuedRow(row) && !seen.has(row.id))
         .map((row) => ({ id: row.id, text: row.text })),
     ]
-  }, [queuedDrafts, serverQueued, conversation.messages])
+  }, [queuedDrafts, heldQueued, serverQueued, conversation.messages])
 
   // Delivery window: the turn stream this tab owned finished normally while
   // messages were still parked — the harness is draining them into the
@@ -1537,10 +1611,6 @@ export function ChatView({
   }, [backend.id, conversation.id, getDraftAttachments, setDraftAttachments])
 
   const importStatusPendingRef = useRef(false)
-  // The Composer clears itself as soon as it hands a payload over, but an imported session is
-  // only checked after that: a send it turns away goes back into the draft, and the Composer
-  // remounts to pick the text and chips up again.
-  const [composerGeneration, setComposerGeneration] = useState(0)
   // The side chat quote riding on the submit in flight. It is reported sent
   // the moment the message goes out (appended or queued), not when the turn
   // it starts ends; a send that stops short keeps the quote in its chip and
@@ -2399,92 +2469,8 @@ export function ChatView({
     [submitWithQuote],
   )
 
-  // Editing a queued message. Browsing into one (↑) takes it back out of
-  // the harness's queue — `harness::unqueue` — so a step boundary cannot
-  // deliver the original while the person is still typing the edit; the
-  // composer is the only copy from then on. Submitting sends the edit the
-  // same way as any message (queued again if the turn is still running,
-  // or as the next turn); leaving it unchanged (↓, or ↑ to another) sends
-  // the original back the same way. The one cost is its place in the
-  // queue: an edited message rejoins at the end.
-  const reservationsRef = useRef(new Map<string, Promise<boolean>>())
-  const queuedDraftsRef = useRef(queuedDrafts)
-  queuedDraftsRef.current = queuedDrafts
-  const handleReserveQueued = useCallback(
-    (id: string): Promise<boolean> => {
-      const conversationId = conversation.id
-      const removeQueued = backend.removeQueued
-      if (!removeQueued) return Promise.resolve(false)
-      const reservation = removeQueued(conversationId, id)
-        .then((removed) => {
-          if (!removed) {
-            onAppendMessage(
-              conversationId,
-              makeSystemNotice(
-                'that message already reached the agent, so it cannot be edited',
-                'warn',
-              ),
-            )
-          }
-          return removed
-        })
-        .catch((err) => {
-          onAppendMessage(
-            conversationId,
-            makeSystemNotice(
-              `could not take the queued message back for editing (${err instanceof Error ? err.message : String(err)}) — it will be delivered as queued`,
-              'warn',
-            ),
-          )
-          return false
-        })
-      reservationsRef.current.set(id, reservation)
-      return reservation
-    },
-    [backend.removeQueued, conversation.id, onAppendMessage],
-  )
-  const takeReservation = useCallback((id: string): Promise<boolean> => {
-    const reservation = reservationsRef.current.get(id)
-    reservationsRef.current.delete(id)
-    return reservation ?? Promise.resolve(false)
-  }, [])
-  // Browsing moved on without a change: the original goes back to the
-  // agent. A reservation that failed left the original where it was.
-  const handleReleaseQueued = useCallback(
-    (id: string) => {
-      void takeReservation(id).then((reserved) => {
-        if (!reserved) return
-        const draft = queuedDraftsRef.current.find((d) => d.id === id)
-        setQueuedDrafts((current) => current.filter((d) => d.id !== id))
-        if (!draft) return
-        void handleSubmit({
-          text: draft.content,
-          attachments: draft.attachments ?? [],
-        })
-      })
-    },
-    [takeReservation, handleSubmit],
-  )
-  // Enter on a browsed message: send the edit (`payload`), or drop the
-  // message (`null` — the composer was emptied).
-  const handleEditQueued = useCallback(
-    (
-      id: string,
-      payload: { text: string; attachments: Attachment[] } | null,
-    ) => {
-      void takeReservation(id).then((reserved) => {
-        setQueuedDrafts((current) => current.filter((d) => d.id !== id))
-        if (!reserved) {
-          // The original is still parked (the unqueue failed) or already
-          // went out: take it back now, best effort, before the edit goes.
-          void backend.removeQueued?.(conversation.id, id).catch(() => {})
-        }
-        if (payload === null || submitBlockedRef.current) return
-        void handleSubmit(payload)
-      })
-    },
-    [takeReservation, backend.removeQueued, conversation.id, handleSubmit],
-  )
+  // Editing a queued message (`useQueuedEdits`) sends through here.
+  sendQueuedEditRef.current = (payload) => void handleSubmit(payload)
   // The side panel's way to hand this chat's agent an instruction: sent now,
   // or put in this chat's draft (the composer remounts to pick it up). The
   // composer buses are global, so neither goes through them.
@@ -3393,7 +3379,7 @@ export function ChatView({
  lives only in the composer — hidden here until the edit is
  sent (it rejoins at the end) or it is removed. */}
                   {queuedStrip
-                    .filter((row) => row.id !== browsedQueuedId)
+                    .filter((row) => !heldQueued.has(row.id))
                     .map((row) => (
                       <div
                         key={row.id}
@@ -3523,13 +3509,16 @@ export function ChatView({
                 stopping={stopping}
                 queuedForEdit={backend.removeQueued ? queuedForEdit : undefined}
                 onEditQueued={
-                  backend.removeQueued ? handleEditQueued : undefined
+                  backend.removeQueued ? queuedEdits.edit : undefined
                 }
                 onReserveQueued={
-                  backend.removeQueued ? handleReserveQueued : undefined
+                  backend.removeQueued ? queuedEdits.reserve : undefined
                 }
                 onReleaseQueued={
-                  backend.removeQueued ? handleReleaseQueued : undefined
+                  backend.removeQueued ? queuedEdits.release : undefined
+                }
+                onAbandonQueued={
+                  backend.removeQueued ? queuedEdits.abandon : undefined
                 }
                 onBrowseChange={setBrowsedQueuedId}
                 isStreaming={streamingIndicator}

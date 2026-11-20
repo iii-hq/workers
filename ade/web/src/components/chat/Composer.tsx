@@ -405,6 +405,14 @@ interface ComposerProps {
   onReserveQueued?: (id: string) => Promise<boolean>
   /** Browsing left this queued message unchanged: put it back in the queue. */
   onReleaseQueued?: (id: string) => void
+  /**
+   * The composer is unmounting while it holds a browsed queued message (with
+   * whatever the person typed): the host keeps it so the only copy is not lost.
+   */
+  onAbandonQueued?: (
+    id: string,
+    payload: { text: string; attachments: Attachment[] },
+  ) => void
   /** Which queued message is being browsed (`null` = live draft), for highlight. */
   onBrowseChange?: (id: string | null) => void
 }
@@ -467,6 +475,7 @@ export function Composer({
   onEditQueued,
   onReserveQueued,
   onReleaseQueued,
+  onAbandonQueued,
   onBrowseChange,
 }: ComposerProps) {
   const [attachments, setAttachmentsState] = useState<Attachment[]>(
@@ -545,12 +554,40 @@ export function Composer({
     [onBrowseChange],
   )
 
-  // Drop the browse cursor if the message it pointed at left the queue.
+  // The browsed message already went to the agent: the copy here would only
+  // be sent a second time, so the editor goes back to a blank draft.
+  const dropBrowsed = useCallback(() => {
+    textRef.current = ''
+    setHasText(false)
+    setAttachments([])
+    setBrowse(null)
+    setClearToken((t) => t + 1)
+  }, [setAttachments, setBrowse])
+
+  // The message being browsed left the queue without this composer sending
+  // it: it drained into the chat. The host keeps a browsed message's row
+  // until its edit settles, so leaving means delivered.
   useEffect(() => {
     if (browseId !== null && !queuedForEdit?.some((m) => m.id === browseId)) {
-      setBrowse(null)
+      dropBrowsed()
     }
-  }, [queuedForEdit, browseId, setBrowse])
+  }, [queuedForEdit, browseId, dropBrowsed])
+
+  // Unmounting mid-edit (another chat, a remount): a reserved message lives
+  // only in this editor, so it goes to the host rather than vanish.
+  const onAbandonQueuedRef = useRef(onAbandonQueued)
+  onAbandonQueuedRef.current = onAbandonQueued
+  useEffect(
+    () => () => {
+      const id = browseIdRef.current
+      if (id === null) return
+      onAbandonQueuedRef.current?.(id, {
+        text: textRef.current.trim(),
+        attachments: attachmentsRef.current,
+      })
+    },
+    [],
+  )
 
   // Apply the pure ↑/↓ decision (see queue-history): load the chosen message
   // (returning its text for LexicalShell to insert) or return null to let the
@@ -585,13 +622,7 @@ export function Composer({
       if (target !== null && onReserveQueued) {
         void onReserveQueued(target).then((reserved) => {
           if (reserved || browseIdRef.current !== target) return
-          // It already went to the agent: the copy here would only be sent
-          // a second time, so the editor goes back to a blank draft.
-          textRef.current = ''
-          setHasText(false)
-          setAttachments([])
-          setBrowse(null)
-          setClearToken((t) => t + 1)
+          dropBrowsed()
         })
       }
       return result.target.text
@@ -603,6 +634,7 @@ export function Composer({
       setAttachments,
       onReserveQueued,
       onReleaseQueued,
+      dropBrowsed,
     ],
   )
 
