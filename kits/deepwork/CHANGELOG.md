@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.5
+
+- **A long check first stops the servers an earlier killed run left behind.** Playwright starts its web servers in their own process group. Each time a check job was killed at its deadline, its `vite preview` and Prism mock kept listening, and the next attempt either reused a console built from old code or failed with `http://127.0.0.1:4298 is already used`, which cost a whole attempt. Before a long job, and after killing one, the recipe stops every process listening from the worktree.
+
 ## 0.8.4
 
 - **A long check prints a short record.** The full suite (Rust, database, 2,737 Playwright tests) printed everything to the job's stdout. The job finished inside its deadline, but its record passed the 256 KB a function result carries: `shell::status` could not return it, and the batch was left without a verdict for a round. The long-run recipe now sends each command's output to its own log and prints only the exit code and the last 40 lines.
