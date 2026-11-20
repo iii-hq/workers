@@ -260,10 +260,29 @@ headers is not detected (see the warnings below).
   local process can already reach the engine port directly, so admitting
   loopback connections gives away nothing a shared token would protect. Do
   not use it on a shared host.
-- **A reverse proxy on the same machine makes every client look local.** A
+- **Anything that forwards to a local port makes its clients look local.** A
   tunnel, an ingress or nginx forwarding to rbac-proxy connects from
   `127.0.0.1`, so every client behind it gets the loopback grants. Front such
   a setup with an `auth_function_id`.
+
+In the iii ecosystem, for example (these are examples, not an exhaustive
+list):
+
+- **`sandbox-libkrun` VMs with networking.** A VM reaches host loopback ports
+  through its gateway, and `iii-network` rewrites the gateway address to
+  `127.0.0.1`, so code running in a sandbox (for example through
+  `sandbox-code-runner`) is a loopback peer.
+- **`tailscale::serve::add` (and Funnel)** publishes a local port to the
+  tailnet (or, with Funnel, to the internet).
+- **`quick-tunnel`** publishes a local port through a cloudflared Quick
+  Tunnel.
+- **`kubectl port-forward` and service-mesh sidecars** deliver remote
+  clients from a local address.
+
+The `Origin` and forwarding-header checks above catch some of these, not all:
+a forwarder that adds no such header, or a sandbox that connects directly, is
+indistinguishable from a local process. "Every local process is trusted" stops
+holding as soon as any such path is in play; use an `auth_function_id` then.
 
 `rbac-proxy::status` reports which authentication is in force as `auth`:
 `"function"`, `"loopback"` or `"none"` (every worker and telemetry
