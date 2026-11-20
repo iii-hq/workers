@@ -289,6 +289,32 @@ mod tests {
         assert!(b.contains("`harness::*`"));
     }
 
+    /// MCP agents start with the ADE's two skills: `ade` itself, and
+    /// `ade/for-mcp-agents`, the ADE's rules for agents that reach the engine
+    /// through mcp-server (pages as injectable UI, the page URL to give).
+    #[test]
+    fn default_mcp_preloads_the_ade_skills() {
+        let mcp = bundled_agents()
+            .into_iter()
+            .find(|a| a.name == "default-mcp")
+            .expect("bundled");
+        assert_eq!(mcp.skills, vec!["ade", "ade/for-mcp-agents"]);
+        let default = bundled_agents()
+            .into_iter()
+            .find(|a| a.name == "default")
+            .expect("bundled");
+        assert!(default.skills.is_empty(), "only default-mcp preloads them");
+    }
+
+    /// A skill or function the task needs whose worker is not installed is
+    /// not a dead end: the agent installs that worker with compose::add.
+    #[test]
+    fn default_mcp_installs_a_missing_worker() {
+        let b = body("default-mcp");
+        assert!(b.contains("compose::add"), "no install rule");
+        assert!(b.contains("not installed"), "no install rule");
+    }
+
     /// Everything that is not about the harness stays `default`'s, byte for
     /// byte: the two cannot drift without this failing.
     #[test]
