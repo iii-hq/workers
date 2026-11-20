@@ -147,7 +147,7 @@ enum Transport {
     #[cfg(test)]
     None,
     #[cfg(test)]
-    Mock(Arc<dyn Fn(EvaluateRequest) -> ReplyFuture + Send + Sync>),
+    Mock(Arc<dyn Fn(Option<String>, EvaluateRequest) -> ReplyFuture + Send + Sync>),
 }
 
 /// Judge namespace (`None` = this worker's own) and provider (`""` = the
@@ -253,16 +253,17 @@ impl JudgeSearch {
         Self::with_transport(Transport::Bus(iii))
     }
 
-    /// Inject the bus boundary: the closure receives each `judge::evaluate`
-    /// payload and answers with the raw reply value or a transport failure.
+    /// Inject the bus boundary: the closure receives the namespace each
+    /// `judge::evaluate` call is routed to (`None`: this worker's own) and its
+    /// payload, and answers with the raw reply value or a transport failure.
     #[cfg(test)]
     pub(crate) fn from_evaluator<F, Fut>(evaluator: F) -> Self
     where
-        F: Fn(EvaluateRequest) -> Fut + Send + Sync + 'static,
+        F: Fn(Option<String>, EvaluateRequest) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Value, JudgeError>> + Send + 'static,
     {
-        Self::with_transport(Transport::Mock(Arc::new(move |request| {
-            Box::pin(evaluator(request))
+        Self::with_transport(Transport::Mock(Arc::new(move |namespace, request| {
+            Box::pin(evaluator(namespace, request))
         })))
     }
 
@@ -615,7 +616,9 @@ impl JudgeSearch {
             #[cfg(test)]
             Transport::None => return Err(fail(JudgeError::Unavailable("not registered"))),
             #[cfg(test)]
-            Transport::Mock(evaluator) => evaluator(request).await.map_err(fail)?,
+            Transport::Mock(evaluator) => evaluator(self.namespace.clone(), request)
+                .await
+                .map_err(fail)?,
         };
         parse_reply(&reply, &blocks, lanes.len(), options)
     }
@@ -1151,7 +1154,7 @@ mod tests {
     {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = requests.clone();
-        let client = JudgeSearch::from_evaluator(move |request| {
+        let client = JudgeSearch::from_evaluator(move |_, request| {
             let result = reply(&request);
             seen.lock().unwrap().push(request);
             async move { result }
@@ -2015,7 +2018,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let slow = || {
             let seen = calls.clone();
-            JudgeSearch::from_evaluator(move |request| {
+            JudgeSearch::from_evaluator(move |_, request| {
                 seen.fetch_add(1, Ordering::SeqCst);
                 async move {
                     tokio::time::sleep(Duration::from_millis(400)).await;
