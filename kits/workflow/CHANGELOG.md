@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8
 
 - **A small goal no longer gets a board, tickets and a workflow run.** The Workflow agent sizes every goal first, with a few read-only calls, and says which path it took: `direct`, `focused` or `full`. A question, a lookup, a run-and-report, or a change of at most five files with one obvious way to do it, low stakes and a quick check is done by the agent itself: it writes in your checkout with guarded writes, commits only when your message asks for it and pushes nothing, runs one narrow check, and reports what it changed, what it ran and how to undo it. Until now every goal paid for a board project, a run ticket, a design run of ten nodes and four to six runs, a one-line config change included.
 - **One or two tickets run focused.** No board (`board=on` keeps it), no design run when the place is known (explorers and a planner when it is not) and no baseline. A code ticket that runs alone is one run: an implementer node writes the code and its tests in the run worktree and the check loops it, with no ticket worktree, no cherry-pick and no separate tests run. A wave of several tickets keeps one worktree per ticket, the integration and the tests-and-check run.
