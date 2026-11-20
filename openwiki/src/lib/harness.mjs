@@ -4,6 +4,7 @@
 // (openwiki::src::*) and returns a validated page via a JSON output contract.
 // Falls back to the router/heuristic path (generate.mjs) when the harness is
 // absent or a turn fails.
+import crypto from 'node:crypto';
 import { generatePage } from './generate.mjs';
 import { resolveModel } from './model.mjs';
 import { getPageQualityIssues, pageRepairFeedback } from './quality.mjs';
@@ -95,6 +96,15 @@ function buildUserPrompt({
   return prompt;
 }
 
+// openwiki turns are machine runs: `automation` keeps them out of the chat list and out of memory extraction.
+export function sendTurn(worker, payload) {
+  return worker.call({
+    function_id: 'harness::send',
+    payload: { ...payload, session: { ...payload.session, kind: 'automation' } },
+    timeoutMs: 30_000,
+  });
+}
+
 // One harness turn for a page. Runs in a named child session titled with the
 // page, linked to the plan session via metadata.parent_session_id — the same
 // linkage shape harness uses for real sub-agents, so the console renders each
@@ -126,14 +136,14 @@ async function runPageTurn(
       ...(parentSessionId ? { metadata: { parent_session_id: parentSessionId, depth: 1 } } : {}),
     };
   }
-  const r = await worker.call({ function_id: 'harness::send', payload, timeoutMs: 30_000 });
+  const r = await sendTurn(worker, payload);
   const sessionId = r?.session_id;
   if (!sessionId) throw new Error('harness::send returned no session_id');
   const result = await awaitTurn(worker, sessionId, { timeoutMs });
   return mapResult(result, { outlineItem, repoUrl, commit });
 }
 
-// A session id is any stable string; the console shows the title, not the id.
+// A session id is any string; the console shows the title, not the id.
 // Keep ids readable and greppable so a whole wiki's turns share a prefix.
 export function sessionSlug(s) {
   return String(s || '')
@@ -142,8 +152,10 @@ export function sessionSlug(s) {
     .replace(/^-|-$/g, '')
     .slice(0, 48);
 }
-export function wikiParentSession(repoName, wikiId) {
-  return `openwiki:${sessionSlug(repoName) || 'repo'}:${String(wikiId || '').slice(0, 6)}`;
+// A new root per generation run: a rebuild must not continue the previous run's session.
+export function newRootSession(repoName, wikiId) {
+  const run = crypto.randomUUID().slice(0, 8);
+  return `openwiki:${sessionSlug(repoName) || 'repo'}:${String(wikiId || '').slice(0, 6)}:${run}`;
 }
 
 // Poll harness::status until the turn is terminal; return its output-contract
@@ -318,40 +330,35 @@ const WIKI_ORCHESTRATOR_OUT = {
 // under it in the console).
 export async function runOrchestrator(
   worker,
-  { wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 60, timeoutMs = 600_000 },
+  { rootSessionId: root, wikiId, repoName, repoUrl, model, docsHint = '', maxTurns = 60, timeoutMs = 600_000 },
 ) {
   const resolved = await resolveModel(worker, model);
   if (!resolved.resolved) throw new Error('no model available for the orchestrator');
-  const root = wikiParentSession(repoName, wikiId);
   const message =
     `Repository: ${repoName} (${repoUrl})\n` +
     `Wiki id (pass as "id" to every openwiki::src::* and openwiki::write-page call, and use "${root}/<slug>" as each writer's session_id): ${wikiId}` +
     (docsHint || '') +
     '\nResearch the repo, plan the pages, spawn one writer sub-agent per page (each writer stores its page with openwiki::write-page), then submit the summary and navigation.';
-  const { session_id } = await worker.call({
-    function_id: 'harness::send',
-    payload: {
-      session_id: root,
-      session: { title: `openwiki: ${repoName}` },
-      message,
-      model: resolved.model,
-      ...(resolved.provider ? { provider: resolved.provider } : {}),
-      options: {
-        system_prompt: ORCHESTRATOR_SYSTEM,
-        output: { type: 'json', schema: WIKI_ORCHESTRATOR_OUT },
-        functions: {
-          allow: [
-            'harness::spawn',
-            'openwiki::src::read',
-            'openwiki::src::list',
-            'openwiki::src::grep',
-            'openwiki::write-page',
-          ],
-        },
-        max_turns: maxTurns,
+  const { session_id } = await sendTurn(worker, {
+    session_id: root,
+    session: { title: `openwiki: ${repoName}` },
+    message,
+    model: resolved.model,
+    ...(resolved.provider ? { provider: resolved.provider } : {}),
+    options: {
+      system_prompt: ORCHESTRATOR_SYSTEM,
+      output: { type: 'json', schema: WIKI_ORCHESTRATOR_OUT },
+      functions: {
+        allow: [
+          'harness::spawn',
+          'openwiki::src::read',
+          'openwiki::src::list',
+          'openwiki::src::grep',
+          'openwiki::write-page',
+        ],
       },
+      max_turns: maxTurns,
     },
-    timeoutMs: 30_000,
   });
   if (!session_id) throw new Error('orchestrator send returned no session_id');
   const result = await awaitTurn(worker, session_id, { timeoutMs });
@@ -391,7 +398,7 @@ export async function planViaHarness(
     repoUrl,
     model,
     docsHint = '',
-    parentSessionId,
+    rootSessionId: base,
     maxTurns = 24,
     timeoutMs = 300_000,
     maxAttempts = 3,
@@ -400,7 +407,6 @@ export async function planViaHarness(
 ) {
   const resolved = await resolveModel(worker, model);
   if (!resolved.resolved) throw new Error('no model available for harness plan');
-  const base = parentSessionId || wikiParentSession(repoName, wikiId);
   const message =
     `Repository: ${repoName} (${repoUrl})\n` +
     `Wiki id (pass as "id" to every openwiki::src::* call): ${wikiId}` +
@@ -415,22 +421,18 @@ export async function planViaHarness(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const parent = attempt === 1 ? base : `${base}:r${attempt}`;
     try {
-      const { session_id } = await worker.call({
-        function_id: 'harness::send',
-        payload: {
-          session_id: parent,
-          session: { title: `openwiki: ${repoName}` },
-          message,
-          model: resolved.model,
-          ...(resolved.provider ? { provider: resolved.provider } : {}),
-          options: {
-            system_prompt: PLAN_SYSTEM,
-            output: { type: 'json', schema: PLAN_HARNESS_OUT },
-            functions: { allow: ['openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
-            max_turns: maxTurns,
-          },
+      const { session_id } = await sendTurn(worker, {
+        session_id: parent,
+        session: { title: `openwiki: ${repoName}` },
+        message,
+        model: resolved.model,
+        ...(resolved.provider ? { provider: resolved.provider } : {}),
+        options: {
+          system_prompt: PLAN_SYSTEM,
+          output: { type: 'json', schema: PLAN_HARNESS_OUT },
+          functions: { allow: ['openwiki::src::read', 'openwiki::src::list', 'openwiki::src::grep'] },
+          max_turns: maxTurns,
         },
-        timeoutMs: 30_000,
       });
       if (!session_id) throw new Error('harness::send returned no session_id for plan');
       const result = await awaitTurn(worker, session_id, { timeoutMs });

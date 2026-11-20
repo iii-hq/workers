@@ -43,6 +43,8 @@ gracefully when a worker is absent:
 | `llm-router` only | model-written from pre-selected files |
 | neither | heuristic, built from file headers, always works |
 
+Every harness session openwiki starts (the lead, the plan, the page writers and a deep `openwiki::ask`) is created with kind `automation`. Such a session stays out of the console's default chat list, and a `memory` worker on the same engine extracts nothing from it. Each generation run uses a new root session, so a rebuild never continues an earlier run's transcript.
+
 ## Quickstart
 
 Open the browser UI on the engine's HTTP port:
