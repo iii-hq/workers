@@ -757,12 +757,18 @@ async fn production_minilm_rankings(
         .iter()
         .map(|position| queries[*position].clone())
         .collect();
-    let semantic_ranked = semantic
+    let mut semantic_ranked = semantic
         .rank(catalog_fingerprint, &model_queries, -1.0)
         .await
         .ok()?;
     if semantic_ranked.len() != model_positions.len() {
         return None;
+    }
+    // The index covers the whole catalog; a namespace-filtered `tools` keeps
+    // only the ids it holds.
+    let held: HashSet<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    for dense in &mut semantic_ranked {
+        dense.retain(|(id, _)| held.contains(id.as_str()));
     }
     // Queries below the admission floor keep the BM25 fallback already in
     // `rankings`; only admitted queries are fused and reranked.
@@ -1401,6 +1407,15 @@ pub async fn search_functions(
     };
     let judge = judge_deadline(&cfg, &tools, &deps.judge);
     let fingerprint = tool_fingerprint(&tools);
+    // The `namespace` filter, for a harness that sends its own namespace;
+    // a blank one is no filter.
+    let own = baggage_own_namespace();
+    let filter = request
+        .namespace
+        .as_deref()
+        .map(str::trim)
+        .filter(|ns| own.is_some() && !ns.is_empty())
+        .map(str::to_string);
     let function_search = async {
         let mut selected: Vec<String> = Vec::new();
         let mut installable: Vec<InstallableWorker> = Vec::new();
@@ -1412,11 +1427,12 @@ pub async fn search_functions(
         // shared judge deadline; results merge in request order.
         let mut batches = tokio::task::JoinSet::new();
         for (position, batch) in request.capabilities.chunks(MAX_SEARCH_QUERIES).enumerate() {
-            let (deps, cfg, tools, fingerprint) = (
+            let (deps, cfg, tools, fingerprint, filter) = (
                 deps.clone(),
                 cfg.clone(),
                 tools.clone(),
                 fingerprint.clone(),
+                filter.clone(),
             );
             let batch = batch.to_vec();
             // The handler's OTel context (baggage: the session's judge
@@ -1424,8 +1440,16 @@ pub async fn search_functions(
             // calls route to the hub default.
             batches.spawn(opentelemetry::context::FutureExt::with_context(
                 async move {
-                    let outcome =
-                        search_batch(&deps, &cfg, &tools, &fingerprint, &batch, judge).await;
+                    let outcome = search_batch(
+                        &deps,
+                        &cfg,
+                        &tools,
+                        &fingerprint,
+                        &batch,
+                        judge,
+                        filter.as_deref(),
+                    )
+                    .await;
                     (position, outcome)
                 }
                 .in_current_span(),
@@ -1478,22 +1502,7 @@ pub async fn search_functions(
         (skills, skills_judged),
         (mut observers, observers_judged),
     ) = tokio::join!(function_search, skill_search, observer_search);
-    let own = baggage_own_namespace();
-    // The namespace filter and how many candidates it dropped, for the guidance.
-    let mut filtered_out: Option<(String, usize)> = None;
-    if own.is_some() {
-        let namespace = request.namespace.as_deref().map(str::trim);
-        if let Some(ns) = namespace.filter(|ns| !ns.is_empty()) {
-            let before = selected.len();
-            // shortcut: filters after ranking, so other namespaces' ids can use up the candidate budget; filter the ranking lanes if filtered searches come back thin.
-            selected.retain(|id| {
-                tools
-                    .iter()
-                    .any(|t| &t.name == id && t.namespaces.iter().any(|n| n == ns))
-            });
-            filtered_out = Some((ns.to_string(), before - selected.len()));
-        }
-    } else {
+    if own.is_none() {
         for observer in &mut observers {
             observer.namespace = None;
             observer.target_namespace = None;
@@ -1532,13 +1541,12 @@ pub async fn search_functions(
     };
     let workers = assemble_workers(&selected, &tools, own.is_some());
     let guidance = if workers.is_empty() && repeated.is_empty() {
-        match &filtered_out {
-            // Installed one namespace away is not "nothing matched".
-            Some((ns, dropped)) if *dropped > 0 => {
+        match &filter {
+            // Another namespace may still hold a match: not "nothing matched".
+            Some(ns) => {
                 let filtered = format!(
-                    "The `namespace` filter removed every candidate: none of the {dropped} \
-functions matching these capabilities is present in namespace `{ns}`. Search again without \
-`namespace` to list them with the namespaces that hold them."
+                    "No function matching these capabilities is present in namespace `{ns}`. \
+Search again without `namespace` to search every namespace."
                 );
                 if installable.is_empty() {
                     filtered
@@ -2112,8 +2120,23 @@ async fn installed_search(
     fingerprint: &str,
     queries: &[String],
     judge: Option<tokio::time::Instant>,
+    namespace: Option<&str>,
 ) -> BenchmarkOutcome {
     let started = Instant::now();
+    // The `namespace` filter narrows the catalog before ranking, so ids held
+    // only elsewhere never use up the candidate budget.
+    let scoped: Vec<ToolSchema>;
+    let tools = match namespace {
+        Some(ns) => {
+            scoped = tools
+                .iter()
+                .filter(|tool| tool.namespaces.iter().any(|n| n == ns))
+                .cloned()
+                .collect();
+            &scoped[..]
+        }
+        None => tools,
+    };
     let corpus = canonical_tools(tools);
     let index = Bm25Index::build(&corpus);
     let lexical = lexical_rankings(&index, queries);
@@ -2197,6 +2220,7 @@ async fn search_batch(
     fingerprint: &str,
     capabilities: &[String],
     judge: Option<tokio::time::Instant>,
+    namespace: Option<&str>,
 ) -> BatchOutcome {
     let queries = search_queries(capabilities);
     let registry = async {
@@ -2216,7 +2240,7 @@ async fn search_batch(
         .await
     };
     let (installed, installable) = tokio::join!(
-        installed_search(deps, cfg, tools, fingerprint, &queries, judge),
+        installed_search(deps, cfg, tools, fingerprint, &queries, judge, namespace),
         registry
     );
     BatchOutcome {
@@ -2245,7 +2269,8 @@ async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkO
         .take(MAX_SEARCH_BATCHES)
     {
         let queries = search_queries(batch);
-        let outcome = installed_search(deps, &cfg, &tools, &fingerprint, &queries, judge).await;
+        let outcome =
+            installed_search(deps, &cfg, &tools, &fingerprint, &queries, judge, None).await;
         total.hybrid_complete &= outcome.hybrid_complete;
         total.judge_complete &= outcome.judge_complete;
         total.effective_mode = total.effective_mode.max(outcome.effective_mode);
@@ -3017,6 +3042,44 @@ mod tests {
                 ["worker"],
             "state"
         );
+    }
+
+    #[tokio::test]
+    async fn namespace_filter_applies_before_the_candidate_budget() {
+        let tool = |name: String, ns: &str| ToolSchema {
+            name,
+            description: "Send email message.".into(),
+            parameters: json!({ "type": "object" }),
+            namespaces: vec![ns.into()],
+        };
+        // Twelve ties outside `laptop` sort ahead of the one inside it.
+        let mut tools: Vec<ToolSchema> = (1..=12)
+            .map(|i| tool(format!("mail::a{i:02}"), "server"))
+            .collect();
+        tools.push(tool("mail::z13".into(), "laptop"));
+        let deps = search_deps(tools);
+        let filtered = search_as(
+            &deps,
+            "budget-a",
+            Some("server"),
+            "send email message",
+            Some("laptop"),
+        )
+        .await;
+        assert_eq!(
+            filtered["workers"][0]["functions"][0]["function_id"],
+            "mail::z13"
+        );
+        // No filter: the twelve-candidate budget is unchanged.
+        let all = search_as(
+            &deps,
+            "budget-b",
+            Some("server"),
+            "send email message",
+            None,
+        )
+        .await;
+        assert_eq!(all["workers"][0]["functions"].as_array().unwrap().len(), 12);
     }
 
     #[tokio::test]
