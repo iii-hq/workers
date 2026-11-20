@@ -2708,7 +2708,7 @@ impl Repo {
                 std::fs::create_dir_all(&folder).unwrap();
                 std::fs::write(
                     dir.join("kits/deepwork/iii.kit.yaml"),
-                    "name: iii/deepwork\n",
+                    "name: iii/deepwork\nversion: 0.9.0\n",
                 )
                 .unwrap();
                 std::fs::write(folder.join("deepwork.md"), name).unwrap();
@@ -3271,12 +3271,43 @@ async fn a_named_stack_installs_each_sides_kit_from_its_commit_under_the_agent()
         "{:?}",
         resolved.warnings
     );
-    let named = dry_run(&h, &evaluation_id, |request| {
+    let no_agent = dry_run(&h, &evaluation_id, |request| {
         request["stack"] = json!("deepwork-source");
     })
     .await
     .unwrap();
+    assert!(
+        no_agent.warnings.iter().any(|w| w.contains("no `agent`")),
+        "{:?}",
+        no_agent.warnings
+    );
+    let named = dry_run(&h, &evaluation_id, |request| {
+        request["stack"] = json!("deepwork-source");
+        request["agent"] = json!("deepwork-e2e");
+    })
+    .await
+    .unwrap();
     assert!(named.warnings.is_empty(), "{:?}", named.warnings);
+
+    // A start that skipped the dry run keeps the warning on the run it records.
+    let unmeasured = start(&h, &evaluation_id, |_| {})
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+    assert!(
+        unmeasured
+            .warnings
+            .iter()
+            .any(|w| w.contains("kits/deepwork")),
+        "{:?}",
+        unmeasured.warnings
+    );
+    assert_eq!((unmeasured.stack, unmeasured.agent), (None, None));
+    h.world().calls.clear();
+    h.world()
+        .state
+        .retain(|(scope, _), _| scope != state::REVIEW_SCOPE);
 
     let error = start(&h, &evaluation_id, |request| {
         request["stack"] = json!("nowhere");
@@ -3290,12 +3321,17 @@ async fn a_named_stack_installs_each_sides_kit_from_its_commit_under_the_agent()
             .is_empty()
     );
 
-    start(&h, &evaluation_id, |request| {
+    let run = start(&h, &evaluation_id, |request| {
         request["stack"] = json!("deepwork-source");
         request["agent"] = json!("deepwork-e2e");
     })
     .await
+    .unwrap()
+    .run
     .unwrap();
+    assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    assert_eq!(run.stack.as_deref(), Some("deepwork-source"));
+    assert_eq!(run.agent.as_deref(), Some("deepwork-e2e"));
     let world = h.world();
     let calls = world.calls_to("e2e::dashboard::execution-start");
     assert_eq!(calls.len(), 2);
@@ -3970,6 +4006,9 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
             runs: 3,
             model: "deepseek-flash".into(),
             provider: "deepseek".into(),
+            stack: None,
+            agent: None,
+            warnings: Vec::new(),
             started_at,
             finished_at: None,
             state,

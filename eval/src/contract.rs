@@ -1195,6 +1195,16 @@ pub struct ValidationRunV1 {
     pub runs: u32,
     pub model: String,
     pub provider: String,
+    /// The E2E stack both sides started from; absent for the default one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<String>,
+    /// The agent profile the scenario ran under; absent for the E2E's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// What the pair would not measure, said when it started (a changed kit
+    /// the stack does not install from the commits, kits with no agent…).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     pub started_at: i64,
     /// When both executions were seen ended; the sweep stops trying to attach
     /// the pair some time after.

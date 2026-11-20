@@ -90,25 +90,27 @@ pub async fn start_validation(
     let (_, assets) = review::terminal_analysis(deps, evaluation_id, "start a validation").await?;
     suggestion_at(&assets, index)?;
     let (candidate_ref, baseline_ref) = (request.candidate_ref, request.baseline_ref);
-    let resolution = {
+    let (mut resolution, changed_kits) = {
         let repository = repository.clone();
-        let default_stack = stack_id.is_none();
         tokio::task::spawn_blocking(move || {
-            let mut resolution =
-                resolve_commits(&repository, &candidate_ref, baseline_ref.as_deref())?;
-            if default_stack {
-                resolution.warnings.extend(unmeasured_kits(
-                    &repository,
-                    &resolution.baseline.commit,
-                    &resolution.candidate.commit,
-                )?);
-            }
-            Ok::<_, EvalError>(resolution)
+            let resolution = resolve_commits(&repository, &candidate_ref, baseline_ref.as_deref())?;
+            let changed = changed_kits(
+                &repository,
+                &resolution.baseline.commit,
+                &resolution.candidate.commit,
+            )?;
+            Ok::<_, EvalError>((resolution, changed))
         })
         .await
         .map_err(|error| EvalError::State(format!("git did not finish: {error}")))??
     };
     if request.dry_run {
+        resolution.warnings.extend(kit_warnings(
+            stack_id.as_deref(),
+            agent.is_some(),
+            &changed_kits,
+            None,
+        ));
         return Ok(StartValidationResponseV1::Resolved(resolution));
     }
     let (baseline_commit, candidate_commit) =
@@ -141,20 +143,30 @@ pub async fn start_validation(
         .await
         .map_err(|error| EvalError::State(format!("git did not finish: {error}")))??
     };
-    let stack = |side: &str, commit: &str, kits| -> Result<Value, EvalError> {
-        Ok(json!({
-            "name": stack_name(evaluation_id, index, side, commit),
-            "yaml": stack_yaml(&base, commit, kits)?,
-        }))
-    };
+    let (baseline_yaml, baseline_installed) = stack_yaml(&base, &baseline_commit, &baseline_kits)?;
+    let (candidate_yaml, candidate_installed) =
+        stack_yaml(&base, &candidate_commit, &candidate_kits)?;
+    // A real start answers with the row, so what it would not measure is kept there.
+    let warnings = kit_warnings(
+        stack_id.as_deref(),
+        agent.is_some(),
+        &changed_kits,
+        Some([&baseline_installed, &candidate_installed]),
+    );
     let stacks = [
         (
             "baseline",
-            stack("baseline", &baseline_commit, &baseline_kits)?,
+            json!({
+                "name": stack_name(evaluation_id, index, "baseline", &baseline_commit),
+                "yaml": baseline_yaml,
+            }),
         ),
         (
             "candidate",
-            stack("candidate", &candidate_commit, &candidate_kits)?,
+            json!({
+                "name": stack_name(evaluation_id, index, "candidate", &candidate_commit),
+                "yaml": candidate_yaml,
+            }),
         ),
     ];
 
@@ -208,6 +220,9 @@ pub async fn start_validation(
             runs,
             model: model.clone(),
             provider: provider.clone(),
+            stack: stack_id.clone(),
+            agent: agent.clone(),
+            warnings,
             started_at: now,
             finished_at: None,
             state: ValidationRunStateV1::Starting,
@@ -526,7 +541,14 @@ fn remote_branch(repository: &str, sha: &str, named: &str) -> Result<Option<Stri
 fn repository_kits(repository: &str, commit: &str) -> Result<BTreeMap<String, String>, EvalError> {
     let listing = git(
         repository,
-        &["ls-tree", "-d", "--name-only", commit, "kits/"],
+        &[
+            "ls-tree",
+            "-d",
+            "--name-only",
+            "--full-tree",
+            commit,
+            "kits/",
+        ],
     )?
     .unwrap_or_default();
     let mut kits = BTreeMap::new();
@@ -549,35 +571,93 @@ fn repository_kits(repository: &str, commit: &str) -> Result<BTreeMap<String, St
     Ok(kits)
 }
 
-/// A warning when the candidate changes a kit and no `stack` was named: the
-/// default stack installs no kit, so that change would go unmeasured.
-fn unmeasured_kits(
+/// The kit folders (`kits/<kit>`) the candidate changes from the baseline.
+fn changed_kits(
     repository: &str,
     baseline: &str,
     candidate: &str,
-) -> Result<Option<String>, EvalError> {
+) -> Result<Vec<String>, EvalError> {
     let changed = git(
         repository,
-        &["diff", "--name-only", baseline, candidate, "--", "kits/"],
+        &[
+            "diff",
+            "--name-only",
+            baseline,
+            candidate,
+            "--",
+            ":(top)kits/",
+        ],
     )?
     .unwrap_or_default();
-    let mut folders: Vec<&str> = changed
+    let mut folders: Vec<String> = changed
         .lines()
         // `kits/<kit>/<file>`; a file of `kits/` itself is no kit.
         .filter_map(|path| {
             let parts: Vec<&str> = path.splitn(3, '/').collect();
-            (parts.len() == 3).then(|| parts[1])
+            (parts.len() == 3).then(|| format!("kits/{}", parts[1]))
         })
         .collect();
     folders.dedup();
-    Ok((!folders.is_empty()).then(|| {
-        format!(
-            "the candidate changes kits/{}, which the default stack does not install: pass \
-             `stack` (one that installs the kit, such as `deepwork-source`) and `agent` to \
-             measure it",
-            folders.join(", kits/")
-        )
-    }))
+    Ok(folders)
+}
+
+/// What the validation would not measure about the kits: a changed kit the
+/// stack does not install from the commits, changed kits installed with no
+/// `agent` to run them, a kit only one side's commit holds. `installed` is
+/// each side's kit folders taken from its commit; `None` before the stack is
+/// read (a dry run), when a named stack is taken to install what changed and
+/// the default one to install none.
+fn kit_warnings(
+    stack: Option<&str>,
+    agent: bool,
+    changed: &[String],
+    installed: Option<[&[String]; 2]>,
+) -> Vec<String> {
+    let assumed: &[String] = if stack.is_some() { changed } else { &[] };
+    let [baseline, candidate] = installed.unwrap_or([assumed, assumed]);
+    let named = stack.map_or("the default stack".to_string(), |id| {
+        format!("stack `{id}`")
+    });
+    let (measured, unmeasured): (Vec<&String>, Vec<&String>) = changed
+        .iter()
+        .partition(|folder| candidate.contains(folder));
+    let list = |folders: &[&String]| {
+        folders
+            .iter()
+            .map(|folder| folder.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut warnings = Vec::new();
+    if !unmeasured.is_empty() {
+        warnings.push(format!(
+            "the candidate changes {}, which {named} does not install from the commits, so that \
+             change is not measured: name a `stack` that installs it (such as \
+             `deepwork-source`) and the `agent` that runs it",
+            list(&unmeasured)
+        ));
+    }
+    if !measured.is_empty() && !agent {
+        warnings.push(format!(
+            "{} come from each side's commit, but no `agent` is set: the scenario runs under \
+             the E2E's default profile, which may never load them (deepwork's is \
+             `deepwork-e2e`)",
+            list(&measured)
+        ));
+    }
+    let one_sided: Vec<&String> = baseline
+        .iter()
+        .filter(|folder| !candidate.contains(folder))
+        .chain(candidate.iter().filter(|folder| !baseline.contains(folder)))
+        .collect();
+    if !one_sided.is_empty() {
+        warnings.push(format!(
+            "{} is in kits/ at only one of the two commits: the other side installs the \
+             stack's published kit",
+            list(&one_sided)
+        ));
+    }
+    warnings
 }
 
 /// The YAML of the E2E's stack `id`, or of the one built on the `harness`
@@ -619,12 +699,12 @@ async fn base_stack(deps: &Deps, id: Option<&str>) -> Result<String, EvalError> 
 /// `yaml` with its `harness` container built from `commit` of the workers
 /// repository (its own settings, such as `config_override`, kept) and each
 /// Registry kit that `kits` names (what the repository holds at `commit`)
-/// installed from that commit.
+/// installed from that commit; with the folders of those kits.
 fn stack_yaml(
     yaml: &str,
     commit: &str,
     kits: &BTreeMap<String, String>,
-) -> Result<String, EvalError> {
+) -> Result<(String, Vec<String>), EvalError> {
     use serde_yaml_ng::Value as Yaml;
     let broken = |why: String| {
         EvalError::Dependency(format!(
@@ -649,6 +729,7 @@ fn stack_yaml(
     harness.insert("worker".into(), "package://harness".into());
     harness.insert("commit".into(), commit.into());
     harness.insert("repository".into(), REPOSITORY.into());
+    let mut installed = Vec::new();
     for entry in stack
         .get_mut("kits")
         .and_then(Yaml::as_sequence_mut)
@@ -661,9 +742,11 @@ fn stack_yaml(
             .and_then(|kit| kits.get(kit.split('@').next().unwrap_or(kit)));
         if let Some(folder) = folder {
             *entry = format!("commit:{REPOSITORY}/{folder}@{commit}").into();
+            installed.push(folder.clone());
         }
     }
-    serde_yaml_ng::to_string(&stack).map_err(|error| broken(error.to_string()))
+    let yaml = serde_yaml_ng::to_string(&stack).map_err(|error| broken(error.to_string()))?;
+    Ok((yaml, installed))
 }
 
 /// A name that tells the stack's purpose and is unique to its commit.
@@ -887,7 +970,8 @@ mod tests {
         let base = "# header\niii: latest\ntemplate: harness\ncontainers:\n  harness:\n    worker: \
                     package://harness\n    version: latest\n  harness-e2e:\n    worker: \
                     package://harness-e2e\n    version: latest\nstartup_timeout: 5m\n";
-        let pinned = stack_yaml(base, &"a".repeat(40), &BTreeMap::new()).unwrap();
+        let (pinned, installed) = stack_yaml(base, &"a".repeat(40), &BTreeMap::new()).unwrap();
+        assert!(installed.is_empty());
         let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&pinned).unwrap();
         assert_eq!(parsed["iii"], "latest");
         assert_eq!(parsed["template"], "harness");
@@ -920,8 +1004,9 @@ mod tests {
                     filesystem_boundary: workspace\n  kanban:\n    worker: package://kanban\n";
         let kits = BTreeMap::from([("iii/deepwork".to_string(), "kits/deepwork".to_string())]);
         let sha = "b".repeat(40);
-        let parsed: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(&stack_yaml(base, &sha, &kits).unwrap()).unwrap();
+        let (yaml, installed) = stack_yaml(base, &sha, &kits).unwrap();
+        assert_eq!(installed, ["kits/deepwork"]);
+        let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
         let harness = &parsed["containers"]["harness"];
         assert_eq!(
             harness["config_override"]["filesystem_boundary"],
@@ -940,6 +1025,28 @@ mod tests {
             ]))
             .unwrap()
         );
+    }
+
+    #[test]
+    fn kit_warnings_say_what_a_validation_would_not_measure() {
+        let changed = ["kits/deepwork".to_string()];
+        let none: [String; 0] = [];
+        let warns = |stack, agent, installed| kit_warnings(stack, agent, &changed, installed);
+        // Dry runs: the default stack installs no kit; a named one is trusted.
+        assert!(warns(None, true, None)[0].contains("the default stack does not install"));
+        assert!(warns(Some("deepwork-source"), true, None).is_empty());
+        assert!(warns(Some("deepwork-source"), false, None)[0].contains("no `agent`"));
+        // Starts: what each side's stack installed from its commit.
+        assert!(warns(Some("deepwork-source"), true, Some([&changed, &changed])).is_empty());
+        assert!(
+            warns(Some("harness-template"), true, Some([&none, &none]))[0]
+                .contains("stack `harness-template` does not install")
+        );
+        assert!(
+            warns(Some("deepwork-source"), true, Some([&none, &changed]))[0]
+                .contains("at only one of the two commits")
+        );
+        assert!(kit_warnings(None, false, &[], None).is_empty());
     }
 
     #[test]

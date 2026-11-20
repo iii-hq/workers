@@ -1196,6 +1196,13 @@
         "additionalProperties": false,
         "description": "The baseline and candidate E2E executions this worker started for a suggestion (`eval::start-validation`).",
         "properties": {
+          "agent": {
+            "description": "The agent profile the scenario ran under; absent for the E2E's default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "baseline_commit": {
             "description": "The full commits the Harness was built from.",
             "type": "string"
@@ -1246,12 +1253,26 @@
           "scenario_id": {
             "type": "string"
           },
+          "stack": {
+            "description": "The E2E stack both sides started from; absent for the default one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "started_at": {
             "format": "int64",
             "type": "integer"
           },
           "state": {
             "$ref": "#/definitions/ValidationRunStateV1"
+          },
+          "warnings": {
+            "description": "What the pair would not measure, said when it started (a changed kit the stack does not install from the commits, kits with no agent…).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
