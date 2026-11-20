@@ -1080,6 +1080,7 @@ export type FcallPatch = Partial<
     | 'durationMs'
     | 'sessionId'
     | 'functionCallId'
+    | 'namespace'
     | 'filesystemAccess'
     | 'functionId'
     | 'unresolvedTarget'
@@ -1235,6 +1236,7 @@ export function applyEntryUpsert(
       running: existing.running,
       pendingApproval: existing.pendingApproval,
       sessionId: existing.sessionId ?? segment.sessionId,
+      namespace: existing.namespace ?? segment.namespace,
       filesystemAccess: existing.filesystemAccess ?? segment.filesystemAccess,
       resultEntryId: existing.resultEntryId ?? segment.resultEntryId,
       ...(stillUnloaded ? { unloaded: true } : {}),

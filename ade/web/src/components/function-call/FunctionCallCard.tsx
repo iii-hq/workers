@@ -807,7 +807,9 @@ export function FunctionCallCard({
       data-expanded={expandedSurface}
       {...(unloaded ? { 'data-unloaded': '' } : {})}
       aria-label={
-        pending ? `action required for ${message.functionId}` : undefined
+        pending
+          ? `action required for ${message.functionId}${message.namespace ? ` in namespace ${message.namespace}` : ''}`
+          : undefined
       }
       tabIndex={pending ? -1 : undefined}
       data-function-status={status}
@@ -947,6 +949,8 @@ export function FunctionCallCard({
           key={`${filesystemAccess.requestedRoot} ${filesystemAccess.attemptedPath ?? ''}`}
           requestedRoot={filesystemAccess.requestedRoot}
           workingDir={workingDir}
+          namespace={message.namespace}
+          onceOnly={filesystemAccess.onceOnly}
           onResolve={(action) => onResolveFilesystemAccess?.(action)}
           onManage={onManageFilesystemAccess}
           disabled={!onResolveFilesystemAccess}
@@ -954,7 +958,9 @@ export function FunctionCallCard({
       ) : pending ? (
         <div className="flex flex-col gap-2 border-t border-edge px-3 py-2.5">
           <p className="font-inter text-body text-ink-faint">
-            Execution is paused until you approve or deny this call.
+            {message.namespace
+              ? `Execution is paused until you approve or deny this call in namespace ${message.namespace}.`
+              : 'Execution is paused until you approve or deny this call.'}
           </p>
           <div className="flex items-center gap-2" data-approval-actions="">
             <Button
@@ -978,6 +984,7 @@ export function FunctionCallCard({
             {onAlwaysAllow ? (
               <AlwaysAllowButton
                 functionId={message.functionId}
+                namespace={message.namespace}
                 onConfirm={() => void runResolve('always_allow')}
                 disabled={!!submitting}
                 submitting={submitting === 'always_allow'}
