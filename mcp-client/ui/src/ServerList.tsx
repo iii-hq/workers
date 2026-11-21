@@ -1,7 +1,8 @@
 import { Button, List, ListItem, Skeleton, StatusDot } from '@iii-dev/console-ui'
 import { Download, Plus } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
-import { pageState, presentServer, type RowActionId } from './presentation'
+import { currentRow, onColumnKeys } from './columns'
+import { byName, pageState, presentServer, type RowActionId } from './presentation'
 import type { Selection } from './types'
 import type { ServersData } from './use-servers'
 
@@ -28,11 +29,10 @@ export function ServerList({
   const select = (server: string) => onSelect({ server, item: { kind: 'connection' } })
   const row = (server: string) => ({
     as: 'div' as const,
-    role: 'option',
     'data-list-roving': '',
     'data-level': 'server',
     className: 'mcp-ui-row',
-    selected: server === selection.server,
+    ...currentRow(server === selection.server),
     label: server,
     onClick: () => select(server),
     onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -44,7 +44,7 @@ export function ServerList({
 
   return (
     <>
-      <List role="listbox" aria-label="MCP servers" className="mcp-ui-list">
+      <List aria-label="MCP servers" className="mcp-ui-list" data-column="1" onKeyDown={onColumnKeys}>
         {state === 'loading'
           ? SKELETON_ROWS.map((n) => (
               <ListItem
@@ -59,10 +59,10 @@ export function ServerList({
             ))
           : state === 'worker_down'
             ? Object.keys(data.config ?? {})
-                .sort()
+                .sort(byName)
                 .map((name) => <ListItem key={name} {...row(name)} leading={<StatusDot tone="ghost" />} />)
             : [...(data.list?.servers ?? [])]
-                .sort((a, b) => a.name.localeCompare(b.name))
+                .sort((a, b) => byName(a.name, b.name))
                 .map((server) => {
                   const { dot, pulse, description, action } = presentServer(server, now)
                   return (

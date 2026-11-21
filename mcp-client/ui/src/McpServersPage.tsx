@@ -2,8 +2,9 @@ import {
   Button,
   EmptyState,
   type Host,
-  List,
   ListItem,
+  type LiveAnnouncement,
+  LiveRegion,
   MetaRow,
   PageBody,
   PageHeader,
@@ -13,56 +14,164 @@ import {
   PageShell,
   PageSidebar,
   Skeleton,
+  StatusBar,
   StatusPanel,
 } from '@iii-dev/console-ui'
 import { useContainerNarrow, useCopyFlash, usePaneState } from '@iii-dev/console-ui/hooks'
-import { Copy, FileJson, Plug, RefreshCw } from 'lucide-react'
-import { type CSSProperties, useMemo, useState } from 'react'
+import { ChevronLeft, Copy, FileJson, Plug, RefreshCw } from 'lucide-react'
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from './api'
-import { pageState, pathHeads, presentServer, type RowActionId } from './presentation'
+import { focusColumn } from './columns'
+import {
+  announcements,
+  type Level,
+  narrowLevel,
+  pageState,
+  pathHeads,
+  type RowActionId,
+  statusBarText,
+  type Tone,
+} from './presentation'
+import { ServerContents } from './ServerContents'
 import { ServerList } from './ServerList'
-import type { Selection, Server } from './types'
+import type { Selection, Server, ServersList } from './types'
 import { useServers } from './use-servers'
 
 const SKELETON_ROWS = [0, 1, 2, 3]
+const COLUMN_OF: Record<Level, number> = { servers: 1, contents: 2, detail: 3 }
 
 /** Column 3 for the Connection and Process rows, until their own views exist. */
 function ServerFacts({ server }: { server: Server }) {
-  const { panel } = presentServer(server, Date.now())
   return (
-    <>
-      {panel ? <StatusPanel variant={panel.variant} headline={panel.headline} detail={panel.next} /> : null}
-      <MetaRow
-        items={[
-          { label: 'Transport', value: server.transport },
-          { label: 'Target', value: server.target },
-          { label: 'Authentication', value: server.auth },
-          { label: 'Protocol', value: server.protocol_version },
-          { label: 'Server', value: server.server_info && `${server.server_info.name} ${server.server_info.version}` },
-        ].filter((item) => item.value)}
-      />
-    </>
+    <MetaRow
+      items={[
+        { label: 'Transport', value: server.transport },
+        { label: 'Target', value: server.target },
+        { label: 'Authentication', value: server.auth },
+        { label: 'Protocol', value: server.protocol_version },
+        { label: 'Server', value: server.server_info && `${server.server_info.name} ${server.server_info.version}` },
+      ].filter((item) => item.value)}
+    />
   )
 }
 
 /** The MCP servers page: the path row over servers, their contents and one thing in depth. */
-export function McpServersPage({ host, panelSide, onRequestClose }: { host: Host } & Partial<PageRenderProps>) {
+export function McpServersPage({
+  host,
+  panelSide,
+  onRequestClose,
+  commands,
+}: { host: Host } & Partial<PageRenderProps>) {
   const data = useServers(host)
   const api = useMemo(() => createApi(host.iii), [host])
   const [selection, setSelection] = useState<Selection>({ server: null, item: null })
+  const [level, setLevel] = useState<Level>('servers')
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
   const [col1, setCol1] = usePaneState('mcp-client:col1', 288)
   const { ref: narrowRef, narrow } = useContainerNarrow()
+  const root = useRef<HTMLDivElement | null>(null)
+  const setRoot = useCallback(
+    (el: HTMLDivElement | null) => {
+      root.current = el
+      narrowRef(el)
+    },
+    [narrowRef],
+  )
   const state = pageState(data)
+  const shown = narrowLevel(state, level)
   const server = data.list?.servers.find((s) => s.name === selection.server) ?? null
   const heads = pathHeads(selection, server, data.list?.servers.length ?? Object.keys(data.config ?? {}).length)
   const { item } = selection
   const copyFlash = useCopyFlash(item?.kind === 'function' ? item.functionId : '')
-  const level = selection.server === null ? 'servers' : 'contents'
+  // No add or import flow and no agent-access status yet: their buttons, commands and row stay hidden.
+  const onAdd = undefined as (() => void) | undefined
+  const onImport = undefined as (() => void) | undefined
+  const accessRow = null as { tone: Tone; text: string } | null
 
-  const onAction = (name: string, action: RowActionId) => {
-    setSelection({ server: name, item: { kind: 'connection' } })
-    if (action === 'retry' || action === 'restart') void api.reconnect(name).then(data.refresh, data.refresh)
+  const reconnect = useCallback(
+    (name: string) => void api.reconnect(name).then(data.refresh, data.refresh),
+    [api, data.refresh],
+  )
+  const pickServer = (next: Selection) => {
+    setSelection(next)
+    setLevel('contents')
   }
+  const pickItem = (next: Selection) => {
+    setSelection(next)
+    setLevel('detail')
+  }
+  const onAction = (name: string, action: RowActionId) => {
+    pickServer({ server: name, item: { kind: 'connection' } })
+    if (action === 'retry' || action === 'restart') reconnect(name)
+  }
+  const back = (to: Level, label: string) =>
+    narrow ? (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="mcp-ui-back"
+        aria-label={`Back to ${label}`}
+        onClick={() => setLevel(to)}
+      >
+        <ChevronLeft size={16} aria-hidden />
+        {label}
+      </Button>
+    ) : null
+
+  // Each server that became ready since the last read is said once.
+  const previousList = useRef<ServersList | null>(null)
+  useEffect(() => {
+    if (!data.list) return
+    const texts = announcements(previousList.current, data.list)
+    previousList.current = data.list
+    if (texts.length === 0) return
+    setAnnouncement((last) => ({ seq: (last?.seq ?? 0) + 1, text: texts.join('. '), urgency: 'polite' }))
+  }, [data.list])
+
+  // A narrow drill-in hides the column that held focus: focus moves into the one shown.
+  const lastShown = useRef(shown)
+  useEffect(() => {
+    if (lastShown.current === shown) return
+    lastShown.current = shown
+    if (narrow) focusColumn(root.current, COLUMN_OF[shown])
+  }, [shown, narrow])
+
+  useEffect(
+    () =>
+      commands?.register([
+        { id: 'add-server', title: 'Add MCP server', enabled: () => onAdd !== undefined, run: () => onAdd?.() },
+        {
+          id: 'import-config',
+          title: 'Import MCP config',
+          enabled: () => onImport !== undefined,
+          run: () => onImport?.(),
+        },
+        {
+          id: 'reconnect',
+          title: 'Reconnect server',
+          enabled: () => selection.server !== null,
+          run: () => {
+            if (selection.server !== null) reconnect(selection.server)
+          },
+        },
+        {
+          id: 'copy-id',
+          title: 'Copy function id',
+          enabled: () => selection.item?.kind === 'function',
+          run: copyFlash.copy,
+        },
+        {
+          id: 'review-access',
+          title: 'Review agent access',
+          enabled: () => accessRow !== null,
+          run: () => {
+            setSelection({ server: selection.server, item: { kind: 'access' } })
+            setLevel('detail')
+          },
+        },
+      ]),
+    [commands, selection, reconnect, copyFlash.copy, onAdd, onImport, accessRow],
+  )
   const retry = (
     <Button variant="secondary" size="sm" onClick={data.refresh}>
       Retry
@@ -77,9 +186,10 @@ export function McpServersPage({ host, panelSide, onRequestClose }: { host: Host
   return (
     <div
       className="mcp-ui-root"
-      ref={narrowRef}
+      ref={setRoot}
       data-narrow={narrow}
-      data-level={level}
+      data-level={shown}
+      data-side={panelSide}
       style={{ '--mcp-ui-col1': `${col1}px` } as CSSProperties}
     >
       <PageShell>
@@ -122,6 +232,7 @@ export function McpServersPage({ host, panelSide, onRequestClose }: { host: Host
           ) : (
             <>
               <PageSidebar
+                className="mcp-ui-col1"
                 label="Servers"
                 side={panelSide}
                 resizable
@@ -131,9 +242,16 @@ export function McpServersPage({ host, panelSide, onRequestClose }: { host: Host
                 onWidthChange={setCol1}
                 narrow={narrow}
               >
-                <ServerList data={data} selection={selection} onSelect={setSelection} onAction={onAction} />
+                <ServerList
+                  data={data}
+                  selection={selection}
+                  onSelect={pickServer}
+                  onAction={onAction}
+                  onAdd={onAdd}
+                  onImport={onImport}
+                />
               </PageSidebar>
-              <PageMain>
+              <PageMain className="mcp-ui-main">
                 {state === 'worker_down' ? (
                   <div className="mcp-ui-whole">
                     <StatusPanel
@@ -155,31 +273,50 @@ export function McpServersPage({ host, panelSide, onRequestClose }: { host: Host
                   <div className="mcp-ui-cols">
                     <div className="mcp-ui-col2">
                       {state === 'loading' ? (
-                        SKELETON_ROWS.map((n) => (
-                          <ListItem
-                            key={n}
-                            as="div"
-                            aria-hidden
-                            label={<Skeleton className="mcp-ui-skeleton-name" />}
-                            description={<Skeleton className="mcp-ui-skeleton-text" />}
-                          />
-                        ))
-                      ) : server ? (
-                        <List aria-label={`${server.name} contents`}>
-                          <ListItem
-                            label="Connection"
-                            selected={item?.kind === 'connection'}
-                            onClick={() => setSelection({ server: server.name, item: { kind: 'connection' } })}
-                          />
-                        </List>
-                      ) : null}
+                        <>
+                          <div className="mcp-ui-search" aria-hidden>
+                            <Skeleton className="mcp-ui-skeleton-search" />
+                          </div>
+                          <div className="mcp-ui-list" aria-hidden>
+                            {SKELETON_ROWS.map((n) => (
+                              <ListItem
+                                key={n}
+                                as="div"
+                                className="mcp-ui-fn"
+                                label={<Skeleton className="mcp-ui-skeleton-name" />}
+                                description={<Skeleton className="mcp-ui-skeleton-text" />}
+                              />
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {back('servers', 'MCP servers')}
+                          {server ? (
+                            <ServerContents
+                              key={server.name}
+                              server={server}
+                              functions={data.functions[server.name] ?? []}
+                              selection={selection}
+                              onSelect={pickItem}
+                              accessRow={accessRow}
+                              onRetryLists={() => reconnect(server.name)}
+                            />
+                          ) : null}
+                        </>
+                      )}
                     </div>
-                    <div className="mcp-ui-col3">
+                    <div className="mcp-ui-col3" data-column="3">
                       {state === 'loading' ? (
                         SKELETON_ROWS.map((n) => <Skeleton key={n} className="mcp-ui-skeleton-line" />)
-                      ) : server && (item?.kind === 'connection' || item?.kind === 'process') ? (
-                        <ServerFacts server={server} />
-                      ) : null}
+                      ) : (
+                        <>
+                          {selection.server ? back('contents', selection.server) : null}
+                          {server && (item?.kind === 'connection' || item?.kind === 'process') ? (
+                            <ServerFacts server={server} />
+                          ) : null}
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
@@ -187,7 +324,16 @@ export function McpServersPage({ host, panelSide, onRequestClose }: { host: Host
             </>
           )}
         </PageBody>
+        {data.list ? (
+          <StatusBar
+            className="mcp-ui-status"
+            end={narrow ? undefined : 'Arrow keys move between columns · Mod+Enter runs the test'}
+          >
+            {statusBarText(data.list)}
+          </StatusBar>
+        ) : null}
       </PageShell>
+      <LiveRegion announcement={announcement} />
     </div>
   )
 }

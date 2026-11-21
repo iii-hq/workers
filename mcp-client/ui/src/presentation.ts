@@ -1,4 +1,6 @@
-import type { AuthKind, Selection, Server, ServerState, ServersList, Stage } from './types'
+import { formatDuration } from '@iii-dev/console-ui/format'
+import { serverAccess } from './access'
+import type { AuthKind, EngineFunction, ProcessInfo, Selection, Server, ServerState, ServersList, Stage } from './types'
 import type { ServersData } from './use-servers'
 
 /** Server state to the words and tones of the page: the spec's "States and
@@ -224,4 +226,158 @@ export function pageState(data: ServersData): PageState {
   if (data.workerDown) return 'worker_down'
   if (data.list?.servers.length === 0) return 'first_run'
   return 'ready'
+}
+
+/** Names in code-unit order, the same in every locale: rows never reorder on a state change. */
+export const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+
+export const STATE_WORD: Record<ServerState, string> = {
+  ready: 'Ready',
+  connecting: 'Connecting',
+  needs_login: 'Needs sign-in',
+  auth_failed: 'Auth failed',
+  config_error: 'Config error',
+  unavailable: 'Unavailable',
+  unapproved: 'Review needed',
+  disabled: 'Off',
+}
+
+/** The pinned Connection row: transport, auth and protocol, each only when known. */
+export function connectionRowText(server: Server): string {
+  return [
+    server.transport === 'http' ? 'HTTP' : 'stdio',
+    AUTH_WORDS[server.auth],
+    server.protocol_version && `protocol ${server.protocol_version}`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+export function processRowText(process: ProcessInfo | null, now: number): string {
+  if (process?.pid == null) return 'not running'
+  const up = process.started_at == null ? null : `up ${formatDuration(now - process.started_at)}`
+  return ['running', `pid ${process.pid}`, up].filter(Boolean).join(' · ')
+}
+
+export interface FunctionRow {
+  functionId: string
+  group: 'tools' | 'resources' | 'prompts'
+  name: string
+  description: string
+  chip: 'Writes' | 'Destructive' | null
+}
+
+const GROUP_OF = { tool: 'tools', instructions: 'tools', resource: 'resources', prompt: 'prompts' } as const
+const CHIP = { read: null, write: 'Writes', destructive: 'Destructive' } as const
+
+/** Column 2's rows, from the classification of access.ts; the description is the engine's. */
+export function functionRows(server: Server, functions: EngineFunction[]): FunctionRow[] {
+  const described = new Map(functions.map((fn) => [fn.function_id, fn.description ?? '']))
+  const unregistered = new Set(
+    [...server.tools, ...server.resource_functions, ...server.prompts]
+      .filter((fn) => !fn.registered)
+      .map((fn) => fn.function_id),
+  )
+  // `instructions` heads the Tools group; the sort is stable, so the rest keep their order.
+  const access = serverAccess(server).sort(
+    (a, b) => Number(b.kind === 'instructions') - Number(a.kind === 'instructions'),
+  )
+  return access.map((fn) => ({
+    functionId: fn.functionId,
+    group: GROUP_OF[fn.kind],
+    name: fn.name,
+    description: unregistered.has(fn.functionId)
+      ? 'Not registered in the engine'
+      : (described.get(fn.functionId) ?? ''),
+    chip: CHIP[fn.cls],
+  }))
+}
+
+/** Rows whose name or description holds the query, case-insensitively, and the count for the search field. */
+export function filterRows(rows: FunctionRow[], query: string): { rows: FunctionRow[]; countText: string } {
+  const q = query.trim().toLowerCase()
+  if (!q) return { rows, countText: String(rows.length) }
+  const matches = rows.filter((row) => row.name.toLowerCase().includes(q) || row.description.toLowerCase().includes(q))
+  return { rows: matches, countText: `${matches.length} of ${rows.length}` }
+}
+
+export interface RowGroup {
+  id: FunctionRow['group']
+  label: string
+  /** Tools count tools only: the instructions row is listed but not counted. */
+  count: number
+  rows: FunctionRow[]
+  /** The quiet line of a group with nothing listed. */
+  empty: string | null
+  /** A list the worker could not read, in its own words. */
+  failed: { headline: string; detail: string } | null
+}
+
+const GROUPS = ['tools', 'resources', 'prompts'] as const
+const GROUP_LABEL = { tools: 'Tools', resources: 'Resources', prompts: 'Prompts' } as const
+
+/** Tools always shows; Resources and Prompts with their capability, a row or a failed list. While
+ * filtering, only groups with a match show. */
+export function rowGroups(server: Server, rows: FunctionRow[], query: string): RowGroup[] {
+  const filtering = query.trim() !== ''
+  const instructions = `mcp::${server.name}::instructions`
+  const failed = (headline: string, detail: string | null) => (detail === null ? null : { headline, detail })
+  const lists = {
+    tools: null,
+    resources: failed('Could not list resource templates', server.list_errors.templates),
+    prompts: failed('Could not list prompts', server.list_errors.prompts),
+  }
+  const advertised = { tools: true, resources: server.capabilities.resources, prompts: server.capabilities.prompts }
+  const empty = {
+    tools: server.tools_listed ? 'No tools. The server lists none.' : 'No tools. Not connected yet.',
+    resources: null,
+    prompts: lists.prompts ? null : 'No prompts',
+  }
+  return GROUPS.flatMap((id): RowGroup[] => {
+    const mine = rows.filter((row) => row.group === id)
+    if (mine.length === 0 && (filtering || !(advertised[id] || lists[id]))) return []
+    const count = mine.filter((row) => row.functionId !== instructions).length
+    return [
+      {
+        id,
+        label: GROUP_LABEL[id],
+        count,
+        rows: mine,
+        empty: !filtering && count === 0 ? empty[id] : null,
+        failed: lists[id],
+      },
+    ]
+  })
+}
+
+export type Level = 'servers' | 'contents' | 'detail'
+
+/** The one column a narrow page shows. A page-level state other than loading stands in for every
+ * column, so it shows in place of the server list. */
+export function narrowLevel(state: PageState, level: Level): Level {
+  return state === 'ready' || state === 'loading' ? level : 'contents'
+}
+
+/** The summary of the skipped names: `3 tools skipped`, or `3 skipped` once a prompt is among them. */
+export function skippedText(server: Server): string | null {
+  const { skipped } = server
+  if (skipped.length === 0) return null
+  if (skipped.some((s) => s.kind === 'prompt')) return `${skipped.length} skipped`
+  return `${count(skipped.length, 'tool', 'tools')} skipped`
+}
+
+/** `abc…hij`: the head and the tail of a long name, which is where names differ. */
+export function middleTruncate(text: string, max: number): string {
+  if (text.length <= max) return text
+  const keep = max - 1
+  return `${text.slice(0, Math.ceil(keep / 2))}…${text.slice(text.length - Math.floor(keep / 2))}`
+}
+
+/** One sentence per server that became ready since the previous read; nothing on the first read. */
+export function announcements(prev: ServersList | null, next: ServersList): string[] {
+  if (prev === null) return []
+  const wasReady = new Set(prev.servers.filter((s) => s.state === 'ready').map((s) => s.name))
+  return next.servers
+    .filter((s) => s.state === 'ready' && !wasReady.has(s.name))
+    .map((s) => `${s.name} connected, ${countLabel(s)}`)
 }

@@ -108,16 +108,104 @@
   min-height: 0;
   overflow-y: auto;
 }
-[data-iii-ui="mcp-client"] .mcp-ui-col2 {
-  gap: 4px;
-  padding: 8px;
-}
 [data-iii-ui="mcp-client"] .mcp-ui-col3 {
   gap: 12px;
   padding: 12px 24px;
   background: var(--color-panel-raised);
-  box-shadow: inset 1px 0 0 var(--color-edge);
 }
+/* ── column 2: the search field stays, the list under it scrolls ──── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-search-field {
+  flex: 1;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-count {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Rows of 44px: a 20px name over an 18px description line. */
+[data-iii-ui="mcp-client"] .mcp-ui-pin,
+[data-iii-ui="mcp-client"] .mcp-ui-fn {
+  flex: none;
+  height: 44px;
+  padding-block: 2px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-fn .iii-ui-list-item__title {
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-pin .iii-ui-list-item__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-group {
+  gap: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-group-count {
+  margin-left: 4px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-quiet {
+  margin: 0;
+  padding: 4px 12px 8px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-panel {
+  flex: none;
+  margin: 4px 0 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-skipped {
+  padding: 8px 12px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-skipped summary {
+  cursor: pointer;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-skipped ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+/* The name over its kind and reason, so a long reason never wraps beside the name. */
+[data-iii-ui="mcp-client"] .mcp-ui-skipped li {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-skipped code {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-back {
+  flex: none;
+  align-self: flex-start;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-col2 > .mcp-ui-back {
+  margin: 8px 8px 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-status {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 /* A page-level state stands in for columns 2 and 3, or for all three. */
 [data-iii-ui="mcp-client"] .mcp-ui-whole {
   flex: 1;
@@ -140,8 +228,50 @@
   width: 160px;
   height: 10px;
 }
+[data-iii-ui="mcp-client"] .mcp-ui-skeleton-search {
+  flex: 1;
+  height: 36px;
+}
 [data-iii-ui="mcp-client"] .mcp-ui-skeleton-line {
   display: block;
   width: 60%;
   height: 14px;
+}
+
+/* ── a right-side sidebar mirrors all three columns; the heads follow ── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="false"][data-side="right"] .mcp-ui-path {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 376px) var(--mcp-ui-col1);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="false"][data-side="right"] .mcp-ui-cols {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 376px);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="false"][data-side="right"] .mcp-ui-path-head:first-child,
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="false"][data-side="right"] .mcp-ui-col2 {
+  order: 2;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="false"][data-side="right"] .mcp-ui-path-head:nth-child(2) {
+  order: 1;
+}
+
+/* ── narrow: one column at a time, chosen by the drill-in level ─────── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"] .mcp-ui-path {
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, 1fr);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"] .mcp-ui-path-head {
+  padding: 0 4px 0 12px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"] .mcp-ui-cols {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"] .mcp-ui-row {
+  height: 44px;
+  padding-block: 2px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"][data-level="servers"] .mcp-ui-main,
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"]:not([data-level="servers"]) .mcp-ui-col1,
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"][data-level="contents"] .mcp-ui-col3,
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"][data-level="detail"] .mcp-ui-col2 {
+  display: none;
 }

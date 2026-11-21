@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { countLabel, pageState, pathHeads, presentServer, STAGES, statusBarText } from '../src/presentation'
-import type { Item, Server } from '../src/types'
+import {
+  announcements,
+  byName,
+  connectionRowText,
+  countLabel,
+  filterRows,
+  functionRows,
+  middleTruncate,
+  narrowLevel,
+  pageState,
+  pathHeads,
+  presentServer,
+  processRowText,
+  rowGroups,
+  STAGES,
+  STATE_WORD,
+  skippedText,
+  statusBarText,
+} from '../src/presentation'
+import type { EngineFunction, Item, Server, Skipped } from '../src/types'
 import type { ServersData } from '../src/use-servers'
 import { docs, list, NOW, server, stdio } from './fixtures/servers'
 
@@ -221,5 +239,133 @@ describe('pageState', () => {
     expect(pageState(data({ workerDown: true, list: null }))).toBe('worker_down')
     expect(pageState(data({ list: list([]), config: {} }))).toBe('first_run')
     expect(pageState(data({}))).toBe('ready')
+  })
+})
+
+describe('byName', () => {
+  it('sorts by code unit, the same in every locale', () => {
+    expect(['linear_x', 'linear-me', 'Zeta', 'alpha'].sort(byName)).toEqual(['Zeta', 'alpha', 'linear-me', 'linear_x'])
+    expect([byName('a', 'b'), byName('b', 'a'), byName('a', 'a')]).toEqual([-1, 1, 0])
+  })
+})
+
+describe('column 2', () => {
+  const fns: EngineFunction[] = [
+    { function_id: 'mcp::linear::list_issues', description: 'List issues in the workspace' },
+  ]
+  const tool = (name: string): Skipped => ({ kind: 'tool', name, reason: 'name has a character outside [A-Za-z0-9_-]' })
+
+  it('builds rows in three groups, tools first', () => {
+    expect(functionRows(server(), fns)).toEqual([
+      {
+        functionId: 'mcp::linear::list_issues',
+        group: 'tools',
+        name: 'list_issues',
+        description: 'List issues in the workspace',
+        chip: null,
+      },
+      { functionId: 'mcp::linear::save_issue', group: 'tools', name: 'save_issue', description: '', chip: 'Writes' },
+    ])
+    expect(functionRows(docs(), []).map((r) => [r.group, r.name, r.chip])).toEqual([
+      ['tools', 'instructions', null],
+      ['tools', 'search', 'Destructive'],
+      ['resources', 'resources::list', null],
+      ['resources', 'resources::read', null],
+      ['resources', 'resources::templates', null],
+      ['prompts', 'code_review', null],
+    ])
+  })
+
+  it('says when the engine does not hold a function', () => {
+    const [first, second] = server().tools
+    const s = server({ tools: [{ ...first, registered: false }, second] })
+    expect(functionRows(s, fns)[0].description).toBe('Not registered in the engine')
+  })
+
+  it('filters all groups and counts the matches', () => {
+    const rows = functionRows(server(), fns)
+    expect(filterRows(rows, '')).toEqual({ rows, countText: '2' })
+    expect(filterRows(rows, '  SAVE ')).toEqual({ rows: [rows[1]], countText: '1 of 2' })
+    // the description matches too
+    expect(filterRows(rows, 'workspace').rows).toEqual([rows[0]])
+    expect(filterRows(rows, 'zzz')).toEqual({ rows: [], countText: '0 of 2' })
+  })
+
+  it('counts skipped names', () => {
+    expect(skippedText(server())).toBeNull()
+    expect(skippedText(server({ skipped: [tool('a.b')] }))).toBe('1 tool skipped')
+    expect(skippedText(server({ skipped: [tool('a.b'), tool('c d'), tool('e/f')] }))).toBe('3 tools skipped')
+    expect(
+      skippedText(server({ skipped: [tool('a.b'), tool('c d'), { kind: 'prompt', name: 'bad.name', reason: 'x' }] })),
+    ).toBe('3 skipped')
+  })
+
+  it('truncates in the middle', () => {
+    expect(middleTruncate('abcdefghij', 7)).toBe('abc…hij')
+    expect(middleTruncate('abcdefghij', 6)).toBe('abc…ij')
+    expect(middleTruncate('abc', 7)).toBe('abc')
+  })
+
+  it('words the pinned rows', () => {
+    expect(STATE_WORD).toEqual({
+      ready: 'Ready',
+      connecting: 'Connecting',
+      needs_login: 'Needs sign-in',
+      auth_failed: 'Auth failed',
+      config_error: 'Config error',
+      unavailable: 'Unavailable',
+      unapproved: 'Review needed',
+      disabled: 'Off',
+    })
+    expect(connectionRowText(server())).toBe('HTTP · API key · protocol 2025-11-25')
+    expect(connectionRowText(stdio({ protocol_version: null }))).toBe('stdio')
+    const proc = stdio().process
+    expect(processRowText(proc, NOW)).toBe('running · pid 48213 · up 2h 14m')
+    expect(processRowText(proc && { ...proc, pid: null, started_at: null }, NOW)).toBe('not running')
+    expect(processRowText(null, NOW)).toBe('not running')
+  })
+
+  it('announces a server that becomes ready, once', () => {
+    expect(announcements(list([server({ state: 'connecting' })]), list([server()]))).toEqual([
+      'linear connected, 2 tools',
+    ])
+    expect(announcements(null, list([server()]))).toEqual([])
+    expect(announcements(list([server()]), list([server()]))).toEqual([])
+  })
+
+  it('groups the rows: Tools always, the others with their capability, only matches while filtering', () => {
+    const shape = (s: Server, query = '', rows = filterRows(functionRows(s, []), query).rows) =>
+      rowGroups(s, rows, query).map((g) => [g.label, g.count, g.rows.length, g.empty, g.failed?.headline ?? null])
+    // the instructions row is listed under Tools but not counted as a tool
+    expect(shape(docs())).toEqual([
+      ['Tools', 1, 2, null, null],
+      ['Resources', 3, 3, null, null],
+      ['Prompts', 1, 1, null, null],
+    ])
+    expect(shape(server({ tools: [], tools_listed: false }))).toEqual([
+      ['Tools', 0, 0, 'No tools. Not connected yet.', null],
+    ])
+    expect(shape(server({ tools: [] }))).toEqual([['Tools', 0, 0, 'No tools. The server lists none.', null]])
+    const prompts = { resources: false, prompts: true }
+    expect(shape(server({ capabilities: prompts }))).toEqual([
+      ['Tools', 2, 2, null, null],
+      ['Prompts', 0, 0, 'No prompts', null],
+    ])
+    const failed = server({ capabilities: prompts, list_errors: { prompts: 'timed out', templates: 'boom' } })
+    expect(shape(failed)).toEqual([
+      ['Tools', 2, 2, null, null],
+      ['Resources', 0, 0, null, 'Could not list resource templates'],
+      ['Prompts', 0, 0, null, 'Could not list prompts'],
+    ])
+    expect(rowGroups(failed, [], '')[2].failed).toEqual({ headline: 'Could not list prompts', detail: 'timed out' })
+    expect(shape(docs(), ' code ')).toEqual([['Prompts', 1, 1, null, null]])
+  })
+
+  it('shows a page-level state in place of the server list when narrow', () => {
+    expect(narrowLevel('ready', 'detail')).toBe('detail')
+    expect(narrowLevel('loading', 'servers')).toBe('servers')
+    expect(narrowLevel('first_run', 'servers')).toBe('contents')
+    expect(narrowLevel('worker_down', 'servers')).toBe('contents')
+    expect(narrowLevel('config_down', 'servers')).toBe('contents')
   })
 })
