@@ -61,7 +61,8 @@ function promptIcon(
 /*
  * Both screens here are a choice, made in two moves: pick one of the
  * options, then confirm it with the footer's button, which names what it
- * will do; with nothing picked it is Close setup, and closes setup. The
+ * will do. Explore on my own starts out picked, so the button closes setup
+ * into a chat until another option is picked. The
  * options are a single-choice group (radio semantics), so arrow keys move
  * the pick and Space or a click sets it. Drawn as checkboxes, like every
  * choice list in the ADE (single choice ticks one): the picked one carries
@@ -176,6 +177,11 @@ function usePickGroup<K extends string>(
   onPick: (key: K) => void,
   /** The rows are on screen; when they come back, they arrive again. */
   active = true,
+  /**
+   * Whether arriving moves the focus into the rows. Off while the pick is a
+   * default, so setup's primary button keeps the focus and Enter takes it.
+   */
+  claimFocus = true,
 ) {
   const buttons = useRef(new Map<K, HTMLButtonElement>())
   const register = useCallback(
@@ -222,6 +228,10 @@ function usePickGroup<K extends string>(
       arrived.current = false
       return
     }
+    if (!arrived.current && !claimFocus) {
+      arrived.current = true
+      return
+    }
     // On arrival the picked row, else the group (found from the first
     // row); after that only the first row, when it opens late and the
     // focus is still on a row.
@@ -256,7 +266,7 @@ function usePickGroup<K extends string>(
       cancelAnimationFrame(outer)
       cancelAnimationFrame(inner)
     }
-  }, [picked, first, active])
+  }, [picked, first, active, claimFocus])
   return { register, onKeyDown, tabbable }
 }
 
@@ -384,7 +394,7 @@ export function ExploreStep({
   onOwn: () => void
   /** Close the wizard: Close setup, with nothing picked. */
   onFinish: () => void
-  /** Back to Ready. */
+  /** Back to the last setup step. */
   onBack: () => void
 }) {
   const [examples, setExamples] = useState(false)
@@ -404,9 +414,19 @@ export function ExploreStep({
   // A pick that has since gone out of reach (the model left, the examples
   // emptied) counts as no pick: the button goes back to Close setup. While
   // the tour gets ready its row stays ticked and every row holds still.
-  const choice = picked !== null && available[picked] ? picked : null
+  // Until something is picked, exploring alone is: the primary button gets
+  // the focus, so Enter from the last setup step closes setup into a chat.
+  const wanted = picked ?? 'own'
+  const choice = available[wanted] ? wanted : null
   const can = (id: ChoiceId) => available[id] && !preparing
-  const group = usePickGroup(CHOICES, can, choice, setPicked, !examples)
+  const group = usePickGroup(
+    CHOICES,
+    can,
+    choice,
+    setPicked,
+    !examples,
+    picked !== null || choice === null,
+  )
 
   if (examples) {
     const chosen = prompt !== null ? prompts?.[prompt] : undefined

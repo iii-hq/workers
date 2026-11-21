@@ -31,12 +31,9 @@ import {
   readableError,
   saveOnboardingState,
 } from '@/lib/onboarding/api'
-import type { JudgeOption } from '@/lib/onboarding/catalog'
 import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
-  type KitInstall,
   onboardingKitsSnapshot,
-  retryOnboardingKit,
   startOnboardingKits,
   subscribeOnboardingKits,
 } from '@/lib/onboarding/kits'
@@ -59,16 +56,13 @@ import {
   type SetupStepProperties,
 } from '@/lib/onboarding/telemetry'
 import { openTour, prepareTour } from '@/lib/onboarding/tour'
-import { requestPanelOpen } from '@/lib/panel-context'
 import { setupCompleted } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import { BrowserStep } from './BrowserStep'
 import { ExploreStep, type TourState } from './ExploreStep'
 import { startExamplePrompt } from './example-prompt'
-import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
 import type { StepPosition } from './parts'
-import { ReadyStep } from './ReadyStep'
 import { Stepper, type StepperStep } from './Stepper'
 import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
@@ -83,13 +77,6 @@ const STEPS: readonly StepperStep[] = [
     description: 'Chromium for agents',
     optional: true,
   },
-  {
-    id: 'judge',
-    title: 'Judge',
-    description: 'Small decision models',
-    optional: true,
-  },
-  { id: 'ready', title: 'Ready', description: 'What setup connected' },
   { id: 'explore', title: 'Explore iii', description: 'Where to start' },
 ]
 
@@ -99,8 +86,7 @@ export function stepPosition(
   id: WizardStepId,
 ): StepPosition | undefined {
   const setup = steps.filter(
-    (entry) =>
-      entry.id !== 'welcome' && entry.id !== 'ready' && entry.id !== 'explore',
+    (entry) => entry.id !== 'welcome' && entry.id !== 'explore',
   )
   const index = setup.findIndex((entry) => entry.id === id)
   return index < 0 ? undefined : { index: index + 1, total: setup.length }
@@ -119,12 +105,12 @@ export function stepPosition(
  * workspace layout in the ADE's data directory, so it never reopens on its
  * own after either.
  *
- * Ready shows what setup connected. Explore iii, after it, offers three
- * ways in: the example prompts the project's template declares
- * (`onboarding.yaml`, read through `ade::onboarding::prompts`; a click
- * opens a new chat that sends the prompt, its agent profile and model chosen
- * — see `openExamplePrompt`), the learn-iii tour (its worker added when it
- * is not running yet), or closing setup to explore alone.
+ * Explore iii, after the last setup step, offers three ways in: the example
+ * prompts the project's template declares (`onboarding.yaml`, read through
+ * `ade::onboarding::prompts`; a click opens a new chat that sends the
+ * prompt, its agent profile and model chosen — see `openExamplePrompt`), the
+ * learn-iii tour (its worker added when it is not running yet), or closing
+ * setup to explore alone.
  */
 export function OnboardingWizardHost() {
   const reduceMotion = useReducedMotion()
@@ -135,7 +121,6 @@ export function OnboardingWizardHost() {
   const [visited, setVisited] = useState<ReadonlySet<WizardStepId>>(
     () => new Set(['welcome']),
   )
-  const [judges, setJudges] = useState<JudgeOption[]>([])
   const [prompts, setPrompts] = useState<ExamplePrompt[] | null>(null)
   const [agents, setAgents] = useState<AgentEntry[] | null>(null)
   const ctxRef = useRef(ctx)
@@ -204,7 +189,10 @@ export function OnboardingWizardHost() {
   useEffect(
     () =>
       onOnboardingWizardRequest((target) => {
-        const next = target ?? 'welcome'
+        // Someone who finished setup has read the welcome: reopening goes
+        // straight to Models.
+        const next =
+          target ?? (status.current === 'completed' ? 'models' : 'welcome')
         if (next === 'browser') setBrowserListed(true)
         setStep(next)
         setVisited((current) => new Set([...current, next]))
@@ -271,15 +259,6 @@ export function OnboardingWizardHost() {
                 ? 'already_installed'
                 : 'skipped',
         }
-      case 'judge':
-        return {
-          outcome: did('judge', 'done')
-            ? 'set_up'
-            : judges.length > 0
-              ? 'continued'
-              : 'skipped',
-          judges: judges.map((option) => option.id),
-        }
       default:
         return {}
     }
@@ -289,19 +268,8 @@ export function OnboardingWizardHost() {
     const previous = lastStep.current
     lastStep.current = step
     const order = stepIds.split(',')
-    // Ready is announced as it shows, so leaving it for Explore is not.
-    if (
-      previous !== step &&
-      previous !== 'ready' &&
-      order.indexOf(step) > order.indexOf(previous)
-    ) {
+    if (previous !== step && order.indexOf(step) > order.indexOf(previous)) {
       reportRef.current(previous as SetupStepId, outcomeRef.current(previous))
-      if (step === 'ready') {
-        reportRef.current('ready', {
-          providers: outcomeRef.current('models').providers ?? [],
-          judges: outcomeRef.current('judge').judges ?? [],
-        })
-      }
     }
     stepStartedAt.current = Date.now()
   }, [step, stepIds])
@@ -323,53 +291,49 @@ export function OnboardingWizardHost() {
   // without the dialog (see `useOnboarding`).
   const close = useCallback(() => {
     setOpen(false)
-    if (step === 'ready' || step === 'explore') return
+    if (step === 'explore') return
     report('closed', { at_step: step })
     record('dismissed')
   }, [record, report, step])
 
-  const finishTo = useCallback(
-    (judgeChoices: JudgeOption[]) => {
-      setJudges(judgeChoices)
-      go('ready')
-      const providers = (onboarding.snapshot.providers ?? [])
-        .filter(servesUsableModels)
-        .map((provider) => ({
-          id: provider.id,
-          models: provider.modelCount,
-          credential_ref: provider.credentialRef,
-        }))
-      const workers = [
-        ...new Set(
-          onboarding.activity
-            .filter((entry) => entry.status === 'done')
-            .flatMap((entry) => entry.workers ?? []),
-        ),
-      ]
-      const chromiumInstalled = onboarding.activity.some(
-        (entry) => entry.group === 'browser' && entry.status === 'done',
-      )
-      setupCompleted()
-      record('completed', {
-        providers,
-        judge: judgeChoices[0]?.id ?? null,
-        judges: judgeChoices.map((option) => option.id),
-        workers_added: workers,
-        kits: kits.map(({ kit, state }) => ({ kit, state })),
-        chromium_installed: chromiumInstalled
-          ? (onboarding.snapshot.browser?.version ?? true)
-          : false,
-      })
-    },
-    [
-      go,
-      kits,
-      onboarding.activity,
-      onboarding.snapshot.browser,
-      onboarding.snapshot.providers,
-      record,
-    ],
-  )
+  // The last setup step hands over to Explore iii, and setup is recorded as
+  // finished there.
+  const finishSetup = useCallback(() => {
+    go('explore')
+    const providers = (onboarding.snapshot.providers ?? [])
+      .filter(servesUsableModels)
+      .map((provider) => ({
+        id: provider.id,
+        models: provider.modelCount,
+        credential_ref: provider.credentialRef,
+      }))
+    const workers = [
+      ...new Set(
+        onboarding.activity
+          .filter((entry) => entry.status === 'done')
+          .flatMap((entry) => entry.workers ?? []),
+      ),
+    ]
+    const chromiumInstalled = onboarding.activity.some(
+      (entry) => entry.group === 'browser' && entry.status === 'done',
+    )
+    setupCompleted()
+    record('completed', {
+      providers,
+      workers_added: workers,
+      kits: kits.map(({ kit, state }) => ({ kit, state })),
+      chromium_installed: chromiumInstalled
+        ? (onboarding.snapshot.browser?.version ?? true)
+        : false,
+    })
+  }, [
+    go,
+    kits,
+    onboarding.activity,
+    onboarding.snapshot.browser,
+    onboarding.snapshot.providers,
+    record,
+  ])
 
   const start = useCallback(
     (choice: FinishChoice) => {
@@ -449,19 +413,6 @@ export function OnboardingWizardHost() {
     openTour()
   }, [])
 
-  // A kit whose plan needs review opens that plan in Directory → Kits (the
-  // kit's own page exists only once it is installed).
-  const reviewKit = useCallback((install: KitInstall) => {
-    setOpen(false)
-    requestPanelOpen({
-      pageId: 'directory',
-      context: {
-        collection: 'kits',
-        ...(install.planId ? { plan_id: install.planId } : {}),
-      },
-    })
-  }, [])
-
   const content = useRef<HTMLDivElement>(null)
   // A new step moves the caret to its primary action, so the keyboard path
   // through setup is Enter, Enter, Enter.
@@ -474,9 +425,47 @@ export function OnboardingWizardHost() {
     return () => window.cancelAnimationFrame(frame)
   }, [open, step])
 
-  // Finished steps stay a click away throughout, Ready and Explore iii
-  // included: setup is recorded on reaching Ready, and going back after
-  // that only re-records it on the way forward, as Ready's own Back does.
+  // Enter with the focus on nothing in particular (the body, the dialog,
+  // plain text) takes the step's primary action. A button that had the focus
+  // and was then disabled or removed (Connect while it runs) leaves the focus
+  // there, and Enter must still move setup on. Controls keep their own Enter.
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key !== 'Enter' ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return
+      }
+      const target = event.target instanceof Element ? event.target : null
+      const popup = popupRef.current
+      if (!popup) return
+      if (target && target !== document.body && !popup.contains(target)) return
+      if (
+        target?.closest(
+          'input, textarea, select, button, a[href], [role="radio"], [role="checkbox"], [role="option"], [contenteditable="true"]',
+        )
+      ) {
+        return
+      }
+      const primary = primaryAction(content.current)
+      if (!primary) return
+      event.preventDefault()
+      primary.click()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
+  // Finished steps stay a click away throughout, Explore iii included: setup
+  // is recorded on reaching Explore, and going back after that only
+  // re-records it on the way forward.
   const reachable = new Set<WizardStepId>(busy ? [] : visited)
 
   return (
@@ -558,30 +547,14 @@ export function OnboardingWizardHost() {
                   <ModelsStep
                     onboarding={onboarding}
                     onBack={() => go('welcome')}
-                    onNext={() => go(showBrowser ? 'browser' : 'judge')}
+                    onNext={() => (showBrowser ? go('browser') : finishSetup())}
                   />
                 ) : step === 'browser' ? (
                   <BrowserStep
                     onboarding={onboarding}
                     position={stepPosition(steps, 'browser')}
                     onBack={() => go('models')}
-                    onNext={() => go('judge')}
-                  />
-                ) : step === 'judge' ? (
-                  <JudgeStep
-                    onboarding={onboarding}
-                    onBack={() => go(showBrowser ? 'browser' : 'models')}
-                    onNext={finishTo}
-                  />
-                ) : step === 'ready' ? (
-                  <ReadyStep
-                    onboarding={onboarding}
-                    judges={judges}
-                    onNext={() => go('explore')}
-                    onBack={() => go('judge')}
-                    kits={kits}
-                    onRetryKit={(kit) => void retryOnboardingKit(kit)}
-                    onReviewKit={reviewKit}
+                    onNext={finishSetup}
                   />
                 ) : (
                   <ExploreStep
@@ -596,7 +569,7 @@ export function OnboardingWizardHost() {
                     onTour={() => void startTour()}
                     onOwn={() => start({ kind: 'own' })}
                     onFinish={() => start({ kind: 'finish' })}
-                    onBack={() => go('ready')}
+                    onBack={() => go(showBrowser ? 'browser' : 'models')}
                   />
                 )}
               </m.div>
