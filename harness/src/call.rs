@@ -862,13 +862,31 @@ pub(crate) fn normalized_result(value: Value) -> ResultData {
     }
 }
 
+/// What a stream channel handle's `access_key` becomes in a captured result.
+const WITHHELD_ACCESS_KEY: &str = "<withheld: a turn cannot read a stream channel. For a file's \
+     text call coder::read-file, or in a sandbox cat it with sandbox::exec>";
+
 /// Bound a captured function result BEFORE it is written to the session or
-/// echoed to the provider: past `max_bytes` (0 disables) `content` + `details`
-/// are replaced by an elision marker, `is_error` kept. Applied once at the
-/// exit of `observe::invoke` and on the `function::resolve` deliver path.
-/// An oversized frame resets the engine connection and the SDK re-flushes it
-/// forever, wedging the worker (MOT-4498).
-pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
+/// echoed to the provider. The `access_key` of every stream channel handle
+/// object in it is withheld first: a secret the model cannot use, and a model
+/// took the handle of `shell::fs::read` for the file's text (MOT-5827). Then past
+/// `max_bytes` (0 disables) `content` + `details` are replaced by an elision
+/// marker, `is_error` kept. Applied once at the exit of `observe::invoke` and
+/// on the `function::resolve` deliver path. An oversized frame resets the
+/// engine connection and the SDK re-flushes it forever, wedging the worker
+/// (MOT-4498).
+pub(crate) fn cap_result(mut result: ResultData, max_bytes: usize) -> ResultData {
+    withhold_stream_handles(&mut result.details);
+    for block in &mut result.content {
+        // `normalize` renders a result without content blocks as JSON text.
+        if let ContentBlock::Text { text } = block
+            && text.contains("access_key")
+            && let Ok(mut value) = serde_json::from_str::<Value>(text)
+            && withhold_stream_handles(&mut value)
+        {
+            *text = value.to_string();
+        }
+    }
     if max_bytes == 0 {
         return result;
     }
@@ -887,6 +905,31 @@ pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
         content: vec![ContentBlock::text(marker)],
         is_error: result.is_error,
         details: json!({ "result_capped": { "original_bytes": total, "max_bytes": max_bytes } }),
+    }
+}
+
+/// Set the `access_key` of each stream channel handle (an object with string
+/// `channel_id` and `access_key`, as `StreamChannelRef`) in `value` to
+/// [`WITHHELD_ACCESS_KEY`], keeping the handle's shape for the UIs that render
+/// it. Whether it withheld any.
+/// shortcut: a handle serialized inside a string (fp::pipe's `value_preview`)
+/// is not seen; withhold it where that string is made if one shows up.
+fn withhold_stream_handles(value: &mut Value) -> bool {
+    if value.get("channel_id").is_some_and(Value::is_string)
+        && let Some(key) = value.get_mut("access_key")
+        && key.is_string()
+    {
+        *key = json!(WITHHELD_ACCESS_KEY);
+        return true;
+    }
+    match value {
+        Value::Object(map) => map
+            .values_mut()
+            .fold(false, |any, v| withhold_stream_handles(v) | any),
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |any, v| withhold_stream_handles(v) | any),
+        _ => false,
     }
 }
 
@@ -1475,6 +1518,35 @@ mod tests {
             .len();
         assert!(bytes <= 1024, "replacement must fit the floor, was {bytes}");
         assert_eq!(capped.details["result_capped"]["max_bytes"], 1024);
+    }
+
+    #[test]
+    fn cap_result_withholds_stream_handles() {
+        let handle = json!({ "channel_id": "c1", "access_key": "secret-key", "direction": "read" });
+        // A `shell::fs::read` return, and a nested pair a resolver could deliver.
+        let read = cap_result(
+            normalized_result(json!({ "content": handle, "size": 16 })),
+            262_144,
+        );
+        let delivered = cap_result(
+            ResultData {
+                content: vec![ContentBlock::text(
+                    json!({ "writer": handle, "reader": handle }).to_string(),
+                )],
+                is_error: false,
+                details: json!([{ "reader": handle }]),
+            },
+            0,
+        );
+        for result in [read, delivered] {
+            let wire = serde_json::to_string(&(&result.content, &result.details)).unwrap();
+            assert!(!wire.contains("secret-key"), "{wire}");
+            assert!(wire.contains("coder::read-file"), "{wire}");
+        }
+        // The UIs still parse it as a handle.
+        let read = cap_result(normalized_result(json!({ "content": handle })), 0);
+        assert_eq!(read.details["content"]["channel_id"], "c1");
+        assert_eq!(read.details["content"]["direction"], "read");
     }
 
     fn pol(allow: &[&str]) -> CompiledPolicy {
