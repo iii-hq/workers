@@ -360,11 +360,15 @@ struct Process {
 }
 
 /// The stderr reader of one child; aborted when dropped.
-struct Reader(JoinHandle<()>);
+struct Reader {
+    task: JoinHandle<()>,
+    /// The ring's push count when the child started: older lines are not its.
+    from: u64,
+}
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        self.0.abort();
+        self.task.abort();
     }
 }
 
@@ -878,11 +882,12 @@ impl Server {
         stopped
     }
 
-    /// `head`, then the last stderr line once the reader reached EOF, or
-    /// after 500 ms: a grandchild may hold the pipe open.
+    /// `head`, then the child's last stderr line once the reader reached
+    /// EOF, or after 500 ms: a grandchild may hold the pipe open.
     async fn with_stderr(&self, head: String, reader: &mut Reader) -> String {
-        let _ = timeout(Duration::from_millis(500), &mut reader.0).await;
-        match self.ring.lock().unwrap().last() {
+        let _ = timeout(Duration::from_millis(500), &mut reader.task).await;
+        let ring = self.ring.lock().unwrap();
+        match ring.last().filter(|_| ring.pushed() > reader.from) {
             Some(line) => format!("{head}: {line}"),
             None => head,
         }
@@ -1036,7 +1041,7 @@ impl Server {
             }
         };
         self.secrets.set_resolved(resolved.secrets());
-        let (session, process) = match &entry.transport {
+        let (session, mut process) = match &entry.transport {
             Transport::Http(http) => (self.open_http(entry, http, &resolved).await?, None),
             Transport::Stdio(stdio) => {
                 let (session, process) = self.open_stdio(stdio, &resolved).await?;
@@ -1063,12 +1068,17 @@ impl Server {
         let tools = match listed {
             Ok(tools) => tools,
             Err(message) => {
-                self.fail(
-                    State::Unavailable,
-                    Stage::Tools,
-                    ErrorCode::ListFailed,
-                    message,
-                );
+                let mut error = (Stage::Tools, ErrorCode::ListFailed, message);
+                // A child that died during the listing is `exited` with its code;
+                // asked before the session closes stdin, which would end it.
+                if let Some(p) = &mut process
+                    && let Ok(exit) = timeout(Duration::from_millis(500), p.child.wait()).await
+                {
+                    let message = self.with_stderr(exit_text(&exit), &mut p.reader).await;
+                    error = (Stage::Connect, ErrorCode::Exited, message);
+                }
+                let (stage, code, message) = error;
+                self.fail(State::Unavailable, stage, code, message);
                 self.close(session).await;
                 if let Some(process) = process {
                     process.child.stop(self.timings.stop_grace).await;
@@ -1197,9 +1207,13 @@ impl Server {
             }
         };
         let mut child = spawned.child;
+        let from = self.ring.lock().unwrap().pushed();
         let ring = self.ring.clone();
         let read = stdio::read_stderr(spawned.stderr, ring, resolved.secrets());
-        let mut reader = Reader(tokio::spawn(read));
+        let mut reader = Reader {
+            task: tokio::spawn(read),
+            from,
+        };
         let limit = self.timings.stdio_start;
         let handshake = self.notifier().serve((spawned.stdout, spawned.stdin));
         let (exit, failure) = tokio::select! {

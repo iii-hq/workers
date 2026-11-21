@@ -14,6 +14,7 @@ use mcp_client::server::{Manager, ManagerOptions, State, Timings};
 use serde_json::{Value, json};
 use support::stdio_fixture::{BIN, cfg, opts};
 use support::{FakeHost, RegOp, WAIT, connect_opts, server, stdio_timings, until};
+use tokio::time::timeout;
 
 /// Backoff of 5 s, so a test can look at `unavailable` before the restart.
 fn held() -> Timings {
@@ -184,6 +185,30 @@ async fn it_restarts_after_an_exit() {
 }
 
 #[tokio::test]
+async fn a_tail_comes_only_from_the_process_that_printed_it() {
+    let host = FakeHost::new();
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("knobs");
+    std::fs::write(&state, "FAKE_MCP_STDERR_BANNER=from the first process\n").unwrap();
+    let m = ready(&host, json!({"FAKE_MCP_STATE_FILE": state})).await;
+    // Every later start prints nothing and exits at once.
+    std::fs::write(&state, "FAKE_MCP_EXIT_AFTER_MS=0\nFAKE_MCP_EXIT_CODE=7\n").unwrap();
+    let exit = host.call("mcp::fake::exit", json!({"code": 3})).await;
+    assert!(exit.is_err(), "{exit:?}");
+    let message = async || server(&m, "fake").await["error"]["message"].clone();
+    let restarted = until(Duration::from_secs(5), || async {
+        message()
+            .await
+            .as_str()
+            .is_some_and(|t| t.contains("code 7"))
+    })
+    .await;
+    assert!(restarted, "{}", server(&m, "fake").await);
+    assert_eq!(message().await, "exited with code 7");
+    m.shutdown().await;
+}
+
+#[tokio::test]
 async fn no_handshake_is_handshake_failed_with_the_stderr_tail() {
     let host = FakeHost::new();
     let timings = Timings {
@@ -286,10 +311,17 @@ async fn removal_and_shutdown_stop_the_process() {
     let a = pid_of(&host, "mcp::a::env", "FAKE_MCP_PID").await;
     let b = pid_of(&host, "mcp::b::env", "FAKE_MCP_PID").await;
     let only_b = json!({"mcpServers": {"b": {"command": BIN}}});
-    m.apply_config(RawConfig::from_value(&only_b)).await;
+    // stop_grace plus one second: a stuck stop fails here instead of hanging.
+    let bound = stdio_timings().stop_grace + Duration::from_secs(1);
+    let removal = m.apply_config(RawConfig::from_value(&only_b));
+    timeout(bound, removal)
+        .await
+        .expect("the removal stopped in time");
     assert!(until(Duration::from_millis(1500), || async { !alive(a) }).await);
     assert!(alive(b));
-    m.shutdown().await;
+    timeout(bound, m.shutdown())
+        .await
+        .expect("the shutdown stopped in time");
     assert!(until(Duration::from_millis(1500), || async { !alive(b) }).await);
 }
 

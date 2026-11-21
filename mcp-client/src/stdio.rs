@@ -15,7 +15,7 @@ use process_wrap::tokio::ProcessGroup;
 use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use schemars::JsonSchema;
 use serde::Serialize;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tokio::time::{Instant, timeout};
 
@@ -191,17 +191,29 @@ impl Drop for ChildGuard {
     }
 }
 
-/// Feeds the ring with the child's stderr until EOF. A line is read up to a
-/// bound, so a child that never writes a newline cannot grow the buffer.
-pub async fn read_stderr(stderr: ChildStderr, ring: Arc<Mutex<StderrRing>>, secrets: Vec<String>) {
+/// Feeds the ring with the child's stderr until EOF. A line is read in
+/// chunks of at most `READ_BOUND`, so one without a newline cannot grow the
+/// buffer. A longer line keeps only its first chunk: the ring keeps 4 KiB of
+/// it anyway, and a later chunk pushed on its own could start with the tail
+/// of a secret that no longer matches.
+pub async fn read_stderr(
+    stderr: impl AsyncRead + Unpin,
+    ring: Arc<Mutex<StderrRing>>,
+    secrets: Vec<String>,
+) {
     let mut reader = BufReader::new(stderr);
     let mut buf = Vec::new();
+    // Set while the line being read is longer than the chunk already pushed.
+    let mut rest_of_line = false;
     loop {
         buf.clear();
-        let bound = 16 * LINE_BYTES as u64;
-        match (&mut reader).take(bound).read_until(b'\n', &mut buf).await {
+        let mut chunk = (&mut reader).take(READ_BOUND as u64);
+        match chunk.read_until(b'\n', &mut buf).await {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
+        }
+        if std::mem::replace(&mut rest_of_line, !buf.ends_with(b"\n")) {
+            continue;
         }
         // Lossy: one invalid byte must not end the reader.
         let line = String::from_utf8_lossy(&buf);
@@ -213,6 +225,7 @@ pub async fn read_stderr(stderr: ChildStderr, ring: Arc<Mutex<StderrRing>>, secr
 
 const RING_LINES: usize = 500;
 const LINE_BYTES: usize = 4096;
+const READ_BOUND: usize = 16 * LINE_BYTES;
 
 /// One stderr line, already redacted when stored.
 #[derive(Debug, Serialize, JsonSchema, Clone)]
@@ -257,6 +270,11 @@ impl StderrRing {
 
     pub fn last(&self) -> Option<String> {
         self.lines.back().map(|l| l.text.clone())
+    }
+
+    /// Every line ever pushed, the dropped ones included.
+    pub fn pushed(&self) -> u64 {
+        self.dropped + self.lines.len() as u64
     }
 }
 
@@ -398,6 +416,31 @@ mod tests {
         assert!(!last.contains("s3cr3t"));
         assert!(last.len() <= 4096);
         assert!(last.ends_with("[redac"));
+    }
+
+    #[tokio::test]
+    async fn a_line_over_the_read_bound_is_one_entry_and_its_rest_is_dropped() {
+        let secret = "s3cr3t-straddles-the-read-bound";
+        let mut input = "a".repeat(READ_BOUND - 10);
+        input.push_str(secret);
+        input.push_str(&"b".repeat(100));
+        input.push_str("\nnext line\n");
+        let ring = Arc::new(Mutex::new(StderrRing::new()));
+        read_stderr(input.as_bytes(), ring.clone(), vec![secret.to_string()]).await;
+        let (lines, dropped) = ring.lock().unwrap().snapshot();
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            (texts.len(), dropped),
+            (2, 0),
+            "lengths {:?}",
+            texts.iter().map(|t| t.len()).collect::<Vec<_>>()
+        );
+        assert_eq!(texts[0], "a".repeat(LINE_BYTES));
+        assert_eq!(texts[1], "next line");
+        for i in 0..=secret.len() - 6 {
+            let (head, tail) = (&secret[..secret.len() - i], &secret[i..]);
+            assert!(texts.iter().all(|t| !t.contains(head) && !t.contains(tail)));
+        }
     }
 
     #[test]
