@@ -292,10 +292,18 @@ async fn run_setup(i: &Interceptor, file: &str, setup: Vec<Setup>) {
                 for id in ids {
                     let frame = json!({ "type": "registerfunction", "id": id });
                     let action = i.handle_downstream(&frame.to_string()).await;
-                    assert!(
-                        matches!(action, DownstreamAction::Forward(_)),
-                        "{file}: registering {id} in setup: {action:?}"
-                    );
+                    let DownstreamAction::Forward(sent) = action else {
+                        panic!("{file}: registering {id} in setup: {action:?}");
+                    };
+                    // The engine confirms it: only then is it the connection's.
+                    let sent: Value = serde_json::from_str(&sent).unwrap();
+                    let ack = json!({
+                        "type": "functionregistered",
+                        "id": sent["id"],
+                        "namespace": "default",
+                        "revision": 1
+                    });
+                    i.handle_upstream(&ack.to_string()).await;
                 }
             }
             Setup::Upstream(frame) => {

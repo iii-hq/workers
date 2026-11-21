@@ -43,7 +43,7 @@ futures-util = "0.3"
 [dev-dependencies]
 serde_json = "1"
 which = "8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "test-util"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 
