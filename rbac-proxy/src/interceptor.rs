@@ -358,13 +358,39 @@ impl Interceptor {
                 && self.private_ids.lock().await.contains(engine_id))
     }
 
-    /// The namespace this connection's own registrations live in.
+    /// The namespace this connection's own registrations live in: the pin
+    /// for a pinned session, else the one it declared.
     async fn own_namespace(&self) -> String {
+        if let Some(pin) = &self.session.registration_namespace {
+            return pin.clone();
+        }
         self.connection_namespace
             .lock()
             .await
             .clone()
             .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string())
+    }
+
+    /// The `engine::workers::register` frame that fixes a pinned session's
+    /// namespace on the engine, with its invocation id. The proxy waits for
+    /// its answer before it forwards any frame of the worker's own.
+    pub fn pin_declaration(&self) -> Option<(Uuid, String)> {
+        // shortcut: the answer says the engine ran the declaration, not which
+        // namespace it fixed. An engine that stalls past its grace window (5 s,
+        // or III_NAMESPACE_GRACE_MS) files the session in `default` and still
+        // answers success, while the proxy treats the pin as the session's own
+        // namespace. Read the connection's namespace on the control connection
+        // before the first forwarded frame when an operator shortens the grace
+        // window or such a stall is seen.
+        let pin = self.session.registration_namespace.as_deref()?;
+        let id = Uuid::new_v4();
+        let frame = json!({
+            "type": "invokefunction",
+            "invocation_id": id.to_string(),
+            "function_id": "engine::workers::register",
+            "data": { "namespace": pin },
+        });
+        Some((id, frame.to_string()))
     }
 
     /// Resolve a worker-supplied bare `function_id`, reached in `namespace`, to
@@ -597,6 +623,25 @@ impl Interceptor {
         if engine_id == SESSION_PROBE_ID {
             tracing::warn!("refusing to register {SESSION_PROBE_ID}: the proxy answers it itself");
             return DownstreamAction::Drop;
+        }
+        // The middleware resolves in the namespace of the call it wraps, and a
+        // pinned session's own namespace is its pin: hosting the id there would
+        // hand that session's calls, with their context, to the session.
+        // shortcut: reads the ids of the configuration snapshot taken at the upgrade, so a hot reload that renames them does not unregister what an open pinned connection holds; close pinned connections on such a reload when an operator renames these ids at run time.
+        if self.session.registration_namespace.is_some() {
+            let rbac = &self.config.rbac;
+            let held = [
+                self.config.middleware_function_id.as_deref(),
+                rbac.auth_function_id.as_deref(),
+                rbac.on_function_registration_function_id.as_deref(),
+                rbac.on_observer_registration_function_id.as_deref(),
+            ];
+            if held.contains(&Some(engine_id.as_str())) {
+                tracing::warn!(
+                    "refusing to register {engine_id} in a pinned namespace: the proxy calls it"
+                );
+                return DownstreamAction::Drop;
+            }
         }
         self.registered_ids.lock().await.insert(engine_id.clone());
         {
@@ -1128,6 +1173,7 @@ impl Interceptor {
     /// call's `FORBIDDEN` result, a `RegistrationRejected { code:
     /// NAMESPACE_FORBIDDEN }`, then Close, so the worker cannot keep running
     /// (and registering) in `default`. An unscoped session declares freely.
+    /// A pinned session may declare its pin only, whatever its grants.
     ///
     /// The worker's `features` are reduced to the ones the proxy enforces
     /// ([`SUPPORTED_FEATURES`]).
@@ -1138,46 +1184,28 @@ impl Interceptor {
             .and_then(Value::as_str)
             .map(str::to_string);
 
-        if !self.session.namespaces.is_empty() {
+        if let Some(pin) = &self.session.registration_namespace {
+            match declared.as_deref() {
+                Some(ns) if ns != pin => return self.namespace_refusal(&v, inv_id, ns, pin),
+                // Every declaration that reaches the engine names the pin. The
+                // engine runs declarations as spawned calls, and two that
+                // disagree could bind the worker-name lease and the functions
+                // to different namespaces.
+                _ => match v.get_mut("data").and_then(Value::as_object_mut) {
+                    Some(data) => {
+                        data.insert("namespace".to_string(), Value::String(pin.clone()));
+                    }
+                    // The proxy's own declaration already fixed the namespace.
+                    None => return DownstreamAction::Drop,
+                },
+            }
+        } else if !self.session.namespaces.is_empty() {
             let checked = declared.as_deref().unwrap_or(DEFAULT_NAMESPACE);
             if !self.session.namespaces.contains_key(checked) {
                 let mut permitted: Vec<&str> =
                     self.session.namespaces.keys().map(String::as_str).collect();
                 permitted.sort_unstable();
-                let mut frames = Vec::new();
-                if let Some(id) = inv_id {
-                    frames.push(
-                        json!({
-                            "type": "invocationresult",
-                            "invocation_id": id.to_string(),
-                            "function_id": "engine::workers::register",
-                            "error": {
-                                "code": "FORBIDDEN",
-                                "message": format!(
-                                    "namespace '{checked}' not allowed for this session (permitted: {})",
-                                    permitted.join(", ")
-                                ),
-                            },
-                        })
-                        .to_string(),
-                    );
-                }
-                let mut rejected = json!({
-                    "type": "registrationrejected",
-                    "code": NAMESPACE_FORBIDDEN,
-                    "namespace": checked,
-                    "owner_worker_id": "",
-                });
-                if let Some(name) = v
-                    .get("data")
-                    .and_then(|d| d.get("name"))
-                    .and_then(Value::as_str)
-                {
-                    rejected["worker_name"] = Value::String(name.to_string());
-                }
-                frames.push(rejected.to_string());
-                tracing::warn!(namespace = %checked, "namespace not allowed for this session — closing the connection");
-                return DownstreamAction::Close(frames);
+                return self.namespace_refusal(&v, inv_id, checked, &permitted.join(", "));
             }
         }
 
@@ -1199,6 +1227,51 @@ impl Interceptor {
             }
         }
         DownstreamAction::Forward(v.to_string())
+    }
+
+    /// Refuse a declaration of `declared` as the engine refuses it: the call's
+    /// `FORBIDDEN` result, a `RegistrationRejected { code:
+    /// NAMESPACE_FORBIDDEN }`, then Close.
+    fn namespace_refusal(
+        &self,
+        v: &Value,
+        inv_id: Option<Uuid>,
+        declared: &str,
+        permitted: &str,
+    ) -> DownstreamAction {
+        let mut frames = Vec::new();
+        if let Some(id) = inv_id {
+            frames.push(
+                json!({
+                    "type": "invocationresult",
+                    "invocation_id": id.to_string(),
+                    "function_id": "engine::workers::register",
+                    "error": {
+                        "code": "FORBIDDEN",
+                        "message": format!(
+                            "namespace '{declared}' not allowed for this session (permitted: {permitted})"
+                        ),
+                    },
+                })
+                .to_string(),
+            );
+        }
+        let mut rejected = json!({
+            "type": "registrationrejected",
+            "code": NAMESPACE_FORBIDDEN,
+            "namespace": declared,
+            "owner_worker_id": "",
+        });
+        if let Some(name) = v
+            .get("data")
+            .and_then(|d| d.get("name"))
+            .and_then(Value::as_str)
+        {
+            rejected["worker_name"] = Value::String(name.to_string());
+        }
+        frames.push(rejected.to_string());
+        tracing::warn!(namespace = %declared, "namespace not allowed for this session — closing the connection");
+        DownstreamAction::Close(frames)
     }
 
     /// Synthesize the engine's `FORBIDDEN` `InvocationResult` (engine/mod.rs:
@@ -3458,6 +3531,37 @@ mod tests {
         })
     }
 
+    fn pinned(pin: &str, grants: &[(&str, &[&str])]) -> Arc<ProxySession> {
+        Arc::new(ProxySession {
+            registration_namespace: Some(pin.to_string()),
+            ..(*scoped(None, grants)).clone()
+        })
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_declares_its_namespace_before_any_worker_frame() {
+        let i = interceptor(
+            config_with(expose(&[]), None),
+            pinned("laptop", &[("hub", &["mesh::call"])]),
+        );
+        let (id, frame) = i.pin_declaration().unwrap();
+        let frame: Value = serde_json::from_str(&frame).unwrap();
+        // Not void: the proxy waits for the answer (see `proxy::declare_pin`).
+        assert_eq!(
+            frame,
+            json!({
+                "type": "invokefunction", "invocation_id": id.to_string(),
+                "function_id": "engine::workers::register",
+                "data": { "namespace": "laptop" }
+            })
+        );
+        assert!(
+            interceptor(config_with(expose(&[]), None), session(None))
+                .pin_declaration()
+                .is_none()
+        );
+    }
+
     fn invoke_in(namespace: Option<&str>, function_id: &str) -> String {
         let mut frame = json!({
             "type": "invokefunction",
@@ -3586,6 +3690,80 @@ mod tests {
             i.handle_downstream(&register_worker_frame(Some("orders")))
                 .await,
         );
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_cannot_declare_another_namespace() {
+        let i = interceptor(
+            config_with(expose(&[]), None),
+            pinned("laptop", &[("hub", &["mesh::call"]), ("default", &[])]),
+        );
+        for declared in ["hub", "default", "analytics"] {
+            // two grant keys and a stranger
+            let DownstreamAction::Close(frames) = i
+                .handle_downstream(&register_worker_frame(Some(declared)))
+                .await
+            else {
+                panic!("{declared}: expected the connection to be closed");
+            };
+            let rejected: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+            assert_eq!(
+                (rejected["code"].as_str(), rejected["namespace"].as_str()),
+                (Some("NAMESPACE_FORBIDDEN"), Some(declared))
+            );
+        }
+        // The pin passes, and a declaration that names no namespace gets the pin.
+        for declared in [Some("laptop"), None] {
+            let o = forwarded(i.handle_downstream(&register_worker_frame(declared)).await);
+            assert_eq!(o["data"]["namespace"], "laptop", "{declared:?}");
+            assert_eq!(o["data"]["name"], "rbac-proxy:laptop::billing");
+        }
+    }
+
+    #[tokio::test]
+    async fn own_functions_of_a_pinned_session_are_own_in_the_pin_only() {
+        let i = interceptor(
+            config_with(expose(&[]), None),
+            pinned("laptop", &[("hub", &["mesh::call"])]),
+        );
+        register(&i, "foo").await; // before any declaration
+        let o = forwarded(i.handle_downstream(&invoke_in(Some("laptop"), "foo")).await);
+        assert_eq!(o["function_id"], "foo");
+        // A refused declaration moves nothing: `foo` in the hub namespace is somebody else's.
+        assert!(matches!(
+            i.handle_downstream(&register_worker_frame(Some("hub")))
+                .await,
+            DownstreamAction::Close(_)
+        ));
+        let r = reply(i.handle_downstream(&invoke_in(Some("hub"), "foo")).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+        // No namespace is `default`, never the pin.
+        let r = reply(i.handle_downstream(&invoke_in(None, "foo")).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+        // A host frame with no namespace names the pin.
+        let ack =
+            json!({ "type": "observerack", "function_id": "foo", "id": "o-1", "revision": 1 });
+        forwarded(i.handle_downstream(&ack.to_string()).await);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_observes_only_what_it_registered_in_its_pin() {
+        // The mesh hub's observer hook relies on this: the session has no grant in its pin.
+        let i = interceptor(
+            config_with(expose(&[]), None),
+            pinned("laptop", &[("hub", &["mesh::call"])]),
+        );
+        let observe = json!({ "type": "observe", "id": "o-1",
+            "source": { "function_id": "foo", "namespace": "laptop" },
+            "target": { "function_id": "sink", "namespace": "laptop" } })
+        .to_string();
+        assert_eq!(
+            reply(i.handle_downstream(&observe).await)["error"]["code"],
+            "FORBIDDEN"
+        );
+        register(&i, "foo").await;
+        register(&i, "sink").await;
+        forwarded(i.handle_downstream(&observe).await);
     }
 
     #[tokio::test]
@@ -3820,5 +3998,39 @@ mod tests {
             i.handle_downstream(&frame.to_string()).await,
             DownstreamAction::Drop
         ));
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_cannot_register_the_middleware_auth_or_hook_ids() {
+        let rbac = RbacConfig {
+            auth_function_id: Some("mesh::auth".into()),
+            on_observer_registration_function_id: Some("mesh::on-observer-registration".into()),
+            ..expose(&[])
+        };
+        let cfg = config_with(rbac, Some("mesh::middleware"));
+        let i = interceptor(cfg.clone(), pinned("laptop", &[]));
+        // A hook that maps an id onto these, and the hook's own id, need a live
+        // hook: probe `a_pinned_session_cannot_host_the_middleware`.
+        for id in [
+            "mesh::middleware",
+            "mesh::auth",
+            "mesh::on-observer-registration",
+        ] {
+            let frame = json!({ "type": "registerfunction", "id": id });
+            assert!(
+                matches!(
+                    i.handle_downstream(&frame.to_string()).await,
+                    DownstreamAction::Drop
+                ),
+                "{id}"
+            );
+        }
+        register(&i, "shell::exec").await; // any other id registers
+        // A session with a prefix keeps today's behaviour: the prefix already keeps it off these ids.
+        register(
+            &interceptor(cfg, session(Some("tenant"))),
+            "mesh::middleware",
+        )
+        .await;
     }
 }
