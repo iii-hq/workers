@@ -328,7 +328,7 @@ export function TestPanel({
                   {required.map(field)}
                   {optional.length > 0 ? (
                     <details className="mcp-ui-optional" open={required.length === 0 || undefined}>
-                      <summary>{optionalLabel(required.length, optional.length)}</summary>
+                      <summary>{optionalLabel(required.length, optional.length, access.kind)}</summary>
                       <div className="mcp-ui-fields">{optional.map(field)}</div>
                     </details>
                   ) : null}

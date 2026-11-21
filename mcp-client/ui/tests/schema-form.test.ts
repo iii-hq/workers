@@ -166,8 +166,11 @@ describe('setField and fieldText', () => {
   })
 
   it('labels the optional disclosure', () => {
-    expect(optionalLabel(2, 7)).toBe('7 more optional inputs')
-    expect(optionalLabel(2, 1)).toBe('1 more optional input')
-    expect(optionalLabel(0, 23)).toBe('23 optional inputs')
+    expect(optionalLabel(2, 7, 'tool')).toBe('7 more optional inputs')
+    expect(optionalLabel(2, 1, 'tool')).toBe('1 more optional input')
+    expect(optionalLabel(0, 23, 'resource')).toBe('23 optional inputs')
+    // A prompt's inputs are arguments, as its meta line says.
+    expect(optionalLabel(1, 1, 'prompt')).toBe('1 more optional argument')
+    expect(optionalLabel(0, 3, 'prompt')).toBe('3 optional arguments')
   })
 })

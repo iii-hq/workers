@@ -4,6 +4,8 @@
  * source of truth, so the CLI line and the raw JSON never drift from it.
  */
 
+import type { FunctionAccess } from './access'
+
 export type FieldKind = 'string' | 'enum' | 'number' | 'boolean' | 'string-list' | 'json'
 
 export interface FormField {
@@ -130,9 +132,10 @@ export function missingRequired(schema: unknown, payload: Record<string, unknown
   return requiredNames(schema).filter((k) => payload[k] === undefined || payload[k] === '')
 }
 
-/** The disclosure that holds the optional fields. */
-export function optionalLabel(required: number, optional: number): string {
-  return `${optional} ${required > 0 ? 'more ' : ''}optional input${optional === 1 ? '' : 's'}`
+/** The disclosure that holds the optional fields; a prompt's are arguments, as its meta line says. */
+export function optionalLabel(required: number, optional: number, kind: FunctionAccess['kind']): string {
+  const noun = kind === 'prompt' ? 'argument' : 'input'
+  return `${optional} ${required > 0 ? 'more ' : ''}optional ${noun}${optional === 1 ? '' : 's'}`
 }
 
 const said = (names: string[], what: string) => `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} ${what}`
