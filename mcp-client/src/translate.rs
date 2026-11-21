@@ -198,9 +198,11 @@ pub enum CallFailure {
     RateLimited { retry_after: Option<String> },
     InsufficientScope { scope: Option<String> },
     CredentialRejected { reference: String },
+    NoSignIn,
     LoginRequired,
     Unavailable { state: &'static str, for_secs: u64 },
     Transport(String),
+    Rejected(String),
 }
 
 pub fn failure_text(server: &str, failure: &CallFailure) -> String {
@@ -226,13 +228,16 @@ pub fn failure_text(server: &str, failure: &CallFailure) -> String {
         CallFailure::CredentialRejected { reference } => {
             format!("credential rejected, an operator must fix `{reference}`")
         }
+        CallFailure::NoSignIn => format!("{server} answered 401 and offers no sign-in"),
         CallFailure::LoginRequired => {
             "sign-in required, an operator must sign in on the MCP servers page".to_string()
         }
         CallFailure::Unavailable { state, for_secs } => {
             format!("`{server}` MCP unavailable (`{state}`), for {for_secs} s")
         }
-        CallFailure::Transport(t) => format!("{server} MCP request failed: {t}"),
+        CallFailure::Transport(t) | CallFailure::Rejected(t) => {
+            format!("{server} MCP request failed: {t}")
+        }
     }
 }
 
@@ -514,6 +519,11 @@ mod tests {
             "`linear` MCP unavailable (`unavailable`), for 42 s"
         );
         assert_eq!(t(Transport("eof".into())), "linear MCP request failed: eof");
+        assert_eq!(
+            t(Rejected("HTTP 400 Bad Request".into())),
+            "linear MCP request failed: HTTP 400 Bad Request"
+        );
+        assert_eq!(t(NoSignIn), "linear answered 401 and offers no sign-in");
     }
 
     #[test]

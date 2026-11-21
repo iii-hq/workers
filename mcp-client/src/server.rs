@@ -16,11 +16,11 @@ use rmcp::model::{
 use rmcp::service::{
     ClientCacheConfig, ClientInitializeError, NotificationContext, RunningService,
 };
-use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
     StreamableHttpError,
 };
+use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
 use rmcp::{ClientHandler, Peer, RoleClient, ServiceError, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -377,6 +377,21 @@ fn retry_wait(e: &ClientInitializeError) -> Option<Duration> {
     }
 }
 
+/// A transport error's text with nothing a response body could have put in
+/// it: an unexpected response keeps only its `HTTP NNN Reason` prefix.
+fn transport_text(e: &DynamicTransportError) -> String {
+    match e.error.downcast_ref::<HttpError>() {
+        Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP ") => {
+            t.split(": ").next().unwrap_or_default().to_string()
+        }
+        Some(HttpError::UnexpectedServerResponse(_) | HttpError::Deserialize(_)) => {
+            "unexpected response".into()
+        }
+        Some(other) => other.to_string(),
+        None => e.error.to_string(),
+    }
+}
+
 fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
     let e = match error {
         ServiceError::McpError(e) => {
@@ -389,17 +404,17 @@ fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
         other => return CallFailure::Transport(other.to_string()),
     };
     // `HttpStatus` is `#[error(transparent)]`: only this downcast finds a 429.
-    let unauthorized = match e.error.downcast_ref::<HttpError>() {
+    let status: Option<u16> = match e.error.downcast_ref::<HttpError>() {
         Some(HttpError::HttpStatus(s)) if s.status == 429 => {
             let retry_after = s.retry_after.clone();
             return CallFailure::RateLimited { retry_after };
         }
-        // Its text carries the response body: matched, never passed on.
-        Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP 403") => {
-            return CallFailure::InsufficientScope { scope: None };
-        }
-        Some(HttpError::UnexpectedServerResponse(t)) => t.starts_with("HTTP 401"),
-        _ => false,
+        Some(HttpError::HttpStatus(s)) => Some(s.status),
+        Some(HttpError::UnexpectedServerResponse(t)) => t
+            .strip_prefix("HTTP ")
+            .and_then(|t| t.get(..3))
+            .and_then(|code| code.parse().ok()),
+        _ => None,
     };
     let top: &(dyn Error + 'static) = e.error.as_ref();
     let mut challenged = false;
@@ -410,16 +425,22 @@ fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
         }
         challenged |= x.is::<AuthRequiredError>();
     }
-    if !(unauthorized || challenged) {
-        return CallFailure::Transport(error.to_string());
+    if challenged || status == Some(401) {
+        let reference = match &entry.transport {
+            Transport::Http(http) => credential_ref(http),
+            Transport::Stdio(_) => None,
+        };
+        return match (reference, challenged) {
+            (Some(reference), _) => CallFailure::CredentialRejected { reference },
+            (None, true) => CallFailure::LoginRequired,
+            (None, false) => CallFailure::NoSignIn,
+        };
     }
-    let reference = match &entry.transport {
-        Transport::Http(http) => credential_ref(http),
-        Transport::Stdio(_) => None,
-    };
-    match reference {
-        Some(reference) => CallFailure::CredentialRejected { reference },
-        None => CallFailure::LoginRequired,
+    match status {
+        Some(403) => CallFailure::InsufficientScope { scope: None },
+        // A 404 is a lost session: an outage like a 5xx.
+        Some(s) if (400..500).contains(&s) && s != 404 => CallFailure::Rejected(transport_text(e)),
+        _ => CallFailure::Transport(transport_text(e)),
     }
 }
 
@@ -624,6 +645,8 @@ impl Server {
     ) {
         let mut backoff = Backoff::new(self.timings.backoff_min, self.timings.backoff_max);
         loop {
+            // The connect lists the tools: what came before it is stale.
+            while notes.try_recv().is_ok() {}
             let attempt = tokio::select! {
                 attempt = self.connect() => attempt,
                 _ = &mut stop => return,
@@ -662,8 +685,6 @@ impl Server {
         notes: &mut mpsc::UnboundedReceiver<ListChanged>,
         backoff: &mut Backoff,
     ) -> bool {
-        // The connect just listed: what came before it is stale.
-        while notes.try_recv().is_ok() {}
         let cancel = session.cancellation_token();
         let mut ended = pin!(session.waiting());
         let mut status = self.status.subscribe();
@@ -693,6 +714,9 @@ impl Server {
                 }
             };
             if relist {
+                // This re-list covers every change queued so far, so a burst
+                // costs one; a change that arrives during it gets its own.
+                while notes.try_recv().is_ok() {}
                 last_relist = Some(Instant::now());
                 tokio::select! {
                     _ = self.relist_tools() => {}
@@ -751,23 +775,27 @@ impl Server {
 
     /// Classifies a failed request and applies its state rule: a rejected
     /// credential or a sign-in challenge stops the server, an unclassified
-    /// transport failure is an outage. The registry is never touched.
+    /// transport failure is an outage, and anything else fails this request
+    /// only. The registry is never touched.
     fn request_failed(&self, error: &ServiceError) -> CallFailure {
         let failure = match &self.checked.entry {
             Some(entry) => classify_call_error(error, entry),
             None => CallFailure::Transport(error.to_string()),
         };
         let (state, stage, code) = match &failure {
-            CallFailure::CredentialRejected { .. } => (
+            CallFailure::CredentialRejected { .. } | CallFailure::NoSignIn => (
                 State::AuthFailed,
                 Stage::Authorize,
                 ErrorCode::CredentialRejected,
             ),
-            CallFailure::LoginRequired => (
-                State::NeedsLogin,
-                Stage::Authorize,
-                ErrorCode::LoginRequired,
-            ),
+            CallFailure::LoginRequired => {
+                self.challenged.store(true, Ordering::Relaxed);
+                (
+                    State::NeedsLogin,
+                    Stage::Authorize,
+                    ErrorCode::LoginRequired,
+                )
+            }
             CallFailure::Transport(_) => {
                 (State::Unavailable, Stage::Connect, ErrorCode::ConnectFailed)
             }
@@ -994,7 +1022,7 @@ impl Server {
             return rejected(CallFailure::CredentialRejected { reference });
         }
         if bare_401 {
-            let message = format!("{} answered 401 and offers no sign-in", self.name);
+            let message = failure_text(&self.name, &CallFailure::NoSignIn);
             return (
                 State::AuthFailed,
                 Stage::Authorize,
@@ -1026,6 +1054,10 @@ impl Server {
                     ClientInitializeError::JsonRpcError(d) => {
                         format!("MCP error {}: {}", d.code.0, d.message)
                     }
+                    ClientInitializeError::TransportError { error, .. } => transport_text(error),
+                    // Their text prints what the server sent.
+                    ClientInitializeError::ExpectedInitResponse(_)
+                    | ClientInitializeError::ExpectedInitResult(_) => "unexpected response".into(),
                     _ => e.to_string(),
                 };
                 (ErrorCode::HandshakeFailed, scrub(&text, secrets))

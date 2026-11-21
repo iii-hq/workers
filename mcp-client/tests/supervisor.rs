@@ -1,6 +1,6 @@
 mod support;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mcp_client::server::{Backoff, Manager, State, retry_after_secs};
@@ -13,12 +13,21 @@ use support::{
 /// A mock with the tool `echo` answering `hi()`, a host holding
 /// `secret://K`, and `srv` at `ready`.
 async fn ready() -> (McpMock, Arc<FakeHost>, Arc<Manager>) {
+    ready_with(bearer).await
+}
+
+/// The config with one http server `srv` and no credential.
+fn plain(url: &str) -> Value {
+    json!({"mcpServers": {"srv": {"type": "http", "url": url}}})
+}
+
+async fn ready_with(config: fn(&str) -> Value) -> (McpMock, Arc<FakeHost>, Arc<Manager>) {
     let mock = McpMock::start().await;
     mock.tools(json!([tool("echo")])).await;
     mock.on_call("echo", hi()).await;
     let host = FakeHost::new();
     host.set_secret("secret://K", "k1");
-    let manager = connect(&host, bearer(&mock.url())).await;
+    let manager = connect(&host, config(&mock.url())).await;
     settle(&manager, State::Ready).await;
     (mock, host, manager)
 }
@@ -188,12 +197,12 @@ async fn rejected_credential_on_a_call_sets_auth_failed_and_keeps_functions() {
     assert!(unregistered(&host).is_empty());
 }
 
-/// Answers `tools/call` with `status`, no `WWW-Authenticate` and a body:
+/// Answers `method` with `status`, no `WWW-Authenticate` and a body:
 /// McpMock's own answers have an empty body.
-async fn calls_answer_with_a_body(mock: &McpMock, status: u16) {
+async fn answer_with_a_body(mock: &McpMock, method: &str, status: u16) {
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::body_partial_json(
-            json!({"method": "tools/call"}),
+            json!({ "method": method }),
         ))
         .respond_with(wiremock::ResponseTemplate::new(status).set_body_string("BODY-SENTINEL"))
         .with_priority(1)
@@ -204,7 +213,7 @@ async fn calls_answer_with_a_body(mock: &McpMock, status: u16) {
 #[tokio::test]
 async fn a_401_without_a_challenge_on_a_call_never_shows_its_body() {
     let (mock, host, manager) = ready().await;
-    calls_answer_with_a_body(&mock, 401).await;
+    answer_with_a_body(&mock, "tools/call", 401).await;
     let error = host.call(ECHO, json!({})).await.unwrap_err();
     assert_eq!(
         error,
@@ -217,13 +226,109 @@ async fn a_401_without_a_challenge_on_a_call_never_shows_its_body() {
 #[tokio::test]
 async fn a_403_without_a_challenge_on_a_call_stays_ready_and_never_shows_its_body() {
     let (mock, host, manager) = ready().await;
-    calls_answer_with_a_body(&mock, 403).await;
+    answer_with_a_body(&mock, "tools/call", 403).await;
     let error = host.call(ECHO, json!({})).await.unwrap_err();
     assert_eq!(error, "insufficient scope: srv refused the call");
     let listed = serde_json::to_string(&manager.list().await).unwrap();
     assert!(!listed.contains("BODY-SENTINEL"), "{listed}");
     assert_eq!(server(&manager, "srv").await["state"], "ready");
     assert!(unregistered(&host).is_empty());
+}
+
+#[tokio::test]
+async fn a_4xx_on_a_call_fails_that_call_only_and_never_shows_its_body() {
+    let (mock, host, manager) = ready().await;
+    answer_with_a_body(&mock, "tools/call", 400).await;
+    let error = host.call(ECHO, json!({})).await.unwrap_err();
+    assert!(
+        error.contains("HTTP 400") && !error.contains("BODY-SENTINEL"),
+        "{error}"
+    );
+    let listed = serde_json::to_string(&manager.list().await).unwrap();
+    assert!(!listed.contains("BODY-SENTINEL"), "{listed}");
+    tokio::time::sleep(fast_timings().backoff_min * 4).await;
+    assert_eq!(server(&manager, "srv").await["state"], "ready");
+    assert_eq!(mock.requests("initialize").await.len(), 1, "no reconnect");
+}
+
+#[tokio::test]
+async fn a_challenged_401_on_a_call_without_a_credential_needs_login() {
+    let (mock, host, manager) = ready_with(plain).await;
+    let challenge =
+        r#"Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource""#;
+    mock.http_status("tools/call", 401, &[("www-authenticate", challenge)])
+        .await;
+    assert_eq!(
+        host.call(ECHO, json!({})).await.unwrap_err(),
+        "sign-in required, an operator must sign in on the MCP servers page"
+    );
+    let row = settle(&manager, State::NeedsLogin).await;
+    assert_eq!(row["error"]["code"], "login_required", "{row}");
+    assert_eq!(row["auth"], "oauth", "{row}");
+    assert!(unregistered(&host).is_empty());
+}
+
+#[tokio::test]
+async fn a_bare_401_on_a_call_without_a_credential_is_auth_failed() {
+    let (mock, host, manager) = ready_with(plain).await;
+    answer_with_a_body(&mock, "tools/call", 401).await;
+    let error = host.call(ECHO, json!({})).await.unwrap_err();
+    assert_eq!(error, "srv answered 401 and offers no sign-in");
+    let row = settle(&manager, State::AuthFailed).await;
+    assert_eq!(
+        row["error"],
+        json!({"code": "credential_rejected", "message": "srv answered 401 and offers no sign-in"})
+    );
+    assert_eq!(row["auth"], "none", "{row}");
+    assert!(unregistered(&host).is_empty());
+}
+
+/// Everything this crate logs, captured on the test's own thread (the
+/// current-thread runtime runs the server task there too).
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Logs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+#[tokio::test]
+async fn a_failed_relist_never_logs_a_body() {
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("mcp_client=trace")
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let (mock, host, manager) = ready().await;
+    mock.on_call_error("echo", -32602, "team is required").await;
+    answer_with_a_body(&mock, "tools/list", 400).await;
+    assert!(host.call(ECHO, json!({})).await.is_err());
+    eventually("the failed re-list is logged", || async {
+        logs.text().contains("again failed")
+    })
+    .await;
+    let text = logs.text();
+    assert!(
+        text.contains("HTTP 400") && !text.contains("BODY-SENTINEL"),
+        "{text}"
+    );
+    assert_eq!(server(&manager, "srv").await["state"], "ready");
 }
 
 #[tokio::test]
