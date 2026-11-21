@@ -69,9 +69,13 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
     // here: fail-open, standing the watch down entirely.
     match harness::filesystem_grants(iii, &input.session_id).await {
         Ok(roots) => {
-            if roots
-                .iter()
-                .any(|root| filesystem_access::dir_contains(root, &hint.requested_root))
+            // A stored grant is stamped only on calls in the implicit namespace, so in another
+            // one this rejection is a real request. Its grant lasts one call.
+            let in_implicit = call.namespace.is_none() || call.namespace == call.implicit_namespace;
+            if in_implicit
+                && roots
+                    .iter()
+                    .any(|root| filesystem_access::dir_contains(root, &hint.requested_root))
             {
                 return HookOutput::Continue;
             }
@@ -863,6 +867,35 @@ mod tests {
                     "{call_id}: {out:?}"
                 );
             }
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stored_grant_does_not_silence_a_folder_request_from_another_namespace() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec!["/work".to_string()]);
+            let in_namespace = |call_id: &str, namespace: &str| {
+                let mut input = jail_input("s_1", call_id, "/work/x");
+                let call = input.call.as_mut().unwrap();
+                call.namespace = Some(namespace.into());
+                call.implicit_namespace = Some("default".into());
+                input
+            };
+
+            let out = handle(&stack.deps, in_namespace("c_1", "zz-a")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+            let held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(held["kind"], json!("filesystem_access"));
+            assert_eq!(held["namespace"], json!("zz-a"));
+
+            let out = handle(&stack.deps, in_namespace("c_2", "default")).await;
+            assert_eq!(out.unwrap(), HookOutput::Continue);
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_2")
+                    .await
+                    .is_null()
+            );
         })
         .await;
     }

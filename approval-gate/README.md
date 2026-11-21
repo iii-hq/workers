@@ -102,6 +102,18 @@ The qualifier must be a plain, non-empty namespace: `*/shell::exec` or
 becomes an automatic allow.
 For a call that names no namespace (an older harness), a qualified `deny`
 still matches and a qualified `allow` does not, so it fails closed.
+A pattern whose id starts with `hub::` or `peer::` uses a mesh id prefix that
+no longer exists. A mesh function keeps its id and lives in the namespace of
+its machine: write `<namespace>/<function id>`. `peer::laptop::shell::exec`
+becomes `laptop/shell::exec`, `hub::shell::exec` becomes `hub/shell::exec`,
+and `peer::*` becomes one rule per machine, such as `laptop/*`. One such rule
+stops the whole list from loading, and the gate then asks for every call.
+A bare `deny` written for a mesh id's old spelling (`!laptop::shell::exec`,
+`!*::shell::pty::*`) still denies the call in another namespace, ahead of
+every allow, for now: a call to `shell::exec` in namespace `laptop` is also
+checked as `laptop::shell::exec`. An `allow` in that spelling matches nothing,
+so the call asks. Write `<namespace>/<pattern>` instead; a later release drops
+the old spelling.
 "Approve always" grants take no `<namespace>/` qualifier: the namespace is a
 separate field and is compared exactly, so a grant never covers another
 namespace. The grant's `function_id` is compared exactly too: an approval
@@ -172,7 +184,9 @@ prompt) whenever:
   or under it — that is a harness stamp hole, not something a grant fixes;
 - the harness already reports a durable grant covering the dir
   (`harness::filesystem::grants`) — shell rejecting anyway is a store/stamp
-  skew, not something a re-ask resolves;
+  skew, not something a re-ask resolves. This holds only for a call in its
+  implicit namespace: the harness stamps a stored grant on those calls only,
+  so a call in another namespace is asked for the folder again;
 - the user already **denied** this dir earlier in the session
   (`approval_filesystem_access_denied/<session_id>`);
 - the call has already been re-asked `grant_reask_limit` times (default `3`,
