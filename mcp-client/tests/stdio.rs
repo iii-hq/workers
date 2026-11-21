@@ -339,6 +339,21 @@ async fn dropping_the_guard_kills_the_group() {
 }
 
 #[tokio::test]
+async fn a_config_after_shutdown_starts_nothing() {
+    let host = FakeHost::new();
+    let m = connect_opts(&host, &json!({"mcpServers": {}}), opts(stdio_timings())).await;
+    m.shutdown().await;
+    let raw = RawConfig::from_value(&cfg(json!({})));
+    let fp = fingerprint(&raw.0["fake"]);
+    m.approve("fake", Some(&fp)).await.unwrap();
+    m.apply_config(raw).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let list = serde_json::to_value(m.list().await).unwrap();
+    assert_eq!(list["servers"], json!([]), "{list}");
+    assert!(host.registered_ids().is_empty());
+}
+
+#[tokio::test]
 async fn an_unapproved_stdio_entry_spawns_nothing_until_approved() {
     let host = FakeHost::new();
     let m = Manager::new(host.clone(), opts(stdio_timings()));

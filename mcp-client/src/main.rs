@@ -1,8 +1,9 @@
+use std::pin::pin;
 use std::sync::Arc;
 
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{InitOptions, register_worker};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use mcp_client::host::EngineHost;
 use mcp_client::server::{Manager, ManagerOptions, Timings};
 use mcp_client::translate::ScrubWriter;
@@ -40,6 +41,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
+    // Installed before boot, so a signal during boot shuts down instead of
+    // waiting for boot to end.
+    let mut shutdown = pin!(shutdown_signal()?);
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
@@ -56,10 +60,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             ..InitOptions::default()
         },
     ));
-    // Interface capture boots with no configuration worker: go on with no servers.
-    if let Err(error) = configuration::register_config(&iii).await {
-        tracing::warn!(%error, "could not register the configuration entry");
-    }
     let manager = Manager::new(
         EngineHost::new(iii.clone()),
         ManagerOptions {
@@ -68,32 +68,48 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             worker_cwd: std::env::current_dir()?,
         },
     );
-    functions::register_all(&iii, &manager);
-    match configuration::fetch_config(&iii).await {
-        Ok(raw) => manager.apply_config(raw).await,
-        Err(error) => tracing::warn!(%error, "could not read the configuration entry; no servers"),
+    let booted = tokio::select! {
+        () = boot(&iii, &manager) => true,
+        () = &mut shutdown => false,
+    };
+    if booted {
+        shutdown.await;
     }
-    // An equal map is a no-op, so this pass only catches an edit made since the read.
-    configuration::register_config_observer(&iii, manager.clone())
-        .run()
-        .await;
-    wait_for_shutdown().await?;
     manager.shutdown().await;
     iii.shutdown_async().await;
     Ok(())
 }
 
+async fn boot(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
+    // Interface capture boots with no configuration worker: go on with no servers.
+    if let Err(error) = configuration::register_config(iii).await {
+        tracing::warn!(%error, "could not register the configuration entry");
+    }
+    functions::register_all(iii, manager);
+    match configuration::fetch_config(iii).await {
+        Ok(raw) => manager.apply_config(raw).await,
+        Err(error) => tracing::warn!(%error, "could not read the configuration entry; no servers"),
+    }
+    // An equal map is a no-op, so this pass only catches an edit made since the read.
+    configuration::register_config_observer(iii, manager.clone())
+        .run()
+        .await;
+}
+
 #[cfg(unix)]
-async fn wait_for_shutdown() -> anyhow::Result<()> {
+fn shutdown_signal() -> anyhow::Result<impl Future<Output = ()>> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
-    tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
-    Ok(())
+    Ok(async move {
+        tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+    })
 }
 
 #[cfg(not(unix))]
-async fn wait_for_shutdown() -> anyhow::Result<()> {
-    tokio::signal::ctrl_c().await?;
-    Ok(())
+fn shutdown_signal() -> anyhow::Result<impl Future<Output = ()>> {
+    let mut ctrl_c = tokio::signal::windows::ctrl_c()?;
+    Ok(async move {
+        ctrl_c.recv().await;
+    })
 }

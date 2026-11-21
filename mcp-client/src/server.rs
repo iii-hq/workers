@@ -1465,6 +1465,8 @@ pub struct Manager {
     servers: tokio::sync::Mutex<BTreeMap<String, Arc<Server>>>,
     /// The start-up load of the approvals, retried until it succeeds.
     load: JoinHandle<()>,
+    /// Set first by `shutdown`: a config applied during or after it starts nothing.
+    closed: AtomicBool,
 }
 
 impl Manager {
@@ -1485,6 +1487,7 @@ impl Manager {
             opts,
             servers: tokio::sync::Mutex::default(),
             load,
+            closed: AtomicBool::default(),
         })
     }
 
@@ -1496,6 +1499,9 @@ impl Manager {
     /// sees no reconnect, no registry operation and no event.
     pub async fn apply_config(self: &Arc<Self>, raw: RawConfig) {
         let mut servers = self.servers.lock().await;
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
         let (kept, removed): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut *servers)
             .into_iter()
             .partition(|(name, _)| raw.0.contains_key(name));
@@ -1668,6 +1674,7 @@ impl Manager {
     }
 
     pub async fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         self.load.abort();
         let mut servers = self.servers.lock().await;
         join_all(std::mem::take(&mut *servers).values().map(|s| s.stop())).await;
