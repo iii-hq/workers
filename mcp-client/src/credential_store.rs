@@ -37,13 +37,16 @@ pub fn decode(text: &str, resource: &str) -> Option<Value> {
         .filter(|c| !c.is_null())
 }
 
-/// Adds every string under an `access_token` or `refresh_token` key of `value`.
+/// Adds every string under an `access_token`, `refresh_token` or `id_token`
+/// key of `value`: rmcp keeps a token response's extra fields.
 fn add_tokens(secrets: &ServerSecrets, value: &Value) {
     match value {
         Value::Object(map) => {
             for (key, v) in map {
                 match (key.as_str(), v) {
-                    ("access_token" | "refresh_token", Value::String(token)) => secrets.add(token),
+                    ("access_token" | "refresh_token" | "id_token", Value::String(token)) => {
+                        secrets.add(token)
+                    }
                     _ => add_tokens(secrets, v),
                 }
             }

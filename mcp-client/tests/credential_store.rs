@@ -291,3 +291,23 @@ async fn loaded_and_saved_tokens_join_the_server_secrets() {
     assert_eq!(values, ["at-1", "rt-1"]);
     assert!(loaded.resolved().is_empty());
 }
+
+#[tokio::test]
+async fn an_id_token_rmcp_keeps_joins_the_server_secrets() {
+    let mut credentials = json_of(&creds("at-1", "rt-1"));
+    credentials["token_response"]["id_token"] = json!("idt-1");
+    let credentials: StoredCredentials = serde_json::from_value(credentials).unwrap();
+    assert_eq!(
+        json_of(&credentials)["token_response"]["id_token"],
+        "idt-1",
+        "rmcp keeps the extra token field"
+    );
+    let saved = ServerSecrets::new();
+    let rejected = Arc::new(AtomicUsize::new(0));
+    store(FakeHost::new(), &rejected)
+        .with_secrets(saved.clone())
+        .save(credentials)
+        .await
+        .unwrap();
+    assert!(saved.values().contains(&"idt-1".to_string()));
+}
