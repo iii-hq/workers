@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- **Every wake says what it waits for.** The chat showed a wake by its label, such as `dw KAN-38 r1 w2`. Each `harness::observe` now also passes `action`, a plain phrase the chat shows instead: `Results from KAN-12 and KAN-13`, `Coding result for KAN-12`, `CI checks on PR #42 finished`, `Test suite finished`. A wake that can show while it still waits, or that can end in a failure, names the result it waits for and never says the work finished or succeeded. Labels are unchanged, and wakes are still matched by them.
+
 ## 0.9.0
 
 Deepwork can run from the board from start to finish: started by the kanban dispatcher with no chat, asking its questions on the run ticket, ending at a pull request ready for review, telling a failing machine from failing code, and keeping to a token budget with subscription models. Each part is opt-in through an argument; a run without them behaves as in 0.8.1.

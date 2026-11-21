@@ -192,6 +192,27 @@ describe('ObserverActivityCard', () => {
     expect(failed).not.toContain('Waiting on condition')
   })
 
+  it('shows the action the observer was armed with in place of its label', () => {
+    const html = renderToStaticMarkup(
+      createElement(ObserverActivityCard, {
+        record: record('e_obsfired_obs_1_1', {
+          observer_id: 'obs_1',
+          function_id: 'state::on-changed',
+          label: 'dw KAN-38 r1 w2',
+          action: 'Results from KAN-41 and KAN-42',
+          target: 'harness::send',
+          once: true,
+          fires: 1,
+          retired: true,
+          fired_at: 1,
+          outcome: 'delivered',
+        }),
+      }),
+    )
+    expect(html).toContain('Results from KAN-41 and KAN-42')
+    expect(html).not.toContain('dw KAN-38 r1 w2')
+  })
+
   it('shows a generic source for any worker-defined function', () => {
     const registration = registrationFromCall({
       id: 'call-1',
@@ -293,7 +314,7 @@ describe('ObserverActivityCard', () => {
     expect(html).toContain('iii-ui-collapsible-card__content')
     expect(html).toContain('aria-hidden="true"')
     expect(html).toContain('Observer fired')
-    expect(html).toContain('explorer-messages</span>')
+    expect(html).not.toContain('explorer-messages</span>')
   })
 
   it('preserves actionable non-fire notification prose', () => {
