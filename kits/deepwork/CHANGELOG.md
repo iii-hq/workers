@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- **Functions in another namespace reach the leads with their namespace.** When a search candidate lists `namespaces` and the copy the run needs is not in its own (a function on another mesh machine, such as `shell::exec` in namespace `laptop`), the orchestrator reads its contract with `namespace` and names it in the lead's task as `<id> in namespace <namespace>`, so the lead calls it there instead of in its own namespace.
+
 ## 0.9.0
 
 Deepwork can run from the board from start to finish: started by the kanban dispatcher with no chat, asking its questions on the run ticket, ending at a pull request ready for review, telling a failing machine from failing code, and keeping to a token budget with subscription models. Each part is opt-in through an argument; a run without them behaves as in 0.8.1.
