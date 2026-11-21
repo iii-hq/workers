@@ -781,7 +781,11 @@ re-tasked sub-agent keeps its own root unless the spawn names one.
 A folder granted for the session (`harness::filesystem::grant`) is stamped only
 on a call in the namespace a call without `namespace` runs in. A call in
 another namespace carries the session's root and only the folders its own
-release grants, so the folder is asked for again there, per call.
+release grants, so `shell` or `coder` refuses the folder there. The harness
+does not ask for it again: the folder watch of `approval-gate` does, per call,
+once that worker checks folder grants per namespace. An older approval-gate
+reads the session's grant as covering the folder and does not ask, so the model
+gets only the refusal; update approval-gate with this harness.
 
 ### Agent observers
 

@@ -844,17 +844,7 @@ async fn handle(
             req.function_id
         )));
     }
-    let allowed = match explicit_namespace(&req) {
-        Some(namespace) => policy.allows_in(namespace, &req.function_id),
-        None => policy.allows(&req.function_id),
-    };
-    if !allowed {
-        return Err(HarnessError::InvalidRequest(format!(
-            "observing `{0}` is not permitted by this session's dispatch policy: an observer \
-             reads every call of the function it observes, so the policy must allow `{0}`",
-            req.function_id
-        )));
-    }
+    authorize_source(policy, explicit_namespace(&req), &req.function_id)?;
 
     validate_lifecycle(req.lifecycle.as_ref())?;
     validate_event_action(req.action.as_deref())?;
@@ -896,6 +886,9 @@ async fn handle(
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
     let host = resolve_source_namespace(deps, &req).await;
+    // An unqualified source can resolve outside its implicit namespace
+    // (`default`, Compose's): the policy must allow it where it is observed.
+    authorize_source(policy, host.namespace.as_deref(), &req.function_id)?;
 
     let topology = deps.topology.lock().await;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
@@ -1814,6 +1807,27 @@ impl SourceHost {
             self.unhosted_in.join(", ")
         ))
     }
+}
+
+/// Refuse observing `function_id` in `namespace` (its implicit one when none)
+/// unless the policy allows calling it there.
+fn authorize_source(
+    policy: &CompiledPolicy,
+    namespace: Option<&str>,
+    function_id: &str,
+) -> Result<(), HarnessError> {
+    let allowed = match namespace {
+        Some(namespace) => policy.allows_in(namespace, function_id),
+        None => policy.allows(function_id),
+    };
+    if allowed {
+        return Ok(());
+    }
+    Err(HarnessError::InvalidRequest(format!(
+        "observing `{function_id}` is not permitted by this session's dispatch policy: an \
+         observer reads every call of the function it observes, so the policy must allow \
+         `{function_id}`"
+    )))
 }
 
 /// The namespace the agent named for the source, blank meaning none.
