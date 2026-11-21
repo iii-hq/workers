@@ -3,7 +3,9 @@ use std::sync::Arc;
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{InitOptions, register_worker};
-use mcp_client::log_directives;
+use mcp_client::host::EngineHost;
+use mcp_client::server::{Manager, ManagerOptions, Timings};
+use mcp_client::{configuration, functions, log_directives, stdio_allowed};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -41,12 +43,53 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 runtime: "rust".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 name: "mcp-client".into(),
+                description: Some(
+                    "Connects to MCP servers and registers their tools as iii functions.".into(),
+                ),
+                telemetry: None,
                 ..WorkerMetadata::default()
             }),
             ..InitOptions::default()
         },
     ));
-    tokio::signal::ctrl_c().await?;
+    // Interface capture boots with no configuration worker: go on with no servers.
+    if let Err(error) = configuration::register_config(&iii).await {
+        tracing::warn!(%error, "could not register the configuration entry");
+    }
+    let manager = Manager::new(
+        EngineHost::new(iii.clone()),
+        ManagerOptions {
+            stdio_enabled: stdio_allowed(std::env::var("III_MCP_CLIENT_STDIO").ok().as_deref()),
+            timings: Timings::default(),
+            worker_cwd: std::env::current_dir()?,
+        },
+    );
+    functions::register_all(&iii, &manager);
+    match configuration::fetch_config(&iii).await {
+        Ok(raw) => manager.apply_config(raw).await,
+        Err(error) => tracing::warn!(%error, "could not read the configuration entry; no servers"),
+    }
+    // An equal map is a no-op, so this pass only catches an edit made since the read.
+    configuration::register_config_observer(&iii, manager.clone())
+        .run()
+        .await;
+    wait_for_shutdown().await?;
+    manager.shutdown().await;
     iii.shutdown_async().await;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown() -> anyhow::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown() -> anyhow::Result<()> {
+    tokio::signal::ctrl_c().await?;
     Ok(())
 }

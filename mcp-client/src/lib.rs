@@ -1,9 +1,17 @@
 pub mod config;
+pub mod configuration;
+pub mod functions;
 pub mod host;
 pub mod reconcile;
 pub mod refs;
 pub mod server;
 pub mod translate;
+
+/// The `III_MCP_CLIENT_STDIO` switch: only `off` (trimmed, any case) turns
+/// stdio servers off.
+pub fn stdio_allowed(value: Option<&str>) -> bool {
+    !value.is_some_and(|v| v.trim().eq_ignore_ascii_case("off"))
+}
 
 /// Log targets whose level is pinned at INFO whatever `RUST_LOG` says: at
 /// DEBUG and below they print authorization codes and token responses.
@@ -89,6 +97,16 @@ mod tests {
             log_directives(Some("warn,[{server}]=trace,mcp_client[connect]=trace")),
             format!("warn,{CAPS}")
         );
+    }
+
+    #[test]
+    fn stdio_is_on_unless_the_switch_says_off() {
+        for on in [None, Some(""), Some("on")] {
+            assert!(stdio_allowed(on), "{on:?}");
+        }
+        for off in ["off", " OFF "] {
+            assert!(!stdio_allowed(Some(off)), "{off:?}");
+        }
     }
 
     #[test]
