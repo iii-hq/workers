@@ -1,10 +1,13 @@
 name: Sync Manifest Versions
 
 # Release Control creates one GitHub Release per version it publishes to the
-# Registry. After each, write every worker's highest published tag into its
-# package manifest and lockfiles, so cargo, npm and uv report the version the
-# Registry serves. Each run converges every worker, so a burst of releases
-# whose pending runs the concurrency group drops still ends up in sync.
+# Registry. After each, write every worker's next release version (one patch
+# past its highest published tag) into its package manifest and lockfiles.
+# Release Control builds from the manifest before it picks the version, so the
+# manifest must already hold the version the next release publishes for the
+# binary (CARGO_PKG_VERSION, Go main.version) to report it. Each run converges
+# every worker, so a burst of releases whose pending runs the concurrency group
+# drops still ends up in sync.
 #
 # A release event runs this file as it exists at the tagged commit, so a
 # release of a commit that predates this workflow does not trigger it; the
