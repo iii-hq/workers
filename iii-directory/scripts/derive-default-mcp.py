@@ -22,7 +22,7 @@ EDITS = [
     # Frontmatter: hidden (a console session has the harness), no placeholder.
     (
         'name: Default\ndescription: Use for general questions and development tasks in your project.\ncomposer_placeholder: "Explain how this project works…"\n',
-        'name: Default (MCP)\ndescription: "The default profile for agents that reach iii through the mcp-server worker (MCP clients such as Claude Code): iii_call and the iii_observe tools instead of the harness."\nhidden: true\nskills:\n  - ade\n  - ade/for-mcp-agents\n',
+        'name: Default (MCP)\ndescription: "The default profile for agents that reach iii through the mcp-server worker (MCP clients such as Claude Code): iii_call and the iii_observe tools instead of the harness."\nhidden: true\nskills:\n  - iii-directory/for-mcp-agents\n  - ade\n  - ade/for-mcp-agents\n',
     ),
     ("You are an iii agent.\n", "You are an iii agent, connected to the engine through an MCP server (the `mcp-server` worker).\n"),
     ("Write all user-facing progress, tool descriptions, questions, event\nnotifications, and final text in it.", "Write all user-facing progress, questions,\nand final text in it."),
@@ -56,11 +56,13 @@ EDITS = [
         "  `engine::observers::list` shows the observers that already exist.\n",
         "  `engine::observers::list` shows the observers that already exist.\n- `fp::pipe` and `fp::batch` — higher-order functions that call other functions for you:\n  `fp::pipe` runs a chain of calls worker-side, each result passed to the next, so a large\n  value never passes through you; `fp::batch` runs independent calls at once.\n- `directory::skills::index` — the skills relevant to this system: guidance documents, not\n  one per worker. Use it sparingly, when a task needs guidance you lack.\n",
     ),
-    # A missing worker is installed, not worked around; the preloaded ade
-    # skills make this the first thing a project without the ADE does.
+    # The preloaded skills are read before the first task (a client without
+    # the iii Claude plugin does not read them on its own). A missing worker
+    # is installed, not worked around; the preloaded ade skills make this the
+    # first thing a project without the ADE does.
     (
         "discovered the same way: list, info, call.\n",
-        "discovered the same way: list, info, call.\n\nWhen a skill or function the task needs comes from a worker that is not installed (a\nskill that is missing, or `function_not_found` after discovery), install that worker with\n`compose::add`, following the install steps `directory::search_functions` returns with an\ninstallable worker, then continue. This includes the skills your profile preloads: a skill\nid's first segment names its worker (`ade/for-mcp-agents` comes from the `ade` worker).\n",
+        "discovered the same way: list, info, call.\n\nBefore the first task, read each skill your profile preloads (the `skills` list in\n`iii_get_agent`'s answer) with `iii_call directory::skills::get { id }`; a missing one means\nits worker is not installed.\n\nWhen a skill or function the task needs comes from a worker that is not installed (a\nskill that is missing, or `function_not_found` after discovery), install that worker with\n`compose::add`, following the install steps `directory::search_functions` returns with an\ninstallable worker, then continue. This includes the skills your profile preloads: a skill\nid's first segment names its worker (`ade/for-mcp-agents` comes from the `ade` worker).\n",
     ),
     (
         "When you mention a function in text for the user, write @fn(<function_id>), for example\n@fn(engine::functions::info); in the `function` field and inside code blocks, use the bare\nid.\n\n`#file(<path>)` in a user message is a reference to a file under the working directory, not\nits content — read it with `coder::read-file` when you need it. Only a line window\n(`#file(<path>:<from>-<to>)`) arrives with those lines already attached.\n\n`@<name>(id=\"<id>\")` in a message is a mention of one item a worker owns (a ticket, a session,\na trace…), not its content. A `<mentions>` block after the message summarizes each one and,\nwhen allowed, gives a pre-verified `details` call for the full item; `<mention_providers>`\nlists the names you may write in a reply, always with an id a function returned.\n\n",

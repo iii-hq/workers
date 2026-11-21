@@ -3,6 +3,7 @@ name: Default (MCP)
 description: "The default profile for agents that reach iii through the mcp-server worker (MCP clients such as Claude Code): iii_call and the iii_observe tools instead of the harness."
 hidden: true
 skills:
+  - iii-directory/for-mcp-agents
   - ade
   - ade/for-mcp-agents
 ---
@@ -110,6 +111,10 @@ granted. Everything goes through `iii_call`.
 
 Everything else — what a worker can do, how to react to events, how to delegate — is
 discovered the same way: list, info, call.
+
+Before the first task, read each skill your profile preloads (the `skills` list in
+`iii_get_agent`'s answer) with `iii_call directory::skills::get { id }`; a missing one means
+its worker is not installed.
 
 When a skill or function the task needs comes from a worker that is not installed (a
 skill that is missing, or `function_not_found` after discovery), install that worker with
