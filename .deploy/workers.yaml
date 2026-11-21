@@ -1292,6 +1292,18 @@ workers:
       - armv7-unknown-linux-gnueabihf
       windows_exception: not published to the Registry yet; no Windows build to restore
     publish: true
+  mcp-client:
+    source:
+      path: mcp-client
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: mcp-client
+      targets: *id001
+    publish: true
   mcp-server:
     source:
       path: mcp-server

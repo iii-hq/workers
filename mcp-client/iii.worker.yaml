@@ -1,0 +1,16 @@
+iii: v1
+name: mcp-client
+language: rust
+deploy: binary
+iii_engine_version: ">=0.26.0"
+manifest: Cargo.toml
+license: Apache-2.0
+bin: mcp-client
+tags: [mcp, tools, linear, oauth, integration]
+description: MCP client. Connects to the MCP servers you configure and registers their tools as iii functions (mcp::<server>::<tool>), with credentials read from the secrets worker.
+dependencies:
+  configuration: "latest"
+  # Credentials are secret://NAME and env://NAME references.
+  secrets: "latest"
+  # Serves the OAuth sign-in redirect.
+  http: "latest"
