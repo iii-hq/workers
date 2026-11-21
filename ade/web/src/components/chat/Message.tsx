@@ -9,7 +9,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { useContext, useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import type { ObserverRegistration } from '@/components/observer-activity/model'
 import { ObserverActivityCard } from '@/components/observer-activity/ObserverActivityCard'
@@ -39,6 +39,7 @@ import {
   formatReplyClock,
   formatTurnDuration,
 } from '@/lib/turn-summary'
+import { parseWorkflowInput } from '@/lib/workflow-input'
 import type {
   AssistantMessage as AssistantMessageType,
   Message as MessageType,
@@ -54,6 +55,7 @@ import { ModelMark } from './ModelMark'
 import { SystemNotice } from './SystemNotice'
 import { ThoughtMessage } from './ThoughtMessage'
 import { useSmoothText } from './use-smooth-text'
+import { WorkflowInputCard } from './WorkflowInputCard'
 import './streaming-message.css'
 import './conversation-design.css'
 import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
@@ -496,7 +498,13 @@ function UserMessage({
   const quoted = sideQuotes
     ? splitQuotedMessage(message.content, sideQuotes.quotes)
     : null
-  const prose = quoted ? quoted.rest : message.content
+  const text = quoted ? quoted.rest : message.content
+  // A workflow node's opening: the bubble keeps the instruction prose, and
+  // the fenced upstream data (nobody's words) renders as a card below it.
+  const workflowInput = useMemo(() => parseWorkflowInput(text), [text])
+  const prose = workflowInput
+    ? [workflowInput.before, workflowInput.after].filter(Boolean).join('\n\n')
+    : text
   return (
     <article
       className="chat-message group flex flex-col items-end gap-2"
@@ -536,6 +544,12 @@ function UserMessage({
             </Hint>
           </div>
         </div>
+      ) : null}
+      {workflowInput ? (
+        <WorkflowInputCard
+          input={workflowInput}
+          copyText={prose.trim() ? undefined : message.content}
+        />
       ) : null}
       {chips.length > 0 ? (
         <div className="flex max-w-[92%] flex-wrap justify-end gap-2 @2xl:max-w-[80%]">
