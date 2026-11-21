@@ -118,12 +118,12 @@ fn own_id(answer: &Value) -> Option<String> {
 const MCP_URL: &str = "https://mcp.linear.app/mcp";
 const ISSUE_FIELDS: [&str; 4] = ["id", "title", "team", "teamId"];
 
-fn http_client() -> reqwest::Client {
+fn http_client() -> Option<reqwest::Client> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
-        .expect("reqwest client")
+        .ok()
 }
 
 /// An `Authorization` value that `Debug` never shows.
@@ -153,6 +153,7 @@ async fn raw_probe() {
         .expect("LINEAR_API_KEY is not a valid header value");
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"iii-mcp-client-live","version":"0"}}}"#;
     let mut resp = http_client()
+        .expect("reqwest client")
         .post(MCP_URL)
         .header("Authorization", auth)
         .header("Accept", "application/json, text/event-stream")
@@ -222,7 +223,17 @@ async fn live_bearer_read() {
     let version = row["protocol_version"].as_str();
     println!("LIVE protocol_version={}", version.unwrap_or("none"));
     println!("LIVE tools={}", tools.len());
-    println!("LIVE skipped={}", skipped.len());
+    let skipped_entries: Vec<String> = skipped
+        .iter()
+        .map(|s| {
+            format!(
+                "{}:{}",
+                s["kind"].as_str().unwrap_or("?"),
+                s["name"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    println!("LIVE skipped={}", names_or_none(&skipped_entries));
     println!("LIVE resources={}", row["capabilities"]["resources"]);
     println!("LIVE prompts={}", row["capabilities"]["prompts"]);
     assert!(version.is_some(), "no protocol version");
@@ -264,8 +275,12 @@ async fn live_bearer_read() {
     println!("LIVE class_destructive={}", count(Class::Destructive));
     println!("LIVE guessed_from_name={}", names_or_none(&guessed));
 
-    // whoami names the user: its answer and error are never shown.
-    let whoami = has_content(&host.call("mcp::linear::whoami", json!({})).await);
+    // With an API key Linear lists no `whoami`; `get_user` with `me` is the identity
+    // read. It names the user: its answer and error are never shown.
+    let me = host
+        .call("mcp::linear::get_user", json!({"query": "me"}))
+        .await;
+    let whoami = has_content(&me);
     println!("LIVE whoami={}", if whoami { "ok" } else { "failed" });
     let teams = host
         .call("mcp::linear::list_teams", json!({"limit": 1}))
@@ -300,7 +315,7 @@ async fn live_bearer_read() {
         let properties = schema["properties"].as_object().map_or(0, Map::len);
         println!("LIVE {tool}_properties={properties}");
     }
-    println!("LIVE schema_saved={}", dir.display());
+    println!("LIVE schema_saved=mcp-client/target/live");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -367,7 +382,7 @@ async fn issue_delete(key: &str, id: &str) -> bool {
             "query": "mutation($id: String!) { issueDelete(id: $id) { success } }",
             "variables": {"id": id}
         });
-        let resp = http_client()
+        let resp = http_client()?
             .post("https://api.linear.app/graphql")
             .header("Authorization", auth)
             .header("Content-Type", "application/json")
