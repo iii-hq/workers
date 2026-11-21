@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.5
+
+- **Functions in another namespace reach the leads with their namespace.** When a search candidate lists `namespaces` and the copy the run needs is not in its own (a function on another mesh machine, such as `shell::exec` in namespace `laptop`), the orchestrator reads its contract with `namespace` and names it in the lead's task as `<id> in namespace <namespace>`, so the lead calls it there instead of in its own namespace.
+
 ## 0.9.4
 
 - **A one-line description in the agent picker.** The `deepwork` profile's description explained the whole run (tickets, leads, waves, rounds, the dev flow) and filled the composer's agent picker with a truncated paragraph. It now says when to pick it: "Use for big goals: plans tickets, runs agents in parallel, reviews the work." The kit's own description and the README keep the full explanation.
