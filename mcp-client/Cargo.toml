@@ -10,6 +10,11 @@ publish = false
 name = "mcp-client"
 path = "src/main.rs"
 
+[[bin]]
+name = "fake-mcp-stdio"
+path = "tests/fixtures/fake_mcp_stdio.rs"
+required-features = ["test-fixtures"]
+
 [lib]
 name = "mcp_client"
 path = "src/lib.rs"
