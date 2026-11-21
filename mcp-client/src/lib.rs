@@ -2,6 +2,7 @@ pub mod config;
 pub mod host;
 pub mod reconcile;
 pub mod refs;
+pub mod server;
 pub mod translate;
 
 /// Log targets whose level is pinned at INFO whatever `RUST_LOG` says: at

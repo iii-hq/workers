@@ -1,10 +1,63 @@
 #![allow(dead_code)]
 
+pub mod mcp_mock;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use mcp_client::config::RawConfig;
 use mcp_client::host::{FunctionDef, Handler, Host, Registration, SecretError, ServerEvent};
+use mcp_client::server::{Manager, ManagerOptions, Timings};
 use serde_json::Value;
+
+pub const WAIT: Duration = Duration::from_secs(5);
+
+/// The production timings scaled down so a test waits milliseconds.
+pub fn fast_timings() -> Timings {
+    let ms = Duration::from_millis;
+    Timings {
+        http_handshake: ms(3_000),
+        stdio_start: ms(6_000),
+        list: ms(3_000),
+        call: ms(1_000),
+        backoff_min: ms(20),
+        backoff_max: ms(200),
+        budget_starts: 5,
+        budget_window: ms(2_000),
+        cooldown: ms(1_000),
+        stable_after: ms(600),
+        stop_grace: ms(500),
+        relist_min_interval: ms(300),
+    }
+}
+
+pub async fn connect(host: &Arc<FakeHost>, config: Value) -> Arc<Manager> {
+    connect_with(host, config, fast_timings()).await
+}
+
+pub async fn connect_with(host: &Arc<FakeHost>, config: Value, timings: Timings) -> Arc<Manager> {
+    // reqwest panics building a client when no rustls provider is installed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let options = ManagerOptions {
+        stdio_enabled: true,
+        timings,
+        worker_cwd: std::env::current_dir().unwrap(),
+    };
+    let manager = Manager::new(host.clone(), options);
+    manager.apply_config(RawConfig::from_value(&config)).await;
+    manager
+}
+
+/// That server's object of `servers::list`.
+pub async fn server(manager: &Arc<Manager>, name: &str) -> Value {
+    let list = serde_json::to_value(manager.list().await).unwrap();
+    list["servers"]
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["name"] == name))
+        .cloned()
+        .unwrap_or_else(|| panic!("no server `{name}` in {list}"))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RegOp {
