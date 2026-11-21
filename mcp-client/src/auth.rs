@@ -34,12 +34,7 @@ pub fn state_of(callback_url: &str) -> Option<String> {
 
 /// Whether `url` names `localhost` or a loopback IP.
 pub fn is_loopback(url: &str) -> bool {
-    match url::Url::parse(url).ok().as_ref().and_then(url::Url::host) {
-        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        None => false,
-    }
+    url::Url::parse(url).is_ok_and(|u| crate::config::is_loopback(u.host()))
 }
 
 /// A failed sign-in's text. No arm formats the error: its fields hold what

@@ -22,7 +22,7 @@ use rmcp::service::{
 };
 use rmcp::transport::auth::{
     AuthClient, AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
-    CredentialStore,
+    CredentialStore, OAuthClientConfig,
 };
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
@@ -1608,20 +1608,32 @@ impl Server {
                         };
                         (Some(token), Some(&*m), None)
                     }
-                    Auth::OAuth { .. } => match (handed, url) {
+                    Auth::OAuth {
+                        client_id,
+                        client_secret,
+                        ..
+                    } => match (handed, url) {
                         (Some(manager), _) => (None, None, Some(manager)),
                         (None, Err(_)) => (None, None, None),
-                        (None, Ok(url)) => match self.restore(&url, None).await {
-                            Ok(Some(manager)) => (None, None, Some(manager)),
-                            // No request to the server without a session.
-                            Ok(None) => {
-                                self.needs_login();
-                                return Err(None);
+                        (None, Ok(url)) => {
+                            let secret = |r: &Ref| resolved.text(&Text::Ref(r.clone()));
+                            let client = client_id.clone().zip(client_secret.as_ref().map(secret));
+                            match self.restore(&url, None, client).await {
+                                Ok(Some(manager)) => (None, None, Some(manager)),
+                                // No request to the server without a session.
+                                Ok(None) => {
+                                    self.needs_login();
+                                    return Err(None);
+                                }
+                                Err(()) => return Err(None),
                             }
-                            Err(()) => return Err(None),
-                        },
+                        }
                     },
-                    _ => (bearer_token(http, &resolved), None, handed),
+                    // A handoff left before a config change is not for a non-sign-in entry.
+                    _ => {
+                        let handed = handed.filter(|_| signs_in(entry));
+                        (bearer_token(http, &resolved), None, handed)
+                    }
                 };
                 let session = self.open_http(entry, http, &resolved, bearer, remint, signed);
                 (session.await?, None)
@@ -1807,11 +1819,13 @@ impl Server {
 
     /// The stored session for `url` as an rmcp manager; `Ok(None)` without
     /// one. With a challenge, the vault is read before any discovery
-    /// request. A failure sets the status and is tried again.
+    /// request. `client` is a configured client id and its resolved secret.
+    /// A failure sets the status and is tried again.
     async fn restore(
         self: &Arc<Self>,
         url: &str,
         challenge: Option<&str>,
+        client: Option<(String, String)>,
     ) -> Result<Option<AuthorizationManager>, ()> {
         let store = self.store(url);
         let restored: Result<_, AuthError> = async {
@@ -1827,7 +1841,15 @@ impl Server {
             if challenge.is_some() {
                 discover(&mut manager, challenge).await?;
             }
-            Ok(manager.initialize_from_store().await?.then_some(manager))
+            if !manager.initialize_from_store().await? {
+                return Ok(None);
+            }
+            // rmcp configures the stored client id without its secret.
+            if let Some((client_id, secret)) = client {
+                let config = OAuthClientConfig::new(client_id, url).with_client_secret(secret);
+                manager.configure_client(config)?;
+            }
+            Ok(Some(manager))
         }
         .await;
         restored.map_err(|e| {
@@ -2006,7 +2028,7 @@ impl Server {
                 // The vault is read only after a challenge: an open server
                 // never depends on the secrets worker.
                 if plain && entry.auth_kind() == "none" && challenge.is_some() {
-                    match self.restore(&url, challenge.as_deref()).await {
+                    match self.restore(&url, challenge.as_deref(), None).await {
                         Ok(Some(manager)) => {
                             let again =
                                 self.open_http(entry, http, resolved, None, None, Some(manager));
@@ -2673,6 +2695,9 @@ impl Manager {
         };
         if event_matches(change, &[approvals]) {
             if self.approvals.on_change(&*self.host).await {
+                for name in servers.keys() {
+                    self.logins.cancel(name);
+                }
                 join_all(servers.values().map(|s| s.unapprove())).await;
             }
             return;
@@ -2817,8 +2842,13 @@ impl Manager {
         exchanged.map_err(|e| auth::login_error_text(&e))?;
         let s = {
             let servers = self.servers.lock().await;
-            let s = servers.get(&name).cloned();
-            let s = s.ok_or_else(|| format!("no server named `{name}`"))?;
+            let Some(s) = servers.get(&name).cloned() else {
+                // Removed during the sign-in: its wipe ran before this save.
+                if let Err(e) = login.store.sign_out().await {
+                    tracing::warn!("clearing the sign-in session of removed `{name}` failed: {e}");
+                }
+                return Err(format!("no server named `{name}`"));
+            };
             *s.handoff.lock().unwrap() = Some((login.url, login.session.auth_manager));
             s.restart(None).await;
             s

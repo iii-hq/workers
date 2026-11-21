@@ -27,9 +27,12 @@ struct Tokens {
     expired: bool,
     reject_refresh: bool,
     hold_refresh: Option<Duration>,
+    hold_metadata: Option<Duration>,
+    metadata_gets: usize,
     registrations: usize,
-    /// Every token request's form body and when it arrived.
-    requests: Vec<(Instant, String)>,
+    /// Every token request: when it arrived, its form body and its
+    /// `Authorization` header.
+    requests: Vec<(Instant, String, Option<String>)>,
 }
 
 /// Matches an `/mcp` request that lacks `Bearer <the current access token>`.
@@ -87,9 +90,18 @@ impl AsMock {
             ),
         ];
         for (at, document) in documents {
+            let t = tokens.clone();
             Mock::given(method("GET"))
                 .and(path(at))
-                .respond_with(ResponseTemplate::new(200).set_body_json(document))
+                .respond_with(move |_: &Request| {
+                    let mut t = t.lock().unwrap();
+                    t.metadata_gets += 1;
+                    let answer = ResponseTemplate::new(200).set_body_json(&document);
+                    match t.hold_metadata {
+                        Some(by) => answer.set_delay(by),
+                        None => answer,
+                    }
+                })
                 .with_priority(1)
                 .mount(mcp.server())
                 .await;
@@ -112,10 +124,12 @@ impl AsMock {
             .and(path("/token"))
             .respond_with(move |request: &Request| {
                 let body = String::from_utf8_lossy(&request.body).into_owned();
+                let sent = request.headers.get("authorization");
+                let sent = sent.and_then(|v| v.to_str().ok()).map(String::from);
                 let refresh = form(&request.body).get("grant_type").map(String::as_str)
                     == Some("refresh_token");
                 let mut t = t.lock().unwrap();
-                t.requests.push((Instant::now(), body));
+                t.requests.push((Instant::now(), body, sent));
                 if refresh && t.reject_refresh {
                     return ResponseTemplate::new(400)
                         .set_body_json(json!({"error": "invalid_grant"}));
@@ -164,15 +178,38 @@ impl AsMock {
         self.tokens.lock().unwrap().hold_refresh = Some(by);
     }
 
+    /// Every later metadata document is answered `by` after it arrived.
+    pub async fn hold_metadata(&self, by: Duration) {
+        self.tokens.lock().unwrap().hold_metadata = Some(by);
+    }
+
+    /// How many metadata documents were asked for.
+    pub async fn metadata_gets(&self) -> usize {
+        self.tokens.lock().unwrap().metadata_gets
+    }
+
     /// The form bodies of the token requests, in arrival order.
     pub async fn token_requests(&self) -> Vec<String> {
         let t = self.tokens.lock().unwrap();
-        t.requests.iter().map(|(_, b)| b.clone()).collect()
+        t.requests.iter().map(|(_, b, _)| b.clone()).collect()
     }
 
     /// The token requests with their arrival times.
     pub async fn token_log(&self) -> Vec<(Instant, String)> {
-        self.tokens.lock().unwrap().requests.clone()
+        let t = self.tokens.lock().unwrap();
+        t.requests
+            .iter()
+            .map(|(at, b, _)| (*at, b.clone()))
+            .collect()
+    }
+
+    /// The token requests' form bodies with their `Authorization` header.
+    pub async fn token_auth(&self) -> Vec<(String, Option<String>)> {
+        let t = self.tokens.lock().unwrap();
+        t.requests
+            .iter()
+            .map(|(_, b, a)| (b.clone(), a.clone()))
+            .collect()
     }
 
     pub async fn registrations(&self) -> usize {

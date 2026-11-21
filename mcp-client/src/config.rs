@@ -222,7 +222,7 @@ impl Sink {
     }
 }
 
-fn is_loopback(host: Option<Host<&str>>) -> bool {
+pub(crate) fn is_loopback(host: Option<Host<&str>>) -> bool {
     match host {
         Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
         Some(Host::Ipv4(a)) => a.octets()[0] == 127,

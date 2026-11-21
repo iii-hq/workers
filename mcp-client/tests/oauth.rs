@@ -490,3 +490,78 @@ async fn removing_an_entry_during_a_refresh_in_flight_clears_the_session() {
     let _ = call.await;
     assert_eq!(stored(&host)["credentials"], Value::Null);
 }
+
+#[tokio::test]
+async fn a_configured_client_secret_survives_a_reconnect() {
+    let mock = echo_mock().await;
+    let as_mock = AsMock::start(&mock).await;
+    let host = FakeHost::new();
+    host.set_secret("secret://APP", "shh");
+    let auth = json!({"type": "oauth", "client_id": "pre-1", "client_secret": "secret://APP"});
+    let m = connect(&host, oauth(&mock, auth)).await;
+    settle(&m, "srv", State::NeedsLogin).await;
+    sign_in(&m, &as_mock).await;
+    m.reconnect("srv").await.unwrap();
+    settle(&m, "srv", State::Ready).await;
+    age_stored_token(&host);
+    assert_eq!(host.call(ECHO, json!({})).await, Ok(hi()));
+    let sent = as_mock.token_auth().await;
+    let of = |grant: &str| {
+        let found = sent.iter().find(|(body, _)| body.contains(grant));
+        found.expect(grant).1.clone()
+    };
+    let code = of("grant_type=authorization_code");
+    assert!(
+        code.as_deref().is_some_and(|a| a.starts_with("Basic ")),
+        "{code:?}"
+    );
+    assert_eq!(
+        of("grant_type=refresh_token"),
+        code,
+        "the refresh lost the client secret"
+    );
+    assert_eq!(server(&m, "srv").await["state"], "ready");
+}
+
+#[tokio::test]
+async fn a_sign_in_finished_after_its_removal_leaves_no_session() {
+    let (_mock, as_mock, host, m) = challenged().await;
+    as_mock.hold_metadata(HOLD).await;
+    let started = m.clone();
+    let start = tokio::spawn(async move { started.login_start("srv").await });
+    eventually("discovery reached the mock", || async {
+        as_mock.metadata_gets().await > 0
+    })
+    .await;
+    m.apply_config(RawConfig::from_value(&json!({"mcpServers": {}})))
+        .await;
+    let start = start.await.unwrap().unwrap();
+    let good = as_mock.authorize_redirect(&start.authorize_url);
+    assert_eq!(
+        m.login_complete(&good).await.unwrap_err(),
+        "no server named `srv`"
+    );
+    assert_eq!(as_mock.token_requests().await.len(), 1, "the exchange ran");
+    assert_eq!(stored(&host)["credentials"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_tampered_approval_list_drops_the_pending_login() {
+    let (_mock, as_mock, host, m) = challenged().await;
+    let start = m.login_start("srv").await.unwrap();
+    let good = as_mock.authorize_redirect(&start.authorize_url);
+    host.set_secret(
+        "secret://MCP_CLIENT_APPROVALS",
+        r#"{"approved":{},"version":1}"#,
+    );
+    m.on_secret_change(&SecretChange {
+        name: Some("MCP_CLIENT_APPROVALS".into()),
+        reference: Some("secret://MCP_CLIENT_APPROVALS".into()),
+        action: Some("set".into()),
+    })
+    .await;
+    let row = settle(&m, "srv", State::Unapproved).await;
+    assert_eq!(row["login"], Value::Null, "{row}");
+    assert_eq!(m.login_complete(&good).await.unwrap_err(), NONE_WAITING);
+    assert!(as_mock.token_requests().await.is_empty());
+}

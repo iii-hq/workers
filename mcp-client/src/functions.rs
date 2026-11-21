@@ -128,7 +128,8 @@ pub struct StateResponse {
     pub state: State,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+/// No `Debug`: the callback URL carries the code and `state`.
+#[derive(Deserialize, JsonSchema)]
 pub struct LoginCompleteRequest {
     /// The whole address the browser ended on after the sign-in.
     pub callback_url: String,
