@@ -472,6 +472,19 @@ pub fn failure_text(server: &str, failure: &CallFailure) -> String {
     }
 }
 
+/// Mirrors `harness/src/call.rs` result sizing: content and details both count.
+#[cfg(test)]
+pub(crate) fn harness_bytes(result: &Value) -> usize {
+    let content = result["content"].as_array().filter(|c| !c.is_empty());
+    match content {
+        Some(c) => serde_json::to_vec(&(c, result)).unwrap().len(),
+        None => {
+            let c = json!([{"type": "text", "text": serde_json::to_string(result).unwrap()}]);
+            serde_json::to_vec(&(c, result)).unwrap().len()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,18 +499,6 @@ mod tests {
     }
     fn text(t: &str) -> Value {
         json!({"type": "text", "text": t})
-    }
-
-    /// Mirrors `harness/src/call.rs` result sizing: content and details both count.
-    fn harness_bytes(result: &Value) -> usize {
-        let content = result["content"].as_array().filter(|c| !c.is_empty());
-        match content {
-            Some(c) => serde_json::to_vec(&(c, result)).unwrap().len(),
-            None => {
-                let c = json!([{"type": "text", "text": serde_json::to_string(result).unwrap()}]);
-                serde_json::to_vec(&(c, result)).unwrap().len()
-            }
-        }
     }
 
     #[test]

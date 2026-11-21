@@ -44,6 +44,15 @@ fn unregisters_a_prompt(ops: &[RegOp]) -> bool {
         .any(|op| matches!(op, RegOp::Unregister(id) if id.contains("::prompts::")))
 }
 
+/// The `tools` events of `fake` so far.
+fn tools_events(host: &FakeHost) -> usize {
+    let tools = ServerEvent {
+        server: "fake".into(),
+        kind: EventKind::Tools,
+    };
+    host.events().iter().filter(|e| **e == tools).count()
+}
+
 /// A knob file for `FAKE_MCP_STATE_FILE`, read by the fixture at each start.
 fn state_file(lines: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -267,6 +276,7 @@ async fn prompts_list_changed_adds_changes_and_removes_without_touching_the_tool
     let host = FakeHost::new();
     let m = ready(&host, json!({"FAKE_MCP_PROMPTS": "1"})).await;
     let mark = host.ops().len();
+    let before = tools_events(&host);
     mutate(&host, "add_prompt").await;
     let added = until(SOON, || async { has(&host, "prompts::extra_prompt") }).await;
     assert!(added, "{:?}", host.registered_ids());
@@ -294,11 +304,8 @@ async fn prompts_list_changed_adds_changes_and_removes_without_touching_the_tool
     let unregister = at(RegOp::Unregister(review.clone())).expect("unregistered");
     let register = at(RegOp::Register(review)).expect("registered again");
     assert!(unregister < register, "{ops:?}");
-    let tools = ServerEvent {
-        server: "fake".into(),
-        kind: EventKind::Tools,
-    };
-    assert!(host.events().contains(&tools));
+    let emitted = until(SOON, || async { tools_events(&host) > before }).await;
+    assert!(emitted, "{:?}", host.events());
 
     // The tool trigger works over stdio as well, and leaves the prompts alone.
     let mark = host.ops().len();
@@ -316,15 +323,11 @@ async fn resources_list_changed_adds_the_templates_function() {
     let host = FakeHost::new();
     let m = ready(&host, json!({"FAKE_MCP_RESOURCES": "1"})).await;
     assert!(!has(&host, "resources::templates"));
-    let tools_events = || {
-        let events = host.events();
-        events.iter().filter(|e| e.kind == EventKind::Tools).count()
-    };
-    let before = tools_events();
+    let before = tools_events(&host);
     mutate(&host, "add_template").await;
     let added = until(SOON, || async { has(&host, "resources::templates") }).await;
     assert!(added, "{:?}", host.registered_ids());
-    let emitted = until(SOON, || async { tools_events() > before }).await;
+    let emitted = until(SOON, || async { tools_events(&host) > before }).await;
     assert!(emitted, "{:?}", host.events());
     m.shutdown().await;
 }

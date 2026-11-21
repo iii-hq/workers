@@ -265,6 +265,34 @@ async fn tool_errors_come_back_as_err() {
 }
 
 #[tokio::test]
+async fn a_huge_error_message_and_huge_instructions_are_cut() {
+    let mock = McpMock::start().await;
+    mock.tools(tools()).await;
+    mock.instructions(&"i".repeat(300_000)).await;
+    mock.on_call_error("save_thing", -32000, &"x".repeat(300_000))
+        .await;
+    let (host, _manager) = ready(&mock).await;
+
+    let error = host
+        .call("mcp::mock::save_thing", json!({}))
+        .await
+        .unwrap_err();
+    let prefix = "MCP error -32000: ";
+    assert_eq!(error, format!("{prefix}{}", "x".repeat(4096)));
+    let out = host
+        .call("mcp::mock::instructions", json!({}))
+        .await
+        .unwrap();
+    let text = out["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.ends_with("\ninstructions cut at 120 KiB"),
+        "{}",
+        &text[text.len() - 40..]
+    );
+    assert!(text.len() < 123_000, "{}", text.len());
+}
+
+#[tokio::test]
 async fn a_call_past_the_limit_says_outcome_unknown() {
     let mock = McpMock::start().await;
     mock.tools(tools()).await;

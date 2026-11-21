@@ -1,7 +1,7 @@
 //! The name rule, the functions a server's listing wants, the diff between two
 //! sets of definitions, and the registry that applies it to the engine.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,17 +65,12 @@ pub struct ToolInfo {
 /// What a registered function calls on the server.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
-    Tool {
-        name: String,
-        declared: BTreeSet<String>,
-    },
+    Tool { name: String },
     Instructions,
     ResourceList,
     ResourceRead,
     ResourceTemplates,
-    Prompt {
-        name: String,
-    },
+    Prompt { name: String },
 }
 
 #[derive(Clone)]
@@ -113,10 +108,6 @@ pub fn tool_wanted(
         if let Some(schema) = request_format.as_object_mut() {
             schema.remove("$schema");
         }
-        let declared = tool.input_schema["properties"]
-            .as_object()
-            .map(|p| p.keys().cloned().collect())
-            .unwrap_or_default();
         let mut mcp = json!({"server": server, "tool": tool.name});
         if let Some(title) = &tool.title {
             mcp["title"] = json!(title);
@@ -133,7 +124,6 @@ pub fn tool_wanted(
         };
         let target = Target::Tool {
             name: tool.name.clone(),
-            declared,
         };
         wanted.insert(id, Wanted { def, target });
     }
@@ -373,8 +363,7 @@ mod tests {
         assert_eq!(
             save.target,
             Target::Tool {
-                name: "save_issue".into(),
-                declared: ["_meta", "title"].map(String::from).into()
+                name: "save_issue".into()
             }
         );
 
@@ -388,8 +377,7 @@ mod tests {
         assert_eq!(
             whoami.target,
             Target::Tool {
-                name: "whoami".into(),
-                declared: BTreeSet::new()
+                name: "whoami".into()
             }
         );
 
@@ -425,8 +413,7 @@ mod tests {
         assert_eq!(
             wanted["mcp::linear::instructions"].target,
             Target::Tool {
-                name: "instructions".into(),
-                declared: BTreeSet::new()
+                name: "instructions".into()
             }
         );
         assert!(skipped.is_empty());

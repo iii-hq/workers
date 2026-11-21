@@ -47,8 +47,8 @@ use crate::refs::{Ref, Resolved, Store, Text, event_matches, ref_error, resolve_
 use crate::resources::{self, list_id, read_id, resource_wanted, templates_id};
 use crate::stdio::{self, ChildGuard, LogLine, RestartPolicy, StderrRing};
 use crate::translate::{
-    BlockCtx, CallFailure, ServerSecrets, failure_text, prompt_result, read_result, scrub,
-    strip_args, tool_result,
+    BlockCtx, CallFailure, ServerSecrets, cap_blocks, failure_text, prompt_result, read_result,
+    scrub, strip_args, tool_result,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -420,9 +420,7 @@ fn exit_text(exit: &ExitInfo) -> String {
 /// A failed handshake's text, with nothing a response body could put in it.
 fn init_text(e: &ClientInitializeError) -> String {
     match e {
-        ClientInitializeError::JsonRpcError(d) => {
-            format!("MCP error {}: {}", d.code.0, d.message)
-        }
+        ClientInitializeError::JsonRpcError(d) => rpc_text(d),
         ClientInitializeError::TransportError { error, .. } => transport_text(error),
         // Their text prints what the server sent.
         ClientInitializeError::ExpectedInitResponse(_)
@@ -470,10 +468,24 @@ fn transport_text(e: &DynamicTransportError) -> String {
     }
 }
 
+/// The most of a server's error message passed on.
+const MESSAGE_CAP: usize = 4096;
+
+/// A server's error message cut to `MESSAGE_CAP` bytes on a char boundary.
+fn server_message(message: &str) -> String {
+    message[..message.floor_char_boundary(MESSAGE_CAP)].to_string()
+}
+
+/// A JSON-RPC error without its `data`, which is whatever the server sent.
+fn rpc_text(e: &rmcp::ErrorData) -> String {
+    format!("MCP error {}: {}", e.code.0, server_message(&e.message))
+}
+
 /// A failed request's text, as body-free as `transport_text`.
 fn service_text(error: &ServiceError) -> String {
     match error {
         ServiceError::TransportSend(e) => transport_text(e),
+        ServiceError::McpError(e) => rpc_text(e),
         other => other.to_string(),
     }
 }
@@ -483,7 +495,7 @@ fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
         ServiceError::McpError(e) => {
             return CallFailure::JsonRpc {
                 code: e.code.0,
-                message: e.message.to_string(),
+                message: server_message(&e.message),
             };
         }
         ServiceError::TransportSend(e) => e,
@@ -535,7 +547,7 @@ fn tool_views(wanted: &WantedSet) -> BTreeMap<String, Option<Value>> {
     wanted
         .values()
         .filter_map(|w| match &w.target {
-            Target::Tool { name, .. } => Some((
+            Target::Tool { name } => Some((
                 name.clone(),
                 w.def.metadata.pointer("/mcp/annotations").cloned(),
             )),
@@ -1769,9 +1781,11 @@ impl Server {
         match target {
             Target::Instructions => {
                 let text = self.info.lock().unwrap().instructions.clone();
-                Ok(json!({"content": [{"type": "text", "text": text}]}))
+                let block = json!({"type": "text", "text": text});
+                let content = cap_blocks(vec![block], "instructions cut at 120 KiB");
+                Ok(json!({ "content": content }))
             }
-            Target::Tool { name, .. } => {
+            Target::Tool { name } => {
                 let params = CallToolRequestParams::new(name.clone()).with_arguments(args);
                 let result = self.send(call, peer.call_tool(params), Some(&self.relist));
                 tool_result(&wire(result.await?), &ctx)
@@ -2144,6 +2158,29 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::check_entry;
+
+    #[test]
+    fn a_server_error_message_is_cut_and_its_data_never_shown() {
+        let huge = format!("a{}", "é".repeat(150_000));
+        let rpc = |message: &str, data| {
+            let code = rmcp::model::ErrorCode(-32000);
+            ServiceError::McpError(rmcp::ErrorData::new(code, message.to_string(), data))
+        };
+        let raw = json!({"url": "https://example.com/mcp"});
+        let entry = check_entry("s", &raw, true).entry.unwrap();
+        let text = failure_text("s", &classify_call_error(&rpc(&huge, None), &entry));
+        let prefix = "MCP error -32000: ";
+        assert!(text.starts_with(prefix) && text.len() <= prefix.len() + MESSAGE_CAP);
+        // Cut on a char boundary: the last `é` that fits stays whole.
+        assert_eq!(text.len(), prefix.len() + MESSAGE_CAP - 1);
+        let result = json!({"content": [{"type": "text", "text": text}]});
+        assert!(crate::translate::harness_bytes(&result) <= 262_144);
+        assert!(service_text(&rpc(&huge, None)).len() <= prefix.len() + MESSAGE_CAP);
+
+        let data = Some(json!({"token": "data-only-value"}));
+        assert_eq!(service_text(&rpc("boom", data)), "MCP error -32000: boom");
+    }
 
     #[test]
     fn wire_names_are_snake_case() {
