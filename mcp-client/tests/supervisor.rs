@@ -300,6 +300,18 @@ impl std::io::Write for Logs {
 }
 
 impl Logs {
+    /// Captures until the guard drops.
+    fn capture() -> (Logs, tracing::subscriber::DefaultGuard) {
+        let logs = Logs::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter("mcp_client=trace")
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        (logs, tracing::subscriber::set_default(subscriber))
+    }
+
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
     }
@@ -307,14 +319,7 @@ impl Logs {
 
 #[tokio::test]
 async fn a_failed_relist_never_logs_a_body() {
-    let logs = Logs::default();
-    let writer = logs.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter("mcp_client=trace")
-        .with_writer(move || writer.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let (logs, _guard) = Logs::capture();
     let (mock, host, manager) = ready().await;
     mock.on_call_error("echo", -32602, "team is required").await;
     answer_with_a_body(&mock, "tools/list", 400).await;
@@ -383,4 +388,23 @@ async fn tools_list_changed_adds_and_removes_functions() {
     .await;
     // The only unregister this task may cause: a tool the list dropped.
     assert_eq!(unregistered(&host), ["mcp::srv::old"]);
+}
+
+#[tokio::test]
+async fn a_failed_list_at_connect_never_shows_a_body() {
+    let (logs, _guard) = Logs::capture();
+    let mock = McpMock::start().await;
+    answer_with_a_body(&mock, "tools/list", 400).await;
+    let host = FakeHost::new();
+    host.set_secret("secret://K", "k1");
+    let manager = connect(&host, bearer(&mock.url())).await;
+    let row = settle(&manager, State::Unavailable).await;
+    assert_eq!(row["stage"], "tools", "{row}");
+    assert_eq!(row["error"]["code"], "list_failed", "{row}");
+    let message = row["error"]["message"].as_str().unwrap();
+    assert!(message.contains("HTTP 400"), "{message}");
+    let listed = serde_json::to_string(&manager.list().await).unwrap();
+    assert!(!listed.contains("BODY-SENTINEL"), "{listed}");
+    let text = logs.text();
+    assert!(!text.contains("BODY-SENTINEL"), "{text}");
 }

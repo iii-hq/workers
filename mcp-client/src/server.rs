@@ -392,6 +392,14 @@ fn transport_text(e: &DynamicTransportError) -> String {
     }
 }
 
+/// A failed request's text, as body-free as `transport_text`.
+fn service_text(error: &ServiceError) -> String {
+    match error {
+        ServiceError::TransportSend(e) => transport_text(e),
+        other => other.to_string(),
+    }
+}
+
 fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
     let e = match error {
         ServiceError::McpError(e) => {
@@ -401,7 +409,7 @@ fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
             };
         }
         ServiceError::TransportSend(e) => e,
-        other => return CallFailure::Transport(other.to_string()),
+        _ => return CallFailure::Transport(service_text(error)),
     };
     // `HttpStatus` is `#[error(transparent)]`: only this downcast finds a 429.
     let status: Option<u16> = match e.error.downcast_ref::<HttpError>() {
@@ -780,7 +788,7 @@ impl Server {
     fn request_failed(&self, error: &ServiceError) -> CallFailure {
         let failure = match &self.checked.entry {
             Some(entry) => classify_call_error(error, entry),
-            None => CallFailure::Transport(error.to_string()),
+            None => CallFailure::Transport(service_text(error)),
         };
         let (state, stage, code) = match &failure {
             CallFailure::CredentialRejected { .. } | CallFailure::NoSignIn => (
@@ -921,7 +929,7 @@ impl Server {
             Ok(Ok(tools)) => serde_json::to_value(tools)
                 .and_then(serde_json::from_value::<Vec<ToolInfo>>)
                 .map_err(|e| e.to_string()),
-            Ok(Err(e)) => Err(scrub(&e.to_string(), &secrets)),
+            Ok(Err(e)) => Err(scrub(&service_text(&e), &secrets)),
             Err(_) => Err(self.no_answer(limit)),
         };
         let tools = match listed {
