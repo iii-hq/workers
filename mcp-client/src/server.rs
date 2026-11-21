@@ -817,6 +817,7 @@ impl Server {
         let tools = match listed {
             Ok(tools) => tools,
             Err(message) => {
+                let message = scrub(&message, &self.secrets.values());
                 tracing::warn!(
                     "listing the tools of `{}` again failed, its functions stay as they were: {message}",
                     self.name

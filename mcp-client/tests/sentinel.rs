@@ -14,7 +14,15 @@ use support::{ECHO, FakeHost, WAIT, connect, server, tool};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 
+// A bare secret value must be unique to its case: the writer scrubs the values
+// of every live set, so a value two cases share hides one's leak behind the other.
 pub const SENTINEL: &str = "sentinel-7f3a9c-do-not-print";
+/// The key inside `keyed`'s URL; no set holds it as a bare value.
+const KEYED_KEY: &str = "keyedkey-2b8e41-do-not-print";
+/// The key inside `LIVE_URL`; no set holds it as a bare value.
+const LIVE_KEY: &str = "livekey-9d05c7-do-not-print";
+/// The bearer token and secret header of the redirect case.
+const REDIRECT_TOKEN: &str = "redirect-4a61f2-do-not-print";
 
 /// Every line the worker's own filter lets through at `RUST_LOG=trace`, as
 /// the production writer prints it.
@@ -61,16 +69,18 @@ impl Captured {
     }
 }
 
-/// `srv` on `url` with the sentinel as its bearer token and its secret header.
+/// `srv` on `url` with `secret://TOK` as its bearer token and `secret://HDR`
+/// as its secret header.
 fn guarded(url: &str) -> Value {
     json!({"type": "http", "url": url, "headers": {"X-API-Key": "secret://HDR"},
            "auth": {"type": "bearer", "token": "secret://TOK"}})
 }
 
-fn sentinel_host() -> Arc<FakeHost> {
+/// A host whose `TOK` and `HDR` are both `token`.
+fn host_with(token: &str) -> Arc<FakeHost> {
     let host = FakeHost::new();
-    host.set_secret("secret://TOK", SENTINEL);
-    host.set_secret("secret://HDR", SENTINEL);
+    host.set_secret("secret://TOK", token);
+    host.set_secret("secret://HDR", token);
     host
 }
 
@@ -88,11 +98,11 @@ async fn sentinel_token_appears_nowhere() {
     let logs = Captured::install();
     let mock = McpMock::start().await;
     mock.tools(json!([tool("echo")])).await;
-    let host = sentinel_host();
+    let host = host_with(SENTINEL);
     // A URL that carries its key; nothing listens there.
     host.set_secret(
         "secret://URL",
-        &format!("http://127.0.0.1:1/mcp?k={SENTINEL}"),
+        &format!("http://127.0.0.1:1/mcp?k={KEYED_KEY}"),
     );
     let config = json!({"mcpServers": {
         "srv": guarded(&mock.url()),
@@ -124,7 +134,10 @@ async fn sentinel_token_appears_nowhere() {
     manager.shutdown().await;
 
     for text in &seen {
-        assert!(!text.contains(SENTINEL), "{text}");
+        assert!(
+            !text.contains(SENTINEL) && !text.contains(KEYED_KEY),
+            "{text}"
+        );
     }
     assert!(
         seen[0].contains("secret://URL"),
@@ -135,7 +148,7 @@ async fn sentinel_token_appears_nowhere() {
         log.contains("mcp_client"),
         "the capture saw none of this crate's lines"
     );
-    assert!(!log.contains(SENTINEL), "{log}");
+    assert!(!log.contains(SENTINEL) && !log.contains(KEYED_KEY), "{log}");
 }
 
 #[tokio::test]
@@ -144,7 +157,7 @@ async fn a_secret_url_stays_out_of_the_log_when_its_server_goes_away() {
     let mock = McpMock::start().await;
     mock.tools(json!([tool("echo")])).await;
     let host = FakeHost::new();
-    host.set_secret("secret://LIVE_URL", &format!("{}?k={SENTINEL}", mock.url()));
+    host.set_secret("secret://LIVE_URL", &format!("{}?k={LIVE_KEY}", mock.url()));
     let config = json!({"mcpServers": {"live": {"type": "http", "url": "secret://LIVE_URL"}}});
     let manager = connect(&host, config).await;
     settle(&manager, "live", State::Ready).await;
@@ -155,10 +168,10 @@ async fn a_secret_url_stays_out_of_the_log_when_its_server_goes_away() {
     manager.shutdown().await;
 
     for text in &seen {
-        assert!(!text.contains(SENTINEL), "{text}");
+        assert!(!text.contains(LIVE_KEY), "{text}");
     }
     let log = logs.text();
-    assert!(!log.contains(SENTINEL), "{log}");
+    assert!(!log.contains(LIVE_KEY) && !log.contains(SENTINEL), "{log}");
 }
 
 /// Pins rmcp's own redirect policy (same-origin 307 and 308 only), which an
@@ -168,7 +181,7 @@ async fn a_cross_origin_redirect_gets_no_credential() {
     let logs = Captured::install();
     let (first, second) = (McpMock::start().await, McpMock::start().await);
     first.tools(json!([tool("echo")])).await;
-    let host = sentinel_host();
+    let host = host_with(REDIRECT_TOKEN);
     let manager = connect(&host, json!({"mcpServers": {"srv": guarded(&first.url())}})).await;
     settle(&manager, "srv", State::Ready).await;
     let location = second.url();
@@ -178,5 +191,9 @@ async fn a_cross_origin_redirect_gets_no_credential() {
     assert!(host.call(ECHO, json!({})).await.is_err());
     assert_eq!(second.request_count().await, 0);
     manager.shutdown().await;
-    assert!(!logs.text().contains(SENTINEL));
+    let log = logs.text();
+    assert!(
+        !log.contains(REDIRECT_TOKEN) && !log.contains(SENTINEL),
+        "{log}"
+    );
 }

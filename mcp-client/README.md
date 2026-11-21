@@ -70,7 +70,7 @@ A server name matches `^[a-z0-9][a-z0-9-]{0,23}$`. Each entry is checked on its 
 |---|---|
 | `type` | `http`; `streamable-http` is read as `http`. Optional when `url` is set. `sse` and `ws` are a config error. |
 | `url` | The endpoint: `https`, or `http` on a loopback host. No user or password in it, and no query parameter whose name looks like a secret. When the URL itself carries a key, make the whole URL a reference. |
-| `headers` | Header name to value, a literal or a reference. The value of a header whose name looks like a credential (`Authorization`, `Cookie`, or a name with a part such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `AUTH`) must be a reference. `Host`, `Content-Length`, `Content-Type`, `Accept` and `Mcp-*` are refused, and `Authorization` cannot be set together with `auth`. |
+| `headers` | Header name to value, a literal or a reference. The value of a header whose name looks like a credential (`Authorization`, `Cookie`, or a name with a part such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `AUTH`) must be a reference. `Host`, `Content-Length`, `Content-Type`, `Accept`, `Last-Event-ID` and `Mcp-*` are refused, and `Authorization` cannot be set together with `auth`. |
 | `auth` | `{"type": "bearer", "token": "secret://NAME"}`. The token must be a reference. Without `auth` the worker sends no credential. |
 | `disabled` | `true` keeps the entry but connects nothing and registers nothing. |
 

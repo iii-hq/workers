@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::io;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use serde_json::{Map, Value, json};
 use tracing_subscriber::fmt::MakeWriter;
@@ -31,7 +31,6 @@ static LIVE: Mutex<Vec<Weak<ServerSecrets>>> = Mutex::new(Vec::new());
 
 /// The secret values one server task knows: those its references resolved
 /// to, and those minted or loaded later. No `Debug`: the values are secrets.
-#[derive(Default)]
 pub struct ServerSecrets {
     resolved: Mutex<Vec<String>>,
     added: Mutex<Vec<String>>,
@@ -40,8 +39,11 @@ pub struct ServerSecrets {
 impl ServerSecrets {
     /// A new set, read by `all_secrets` for as long as it lives.
     pub fn new() -> Arc<ServerSecrets> {
-        let set = Arc::new(ServerSecrets::default());
-        let mut live = LIVE.lock().unwrap();
+        let set = Arc::new(ServerSecrets {
+            resolved: Mutex::default(),
+            added: Mutex::default(),
+        });
+        let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
         live.retain(|w| w.strong_count() > 0);
         live.push(Arc::downgrade(&set));
         set
@@ -49,27 +51,37 @@ impl ServerSecrets {
 
     /// Replaces the values that came from references.
     pub fn set_resolved(&self, values: Vec<String>) {
-        *self.resolved.lock().unwrap() = values;
+        *self.resolved.lock().unwrap_or_else(PoisonError::into_inner) = values;
     }
 
     /// A value minted or loaded after the references were resolved.
     pub fn add(&self, value: &str) {
-        let mut added = self.added.lock().unwrap();
+        let mut added = self.added.lock().unwrap_or_else(PoisonError::into_inner);
         if !value.is_empty() && !added.iter().any(|v| v == value) {
             added.push(value.into());
         }
     }
 
     pub fn values(&self) -> Vec<String> {
-        let mut values = self.resolved.lock().unwrap().clone();
-        values.extend(self.added.lock().unwrap().iter().cloned());
+        let mut values = self
+            .resolved
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        values.extend(
+            self.added
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .cloned(),
+        );
         values
     }
 }
 
 /// The values of every live set.
 pub fn all_secrets() -> Vec<String> {
-    let mut live = LIVE.lock().unwrap();
+    let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
     live.retain(|w| w.strong_count() > 0);
     live.iter()
         .filter_map(Weak::upgrade)
