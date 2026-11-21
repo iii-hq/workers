@@ -141,7 +141,7 @@ async fn run_stream_call(
         reasoning_effort,
         response_format: input.response_format,
     });
-    let headers = build_headers(&cfg);
+    let headers = build_headers(&cfg, input.session_id.as_deref());
 
     // Aborted while we were setting up — never start the upstream request.
     if abort_reg.is_some_and(|g| g.is_fired()) {
