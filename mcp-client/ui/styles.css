@@ -769,3 +769,97 @@
   font-weight: 500;
   line-height: 18px;
 }
+
+/* ── column 3, Connection: the stage track, the entry's form, the negotiated facts ── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-stages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 20px;
+}
+/* A hairline between two stages, so the six read as one path. */
+[data-iii-ui="mcp-client"] .mcp-ui-stage + .mcp-ui-stage::before {
+  content: "";
+  width: 12px;
+  height: 1px;
+  margin-inline: 4px 6px;
+  background: var(--color-edge);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stage[data-tone="ghost"] {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stage[aria-current="step"] {
+  font-weight: 500;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+/* The Form / JSON switch, Transport and Authentication keep their own width. */
+[data-iii-ui="mcp-client"] .mcp-ui-form [data-variant="radio"] {
+  align-self: flex-start;
+  width: fit-content;
+}
+/* Every value of an entry is a machine value. */
+[data-iii-ui="mcp-client"] .mcp-ui-form input {
+  font-family: var(--font-mono);
+}
+/* The console's SecretKeyField card, as a row of the list. */
+[data-iii-ui="mcp-client"] .mcp-ui-form-card {
+  padding: 14px 16px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-form-card,
+[data-iii-ui="mcp-client"] .mcp-ui-form-card + * {
+  border-top: 1px solid var(--color-edge);
+}
+/* Name and value rows: the name, the value, the remove button; messages under the row. */
+[data-iii-ui="mcp-client"] .mcp-ui-kv {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-kv-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-self: stretch;
+  gap: 4px 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-kv-row > input {
+  flex: 3 1 0;
+  min-width: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-kv-row > .mcp-ui-kv-name {
+  flex: 2 1 0;
+}
+/* A SecretKeyField card takes the row's width under the name; messages go last. */
+[data-iii-ui="mcp-client"] .mcp-ui-kv-row[data-card] > :nth-child(2),
+[data-iii-ui="mcp-client"] .mcp-ui-kv-row > .mcp-ui-input-error {
+  flex-basis: 100%;
+  order: 1;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-kv-row > .mcp-ui-input-error {
+  order: 2;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-facts {
+  padding-top: 4px;
+}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  advertisesText,
   announcements,
   blocksOf,
   byName,
@@ -29,12 +30,13 @@ import {
   STATE_WORD,
   searchNote,
   skippedText,
+  stageTrack,
   statusBarText,
   uniqueBy,
 } from '../src/presentation'
 import type { EngineFunction, Item, Server, Skipped } from '../src/types'
 import type { ServersData } from '../src/use-servers'
-import { docs, list, NOW, server, stdio } from './fixtures/servers'
+import { docs, list, NOW, server, server as srv, stdio } from './fixtures/servers'
 
 const err = (code: string, message: string) => ({ code, message }) as never
 const exited = (code: number | null, signal: number | null, next: number | null) =>
@@ -545,5 +547,55 @@ describe('resource read and prompt run', () => {
         (t) => t.uri_template,
       ),
     ).toEqual([template('file:///{name}.txt', 'Text file'), template('repo://{owner}', 'Repo')])
+  })
+})
+
+describe('stageTrack', () => {
+  const tones = (s: Server | null) => stageTrack(s).map((stage) => stage.tone)
+  const ghosts = Array(6).fill('ghost')
+
+  it('shows six labelled stages, none reached for a draft', () => {
+    expect(stageTrack(null).map((s) => s.label)).toEqual([
+      'Config',
+      'Approval',
+      'Secret',
+      'Connect',
+      'Authorize',
+      'Tools',
+    ])
+    expect(tones(null)).toEqual(ghosts)
+  })
+
+  it('marks how far the connection got and where it stopped', () => {
+    expect(tones(srv({ state: 'ready', stage: null }))).toEqual(Array(6).fill('ok'))
+    const connecting = srv({ state: 'connecting', stage: 'connect' })
+    expect(stageTrack(connecting)[3]).toEqual({ id: 'connect', label: 'Connect', tone: 'accent', pulse: true })
+    expect(tones(connecting)).toEqual(['ok', 'ok', 'ok', 'accent', 'ghost', 'ghost'])
+    expect(tones(srv({ state: 'unapproved', stage: 'approval' }))).toEqual([
+      'ok',
+      'warn',
+      'ghost',
+      'ghost',
+      'ghost',
+      'ghost',
+    ])
+    expect(tones(srv({ state: 'needs_login', stage: 'authorize' }))).toEqual(['ok', 'ok', 'ok', 'ok', 'warn', 'ghost'])
+    expect(tones(srv({ state: 'config_error', stage: 'config' }))).toEqual([
+      'alert',
+      'ghost',
+      'ghost',
+      'ghost',
+      'ghost',
+      'ghost',
+    ])
+    expect(tones(srv({ state: 'disabled', stage: null }))).toEqual(ghosts)
+  })
+})
+
+describe('advertisesText', () => {
+  it('names what a connected server advertises', () => {
+    expect(advertisesText(srv())).toEqual('tools')
+    expect(advertisesText(docs())).toEqual('tools · resources · prompts')
+    expect(advertisesText(srv({ tools_listed: false }))).toEqual('none')
   })
 })

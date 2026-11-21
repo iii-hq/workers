@@ -17,6 +17,7 @@ export function ServerList({
   onAction,
   onAdd,
   onImport,
+  draft,
 }: {
   data: ServersData
   selection: Selection
@@ -24,16 +25,26 @@ export function ServerList({
   onAction: (server: string, action: RowActionId) => void
   onAdd?: () => void
   onImport?: () => void
+  /** The unsaved row of Add server, listed last and selected. */
+  draft: { name: string } | null
 }) {
   const state = pageState(data)
   const now = Date.now()
   // The row is the shared list-item look; its pick button and its fix action are siblings in it,
   // since a button inside a button (or inside an option) is lost to assistive tech.
-  const row = (name: string, tone: Tone, pulse = false, description?: string, count?: string, action?: ReactNode) => {
-    const selected = name === selection.server
+  const row = (
+    name: string,
+    tone: Tone,
+    pulse = false,
+    description?: string,
+    count?: string,
+    action?: ReactNode,
+    unsaved = false,
+  ) => {
+    const selected = unsaved || name === selection.server
     return (
       <div
-        key={name}
+        key={unsaved ? ':draft' : name}
         className={`${uiClasses.listItem} mcp-ui-row mcp-ui-server`}
         data-selected={selected || undefined}
         data-tone={tone}
@@ -45,7 +56,7 @@ export function ServerList({
           data-list-roving=""
           data-level="server"
           {...currentRow(selected)}
-          onClick={() => onSelect({ server: name, item: { kind: 'connection' } })}
+          onClick={() => onSelect({ server: unsaved ? null : name, item: { kind: 'connection' } })}
         >
           <span className={uiClasses.listItemIcon}>
             <StatusDot tone={tone} pulse={pulse} />
@@ -104,6 +115,7 @@ export function ServerList({
                     ) : null,
                   )
                 })}
+        {draft ? row(draft.name || 'New server', 'ghost', false, 'Not saved', undefined, null, true) : null}
       </List>
       {onAdd || onImport ? (
         <div className="mcp-ui-foot">

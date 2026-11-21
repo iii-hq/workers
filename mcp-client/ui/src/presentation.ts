@@ -160,6 +160,25 @@ export function presentServer(server: Server, now: number): RowPresentation {
   }
 }
 
+/** The Connection view's six stages: the ones the connection passed, the one it is at (in the row's dot),
+ * and the ones it has not reached. A draft, or a server stopped with no stage, has reached none. */
+export function stageTrack(server: Server | null): { id: Stage; label: string; tone: Tone; pulse: boolean }[] {
+  const at = server?.state === 'ready' ? STAGES.length : STAGES.findIndex((s) => s.id === server?.stage)
+  const here = server ? presentServer(server, 0) : null
+  return STAGES.map((stage, i) => ({
+    ...stage,
+    tone: i < at ? 'ok' : i === at ? (here?.dot ?? 'ghost') : 'ghost',
+    pulse: i === at && here?.pulse === true,
+  }))
+}
+
+/** What a connected server advertises, for the Connection view's facts. */
+export function advertisesText(server: Server): string {
+  const { tools_listed, capabilities } = server
+  const words = [tools_listed && 'tools', capabilities.resources && 'resources', capabilities.prompts && 'prompts']
+  return words.filter(Boolean).join(' · ') || 'none'
+}
+
 /** `69 tools` while the server holds only tools (and maybe instructions);
  * `74 functions` once it also has resource functions or prompts. */
 export function countLabel(server: Server): string {
