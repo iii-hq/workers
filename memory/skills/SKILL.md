@@ -126,8 +126,10 @@ rule; point-in-time information belongs in memories.
   pinned memory, and `memory::pin` is refused.
 - `memory::recall` — rank a bank's memories against a query (the injection
   hook's exact scorer); response names the retrieval mode that ran; `tag`
-  narrows to one label. When the query was embedded, `vector_coverage
-  {covered, live}` counts the bank's live memories the semantic signal can
+  narrows to one label. A query matching a superseded memory's words returns
+  the live memory that replaced it, never the retired text (the raw `mode:
+  lexical | semantic` arms do not). When the query was embedded,
+  `vector_coverage {covered, live}` counts the bank's live memories the semantic signal can
   reach; `covered < live` means some vectors have not landed yet.
 - `memory::preview` — the FULL injection dry-run for a hypothetical chat
   message: the system-prompt rules section, the memories a turn would be

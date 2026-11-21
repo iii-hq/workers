@@ -93,7 +93,9 @@ Consumer-facing:
   CRUD; delete tombstones, update bumps a revision, pinned records are untouchable by every
   automatic path.
 - `memory::recall` — rank a bank's memories against a query with the injection hook's exact
-  scorer; `include_superseded` ranks history too.
+  scorer; a query matching a superseded memory's words returns the live memory that replaced
+  it, never the retired text (the raw `lexical` and `semantic` modes do not);
+  `include_superseded` ranks history too.
 - `memory::preview` — the full injection dry-run: the system-prompt memory section (rules,
   budgets, truncation markers), the memories a turn would be handed post ambient floor and token
   budget, and the appended message verbatim. Shares the hook's code, so it cannot drift.

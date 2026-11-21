@@ -393,16 +393,19 @@ fn survivor_of(c: &Consolidation) -> HashMap<&str, &str> {
 
 /// `expect` with retired keys replaced by their survivors (deduped, order
 /// kept) and `stale` without retired keys.
-fn remap(q: &GoldenQuery, survivors: &HashMap<&str, &str>) -> (Vec<String>, Vec<String>) {
+fn remap(
+    keys: &[String],
+    stale: &[String],
+    survivors: &HashMap<&str, &str>,
+) -> (Vec<String>, Vec<String>) {
     let mut expect: Vec<String> = Vec::new();
-    for k in &q.expect {
+    for k in keys {
         let s = survivors.get(k.as_str()).copied().unwrap_or(k).to_string();
         if !expect.contains(&s) {
             expect.push(s);
         }
     }
-    let stale = q
-        .stale
+    let stale = stale
         .iter()
         .filter(|k| !survivors.contains_key(k.as_str()))
         .cloned()
@@ -564,7 +567,7 @@ async fn gate(vectors_file: &str, baseline_file: &str) {
                 .map(|(m, _)| key_of_id[&m.id].as_str())
                 .collect();
             let (expect, stale) = if mode == "hybrid-consolidated" {
-                remap(q, &survivors)
+                remap(&q.expect, &q.stale, &survivors)
             } else {
                 (q.expect.clone(), q.stale.clone())
             };
@@ -897,16 +900,47 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
     validate(&golden);
     let (vectors, vectors_fp) = load_vectors(&golden, vectors_file);
     let (_dir, bank, key_of_id) = build_bank(&golden, &vectors).await;
+    // A second bank with the recorded consolidation decisions applied, where
+    // a question matching a retired line reaches its live successor.
+    let (_dir2, consolidated, _) = build_bank(&golden, &vectors).await;
+    let consolidation = load_consolidation(&golden);
+    apply_consolidation(&consolidated, &golden, &consolidation).await;
+    let survivors = survivor_of(&consolidation);
     let cfg = WorkerConfig::default();
     let (half_life, limit) = (cfg.decay_half_life_days, cfg.recall_limit);
     let cluster = clusters(&golden);
     let messages = messages(&golden);
+    // The same messages, judged on the survivors of the keys they name.
+    let remapped: Vec<_> = messages
+        .iter()
+        .map(|m| {
+            let (expect, stale) = remap(m.expect, m.stale, &survivors);
+            (expect, stale, remap(m.related, &[], &survivors).0)
+        })
+        .collect();
+    let consolidated_messages: Vec<Message> = messages
+        .iter()
+        .zip(&remapped)
+        .map(|(m, (expect, stale, related))| Message {
+            id: m.id,
+            text: m.text,
+            negative: m.negative,
+            expect,
+            stale,
+            related,
+            slices: m.slices.clone(),
+        })
+        .collect();
 
     let mut report = String::new();
     let mut snapshot = BTreeMap::new();
-    for mode in ["lexical", "hybrid"] {
+    for (mode, bank, messages) in [
+        ("lexical", &bank, &messages),
+        ("hybrid", &bank, &messages),
+        ("hybrid-consolidated", &consolidated, &consolidated_messages),
+    ] {
         let mut rows: Vec<Row> = Vec::new();
-        for m in &messages {
+        for m in messages {
             let qv = match (mode, vectors.items.get(m.id)) {
                 ("lexical", _) => None,
                 (_, Some(e)) => Some(e.v.as_slice()),
@@ -924,6 +958,7 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
                     half_life,
                     false,
                     0.0,
+                    |_| true,
                 )
                 .await;
             let key = |mem: &Memory| key_of_id[&mem.id].as_str();
@@ -1032,19 +1067,22 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
         );
         // A needed line recall ranks but the hook drops: only the three
         // paraphrases that share no word with their question, reached through
-        // a bare `user` alone, in lexical mode. A new loss fails here, not
-        // only in the snapshot.
+        // a bare `user` alone, in lexical mode; and `id-age`, which hybrid
+        // does not tell for that question either: consolidation retires lines
+        // that ranked above it, lifting it inside `recall_limit`. A new loss
+        // fails here, not only in the snapshot.
         let lost = summaries["all"]
             .positives
             .as_ref()
             .map(|p| p.injection_loss.clone())
             .unwrap_or_default();
-        let known: &[&str] = match mode {
-            "lexical" => &[
+        let known: &[&str] = match (mode, vectors_file) {
+            ("lexical", _) => &[
                 "q-en-work-release-days: en-work-deploy-window",
                 "q-en-work-late-week-rollout: en-work-deploy-window",
                 "q-id-job-title: id-role",
             ],
+            ("hybrid-consolidated", "vectors.json") => &["q-id-aniversario: id-age"],
             _ => &[],
         };
         assert_eq!(
@@ -1289,7 +1327,7 @@ mod metric_tests {
             expect: keys(&["moved", "dup", "other"]),
             stale: keys(&["oct15"]),
         };
-        let (expect, stale) = remap(&q, &survivors);
+        let (expect, stale) = remap(&q.expect, &q.stale, &survivors);
         assert_eq!(expect, keys(&["dup", "other"]), "deduped, order kept");
         assert!(
             stale.is_empty(),

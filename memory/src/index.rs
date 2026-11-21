@@ -129,6 +129,13 @@ impl Bm25Index {
 
     /// Okapi BM25 over the query tokens.
     pub fn score(&self, query_tokens: &[String]) -> HashMap<String, f32> {
+        self.score_of(self, query_tokens)
+    }
+
+    /// Okapi BM25 of `docs`' documents on this index's statistics (document
+    /// count, document frequency, average length): documents held outside
+    /// the index score on the scale of those inside.
+    pub fn score_of(&self, docs: &Bm25Index, query_tokens: &[String]) -> HashMap<String, f32> {
         let n = self.doc_len.len() as f32;
         if n == 0.0 {
             return HashMap::new();
@@ -136,13 +143,14 @@ impl Bm25Index {
         let avgdl = (self.total_len as f32 / n).max(1.0);
         let mut scores: HashMap<String, f32> = HashMap::new();
         for term in query_tokens {
-            let Some(docs) = self.postings.get(term) else {
+            let Some(postings) = docs.postings.get(term) else {
                 continue;
             };
-            let df = docs.len() as f32;
+            // A term no document here holds counts as held by one.
+            let df = self.postings.get(term).map_or(0, HashMap::len).max(1) as f32;
             let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-            for (doc, tf) in docs {
-                let dl = *self.doc_len.get(doc).unwrap_or(&0) as f32;
+            for (doc, tf) in postings {
+                let dl = *docs.doc_len.get(doc).unwrap_or(&0) as f32;
                 let tf = *tf as f32;
                 let s = idf * (tf * (BM25_K1 + 1.0))
                     / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl));
@@ -331,6 +339,23 @@ mod scoring_tests {
         assert!(!index.score(&tokenize("api port")).is_empty());
         index.remove(&m.id);
         assert!(index.score(&tokenize("api port")).is_empty());
+    }
+
+    #[test]
+    fn score_of_scores_an_outside_document_on_this_index_statistics() {
+        let mut live = Bm25Index::default();
+        let twin = memory("dana is on call for payments", &[]);
+        live.add(&twin);
+        live.add(&memory("the nightly backup runs at two", &[]));
+        let mut outside = Bm25Index::default();
+        let mut same_text = twin.clone();
+        same_text.id = "fp-outside".into();
+        outside.add(&same_text);
+        let q = tokenize("on call payments");
+        let mine = live.score(&q);
+        assert_eq!(live.score_of(&outside, &q)["fp-outside"], mine[&twin.id]);
+        assert_eq!(live.score_of(&live, &q), mine);
+        assert!(Bm25Index::default().score_of(&outside, &q).is_empty());
     }
 
     #[test]
