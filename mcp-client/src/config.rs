@@ -1,7 +1,11 @@
-use crate::refs::{Ref, Text};
+use crate::refs::{Ref, Text, looks_secret_name};
+use schemars::JsonSchema;
+use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use url::{Host, Url};
 
 pub const ROOT_KEY: &str = "mcpServers";
 
@@ -143,6 +147,524 @@ impl Entry {
     }
 }
 
+/// The whole message of rule 9, so callers can tell it from `invalid_config`.
+pub const STDIO_OFF: &str =
+    "stdio servers are turned off on this worker (III_MCP_CLIENT_STDIO=off)";
+
+const REF_ONLY: &str = "must be a reference (`secret://NAME` or `env://NAME`), not a literal";
+const NO_LITERAL: &str =
+    "a literal is not allowed here; store the value in the vault and use `secret://NAME`";
+const OBJECT: &str = "must be an object";
+const STRING: &str = "must be a string";
+const LOOPBACK: &str = "must be https, or http on a loopback host";
+const TRANSPORT_HEADERS: [&str; 5] = [
+    "host",
+    "content-length",
+    "content-type",
+    "accept",
+    "last-event-id",
+];
+const FINGERPRINT_KEYS: [&str; 7] = ["command", "args", "env", "cwd", "url", "headers", "auth"];
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct Issue {
+    /// JSON pointer into the candidate value.
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct SendEffect {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub host: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
+pub struct Effects {
+    pub runs: Option<String>,
+    pub sends: Vec<SendEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Checked {
+    /// `Some` exactly when `errors` is empty.
+    pub entry: Option<Entry>,
+    pub errors: Vec<Issue>,
+    pub warnings: Vec<Issue>,
+    pub fingerprint: String,
+    pub effects: Effects,
+}
+
+fn esc(s: &str) -> String {
+    s.replace('~', "~0").replace('/', "~1")
+}
+
+struct Sink {
+    base: String,
+    errors: Vec<Issue>,
+    warnings: Vec<Issue>,
+}
+
+impl Sink {
+    fn err(&mut self, at: &str, message: &str) {
+        self.errors.push(Issue {
+            path: format!("{}{at}", self.base),
+            message: message.into(),
+        });
+    }
+
+    fn warn(&mut self, at: &str, message: &str) {
+        self.warnings.push(Issue {
+            path: format!("{}{at}", self.base),
+            message: message.into(),
+        });
+    }
+}
+
+fn is_loopback(host: Option<Host<&str>>) -> bool {
+    match host {
+        Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(a)) => a.octets()[0] == 127,
+        Some(Host::Ipv6(a)) => a.is_loopback(),
+        None => false,
+    }
+}
+
+/// The URL checks shared by rule 3 and by a URL that came out of a reference.
+pub fn check_url_text(text: &str) -> Result<(), &'static str> {
+    let u = Url::parse(text).map_err(|_| "not a valid URL")?;
+    if !(u.scheme() == "https" || u.scheme() == "http" && is_loopback(u.host())) {
+        return Err(LOOPBACK);
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err("must not carry a user name or password");
+    }
+    Ok(())
+}
+
+fn url_issue(text: &str, https_only: bool) -> Option<String> {
+    if https_only && Url::parse(text).is_ok_and(|u| u.scheme() != "https") {
+        return Some("must be https".into());
+    }
+    if let Err(m) = check_url_text(text) {
+        return Some(m.into());
+    }
+    let u = Url::parse(text).ok()?;
+    u.query_pairs().find(|(k, _)| looks_secret_name(k)).map(|(k, _)| {
+        format!(
+            "query parameter `{k}` looks like a secret; make the whole value a reference (`secret://NAME`)"
+        )
+    })
+}
+
+fn url_field(sink: &mut Sink, at: &str, v: Option<&Value>, https_only: bool, ref_ok: bool) {
+    match v.and_then(Value::as_str) {
+        None => sink.err(at, STRING),
+        Some(s) if ref_ok && Ref::parse(s).is_some() => {}
+        Some(s) => {
+            if let Some(m) = url_issue(s, https_only) {
+                sink.err(at, &m);
+            }
+        }
+    }
+}
+
+fn is_ref(v: Option<&Value>) -> bool {
+    v.and_then(Value::as_str).and_then(Ref::parse).is_some()
+}
+
+fn present<'a>(o: &'a serde_json::Map<String, Value>, k: &str) -> Option<&'a Value> {
+    o.get(k).filter(|v| !v.is_null())
+}
+
+fn string_array(v: &Value) -> Option<Vec<&str>> {
+    v.as_array()?.iter().map(Value::as_str).collect()
+}
+
+/// Rule 4 (and rule 3 on the auth URLs).
+fn check_auth(sink: &mut Sink, auth: &Value) {
+    let Some(a) = auth.as_object() else {
+        return sink.err("/auth", OBJECT);
+    };
+    let known: &[&str] = match a.get("type").and_then(Value::as_str) {
+        Some("bearer") => {
+            if !is_ref(a.get("token")) {
+                sink.err("/auth/token", REF_ONLY);
+            }
+            &["type", "token"]
+        }
+        Some("client_credentials") => {
+            match present(a, "token_url") {
+                None => sink.err("/auth/token_url", "required for client_credentials"),
+                v => url_field(sink, "/auth/token_url", v, false, false),
+            }
+            match present(a, "client_id") {
+                None => sink.err("/auth/client_id", "required for client_credentials"),
+                Some(v) if !v.is_string() => sink.err("/auth/client_id", STRING),
+                Some(_) => {}
+            }
+            if !is_ref(a.get("client_secret")) {
+                sink.err("/auth/client_secret", REF_ONLY);
+            }
+            if present(a, "scope").is_some_and(|v| !v.is_string()) {
+                sink.err("/auth/scope", STRING);
+            }
+            &["type", "token_url", "client_id", "client_secret", "scope"]
+        }
+        Some("oauth") => {
+            if present(a, "scopes").is_some_and(|v| string_array(v).is_none()) {
+                sink.err("/auth/scopes", "must be an array of strings");
+            }
+            if present(a, "client_id").is_some_and(|v| !v.is_string()) {
+                sink.err("/auth/client_id", STRING);
+            }
+            if present(a, "client_secret").is_some() && !is_ref(a.get("client_secret")) {
+                sink.err("/auth/client_secret", REF_ONLY);
+            }
+            if let v @ Some(_) = present(a, "client_metadata_url") {
+                url_field(sink, "/auth/client_metadata_url", v, true, false);
+            }
+            &[
+                "type",
+                "scopes",
+                "client_id",
+                "client_secret",
+                "client_metadata_url",
+            ]
+        }
+        _ => {
+            return sink.err(
+                "/auth/type",
+                "unknown auth type; use `bearer`, `client_credentials` or `oauth`",
+            );
+        }
+    };
+    for k in a.keys().filter(|k| !known.contains(&k.as_str())) {
+        sink.warn(&format!("/auth/{}", esc(k)), "unknown field, ignored");
+    }
+}
+
+fn check_headers(sink: &mut Sink, headers: &Value, has_auth: bool) {
+    let Some(h) = headers.as_object() else {
+        return sink.err("/headers", OBJECT);
+    };
+    for (name, v) in h {
+        let at = format!("/headers/{}", esc(name));
+        let lower = name.to_ascii_lowercase();
+        if http::HeaderName::from_bytes(name.as_bytes()).is_err() {
+            sink.err(&at, "not a valid HTTP header name");
+        } else if TRANSPORT_HEADERS.contains(&lower.as_str()) || lower.starts_with("mcp-") {
+            sink.err(&at, "set by the transport, cannot be configured");
+        } else if lower == "authorization" && has_auth {
+            sink.err(
+                &at,
+                "remove the `Authorization` header or the `auth` block; both cannot be set",
+            );
+        } else if !v.is_string() {
+            sink.err(&at, STRING);
+        } else if !is_ref(Some(v)) && looks_secret_name(name) {
+            sink.err(&at, NO_LITERAL);
+        }
+    }
+}
+
+fn check_env(sink: &mut Sink, env: &Value) {
+    let Some(e) = env.as_object() else {
+        return sink.err("/env", OBJECT);
+    };
+    for (name, v) in e {
+        let at = format!("/env/{}", esc(name));
+        if !v.is_string() {
+            sink.err(&at, STRING);
+        } else if !is_ref(Some(v)) && looks_secret_name(name) {
+            sink.err(&at, NO_LITERAL);
+        }
+    }
+}
+
+/// Rule 8: any string anywhere that the configuration worker would expand.
+fn walk_expansions(sink: &mut Sink, v: &Value, at: &str) {
+    match v {
+        Value::String(s) => {
+            if s.find("${").is_some_and(|i| s[i..].contains('}')) {
+                sink.err(at, "use `env://VAR` instead of `${VAR}`");
+            }
+        }
+        Value::Array(a) => a
+            .iter()
+            .enumerate()
+            .for_each(|(i, x)| walk_expansions(sink, x, &format!("{at}/{i}"))),
+        Value::Object(o) => o
+            .iter()
+            .for_each(|(k, x)| walk_expansions(sink, x, &format!("{at}/{}", esc(k)))),
+        _ => {}
+    }
+}
+
+fn valid_name(name: &str) -> bool {
+    (1..=24).contains(&name.len())
+        && !name.starts_with('-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn build_auth(v: Option<&Value>) -> Option<Auth> {
+    let Some(a) = v.and_then(Value::as_object) else {
+        return Some(Auth::None);
+    };
+    let s = |k: &str| present(a, k).and_then(Value::as_str).map(String::from);
+    let r = |k: &str| present(a, k).and_then(Value::as_str).and_then(Ref::parse);
+    Some(match a.get("type")?.as_str()? {
+        "bearer" => Auth::Bearer { token: r("token")? },
+        "client_credentials" => Auth::ClientCredentials {
+            token_url: s("token_url")?,
+            client_id: s("client_id")?,
+            client_secret: r("client_secret")?,
+            scope: s("scope"),
+        },
+        _ => Auth::OAuth {
+            scopes: present(a, "scopes")
+                .and_then(string_array)
+                .map(|v| v.into_iter().map(String::from).collect())
+                .unwrap_or_default(),
+            client_id: s("client_id"),
+            client_secret: r("client_secret"),
+            client_metadata_url: s("client_metadata_url"),
+        },
+    })
+}
+
+fn texts(o: Option<&Value>) -> Option<BTreeMap<String, Text>> {
+    let Some(o) = present_value(o) else {
+        return Some(BTreeMap::new());
+    };
+    o.as_object()?
+        .iter()
+        .map(|(k, v)| Some((k.clone(), Text::parse(v.as_str()?))))
+        .collect()
+}
+
+fn present_value(v: Option<&Value>) -> Option<&Value> {
+    v.filter(|v| !v.is_null())
+}
+
+fn build(name: &str, o: &serde_json::Map<String, Value>, http: bool) -> Option<Entry> {
+    let transport = if http {
+        Transport::Http(HttpEntry {
+            url: Text::parse(o.get("url")?.as_str()?),
+            headers: texts(o.get("headers"))?,
+            auth: build_auth(present(o, "auth"))?,
+        })
+    } else {
+        Transport::Stdio(StdioEntry {
+            command: o.get("command")?.as_str()?.into(),
+            args: present(o, "args")
+                .map_or(Some(vec![]), string_array)?
+                .into_iter()
+                .map(Text::parse)
+                .collect(),
+            env: texts(o.get("env"))?,
+            cwd: present(o, "cwd").and_then(Value::as_str).map(PathBuf::from),
+        })
+    };
+    Some(Entry {
+        name: name.into(),
+        disabled: o.get("disabled").and_then(Value::as_bool).unwrap_or(false),
+        transport,
+    })
+}
+
+fn host_of(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from))
+        .unwrap_or_default()
+}
+
+fn effects(e: &Entry) -> Effects {
+    let sends = |host_of_ref: &dyn Fn(&Ref) -> String| {
+        e.refs()
+            .into_iter()
+            .map(|r| SendEffect {
+                host: host_of_ref(&r),
+                reference: r.to_string(),
+            })
+            .collect()
+    };
+    match &e.transport {
+        Transport::Stdio(_) => Effects {
+            runs: Some(e.target()),
+            sends: sends(&|_| "process".into()),
+        },
+        Transport::Http(h) => {
+            let url_host = match &h.url {
+                Text::Ref(r) => r.to_string(),
+                Text::Literal(s) => host_of(s),
+            };
+            let token_host = match &h.auth {
+                Auth::ClientCredentials {
+                    token_url,
+                    client_secret,
+                    ..
+                } => Some((client_secret.clone(), host_of(token_url))),
+                _ => None,
+            };
+            Effects {
+                runs: None,
+                sends: sends(&|r| match &token_host {
+                    Some((secret, host)) if secret == r => host.clone(),
+                    _ => url_host.clone(),
+                }),
+            }
+        }
+    }
+}
+
+/// SHA-256 hex over the canonical JSON of the seven keys an operator approves.
+pub fn fingerprint(raw: &Value) -> String {
+    let picked: serde_json::Map<String, Value> = FINGERPRINT_KEYS
+        .iter()
+        .filter_map(|k| Some((k.to_string(), raw.get(k)?.clone())))
+        .collect();
+    // serde_json::Map is a BTreeMap here, so keys come out sorted at every level.
+    let text = serde_json::to_string(&picked).unwrap_or_default();
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+pub fn check_entry(name: &str, raw: &Value, stdio_enabled: bool) -> Checked {
+    let mut sink = Sink {
+        base: format!("/mcpServers/{}", esc(name)),
+        errors: vec![],
+        warnings: vec![],
+    };
+    let mut entry = None;
+    if let Some(o) = raw.as_object() {
+        if !valid_name(name) {
+            sink.err(
+                "",
+                "server name must be 1 to 24 characters: lower-case letters, digits and hyphens, not starting with a hyphen",
+            );
+        }
+        let http = check_transport(&mut sink, o);
+        walk_expansions(&mut sink, raw, "");
+        if http == Some(false) && !stdio_enabled {
+            sink.err("", STDIO_OFF);
+        }
+        if sink.errors.is_empty() {
+            entry = http.and_then(|h| build(name, o, h));
+        }
+    } else {
+        sink.err("", "entry must be an object");
+    }
+    let effects = entry.as_ref().map(effects).unwrap_or_default();
+    Checked {
+        entry,
+        errors: sink.errors,
+        warnings: sink.warnings,
+        fingerprint: fingerprint(raw),
+        effects,
+    }
+}
+
+/// Rules 2 to 7 and 10; `Some(true)` is an http entry, `Some(false)` stdio,
+/// `None` a rule 2 error.
+fn check_transport(sink: &mut Sink, o: &serde_json::Map<String, Value>) -> Option<bool> {
+    let (url, command) = (present(o, "url").is_some(), present(o, "command").is_some());
+    let http = match (url, command) {
+        (true, true) => {
+            sink.err("", "set `url` or `command`, not both");
+            None
+        }
+        (false, false) => {
+            sink.err("", "set `url` (http) or `command` (stdio)");
+            None
+        }
+        _ => Some(url),
+    };
+    let declared = present(o, "type").map(|t| t.as_str().unwrap_or(""));
+    let http = match (http, declared) {
+        (Some(_), Some("http" | "streamable-http")) if !url => {
+            sink.err("/type", "type `http` needs `url`");
+            None
+        }
+        (Some(_), Some("stdio")) if url => {
+            sink.err("/type", "type `stdio` needs `command`");
+            None
+        }
+        (Some(h), Some("http" | "streamable-http" | "stdio") | None) => Some(h),
+        (Some(_), Some(t @ ("sse" | "ws"))) => {
+            sink.err(
+                "/type",
+                &format!("type `{t}` is not supported; use `http` or `stdio`"),
+            );
+            None
+        }
+        (Some(_), Some(_)) => {
+            sink.err("/type", "unknown type; use `http` or `stdio`");
+            None
+        }
+        (None, _) => None,
+    };
+    let http = http?;
+    let auth = present(o, "auth");
+    if http {
+        url_field(sink, "/url", o.get("url"), false, true);
+        if let Some(a) = auth {
+            check_auth(sink, a);
+        }
+        if let Some(h) = present(o, "headers") {
+            check_headers(sink, h, auth.is_some());
+        }
+    } else {
+        if !o
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|c| !c.trim().is_empty())
+        {
+            sink.err("/command", "must be a non-empty string");
+        }
+        if present(o, "args").is_some_and(|v| string_array(v).is_none()) {
+            sink.err("/args", "must be an array of strings");
+        }
+        if present(o, "cwd").is_some_and(|v| {
+            !v.as_str()
+                .is_some_and(|s| std::path::Path::new(s).is_absolute())
+        }) {
+            sink.err("/cwd", "must be an absolute path");
+        }
+        if let Some(e) = present(o, "env") {
+            check_env(sink, e);
+        }
+        if auth.is_some() {
+            sink.err(
+                "/auth",
+                "auth is for http servers; a stdio server takes credentials through `env`",
+            );
+        }
+    }
+    if present(o, "disabled").is_some_and(|v| !v.is_boolean()) {
+        sink.err("/disabled", "must be true or false");
+    }
+    let ignored = if http {
+        ("an http", ["args", "env", "cwd"].as_slice())
+    } else {
+        ("a stdio", ["headers"].as_slice())
+    };
+    for k in o.keys() {
+        if !KNOWN_FIELDS.contains(&k.as_str()) {
+            sink.warn(&format!("/{}", esc(k)), "unknown field, ignored");
+        } else if ignored.1.contains(&k.as_str()) {
+            sink.warn(
+                &format!("/{}", esc(k)),
+                &format!("ignored on {} entry", ignored.0),
+            );
+        }
+    }
+    Some(http)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +797,479 @@ mod tests {
                 r("secret://PLAYWRIGHT_GITHUB_TOKEN"),
                 r("env://HTTPS_PROXY")
             ]
+        );
+    }
+
+    const REF_ONLY: &str = "must be a reference (`secret://NAME` or `env://NAME`), not a literal";
+    const NO_LITERAL: &str =
+        "a literal is not allowed here; store the value in the vault and use `secret://NAME`";
+    const URL: &str = "https://x.example/mcp";
+
+    fn check(name: &str, raw: Value) -> Checked {
+        check_entry(name, &raw, true)
+    }
+
+    fn one_error(raw: Value) -> (String, String) {
+        let c = check("s", raw.clone());
+        assert!(c.entry.is_none(), "{raw}");
+        assert_eq!(c.errors.len(), 1, "{raw}: {:?}", c.errors);
+        let e = &c.errors[0];
+        (
+            e.path.strip_prefix("/mcpServers/s").unwrap().to_string(),
+            e.message.clone(),
+        )
+    }
+
+    fn send(r: &str, host: &str) -> SendEffect {
+        SendEffect {
+            reference: r.into(),
+            host: host.into(),
+        }
+    }
+
+    #[test]
+    fn the_standard_shapes_parse() {
+        let cases = [
+            (
+                json!({"type": "http", "url": "https://mcp.linear.app/mcp",
+                    "auth": {"type": "bearer", "token": "secret://LINEAR_API_KEY"}}),
+                "bearer",
+            ),
+            (json!({"url": URL}), "none"),
+            (
+                json!({"type": "streamable-http", "url": "http://127.0.0.1:8080/mcp"}),
+                "none",
+            ),
+            (
+                json!({"url": "http://localhost:8080/mcp", "disabled": true}),
+                "none",
+            ),
+            (
+                json!({"url": "http://[::1]:8080/mcp",
+                    "headers": {"X-API-Key": "secret://K", "X-Workspace": "acme"}}),
+                "header",
+            ),
+            (json!({"url": "secret://MCP_URL"}), "none"),
+            (json!({"url": URL, "auth": {"type": "oauth"}}), "oauth"),
+            (
+                json!({"url": URL, "auth": {"type": "client_credentials",
+                    "token_url": "https://api.linear.app/oauth/token", "client_id": "id",
+                    "client_secret": "secret://S", "scope": "read"}}),
+                "client_credentials",
+            ),
+        ];
+        for (raw, kind) in cases {
+            let c = check("linear", raw.clone());
+            assert!(c.errors.is_empty() && c.warnings.is_empty(), "{raw}: {c:?}");
+            assert_eq!(c.entry.unwrap().auth_kind(), kind, "{raw}");
+        }
+        let c = check(
+            "linear",
+            json!({"url": "http://localhost:8080/mcp", "disabled": true}),
+        );
+        let e = c.entry.unwrap();
+        assert!(e.disabled && e.name == "linear");
+        let c = check(
+            "pw",
+            json!({"command": "npx", "args": ["-y", "@playwright/mcp@0.0.41"],
+                "env": {"GITHUB_TOKEN": "secret://T", "HTTPS_PROXY": "env://HTTPS_PROXY",
+                    "PLAYWRIGHT_BROWSERS_PATH": "/opt/pw-browsers"},
+                "cwd": "/srv"}),
+        );
+        assert!(c.errors.is_empty() && c.warnings.is_empty(), "{c:?}");
+        assert!(matches!(c.entry.unwrap().transport, Transport::Stdio(_)));
+    }
+
+    #[test]
+    fn every_rule_refuses_its_case() {
+        let url = URL;
+        let cc = |f: Value| {
+            let mut a = json!({"type": "client_credentials",
+                "token_url": "https://t.example/token", "client_id": "id",
+                "client_secret": "secret://S"});
+            for (k, v) in f.as_object().unwrap() {
+                if v.is_null() {
+                    a.as_object_mut().unwrap().remove(k);
+                } else {
+                    a[k] = v.clone();
+                }
+            }
+            json!({"url": url, "auth": a})
+        };
+        let both = "set `url` or `command`, not both";
+        let cases: Vec<(Value, &str, &str)> = vec![
+            (json!(null), "", "entry must be an object"),
+            (
+                json!({"type": "http"}),
+                "",
+                "set `url` (http) or `command` (stdio)",
+            ),
+            (json!({"url": url, "command": "npx"}), "", both),
+            (
+                json!({"type": "sse", "url": url}),
+                "/type",
+                "type `sse` is not supported; use `http` or `stdio`",
+            ),
+            (
+                json!({"type": "ws", "url": url}),
+                "/type",
+                "type `ws` is not supported; use `http` or `stdio`",
+            ),
+            (
+                json!({"type": "grpc", "url": url}),
+                "/type",
+                "unknown type; use `http` or `stdio`",
+            ),
+            (
+                json!({"type": "stdio", "url": url}),
+                "/type",
+                "type `stdio` needs `command`",
+            ),
+            (
+                json!({"type": "http", "command": "npx"}),
+                "/type",
+                "type `http` needs `url`",
+            ),
+            (json!({"url": 5}), "/url", "must be a string"),
+            (json!({"url": "not a url"}), "/url", "not a valid URL"),
+            (
+                json!({"url": "ftp://x.example/mcp"}),
+                "/url",
+                "must be https, or http on a loopback host",
+            ),
+            (
+                json!({"url": "http://example.com/mcp"}),
+                "/url",
+                "must be https, or http on a loopback host",
+            ),
+            (
+                json!({"url": "https://u:p@x.example/mcp"}),
+                "/url",
+                "must not carry a user name or password",
+            ),
+            (
+                json!({"url": "https://x.example/mcp?team=a&api_key=1"}),
+                "/url",
+                "query parameter `api_key` looks like a secret; make the whole value a reference (`secret://NAME`)",
+            ),
+            (
+                cc(json!({"token_url": "http://example.com/t"})),
+                "/auth/token_url",
+                "must be https, or http on a loopback host",
+            ),
+            (
+                json!({"url": url, "auth": {"type": "oauth", "client_metadata_url": "http://localhost/c.json"}}),
+                "/auth/client_metadata_url",
+                "must be https",
+            ),
+            (
+                json!({"url": url, "auth": "x"}),
+                "/auth",
+                "must be an object",
+            ),
+            (
+                json!({"url": url, "auth": {"type": "basic"}}),
+                "/auth/type",
+                "unknown auth type; use `bearer`, `client_credentials` or `oauth`",
+            ),
+            (
+                json!({"url": url, "auth": {"type": "bearer", "token": "abc"}}),
+                "/auth/token",
+                REF_ONLY,
+            ),
+            (
+                json!({"url": url, "auth": {"type": "bearer", "token": "Bearer secret://X"}}),
+                "/auth/token",
+                REF_ONLY,
+            ),
+            (
+                json!({"url": url, "auth": {"type": "bearer"}}),
+                "/auth/token",
+                REF_ONLY,
+            ),
+            (
+                cc(json!({"client_secret": "abc"})),
+                "/auth/client_secret",
+                REF_ONLY,
+            ),
+            (
+                cc(json!({"client_secret": null})),
+                "/auth/client_secret",
+                REF_ONLY,
+            ),
+            (
+                cc(json!({"token_url": null})),
+                "/auth/token_url",
+                "required for client_credentials",
+            ),
+            (
+                cc(json!({"client_id": null})),
+                "/auth/client_id",
+                "required for client_credentials",
+            ),
+            (
+                cc(json!({"client_id": 5})),
+                "/auth/client_id",
+                "must be a string",
+            ),
+            (cc(json!({"scope": 5})), "/auth/scope", "must be a string"),
+            (
+                json!({"url": url, "auth": {"type": "oauth", "scopes": "x"}}),
+                "/auth/scopes",
+                "must be an array of strings",
+            ),
+            (
+                json!({"url": url, "auth": {"type": "oauth", "client_secret": "abc"}}),
+                "/auth/client_secret",
+                REF_ONLY,
+            ),
+            (
+                json!({"url": url, "headers": "x"}),
+                "/headers",
+                "must be an object",
+            ),
+            (
+                json!({"url": url, "headers": {"bad name": "x"}}),
+                "/headers/bad name",
+                "not a valid HTTP header name",
+            ),
+            (
+                json!({"url": url, "headers": {"Content-Type": "x"}}),
+                "/headers/Content-Type",
+                "set by the transport, cannot be configured",
+            ),
+            (
+                json!({"url": url, "headers": {"Mcp-Session-Id": "x"}}),
+                "/headers/Mcp-Session-Id",
+                "set by the transport, cannot be configured",
+            ),
+            (
+                json!({"url": url, "headers": {"Last-Event-ID": "x"}}),
+                "/headers/Last-Event-ID",
+                "set by the transport, cannot be configured",
+            ),
+            (
+                json!({"url": url, "headers": {"Authorization": "secret://A"}, "auth": {"type": "oauth"}}),
+                "/headers/Authorization",
+                "remove the `Authorization` header or the `auth` block; both cannot be set",
+            ),
+            (
+                json!({"url": url, "headers": {"X-Workspace": 5}}),
+                "/headers/X-Workspace",
+                "must be a string",
+            ),
+            (
+                json!({"url": url, "headers": {"Authorization": "Bearer abc"}}),
+                "/headers/Authorization",
+                NO_LITERAL,
+            ),
+            (
+                json!({"command": "npx", "env": {"GITHUB_TOKEN": "abc"}}),
+                "/env/GITHUB_TOKEN",
+                NO_LITERAL,
+            ),
+            (
+                json!({"command": ""}),
+                "/command",
+                "must be a non-empty string",
+            ),
+            (
+                json!({"command": 5}),
+                "/command",
+                "must be a non-empty string",
+            ),
+            (
+                json!({"command": "npx", "args": "x"}),
+                "/args",
+                "must be an array of strings",
+            ),
+            (
+                json!({"command": "npx", "args": [1]}),
+                "/args",
+                "must be an array of strings",
+            ),
+            (
+                json!({"command": "npx", "cwd": "rel/dir"}),
+                "/cwd",
+                "must be an absolute path",
+            ),
+            (
+                json!({"command": "npx", "env": "x"}),
+                "/env",
+                "must be an object",
+            ),
+            (
+                json!({"command": "npx", "env": {"A": 1}}),
+                "/env/A",
+                "must be a string",
+            ),
+            (
+                json!({"command": "npx", "auth": {"type": "oauth"}}),
+                "/auth",
+                "auth is for http servers; a stdio server takes credentials through `env`",
+            ),
+            (
+                json!({"url": url, "disabled": "yes"}),
+                "/disabled",
+                "must be true or false",
+            ),
+            (
+                json!({"command": "npx", "args": ["--dir=${HOME}/data"]}),
+                "/args/0",
+                "use `env://VAR` instead of `${VAR}`",
+            ),
+            (
+                json!({"url": url, "note": {"deep": ["${X}"]}}),
+                "/note/deep/0",
+                "use `env://VAR` instead of `${VAR}`",
+            ),
+        ];
+        for (raw, path, message) in cases {
+            assert_eq!(
+                one_error(raw.clone()),
+                (path.to_string(), message.to_string()),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn names_follow_rule_one_and_errors_keep_the_rule_order() {
+        let raw = json!({"url": "https://x.example/${T}/mcp"});
+        for ok in ["linear", "a", "0", "linear-app", &"a".repeat(24)] {
+            let c = check(ok, json!({"url": URL}));
+            assert!(c.errors.is_empty(), "{ok}");
+        }
+        for bad in ["", "Linear", "-a", "a_b", "a.b", &"a".repeat(25)] {
+            let c = check(bad, raw.clone());
+            assert_eq!(c.errors.len(), 2, "{bad:?}: {:?}", c.errors);
+            assert_eq!(c.errors[0].path, format!("/mcpServers/{bad}"));
+            assert!(
+                c.errors[0].message.starts_with("server name must be"),
+                "{bad:?}"
+            );
+            assert!(c.errors[1].message.contains("env://VAR"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn stdio_can_be_switched_off() {
+        assert_eq!(
+            check_entry("s", &json!({"command": "npx"}), false).errors,
+            vec![Issue {
+                path: "/mcpServers/s".into(),
+                message: STDIO_OFF.into()
+            }]
+        );
+        assert!(
+            check_entry("s", &json!({"url": URL}), false)
+                .entry
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn unknown_fields_are_warnings_and_never_read() {
+        let c = check(
+            "s",
+            json!({"url": URL, "headersHelper": "/bin/steal", "http_headers_helper": "x",
+                "timeout": 30, "env": {"A": "b"}, "auth": {"type": "oauth", "audience": "x"}}),
+        );
+        assert!(c.entry.is_some(), "{c:?}");
+        let mut got: Vec<_> = c
+            .warnings
+            .iter()
+            .map(|w| (w.path.as_str(), w.message.as_str()))
+            .collect();
+        got.sort();
+        let unknown = "unknown field, ignored";
+        assert_eq!(
+            got,
+            vec![
+                ("/mcpServers/s/auth/audience", unknown),
+                ("/mcpServers/s/env", "ignored on an http entry"),
+                ("/mcpServers/s/headersHelper", unknown),
+                ("/mcpServers/s/http_headers_helper", unknown),
+                ("/mcpServers/s/timeout", unknown),
+            ]
+        );
+        let c = check("s", json!({"command": "npx", "headers": {"X": "y"}}));
+        assert_eq!(c.warnings.len(), 1);
+        assert_eq!(c.warnings[0].message, "ignored on a stdio entry");
+    }
+
+    #[test]
+    fn fingerprint_covers_seven_keys_whatever_their_order() {
+        const LINEAR_FP: &str = "4ba127a86d69977e896f4e4291cf18c8dac1f1bc7c7cf055bdd20216efa50ba6";
+        let base = json!({"type": "http", "url": "https://mcp.linear.app/mcp",
+            "auth": {"type": "bearer", "token": "secret://LINEAR_API_KEY"}});
+        assert_eq!(fingerprint(&base), LINEAR_FP);
+        let reordered = json!({"auth": {"token": "secret://LINEAR_API_KEY", "type": "bearer"},
+            "url": "https://mcp.linear.app/mcp"});
+        assert_eq!(fingerprint(&reordered), LINEAR_FP);
+        let mut outside = base.clone();
+        outside["disabled"] = json!(true);
+        outside["type"] = json!("streamable-http");
+        outside["note"] = json!("x");
+        assert_eq!(fingerprint(&outside), LINEAR_FP);
+        for (k, v) in [
+            ("command", json!("npx")),
+            ("args", json!(["a"])),
+            ("env", json!({"A": "b"})),
+            ("cwd", json!("/x")),
+            ("url", json!("https://other.example/mcp")),
+            ("headers", json!({"A": "b"})),
+            ("auth", json!({"type": "oauth"})),
+        ] {
+            let mut changed = base.clone();
+            changed[k] = v;
+            assert_ne!(fingerprint(&changed), LINEAR_FP, "{k}");
+        }
+        assert_eq!(fingerprint(&json!("oops")), fingerprint(&json!({})));
+        assert_eq!(check("linear", base).fingerprint, LINEAR_FP);
+    }
+
+    #[test]
+    fn effects_say_what_approving_allows() {
+        let linear = json!({"type": "http", "url": "https://mcp.linear.app/mcp",
+            "headers": {"X-Key": "env://K"},
+            "auth": {"type": "bearer", "token": "secret://LINEAR_API_KEY"}});
+        let e = check("linear", linear).effects;
+        assert_eq!(e.runs, None);
+        assert_eq!(
+            e.sends,
+            vec![
+                send("env://K", "mcp.linear.app"),
+                send("secret://LINEAR_API_KEY", "mcp.linear.app")
+            ]
+        );
+        let cc = json!({"url": "https://mcp.linear.app/mcp", "auth": {"type": "client_credentials",
+            "token_url": "https://api.linear.app/oauth/token", "client_id": "id",
+            "client_secret": "secret://S"}});
+        assert_eq!(
+            check("s", cc).effects.sends,
+            vec![send("secret://S", "api.linear.app")]
+        );
+        let by_ref = json!({"url": "secret://MCP_URL", "headers": {"X-Key": "secret://K"}});
+        assert_eq!(
+            check("s", by_ref).effects.sends,
+            vec![
+                send("secret://MCP_URL", "secret://MCP_URL"),
+                send("secret://K", "secret://MCP_URL")
+            ]
+        );
+        let stdio = json!({"command": "npx", "args": ["-y", "@playwright/mcp@0.0.41"],
+            "env": {"GITHUB_TOKEN": "secret://T"}});
+        let e = check("s", stdio).effects;
+        assert_eq!(e.runs.as_deref(), Some("npx -y @playwright/mcp@0.0.41"));
+        assert_eq!(e.sends, vec![send("secret://T", "process")]);
+        assert_eq!(
+            check("s", json!({"url": "ftp://x"})).effects,
+            Effects::default()
+        );
+        assert_eq!(
+            serde_json::to_value(send("secret://T", "process")).unwrap(),
+            json!({"ref": "secret://T", "host": "process"})
         );
     }
 }
