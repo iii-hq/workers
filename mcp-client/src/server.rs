@@ -18,6 +18,7 @@ use rmcp::model::{
 };
 use rmcp::service::{
     ClientCacheConfig, ClientInitializeError, NotificationContext, RunningService,
+    RunningServiceCancellationToken,
 };
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
@@ -33,6 +34,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::approvals::{APPROVALS_REF, APPROVALS_SECRET, Approvals, is_fingerprint};
+use crate::auth::{self, Minter, token_request_body};
 use crate::config::{
     Auth, Checked, Entry, HttpEntry, RawConfig, STDIO_OFF, StdioEntry, Transport, check_entry,
     check_url_text, fingerprint,
@@ -338,6 +340,34 @@ fn client_config() -> ClientConfig {
 
 type Session = RunningService<RoleClient, Notifier>;
 
+/// A session's peer. A call holds it while in flight, and the last holder
+/// ends the session: a reconnect never cuts off a call on the old one.
+struct Conn {
+    peer: Peer<RoleClient>,
+    end: Option<RunningServiceCancellationToken>,
+}
+
+impl Conn {
+    fn new(session: &Session) -> Arc<Conn> {
+        Arc::new(Conn {
+            peer: session.peer().clone(),
+            end: Some(session.cancellation_token()),
+        })
+    }
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        if let Some(end) = self.end.take() {
+            end.cancel();
+        }
+    }
+}
+
+/// A call's ask for a new session after a 401 on `Conn`, answered by the
+/// server task with the session to retry on.
+type Recover = (Arc<Conn>, oneshot::Sender<Result<Arc<Conn>, CallFailure>>);
+
 type HttpError = StreamableHttpError<reqwest::Error>;
 
 /// The list a server said changed.
@@ -395,10 +425,12 @@ impl Drop for Reader {
     }
 }
 
-/// A ready session, and for stdio the process behind it.
+/// A ready session, for stdio the process behind it, and the values its
+/// references resolved to.
 struct Live {
     session: Session,
     process: Option<Process>,
+    resolved: Resolved,
 }
 
 /// The exit of the session's process; never, for http.
@@ -429,15 +461,46 @@ fn init_text(e: &ClientInitializeError) -> String {
     }
 }
 
-/// The reference a 401 blames: the bearer token, else the first secret header.
+/// The reference a 401 blames: the bearer token, the client secret, else the
+/// first secret header.
 fn credential_ref(http: &HttpEntry) -> Option<String> {
-    if let Auth::Bearer { token } = &http.auth {
-        return Some(token.to_string());
+    match &http.auth {
+        Auth::Bearer { token } => return Some(token.to_string()),
+        Auth::ClientCredentials { client_secret, .. } => return Some(client_secret.to_string()),
+        _ => {}
     }
     http.headers.values().find_map(|v| match v {
         Text::Ref(r) => Some(r.to_string()),
         Text::Literal(_) => None,
     })
+}
+
+/// The token a bearer entry sends.
+fn bearer_token(http: &HttpEntry, resolved: &Resolved) -> Option<String> {
+    match &http.auth {
+        Auth::Bearer { token } => Some(resolved.text(&Text::Ref(token.clone()))),
+        _ => None,
+    }
+}
+
+/// The errors behind a failed handshake, outermost first.
+fn init_chain(e: &ClientInitializeError) -> Vec<&(dyn Error + 'static)> {
+    match e {
+        ClientInitializeError::TransportError { error, .. } => {
+            let top: &(dyn Error + 'static) = error.error.as_ref();
+            std::iter::successors(Some(top), |&x| x.source()).collect()
+        }
+        _ => vec![],
+    }
+}
+
+/// Whether a handshake was answered 401, with a challenge or without. The
+/// text of a bare 401 carries the response body: matched, never passed on.
+fn unauthorized(e: &ClientInitializeError) -> bool {
+    let chain = init_chain(e);
+    let bare = matches!(chain.first().and_then(|x| x.downcast_ref::<HttpError>()),
+        Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP 401"));
+    bare || chain.iter().any(|x| x.is::<AuthRequiredError>())
 }
 
 /// The wait a 429 at connect asks for.
@@ -643,9 +706,11 @@ struct Server {
     /// Replaced in every error this server stores or a handler returns, and
     /// in every log line of the process.
     secrets: Arc<ServerSecrets>,
+    /// Read by the running task, replaced by each start.
+    recoveries: Mutex<mpsc::UnboundedSender<Recover>>,
     /// A no-`auth` entry the server answered with a sign-in challenge.
     challenged: AtomicBool,
-    peer: RwLock<Option<Peer<RoleClient>>>,
+    peer: RwLock<Option<Arc<Conn>>>,
     /// Each session's `Notifier` holds a clone; the server task reads them.
     notes: mpsc::UnboundedSender<ListChanged>,
     /// Held by the running task, so a restarted task reads the same channel.
@@ -690,12 +755,6 @@ fn first_status(name: &str, checked: &Checked) -> (State, Option<Stage>, Option<
     match &entry.transport {
         Transport::Stdio(_) => (State::Connecting, Some(Stage::Secret), None),
         Transport::Http(http) => match http.auth {
-            Auth::ClientCredentials { .. } => fail(
-                State::ConfigError,
-                Stage::Authorize,
-                ErrorCode::InvalidConfig,
-                "`client_credentials` is not supported by this version of mcp-client".into(),
-            ),
             Auth::OAuth { .. } => fail(
                 State::NeedsLogin,
                 Stage::Authorize,
@@ -738,6 +797,7 @@ impl Server {
             registry: Registry::new(),
             info: Mutex::default(),
             secrets: ServerSecrets::new(),
+            recoveries: Mutex::new(mpsc::unbounded_channel().0),
             challenged: AtomicBool::default(),
             peer: RwLock::default(),
             notes,
@@ -806,7 +866,9 @@ impl Server {
     /// Starts the task, with a fresh backoff.
     fn spawn(self: &Arc<Self>) {
         let (stop, stopped) = oneshot::channel();
-        let handle = tokio::spawn(self.clone().run(stopped));
+        let (recover, recoveries) = mpsc::unbounded_channel();
+        *self.recoveries.lock().unwrap() = recover;
+        let handle = tokio::spawn(self.clone().run(stopped, recoveries));
         *self.task.lock().unwrap() = Some((stop, handle));
     }
 
@@ -898,22 +960,36 @@ impl Server {
 
     /// Connects, serves and reconnects until `stop`. Only `unavailable` is
     /// tried again; every other failure waits for a change from outside.
-    async fn run(self: Arc<Self>, mut stop: oneshot::Receiver<()>) {
+    async fn run(
+        self: Arc<Self>,
+        mut stop: oneshot::Receiver<()>,
+        mut recoveries: mpsc::UnboundedReceiver<Recover>,
+    ) {
         let mut notes = self.notes_rx.lock().await;
         let mut backoff = Backoff::new(self.timings.backoff_min, self.timings.backoff_max);
         let stdio = self.is_stdio();
+        // Kept across reconnects with the client secret it was made for.
+        let mut minter: Option<(String, Minter)> = None;
         loop {
             // The connect lists the tools: what came before it is stale.
             while notes.try_recv().is_ok() {}
+            // Asked of a session that is gone: those calls fail as unavailable.
+            while recoveries.try_recv().is_ok() {}
             let attempt = tokio::select! {
-                attempt = self.connect() => attempt,
+                attempt = self.connect(&mut minter) => attempt,
                 _ = &mut stop => return,
             };
             let (wait, stable) = match attempt {
-                Ok(live) => match self.serve(live, &mut stop, &mut notes, &mut backoff).await {
-                    Some(stable) => (None, Some(stable)),
-                    None => return,
-                },
+                Ok(live) => {
+                    let (minter, asks) = (minter.as_ref().map(|(_, m)| m), &mut recoveries);
+                    match self
+                        .serve(live, &mut stop, &mut notes, asks, &mut backoff, minter)
+                        .await
+                    {
+                        Some(stable) => (None, Some(stable)),
+                        None => return,
+                    }
+                }
                 Err(wait) => (wait, None),
             };
             // `connecting` after a failed attempt: the approvals could not be read.
@@ -922,6 +998,7 @@ impl Server {
                 (s.state, s.stage)
             };
             if !matches!(state, State::Unavailable | State::Connecting) {
+                drop(recoveries);
                 let _ = (&mut stop).await;
                 return;
             }
@@ -947,20 +1024,24 @@ impl Server {
 
     /// Serves a ready session until `stop` (`None`) or until the server
     /// leaves `ready` (whether it was `ready` for `stable_after`), then
-    /// closes the session and stops its process.
+    /// closes the session and stops its process. A call's 401 is answered
+    /// here with a new session: `minter` mints for a client-credentials entry.
     async fn serve(
         self: &Arc<Self>,
         live: Live,
         stop: &mut oneshot::Receiver<()>,
         notes: &mut mpsc::UnboundedReceiver<ListChanged>,
+        recoveries: &mut mpsc::UnboundedReceiver<Recover>,
         backoff: &mut Backoff,
+        minter: Option<&Minter>,
     ) -> Option<bool> {
         let Live {
             session,
             mut process,
+            mut resolved,
         } = live;
-        let cancel = session.cancellation_token();
-        let mut ended = pin!(session.waiting());
+        let mut cancel = session.cancellation_token();
+        let mut ended = Box::pin(session.waiting());
         let mut status = self.status.subscribe();
         let mut stable = pin!(sleep(self.timings.stable_after));
         let mut stable_seen = false;
@@ -968,6 +1049,7 @@ impl Server {
         let mut last_prompt_relist: Option<Instant> = None;
         let interval = self.timings.relist_min_interval;
         let (stopped, open, exit) = loop {
+            let mut asked = None;
             let due = tokio::select! {
                 _ = &mut *stop => break (true, true, None),
                 _ = status.wait_for(|s| s.state != State::Ready) => break (false, true, None),
@@ -990,6 +1072,10 @@ impl Server {
                     None
                 }
                 Some(change) = notes.recv() => Some(change),
+                Some(ask) = recoveries.recv() => {
+                    asked = Some(ask);
+                    None
+                }
                 _ = self.relist.notified() => {
                     let due = last_relist.is_none_or(|t| t.elapsed() >= interval);
                     due.then_some(ListChanged::Tools)
@@ -999,6 +1085,29 @@ impl Server {
                     due.then_some(ListChanged::Prompts)
                 }
             };
+            if let Some((seen, reply)) = asked {
+                let current = self.peer.read().unwrap().clone();
+                let answer = match current {
+                    // Recovered since that call was sent.
+                    Some(conn) if !Arc::ptr_eq(&conn, &seen) => Ok(conn),
+                    _ => {
+                        let reopened = tokio::select! {
+                            reopened = self.reopen(&mut resolved, minter) => reopened,
+                            _ = &mut *stop => break (true, true, None),
+                        };
+                        reopened.map(|session| {
+                            let conn = Conn::new(&session);
+                            *self.peer.write().unwrap() = Some(conn.clone());
+                            cancel = session.cancellation_token();
+                            // The old session ends with the last call on it.
+                            let old = std::mem::replace(&mut ended, Box::pin(session.waiting()));
+                            tokio::spawn(old);
+                            conn
+                        })
+                    }
+                };
+                let _ = reply.send(answer);
+            }
             if let Some(first) = due {
                 // This re-list covers every change queued so far, so a burst
                 // costs one per kind; a change that arrives during it gets its own.
@@ -1060,15 +1169,18 @@ impl Server {
     /// `tools/list` again on the live session, then the reconcile. A failure
     /// leaves the registry as it was.
     async fn relist_tools(self: &Arc<Self>) {
-        let Some(peer) = self.peer.read().unwrap().clone() else {
+        let Some(conn) = self.peer.read().unwrap().clone() else {
             return;
         };
         let limit = self.timings.list;
-        let listed = match timeout(limit, peer.list_all_tools()).await {
+        let listed = match timeout(limit, conn.peer.list_all_tools()).await {
             Ok(Ok(tools)) => serde_json::to_value(tools)
                 .and_then(serde_json::from_value::<Vec<ToolInfo>>)
                 .map_err(|e| e.to_string()),
-            Ok(Err(e)) => Err(failure_text(&self.name, &self.request_failed(&e))),
+            Ok(Err(e)) => Err(failure_text(
+                &self.name,
+                &self.request_failed(self.classify(&e)),
+            )),
             Err(_) => Err(self.no_answer(limit)),
         };
         let tools = match listed {
@@ -1199,13 +1311,13 @@ impl Server {
     /// `prompts/list` again, then the reconcile of the prompt functions
     /// only. A failure leaves them as they were.
     async fn relist_prompts(self: &Arc<Self>) {
-        let Some(peer) = self.peer.read().unwrap().clone() else {
+        let Some(conn) = self.peer.read().unwrap().clone() else {
             return;
         };
         if !self.info.lock().unwrap().capabilities.prompts {
             return;
         }
-        let listed = self.list_prompts(&peer).await;
+        let listed = self.list_prompts(&conn.peer).await;
         let Some(wanted) = self.take_prompts(Some(listed)) else {
             return;
         };
@@ -1217,14 +1329,14 @@ impl Server {
     /// function only. A `tools` event goes out every time, changed or not:
     /// an open page reloads its resource list on it.
     async fn recheck_templates(self: &Arc<Self>) {
-        let Some(peer) = self.peer.read().unwrap().clone() else {
+        let Some(conn) = self.peer.read().unwrap().clone() else {
             return;
         };
         if !self.info.lock().unwrap().capabilities.resources {
             return;
         }
         let id = templates_id(&self.name);
-        let changed = match self.has_template(&peer).await {
+        let changed = match self.has_template(&conn.peer).await {
             Ok(has) => {
                 let mut wanted = resource_wanted(&self.name, has);
                 wanted.retain(|k, _| *k == id);
@@ -1237,16 +1349,18 @@ impl Server {
         }
     }
 
-    /// Classifies a failed request and applies its state rule: a rejected
-    /// credential or a sign-in challenge stops the server, an unclassified
-    /// transport failure is an outage, and anything else fails this request
-    /// only. The registry is never touched.
-    fn request_failed(&self, error: &ServiceError) -> CallFailure {
-        let spec = self.spec();
-        let failure = match &spec.checked.entry {
+    fn classify(&self, error: &ServiceError) -> CallFailure {
+        match &self.spec().checked.entry {
             Some(entry) => classify_call_error(error, entry),
             None => CallFailure::Transport(service_text(error)),
-        };
+        }
+    }
+
+    /// Applies a failed request's state rule: a rejected credential or a
+    /// sign-in challenge stops the server, an unclassified transport failure
+    /// is an outage, and anything else fails this request only. The registry
+    /// is never touched.
+    fn request_failed(&self, failure: CallFailure) -> CallFailure {
         let stdio = self.is_stdio();
         let (state, stage, code) = match &failure {
             CallFailure::CredentialRejected { .. } | CallFailure::NoSignIn => (
@@ -1311,7 +1425,10 @@ impl Server {
 
     /// One attempt, from the secrets to `ready`. `Err` carries the wait a
     /// 429 asked for.
-    async fn connect(self: &Arc<Self>) -> Result<Live, Option<Duration>> {
+    async fn connect(
+        self: &Arc<Self>,
+        minter: &mut Option<(String, Minter)>,
+    ) -> Result<Live, Option<Duration>> {
         let spec = self.spec();
         let Some(entry) = spec.checked.entry.as_ref() else {
             return Err(None);
@@ -1337,20 +1454,41 @@ impl Server {
         }
         // Resolved again on every attempt.
         self.progress(Stage::Secret);
-        let resolved = match resolve_all(&*self.host, &entry.refs()).await {
-            Ok(resolved) => resolved,
-            Err(e) => {
-                let state = match e.code {
-                    ErrorCode::ConnectFailed => State::Unavailable,
-                    _ => State::ConfigError,
-                };
-                self.set(state, Some(Stage::Secret), Some(e));
-                return Err(None);
-            }
+        let Some(resolved) = self.resolve(entry).await else {
+            return Err(None);
         };
-        self.secrets.set_resolved(resolved.secrets());
         let (session, mut process) = match &entry.transport {
-            Transport::Http(http) => (self.open_http(entry, http, &resolved).await?, None),
+            Transport::Http(http) => {
+                let (bearer, remint) = match &http.auth {
+                    Auth::ClientCredentials {
+                        token_url,
+                        client_id,
+                        client_secret,
+                        scope,
+                    } => {
+                        let secret = resolved.text(&Text::Ref(client_secret.clone()));
+                        let body = token_request_body(client_id, &secret, scope.as_deref());
+                        if minter
+                            .as_ref()
+                            .is_some_and(|(made_for, _)| *made_for != body)
+                        {
+                            *minter = None;
+                        }
+                        let (_, m) = minter.get_or_insert_with(|| {
+                            let made =
+                                Minter::new(auth::http_client(), token_url.clone(), body.clone());
+                            (body, made)
+                        });
+                        let Some(token) = self.mint(m).await else {
+                            return Err(None);
+                        };
+                        (Some(token), Some(&*m))
+                    }
+                    _ => (bearer_token(http, &resolved), None),
+                };
+                let session = self.open_http(entry, http, &resolved, bearer, remint);
+                (session.await?, None)
+            }
             Transport::Stdio(stdio) => {
                 let (session, process) = self.open_stdio(stdio, &resolved).await?;
                 (session, Some(process))
@@ -1440,14 +1578,97 @@ impl Server {
         if let Some(template) = template {
             wanted.extend(resource_wanted(&self.name, template.unwrap_or(false)));
         }
-        *self.peer.write().unwrap() = Some(peer);
+        *self.peer.write().unwrap() = Some(Conn::new(&session));
         let (prefix, templates) = (self.prefix("prompts"), templates_id(&self.name));
         let untouched = |id: &str| {
             (prompts_failed && id.starts_with(&prefix)) || (template_failed && id == templates)
         };
         self.reconcile(wanted, &untouched).await;
         self.set(State::Ready, None, None);
-        Ok(Live { session, process })
+        Ok(Live {
+            session,
+            process,
+            resolved,
+        })
+    }
+
+    /// The entry's references, resolved; a failure sets the status.
+    async fn resolve(&self, entry: &Entry) -> Option<Resolved> {
+        match resolve_all(&*self.host, &entry.refs()).await {
+            Ok(resolved) => {
+                self.secrets.set_resolved(resolved.secrets());
+                Some(resolved)
+            }
+            Err(e) => {
+                let state = match e.code {
+                    ErrorCode::ConnectFailed => State::Unavailable,
+                    _ => State::ConfigError,
+                };
+                self.set(state, Some(Stage::Secret), Some(e));
+                None
+            }
+        }
+    }
+
+    /// A client-credentials token, redacted from here on before it is
+    /// used. A refusal is `auth_failed`, no answer `unavailable`.
+    async fn mint(&self, minter: &Minter) -> Option<String> {
+        self.progress(Stage::Authorize);
+        match minter.token().await {
+            Ok(token) => {
+                self.secrets.add(&token);
+                Some(token)
+            }
+            Err(e) => {
+                let state = match e.code {
+                    ErrorCode::CredentialRejected => State::AuthFailed,
+                    _ => State::Unavailable,
+                };
+                self.set(state, Some(Stage::Authorize), Some(e));
+                None
+            }
+        }
+    }
+
+    /// A new session after a 401 on a call, with the credential acquired
+    /// again: minted again, or the references resolved again. A failure sets
+    /// the status and is the call's: a refused credential is
+    /// `CredentialRejected`, anything else `Unavailable`.
+    async fn reopen(
+        &self,
+        resolved: &mut Resolved,
+        minter: Option<&Minter>,
+    ) -> Result<Session, CallFailure> {
+        let spec = self.spec();
+        let Some(entry) = &spec.checked.entry else {
+            return Err(self.unavailable());
+        };
+        let Transport::Http(http) = &entry.transport else {
+            return Err(self.unavailable());
+        };
+        let bearer = match minter {
+            Some(minter) => {
+                minter.invalidate().await;
+                self.mint(minter).await.map(Some)
+            }
+            None => self.resolve(entry).await.map(|fresh| {
+                *resolved = fresh;
+                bearer_token(http, resolved)
+            }),
+        };
+        // With what was just acquired: no second resolve, no second mint.
+        let session = match bearer {
+            Some(bearer) => self
+                .open_http(entry, http, resolved, bearer, None)
+                .await
+                .ok(),
+            None => None,
+        };
+        let state = self.status.borrow().state;
+        session.ok_or_else(|| match (state, credential_ref(http)) {
+            (State::AuthFailed, Some(reference)) => CallFailure::CredentialRejected { reference },
+            _ => self.unavailable(),
+        })
     }
 
     fn notifier(&self) -> Notifier {
@@ -1458,12 +1679,16 @@ impl Server {
         }
     }
 
-    /// The http transport from the resolved entry, then the handshake.
+    /// The http transport from the resolved entry and `bearer`, then the
+    /// handshake. With `remint`, a 401 mints once more and tries again: the
+    /// token held may be one the provider no longer takes.
     async fn open_http(
         &self,
         entry: &Entry,
         http: &HttpEntry,
         resolved: &Resolved,
+        bearer: Option<String>,
+        remint: Option<&Minter>,
     ) -> Result<Session, Option<Duration>> {
         let url = resolved.text(&http.url);
         if let Text::Ref(r) = &http.url
@@ -1497,8 +1722,8 @@ impl Server {
             headers.insert(header, value);
         }
         let mut config = StreamableHttpClientTransportConfig::with_uri(url).custom_headers(headers);
-        if let Auth::Bearer { token } = &http.auth {
-            config = config.auth_header(resolved.text(&Text::Ref(token.clone())));
+        if let Some(token) = bearer {
+            config = config.auth_header(token);
         }
         let transport = StreamableHttpClientTransport::from_config(config);
 
@@ -1507,6 +1732,14 @@ impl Server {
         match timeout(limit, self.notifier().serve(transport)).await {
             Ok(Ok(session)) => Ok(session),
             Ok(Err(e)) => {
+                if let Some(minter) = remint
+                    && unauthorized(&e)
+                {
+                    minter.invalidate().await;
+                    let token = self.mint(minter).await.ok_or(None)?;
+                    let again = self.open_http(entry, http, resolved, Some(token), None);
+                    return Box::pin(again).await;
+                }
                 let (state, stage, code, message) = self.handshake_failure(&e, entry, http);
                 self.fail(state, stage, code, message);
                 Err(retry_wait(&e))
@@ -1591,13 +1824,7 @@ impl Server {
         http: &HttpEntry,
     ) -> (State, Stage, ErrorCode, String) {
         let auth = entry.auth_kind();
-        let chain: Vec<&(dyn Error + 'static)> = match e {
-            ClientInitializeError::TransportError { error, .. } => {
-                let top: &(dyn Error + 'static) = error.error.as_ref();
-                std::iter::successors(Some(top), |&x| x.source()).collect()
-            }
-            _ => vec![],
-        };
+        let chain = init_chain(e);
         let challenged = chain.iter().any(|x| x.is::<AuthRequiredError>());
         let scope = chain
             .iter()
@@ -1728,30 +1955,60 @@ impl Server {
         })
     }
 
-    /// One request within `limit`. A failure applies its state rule and comes
-    /// back as its text; a -32602 also asks for the re-list `relist` serves.
-    async fn send<T>(
+    /// One request on `conn` within `limit`. A rejected credential is
+    /// acquired again and the request sent once more on a new session; a
+    /// timeout never is. A failure applies its state rule and comes back as
+    /// its text; a -32602 also asks for the re-list `relist` serves.
+    async fn send<T, F>(
         &self,
+        mut conn: Arc<Conn>,
         limit: Duration,
-        request: impl Future<Output = Result<T, ServiceError>>,
+        request: impl Fn(Peer<RoleClient>) -> F,
         relist: Option<&Notify>,
-    ) -> Result<T, String> {
-        let failure = match timeout(limit, request).await {
-            Ok(Ok(result)) => return Ok(result),
-            Ok(Err(e)) => {
-                let failure = self.request_failed(&e);
-                if let (CallFailure::JsonRpc { code: -32602, .. }, Some(relist)) =
-                    (&failure, relist)
-                {
-                    relist.notify_one();
+    ) -> Result<T, String>
+    where
+        F: Future<Output = Result<T, ServiceError>>,
+    {
+        let mut retried = false;
+        let failure = loop {
+            let error = match timeout(limit, request(conn.peer.clone())).await {
+                Ok(Ok(result)) => return Ok(result),
+                Ok(Err(e)) => e,
+                Err(_) => {
+                    let secs = limit.as_secs();
+                    break CallFailure::Timeout { secs };
                 }
-                failure
+            };
+            let failure = self.classify(&error);
+            if !retried && matches!(failure, CallFailure::CredentialRejected { .. }) {
+                retried = true;
+                match self.recover(conn).await {
+                    Ok(fresh) => conn = fresh,
+                    Err(failure) => break failure,
+                }
+                continue;
             }
-            Err(_) => CallFailure::Timeout {
-                secs: limit.as_secs(),
-            },
+            if let (CallFailure::JsonRpc { code: -32602, .. }, Some(relist)) = (&failure, relist) {
+                relist.notify_one();
+            }
+            break self.request_failed(failure);
         };
         Err(failure_text(&self.name, &failure))
+    }
+
+    /// Asks the server task for a session after a 401 on `seen`. A task
+    /// that is gone, or goes, answers nothing: the call is unavailable.
+    async fn recover(&self, seen: Arc<Conn>) -> Result<Arc<Conn>, CallFailure> {
+        let (reply, answer) = oneshot::channel();
+        let _ = self.recoveries.lock().unwrap().send((seen, reply));
+        answer.await.unwrap_or_else(|_| Err(self.unavailable()))
+    }
+
+    fn unavailable(&self) -> CallFailure {
+        let status = self.status.borrow();
+        let for_secs = now_ms().saturating_sub(status.since) / 1000;
+        let state = status.state.as_str();
+        CallFailure::Unavailable { state, for_secs }
     }
 
     /// `declared`: the properties of the function's request schema.
@@ -1761,13 +2018,10 @@ impl Server {
         declared: &BTreeSet<String>,
         payload: Value,
     ) -> Result<Value, String> {
-        let status = self.status.borrow().clone();
-        let peer = self.peer.read().unwrap().clone();
-        let (State::Ready, Some(peer)) = (status.state, peer) else {
-            let for_secs = now_ms().saturating_sub(status.since) / 1000;
-            let state = status.state.as_str();
-            let failure = CallFailure::Unavailable { state, for_secs };
-            return Err(failure_text(&self.name, &failure));
+        let state = self.status.borrow().state;
+        let conn = self.peer.read().unwrap().clone();
+        let (State::Ready, Some(conn)) = (state, conn) else {
+            return Err(failure_text(&self.name, &self.unavailable()));
         };
         let args = strip_args(payload, declared);
         let ctx = BlockCtx {
@@ -1786,35 +2040,49 @@ impl Server {
                 Ok(json!({ "content": content }))
             }
             Target::Tool { name } => {
-                let params = CallToolRequestParams::new(name.clone()).with_arguments(args);
-                let result = self.send(call, peer.call_tool(params), Some(&self.relist));
+                let params = &CallToolRequestParams::new(name.clone()).with_arguments(args);
+                let call_tool =
+                    move |p: Peer<RoleClient>| async move { p.call_tool(params.clone()).await };
+                let result = self.send(conn, call, call_tool, Some(&self.relist));
                 tool_result(&wire(result.await?), &ctx)
             }
             Target::ResourceList => {
-                let page = peer.list_resources(page_params(&args)?);
+                let params = &page_params(&args)?;
+                let page = move |p: Peer<RoleClient>| async move {
+                    p.list_resources(params.clone()).await
+                };
                 Ok(resources::list_page(&wire(
-                    self.send(list, page, None).await?,
+                    self.send(conn, list, page, None).await?,
                 )))
             }
             Target::ResourceTemplates => {
-                let page = peer.list_resource_templates(page_params(&args)?);
+                let params = &page_params(&args)?;
+                let page = move |p: Peer<RoleClient>| async move {
+                    p.list_resource_templates(params.clone()).await
+                };
                 Ok(resources::templates_page(&wire(
-                    self.send(list, page, None).await?,
+                    self.send(conn, list, page, None).await?,
                 )))
             }
             Target::ResourceRead => {
                 let Some(Value::String(uri)) = args.get("uri") else {
                     return Err("invalid_argument: uri must be a string".into());
                 };
-                let read = peer.read_resource(ReadResourceRequestParams::new(uri.clone()));
-                let result = self.send(call, read, None).await?;
+                let params = &ReadResourceRequestParams::new(uri.clone());
+                let read =
+                    move |p: Peer<RoleClient>| async move { p.read_resource(params.clone()).await };
+                let result = self.send(conn, call, read, None).await?;
                 Ok(read_result(&wire(result), uri, &ctx))
             }
             Target::Prompt { name } => {
-                let params = GetPromptRequestParams::new(name.clone())
+                let params = &GetPromptRequestParams::new(name.clone())
                     .with_arguments(prompts::coerce(&args)?);
-                let get = peer.get_prompt_once(params);
-                let response = self.send(call, get, Some(&self.relist_prompts)).await?;
+                let get = move |p: Peer<RoleClient>| async move {
+                    p.get_prompt_once(params.clone()).await
+                };
+                let response = self
+                    .send(conn, call, get, Some(&self.relist_prompts))
+                    .await?;
                 let GetPromptResponse::Complete(result) = response else {
                     return Err(
                         "MCP error: the prompt asked for input this client does not provide".into(),

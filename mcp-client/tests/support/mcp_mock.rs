@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use wiremock::matchers::method;
+use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 #[derive(Default)]
@@ -38,6 +38,10 @@ struct Settings {
     notify: HashMap<String, String>,
     statuses: HashMap<String, (u16, Vec<(String, String)>)>,
     delays: HashMap<String, Duration>,
+    /// What `POST /oauth/token` issues; set once the endpoint is mounted.
+    token: Option<String>,
+    /// The only `Authorization: Bearer` value the server takes.
+    bearer: Option<String>,
 }
 
 struct Responder(Arc<Mutex<Settings>>);
@@ -51,7 +55,13 @@ impl Respond for Responder {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
         let method = body["method"].as_str().unwrap_or("");
         let s = self.0.lock().unwrap();
-        let answer = if let Some((status, headers)) = s.statuses.get(method) {
+        let authorization = request.headers.get("authorization");
+        let refused = s.bearer.as_ref().is_some_and(|token| {
+            authorization.and_then(|v| v.to_str().ok()) != Some(format!("Bearer {token}").as_str())
+        });
+        let answer = if refused {
+            ResponseTemplate::new(401)
+        } else if let Some((status, headers)) = s.statuses.get(method) {
             headers
                 .iter()
                 .fold(ResponseTemplate::new(*status), |t, (k, v)| {
@@ -232,6 +242,44 @@ impl McpMock {
             .collect()
     }
 
+    /// Mounts `POST /oauth/token`, answering a client-credentials token
+    /// request with `token`; its URL. A second call replaces the token.
+    pub async fn token_endpoint(&self, token: &str) -> String {
+        let mounted = self.settings().token.replace(token.into()).is_some();
+        if !mounted {
+            let settings = self.settings.clone();
+            Mock::given(method("POST"))
+                .and(path("/oauth/token"))
+                .respond_with(move |_: &Request| {
+                    let token = settings.lock().unwrap().token.clone();
+                    ResponseTemplate::new(200).set_body_json(
+                        json!({"access_token": token, "token_type": "Bearer", "expires_in": 3600}),
+                    )
+                })
+                .with_priority(1)
+                .mount(&self.server)
+                .await;
+        }
+        format!("{}/oauth/token", self.server.uri())
+    }
+
+    /// The form bodies of the token requests, in arrival order.
+    pub async fn token_requests(&self) -> Vec<String> {
+        let received = self.server.received_requests().await.unwrap_or_default();
+        received
+            .into_iter()
+            .filter(|r| r.url.path() == "/oauth/token")
+            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            .collect()
+    }
+
+    /// Answers 401 without `WWW-Authenticate` to every MCP POST whose
+    /// `Authorization` is not `Bearer <token>`; a second call replaces the
+    /// token. A refused request still shows in `requests`.
+    pub async fn require_bearer(&self, token: &str) {
+        self.settings().bearer = Some(token.into());
+    }
+
     /// Every request of any method and path.
     pub async fn request_count(&self) -> usize {
         self.server
@@ -240,4 +288,15 @@ impl McpMock {
             .unwrap_or_default()
             .len()
     }
+}
+
+/// A mock with one tool `echo` (a string property `text`) answering `hi`.
+pub async fn echo_mock() -> McpMock {
+    let mock = McpMock::start().await;
+    let echo = json!({"name": "echo", "description": "echo", "inputSchema": {
+        "type": "object", "properties": {"text": {"type": "string"}}}});
+    mock.tools(json!([echo])).await;
+    mock.on_call("echo", json!({"content": [{"type": "text", "text": "hi"}]}))
+        .await;
+    mock
 }

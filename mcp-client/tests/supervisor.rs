@@ -191,8 +191,8 @@ async fn rejected_credential_on_a_call_sets_auth_failed_and_keeps_functions() {
     tokio::time::sleep(fast_timings().backoff_max * 2).await;
     assert_eq!(
         mock.requests("initialize").await.len(),
-        1,
-        "auth_failed is not retried"
+        2,
+        "one recovery, then auth_failed is not retried"
     );
     assert!(unregistered(&host).is_empty());
 }
