@@ -60,13 +60,18 @@ function field(name: string, prop: unknown, required: boolean): FormField {
   return out
 }
 
-/** Required fields in the schema's `required` order, then the rest in `properties` order. */
+/** The schema's `required` names, each once, first occurrence first. */
+function requiredNames(schema: Record<string, unknown>): string[] {
+  const listed = Array.isArray(schema.required) ? schema.required : []
+  return [...new Set(listed.filter((k): k is string => typeof k === 'string'))]
+}
+
+/** Required fields in the schema's `required` order, then the rest in `properties` order. A
+ * required name with no property is still a field (JSON), so the form shows what Run asks for. */
 export function fieldsFromSchema(schema: unknown): { required: FormField[]; optional: FormField[] } {
-  if (!isRecord(schema) || !isRecord(schema.properties)) return { required: [], optional: [] }
-  const props = schema.properties
-  const names = Array.isArray(schema.required)
-    ? schema.required.filter((k): k is string => typeof k === 'string' && Object.hasOwn(props, k))
-    : []
+  if (!isRecord(schema)) return { required: [], optional: [] }
+  const props = isRecord(schema.properties) ? schema.properties : {}
+  const names = requiredNames(schema)
   return {
     required: names.map((name) => field(name, props[name], true)),
     optional: Object.keys(props)
@@ -103,8 +108,10 @@ export function setField(
   raw: string | boolean | null,
 ): Record<string, unknown> {
   const value = typedValue(field, raw)
+  // Spread first, so an edited key keeps its place in the payload and the CLI line.
+  if (value !== undefined) return { ...payload, [field.name]: value }
   const { [field.name]: _old, ...rest } = payload
-  return value === undefined ? rest : { ...rest, [field.name]: value }
+  return rest
 }
 
 /** The field's payload value as the text its input shows. */
@@ -119,13 +126,27 @@ export function fieldText(payload: Record<string, unknown>, field: FormField): s
 
 /** The schema's required keys the payload leaves absent or empty. */
 export function missingRequired(schema: unknown, payload: Record<string, unknown>): string[] {
-  if (!isRecord(schema) || !isRecord(payload) || !Array.isArray(schema.required)) return []
-  return schema.required.filter(
-    (k): k is string => typeof k === 'string' && (payload[k] === undefined || payload[k] === ''),
-  )
+  if (!isRecord(schema) || !isRecord(payload)) return []
+  return requiredNames(schema).filter((k) => payload[k] === undefined || payload[k] === '')
 }
 
 /** The disclosure that holds the optional fields. */
 export function optionalLabel(required: number, optional: number): string {
   return `${optional} ${required > 0 ? 'more ' : ''}optional input${optional === 1 ? '' : 's'}`
+}
+
+/** What Run says when required inputs are missing. */
+export function requiredText(names: string[]): string {
+  return `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} required`
+}
+
+/** The JSON view's text as the payload, or why it cannot be one; the view keeps the text either way. */
+export function parsePayload(text: string): { payload: Record<string, unknown> } | { error: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (err) {
+    return { error: `Not valid JSON: ${(err as Error).message}` }
+  }
+  return isRecord(parsed) ? { payload: parsed } : { error: 'The input must be a JSON object' }
 }

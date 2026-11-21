@@ -5,6 +5,8 @@ import {
   fieldText,
   missingRequired,
   optionalLabel,
+  parsePayload,
+  requiredText,
   setField,
 } from '../src/schema-form'
 import listIssues from './fixtures/linear-list-issues.schema.json'
@@ -77,6 +79,15 @@ describe('fieldsFromSchema, the rest', () => {
     expect(x.o.kind).toBe('json')
   })
 
+  it('agrees with missingRequired on required names: deduped, absent properties kept', () => {
+    const schema = { type: 'object', properties: { team: { type: 'string' } }, required: ['team', 'ghost', 'team'] }
+    const { required, optional } = fieldsFromSchema(schema)
+    expect(required.map((field) => field.name)).toEqual(['team', 'ghost'])
+    expect(required[1].kind).toBe('json')
+    expect(optional).toEqual([])
+    expect(missingRequired(schema, {})).toEqual(['team', 'ghost'])
+  })
+
   it('gives no field for a schema that is not an object with properties', () => {
     for (const x of [undefined, null, {}, { type: 'object' }, 'x']) {
       expect(fieldsFromSchema(x)).toEqual({ required: [], optional: [] })
@@ -100,6 +111,13 @@ describe('setField and fieldText', () => {
       links: [{ url: 'https://x.test', title: 'X' }],
     })
     expect(() => setField({}, s.links, '[{')).toThrow(SyntaxError)
+  })
+
+  it('keeps an edited key where it is', () => {
+    let payload = setField({}, f.team, 'ENG')
+    payload = setField(payload, f.limit, '5')
+    payload = setField(payload, f.team, 'OPS')
+    expect(Object.keys(payload)).toEqual(['team', 'limit'])
   })
 
   it('never changes the payload it was given', () => {
@@ -126,6 +144,19 @@ describe('setField and fieldText', () => {
     expect(missingRequired(schema, {})).toEqual(['a', 'b'])
     expect(missingRequired(schema, { a: '', b: 0 })).toEqual(['a'])
     expect(missingRequired(listIssues, {})).toEqual([])
+  })
+
+  it('says which required inputs are missing', () => {
+    expect(requiredText(['team'])).toBe('team is required')
+    expect(requiredText(['title', 'team'])).toBe('title, team are required')
+  })
+
+  it('reads the JSON view as a payload object or says why not', () => {
+    expect(parsePayload('{"team":"ENG"}')).toEqual({ payload: { team: 'ENG' } })
+    for (const text of ['[]', '1', 'null', '"x"']) {
+      expect(parsePayload(text)).toEqual({ error: 'The input must be a JSON object' })
+    }
+    expect(parsePayload('{"team":')).toMatchObject({ error: expect.stringMatching(/^Not valid JSON: ./) })
   })
 
   it('labels the optional disclosure', () => {

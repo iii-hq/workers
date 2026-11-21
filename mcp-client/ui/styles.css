@@ -409,7 +409,8 @@
   color: var(--color-ink-faint);
   text-wrap: pretty;
 }
-[data-iii-ui="mcp-client"] .mcp-ui-json {
+[data-iii-ui="mcp-client"] .mcp-ui-json,
+[data-iii-ui="mcp-client"] .mcp-ui-code {
   display: block;
   margin: 0;
   padding: 12px 14px;
@@ -542,3 +543,158 @@
   }
 }
 
+
+/* ── column 3, the Test tab: Input and Result side by side from 640px, the CLI line under both ── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-test,
+[data-iii-ui="mcp-client"] .mcp-ui-test-input,
+[data-iii-ui="mcp-client"] .mcp-ui-result,
+[data-iii-ui="mcp-client"] .mcp-ui-fields,
+[data-iii-ui="mcp-client"] .mcp-ui-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-test {
+  gap: 20px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-test-halves {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+@container mcp-ui-detail (min-width: 640px) {
+  [data-iii-ui="mcp-client"] .mcp-ui-test-halves {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+[data-iii-ui="mcp-client"] .mcp-ui-test-input,
+[data-iii-ui="mcp-client"] .mcp-ui-result {
+  gap: 12px;
+}
+/* The Form / JSON switch and a boolean's Unset / True / False keep their own width. */
+[data-iii-ui="mcp-client"] .mcp-ui-test [data-variant="radio"] {
+  align-self: flex-start;
+}
+/* A fieldset only to disable every control at once while a call runs. */
+[data-iii-ui="mcp-client"] .mcp-ui-fields {
+  gap: 14px;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-field {
+  gap: 6px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-field-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-field-label code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A name with no title is the label itself. */
+[data-iii-ui="mcp-client"] .mcp-ui-field-label code:only-child {
+  color: var(--color-ink);
+  font-size: 13px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-payload-json,
+[data-iii-ui="mcp-client"] .mcp-ui-field-json {
+  min-height: 72px;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-payload-json {
+  min-height: 160px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-optional > summary,
+[data-iii-ui="mcp-client"] .mcp-ui-raw > summary {
+  width: fit-content;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-optional[open] > summary,
+[data-iii-ui="mcp-client"] .mcp-ui-raw[open] > summary {
+  margin-bottom: 12px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-run {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-quiet-line,
+[data-iii-ui="mcp-client"] .mcp-ui-input-error {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-input-error {
+  color: var(--color-alert-strong);
+}
+/* As tall as the Form / JSON switch beside it, so both halves start on one line. */
+[data-iii-ui="mcp-client"] .mcp-ui-result-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-code {
+  color: var(--color-ink);
+  font-family: var(--font-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-image {
+  align-self: flex-start;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-cli {
+  padding: 10px 12px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel);
+}
+/* The payload a write would send, in the confirm. */
+[data-iii-ui="mcp-client"] .mcp-ui-confirm-payload {
+  display: block;
+  max-height: 240px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+  color: var(--color-ink);
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

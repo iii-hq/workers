@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   announcements,
+  blocksOf,
   byName,
   connectionRowText,
   countLabel,
+  drawsWhole,
+  elapsedText,
   filterRows,
   functionRows,
+  highlightable,
+  jsonText,
   metaLine,
   middleTruncate,
   narrowLevel,
@@ -13,7 +18,9 @@ import {
   pathHeads,
   presentServer,
   processRowText,
+  resultSummary,
   rowGroups,
+  runConfirm,
   STAGES,
   STATE_WORD,
   skippedText,
@@ -408,5 +415,66 @@ describe('metaLine', () => {
     const union = { anyOf: [schema(1, ['p0']), schema(2)] }
     expect(metaLine('mcp::linear::list_issues', union, 'tools')).toBe('mcp::linear::list_issues')
     expect(metaLine('mcp::linear::whoami', null, 'tools')).toBe('mcp::linear::whoami · no inputs')
+  })
+})
+
+describe('test results', () => {
+  const text = (n: number) => ({ type: 'text', text: 'x'.repeat(n) })
+
+  it('summarises a tool result', () => {
+    expect(resultSummary({ content: [text(2355)] }, 412)).toBe('OK · 412 ms · 1 text block · 2.3 KiB')
+    expect(
+      resultSummary(
+        { content: [text(10), text(10), { type: 'image', mime: 'image/png', data: 'A'.repeat(1368) }] },
+        1234,
+      ),
+    ).toBe('OK · 1.2 s · 2 text blocks · 1 image · 1.0 KiB')
+    expect(resultSummary({ content: [] }, 88)).toBe('OK · 88 ms · empty')
+    expect(resultSummary({ content: [{ type: 'text', text: '日本' }] }, 5)).toBe('OK · 5 ms · 1 text block · 6 B')
+  })
+
+  it('summarises a prompt result and a list page', () => {
+    expect(resultSummary({ messages: [{}, {}, {}] }, 120)).toBe('OK · 120 ms · 3 messages')
+    expect(resultSummary({ messages: [{}] }, 120)).toBe('OK · 120 ms · 1 message')
+    // The bytes of {"resources":[]}.
+    expect(resultSummary({ resources: [] }, 88)).toBe('OK · 88 ms · 16 B')
+  })
+
+  it('formats elapsed time', () => {
+    expect([0, 999, 1000, 1249, 61_000].map(elapsedText)).toEqual(['0 ms', '999 ms', '1.0 s', '1.2 s', '61.0 s'])
+  })
+
+  it('keeps only blocks it can draw', () => {
+    const image = { type: 'image', mime: 'image/png', data: 'AA' }
+    expect(blocksOf({ content: [text(1), image, { type: 'audio' }, null] })).toEqual([text(1), image])
+    expect(blocksOf({ resources: [] })).toEqual([])
+    expect(blocksOf(null)).toEqual([])
+  })
+
+  it('highlights text that parses to an object or an array, up to 32,768 characters', () => {
+    expect(jsonText('{"a":[1]}')).toBe('{\n  "a": [\n    1\n  ]\n}')
+    expect(jsonText('[]')).toBe('[]')
+    for (const text of ['42', '"x"', 'null', 'not json', '']) expect(jsonText(text)).toBeNull()
+    expect(jsonText(`[${'1,'.repeat(16_384)}1]`)).toBeNull()
+    expect([highlightable('x'.repeat(32_768)), highlightable('x'.repeat(32_769))]).toEqual([true, false])
+  })
+
+  it('draws a result whole when it has no block and no messages', () => {
+    expect(drawsWhole({ resources: [] })).toBe(true)
+    expect(drawsWhole({ content: [] })).toBe(true)
+    expect(drawsWhole({ content: [text(1)] })).toBe(false)
+    expect(drawsWhole({ messages: [] })).toBe(false)
+  })
+
+  it('asks before a write and never before a read', () => {
+    expect(runConfirm('linear', 'list_issues', 'read')).toBeNull()
+    expect(runConfirm('linear', 'save_issue', 'write')).toEqual({
+      title: 'Run `save_issue` on linear? This tool can change data.',
+      tone: 'default',
+    })
+    expect(runConfirm('linear', 'delete_comment', 'destructive')).toEqual({
+      title: 'Run `delete_comment` on linear? This tool is destructive and can change data.',
+      tone: 'danger',
+    })
   })
 })

@@ -1,5 +1,5 @@
-import { formatDuration } from '@iii-dev/console-ui/format'
-import { serverAccess } from './access'
+import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
+import { type AccessClass, serverAccess } from './access'
 import type { AuthKind, EngineFunction, ProcessInfo, Selection, Server, ServerState, ServersList, Stage } from './types'
 import type { ServersData } from './use-servers'
 
@@ -403,4 +403,91 @@ export function metaLine(functionId: string, schema: unknown, kind: FunctionRow[
   const listed = isRecord(schema) && Array.isArray(schema.required) ? schema.required : []
   const required = names.filter((name) => listed.includes(name)).length
   return `${functionId} · ${count(names.length, one, many)}, ${required || 'none'} required`
+}
+
+/** A content block the Result half can draw: the worker turns MCP images into `mime` and `data`. */
+export type Block = { type: 'text'; text: string } | { type: 'image'; mime: string; data: string }
+
+const utf8 = new TextEncoder()
+
+/** `412 ms` under a second, `1.2 s` from there. */
+export function elapsedText(ms: number): string {
+  const n = Math.round(ms)
+  return n < 1000 ? `${n} ms` : `${(n / 1000).toFixed(1)} s`
+}
+
+/** The text and image blocks of a tool result, in order; anything else is left to the raw view. */
+export function blocksOf(result: unknown): Block[] {
+  const content = isRecord(result) && Array.isArray(result.content) ? result.content : []
+  return content.filter(
+    (block): block is Block =>
+      isRecord(block) &&
+      ((block.type === 'text' && typeof block.text === 'string') ||
+        (block.type === 'image' && typeof block.mime === 'string' && typeof block.data === 'string')),
+  )
+}
+
+/** The Result status line: messages for a prompt, blocks and their size for a tool, else the JSON size. */
+export function resultSummary(result: unknown, ms: number): string {
+  const head = `OK · ${elapsedText(ms)}`
+  if (isRecord(result) && Array.isArray(result.messages)) {
+    return `${head} · ${count(result.messages.length, 'message', 'messages')}`
+  }
+  if (isRecord(result) && Array.isArray(result.content)) {
+    const blocks = blocksOf(result)
+    if (blocks.length === 0) return `${head} · empty`
+    const texts = blocks.filter((block) => block.type === 'text').length
+    const images = blocks.length - texts
+    // An image's size is its decoded bytes, from the base64 length.
+    const bytes = blocks.reduce(
+      (n, block) =>
+        n + (block.type === 'text' ? utf8.encode(block.text).length : Math.floor((block.data.length * 3) / 4)),
+      0,
+    )
+    return [
+      head,
+      texts > 0 && count(texts, 'text block', 'text blocks'),
+      images > 0 && count(images, 'image', 'images'),
+      formatBytes(bytes),
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+  return `${head} · ${formatBytes(utf8.encode(JSON.stringify(result) ?? '').length)}`
+}
+
+/** A result drawn whole, as one JSON view: no block to draw and no messages (a resource list page). */
+export function drawsWhole(result: unknown): boolean {
+  return blocksOf(result).length === 0 && !(isRecord(result) && Array.isArray(result.messages))
+}
+
+// shortcut: highlighting 120 KiB freezes the pane; window the block if people read results this long here
+const HIGHLIGHT_MAX = 32_768
+
+/** Whether a code view is short enough to highlight; a longer one is drawn as plain text. */
+export const highlightable = (code: string): boolean => code.length <= HIGHLIGHT_MAX
+
+/** A text block as pretty JSON when it parses to an object or an array and can be highlighted; else null. */
+export function jsonText(text: string): string | null {
+  if (!highlightable(text)) return null
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return typeof parsed === 'object' && parsed !== null ? JSON.stringify(parsed, null, 2) : null
+  } catch {
+    return null
+  }
+}
+
+/** The question Run asks before a call that can change data; `null` for a read, which runs at once. */
+export function runConfirm(
+  server: string,
+  name: string,
+  cls: AccessClass,
+): { title: string; tone: 'default' | 'danger' } | null {
+  if (cls === 'read') return null
+  const effect = cls === 'destructive' ? 'is destructive and can change data' : 'can change data'
+  return {
+    title: `Run \`${name}\` on ${server}? This tool ${effect}.`,
+    tone: cls === 'destructive' ? 'danger' : 'default',
+  }
 }

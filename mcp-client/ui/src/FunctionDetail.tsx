@@ -11,9 +11,11 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { serverAccess } from './access'
 import type { Api } from './api'
 import { type FunctionRow, functionName, metaLine } from './presentation'
 import { SchemaTable } from './SchemaTable'
+import { TestPanel } from './TestPanel'
 import type { FunctionInfo, Server } from './types'
 
 const SKELETON_LINES = [0, 1, 2]
@@ -59,6 +61,7 @@ export function FunctionDetail({
   api,
   server,
   row,
+  commands,
 }: {
   api: Api
   server: Server
@@ -67,6 +70,7 @@ export function FunctionDetail({
   commands: PageRenderProps['commands']
 }) {
   const { functionId } = row
+  const access = serverAccess(server).find((fn) => fn.functionId === functionId)
   const [contract, setContract] = useState<Contract | null>(null)
   const [attempt, setAttempt] = useState(0)
   const seq = useRef(0)
@@ -88,6 +92,7 @@ export function FunctionDetail({
   // What is held for another function never shows, not even for the first frame after a switch.
   const held = contract?.functionId === functionId ? contract : null
   const schema = held?.info ? (held.info.request_schema ?? null) : undefined
+  const skeleton = SKELETON_LINES.map((n) => <Skeleton key={n} className="mcp-ui-skeleton-line" />)
 
   return (
     <div className="mcp-ui-detail">
@@ -117,12 +122,27 @@ export function FunctionDetail({
               Input schema
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="test" />
+          <TabsContent value="test">
+            {held?.info && access ? (
+              <TestPanel
+                key={functionId}
+                api={api}
+                server={server}
+                functionId={functionId}
+                name={access.name}
+                schema={held.info.request_schema}
+                access={access}
+                commands={commands}
+              />
+            ) : (
+              skeleton
+            )}
+          </TabsContent>
           <TabsContent value="schema">
             {held?.info ? (
               <SchemaTable schema={schema} label="Input" empty="This function declares no input schema." />
             ) : (
-              SKELETON_LINES.map((n) => <Skeleton key={n} className="mcp-ui-skeleton-line" />)
+              skeleton
             )}
           </TabsContent>
         </Tabs>
