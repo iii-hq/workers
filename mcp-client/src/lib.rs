@@ -1,3 +1,6 @@
+pub mod config;
+pub mod refs;
+
 /// Log targets whose level is pinned at INFO whatever `RUST_LOG` says: at
 /// DEBUG and below they print authorization codes and token responses.
 pub const CAPPED_LOG_TARGETS: [&str; 4] = ["rmcp", "reqwest", "hyper", "h2"];

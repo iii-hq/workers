@@ -1,0 +1,159 @@
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Store {
+    Secret,
+    Env,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ref {
+    pub store: Store,
+    pub name: String,
+}
+
+impl Ref {
+    /// A reference is the whole string: `secret://NAME` or `env://NAME`, the
+    /// scheme in any case, NAME matching `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`.
+    pub fn parse(s: &str) -> Option<Ref> {
+        let (scheme, name) = s.split_once("://")?;
+        let store = if scheme.eq_ignore_ascii_case("secret") {
+            Store::Secret
+        } else if scheme.eq_ignore_ascii_case("env") {
+            Store::Env
+        } else {
+            return None;
+        };
+        let mut chars = name.chars();
+        let first = chars.next()?;
+        let valid = (first.is_ascii_alphabetic() || first == '_')
+            && name.len() <= 128
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+        valid.then(|| Ref {
+            store,
+            name: name.into(),
+        })
+    }
+}
+
+impl fmt::Display for Ref {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let scheme = match self.store {
+            Store::Secret => "secret",
+            Store::Env => "env",
+        };
+        write!(f, "{scheme}://{}", self.name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Text {
+    Literal(String),
+    Ref(Ref),
+}
+
+impl Text {
+    pub fn parse(s: &str) -> Text {
+        Ref::parse(s).map_or_else(|| Text::Literal(s.into()), Text::Ref)
+    }
+}
+
+/// Whether a header or env name probably carries a credential. The TypeScript
+/// twin shares the name vector in its tests.
+pub fn looks_secret_name(name: &str) -> bool {
+    const NAMES: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
+    const WORDS: [&str; 10] = [
+        "KEY",
+        "APIKEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "PAT",
+        "AUTH",
+        "CREDENTIAL",
+        "CREDENTIALS",
+    ];
+    NAMES.iter().any(|n| name.eq_ignore_ascii_case(n))
+        || name
+            .split(['_', '-'])
+            .any(|seg| WORDS.iter().any(|w| seg.eq_ignore_ascii_case(w)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reference_is_the_whole_string() {
+        assert_eq!(
+            Ref::parse("secret://LINEAR_API_KEY").unwrap(),
+            Ref {
+                store: Store::Secret,
+                name: "LINEAR_API_KEY".into()
+            }
+        );
+        assert_eq!(
+            Ref::parse("ENV://HTTPS_PROXY").unwrap().to_string(),
+            "env://HTTPS_PROXY"
+        );
+        assert_eq!(Ref::parse("Secret://_a.b-c").unwrap().name, "_a.b-c");
+        assert!(Ref::parse(&format!("secret://A{}", "b".repeat(127))).is_some());
+        assert!(Ref::parse(&format!("secret://A{}", "b".repeat(128))).is_none());
+        for not_a_ref in [
+            "Bearer secret://X",
+            "secret://X ",
+            " secret://X",
+            "secret://",
+            "secret://1X",
+            "secret://A B",
+            "secret://A/B",
+            "vault://X",
+            "secret:/X",
+            "",
+            "LINEAR_API_KEY",
+            "https://x/secret://X",
+        ] {
+            assert!(Ref::parse(not_a_ref).is_none(), "{not_a_ref:?}");
+        }
+    }
+
+    #[test]
+    fn text_is_a_reference_or_a_literal() {
+        assert_eq!(
+            Text::parse("env://HOME"),
+            Text::Ref(Ref::parse("env://HOME").unwrap())
+        );
+        assert_eq!(
+            Text::parse("Bearer secret://X"),
+            Text::Literal("Bearer secret://X".into())
+        );
+    }
+
+    #[test]
+    fn secret_names() {
+        for n in [
+            "X-API-Key",
+            "GITHUB_TOKEN",
+            "Authorization",
+            "cookie",
+            "apikey",
+            "MY_PAT",
+            "DB_PASSWD",
+            "X-Auth-Token",
+            "CREDENTIALS_FILE",
+            "proxy-authorization",
+        ] {
+            assert!(looks_secret_name(n), "{n}");
+        }
+        for n in [
+            "X-Workspace",
+            "PLAYWRIGHT_BROWSERS_PATH",
+            "HTTPS_PROXY",
+            "MONKEY",
+            "AUTHOR",
+        ] {
+            assert!(!looks_secret_name(n), "{n}");
+        }
+    }
+}
