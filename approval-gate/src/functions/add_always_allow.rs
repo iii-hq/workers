@@ -36,7 +36,48 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{BootOpts, with_stack};
+    use crate::functions::{gate, set_mode};
+    use crate::testkit::{BootOpts, hook_input, with_stack};
+    use crate::types::{HookInput, HookOutput, PermissionMode, SetModeRequest};
+
+    /// A glob is the operator's to write here, unlike an "approve always"
+    /// grant from a held call.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_glob_added_by_hand_matches_in_auto_mode() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            handle(
+                &stack.deps,
+                AlwaysAllowMutationRequest {
+                    session_id: "s_1".into(),
+                    namespace: None,
+                    function_id: "shell::*".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let call = |call_id: &str| -> HookInput {
+                serde_json::from_value(hook_input("s_1", call_id, "shell::exec")).unwrap()
+            };
+            assert_eq!(
+                gate::handle(&stack.deps, call("c_1")).await.unwrap(),
+                HookOutput::Hold
+            );
+            set_mode::handle(
+                &stack.deps,
+                SetModeRequest {
+                    session_id: "s_1".into(),
+                    mode: PermissionMode::Auto,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                gate::handle(&stack.deps, call("c_2")).await.unwrap(),
+                HookOutput::Continue
+            );
+        })
+        .await;
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn add_is_idempotent_on_function_id() {

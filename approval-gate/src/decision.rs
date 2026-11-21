@@ -6,8 +6,8 @@
 //!
 //!   1. human-only target → deny (before the snapshot, even under full)
 //!   2. mode full → allow
-//!   3. approved_always hit → allow (every mode)
-//!   4. mode auto AND always_allow hit → allow (dormant under manual)
+//!   3. approved_always hit → allow (every mode; exact id, never a glob)
+//!   4. mode auto AND always_allow hit → allow (dormant under manual; globs)
 //!   5. fall through to configuration `rules` (permissions module)
 
 use crate::types::{AlwaysAllowEntry, ApprovalSettings, PermissionMode};
@@ -57,12 +57,13 @@ pub fn glob_match(pattern: &str, candidate: &str) -> bool {
 /// when it was granted.
 fn list_matches(
     entries: &[AlwaysAllowEntry],
+    id_matches: fn(&str, &str) -> bool,
     namespace: Option<&str>,
     implicit_namespace: Option<&str>,
     function_id: &str,
 ) -> bool {
     entries.iter().any(|entry| {
-        glob_match(&entry.function_id, function_id)
+        id_matches(&entry.function_id, function_id)
             && match (entry.namespace.as_deref(), namespace) {
                 (Some(granted), call) => call == Some(granted),
                 (None, None) => true, // old harness: no namespace on the wire
@@ -83,9 +84,12 @@ pub fn pre_policy_allow(
         return true;
     }
     // Per-session "approve always" grants apply in every mode — they are
-    // remembered human decisions, not an auto-policy.
+    // remembered human decisions, not an auto-policy. Exact, because the
+    // prompt stores the held call's id as it arrived: a `*` the model put in
+    // it must not widen what the human approved.
     if list_matches(
         &settings.approved_always,
+        |granted, id| granted == id,
         namespace,
         implicit_namespace,
         function_id,
@@ -95,6 +99,7 @@ pub fn pre_policy_allow(
     if settings.mode == PermissionMode::Auto
         && list_matches(
             &settings.always_allow,
+            glob_match,
             namespace,
             implicit_namespace,
             function_id,
@@ -196,8 +201,21 @@ mod tests {
     }
 
     #[test]
-    fn glob_grant_stays_in_its_namespace() {
-        let s = manual(vec![entry(Some("laptop"), "shell::*")]);
+    fn approved_always_is_exact_not_a_pattern() {
+        for mode in [PermissionMode::Manual, PermissionMode::Auto] {
+            let s = settings(mode, &[], &["shell::*"]);
+            assert!(!pre_policy_allow(&s, None, None, "shell::exec"));
+            assert!(pre_policy_allow(&s, None, None, "shell::*"));
+        }
+    }
+
+    #[test]
+    fn glob_always_allow_stays_in_its_namespace() {
+        let s = ApprovalSettings {
+            mode: PermissionMode::Auto,
+            always_allow: vec![entry(Some("laptop"), "shell::*")],
+            ..Default::default()
+        };
         assert!(pre_policy_allow(
             &s,
             Some("laptop"),
@@ -306,18 +324,12 @@ mod tests {
     }
 
     #[test]
-    fn glob_entries_in_allow_lists_match() {
+    fn glob_entries_in_always_allow_match() {
         assert!(pre_policy_allow(
             &settings(PermissionMode::Auto, &["shell::*"], &[]),
             None,
             None,
             "shell::run"
-        ));
-        assert!(pre_policy_allow(
-            &settings(PermissionMode::Manual, &[], &["state::*"]),
-            None,
-            None,
-            "state::get"
         ));
     }
 }

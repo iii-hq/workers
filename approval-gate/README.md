@@ -104,9 +104,11 @@ For a call that names no namespace (an older harness), a qualified `deny`
 still matches and a qualified `allow` does not, so it fails closed.
 "Approve always" grants take no `<namespace>/` qualifier: the namespace is a
 separate field and is compared exactly, so a grant never covers another
-namespace. The grant's `function_id` is matched like a pattern, so a `*` in it
-is a glob (`shell::*` also allows `shell::exec` in that namespace); an approval
-prompt stores the held call's own id. A grant stored before namespaces existed
+namespace. The grant's `function_id` is compared exactly too: an approval
+prompt stores the held call's own id, and a `*` in it is a plain character (a
+grant for `shell::*` allows a call to `shell::*`, never `shell::exec`). A glob
+belongs in an `allow` rule or an auto-mode `add-always-allow` entry, both
+written by an operator. A grant stored before namespaces existed
 covers only the namespace a call without `namespace` runs in. Modes are
 unchanged.
 
