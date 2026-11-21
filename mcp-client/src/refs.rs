@@ -77,8 +77,19 @@ impl Resolved {
         }
     }
 
+    /// Each value, and for one that parses as a URL also its normalized form:
+    /// reqwest prints URLs that way (`https://h?k=v` as `https://h/?k=v`).
     pub fn secrets(&self) -> Vec<String> {
-        self.values.values().cloned().collect()
+        let mut out = Vec::new();
+        for value in self.values.values() {
+            out.push(value.clone());
+            if let Ok(url) = url::Url::parse(value)
+                && url.as_str() != value
+            {
+                out.push(url.into());
+            }
+        }
+        out
     }
 }
 

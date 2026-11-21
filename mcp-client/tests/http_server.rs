@@ -446,3 +446,24 @@ async fn a_url_reference_that_resolves_to_plain_http_is_refused() {
     );
     assert!(!r.to_string().contains("mcp.example.com"), "{r}");
 }
+
+#[tokio::test]
+async fn a_url_secret_is_scrubbed_in_its_normalized_form() {
+    let mock = McpMock::start().await;
+    mock.tools(tools()).await;
+    let base = mock.url().trim_end_matches("/mcp").to_string();
+    let host = FakeHost::new();
+    // reqwest prints it as `<base>/?api_key=…`, which the stored text is not.
+    host.set_secret("secret://MOCK_URL", &format!("{base}?api_key=SENTINEL-KEY"));
+    let manager = connect(&host, cfg(json!({"m": {"url": "secret://MOCK_URL"}}))).await;
+    settle(&manager, "m", State::Ready).await;
+
+    drop(mock);
+    let error = host
+        .call("mcp::m::echo", json!({"text": "x"}))
+        .await
+        .unwrap_err();
+    assert!(!error.contains("SENTINEL-KEY"), "{error}");
+    let listed = serde_json::to_string(&manager.list().await).unwrap();
+    assert!(!listed.contains("SENTINEL-KEY"), "{listed}");
+}

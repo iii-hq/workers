@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 #[derive(Default)]
@@ -100,17 +100,17 @@ pub struct McpMock {
 }
 
 impl McpMock {
+    /// Its own server, not one from wiremock's pool: dropping the mock closes
+    /// the port. Every path answers, so a URL without `/mcp` works too.
     pub async fn start() -> McpMock {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let settings = Arc::new(Mutex::new(Settings::default()));
         Mock::given(method("POST"))
-            .and(path("/mcp"))
             .respond_with(Responder(settings.clone()))
             .mount(&server)
             .await;
         for verb in ["GET", "DELETE"] {
             Mock::given(method(verb))
-                .and(path("/mcp"))
                 .respond_with(ResponseTemplate::new(405))
                 .mount(&server)
                 .await;
