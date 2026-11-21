@@ -1,5 +1,6 @@
 pub mod config;
 pub mod refs;
+pub mod translate;
 
 /// Log targets whose level is pinned at INFO whatever `RUST_LOG` says: at
 /// DEBUG and below they print authorization codes and token responses.
