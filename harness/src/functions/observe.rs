@@ -1841,8 +1841,9 @@ fn explicit_namespace(req: &ObserveRequest) -> Option<&str> {
 /// Resolve the source namespace: the agent's explicit one, else the first of
 /// this harness's namespace, `default` and Compose's that hosts the function.
 /// When none does yet, the observer waits in this harness's namespace
-/// (Compose's for a `compose::*` function). Fail-open: a probe error that is
-/// not a definitive NOT_FOUND stops probing and leaves the namespace unset.
+/// (Compose's for a `compose::*` function). A probe error that is not a
+/// definitive NOT_FOUND stops probing and waits there too, so the binding
+/// always names the namespace the policy was checked in.
 async fn resolve_source_namespace(deps: &Deps, req: &ObserveRequest) -> SourceHost {
     if let Some(namespace) = explicit_namespace(req) {
         return SourceHost {
@@ -1875,20 +1876,29 @@ async fn resolve_source_namespace(deps: &Deps, req: &ObserveRequest) -> SourceHo
             Err(e) if e.to_string().contains("NOT_FOUND") => {}
             Err(_) => {
                 return SourceHost {
-                    namespace: None,
+                    namespace: waiting_namespace(&req.function_id, own, compose),
                     unhosted_in: Vec::new(),
                 };
             }
         }
     }
-    let fallback = if req.function_id.starts_with("compose::") {
+    SourceHost {
+        namespace: waiting_namespace(&req.function_id, own, compose),
+        unhosted_in: candidates,
+    }
+}
+
+/// Where an observer waits when no probe found its source: Compose's
+/// namespace for a `compose::*` function, else this harness's.
+fn waiting_namespace(
+    function_id: &str,
+    own: Option<String>,
+    compose: Option<String>,
+) -> Option<String> {
+    if function_id.starts_with("compose::") {
         compose.or(own)
     } else {
         own
-    };
-    SourceHost {
-        namespace: fallback,
-        unhosted_in: candidates,
     }
 }
 
@@ -1978,6 +1988,29 @@ pub(crate) mod tests {
         assert_eq!(
             source_namespace_candidates(Some("default"), Some("default")),
             vec!["default"]
+        );
+    }
+
+    /// An unresolved source (nothing hosts it yet, or a probe failed) waits
+    /// in a named namespace, so the second policy check sees where it runs.
+    #[test]
+    fn an_unresolved_source_waits_in_a_named_namespace() {
+        let ns = |s: &str| Some(s.to_string());
+        assert_eq!(
+            waiting_namespace(
+                "compose::on-operation-progress",
+                ns("project"),
+                ns("compose-host")
+            ),
+            ns("compose-host")
+        );
+        assert_eq!(
+            waiting_namespace("compose::on-operation-progress", ns("project"), None),
+            ns("project")
+        );
+        assert_eq!(
+            waiting_namespace("state::on-changed", ns("project"), ns("compose-host")),
+            ns("project")
         );
     }
 
