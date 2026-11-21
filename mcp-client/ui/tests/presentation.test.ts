@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { countLabel, presentServer, STAGES, statusBarText } from '../src/presentation'
-import type { Server } from '../src/types'
+import { countLabel, pageState, pathHeads, presentServer, STAGES, statusBarText } from '../src/presentation'
+import type { Item, Server } from '../src/types'
+import type { ServersData } from '../src/use-servers'
 import { docs, list, NOW, server, stdio } from './fixtures/servers'
 
 const err = (code: string, message: string) => ({ code, message }) as never
@@ -143,5 +144,82 @@ describe('statusBarText', () => {
 describe('STAGES', () => {
   it('names the six stages in order', () => {
     expect(STAGES.map((s) => s.label)).toEqual(['Config', 'Approval', 'Secret', 'Connect', 'Authorize', 'Tools'])
+  })
+})
+
+describe('pathHeads', () => {
+  const fn = (functionId: string): Item => ({ kind: 'function', functionId })
+
+  it('spells the function id across the three heads', () => {
+    expect(pathHeads({ server: null, item: null }, null, 6)).toEqual({
+      first: 'mcp::',
+      firstMeta: '6 servers',
+      second: null,
+      secondMeta: null,
+      third: null,
+      thirdIsId: false,
+    })
+    expect(pathHeads({ server: 'linear', item: fn('mcp::linear::list_issues') }, server(), 6)).toEqual({
+      first: 'mcp::',
+      firstMeta: '6 servers',
+      second: 'linear::',
+      secondMeta: '2 tools',
+      third: 'list_issues',
+      thirdIsId: true,
+    })
+    expect(pathHeads({ server: 'docs', item: fn('mcp::docs::resources::read') }, docs(), 1)).toMatchObject({
+      firstMeta: '1 server',
+      secondMeta: '6 functions',
+      third: 'resources::read',
+      thirdIsId: true,
+    })
+    expect(pathHeads({ server: 'docs', item: fn('mcp::docs::prompts::code_review') }, docs(), 1).third).toBe(
+      'prompts::code_review',
+    )
+  })
+
+  it('shows a word, not an id, for the pinned rows', () => {
+    for (const [kind, third] of [
+      ['connection', 'Connection'],
+      ['process', 'Process'],
+      ['access', 'Agent access'],
+    ] as const) {
+      expect(pathHeads({ server: 'linear', item: { kind } }, server(), 1)).toMatchObject({ third, thirdIsId: false })
+    }
+  })
+
+  it('reads 0 servers on first run and keeps a name the worker did not report', () => {
+    expect(pathHeads({ server: null, item: null }, null, 0).firstMeta).toBe('0 servers')
+    expect(pathHeads({ server: 'linear', item: null }, null, 1)).toMatchObject({
+      second: 'linear::',
+      secondMeta: null,
+      third: null,
+    })
+  })
+})
+
+describe('pageState', () => {
+  const data = (over: Partial<ServersData> = {}): ServersData => ({
+    list: list([server()]),
+    config: { linear: {} },
+    functions: {},
+    workerDown: false,
+    configDown: false,
+    configError: null,
+    loading: false,
+    error: null,
+    refresh: () => {},
+    ...over,
+  })
+
+  it('tells the five situations apart by which read failed', () => {
+    expect(pageState(data({ loading: true, list: null, config: null }))).toBe('loading')
+    // a re-read never flashes the skeleton
+    expect(pageState(data({ loading: true }))).toBe('ready')
+    expect(pageState(data({ configDown: true, config: null }))).toBe('config_down')
+    expect(pageState(data({ configDown: true, workerDown: true, list: null, config: null }))).toBe('config_down')
+    expect(pageState(data({ workerDown: true, list: null }))).toBe('worker_down')
+    expect(pageState(data({ list: list([]), config: {} }))).toBe('first_run')
+    expect(pageState(data({}))).toBe('ready')
   })
 })

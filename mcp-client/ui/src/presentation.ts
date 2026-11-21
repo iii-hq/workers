@@ -1,4 +1,5 @@
-import type { AuthKind, Server, ServerState, ServersList, Stage } from './types'
+import type { AuthKind, Selection, Server, ServerState, ServersList, Stage } from './types'
+import type { ServersData } from './use-servers'
 
 /** Server state to the words and tones of the page: the spec's "States and
  * ranges" table. Every string is authored copy; nothing is case-transformed. */
@@ -183,4 +184,44 @@ export function statusBarText(list: ServersList): string {
     `${count(registered, 'function', 'functions')} registered`,
     `${attention} ${attention === 1 ? 'needs' : 'need'} attention`,
   ].join(' · ')
+}
+
+const PINNED_WORDS = { connection: 'Connection', process: 'Process', access: 'Agent access' } as const
+
+export interface PathHeads {
+  first: string
+  firstMeta: string
+  second: string | null
+  secondMeta: string | null
+  third: string | null
+  thirdIsId: boolean
+}
+
+/** The three heads of the path row, which together spell the selected function id. */
+export function pathHeads(selection: Selection, server: Server | null, total: number): PathHeads {
+  const { item } = selection
+  return {
+    first: 'mcp::',
+    firstMeta: count(total, 'server', 'servers'),
+    second: selection.server === null ? null : `${selection.server}::`,
+    secondMeta: server ? countLabel(server) : null,
+    third:
+      item === null
+        ? null
+        : item.kind === 'function'
+          ? item.functionId.slice(`mcp::${selection.server}::`.length)
+          : PINNED_WORDS[item.kind],
+    thirdIsId: item?.kind === 'function',
+  }
+}
+
+export type PageState = 'loading' | 'config_down' | 'worker_down' | 'first_run' | 'ready'
+
+/** The page-level situation, by which read failed: the spec's page-level states. */
+export function pageState(data: ServersData): PageState {
+  if (data.loading && data.list === null && data.config === null) return 'loading'
+  if (data.configDown) return 'config_down'
+  if (data.workerDown) return 'worker_down'
+  if (data.list?.servers.length === 0) return 'first_run'
+  return 'ready'
 }

@@ -160,3 +160,16 @@ export interface FunctionInfo {
   response_schema?: unknown
   metadata?: Record<string, unknown>
 }
+
+/** What column 2 has selected: a pinned row or one function. */
+export type Item =
+  | { kind: 'connection' }
+  | { kind: 'process' }
+  | { kind: 'access' }
+  | { kind: 'function'; functionId: string }
+
+/** The page's place: the server of column 1 and the item of column 2. */
+export interface Selection {
+  server: string | null
+  item: Item | null
+}

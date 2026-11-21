@@ -1,1 +1,147 @@
-[data-iii-ui="mcp-client"] .mcp-ui-root { min-height: 0; }
+/*
+ * The mcp-client page (`mcp-client-servers`), scoped under
+ * `[data-iii-ui="mcp-client"]`. Layout only: chrome comes from
+ * @iii-dev/console-ui and the console's tokens; sans for people, mono for
+ * machine values. `--mcp-ui-col1` is column 1's width, set on the root, so
+ * the path row's first head sits over the column it names.
+ */
+
+[data-iii-ui="mcp-client"] .mcp-ui-root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ── the path row: one head per column, together the function id ────── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-path {
+  display: grid;
+  flex: none;
+  grid-template-columns: var(--mcp-ui-col1) minmax(320px, 376px) minmax(0, 1fr);
+  height: 36px;
+  background: var(--color-surface);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-path-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 12px 0 20px;
+  white-space: nowrap;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-path-head:last-child {
+  padding-left: 24px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-path-head code,
+[data-iii-ui="mcp-client"] .mcp-ui-path-head b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-path-head code {
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-path-head span {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-path-head button {
+  margin-left: auto;
+}
+
+/* ── column 1: servers ─────────────────────────────────────────────── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-list {
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+/* One height whatever the row holds, so a state change never moves a row. */
+[data-iii-ui="mcp-client"] .mcp-ui-row {
+  flex: none;
+  height: 52px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-row .iii-ui-list-item__title {
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-row .iii-ui-list-item__meta {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-row[data-tone="warn"] .iii-ui-list-item__description {
+  color: var(--color-warn-strong);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-row[data-tone="alert"] .iii-ui-list-item__description {
+  color: var(--color-alert-strong);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 48px;
+  padding: 0 8px;
+}
+
+/* ── columns 2 and 3 ───────────────────────────────────────────────── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-cols {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(320px, 376px) minmax(0, 1fr);
+  min-height: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-col2,
+[data-iii-ui="mcp-client"] .mcp-ui-col3 {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-col2 {
+  gap: 4px;
+  padding: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-col3 {
+  gap: 12px;
+  padding: 12px 24px;
+  background: var(--color-panel-raised);
+  box-shadow: inset 1px 0 0 var(--color-edge);
+}
+/* A page-level state stands in for columns 2 and 3, or for all three. */
+[data-iii-ui="mcp-client"] .mcp-ui-whole {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 24px;
+}
+
+/* ── loading: placeholders in the shape of each column ────────────── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-skeleton-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-skeleton-name {
+  width: 96px;
+  height: 12px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-skeleton-text {
+  width: 160px;
+  height: 10px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-skeleton-line {
+  display: block;
+  width: 60%;
+  height: 14px;
+}

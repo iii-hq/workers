@@ -1,4 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { useMemo } from 'react'
 import { createApi } from './api'
@@ -16,12 +17,14 @@ export interface ServersData {
   functions: Record<string, EngineFunction[]>
   workerDown: boolean
   configDown: boolean
+  /** Why the entry could not be read. */
+  configError: string | null
   loading: boolean
   error: string | null
   refresh: () => void
 }
 
-type Snapshot = Pick<ServersData, 'list' | 'config' | 'functions' | 'workerDown' | 'configDown'>
+type Snapshot = Pick<ServersData, 'list' | 'config' | 'functions' | 'workerDown' | 'configDown' | 'configError'>
 
 /** The servers, the entry and the registered functions, re-read on every server or function change. */
 export function useServers(host: Host): ServersData {
@@ -43,6 +46,7 @@ export function useServers(host: Host): ServersData {
         functions,
         workerDown: list.status === 'rejected',
         configDown: config.status === 'rejected',
+        configError: config.status === 'rejected' ? errorMessage(config.reason) : null,
       }
     },
   })
@@ -52,6 +56,7 @@ export function useServers(host: Host): ServersData {
     functions: data?.functions ?? {},
     workerDown: data?.workerDown ?? false,
     configDown: data?.configDown ?? false,
+    configError: data?.configError ?? null,
     loading,
     error,
     refresh,
