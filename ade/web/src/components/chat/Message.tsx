@@ -32,6 +32,7 @@ import {
 } from '@/lib/chat-aside'
 import { FileMessageContext, useOpenMessageFile } from '@/lib/file-navigation'
 import { Markdown } from '@/lib/markdown'
+import { splitMessageBlocks } from '@/lib/message-blocks'
 import { invocationCommand, parseSlashInvocations } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
 import {
@@ -39,7 +40,7 @@ import {
   formatReplyClock,
   formatTurnDuration,
 } from '@/lib/turn-summary'
-import { parseWorkflowInput } from '@/lib/workflow-input'
+import { useExtMessageBlockRenderers } from '@/lib/ui-slots'
 import type {
   AssistantMessage as AssistantMessageType,
   Message as MessageType,
@@ -55,7 +56,6 @@ import { ModelMark } from './ModelMark'
 import { SystemNotice } from './SystemNotice'
 import { ThoughtMessage } from './ThoughtMessage'
 import { useSmoothText } from './use-smooth-text'
-import { WorkflowInputCard } from './WorkflowInputCard'
 import './streaming-message.css'
 import './conversation-design.css'
 import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
@@ -499,12 +499,13 @@ function UserMessage({
     ? splitQuotedMessage(message.content, sideQuotes.quotes)
     : null
   const text = quoted ? quoted.rest : message.content
-  // A workflow node's opening: the bubble keeps the instruction prose, and
-  // the fenced upstream data (nobody's words) renders as a card below it.
-  const workflowInput = useMemo(() => parseWorkflowInput(text), [text])
-  const prose = workflowInput
-    ? [workflowInput.before, workflowInput.after].filter(Boolean).join('\n\n')
-    : text
+  // Blocks a worker wrote into the message (a workflow node's input) are
+  // nobody's words: the bubble keeps the prose, its renderer draws each one.
+  const blockRenderers = useExtMessageBlockRenderers()
+  const { prose, blocks } = useMemo(
+    () => splitMessageBlocks(text, blockRenderers),
+    [text, blockRenderers],
+  )
   return (
     <article
       className="chat-message group flex flex-col items-end gap-2"
@@ -545,11 +546,33 @@ function UserMessage({
           </div>
         </div>
       ) : null}
-      {workflowInput ? (
-        <WorkflowInputCard
-          input={workflowInput}
-          copyText={prose.trim() ? undefined : message.content}
-        />
+      {blocks.length > 0 ? (
+        <div
+          data-message-blocks=""
+          // No prose: room above the first block so the copy never covers its header.
+          className={cn(
+            'relative flex w-full flex-col gap-2',
+            !prose && 'pt-5',
+          )}
+        >
+          {blocks.map((block, index) => {
+            const Block = blockRenderers.get(block.tag)?.render
+            return Block ? (
+              // biome-ignore lint/suspicious/noArrayIndexKey: blocks are positional and never reorder
+              <Block key={index} {...block} sessionId={sessionId} />
+            ) : null
+          })}
+          {/* No bubble left to carry the copy: it rides above the first
+ block's top-right edge, in the room the padding leaves. */}
+          {prose ? null : (
+            <Hint label="Copy message" side="top">
+              <CopyMessageButton
+                text={message.content}
+                className="chat-user-copy"
+              />
+            </Hint>
+          )}
+        </div>
       ) : null}
       {chips.length > 0 ? (
         <div className="flex max-w-[92%] flex-wrap justify-end gap-2 @2xl:max-w-[80%]">

@@ -305,3 +305,155 @@
 [data-iii-ui="workflow"] .wf-ctx-ok {
   color: var(--color-ok);
 }
+
+/* ── message block: <workflow_input> ── */
+/* A node's input as label/value rows (the console's fact-list look): labels
+   Inter 14px ink-faint, values ink, machine values Geist Mono 13px. */
+[data-iii-ui="workflow"] .wf-input {
+  width: 100%;
+  min-width: 0;
+}
+[data-iii-ui="workflow"] .wf-input-head {
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="workflow"] .wf-input-title {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="workflow"] .wf-input-chip {
+  flex-shrink: 0;
+}
+[data-iii-ui="workflow"] .wf-input-chip:focus-visible,
+[data-iii-ui="workflow"] .wf-input-summary:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+[data-iii-ui="workflow"] .wf-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+[data-iii-ui="workflow"] .wf-input-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+[data-iii-ui="workflow"] .wf-input-data {
+  min-width: 0;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+[data-iii-ui="workflow"] .wf-input-data:focus-visible,
+[data-iii-ui="workflow"] .wf-input-json:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="workflow"] .wf-input-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  min-width: 0;
+  margin: 0;
+}
+[data-iii-ui="workflow"] .wf-input-facts > dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-input-facts > dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: break-word;
+}
+/* A nested object or list sits under its label, indented on a rule. */
+[data-iii-ui="workflow"] .wf-input-facts > [data-block] {
+  grid-column: 1 / -1;
+}
+[data-iii-ui="workflow"] .wf-input-facts > dd[data-block] {
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--color-edge);
+}
+/* Plain text, never Markdown: line breaks kept, long words wrapped. */
+[data-iii-ui="workflow"] .wf-input-text {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+[data-iii-ui="workflow"] .wf-input-mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+[data-iii-ui="workflow"] .wf-input-quiet {
+  font-style: italic;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-input-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+[data-iii-ui="workflow"] ol.wf-input-list {
+  list-style: decimal;
+}
+[data-iii-ui="workflow"] .wf-input-list > li {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+[data-iii-ui="workflow"] .wf-input-list > li::marker {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="workflow"] .wf-input-list > li + li {
+  margin-top: 0.25rem;
+}
+[data-iii-ui="workflow"] ol.wf-input-list > li + li {
+  margin-top: 0.75rem;
+}
+[data-iii-ui="workflow"] .wf-input-raw {
+  margin: 0;
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+/* A card's section label: 12px / 500 ink-faint. */
+[data-iii-ui="workflow"] .wf-input-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  transition: color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="workflow"] .wf-input-summary::-webkit-details-marker {
+  display: none;
+}
+[data-iii-ui="workflow"] .wf-input-summary:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="workflow"] .wf-input-json {
+  max-height: 16rem;
+  margin-top: 0.25rem;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+}
