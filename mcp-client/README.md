@@ -73,10 +73,10 @@ A server name matches `^[a-z0-9][a-z0-9-]{0,23}$`. Each entry is checked on its 
 | `type` | `http`; `streamable-http` is read as `http`. Optional when `url` is set. `sse` and `ws` are a config error. |
 | `url` | The endpoint: `https`, or `http` on a loopback host. No user or password in it, and no query parameter whose name looks like a secret. When the URL itself carries a key, make the whole URL a reference. |
 | `headers` | Header name to value, a literal or a reference. The value of a header whose name looks like a credential (`Authorization`, `Cookie`, or a name with a part such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `AUTH`) must be a reference. `Host`, `Content-Length`, `Content-Type`, `Accept`, `Last-Event-ID` and `Mcp-*` are refused, and `Authorization` cannot be set together with `auth`. |
-| `auth` | `{"type": "bearer", "token": "secret://NAME"}`. The token must be a reference. Without `auth` the worker sends no credential. |
+| `auth` | `bearer`, `client_credentials` or `oauth`: see Authentication below. Without `auth` the worker sends no credential, and asks for a sign-in if the server wants one. |
 | `disabled` | `true` keeps the entry but connects nothing and registers nothing. |
 
-The other `auth` types are not run by this release. An entry with `command` instead of `url` runs a local process: see stdio servers below.
+An entry with `command` instead of `url` runs a local process: see stdio servers below.
 
 **References.** `secret://NAME` reads the vault; `env://NAME` reads the secrets worker's env store (the project's `.env`, or the secrets worker's own environment). `NAME` matches `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`. A reference is the whole value, never part of a longer string: `"Bearer secret://X"` is a literal, and a literal is refused where a credential belongs. The secret must be shared with `mcp-client` (`"consumers": ["mcp-client"]`).
 
@@ -93,11 +93,82 @@ The other `auth` types are not run by this release. An entry with `command` inst
 | `ready` | Tools listed and registered | |
 | `unavailable` | Network failure, failed handshake, or the session ended | by itself: retried with backoff |
 | `auth_failed` | The server rejected the credential | the secret or the entry changes, or `mcp-client::servers::reconnect` |
-| `needs_login` | The server asks for an interactive sign-in, which this release cannot do | the entry changes |
+| `needs_login` | The server asks for a sign-in, or its stored session ended or was signed out | a sign-in finishes, or the entry changes |
 
 A server that leaves `ready` keeps its functions registered. Until it is back, a call answers `` `<server>` MCP unavailable (`<state>`) `` with how long it has been so.
 
 **Fixed limits**, none configurable: 120 s per call, after which the outcome is unknown; 120 KiB per result, longer text is cut and ends with a hint to narrow the query; reconnect backoff from 1 s, doubling to 60 s.
+
+## Authentication
+
+An http entry authenticates in one of four ways.
+
+**No `auth`.** Requests carry no credential. If the server answers with an OAuth sign-in challenge, as Linear does, the server goes to `needs_login` and its row on the MCP servers page shows Needs sign-in.
+
+```json
+{"linear-auto": {"type": "http", "url": "https://mcp.linear.app/mcp"}}
+```
+
+**`bearer`, and secret headers.** The token is sent as `Authorization: Bearer <token>`, and a header can carry any other credential. Both are references, never literals. A changed secret reconnects the server.
+
+```json
+{"linear": {"type": "http", "url": "https://mcp.linear.app/mcp",
+  "auth": {"type": "bearer", "token": "secret://LINEAR_API_KEY"}}}
+```
+
+```json
+{"search": {"type": "http", "url": "https://mcp.example.com/mcp",
+  "headers": {"X-API-Key": "secret://SEARCH_X_API_KEY", "X-Workspace": "acme"}}}
+```
+
+**`client_credentials`.** The worker posts `client_id`, `client_secret` and `scope` to `token_url` (https) and sends the token it gets back. `client_secret` is a reference. `scope` is one string, sent as written: Linear wants commas. When the server rejects the token, the worker gets a new one and retries once. A refused token request leaves the server `auth_failed` with the provider's reason.
+
+```json
+{"linear-app": {"type": "http", "url": "https://mcp.linear.app/mcp",
+  "auth": {"type": "client_credentials", "token_url": "https://api.linear.app/oauth/token",
+    "client_id": "abc123", "client_secret": "secret://LINEAR_CLIENT_SECRET", "scope": "read,write"}}}
+```
+
+**`oauth`.** Interactive sign-in. Every field is optional: `scopes` (an array; by default, what the server asks for), `client_id` and `client_secret` (a reference) for a client you registered with the provider, and `client_metadata_url` (https) for a Client ID Metadata Document.
+
+```json
+{"linear-me": {"type": "http", "url": "https://mcp.linear.app/mcp",
+  "auth": {"type": "oauth", "scopes": ["read", "write"]}}}
+```
+
+**Signing in.** Start the sign-in on the MCP servers page, or call `mcp-client::login::start` and open its `authorize_url` in a browser:
+
+```bash
+iii call mcp-client::login::start --json '{"server": "linear-me"}'
+```
+
+The sign-in waits 10 minutes; `mcp-client::login::cancel` drops it. After you sign in, the browser comes back to the callback route on the http worker, which shows a page you can close, and the server turns `ready`.
+
+**The redirect URI to register** with a provider that needs a fixed one is `http://127.0.0.1:<http worker port>/mcp-client/oauth/callback`, port 3111 unless the [http worker](https://github.com/iii-hq/workers/blob/main/http/README.md) is configured otherwise. `mcp-client::servers::list` returns the exact value as `callback_url`.
+
+**When the browser is on another machine**, it cannot reach that address. Sign in anyway, then paste the whole address the browser ended on into the MCP servers page, or call:
+
+```bash
+iii call mcp-client::login::complete --json '{"callback_url": "<the address the browser ended on>"}'
+```
+
+The same path works when the http worker is not installed. The worker then logs one warning 30 s after it starts, and the route comes up if the http worker starts later.
+
+**Client-credentials warnings.**
+
+- Keep the `scope` string identical everywhere.
+- Never use one Linear OAuth application for both `client_credentials` and interactive sign-in: a client-credentials request replaces that application's authorization-code installation.
+
+**What is stored, and where.**
+
+- A signed-in session is one vault secret per server, `MCP_CLIENT_<SERVER>_OAUTH` (the server name upper-cased, `-` as `_`), readable only by `mcp-client`. A `client_credentials` token is never stored: it stays in the worker's memory.
+- Sign out (`mcp-client::login::sign-out`) clears the stored session. It does not revoke it at the provider.
+- Removing a server clears its session; disabling it does not.
+- Without `client_id` or `client_metadata_url`, each sign-in registers a new client with the provider.
+
+**The callback route is reachable from the network** when the http worker binds `0.0.0.0`, its default. That grants nothing: a request does something only with the `state` of a sign-in this worker started less than 10 minutes ago, and the code it carries is useless without a verifier that never leaves this worker's memory. A wrong or missing `state` consumes nothing, and every request gets the same static page, which repeats nothing from the request and is not cached. The redirect URI always names `127.0.0.1`.
+
+**What the callback route leaves in traces.** The http worker records each request it serves in its trace span, and for this route that includes the one-time `code` and `state`. The code works once, for 10 minutes, and only together with that verifier. Finishing a sign-in by pasting the address does not go through the http worker.
 
 ## stdio servers
 
