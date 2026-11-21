@@ -538,6 +538,31 @@ async fn a_step_ending_the_turn_writes_no_live_phase_after_its_projection() {
     );
 }
 
+/// A `shell::fs::read` result is a stream handle: the turn records it with its
+/// `access_key` withheld, in its place a note naming the call that reads text
+/// (MOT-5827).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_handle_result_is_recorded_with_its_access_key_withheld() {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["arguments"] =
+        json!({"function": "shell::fs::read", "payload": {"path": "MARKER.txt"}});
+    let read = json!({"content": {"channel_id": "c", "access_key": "secret-key",
+        "direction": "read"}, "size": 16});
+    let (result, calls, _) = generate_observed(reply, json!({"shell::fs::read": read})).await;
+    assert_eq!(result.expect("the step advances").next_step, Some(2));
+    assert!(
+        calls.iter().any(|(f, _)| f == "shell::fs::read"),
+        "dispatched"
+    );
+    let recorded = calls
+        .iter()
+        .find(|(f, d)| f == "session::append" && d.to_string().contains("function_result"))
+        .map(|(_, d)| d.to_string())
+        .expect("the result is appended");
+    assert!(!recorded.contains("secret-key"), "{recorded}");
+    assert!(recorded.contains("coder::read-file"), "{recorded}");
+}
+
 /// Recall provenance is read only when the step calls Memory's pre_generate
 /// hook: a stack without Memory reads no ledger, neither per step nor when the
 /// turn ends, even with another pre_generate observer called every step.
