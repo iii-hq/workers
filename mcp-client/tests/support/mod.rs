@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod as_mock;
 pub mod mcp_mock;
 
 use std::collections::{HashMap, HashSet};

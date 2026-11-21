@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Effects, Issue, check_entry};
 use crate::host::{EventKind, ServerEvent};
-use crate::server::{Logs, Manager, ServersList, State};
+use crate::server::{LoginStart, Logs, Manager, ServersList, State};
 
 pub const SERVERS_LIST: &str = "mcp-client::servers::list";
 pub const SERVERS_APPROVE: &str = "mcp-client::servers::approve";
@@ -23,6 +23,10 @@ pub const PROCESS_LOGS: &str = "mcp-client::process::logs";
 pub const CONFIG_VALIDATE: &str = "mcp-client::config::validate";
 pub const ON_SERVERS_CHANGED: &str = "mcp-client::on-servers-changed";
 pub const ON_SECRET_CHANGE: &str = "mcp-client::on-secret-change";
+pub const LOGIN_START: &str = "mcp-client::login::start";
+pub const LOGIN_COMPLETE: &str = "mcp-client::login::complete";
+pub const LOGIN_CANCEL: &str = "mcp-client::login::cancel";
+pub const LOGIN_SIGN_OUT: &str = "mcp-client::login::sign-out";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Flags {
@@ -39,7 +43,7 @@ const OPERATOR: Flags = Flags {
 
 /// One row per function `register_all` registers. A function whose payloads
 /// carry a credential is `observable: false`; an event source is `private`.
-const FLAGS: [(&str, Flags); 7] = [
+const FLAGS: [(&str, Flags); 11] = [
     (SERVERS_LIST, OPERATOR),
     (SERVERS_APPROVE, OPERATOR),
     (SERVERS_RECONNECT, OPERATOR),
@@ -59,6 +63,22 @@ const FLAGS: [(&str, Flags); 7] = [
             ..OPERATOR
         },
     ),
+    (
+        LOGIN_START,
+        Flags {
+            observable: false,
+            ..OPERATOR
+        },
+    ),
+    (
+        LOGIN_COMPLETE,
+        Flags {
+            observable: false,
+            ..OPERATOR
+        },
+    ),
+    (LOGIN_CANCEL, OPERATOR),
+    (LOGIN_SIGN_OUT, OPERATOR),
 ];
 
 /// Panics for an id with no row, so nothing registers without one.
@@ -107,6 +127,22 @@ pub struct ApproveResponse {
 pub struct StateResponse {
     pub state: State,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LoginCompleteRequest {
+    /// The whole address the browser ended on after the sign-in.
+    pub callback_url: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct LoginCompleteResponse {
+    /// The server the sign-in was started for.
+    pub server: String,
+    pub state: State,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EmptyResponse {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ValidateRequest {
@@ -270,6 +306,26 @@ pub fn catalog() -> Vec<(&'static str, Value, Value)> {
             schema_value::<Observed<Value, SecretChange>>(),
             schema_value::<Ack>(),
         ),
+        (
+            LOGIN_START,
+            schema_value::<ServerRequest>(),
+            schema_value::<LoginStart>(),
+        ),
+        (
+            LOGIN_COMPLETE,
+            schema_value::<LoginCompleteRequest>(),
+            schema_value::<LoginCompleteResponse>(),
+        ),
+        (
+            LOGIN_CANCEL,
+            schema_value::<ServerRequest>(),
+            schema_value::<EmptyResponse>(),
+        ),
+        (
+            LOGIN_SIGN_OUT,
+            schema_value::<ServerRequest>(),
+            schema_value::<StateResponse>(),
+        ),
     ]
 }
 
@@ -356,6 +412,60 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
                 };
                 m.on_secret_change(&change).await;
                 Ok(Ack { ok: true })
+            }
+        }),
+    );
+    let m = manager.clone();
+    register(
+        iii,
+        LOGIN_START,
+        "Start the sign-in of an MCP server that asks for one: the authorize URL to open in a browser, the redirect URI and when the sign-in expires. Starting again replaces the pending one.",
+        RegisterFunction::new_async(move |request: ServerRequest| {
+            let m = m.clone();
+            async move { m.login_start(&request.server).await.map_err(Error::Handler) }
+        }),
+    );
+    let m = manager.clone();
+    register(
+        iii,
+        LOGIN_COMPLETE,
+        "Finish a sign-in with the whole address the browser ended on; the server is found from that address, then connected.",
+        RegisterFunction::new_async(move |request: LoginCompleteRequest| {
+            let m = m.clone();
+            async move {
+                let (server, state) = m
+                    .login_complete(&request.callback_url)
+                    .await
+                    .map_err(Error::Handler)?;
+                Ok::<LoginCompleteResponse, Error>(LoginCompleteResponse { server, state })
+            }
+        }),
+    );
+    let m = manager.clone();
+    register(
+        iii,
+        LOGIN_CANCEL,
+        "Drop the pending sign-in of an MCP server; nothing pending is not an error.",
+        RegisterFunction::new_async(move |request: ServerRequest| {
+            let m = m.clone();
+            async move {
+                m.login_cancel(&request.server)
+                    .await
+                    .map_err(Error::Handler)?;
+                Ok::<EmptyResponse, Error>(EmptyResponse {})
+            }
+        }),
+    );
+    let m = manager.clone();
+    register(
+        iii,
+        LOGIN_SIGN_OUT,
+        "Sign an MCP server out: its session ends and is cleared from the vault; its functions stay registered and answer that a sign-in is required.",
+        RegisterFunction::new_async(move |request: ServerRequest| {
+            let m = m.clone();
+            async move {
+                let state = m.sign_out(&request.server).await.map_err(Error::Handler)?;
+                Ok::<StateResponse, Error>(StateResponse { state })
             }
         }),
     );
@@ -481,6 +591,12 @@ mod tests {
         assert!(
             serde_json::from_value::<ServerRequest>(
                 json!({ "_caller_worker_id": "w1", "server": "linear" })
+            )
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<LoginCompleteRequest>(
+                json!({ "_caller_worker_id": "w1", "callback_url": "http://127.0.0.1/cb" })
             )
             .is_ok()
         );

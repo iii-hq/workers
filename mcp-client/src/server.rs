@@ -20,6 +20,10 @@ use rmcp::service::{
     ClientCacheConfig, ClientInitializeError, NotificationContext, RunningService,
     RunningServiceCancellationToken,
 };
+use rmcp::transport::auth::{
+    AuthClient, AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
+    CredentialStore,
+};
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
     StreamableHttpError,
@@ -34,11 +38,12 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::approvals::{APPROVALS_REF, APPROVALS_SECRET, Approvals, is_fingerprint};
-use crate::auth::{self, Minter, token_request_body};
+use crate::auth::{self, Minter, PendingLogins, token_request_body};
 use crate::config::{
     Auth, Checked, Entry, HttpEntry, RawConfig, STDIO_OFF, StdioEntry, Transport, check_entry,
     check_url_text, fingerprint,
 };
+use crate::credential_store::VaultCredentialStore;
 use crate::functions::SecretChange;
 use crate::host::{EventKind, Handler, Host, ServerEvent};
 use crate::prompts::{self, PromptInfo, prompt_wanted};
@@ -252,6 +257,75 @@ pub struct ListErrors {
 pub struct LoginView {
     pub pending: bool,
     pub expires_at: u64,
+}
+
+/// A started sign-in. Its `Debug` shows no field: the authorize URL goes to
+/// the operator only, never into a panic message or a log line.
+#[derive(Clone, Serialize, JsonSchema)]
+pub struct LoginStart {
+    pub authorize_url: String,
+    pub redirect_uri: String,
+    /// Unix milliseconds.
+    pub expires_at: u64,
+}
+
+impl std::fmt::Debug for LoginStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoginStart { .. }")
+    }
+}
+
+/// A sign-in waiting for its callback: the rmcp session, the store it saves
+/// to, and the resolved URL that store is bound to.
+struct Login {
+    session: AuthorizationSession,
+    store: VaultCredentialStore,
+    url: String,
+}
+
+/// The text of every failure to read or refresh a sign-in session; rmcp's
+/// own text is never shown.
+const SESSION_UNREADABLE: &str = "the sign-in session could not be read or refreshed";
+const NONE_WAITING: &str = "no sign-in is waiting for this address; start again";
+
+/// Whether an entry signs in: http with `oauth`, or with no `auth` and no
+/// secret header (it may be challenged).
+fn signs_in(entry: &Entry) -> bool {
+    matches!(entry.transport, Transport::Http(_)) && matches!(entry.auth_kind(), "oauth" | "none")
+}
+
+/// The resolved URL; a `secret://` one must pass the rules a literal does.
+fn resolved_url(http: &HttpEntry, resolved: &Resolved) -> Result<String, String> {
+    let url = resolved.text(&http.url);
+    if let Text::Ref(r) = &http.url
+        && let Err(m) = check_url_text(&url)
+    {
+        return Err(format!("the address stored in `{r}` {m}"));
+    }
+    Ok(url)
+}
+
+/// An rmcp manager on `store`; private addresses only for a loopback server.
+async fn oauth_manager(
+    url: &str,
+    store: VaultCredentialStore,
+) -> Result<AuthorizationManager, AuthError> {
+    let mut manager = match auth::is_loopback(url) {
+        true => AuthorizationManager::new_allowing_private_addresses(url).await?,
+        false => AuthorizationManager::new(url).await?,
+    };
+    manager.set_credential_store(store);
+    Ok(manager)
+}
+
+/// Sets the metadata `challenge` points at, else the discovered one.
+async fn discover(
+    manager: &mut AuthorizationManager,
+    challenge: Option<&str>,
+) -> Result<(), AuthError> {
+    let resolution = manager.resolve_metadata_from_challenge(challenge).await?;
+    manager.set_metadata(resolution.metadata);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -486,12 +560,22 @@ fn bearer_token(http: &HttpEntry, resolved: &Resolved) -> Option<String> {
 /// The errors behind a failed handshake, outermost first.
 fn init_chain(e: &ClientInitializeError) -> Vec<&(dyn Error + 'static)> {
     match e {
-        ClientInitializeError::TransportError { error, .. } => {
-            let top: &(dyn Error + 'static) = error.error.as_ref();
-            std::iter::successors(Some(top), |&x| x.source()).collect()
-        }
+        ClientInitializeError::TransportError { error, .. } => transport_chain(error),
         _ => vec![],
     }
+}
+
+fn transport_chain(e: &DynamicTransportError) -> Vec<&(dyn Error + 'static)> {
+    let top: &(dyn Error + 'static) = e.error.as_ref();
+    std::iter::successors(Some(top), |&x| x.source()).collect()
+}
+
+/// The `WWW-Authenticate` value of a 401 in `chain`.
+fn challenge_in(chain: &[&(dyn Error + 'static)]) -> Option<String> {
+    let found = chain
+        .iter()
+        .find_map(|x| x.downcast_ref::<AuthRequiredError>());
+    found.map(|c| c.www_authenticate_header.clone())
 }
 
 /// Whether a handshake was answered 401, with a challenge or without. The
@@ -526,6 +610,7 @@ fn transport_text(e: &DynamicTransportError) -> String {
         Some(HttpError::UnexpectedServerResponse(_) | HttpError::Deserialize(_)) => {
             "unexpected response".into()
         }
+        Some(HttpError::Auth(_)) => SESSION_UNREADABLE.into(),
         Some(other) => other.to_string(),
         None => e.error.to_string(),
     }
@@ -577,6 +662,12 @@ fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
             let retry_after = s.retry_after.clone();
             return CallFailure::RateLimited { retry_after };
         }
+        Some(HttpError::Auth(AuthError::AuthorizationRequired)) => {
+            return CallFailure::LoginRequired;
+        }
+        // A store outage or a refresh not sent: this request fails, the
+        // session stays (`Rejected` leaves the server `ready`).
+        Some(HttpError::Auth(_)) => return CallFailure::Rejected(SESSION_UNREADABLE.into()),
         Some(HttpError::HttpStatus(s)) => Some(s.status),
         Some(HttpError::UnexpectedServerResponse(t)) => t
             .strip_prefix("HTTP ")
@@ -595,6 +686,11 @@ fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
     }
     if challenged || status == Some(401) {
         let reference = match &entry.transport {
+            // Signed in: rmcp already refreshed once, a header is no credential.
+            Transport::Http(HttpEntry {
+                auth: Auth::OAuth { .. },
+                ..
+            }) => return CallFailure::LoginRequired,
             Transport::Http(http) => credential_ref(http),
             Transport::Stdio(_) => None,
         };
@@ -715,8 +811,14 @@ struct Server {
     secrets: Arc<ServerSecrets>,
     /// Read by the running task, replaced by each start.
     recoveries: Mutex<mpsc::UnboundedSender<Recover>>,
-    /// A no-`auth` entry the server answered with a sign-in challenge.
-    challenged: AtomicBool,
+    /// The last sign-in challenge of an entry that signs in; set, a no-`auth`
+    /// entry shows as `oauth`.
+    challenge: Mutex<Option<String>>,
+    /// The session store of the resolved URL it is bound to. Clones share
+    /// one refresh mutex, so every rmcp manager of this server takes a clone.
+    store: Mutex<Option<(String, VaultCredentialStore)>>,
+    /// A finished sign-in's manager and the URL it is for, for the next connect.
+    handoff: Mutex<Option<(String, AuthorizationManager)>>,
     peer: RwLock<Option<Arc<Conn>>>,
     /// Each session's `Notifier` holds a clone; the server task reads them.
     notes: mpsc::UnboundedSender<ListChanged>,
@@ -733,7 +835,7 @@ struct Server {
 }
 
 /// The state an entry starts in, from what its config alone says.
-fn first_status(name: &str, checked: &Checked) -> (State, Option<Stage>, Option<ServerError>) {
+fn first_status(checked: &Checked) -> (State, Option<Stage>, Option<ServerError>) {
     let fail = |state, stage, code, message: String| {
         (state, Some(stage), Some(ServerError::new(code, message)))
     };
@@ -759,18 +861,8 @@ fn first_status(name: &str, checked: &Checked) -> (State, Option<Stage>, Option<
     if entry.disabled {
         return (State::Disabled, None, None);
     }
-    match &entry.transport {
-        Transport::Stdio(_) => (State::Connecting, Some(Stage::Secret), None),
-        Transport::Http(http) => match http.auth {
-            Auth::OAuth { .. } => fail(
-                State::NeedsLogin,
-                Stage::Authorize,
-                ErrorCode::LoginRequired,
-                failure_text(name, &CallFailure::LoginRequired),
-            ),
-            _ => (State::Connecting, Some(Stage::Secret), None),
-        },
-    }
+    // A sign-in entry too: the approval gate comes before its stored session.
+    (State::Connecting, Some(Stage::Secret), None)
 }
 
 impl Server {
@@ -782,7 +874,7 @@ impl Server {
         raw: &Value,
     ) -> Arc<Server> {
         let checked = check_entry(name, raw, opts.stdio_enabled);
-        let (state, stage, error) = first_status(name, &checked);
+        let (state, stage, error) = first_status(&checked);
         let (notes, notes_rx) = mpsc::unbounded_channel();
         let status = Status {
             state,
@@ -805,7 +897,9 @@ impl Server {
             info: Mutex::default(),
             secrets: ServerSecrets::new(),
             recoveries: Mutex::new(mpsc::unbounded_channel().0),
-            challenged: AtomicBool::default(),
+            challenge: Mutex::default(),
+            store: Mutex::default(),
+            handoff: Mutex::default(),
             peer: RwLock::default(),
             notes,
             notes_rx: tokio::sync::Mutex::new(notes_rx),
@@ -886,10 +980,10 @@ impl Server {
         self.halt().await;
         self.facts.lock().unwrap().policy.reset();
         if let Some(spec) = spec {
-            self.challenged.store(false, Ordering::Relaxed);
+            *self.challenge.lock().unwrap() = None;
             *self.spec.write().unwrap() = Arc::new(spec);
         }
-        let (state, stage, error) = first_status(&self.name, &self.spec().checked);
+        let (state, stage, error) = first_status(&self.spec().checked);
         if state == State::Disabled {
             self.registry.clear().await;
             *self.info.lock().unwrap() = Info::default();
@@ -1371,11 +1465,19 @@ impl Server {
         }
     }
 
+    /// Also keeps the challenge of a sign-in entry's 401.
     fn classify(&self, error: &ServiceError) -> CallFailure {
-        match &self.spec().checked.entry {
-            Some(entry) => classify_call_error(error, entry),
-            None => CallFailure::Transport(service_text(error)),
+        let spec = self.spec();
+        let Some(entry) = &spec.checked.entry else {
+            return CallFailure::Transport(service_text(error));
+        };
+        if let ServiceError::TransportSend(e) = error
+            && signs_in(entry)
+            && let Some(challenge) = challenge_in(&transport_chain(e))
+        {
+            *self.challenge.lock().unwrap() = Some(challenge);
         }
+        classify_call_error(error, entry)
     }
 
     /// Applies a failed request's state rule: a rejected credential or a
@@ -1390,14 +1492,11 @@ impl Server {
                 Stage::Authorize,
                 ErrorCode::CredentialRejected,
             ),
-            CallFailure::LoginRequired => {
-                self.challenged.store(true, Ordering::Relaxed);
-                (
-                    State::NeedsLogin,
-                    Stage::Authorize,
-                    ErrorCode::LoginRequired,
-                )
-            }
+            CallFailure::LoginRequired => (
+                State::NeedsLogin,
+                Stage::Authorize,
+                ErrorCode::LoginRequired,
+            ),
             // A stdio pipe fails when its process ends, which `serve` reports
             // as `exited` with the code.
             CallFailure::Transport(_) if !stdio => {
@@ -1481,7 +1580,10 @@ impl Server {
         };
         let (session, mut process) = match &entry.transport {
             Transport::Http(http) => {
-                let (bearer, remint) = match &http.auth {
+                let url = resolved_url(http, &resolved);
+                // An invalid address fails in `open_http`, before any request.
+                let handed = url.as_ref().ok().and_then(|url| self.handed_over(url));
+                let (bearer, remint, signed) = match &http.auth {
                     Auth::ClientCredentials {
                         token_url,
                         client_id,
@@ -1504,11 +1606,24 @@ impl Server {
                         let Some(token) = self.mint(m).await else {
                             return Err(None);
                         };
-                        (Some(token), Some(&*m))
+                        (Some(token), Some(&*m), None)
                     }
-                    _ => (bearer_token(http, &resolved), None),
+                    Auth::OAuth { .. } => match (handed, url) {
+                        (Some(manager), _) => (None, None, Some(manager)),
+                        (None, Err(_)) => (None, None, None),
+                        (None, Ok(url)) => match self.restore(&url, None).await {
+                            Ok(Some(manager)) => (None, None, Some(manager)),
+                            // No request to the server without a session.
+                            Ok(None) => {
+                                self.needs_login();
+                                return Err(None);
+                            }
+                            Err(()) => return Err(None),
+                        },
+                    },
+                    _ => (bearer_token(http, &resolved), None, handed),
                 };
-                let session = self.open_http(entry, http, &resolved, bearer, remint);
+                let session = self.open_http(entry, http, &resolved, bearer, remint, signed);
                 (session.await?, None)
             }
             Transport::Stdio(stdio) => {
@@ -1636,6 +1751,101 @@ impl Server {
         }
     }
 
+    fn needs_login(&self) {
+        let message = failure_text(&self.name, &CallFailure::LoginRequired);
+        let code = ErrorCode::LoginRequired;
+        self.fail(State::NeedsLogin, Stage::Authorize, code, message);
+    }
+
+    /// The manager a finished sign-in left for `url`.
+    fn handed_over(&self, url: &str) -> Option<AuthorizationManager> {
+        let handed = self.handoff.lock().unwrap().take();
+        handed
+            .filter(|(made_for, _)| made_for == url)
+            .map(|(_, m)| m)
+    }
+
+    /// The session store bound to `resource`, the resolved URL: never the
+    /// entry's target, which stays the same when a `secret://` URL changes.
+    /// A refresh token the provider refuses sets `needs_login`.
+    fn store(self: &Arc<Self>, resource: &str) -> VaultCredentialStore {
+        let mut held = self.store.lock().unwrap();
+        if let Some((bound, store)) = &*held
+            && bound == resource
+        {
+            return store.clone();
+        }
+        let server = Arc::downgrade(self);
+        let rejected = Arc::new(move || {
+            if let Some(s) = server.upgrade() {
+                s.request_failed(CallFailure::LoginRequired);
+            }
+        });
+        let store = VaultCredentialStore::new(self.host.clone(), &self.name, resource, rejected)
+            .with_secrets(self.secrets.clone());
+        *held = Some((resource.into(), store.clone()));
+        store
+    }
+
+    /// The store a sign-out wipes: the one in use, whose refresh mutex the
+    /// task's refreshes hold, else one for the entry; `None` for an entry
+    /// that does not sign in.
+    fn session_store(&self) -> Option<VaultCredentialStore> {
+        let spec = self.spec();
+        let entry = spec.checked.entry.as_ref().filter(|e| signs_in(e))?;
+        let held = self.store.lock().unwrap().as_ref().map(|(_, s)| s.clone());
+        let fresh = || {
+            VaultCredentialStore::new(
+                self.host.clone(),
+                &self.name,
+                &entry.target(),
+                Arc::new(|| {}),
+            )
+        };
+        Some(held.unwrap_or_else(fresh))
+    }
+
+    /// The stored session for `url` as an rmcp manager; `Ok(None)` without
+    /// one. With a challenge, the vault is read before any discovery
+    /// request. A failure sets the status and is tried again.
+    async fn restore(
+        self: &Arc<Self>,
+        url: &str,
+        challenge: Option<&str>,
+    ) -> Result<Option<AuthorizationManager>, ()> {
+        let store = self.store(url);
+        let restored: Result<_, AuthError> = async {
+            if challenge.is_some()
+                && store
+                    .load()
+                    .await?
+                    .is_none_or(|c| c.token_response.is_none())
+            {
+                return Ok(None);
+            }
+            let mut manager = oauth_manager(url, store).await?;
+            if challenge.is_some() {
+                discover(&mut manager, challenge).await?;
+            }
+            Ok(manager.initialize_from_store().await?.then_some(manager))
+        }
+        .await;
+        restored.map_err(|e| {
+            let (stage, message) = match e {
+                AuthError::CredentialStoreError(_) => (
+                    Stage::Secret,
+                    "the sign-in session could not be read: the secrets worker did not answer",
+                ),
+                _ => (
+                    Stage::Connect,
+                    "the server's OAuth metadata could not be read",
+                ),
+            };
+            let code = ErrorCode::ConnectFailed;
+            self.fail(State::Unavailable, stage, code, message.into());
+        })
+    }
+
     /// A client-credentials token, redacted from here on before it is
     /// used. A refusal is `auth_failed`, no answer `unavailable`.
     async fn mint(&self, minter: &Minter) -> Option<String> {
@@ -1661,7 +1871,7 @@ impl Server {
     /// the status and is the call's: a refused credential is
     /// `CredentialRejected`, anything else `Unavailable`.
     async fn reopen(
-        &self,
+        self: &Arc<Self>,
         resolved: &mut Resolved,
         minter: Option<&Minter>,
     ) -> Result<Session, CallFailure> {
@@ -1685,7 +1895,7 @@ impl Server {
         // With what was just acquired: no second resolve, no second mint.
         let session = match bearer {
             Some(bearer) => self
-                .open_http(entry, http, resolved, bearer, None)
+                .open_http(entry, http, resolved, bearer, None, None)
                 .await
                 .ok(),
             None => None,
@@ -1718,30 +1928,28 @@ impl Server {
         }
     }
 
-    /// The http transport from the resolved entry and `bearer`, then the
-    /// handshake. With `remint`, a 401 mints once more and tries again: the
-    /// token held may be one the provider no longer takes.
+    /// The http transport from the resolved entry and `bearer`, or through
+    /// `AuthClient` on a `signed` session, then the handshake. With `remint`,
+    /// a 401 mints once more and tries again: the token held may be one the
+    /// provider no longer takes. A challenge to an open entry tries its
+    /// stored session.
     async fn open_http(
-        &self,
+        self: &Arc<Self>,
         entry: &Entry,
         http: &HttpEntry,
         resolved: &Resolved,
         bearer: Option<String>,
         remint: Option<&Minter>,
+        signed: Option<AuthorizationManager>,
     ) -> Result<Session, Option<Duration>> {
-        let url = resolved.text(&http.url);
-        if let Text::Ref(r) = &http.url
-            && let Err(m) = check_url_text(&url)
-        {
-            let message = format!("the address stored in `{r}` {m}");
-            self.fail(
-                State::ConfigError,
-                Stage::Secret,
-                ErrorCode::InvalidConfig,
-                message,
-            );
-            return Err(None);
-        }
+        let url = match resolved_url(http, resolved) {
+            Ok(url) => url,
+            Err(message) => {
+                let code = ErrorCode::InvalidConfig;
+                self.fail(State::ConfigError, Stage::Secret, code, message);
+                return Err(None);
+            }
+        };
         let mut headers = HashMap::new();
         for (name, text) in &http.headers {
             let parsed = HeaderName::from_bytes(name.as_bytes())
@@ -1760,15 +1968,27 @@ impl Server {
             value.set_sensitive(matches!(text, Text::Ref(_)));
             headers.insert(header, value);
         }
-        let mut config = StreamableHttpClientTransportConfig::with_uri(url).custom_headers(headers);
+        let mut config =
+            StreamableHttpClientTransportConfig::with_uri(url.clone()).custom_headers(headers);
         if let Some(token) = bearer {
             config = config.auth_header(token);
         }
-        let transport = StreamableHttpClientTransport::from_config(config);
+        let plain = signed.is_none();
 
         self.progress(Stage::Connect);
         let limit = self.timings.http_handshake;
-        match timeout(limit, self.handshake(transport)).await {
+        let served = match signed {
+            Some(manager) => {
+                let client = AuthClient::new(auth::http_client(), manager);
+                let transport = StreamableHttpClientTransport::with_client(client, config);
+                timeout(limit, self.handshake(transport)).await
+            }
+            None => {
+                let transport = StreamableHttpClientTransport::from_config(config);
+                timeout(limit, self.handshake(transport)).await
+            }
+        };
+        match served {
             Ok(Ok(session)) => Ok(session),
             Ok(Err(e)) => {
                 if let Some(minter) = remint
@@ -1776,8 +1996,25 @@ impl Server {
                 {
                     minter.invalidate().await;
                     let token = self.mint(minter).await.ok_or(None)?;
-                    let again = self.open_http(entry, http, resolved, Some(token), None);
+                    let again = self.open_http(entry, http, resolved, Some(token), None, None);
                     return Box::pin(again).await;
+                }
+                let challenge = challenge_in(&init_chain(&e)).filter(|_| signs_in(entry));
+                if challenge.is_some() {
+                    self.challenge.lock().unwrap().clone_from(&challenge);
+                }
+                // The vault is read only after a challenge: an open server
+                // never depends on the secrets worker.
+                if plain && entry.auth_kind() == "none" && challenge.is_some() {
+                    match self.restore(&url, challenge.as_deref()).await {
+                        Ok(Some(manager)) => {
+                            let again =
+                                self.open_http(entry, http, resolved, None, None, Some(manager));
+                            return Box::pin(again).await;
+                        }
+                        Ok(None) => {}
+                        Err(()) => return Err(None),
+                    }
                 }
                 let (state, stage, code, message) = self.handshake_failure(&e, entry, http);
                 self.fail(state, stage, code, message);
@@ -1881,8 +2118,21 @@ impl Server {
                 message,
             )
         };
-        if challenged && auth == "none" {
-            self.challenged.store(true, Ordering::Relaxed);
+        // A sign-in entry's 401 is a sign-in matter, never a credential's.
+        let login = match auth {
+            "none" => challenged,
+            "oauth" => challenged || bare_401,
+            _ => false,
+        };
+        if let Some(HttpError::Auth(e)) = http_error {
+            let stage = match e {
+                AuthError::CredentialStoreError(_) => Stage::Secret,
+                _ => Stage::Connect,
+            };
+            let code = ErrorCode::ConnectFailed;
+            return (State::Unavailable, stage, code, SESSION_UNREADABLE.into());
+        }
+        if login {
             let message = failure_text(&self.name, &CallFailure::LoginRequired);
             return (
                 State::NeedsLogin,
@@ -2018,7 +2268,13 @@ impl Server {
                     break CallFailure::Timeout { secs };
                 }
             };
-            let failure = self.classify(&error);
+            let state = self.status.borrow().state;
+            let failure = match state {
+                // Set while this request was out (a refused refresh token):
+                // the request's own error, a closed session, says less.
+                State::NeedsLogin => CallFailure::LoginRequired,
+                _ => self.classify(&error),
+            };
             if !retried && matches!(failure, CallFailure::CredentialRejected { .. }) {
                 retried = true;
                 match self.recover(conn).await {
@@ -2058,6 +2314,9 @@ impl Server {
         payload: Value,
     ) -> Result<Value, String> {
         let state = self.status.borrow().state;
+        if state == State::NeedsLogin {
+            return Err(failure_text(&self.name, &CallFailure::LoginRequired));
+        }
         let conn = self.peer.read().unwrap().clone();
         let (State::Ready, Some(conn)) = (state, conn) else {
             return Err(failure_text(&self.name, &self.unavailable()));
@@ -2132,7 +2391,8 @@ impl Server {
         }
     }
 
-    fn view(&self, registered: &HashSet<String>) -> ServerView {
+    /// `expires_at`: the server's pending login.
+    fn view(&self, registered: &HashSet<String>, expires_at: Option<u64>) -> ServerView {
         let status = self.status.borrow().clone();
         let info = self.info.lock().unwrap();
         let spec = self.spec();
@@ -2142,7 +2402,7 @@ impl Server {
                     Transport::Http(_) => "http",
                     Transport::Stdio(_) => "stdio",
                 };
-                let auth = match self.challenged.load(Ordering::Relaxed) {
+                let auth = match self.challenge.lock().unwrap().is_some() {
                     true => "oauth",
                     false => entry.auth_kind(),
                 };
@@ -2210,7 +2470,10 @@ impl Server {
                 })
                 .collect(),
             list_errors: info.list_errors.clone(),
-            login: None,
+            login: expires_at.map(|expires_at| LoginView {
+                pending: true,
+                expires_at,
+            }),
             process: self.is_stdio().then(|| {
                 let f = self.facts.lock().unwrap();
                 ProcessView {
@@ -2236,6 +2499,7 @@ pub struct Manager {
     load: JoinHandle<()>,
     /// Set first by `shutdown`: a config applied during or after it starts nothing.
     closed: AtomicBool,
+    logins: PendingLogins<Login>,
 }
 
 impl Manager {
@@ -2257,6 +2521,7 @@ impl Manager {
             servers: tokio::sync::Mutex::default(),
             load,
             closed: AtomicBool::default(),
+            logins: PendingLogins::new(),
         })
     }
 
@@ -2278,6 +2543,13 @@ impl Manager {
         join_all(removed.iter().map(|(name, s)| async move {
             s.stop().await;
             s.emit(EventKind::State);
+            self.logins.cancel(name);
+            // After the stop: a refresh of the stopped task saved or went.
+            if let Some(store) = s.session_store()
+                && let Err(e) = store.sign_out().await
+            {
+                tracing::warn!("clearing the sign-in session of removed `{name}` failed: {e}");
+            }
             self.approvals.clear_pending(name);
             if let Err(e) = self.approvals.forget(&*self.host, name).await {
                 tracing::warn!("forgetting the approval of removed `{name}` failed: {e}");
@@ -2292,6 +2564,8 @@ impl Manager {
             self.promote(&name, &fingerprint(&value)).await;
             match servers.get(&name) {
                 Some(s) => {
+                    // Started for the entry as it was; disabling keeps the session.
+                    self.logins.cancel(&name);
                     let checked = check_entry(&name, &value, self.opts.stdio_enabled);
                     let spec = Spec {
                         raw: value,
@@ -2430,13 +2704,165 @@ impl Manager {
 
     pub async fn list(&self) -> ServersList {
         let registered = self.host.registered().await;
-        let port = self.host.http_port().await.unwrap_or(3111);
+        let port = self.host.http_port().await;
         let servers = self.servers.lock().await;
+        let now = std::time::Instant::now();
+        let view = |s: &Arc<Server>| s.view(&registered, self.logins.pending(&s.name, now));
         ServersList {
             stdio_enabled: self.opts.stdio_enabled,
-            callback_url: format!("http://127.0.0.1:{port}/mcp-client/oauth/callback"),
-            servers: servers.values().map(|s| s.view(&registered)).collect(),
+            callback_url: auth::redirect_uri(port),
+            servers: servers.values().map(view).collect(),
         }
+    }
+
+    fn emit_login(&self, server: &str) {
+        let (server, kind) = (server.into(), EventKind::Login);
+        self.host.emit(ServerEvent { server, kind });
+    }
+
+    /// Starts a sign-in: discovery, registration unless a client id is
+    /// configured, and the authorize URL, for the operator only.
+    pub async fn login_start(&self, server: &str) -> Result<LoginStart, String> {
+        let s = self.servers.lock().await.get(server).cloned();
+        let s = s.ok_or_else(|| format!("no server named `{server}`"))?;
+        let spec = s.spec();
+        let Some(entry) = spec.checked.entry.as_ref().filter(|e| signs_in(e)) else {
+            return Err(format!("`{server}` does not use sign-in"));
+        };
+        let Transport::Http(http) = &entry.transport else {
+            return Err(format!("`{server}` does not use sign-in"));
+        };
+        // Discovery sends requests: only for an entry an operator approved.
+        if !self
+            .approvals
+            .is_approved(server, &spec.checked.fingerprint)
+        {
+            return Err(format!("approve `{server}` before signing in"));
+        }
+        let challenge = s.challenge.lock().unwrap().clone();
+        if matches!(http.auth, Auth::None) && challenge.is_none() {
+            return Err(format!("`{server}` did not ask for sign-in"));
+        }
+        let resolved = resolve_all(&*self.host, &entry.refs()).await;
+        let resolved = resolved.map_err(|e| e.message)?;
+        let url = resolved_url(http, &resolved)?;
+        let redirect_uri = auth::redirect_uri(self.host.http_port().await);
+        let mut request =
+            AuthorizationRequest::new(&redirect_uri).with_client_name("iii mcp-client");
+        request = match &http.auth {
+            Auth::OAuth { scopes, .. } if !scopes.is_empty() => request.with_scopes(scopes),
+            // The challenge's scope is then the default.
+            _ => request.with_initial_scope_selection(),
+        };
+        if let Auth::OAuth {
+            client_id,
+            client_secret,
+            client_metadata_url,
+            ..
+        } = &http.auth
+        {
+            if let Some(id) = client_id {
+                request = request.with_preregistered_client(id);
+            }
+            if let Some(secret) = client_secret {
+                request = request.with_client_secret(resolved.text(&Text::Ref(secret.clone())));
+            }
+            if let Some(metadata_url) = client_metadata_url {
+                request = request.with_client_metadata_url(metadata_url);
+            }
+        }
+        let store = s.store(&url);
+        let started: Result<_, AuthError> = async {
+            let mut manager = oauth_manager(&url, store.clone()).await?;
+            discover(&mut manager, challenge.as_deref()).await?;
+            AuthorizationSession::new(manager, request)
+                .await
+                .map_err(|(_, e)| e)
+        }
+        .await;
+        let session = started.map_err(|e| auth::login_error_text(&e))?;
+        let authorize_url = session.get_authorization_url().to_string();
+        let state = auth::state_of(&authorize_url).ok_or("sign-in failed")?;
+        let now = std::time::Instant::now();
+        let login = Login {
+            session,
+            store,
+            url,
+        };
+        self.logins.insert(state, server, login, now);
+        let expires_at = self.logins.pending(server, now).unwrap_or_default();
+        self.emit_login(server);
+        Ok(LoginStart {
+            authorize_url,
+            redirect_uri,
+            expires_at,
+        })
+    }
+
+    /// Finishes the sign-in the callback's `state` started, whichever server
+    /// that is, and connects it. The pending login is spent whatever the outcome.
+    pub async fn login_complete(&self, callback_url: &str) -> Result<(String, State), String> {
+        let state = auth::state_of(callback_url).ok_or(
+            "this address holds no sign-in state; paste the whole address the browser ended on",
+        )?;
+        let now = std::time::Instant::now();
+        let (name, login) = self.logins.take(&state, now).ok_or(NONE_WAITING)?;
+        self.emit_login(&name);
+        let exchanged = {
+            // rmcp saves the exchanged session without this guard: a refresh in
+            // flight, which loaded the old session, saves first.
+            let _refresh = login.store.acquire_refresh_guard().await;
+            login.session.handle_callback_url(callback_url).await
+        };
+        exchanged.map_err(|e| auth::login_error_text(&e))?;
+        let s = {
+            let servers = self.servers.lock().await;
+            let s = servers.get(&name).cloned();
+            let s = s.ok_or_else(|| format!("no server named `{name}`"))?;
+            *s.handoff.lock().unwrap() = Some((login.url, login.session.auth_manager));
+            s.restart(None).await;
+            s
+        };
+        let mut status = s.status.subscribe();
+        let limit = self.opts.timings.http_handshake + self.opts.timings.list;
+        let _ = timeout(limit, status.wait_for(|s| s.state != State::Connecting)).await;
+        let state = s.status.borrow().state;
+        Ok((name, state))
+    }
+
+    /// Drops the server's pending login; nothing pending is no error.
+    pub async fn login_cancel(&self, server: &str) -> Result<(), String> {
+        if !self.servers.lock().await.contains_key(server) {
+            return Err(format!("no server named `{server}`"));
+        }
+        if self.logins.cancel(server) {
+            self.emit_login(server);
+        }
+        Ok(())
+    }
+
+    /// Ends the session and clears it from the vault. The task stops first:
+    /// a refresh in flight finishes or goes before the wipe, which waits for
+    /// the refresh mutex and is never awaited beside a call on the store.
+    pub async fn sign_out(&self, server: &str) -> Result<State, String> {
+        let servers = self.servers.lock().await;
+        let s = servers
+            .get(server)
+            .ok_or_else(|| format!("no server named `{server}`"))?;
+        let store = s
+            .session_store()
+            .ok_or_else(|| format!("`{server}` does not use sign-in"))?;
+        self.logins.cancel(server);
+        s.halt().await;
+        let wiped = store.sign_out().await;
+        let state = s.status.borrow().state;
+        if !matches!(state, State::Disabled | State::Unapproved) {
+            s.needs_login();
+        }
+        self.emit_login(server);
+        wiped?;
+        let state = s.status.borrow().state;
+        Ok(state)
     }
 
     pub async fn wait_for(&self, server: &str, state: State, within: Duration) -> bool {
