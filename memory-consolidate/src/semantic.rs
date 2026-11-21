@@ -445,7 +445,7 @@ pub fn validate(
             verdict.rejected.push((label, "missing alias"));
             continue;
         };
-        let (Some(keep), Some(retire)) = (
+        let (Some(mut keep), Some(mut retire)) = (
             batch.records.get(keep_alias),
             batch.records.get(retire_alias),
         ) else {
@@ -471,6 +471,19 @@ pub fn validate(
                 .rejected
                 .push((label, "not one of that new memory's candidates"));
             continue;
+        }
+        // The user's line survives an agent's note: a merge is swapped (the
+        // checks below then hold the note to it); a supersede is refused, as
+        // a swap would reverse which fact is newer.
+        if keep.is_agent_note() && !keep.pinned && !retire.is_agent_note() {
+            if kind == ActionKind::Supersede {
+                verdict.rejected.push((
+                    label,
+                    "an agent's note never retires a memory from the user",
+                ));
+                continue;
+            }
+            std::mem::swap(&mut keep, &mut retire);
         }
         if retire.pinned {
             verdict
@@ -528,7 +541,7 @@ pub fn validate(
             continue;
         }
         gone.insert(retire.id.clone());
-        if kind == ActionKind::Merge && !keep.pinned {
+        if kind == ActionKind::Merge && !keep.pinned && retire.reinforces() {
             let latest = seen(keep).max(seen(retire));
             stated.insert(keep.id.clone(), latest);
         }
@@ -883,6 +896,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
             continue;
         }
         let expected = |row: &MemoryRow| guard_snapshot(row, written.get(&row.id));
+        let reinforce = action.kind == ActionKind::Merge && action.retire.reinforces();
         let reply = call(
             iii,
             "memory::supersede",
@@ -892,7 +906,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
                 "superseded_by": action.keep.id,
                 "expected_memory": expected(&action.retire),
                 "expected_superseded_by": expected(&action.keep),
-                "reinforce": action.kind == ActionKind::Merge,
+                "reinforce": reinforce,
                 "reason": action.reason,
             }),
         )
@@ -901,7 +915,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
             Ok(reply) => {
                 *budget = budget.saturating_sub(1);
                 report.superseded += 1;
-                if action.kind == ActionKind::Merge {
+                if reinforce {
                     crate::consolidate::tally_reinforcement(report, &reply);
                 }
                 if let Some(survivor) = reply.get("survivor").filter(|v| !v.is_null()) {
@@ -1326,6 +1340,48 @@ mod tests {
             v.rejected[0].1,
             "the outdated side was stated after its replacement"
         );
+    }
+
+    #[test]
+    fn a_merged_agents_note_carries_no_later_statement() {
+        // The same shape, but n2 is an agent's note: memory does not move
+        // c1's statement for it, so the move still supersedes c1.
+        let n1 = row("n1", "Dentist moved to Thursdays.", 200, 200);
+        let mut n2 = row("n2", "Dentist is on Tuesdays.", 300, 300);
+        n2.snapshot.insert("confidence".into(), json!("stated"));
+        n2.snapshot
+            .insert("source".into(), json!({"turn_id": "t-1"}));
+        let c1 = row("c1", "User's dentist is on Tuesdays.", 100, 100);
+        let batch = build_batch(&[(n1, vec![c1.clone()]), (n2, vec![c1])]);
+        let raw = vec![
+            action("merge", "c1", "n2", "same weekday restated"),
+            action("supersede", "n1", "c1", "moved"),
+        ];
+        let v = validate(&raw, &batch, &HashSet::new(), 10);
+        assert_eq!(v.accepted.len(), 2, "{:?}", v.rejected);
+    }
+
+    #[test]
+    fn a_merge_kept_by_an_agents_note_is_swapped_and_still_checked() {
+        let note = |text: &str| {
+            let mut n = row("note", text, 200, 200);
+            n.snapshot.insert("confidence".into(), json!("stated"));
+            n.snapshot
+                .insert("source".into(), json!({"turn_id": "t-1"}));
+            n
+        };
+        let user = row("user", "User's dentist is on Tuesdays.", 100, 100);
+        let merge = [action("merge", "n1", "c1", "same weekday restated")];
+        let batch = build_batch(&[(note("Dentist is on Tuesdays."), vec![user.clone()])]);
+        let v = validate(&merge, &batch, &HashSet::new(), 10);
+        assert_eq!(v.accepted.len(), 1, "{:?}", v.rejected);
+        assert_eq!(v.accepted[0].keep.id, "user");
+        assert_eq!(v.accepted[0].retire.id, "note");
+        // Swapped, the note would take a number the user's line lacks.
+        let batch = build_batch(&[(note("Dentist is on Tuesdays at 9."), vec![user])]);
+        let v = validate(&merge, &batch, &HashSet::new(), 10);
+        assert!(v.accepted.is_empty());
+        assert_eq!(v.rejected[0].1, "the survivor would lose a number");
     }
 
     #[test]

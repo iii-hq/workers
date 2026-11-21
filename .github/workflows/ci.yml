@@ -1703,11 +1703,14 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # Memory E2E (non-required). A pull request from this repository that
-  # changes memory runs harness-e2e's `memory` and `memory-learning` suites on
-  # its stacks/memory.yaml, with memory built from the PR head and the rest
-  # released. Memory is outside the harness graph, so the pr suite above never
-  # builds it. Like that job it warns and never gates; each suite keeps its
-  # own PR comment.
+  # changes memory or memory-consolidate runs harness-e2e's `memory` and
+  # `memory-learning` suites, with the changed ones of the two built from the
+  # PR head and the rest released: on stacks/memory.yaml when only memory
+  # changed, else on stacks/memory-consolidated.yaml, where each attempt's bank
+  # is consolidated before the session reads it. A PR that changes both is
+  # therefore not comparable with a memory-only run. Neither worker is in the
+  # harness graph, so the pr suite above never builds them. Like that job it
+  # warns and never gates; each suite keeps its own PR comment.
   # ──────────────────────────────────────────────────────────────
   memory-e2e:
     name: memory e2e (${{ matrix.suite }})
@@ -1716,7 +1719,8 @@ jobs:
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
       && !startsWith(github.head_ref, 'eval/')
-      && contains(fromJSON(needs.discover.outputs.changed_workers), 'memory')
+      && (contains(fromJSON(needs.discover.outputs.changed_workers), 'memory')
+      || contains(fromJSON(needs.discover.outputs.changed_workers), 'memory-consolidate'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -1737,16 +1741,17 @@ jobs:
           repositories: harness-e2e
           permission-actions: write
 
-      - name: Run the ${{ matrix.suite }} suite on memory built from this PR
+      - name: Run the ${{ matrix.suite }} suite on the memory workers built from this PR
         id: e2e
-        uses: iii-hq/harness-e2e/.github/actions/verify-stack@36c41f00bf0b23919b82e75ab72c86aec101f485
+        # A pin the stack does not declare is ignored; this commit has stacks/memory-consolidated.yaml.
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@3d1c3566d116882f4efdb07a9c445d9b662fe9c0
         with:
           token: ${{ steps.app.outputs.token }}
           comment-token: ${{ github.token }}
-          pins: '["memory"]'
+          pins: ${{ contains(fromJSON(needs.discover.outputs.changed_workers), 'memory') && '["memory","memory-consolidate"]' || '["memory-consolidate"]' }}
           commit: ${{ github.event.pull_request.head.sha }}
           suite: ${{ matrix.suite }}
-          stack: memory
+          stack: ${{ contains(fromJSON(needs.discover.outputs.changed_workers), 'memory-consolidate') && 'memory-consolidated' || 'memory' }}
           comment-pr: ${{ github.repository }}#${{ github.event.pull_request.number }}
 
       - name: Turn red when the suite did not pass

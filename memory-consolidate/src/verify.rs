@@ -214,11 +214,8 @@ fn source<'a>(row: &'a MemoryRow, key: &str) -> Option<&'a str> {
 /// extracted ones.
 fn priority(row: &MemoryRow) -> bool {
     source(row, "correction_reason").is_some()
-        || match row.snapshot.get("confidence").and_then(Value::as_str) {
-            Some("inferred") => true,
-            Some("stated") => source(row, "turn_id").is_some(),
-            _ => false,
-        }
+        || row.is_agent_note()
+        || row.snapshot.get("confidence").and_then(Value::as_str) == Some("inferred")
 }
 
 /// Why a note cannot be checked, decided without any call.

@@ -41,12 +41,13 @@ pub const PRE_GENERATE_DESC: &str = "Internal: target of the harness::hook::on-p
      Never denies.";
 pub const TURN_COMPLETED_DESC: &str = "Internal: target of the harness::on-turn-completed observer — enqueues one durable \
      extraction job (a single router::complete call) for the finished turn; inline fallback \
-     without a queue.";
-pub const EXTRACT_JOB_DESC: &str = "Internal: target of the queue::on-message observer on the memory-extraction topic — \
-     runs one extraction job; errors propagate so the queue retries and dead-letters instead \
-     of losing the pass.";
+     without a queue. A direct call is refused.";
+pub const EXTRACT_JOB_DESC: &str = "Internal: target of the queue::on-message observer on the memory-extraction topic and \
+     of the memory-extraction function queue — runs one extraction job; errors propagate so \
+     the queue retries and dead-letters instead of losing the pass. A job this worker did not \
+     queue is refused, whoever calls it.";
 pub const SESSION_DELETED_DESC: &str = "Internal: target of the session::on-deleted observer — drops the session's extraction \
-     cursor and state.";
+     cursor and state. A direct call is refused.";
 /// Durable queue (iii-queue builtin or the queue worker) carrying one
 /// extraction job per completed turn: retries + DLQ instead of a lost
 /// pass when this worker restarts mid-extraction.
@@ -1390,22 +1391,29 @@ pub async fn turn_completed(
         .turn_id
         .clone()
         .unwrap_or_else(|| format!("t{}", now_ms()));
-    let enqueued = deps
-        .iii
-        .call(CallRequest {
-            function_id: "engine::queue::enqueue".into(),
-            payload: json!({
-                "queue": EXTRACTION_QUEUE,
-                "function_id": EXTRACT_JOB_FN,
-                "data": job,
-                "messageReceiptId": format!("memx-{receipt}"),
-            }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
+    let store = deps.store().await;
+    let enqueued = match crate::store::run_blocking(|| store.hold_extraction_job(&job)).await {
+        Ok(()) => deps
+            .iii
+            .call(CallRequest {
+                function_id: "engine::queue::enqueue".into(),
+                payload: json!({
+                    "queue": EXTRACTION_QUEUE,
+                    "function_id": EXTRACT_JOB_FN,
+                    "data": job,
+                    "messageReceiptId": format!("memx-{receipt}"),
+                }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+            .map(drop)
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
     if let Err(e) = enqueued {
-        tracing::debug!(error = %e, "queue surface unavailable; extracting inline");
+        tracing::debug!(error = %e, "extraction job not queued; extracting inline");
+        let _ = crate::store::run_blocking(|| store.release_extraction_job(&job)).await;
         let deps = deps.clone();
         tokio::spawn(async move { extract::run(deps, job).await });
     }
@@ -1456,13 +1464,24 @@ pub(crate) fn plan_extraction(
     })
 }
 
-/// Queue-delivered extraction job. Returns the error to the queue so a
+/// Queue-delivered extraction job: only one this worker queued and still
+/// holds, never a job another caller put on the queue (its bank, agent or
+/// `skip` would be the caller's). Returns the error to the queue so a
 /// failed pass retries and eventually lands in the DLQ instead of
 /// vanishing.
 pub async fn extract_job(deps: &Arc<Deps>, input: ExtractJobInput) -> Result<AckResponse, Error> {
+    let store = deps.store().await;
+    if !crate::store::run_blocking(|| store.holds_extraction_job(&input)).await? {
+        tracing::warn!(session_id = %input.session_id, "extraction job refused: not one this worker queued");
+        return Err(crate::error::MemoryError::Forbidden(format!(
+            "`{EXTRACT_JOB_FN}` runs only an extraction job this worker queued"
+        ))
+        .into());
+    }
     extract::try_run(deps, &input)
         .await
         .map_err(Error::Handler)?;
+    crate::store::run_blocking(|| store.release_extraction_job(&input)).await?;
     Ok(AckResponse { ok: true })
 }
 

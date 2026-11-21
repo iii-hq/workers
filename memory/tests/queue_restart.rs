@@ -28,7 +28,10 @@ use iii_sdk::{
     Call, CallRequest, Capture, Error, IIIClient, InitOptions, Match, ObserveRejection, Observer,
     ObserverOptions, RegisterFunction, Source, register_worker,
 };
-use memory::hooks::{EXTRACT_JOB_FN, EXTRACTION_QUEUE, WORKER_NAME, extraction_observer_id};
+use memory::hooks::{
+    EXTRACT_JOB_FN, EXTRACTION_QUEUE, ExtractJobInput, WORKER_NAME, extraction_observer_id,
+};
+use memory::store::Store;
 use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
@@ -338,8 +341,18 @@ fn record_jobs(iii: &IIIClient) -> Arc<Mutex<Vec<String>>> {
     handled
 }
 
-fn job(session_id: &str) -> Value {
-    json!({ "session_id": session_id, "skip": true })
+/// A job the worker under `dir` holds as one it queued: it refuses any other.
+fn job(dir: &Path, session_id: &str) -> Value {
+    let job = ExtractJobInput {
+        session_id: session_id.into(),
+        skip: true,
+        ..Default::default()
+    };
+    Store::open(dir.join("data"))
+        .unwrap()
+        .hold_extraction_job(&job)
+        .unwrap();
+    json!(job)
 }
 
 /// The observers of `function_id` with target `target`, as the engine lists
@@ -458,7 +471,7 @@ async fn a_killed_worker_gets_its_unacked_extraction_jobs_once_after_a_restart()
     wait_observers(&host, RECORDED, &first, one_active).await;
 
     // A job the first process handles and acks.
-    queue.publish(EXTRACTION_QUEUE, job("acked-before"));
+    queue.publish(EXTRACTION_QUEUE, job(dir.path(), "acked-before"));
     queue
         .drain(&host)
         .await
@@ -472,7 +485,7 @@ async fn a_killed_worker_gets_its_unacked_extraction_jobs_once_after_a_restart()
     // Jobs the first process never acks: it is killed with them queued.
     let backlog = ["left-1", "left-2", "left-3"];
     for session in backlog {
-        queue.publish(EXTRACTION_QUEUE, job(session));
+        queue.publish(EXTRACTION_QUEUE, job(dir.path(), session));
     }
     assert_eq!(queue.len(), backlog.len());
     first.kill();
@@ -628,7 +641,7 @@ async fn the_consumer_observes_again_on_its_schedule_until_another_worker_lets_i
     wait_observers(&host, RECORDED, &memory, one_active).await;
 
     // The subscription's backlog (filed under the id) reaches the worker.
-    queue.publish(EXTRACTION_QUEUE, job("after-the-holder"));
+    queue.publish(EXTRACTION_QUEUE, job(dir.path(), "after-the-holder"));
     queue.drain(&host).await.expect("the worker acks the job");
     wait_until("the worker handles the job", || {
         count(&handled, "after-the-holder") == 1

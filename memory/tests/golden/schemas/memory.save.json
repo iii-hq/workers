@@ -1,5 +1,5 @@
 {
-  "description": "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces the existing memory instead of duplicating it. A text a newer memory superseded is refused with `memory_retired`, naming that memory. Called from a turn it is the agent's note: 3 to 500 characters, in the turn's own bank, at most `max_memories_per_turn` new notes per turn, with that session and turn as its source; a pin, another bank, the `user` entity and the `demoted-rule` tag are refused there, and so is a save from an automation or test session. Needed where the `# Memory` header asks for it (a sub-agent, extraction off): save what a later session would need.",
+  "description": "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces the existing memory instead of duplicating it. A text a newer memory superseded is refused with `memory_retired`, naming that memory. Called from a turn it is the agent's note: 3 to 500 characters, in the turn's own bank, at most `max_memories_per_turn` new notes per turn, with that session and turn as its source; a pin, another bank, the `user` entity and the `demoted-rule` tag are refused there, and so is a save from an automation or test session. From a turn a repeat adds no corroboration: it restates the turn's own note and leaves any other memory as it is. Needed where the `# Memory` header asks for it (a sub-agent, extraction off): save what a later session would need.",
   "function_id": "memory::save",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -234,7 +234,7 @@
     },
     "properties": {
       "created": {
-        "description": "False when the text fingerprint matched an existing memory (it was reinforced instead).",
+        "description": "False when the text fingerprint matched an existing memory (it was reinforced instead, or, from a turn, left as it was).",
         "type": "boolean"
       },
       "memory": {

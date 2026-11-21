@@ -32,7 +32,8 @@ Two record kinds per bank, chosen by durability semantics:
 - **Memories** (`memories.jsonl`) — one-line records recalled on demand, ranked against the current
   question. Append-only full-record log: fsync before RAM, last-wins replay by id, updates append
   revisions, deletes append tombstones. Content-fingerprinted ids (`fp` + FNV-1a of normalized
-  text) make re-observation reinforce (`corroboration += 1`) instead of duplicating.
+  text) make re-observation reinforce (`corroboration += 1`) instead of duplicating; a save from
+  inside a turn never adds corroboration (only the user restating it does).
 
 Bank selection: turn metadata `memory_bank` → session metadata `memory_bank` → configured
 `default_bank`. A session-lookup failure injects nothing new (the frozen section stays) — never a
@@ -85,7 +86,9 @@ re-embed, never memory integrity.
 
 Consumer-facing:
 
-- `memory::save` — explicit save; fingerprinted, repeat saves reinforce.
+- `memory::save` — explicit save; fingerprinted, and a repeat from outside a turn reinforces. A
+  repeat from inside a turn adds no corroboration: it refreshes the stated time of the turn's own
+  note and leaves any other memory unchanged.
 - `memory::get` / `memory::list` / `memory::update` / `memory::delete` / `memory::pin` — memory
   CRUD; delete tombstones, update bumps a revision, pinned records are untouchable by every
   automatic path.
@@ -113,7 +116,8 @@ Consumer-facing:
 - `memory::reload` — drop RAM state and re-read every bank from disk (the recovery hatch after
   hand-editing files).
 
-Internal (denied by the suggested policy, see Security):
+Internal (denied by the suggested policy; the worker also refuses a direct call of
+`memory::on-turn-completed`, `memory::extract-job` and `memory::on-session-deleted`, see Security):
 
 - `memory::hook::pre-generate` — harness injection hook.
 - `memory::on-turn-completed` / `memory::extract-job` — capture pipeline.
@@ -188,8 +192,13 @@ only such a note, and a pinned memory is neither updated nor deleted (memory/REA
 without it arrives as a human's. `memory/iii-permissions.yaml` is a suggested policy for
 deployments that run a policy worker, and nothing loads it at run time: agents get
 `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`,
-`memory::delete`; `memory::pin`, the functions above and the hook/pipeline internals are denied,
-and only that policy keeps an agent off the internals.
+`memory::delete`; `memory::pin`, the functions above and the hook/pipeline internals are denied.
+The worker itself refuses three internals with `forbidden`:
+`memory::on-turn-completed` and `memory::on-session-deleted` run only when this worker's own
+observer delivers them, and `memory::extract-job` runs only a job this worker queued: it holds each
+job it puts on the queue until the job succeeds, so a direct call, or a job another caller enqueues
+or publishes, is refused. `memory::hook::pre-generate` records a turn's bank only from its observer's delivery;
+`memory::on-config-change` and `memory::rest` rely on the policy alone.
 
 ## The memory family
 
@@ -202,14 +211,18 @@ siblings over one on-disk contract, not a monolith with modes.
   hourly heartbeat tick; the pass runs only when `interval_hours` elapsed) with catch-up-on-boot
   semantics (last completed pass persisted in the state worker; a pass missed while down runs
   shortly after boot, via a backstop loop that also covers cron-less rigs): deterministic dedup of near-duplicate memories (normalized-text or token-set equality;
-  one differing word never merges), survivor = pinned > corroboration > oldest. Strictly
+  one differing word never merges), survivor = pinned > not an agent's note (confidence `stated`
+  with a `source.turn_id`) > corroboration > oldest. An unpinned agent's note never retires a
+  memory that is not one (the semantic tier swaps such a merge and refuses such a supersede), and
+  a merge from an agent's note or a `demoted-rule` line does not reinforce the survivor. Strictly
   supersede-only through `memory::supersede` + `memory::save` (+ `memory::correct` for the verify
   tier), never touches pinned records; every change lands as a `memory::item-changed` event. `dry_run` plans without writing;
   `max_supersedes_per_run` and `max_llm_calls_per_run` cap a pass. Promotion of corroborated clusters toward rules is its
   An optional LLM tier (`llm_assist_enabled`, off by default) runs after the deterministic pass:
   one `router::complete` judge per bank confirms which reorder groups really are equivalent
   (merged through the same seam) and promotes standing instructions observed
-  `promote_corroboration_threshold`+ times into the bank's `learned` rule — append-only,
+  `promote_corroboration_threshold`+ times (never an agent's note or a `demoted-rule` line) into
+  the bank's `learned` rule — append-only,
   fingerprint-deduped, and the judge can only act on candidates it was offered. The judge sees
   the `learned` lines in force and lists a candidate one of them already states as `covered`
   instead of promoting it. Promoted and covered ids are kept in the state worker

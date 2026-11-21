@@ -14,9 +14,14 @@ name: Memory E2E on release
 # key the executor holds; another model runs when a dispatch names it, with its
 # provider's key in the executor, or locally (harness-e2e README, "Memory gain").
 #
-# A release event runs this file as it exists at the tagged commit, so a memory
-# release of a commit that predates this workflow does not trigger it; dispatch
-# it by hand for that version.
+# A memory-consolidate release runs the gain arms only. Every run pins both
+# versions, the released one and the newest release of the other worker, and
+# the report names them. A memory and a memory-consolidate released together
+# start one run each.
+#
+# A release event runs this file as it exists at the tagged commit, so a
+# release of a commit that predates this workflow does not trigger it;
+# dispatch it by hand for that version.
 
 on:
   release:
@@ -24,8 +29,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Published memory version to measure (e.g. 0.2.22)
-        required: true
+        description: Published memory version to measure (e.g. 0.2.22); empty takes the newest memory release
+        required: false
+      consolidate_version:
+        description: >-
+          Published memory-consolidate version the memory-consolidated arm
+          measures; empty takes the newest memory-consolidate release. Given
+          without `version`, only the gain arms run.
+        required: false
       models:
         description: >-
           JSON list of provider/model subjects for the gain arms; empty runs
@@ -43,30 +54,56 @@ permissions: {}
 
 jobs:
   version:
-    name: Name the published version
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'memory/v')
+    name: Name the published versions
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || startsWith(github.event.release.tag_name, 'memory/v')
+      || startsWith(github.event.release.tag_name, 'memory-consolidate/v')
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       versions: ${{ steps.version.outputs.versions }}
+      consolidated: ${{ steps.version.outputs.consolidated }}
     steps:
-      - name: Name the published version
+      - name: Name the published versions
         id: version
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
           INPUT: ${{ inputs.version }}
+          CONSOLIDATE_INPUT: ${{ inputs.consolidate_version }}
         run: |
-          version="${INPUT:-${TAG#memory/v}}"
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::not a memory version: ${version}"
-            exit 1
-          fi
-          echo "versions={\"memory\":\"${version}\"}" >> "$GITHUB_OUTPUT"
+          # The newest release of a worker, from its release tags.
+          newest() {
+            gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/$1/v" --paginate -q '.[].ref' \
+              | sed "s|^refs/tags/$1/v||" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+          }
+          memory="$INPUT"
+          consolidate="$CONSOLIDATE_INPUT"
+          case "$TAG" in
+            memory-consolidate/v*) consolidate="${TAG#memory-consolidate/v}" ;;
+            memory/v*) memory="${TAG#memory/v}" ;;
+          esac
+          memory="${memory:-$(newest memory)}"
+          consolidate="${consolidate:-$(newest memory-consolidate)}"
+          for version in "$memory" "$consolidate"; do
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::not a released version: '${version}' (memory '${memory}', memory-consolidate '${consolidate}')"
+              exit 1
+            fi
+          done
+          echo "versions={\"memory\":\"${memory}\"}" >> "$GITHUB_OUTPUT"
+          echo "consolidated={\"memory\":\"${memory}\",\"memory-consolidate\":\"${consolidate}\"}" >> "$GITHUB_OUTPUT"
 
   memory-e2e:
     name: memory e2e (${{ matrix.suite }})
     needs: version
+    # A memory-consolidate release, or a dispatch naming only its version, changed no memory.
+    if: >-
+      !startsWith(github.event.release.tag_name, 'memory-consolidate/v')
+      && !(inputs.consolidate_version != '' && inputs.version == '')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -136,7 +173,8 @@ jobs:
         uses: iii-hq/harness-e2e/.github/actions/verify-stack@34f19f5c331d993777c58decab0a0c7d0062c96d
         with:
           token: ${{ steps.app.outputs.token }}
-          versions: ${{ needs.version.outputs.versions }}
+          # Only the consolidated stack declares memory-consolidate; the others refuse its version.
+          versions: ${{ matrix.stack == 'memory-consolidated' && needs.version.outputs.consolidated || needs.version.outputs.versions }}
           suite: memory-gain
           stack: ${{ matrix.stack }}
           model: ${{ matrix.model }}
@@ -165,7 +203,7 @@ jobs:
 
   memory-gain-report:
     name: memory gain report
-    needs: memory-gain
+    needs: [version, memory-gain]
     if: always() && needs.memory-gain.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -200,6 +238,19 @@ jobs:
         with:
           token: ${{ steps.app.outputs.token }}
           runs: ${{ steps.runs.outputs.runs }}
+
+      # The comparison names no versions; the report says which ones the arms ran.
+      - name: Name the measured versions
+        if: always() && steps.gain.outputs.report != ''
+        env:
+          VERSIONS: ${{ needs.version.outputs.consolidated }}
+          REPORT: ${{ steps.gain.outputs.report }}
+        run: |
+          line=$(jq -r '"Measured: memory \(.memory) on every arm, memory-consolidate \(.["memory-consolidate"]) on the memory-consolidated arm."' <<<"$VERSIONS")
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$REPORT/memory-gain.md" ]; then
+            printf '\n%s\n' "$line" >> "$REPORT/memory-gain.md"
+          fi
 
       - name: Keep the report
         if: always() && steps.gain.outputs.report != ''

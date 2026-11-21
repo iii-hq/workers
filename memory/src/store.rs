@@ -675,6 +675,12 @@ fn dismissed_key(session: &str) -> String {
     serde_json::json!(["dismissed-history-v1", session]).to_string()
 }
 
+/// The whole job is the key: a job differing in any field is not held.
+fn job_key(job: &crate::hooks::ExtractJobInput) -> Result<String, MemoryError> {
+    extraction_identifier(&job.session_id)?;
+    Ok(serde_json::json!(["queued-job", job.session_id, job]).to_string())
+}
+
 fn extraction_identifier(id: &str) -> Result<(), MemoryError> {
     if !crate::extraction_proof::bounded(id) {
         return Err(MemoryError::InvalidInput(
@@ -932,6 +938,35 @@ impl Store {
     pub fn delete_extraction_plan(&self, source: &str) -> Result<(), MemoryError> {
         let _lock = extraction_lock();
         remove_if_exists(&self.extraction_plan_path(source))
+    }
+
+    /// Hold a job this worker puts on the extraction queue: the queue runs
+    /// whatever job a caller enqueues, so only a held job may run. Released
+    /// when it succeeds, it outlives its session like its queue message (a
+    /// redriven dead letter still runs).
+    pub fn hold_extraction_job(
+        &self,
+        job: &crate::hooks::ExtractJobInput,
+    ) -> Result<(), MemoryError> {
+        let key = job_key(job)?;
+        let _lock = extraction_lock();
+        self.write_extraction_record(&key, serde_json::json!({"source":key,"plan":true}))
+    }
+
+    pub fn holds_extraction_job(
+        &self,
+        job: &crate::hooks::ExtractJobInput,
+    ) -> Result<bool, MemoryError> {
+        Ok(self.extraction_plan(&job_key(job)?)?.is_some())
+    }
+
+    pub fn release_extraction_job(
+        &self,
+        job: &crate::hooks::ExtractJobInput,
+    ) -> Result<(), MemoryError> {
+        let key = job_key(job)?;
+        let _lock = extraction_lock();
+        remove_if_exists(&self.extraction_plan_path(&key))
     }
 
     /// Banks whose learned-rule merge this run already settled.

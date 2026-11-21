@@ -174,6 +174,8 @@ mod tests {
         }
         for internal in [
             crate::hooks::PRE_GENERATE_FN,
+            crate::hooks::TURN_COMPLETED_FN,
+            crate::hooks::SESSION_DELETED_FN,
             crate::hooks::EXTRACT_JOB_FN,
             crate::events::ON_ITEM_CHANGED_FN,
             REST_ID,

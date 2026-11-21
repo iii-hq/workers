@@ -520,6 +520,9 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
                 skip: false,
                 until: Some(a.entry_id.clone()),
             };
+            crate::store::run_blocking(|| store.hold_extraction_job(&job))
+                .await
+                .map_err(|_| "history recovery scheduling failed")?;
             deps.iii
                 .call(
                     iii_sdk::CallRequest::new(
