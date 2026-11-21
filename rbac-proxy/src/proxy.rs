@@ -21,9 +21,11 @@ use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, We
 use axum::http::{HeaderMap, Uri};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungCloseFrame;
+use uuid::Uuid;
 
 use crate::interceptor::{DownstreamAction, Interceptor, UpstreamAction};
 use crate::rbac;
@@ -86,7 +88,7 @@ pub async fn handle_connection(
 
     // 2. Dial the upstream engine listener.
     // Nagle off toward the engine too (small frames, see server.rs).
-    let (engine, _resp) =
+    let (mut engine, _resp) =
         match tokio_tungstenite::connect_async_with_config(cfg.engine_url.as_str(), None, true)
             .await
         {
@@ -117,6 +119,7 @@ pub async fn handle_connection(
     // Interceptor's `reply_tx` — spawning avoids a head-of-line deadlock).
     let (reply_tx, mut reply_rx) = mpsc::channel::<String>(128);
 
+    let pinned = session.registration_namespace.is_some();
     let interceptor = Arc::new(Interceptor::new(
         state.iii.clone(),
         cfg.clone(),
@@ -125,8 +128,33 @@ pub async fn handle_connection(
         reply_tx,
     ));
 
+    // Declared and answered before the pumps start. The engine keeps the
+    // first namespace a connection declares, so a session that registers and
+    // then stays silent past the grace window cannot land in `default`. The
+    // engine runs each declaration as its own task, and every one rewrites the
+    // runtime, version and telemetry: waiting for the answer keeps this one
+    // from landing after the worker's own and wiping them. No `name` and no
+    // `features`: the worker's own declaration sets them.
+    let mut early = Vec::new();
+    if let Some((id, frame)) = interceptor.pin_declaration()
+        && let Err(error) = declare_pin(&mut engine, id, frame, &mut early).await
+    {
+        tracing::warn!(%error, "the engine did not take the session's namespace; closing downstream");
+        let mut client = client;
+        let _ = client
+            .send(AxumMessage::Close(Some(AxumCloseFrame {
+                code: 1011, // internal error
+                reason: "engine did not take the namespace".into(),
+            })))
+            .await;
+        return;
+    }
+
     let (mut client_sink, mut client_rx) = client.split();
-    let (mut engine_sink, mut engine_rx) = engine.split();
+    let (mut engine_sink, engine_rx) = engine.split();
+    // What the engine sent before its answer (its `workerregistered`) still
+    // reaches the client first.
+    let mut engine_rx = futures_util::stream::iter(early.into_iter().map(Ok)).chain(engine_rx);
 
     // One writer per socket; both pump directions (and the reply forwarder)
     // feed the client writer.
@@ -295,6 +323,18 @@ pub async fn handle_connection(
     let closed_by_proxy = tokio::select! {
         closed = client_to_engine => closed,
         _ = engine_to_client => false,
+        _ = called_id_added(&state, &cfg), if pinned => {
+            tracing::info!("a reload changed an id the proxy calls; closing the pinned session");
+            // The engine drops the session's functions with its connection:
+            // that one goes first. `try_send`: a client that stopped reading
+            // must not keep them alive.
+            engine_writer.abort();
+            let _ = client_out.try_send(AxumMessage::Close(Some(AxumCloseFrame {
+                code: 1012, // service restart: the worker reconnects
+                reason: "configuration changed".into(),
+            })));
+            true
+        }
     };
 
     // A proxy-initiated close queued its answer and a Close: let the writer
@@ -312,6 +352,72 @@ pub async fn handle_connection(
     engine_writer.abort();
     reply_forwarder.abort();
     // _guard (ActiveGuard) drops here → live-connection gauge decremented.
+}
+
+/// Resolves when a reload makes the proxy call an id that `admitted` does not
+/// name. A pinned session admitted under `admitted` was never refused that id:
+/// it may hold it in its pin, where the middleware of a call into that
+/// namespace resolves, and its stale snapshot would still let it register it.
+/// It subscribes before the first check, so a reload during the upgrade counts.
+// shortcut: the engine drops a closed session's functions a moment after the new ids apply, so a call made in between can still reach one; make the reload wait for these closes if ids are ever renamed under hostile pinned sessions.
+async fn called_id_added(state: &ProxyState, admitted: &crate::config::WorkerConfig) {
+    let mut changes = crate::configuration::config_changes();
+    let refused = admitted.called_ids();
+    loop {
+        let live = state.config.read().await.clone();
+        if live
+            .called_ids()
+            .iter()
+            .any(|id| id.is_some() && !refused.contains(id))
+        {
+            return;
+        }
+        if changes.changed().await.is_err() {
+            return std::future::pending().await;
+        }
+    }
+}
+
+/// How long the engine may take to answer a pin declaration.
+const PIN_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
+
+type EngineSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Send the pin declaration `frame` and wait for the engine's successful
+/// answer to `id`. Frames the engine sends meanwhile go to `early`, in order.
+async fn declare_pin(
+    engine: &mut EngineSocket,
+    id: Uuid,
+    frame: String,
+    early: &mut Vec<TungMessage>,
+) -> Result<(), String> {
+    let id = id.to_string();
+    let answer = async {
+        engine
+            .send(TungMessage::Text(frame.into()))
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(msg) = engine.next().await {
+            let msg = msg.map_err(|e| e.to_string())?;
+            if let TungMessage::Text(t) = &msg
+                && let Ok(v) = serde_json::from_str::<Value>(t.as_str())
+                && v["type"] == "invocationresult"
+                && v["invocation_id"] == id
+            {
+                return if v["result"]["success"] == true {
+                    Ok(())
+                } else {
+                    Err(v.to_string())
+                };
+            }
+            early.push(msg);
+        }
+        Err("the engine closed the connection".to_string())
+    };
+    tokio::time::timeout(PIN_ANSWER_TIMEOUT, answer)
+        .await
+        .map_err(|_| format!("no answer in {PIN_ANSWER_TIMEOUT:?}"))?
 }
 
 /// Send the engine's out-of-band rejection frame, then Close — the exact shape
@@ -407,6 +513,86 @@ mod tests {
         let m = query_to_multi_map(Some("a=1&a=2&b=hello%20world"));
         assert_eq!(m.get("a"), Some(&vec!["1".to_string(), "2".to_string()]));
         assert_eq!(m.get("b"), Some(&vec!["hello world".to_string()]));
+    }
+
+    /// A one-connection engine: it sends `workerregistered`, then answers the
+    /// first frame with `result` and `error`.
+    async fn fake_engine(result: Value, error: Value) -> EngineSocket {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            ws.send(TungMessage::text(r#"{"type":"workerregistered"}"#))
+                .await
+                .unwrap();
+            let Some(Ok(TungMessage::Text(t))) = ws.next().await else {
+                return;
+            };
+            let call: Value = serde_json::from_str(t.as_str()).unwrap();
+            let answer = serde_json::json!({ "type": "invocationresult",
+                "invocation_id": call["invocation_id"], "result": result, "error": error });
+            ws.send(TungMessage::text(answer.to_string()))
+                .await
+                .unwrap();
+            while ws.next().await.is_some() {}
+        });
+        tokio_tungstenite::connect_async(url).await.unwrap().0
+    }
+
+    #[tokio::test]
+    async fn a_pin_declaration_waits_for_the_engine_to_take_it() {
+        let id = Uuid::new_v4();
+        let frame = serde_json::json!({ "invocation_id": id.to_string() }).to_string();
+        let mut early = Vec::new();
+        let mut engine = fake_engine(serde_json::json!({ "success": true }), Value::Null).await;
+        declare_pin(&mut engine, id, frame.clone(), &mut early)
+            .await
+            .unwrap();
+        // The frame the engine sent first still reaches the client; the answer does not.
+        assert_eq!(early, [TungMessage::text(r#"{"type":"workerregistered"}"#)]);
+
+        let refused = serde_json::json!({ "code": "INVALID_NAMESPACE", "message": "blank" });
+        let mut engine = fake_engine(Value::Null, refused).await;
+        let error = declare_pin(&mut engine, id, frame, &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(error.contains("INVALID_NAMESPACE"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_adds_a_called_id_ends_the_wait_of_a_pinned_session() {
+        use crate::config::WorkerConfig;
+        let admitted = WorkerConfig {
+            middleware_function_id: Some("mesh::middleware".into()),
+            ..WorkerConfig::default()
+        };
+        let iii = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        let cell = Arc::new(tokio::sync::RwLock::new(Arc::new(admitted.clone())));
+        let state = ProxyState::new(cell.clone(), iii);
+        let wait = called_id_added(&state, &admitted);
+        tokio::pin!(wait);
+
+        // Dropping an id, or a key that names none, leaves the session open.
+        let mut next = admitted.clone();
+        next.middleware_function_id = None;
+        next.expose_worker_internals = true;
+        crate::configuration::apply_config(&cell, next.clone()).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut wait)
+                .await
+                .is_err()
+        );
+
+        // An id the session was never refused closes it.
+        next.middleware_function_id = Some("probe::next-mw".into());
+        crate::configuration::apply_config(&cell, next).await;
+        tokio::time::timeout(Duration::from_secs(5), &mut wait)
+            .await
+            .expect("the renamed middleware ends the wait");
     }
 
     #[test]
