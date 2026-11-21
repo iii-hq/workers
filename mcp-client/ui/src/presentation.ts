@@ -199,6 +199,9 @@ export interface PathHeads {
   thirdIsId: boolean
 }
 
+/** A function's id past `mcp::<server>::`: the path row's third head and column 3's name. */
+export const functionName = (server: string, functionId: string): string => functionId.slice(`mcp::${server}::`.length)
+
 /** The three heads of the path row, which together spell the selected function id. */
 export function pathHeads(selection: Selection, server: Server | null, total: number): PathHeads {
   const { item } = selection
@@ -211,7 +214,7 @@ export function pathHeads(selection: Selection, server: Server | null, total: nu
       item === null
         ? null
         : item.kind === 'function'
-          ? item.functionId.slice(`mcp::${selection.server}::`.length)
+          ? functionName(selection.server ?? '', item.functionId)
           : PINNED_WORDS[item.kind],
     thirdIsId: item?.kind === 'function',
   }
@@ -380,4 +383,24 @@ export function announcements(prev: ServersList | null, next: ServersList): stri
   return next.servers
     .filter((s) => s.state === 'ready' && !wasReady.has(s.name))
     .map((s) => `${s.name} connected, ${countLabel(s)}`)
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const COMBINED = ['oneOf', 'anyOf', 'allOf', '$ref']
+
+/** Column 3's mono line: the id, then the inputs (a prompt's arguments) and how many are required.
+ * A schema still `undefined` is one not read yet; one combined from others (`oneOf`, `$ref`…) with no
+ * top-level properties cannot be counted. */
+export function metaLine(functionId: string, schema: unknown, kind: FunctionRow['group']): string {
+  if (schema === undefined) return functionId
+  const properties = isRecord(schema) ? schema.properties : undefined
+  if (isRecord(schema) && !isRecord(properties) && COMBINED.some((key) => key in schema)) return functionId
+  const names = isRecord(properties) ? Object.keys(properties) : []
+  const [one, many] = kind === 'prompts' ? ['argument', 'arguments'] : ['input', 'inputs']
+  if (names.length === 0) return `${functionId} · no ${many}`
+  const listed = isRecord(schema) && Array.isArray(schema.required) ? schema.required : []
+  const required = names.filter((name) => listed.includes(name)).length
+  return `${functionId} · ${count(names.length, one, many)}, ${required || 'none'} required`
 }

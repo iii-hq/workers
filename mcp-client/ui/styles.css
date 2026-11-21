@@ -142,6 +142,61 @@
   padding: 12px 24px;
   background: var(--color-panel-raised);
 }
+/* ── column 3, a function: name, description, meta line, then the tabs ── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-detail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 16px;
+  container: mcp-ui-detail / inline-size;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-detail-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+/* The full name, wrapped: column 3 is where a name the list truncated reads whole. */
+[data-iii-ui="mcp-client"] .mcp-ui-detail-name {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-detail-desc {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre-line;
+  text-wrap: pretty;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-detail-desc[data-open="false"] {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+}
+/* The button's border and padding hang left, so its label lines up with the text above. */
+[data-iii-ui="mcp-client"] .mcp-ui-more {
+  margin-left: -13px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-detail-meta {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-tabs {
+  gap: 16px;
+}
+
 /* ── column 2: the search field stays, the list under it scrolls ──── */
 
 [data-iii-ui="mcp-client"] .mcp-ui-search {
@@ -307,3 +362,183 @@
 [data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"][data-level="detail"] .mcp-ui-col2 {
   display: none;
 }
+
+/* ── the schema table, copied from ade/ui/styles.css with SchemaTable.tsx. The table rules
+   name the shared Table's `data-slot` parts: its `iii-ui-table__*` classes are gone. ── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-swap {
+  display: grid;
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-swap > svg {
+  grid-area: 1 / 1;
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-swap > .to,
+[data-iii-ui="mcp-client"] .mcp-ui-copy[data-copied="true"] .mcp-ui-swap > .from {
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-copy[data-copied="true"] .mcp-ui-swap > .to {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+  color: var(--color-ok);
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="mcp-client"] .mcp-ui-swap > svg {
+    transition-property: opacity, scale, filter;
+    transition-duration: var(--motion-duration-panel);
+    transition-timing-function: var(--motion-ease-standard);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="mcp-client"] .mcp-ui-swap > svg {
+    scale: 1 !important;
+    filter: none !important;
+    transition: opacity var(--motion-duration-fast) ease-out;
+  }
+}
+[data-iii-ui="mcp-client"] .mcp-ui-note {
+  padding: 4px 0 12px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+  text-wrap: pretty;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-json {
+  display: block;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel);
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 420px;
+  overflow: auto;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-head .title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-head .desc,
+[data-iii-ui="mcp-client"] .mcp-ui-schema .desc,
+[data-iii-ui="mcp-client"] .mcp-ui-schema-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-section {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-height: 30px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-section .label {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-section .type-name {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-section .summary {
+  margin-inline-start: auto;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema-table [data-slot="table"] {
+  width: 100%;
+}
+/* The shared table cell does not wrap; a field's description and notes do. */
+[data-iii-ui="mcp-client"] .mcp-ui-schema-table [data-slot="table-cell"] {
+  white-space: normal;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .field-column {
+  width: 30%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .type-column {
+  width: 18%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .field-line,
+[data-iii-ui="mcp-client"] .mcp-ui-schema .notes {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .field-line {
+  flex-wrap: wrap;
+  align-items: center;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .notes {
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .field {
+  display: inline-block;
+  padding-inline-start: var(--schema-indent);
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .required {
+  min-height: 20px;
+  padding: 1px 7px;
+  border-color: var(--color-edge);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  font-weight: 500;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .type {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-schema .enum,
+[data-iii-ui="mcp-client"] .mcp-ui-schema .default {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+/* Narrow: each field becomes a block — no sideways scroll, nothing clipped. */
+@container mcp-ui-detail (max-width: 34rem) {
+  [data-iii-ui="mcp-client"] .mcp-ui-schema-table [data-slot="table-header"] {
+    display: none;
+  }
+  [data-iii-ui="mcp-client"] .mcp-ui-schema-table [data-slot="table-body"] [data-slot="table-row"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 2px 10px;
+    padding: 10px 12px;
+  }
+  [data-iii-ui="mcp-client"] .mcp-ui-schema-table [data-slot="table-body"] [data-slot="table-cell"] {
+    display: block;
+    padding: 0;
+  }
+  [data-iii-ui="mcp-client"] .mcp-ui-schema-table [data-slot="table-body"] [data-slot="table-cell"]:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+}
+

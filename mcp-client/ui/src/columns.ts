@@ -8,8 +8,18 @@ export const currentRow = (selected: boolean) => ({
   'aria-current': selected || undefined,
 })
 
-const FOCUSABLE =
-  'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])'
+// `tabindex="-1"` drops a roving widget's other items (an unselected tab): only its stop takes focus.
+const FOCUSABLE = [
+  'a[href]',
+  'button:not(:disabled)',
+  'input:not(:disabled)',
+  'select:not(:disabled)',
+  'textarea:not(:disabled)',
+  'summary',
+  '[tabindex]',
+]
+  .map((selector) => `${selector}:not([tabindex="-1"])`)
+  .join(', ')
 
 /** Focus column `n` (`data-column`): a list's selected row, else its first; otherwise the column's
  * first focusable element. False when there is nothing to focus. */

@@ -6,6 +6,7 @@ import {
   countLabel,
   filterRows,
   functionRows,
+  metaLine,
   middleTruncate,
   narrowLevel,
   pageState,
@@ -367,5 +368,45 @@ describe('column 2', () => {
     expect(narrowLevel('first_run', 'servers')).toBe('contents')
     expect(narrowLevel('worker_down', 'servers')).toBe('contents')
     expect(narrowLevel('config_down', 'servers')).toBe('contents')
+  })
+})
+
+describe('metaLine', () => {
+  const schema = (n: number, required: string[] = []) => ({
+    type: 'object',
+    properties: Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i}`, { type: 'string' }])),
+    required,
+  })
+
+  it('counts inputs for tools and resource functions', () => {
+    expect(metaLine('mcp::linear::list_issues', schema(12), 'tools')).toBe(
+      'mcp::linear::list_issues · 12 inputs, none required',
+    )
+    expect(metaLine('mcp::linear::save_comment', schema(3, ['p0']), 'tools')).toBe(
+      'mcp::linear::save_comment · 3 inputs, 1 required',
+    )
+    expect(metaLine('mcp::docs::resources::read', schema(1, ['p0']), 'resources')).toBe(
+      'mcp::docs::resources::read · 1 input, 1 required',
+    )
+    expect(metaLine('mcp::linear::whoami', schema(0), 'tools')).toBe('mcp::linear::whoami · no inputs')
+  })
+
+  it('says arguments for a prompt', () => {
+    expect(metaLine('mcp::docs::prompts::code_review', schema(2, ['p0']), 'prompts')).toBe(
+      'mcp::docs::prompts::code_review · 2 arguments, 1 required',
+    )
+    expect(metaLine('mcp::docs::prompts::summary', schema(0), 'prompts')).toBe(
+      'mcp::docs::prompts::summary · no arguments',
+    )
+  })
+
+  it('is the id alone until the schema is read', () => {
+    expect(metaLine('mcp::linear::whoami', undefined, 'tools')).toBe('mcp::linear::whoami')
+  })
+
+  it('is the id alone when a union hides the inputs, and counts none for no schema', () => {
+    const union = { anyOf: [schema(1, ['p0']), schema(2)] }
+    expect(metaLine('mcp::linear::list_issues', union, 'tools')).toBe('mcp::linear::list_issues')
+    expect(metaLine('mcp::linear::whoami', null, 'tools')).toBe('mcp::linear::whoami · no inputs')
   })
 })

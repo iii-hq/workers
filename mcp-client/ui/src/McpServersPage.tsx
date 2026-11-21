@@ -22,8 +22,10 @@ import { ChevronLeft, Copy, FileJson, Plug, RefreshCw } from 'lucide-react'
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from './api'
 import { focusColumn } from './columns'
+import { FunctionDetail } from './FunctionDetail'
 import {
   announcements,
+  functionRows,
   type Level,
   narrowLevel,
   pageState,
@@ -82,6 +84,14 @@ export function McpServersPage({
   const server = data.list?.servers.find((s) => s.name === selection.server) ?? null
   const heads = pathHeads(selection, server, data.list?.servers.length ?? Object.keys(data.config ?? {}).length)
   const { item } = selection
+  const fnRow = useMemo(
+    () =>
+      server && item?.kind === 'function'
+        ? functionRows(server, data.functions[server.name] ?? []).find((row) => row.functionId === item.functionId)
+        : undefined,
+    [server, item, data.functions],
+  )
+  const fnGone = item?.kind === 'function' && server !== null && fnRow === undefined
   const copyFlash = useCopyFlash(item?.kind === 'function' ? item.functionId : '')
   // No add or import flow and no agent-access status yet: their buttons, commands and row stay hidden.
   const onAdd = undefined as (() => void) | undefined
@@ -117,6 +127,11 @@ export function McpServersPage({
         {label}
       </Button>
     ) : null
+
+  // A function the server no longer lists leaves its server on Connection.
+  useEffect(() => {
+    if (fnGone) setSelection((s) => ({ server: s.server, item: { kind: 'connection' } }))
+  }, [fnGone])
 
   // Each server that became ready since the last read is said once.
   const previousList = useRef<ServersList | null>(null)
@@ -314,6 +329,9 @@ export function McpServersPage({
                           {selection.server ? back('contents', selection.server) : null}
                           {server && (item?.kind === 'connection' || item?.kind === 'process') ? (
                             <ServerFacts server={server} />
+                          ) : null}
+                          {server && fnRow ? (
+                            <FunctionDetail api={api} server={server} row={fnRow} host={host} commands={commands} />
                           ) : null}
                         </>
                       )}
