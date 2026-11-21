@@ -8,9 +8,11 @@ use mcp_client::functions::SecretChange;
 use mcp_client::server::{ErrorCode, Manager, State};
 use serde_json::{Value, json};
 use support::mcp_mock::{McpMock, echo_mock};
-use support::{ECHO, FakeHost, RegOp, WAIT, connect, connect_unapproved, fast_timings, hi, server};
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use support::{
+    ECHO, FakeHost, RegOp, WAIT, connect, connect_unapproved, eventually, fast_timings, hi, server,
+};
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const SECRET_REJECTED: &str = "credential rejected, an operator must fix `secret://APP_SECRET`";
 
@@ -394,4 +396,87 @@ async fn a_secret_change_restarts_only_when_a_value_in_use_changed() {
     let minted = mock.token_requests().await;
     assert_eq!(minted.len(), 2, "{minted:?}");
     assert!(minted[1].contains("client_secret=shh-2"), "{minted:?}");
+}
+
+/// Answers `tools/list` with 401 when it carries `Bearer <token>`.
+async fn refuse_tools_list_with(mock: &McpMock, token: &str) {
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "tools/list"})))
+        .and(header("authorization", format!("Bearer {token}").as_str()))
+        .respond_with(ResponseTemplate::new(401))
+        .with_priority(1)
+        .mount(mock.server())
+        .await;
+}
+
+#[tokio::test]
+async fn a_recovered_session_serves_no_cached_answer() {
+    let (mock, host, manager) = keyed_ready().await;
+    host.set_secret("secret://KEY", "k2");
+    mock.require_bearer("k2").await;
+    assert_eq!(host.call(ECHO, json!({})).await, Ok(hi()), "recovered");
+    // From here every tools/list answer asks to be cached for a minute.
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "tools/list"})))
+        .respond_with(|r: &Request| {
+            let id = serde_json::from_slice::<Value>(&r.body).unwrap()["id"].clone();
+            let echo = json!({"name": "echo", "description": "echo", "inputSchema": {
+                "type": "object", "properties": {"text": {"type": "string"}}}});
+            let result = json!({"tools": [echo], "ttlMs": 60000});
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+        })
+        .with_priority(1)
+        .mount(mock.server())
+        .await;
+    // A -32602 asks for a re-list, at most once per interval.
+    mock.on_call_error("echo", -32602, "bad").await;
+    for n in [2, 3] {
+        assert!(host.call(ECHO, json!({})).await.is_err());
+        eventually("each re-list reaches the server", || async {
+            mock.requests("tools/list").await.len() == n
+        })
+        .await;
+        tokio::time::sleep(fast_timings().relist_min_interval).await;
+    }
+    assert_eq!(server(&manager, "srv").await["state"], "ready");
+}
+
+#[tokio::test]
+async fn an_expired_token_on_a_relist_is_minted_again() {
+    let mock = echo_mock().await;
+    let host = FakeHost::new();
+    host.set_secret("secret://APP_SECRET", "shh");
+    let token_url = mock.token_endpoint("tok-1").await;
+    let manager = connect(&host, cc(&mock, &token_url)).await;
+    settle(&manager, State::Ready).await;
+    // tok-1 has expired, for the re-list only; the endpoint now issues tok-2.
+    refuse_tools_list_with(&mock, "tok-1").await;
+    mock.token_endpoint("tok-2").await;
+    mock.on_call_error("echo", -32602, "bad").await;
+    assert!(host.call(ECHO, json!({})).await.is_err());
+    eventually("the refused re-list is listed again", || async {
+        mock.requests("tools/list").await.len() == 3
+    })
+    .await;
+    assert_eq!(mock.token_requests().await.len(), 2);
+    assert_eq!(mock.requests("initialize").await.len(), 2);
+    let row = server(&manager, "srv").await;
+    assert_eq!(row["state"], "ready", "{row}");
+}
+
+#[tokio::test]
+async fn a_401_on_the_connect_listing_mints_again_on_the_next_attempt() {
+    let mock = echo_mock().await;
+    let host = FakeHost::new();
+    host.set_secret("secret://APP_SECRET", "shh");
+    let token_url = mock.token_endpoint("tok-1").await;
+    refuse_tools_list_with(&mock, "tok-1").await;
+    let manager = connect(&host, cc(&mock, &token_url)).await;
+    eventually("a later attempt mints a token", || async {
+        mock.token_requests().await.len() >= 2
+    })
+    .await;
+    mock.token_endpoint("tok-2").await;
+    settle(&manager, State::Ready).await;
 }

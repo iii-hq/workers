@@ -24,7 +24,7 @@ use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
     StreamableHttpError,
 };
-use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
+use rmcp::transport::{DynamicTransportError, IntoTransport, StreamableHttpClientTransport};
 use rmcp::{ClientHandler, Peer, RoleClient, ServiceError, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1079,8 +1079,8 @@ impl Server {
                     None
                 }
                 Some(change) = notes.recv() => Some(change),
-                Some(ask) = recoveries.recv() => {
-                    asked = Some(ask);
+                Some((seen, reply)) = recoveries.recv() => {
+                    asked = Some((seen, Some(reply)));
                     None
                 }
                 _ = self.relist.notified() => {
@@ -1092,32 +1092,6 @@ impl Server {
                     due.then_some(ListChanged::Prompts)
                 }
             };
-            if let Some((seen, reply)) = asked {
-                let current = self.peer.read().unwrap().clone();
-                let ready = self.status.borrow().state == State::Ready;
-                let answer = match current {
-                    // Recovered since that call was sent.
-                    Some(conn) if !Arc::ptr_eq(&conn, &seen) => Ok(conn),
-                    // A failed recovery, or anything else, left `ready` first.
-                    _ if !ready => Err(self.unavailable()),
-                    _ => {
-                        let reopened = tokio::select! {
-                            reopened = self.reopen(&mut resolved, minter) => reopened,
-                            _ = &mut *stop => break (true, true, None),
-                        };
-                        reopened.map(|session| {
-                            let conn = Conn::new(&session);
-                            *self.peer.write().unwrap() = Some(conn.clone());
-                            cancel = session.cancellation_token();
-                            // The old session ends with the last call on it.
-                            let old = std::mem::replace(&mut ended, Box::pin(session.waiting()));
-                            tokio::spawn(old);
-                            conn
-                        })
-                    }
-                };
-                let _ = reply.send(answer);
-            }
             if let Some(first) = due {
                 // This re-list covers every change queued so far, so a burst
                 // costs one per kind; a change that arrives during it gets its own.
@@ -1134,9 +1108,48 @@ impl Server {
                 if due.contains(&ListChanged::Prompts) {
                     last_prompt_relist = now;
                 }
-                tokio::select! {
-                    _ = self.relist(&due) => {}
+                let refused = tokio::select! {
+                    refused = self.relist(&due) => refused,
                     _ = &mut *stop => break (true, true, None),
+                };
+                // A 401 on the re-list recovers as a call's does, then lists once more.
+                asked = refused.map(|seen| (seen, None));
+            }
+            if let Some((seen, reply)) = asked {
+                let current = self.peer.read().unwrap().clone();
+                let ready = self.status.borrow().state == State::Ready;
+                let answer = match current {
+                    // Recovered since that request was sent.
+                    Some(conn) if !Arc::ptr_eq(&conn, &seen) => Ok(conn),
+                    // A failed recovery, or anything else, left `ready` first.
+                    _ if !ready => Err(self.unavailable()),
+                    _ => {
+                        let reopened = tokio::select! {
+                            reopened = self.reopen(&mut resolved, minter) => reopened,
+                            _ = &mut *stop => break (true, true, None),
+                        };
+                        reopened.map(|session| {
+                            let conn = Conn::new(&session);
+                            *self.peer.write().unwrap() = Some(conn.clone());
+                            cancel = session.cancellation_token();
+                            // The old session ends with the last call on it, which
+                            // ends within its own timeout.
+                            let old = std::mem::replace(&mut ended, Box::pin(session.waiting()));
+                            let t = self.timings;
+                            tokio::spawn(timeout(t.call.max(t.list) + t.stop_grace, old));
+                            conn
+                        })
+                    }
+                };
+                let relist = reply.is_none() && answer.is_ok();
+                if let Some(reply) = reply {
+                    let _ = reply.send(answer);
+                }
+                if relist {
+                    tokio::select! {
+                        _ = self.relist_tools(true) => {}
+                        _ = &mut *stop => break (true, true, None),
+                    }
                 }
             }
         };
@@ -1177,18 +1190,17 @@ impl Server {
     }
 
     /// `tools/list` again on the live session, then the reconcile. A failure
-    /// leaves the registry as it was.
-    async fn relist_tools(self: &Arc<Self>) {
-        let Some(conn) = self.peer.read().unwrap().clone() else {
-            return;
-        };
+    /// leaves the registry as it was. A first rejected credential returns the
+    /// session it was refused on, for the recovery a call would get.
+    async fn relist_tools(self: &Arc<Self>, retried: bool) -> Option<Arc<Conn>> {
+        let conn = self.peer.read().unwrap().clone()?;
         let limit = self.timings.list;
         let listed = match timeout(limit, conn.peer.list_all_tools()).await {
             Ok(Ok(tools)) => listing::<ToolInfo>(tools),
-            Ok(Err(e)) => Err(failure_text(
-                &self.name,
-                &self.request_failed(self.classify(&e)),
-            )),
+            Ok(Err(e)) => match self.classify(&e) {
+                CallFailure::CredentialRejected { .. } if !retried => return Some(conn),
+                failure => Err(failure_text(&self.name, &self.request_failed(failure))),
+            },
             Err(_) => Err(self.no_answer(limit)),
         };
         let tools = match listed {
@@ -1199,7 +1211,7 @@ impl Server {
                     "listing the tools of `{}` again failed, its functions stay as they were: {message}",
                     self.name
                 );
-                return;
+                return None;
             }
         };
         let has_instructions = self.info.lock().unwrap().instructions.is_some();
@@ -1213,6 +1225,7 @@ impl Server {
         let (prompt_ids, resource_ids) = (self.prefix("prompts"), self.prefix("resources"));
         let untouched = |id: &str| id.starts_with(&prompt_ids) || id.starts_with(&resource_ids);
         self.reconcile(wanted, &untouched).await;
+        None
     }
 
     /// `mcp::<server>::<kind>::`, the start of every id of that kind.
@@ -1220,15 +1233,18 @@ impl Server {
         format!("mcp::{}::{kind}::", self.name)
     }
 
-    /// Lists each changed kind again, in turn.
-    async fn relist(self: &Arc<Self>, due: &[ListChanged]) {
+    /// Lists each changed kind again, in turn; the session the tools were
+    /// refused on with a rejected credential.
+    async fn relist(self: &Arc<Self>, due: &[ListChanged]) -> Option<Arc<Conn>> {
+        let mut refused = None;
         for change in due {
             match change {
-                ListChanged::Tools => self.relist_tools().await,
+                ListChanged::Tools => refused = self.relist_tools(false).await,
                 ListChanged::Prompts => self.relist_prompts().await,
                 ListChanged::Resources => self.recheck_templates().await,
             }
         }
+        refused
     }
 
     /// `prompts/list` on the live session, as functions. A failure is
@@ -1501,8 +1517,6 @@ impl Server {
             }
         };
         let peer = session.peer().clone();
-        peer.set_response_cache_config(ClientCacheConfig::disabled())
-            .await;
         let handshake = peer
             .peer_info()
             .and_then(|i| serde_json::to_value(&*i).ok())
@@ -1512,7 +1526,15 @@ impl Server {
         let limit = self.timings.list;
         let listed = match timeout(limit, peer.list_all_tools()).await {
             Ok(Ok(tools)) => listing::<ToolInfo>(tools),
-            Ok(Err(e)) => Err(service_text(&e)),
+            Ok(Err(e)) => {
+                // The next attempt mints a token instead of reusing the refused one.
+                if let Some((_, m)) = minter.as_ref()
+                    && matches!(self.classify(&e), CallFailure::CredentialRejected { .. })
+                {
+                    m.invalidate().await;
+                }
+                Err(service_text(&e))
+            }
             Err(_) => Err(self.no_answer(limit)),
         };
         let tools = match listed {
@@ -1675,6 +1697,19 @@ impl Server {
         })
     }
 
+    /// Every session's handshake. rmcp's response cache goes off at once:
+    /// no answer is served again without a request, nor in place of an error.
+    async fn handshake<T, E, A>(&self, transport: T) -> Result<Session, ClientInitializeError>
+    where
+        T: IntoTransport<RoleClient, E, A>,
+        E: Error + Send + Sync + 'static,
+    {
+        let session = self.notifier().serve(transport).await?;
+        let off = ClientCacheConfig::disabled();
+        session.peer().set_response_cache_config(off).await;
+        Ok(session)
+    }
+
     fn notifier(&self) -> Notifier {
         Notifier {
             info: client_config(),
@@ -1733,7 +1768,7 @@ impl Server {
 
         self.progress(Stage::Connect);
         let limit = self.timings.http_handshake;
-        match timeout(limit, self.notifier().serve(transport)).await {
+        match timeout(limit, self.handshake(transport)).await {
             Ok(Ok(session)) => Ok(session),
             Ok(Err(e)) => {
                 if let Some(minter) = remint
@@ -1790,7 +1825,7 @@ impl Server {
             from,
         };
         let limit = self.timings.stdio_start;
-        let handshake = self.notifier().serve((spawned.stdout, spawned.stdin));
+        let handshake = self.handshake((spawned.stdout, spawned.stdin));
         let (exit, failure) = tokio::select! {
             served = timeout(limit, handshake) => match served {
                 Ok(Ok(session)) => return Ok((session, Process { child, reader })),

@@ -7,6 +7,7 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::Value;
 
 use crate::server::{ErrorCode, ServerError};
+use crate::translate::scrub;
 
 /// The form body of a client-credentials token request; `scope` as written.
 pub fn token_request_body(client_id: &str, client_secret: &str, scope: Option<&str>) -> String {
@@ -32,13 +33,18 @@ pub fn http_client() -> reqwest::Client {
 }
 
 /// One token request. A refusal names the endpoint's `error_description`,
-/// else its `error`, else the status: never the token, the body or a
-/// reqwest error, whose text carries the URL.
+/// else its `error`, else the status: never the token, the body, the client
+/// secret or a reqwest error, whose text carries the URL.
 pub async fn mint(
     http: &reqwest::Client,
     token_url: &str,
     body: String,
 ) -> Result<String, ServerError> {
+    // Scrubbed before the cut, which could leave part of it unmatched.
+    let secret: Vec<String> = url::form_urlencoded::parse(body.as_bytes())
+        .filter(|(k, _)| k == "client_secret")
+        .map(|(_, v)| v.into_owned())
+        .collect();
     let unreachable =
         || ServerError::new(ErrorCode::ConnectFailed, "token endpoint did not answer");
     let rejected = |detail: &str| {
@@ -62,7 +68,7 @@ pub async fn mint(
             .as_str()
             .or(answer["error"].as_str())
         {
-            Some(words) => words.chars().take(200).collect(),
+            Some(words) => scrub(words, &secret).chars().take(200).collect(),
             None => format!("HTTP {}", status.as_u16()),
         };
         return Err(rejected(&detail));
@@ -112,6 +118,27 @@ impl Minter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn an_echoed_client_secret_is_scrubbed_before_the_cut() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let secret = "secret-across-the-cut-0123456789";
+        let words = format!("{}{secret} tail", "x".repeat(190));
+        let reply = serde_json::json!({"error": "invalid_client", "error_description": words});
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(reply))
+            .mount(&server)
+            .await;
+        let body = token_request_body("app", secret, None);
+        let err = mint(&http_client(), &server.uri(), body).await.unwrap_err();
+        for start in 0..=secret.len() - 6 {
+            let piece = &secret[start..start + 6];
+            assert!(!err.message.contains(piece), "{piece} in {}", err.message);
+        }
+        assert!(err.message.ends_with("[redacted]"), "{}", err.message);
+    }
 
     #[test]
     fn token_body_is_form_encoded_and_keeps_the_scope_verbatim() {
