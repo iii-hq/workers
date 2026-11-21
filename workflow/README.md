@@ -208,7 +208,9 @@ is denied with the cause and the schema, so the harness re-prompts the turn,
 at most `max_validation_retries` times. A turn that ends with a wake armed
 (`harness::status` reads `expects_wake`) passes whatever it says, so a node can
 park on a status line and answer on the woken turn. A node that submitted
-settles when its turn ends, even with a wake armed. The worker then stops its
+settles when its turn ends, even with a wake armed, or at its `timeout_ms`
+when the turn is still running then: done with the submitted result, never
+refired or failed with `node_timeout`. The worker then stops its
 session tree: armed wakes are disposed, and background shell jobs and child
 sessions are killed. A node that must wait for a wake submits on the woken
 turn. A node that must leave a background job running ends with no wake armed.

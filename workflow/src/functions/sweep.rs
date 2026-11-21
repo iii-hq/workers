@@ -2,8 +2,9 @@
 //!
 //! Scans all `AwaitingNodes` runs. For each, re-runs reconciliation (to pick up
 //! any newly-completed nodes) and times out any `Running` checkpoint past its
-//! `pending_at + timeout_ms` deadline (`timeout::node_limits`). Then re-enqueues a tick so the
-//! run can advance.
+//! `pending_at + timeout_ms` deadline (`timeout::node_limits`); one whose result
+//! `workflow-result::submit` already accepted settles as done with it. Then
+//! re-enqueues a tick so the run can advance.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -134,6 +135,8 @@ async fn sweep_one_run(
     let now = deps.now_ms();
     let dispatch_timeout_ms = cfg.dispatch_timeout_ms;
     let mut timed_out_any = false;
+    // Sessions of submitted nodes settled at their deadline, stopped after the write.
+    let mut settled = Vec::new();
     let node_uids: Vec<String> = record.nodes.keys().cloned().collect();
     for uid in node_uids {
         let cp = record.nodes.get(&uid).cloned().unwrap();
@@ -174,6 +177,22 @@ async fn sweep_one_run(
                 crate::telemetry::record_node_terminal(false, dur);
                 timed_out_any = true;
             }
+            crate::timeout::TimeoutAction::Settle => {
+                // The accepted value is already in the node's result slot, so the node
+                // is done with it, as when reconcile settles a submitted node whose
+                // turn failed.
+                if let Some(c) = record.nodes.get_mut(&uid) {
+                    c.state = NodeState::Done;
+                    c.result_ref = Some(crate::ids::node_result_key(&record.run_id, &uid));
+                }
+                let dur = cp
+                    .pending_at
+                    .map(|p| (now - p).max(0) as f64)
+                    .unwrap_or(0.0);
+                crate::telemetry::record_node_terminal(true, dur);
+                settled.extend(cp.session_id.clone());
+                timed_out_any = true;
+            }
         }
     }
 
@@ -182,6 +201,11 @@ async fn sweep_one_run(
         record.updated_at = record.updated_at.max(now);
     }
     state::put_run(&deps.iii, &record).await?;
+    // Written first: the stop cancels the turn, which would cancel a node still
+    // stored as Running if this write were lost.
+    for sid in &settled {
+        super::harness_stop_session(deps, sid, dispatch_timeout_ms).await;
+    }
 
     // Re-drive: enqueue the next tick so the run can advance past the
     // newly-resolved nodes.
