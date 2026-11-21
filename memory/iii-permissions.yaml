@@ -2,8 +2,11 @@
 # that run a policy worker; nothing loads this file at run time.
 # The worker itself refuses every function denied after `memory::rest` when
 # the call comes from inside an agent turn, and holds an agent's save, update
-# and delete to its own note (README § Permissions); the internal seams and
-# `memory::rest` rely on this policy alone.
+# and delete to its own note (README § Permissions). It also refuses a
+# direct call of `memory::on-turn-completed`, `memory::on-session-deleted`
+# and `memory::extract-job`, and runs only an extraction job it queued
+# itself; the other internal seams and `memory::rest` rely on this policy
+# alone.
 # Spec: tech-specs/2026-06-agentic/memory.md § Security.
 version: 1
 

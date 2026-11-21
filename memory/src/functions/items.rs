@@ -105,10 +105,14 @@ struct SaveInput {
     now: u64,
     /// A re-observation adds `entities` too, not only tags.
     merge_entities: bool,
+    /// The user's own restatement (a save from outside a turn): only that
+    /// adds corroboration.
+    corroborates: bool,
 }
 
 /// The save state transition, pure so its invariants are testable:
-/// - same fingerprint + live: reinforce (corroboration + 1, revision + 1);
+/// - same fingerprint + live: reinforce (corroboration + 1 when the input
+///   corroborates, revision + 1);
 /// - same fingerprint + retired: RESURRECT — clear the tombstone and
 ///   CONTINUE the revision counter (a fresh revision-0 record would lose
 ///   to the tombstone under last-wins replay on the next boot);
@@ -123,6 +127,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
         source,
         now,
         merge_entities,
+        corroborates,
     } = input;
     match existing {
         Some(existing) => {
@@ -145,7 +150,9 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
                     }
                 }
             }
-            f.corroboration = f.corroboration.saturating_add(1);
+            if corroborates {
+                f.corroboration = f.corroboration.saturating_add(1);
+            }
             f.pinned = f.pinned || pinned;
             f.updated_at = now;
             f.stated_at = Some(now);
@@ -233,7 +240,7 @@ pub struct SaveRequest {
 pub struct SaveResponse {
     pub memory: Memory,
     /// False when the text fingerprint matched an existing memory (it was
-    /// reinforced instead).
+    /// reinforced instead, or, from a turn, left as it was).
     pub created: bool,
 }
 
@@ -314,6 +321,7 @@ pub(crate) async fn save_in(
         source: save_source(req.session_id, caller),
         now: stated_now_ms(),
         merge_entities: demoting,
+        corroborates: !in_turn,
     };
     // The same text saved twice at once: the commit that lands second
     // re-reads and corroborates the first instead of failing.
@@ -332,6 +340,16 @@ pub(crate) async fn save_in(
         }
         if let Some((turn_id, cap)) = &turn {
             turn_may_save(&bank, existing.as_ref(), turn_id, *cap).await?;
+            // A turn's echo of a line it may not revise is not the user saying it again.
+            if let Some(live) = existing
+                .as_ref()
+                .filter(|m| m.is_live() && !a_turns_note(m))
+            {
+                return Ok(SaveResponse {
+                    memory: live.clone(),
+                    created: false,
+                });
+            }
         }
         let mut next = save_transition(existing.clone(), input.clone());
         if turn.is_some() && next.2 {
@@ -359,9 +377,10 @@ pub(crate) async fn save_in(
 }
 
 /// Whether a save from `turn_id` may write over `existing`: a live memory is
-/// only reinforced (its tags may grow; `user` and `demoted-rule` were
-/// refused on the request), a new line counts against the turn's `cap`, and
-/// a retired one comes back only when it is a note a turn may revise.
+/// only restated (no corroboration; its tags may grow when it is a turn's
+/// note, `user` and `demoted-rule` were refused on the request), a new line
+/// counts against the turn's `cap`, and a retired one comes back only when
+/// it is a note a turn may revise.
 async fn turn_may_save(
     bank: &crate::store::Bank,
     existing: Option<&Memory>,
@@ -903,6 +922,7 @@ mod tests {
                 }),
                 now: 99,
                 merge_entities: false,
+                corroborates: true,
             },
         );
         assert!(created);
@@ -931,6 +951,7 @@ mod tests {
                 source: None,
                 now: 1,
                 merge_entities: false,
+                corroborates: true,
             },
         );
         assert_eq!(m.entities.len(), 8);
@@ -947,6 +968,7 @@ mod tests {
             source: None,
             now: 99,
             merge_entities: false,
+            corroborates: true,
         };
         let (m, event, created) =
             save_transition(Some(record("fp1", 4, true, true)), input.clone());
@@ -960,10 +982,20 @@ mod tests {
         assert!(m.entities.is_empty(), "a plain re-save keeps its entities");
         let merged = SaveInput {
             merge_entities: true,
-            ..input
+            ..input.clone()
         };
         let (m, ..) = save_transition(Some(record("fp1", 4, true, true)), merged);
         assert_eq!(m.entities, ["user"], "a demotion's re-save adds them");
+        let echo = SaveInput {
+            corroborates: false,
+            ..input
+        };
+        let (m, ..) = save_transition(Some(record("fp1", 4, true, true)), echo);
+        assert_eq!(
+            m.corroboration, 2,
+            "only the user's restatement corroborates"
+        );
+        assert_eq!(m.stated_at, Some(99));
     }
 
     #[test]
@@ -979,6 +1011,7 @@ mod tests {
                 source: None,
                 now: 99,
                 merge_entities: false,
+                corroborates: true,
             },
         );
         assert!(created, "a resurrection re-enters live sets");
@@ -1429,6 +1462,59 @@ mod tests {
         for text in ["Human one.", "Human two.", "Human three."] {
             assert!(save(&deps, note(Some("blog"), text)).await.is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn four_saves_from_a_turn_leave_corroboration_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("echo", "user", named("blog"));
+        let text = "The staging host is blue.";
+        let first = turn("echo", save(&deps, note(None, text)))
+            .await
+            .unwrap()
+            .memory;
+        for _ in 0..3 {
+            let again = turn("echo", save(&deps, note(None, text))).await.unwrap();
+            assert!(!again.created);
+        }
+        let echoed = stored(&deps, "blog", &first.id).await;
+        assert_eq!(echoed.corroboration, 0, "a model echo is no restatement");
+        assert_eq!(echoed.revision, 3);
+        assert!(echoed.last_stated() >= first.last_stated());
+        let said = save(&deps, note(Some("blog"), text)).await.unwrap().memory;
+        assert_eq!(said.corroboration, 1, "the user saying it again is");
+    }
+
+    #[tokio::test]
+    async fn a_save_from_a_turn_leaves_a_memory_it_may_not_revise_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        a_turn("echo-held", "user", named("blog"));
+        let styled = SaveRequest {
+            tags: vec!["style".into()],
+            ..note(None, "Ship on Fridays.")
+        };
+        let noted = turn("echo-held", save(&deps, styled)).await.unwrap().memory;
+        let pin_it = PinRequest {
+            bank: Some("blog".into()),
+            id: noted.id,
+            pinned: true,
+        };
+        let pinned = pin(&deps, pin_it).await.unwrap().memory;
+        let held = extracted(&deps, "blog", "The blog runs on Hugo.").await;
+        for kept in [pinned, held.clone()] {
+            let echo = SaveRequest {
+                tags: vec!["fresh-tag".into()],
+                ..note(None, &kept.text)
+            };
+            let echoed = turn("echo-held", save(&deps, echo)).await.unwrap();
+            assert!(!echoed.created);
+            assert_eq!(echoed.memory, kept);
+            assert_eq!(stored(&deps, "blog", &kept.id).await, kept);
+        }
+        let said = save(&deps, note(Some("blog"), &held.text)).await.unwrap();
+        assert_eq!(said.memory.corroboration, held.corroboration + 1);
     }
 
     #[tokio::test]

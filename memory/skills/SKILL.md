@@ -41,8 +41,8 @@ rule; point-in-time information belongs in memories.
   what a later session would need: `memory::save { "text": "..." }`, one
   self-contained sentence of 3 to 500 characters each. It is your note: it
   lands in your session's bank with your session and turn as its source, at
-  most `max_memories_per_turn` new notes per turn; re-saving reinforces, never
-  duplicates.
+  most `max_memories_per_turn` new notes per turn; re-saving never duplicates
+  and does not make a memory more certain: only the user restating it does.
 - The user asks you to remember something (not in a scripted run) — in a
   captured session acknowledge it: extraction saves it after the turn, and no
   save call is needed. Where the header asks you to save, save it as a note.
@@ -115,7 +115,8 @@ rule; point-in-time information belongs in memories.
 
 ## Functions
 
-- `memory::save` — explicit save; content-fingerprinted, repeat saves reinforce;
+- `memory::save` — explicit save; content-fingerprinted, a repeat from a turn
+  adds no corroboration;
   from a turn it is your note in your session's bank (3 to 500 characters, at
   most `max_memories_per_turn` per turn), and a pin, another bank, the `user`
   entity and the `demoted-rule` tag are refused.

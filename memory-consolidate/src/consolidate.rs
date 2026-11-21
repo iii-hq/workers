@@ -130,6 +130,32 @@ impl MemoryRow {
         ]);
         json!(fields)
     }
+
+    /// A note an agent saved from inside a turn (memory's `Memory::is_agent_note`).
+    pub(crate) fn is_agent_note(&self) -> bool {
+        self.snapshot.get("confidence").and_then(Value::as_str) == Some("stated")
+            && self
+                .snapshot
+                .get("source")
+                .and_then(|s| s.get("turn_id"))
+                .is_some_and(Value::is_string)
+    }
+
+    /// A line the learned rule's cap moved back to memories (memory's
+    /// `demoted-rule` tag).
+    pub(crate) fn is_demoted_rule(&self) -> bool {
+        self.snapshot
+            .get("tags")
+            .and_then(Value::as_array)
+            .is_some_and(|tags| tags.iter().any(|t| t == "demoted-rule"))
+    }
+
+    /// Whether this row, retired by a merge, may reinforce its survivor. An
+    /// agent's note is not the user saying it again, and a demoted line's
+    /// count must not carry its twin back into the rule.
+    pub(crate) fn reinforces(&self) -> bool {
+        !self.is_agent_note() && !self.is_demoted_rule()
+    }
 }
 
 /// One planned merge: `losers` retire in favor of `winner`.
@@ -319,8 +345,9 @@ pub fn token_key(text: &str) -> String {
 }
 
 /// Group live memories and pick a survivor per group: pinned first (a
-/// pinned record always wins), then highest corroboration, then the
-/// OLDEST record (it carries the original provenance), then id for a
+/// pinned record always wins), then a memory that is not an agent's note
+/// (the user's line outranks the agent's), then highest corroboration, then
+/// the OLDEST record (it carries the original provenance), then id for a
 /// stable total order. Normalized-text groups are writable; token-set
 /// groups (same words, different order) are report-only.
 pub fn plan(rows: &[MemoryRow]) -> Vec<PlannedGroup> {
@@ -356,6 +383,7 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
         members.sort_by(|a, b| {
             b.pinned
                 .cmp(&a.pinned)
+                .then(a.is_agent_note().cmp(&b.is_agent_note()))
                 .then(b.corroboration.cmp(&a.corroboration))
                 .then(a.created_at.cmp(&b.created_at))
                 .then(a.id.cmp(&b.id))
@@ -541,7 +569,7 @@ async fn apply_group<T: ConsolidationTransport + ?Sized>(
             "id": loser,
             "superseded_by": group.winner_id,
             "expected_memory": seen.expected_snapshot(),
-            "reinforce": true,
+            "reinforce": seen.reinforces(),
             "reason": reason,
         });
         if let Some(expected) = &expected_winner {

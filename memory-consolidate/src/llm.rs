@@ -75,9 +75,10 @@ pub struct Promotion {
 
 /// Live, unpinned-or-pinned memories reinforced often enough to be worth a
 /// promotion judgment. Pinned records are eligible: promotion copies a
-/// line into the learned rule and never modifies the memory itself. Ids in
-/// `promoted` (the ledger) are dropped before the cap, so they never hold
-/// the top slots.
+/// line into the learned rule and never modifies the memory itself. A note
+/// an agent saved (pinned or not) and a line the rule's cap moved back
+/// (`demoted-rule`) never are. Ids in `promoted` (the ledger) are dropped
+/// before the cap, so they never hold the top slots.
 // shortcut: the ledger holds promoted and covered ids only, a candidate the judge rejects is judged again each pass; record judged ids once a reply can be told from a malformed one.
 pub fn promotion_candidates<'a>(
     rows: &'a [MemoryRow],
@@ -89,7 +90,12 @@ pub fn promotion_candidates<'a>(
     }
     let mut out: Vec<&MemoryRow> = rows
         .iter()
-        .filter(|r| r.corroboration >= threshold && !promoted.contains(&r.id))
+        .filter(|r| {
+            r.corroboration >= threshold
+                && !promoted.contains(&r.id)
+                && !r.is_agent_note()
+                && !r.is_demoted_rule()
+        })
         .collect();
     out.sort_by(|a, b| b.corroboration.cmp(&a.corroboration).then(a.id.cmp(&b.id)));
     out.truncate(20);

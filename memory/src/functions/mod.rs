@@ -47,7 +47,8 @@ pub const SAVE_DESC: &str = "Save one memory explicitly. Content-fingerprinted: 
      note: 3 to 500 characters, in the turn's own bank, at most `max_memories_per_turn` new \
      notes per turn, with that session and turn as its source; a pin, another bank, the \
      `user` entity and the `demoted-rule` tag are refused there, and so is a save from an \
-     automation or test session. Needed where the `# Memory` header asks for it (a \
+     automation or test session. From a turn a repeat adds no corroboration: it restates the \
+     turn's own note and leaves any other memory as it is. Needed where the `# Memory` header asks for it (a \
      sub-agent, extraction off): save what a later session would need.";
 
 pub const GET_ID: &str = "memory::get";
