@@ -317,6 +317,7 @@ dependencies = [
 name = "fp"
 version = "0.3.3"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "clap",
  "iii-config-client",
