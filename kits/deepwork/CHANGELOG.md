@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- **A one-line description in the agent picker.** The `deepwork` profile's description explained the whole run (tickets, leads, waves, rounds, the dev flow) and filled the composer's agent picker with a truncated paragraph. It now says when to pick it: "Use for big goals: plans tickets, runs agents in parallel, reviews the work." The kit's own description and the README keep the full explanation.
+
 ## 0.9.0
 
 Deepwork can run from the board from start to finish: started by the kanban dispatcher with no chat, asking its questions on the run ticket, ending at a pull request ready for review, telling a failing machine from failing code, and keeping to a token budget with subscription models. Each part is opt-in through an argument; a run without them behaves as in 0.8.1.
