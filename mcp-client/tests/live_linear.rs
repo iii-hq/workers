@@ -5,6 +5,7 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mcp_client::auth::{Minter, token_request_body};
 use mcp_client::server::{Manager, State, Timings};
 use serde_json::{Map, Value, json};
 use support::{FakeHost, connect_with, server};
@@ -632,4 +633,111 @@ fn own_id_reads_the_top_level_only() {
     assert_eq!(own_id(&no_id), None);
     assert_eq!(own_id(&json!({ "issue": no_id })), None);
     assert_eq!(own_id(&json!({ "data": { "issue": issue } })), None);
+}
+
+const TOKEN_URL: &str = "https://api.linear.app/oauth/token";
+
+/// The config with one client-credentials entry `name` for the test application.
+fn cc_entry(name: &str, client_id: &str) -> Value {
+    json!({"mcpServers": {name: {"type": "http", "url": MCP_URL, "auth": {
+        "type": "client_credentials", "token_url": TOKEN_URL, "client_id": client_id,
+        "client_secret": "env://LINEAR_TEST_CLIENT_SECRET", "scope": "read,write"}}}})
+}
+
+/// `name` connected with `secret`, once it reaches `state`, else a panic with
+/// `what` and its row. The client id and the secret never show.
+async fn cc_connect(
+    name: &str,
+    id: &str,
+    secret: &str,
+    state: State,
+    what: &str,
+) -> (Arc<FakeHost>, Arc<Manager>) {
+    let host = FakeHost::new();
+    host.set_secret("env://LINEAR_TEST_CLIENT_SECRET", secret);
+    let manager = connect_with(&host, cc_entry(name, id), Timings::default()).await;
+    if !manager.wait_for(name, state, Duration::from_secs(60)).await {
+        let r = server(&manager, name).await;
+        let row = format!(
+            "state={} stage={} error.code={} error.message={}",
+            r["state"], r["stage"], r["error"]["code"], r["error"]["message"]
+        );
+        let row = row.replace(id, "[client id]").replace(secret, "[redacted]");
+        panic!("{what}: {row}");
+    }
+    (host, manager)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn live_client_credentials() {
+    let id = need("LINEAR_TEST_CLIENT_ID");
+    let secret = need("LINEAR_TEST_CLIENT_SECRET");
+    // `http_client()` panics without a provider; no `connect_with` has run yet.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let body = token_request_body(&id, &secret, Some("read,write"));
+    let minter = Minter::new(mcp_client::auth::http_client(), TOKEN_URL.into(), body);
+    let mint = async || {
+        let token = minter
+            .token()
+            .await
+            .unwrap_or_else(|e| panic!("mint failed: {}", e.message.replace(&id, "[client id]")));
+        assert!(!token.is_empty(), "a minted token is empty");
+        token
+    };
+    let first = mint().await;
+    minter.invalidate().await;
+    let second = mint().await;
+    println!("LIVE cc_second_mint_returns_new_token={}", first != second);
+
+    let refused = "app token refused as Bearer on /mcp";
+    let (host, _manager) = cc_connect("linear-cc", &id, &secret, State::Ready, refused).await;
+    host.call("mcp::linear-cc::list_teams", json!({"limit": 1}))
+        .await
+        .unwrap_or_else(|e| panic!("list_teams failed: {e}"));
+
+    let wrong = "wrong-secret-for-the-live-test";
+    let not_failed = "linear-cc-bad is not auth_failed";
+    let (_bad_host, bad) =
+        cc_connect("linear-cc-bad", &id, wrong, State::AuthFailed, not_failed).await;
+    let row = server(&bad, "linear-cc-bad").await;
+    assert_eq!(row["error"]["code"], "credential_rejected");
+    let message = row["error"]["message"].as_str().unwrap_or_default();
+    let message = message.replace(id.as_str(), "[client id]");
+    println!("LIVE cc_wrong_secret_message={message}");
+    assert!(message.starts_with("token request rejected: "), "{message}");
+    assert!(!message.ends_with("HTTP 401"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn live_client_credentials_write() {
+    let id = need("LINEAR_TEST_CLIENT_ID");
+    let secret = need("LINEAR_TEST_CLIENT_SECRET");
+    let team = need("LINEAR_TEST_TEAM");
+    let refused = "app token refused as Bearer on /mcp";
+    let (host, _manager) = cc_connect("linear-cc", &id, &secret, State::Ready, refused).await;
+
+    let result = host
+        .call("mcp::linear-cc::list_teams", json!({"limit": 250}))
+        .await
+        .unwrap_or_else(|e| panic!("list_teams failed: {e}"));
+    let answer = text_json("list_teams", &result);
+    let mut seen = Vec::new();
+    with_key(&answer, &team, &mut seen);
+    assert!(
+        !seen.is_empty(),
+        "the test application cannot see team {team}: make the team public or add the application to it. Nothing was written."
+    );
+
+    let mut guard = WriteGuard::new(&host, "linear-cc").await;
+    let issue = guard.create_issue().await;
+    let answer = host
+        .call("mcp::linear-cc::get_issue", json!({"id": issue}))
+        .await
+        .unwrap_or_else(|e| panic!("get_issue failed: {e}"));
+    assert!(
+        answer.to_string().contains("mcp-client live test"),
+        "get_issue does not show the test title"
+    );
 }
