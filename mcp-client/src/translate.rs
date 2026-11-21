@@ -132,27 +132,33 @@ pub fn block(item: &Value, ctx: &BlockCtx) -> Value {
     try_block(item, ctx).unwrap_or_else(|| text_block(item.to_string()))
 }
 
+/// JSON framing of one more block (`{"type":"text","text":""},`), counted twice by the harness.
+const BLOCK_OVERHEAD: usize = 32;
+
 pub fn cap_blocks(blocks: Vec<Value>, cut_note: &str) -> Vec<Value> {
     let mut left = CAP_BYTES;
     let mut out = Vec::new();
     for mut b in blocks {
+        let oh = if out.is_empty() { 0 } else { BLOCK_OVERHEAD };
         if b["type"] == "image" {
-            let n = b["data"].as_str().map_or(0, str::len);
-            if n <= left {
-                left -= n;
+            let data = b["data"].as_str().unwrap_or("");
+            let n = escaped_len(data, 1);
+            if n + oh <= left {
+                left -= n + oh;
                 out.push(b);
                 continue;
             }
+            let n = data.len();
             let mime = b["mime"].as_str().unwrap_or("");
             b = text_block(format!("[image {mime}, {n} bytes, not shown]"));
         }
         let text = b["text"].as_str().unwrap_or("");
         let n = escaped_len(text, 1);
-        if n <= left {
-            left -= n;
+        if n + oh <= left {
+            left -= n + oh;
             out.push(b);
         } else {
-            let cut = format!("{}\n{cut_note}", cut_prefix(text, left));
+            let cut = format!("{}\n{cut_note}", cut_prefix(text, left.saturating_sub(oh)));
             out.push(text_block(cut));
             break;
         }
@@ -508,6 +514,28 @@ mod tests {
             "`linear` MCP unavailable (`unavailable`), for 42 s"
         );
         assert_eq!(t(Transport("eof".into())), "linear MCP request failed: eof");
+    }
+
+    #[test]
+    fn many_small_blocks_hold_under_the_harness_measure() {
+        let blocks = vec![text(&"y".repeat(60)); 2_000];
+        let r = tool_result(&json!({"content": blocks}), &ctx()).unwrap();
+        assert!(harness_bytes(&r) <= 262_144, "{}", harness_bytes(&r));
+    }
+
+    #[test]
+    fn empty_blocks_cannot_flood_the_result() {
+        let r = tool_result(&json!({"content": vec![text(""); 10_000]}), &ctx()).unwrap();
+        assert!(harness_bytes(&r) <= 262_144, "{}", harness_bytes(&r));
+    }
+
+    #[test]
+    fn image_data_is_measured_escaped() {
+        let img =
+            json!({"type": "image", "data": "\u{1}".repeat(120_000), "mimeType": "image/png"});
+        let r = tool_result(&json!({"content": [img]}), &ctx()).unwrap();
+        assert_eq!(r["content"][0]["type"], "text");
+        assert!(harness_bytes(&r) <= 262_144, "{}", harness_bytes(&r));
     }
 
     #[test]
