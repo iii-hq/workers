@@ -1,7 +1,7 @@
 //! One task per configured server: connect, list, register, call; and the
 //! wire types of `servers::list`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::path::PathBuf;
 use std::pin::pin;
@@ -12,7 +12,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::future::join_all;
 use http::{HeaderName, HeaderValue};
 use rmcp::model::{
-    CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
+    CallToolRequestParams, ClientCapabilities, ClientConfig, GetPromptRequestParams,
+    GetPromptResponse, Implementation, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams,
 };
 use rmcp::service::{
     ClientCacheConfig, ClientInitializeError, NotificationContext, RunningService,
@@ -25,7 +27,7 @@ use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport};
 use rmcp::{ClientHandler, Peer, RoleClient, ServiceError, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
@@ -37,13 +39,16 @@ use crate::config::{
 };
 use crate::functions::SecretChange;
 use crate::host::{EventKind, Handler, Host, ServerEvent};
+use crate::prompts::{self, PromptInfo, prompt_wanted};
 use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
 use crate::refs::{Ref, Resolved, Store, Text, event_matches, ref_error, resolve_all};
+use crate::resources::{self, list_id, read_id, resource_wanted, templates_id};
 use crate::stdio::{self, ChildGuard, LogLine, RestartPolicy, StderrRing};
 use crate::translate::{
-    BlockCtx, CallFailure, ServerSecrets, failure_text, scrub, strip_args, tool_result,
+    BlockCtx, CallFailure, ServerSecrets, failure_text, prompt_result, read_result, scrub,
+    strip_args, tool_result,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -336,6 +341,7 @@ type Session = RunningService<RoleClient, Notifier>;
 type HttpError = StreamableHttpError<reqwest::Error>;
 
 /// The list a server said changed.
+#[derive(Clone, Copy, PartialEq)]
 enum ListChanged {
     Tools,
     Prompts,
@@ -538,6 +544,43 @@ fn tool_views(wanted: &WantedSet) -> BTreeMap<String, Option<Value>> {
         .collect()
 }
 
+/// A prompt listing as functions.
+struct PromptList {
+    wanted: WantedSet,
+    skipped: Vec<Skipped>,
+    /// The wanted prompts in server order.
+    views: Vec<PromptView>,
+}
+
+/// One listing's outcome in its `list_errors` entry: the first failure of a
+/// run logs a warning, a success clears it.
+fn note_list(server: &str, what: &str, slot: &mut Option<String>, error: Option<String>) {
+    if let Some(message) = &error
+        && slot.is_none()
+    {
+        tracing::warn!(
+            "`{server}` could not list its {what}, their functions stay as they were: {message}"
+        );
+    }
+    *slot = error;
+}
+
+/// The params of one list page: `None` without a cursor.
+fn page_params(args: &Map<String, Value>) -> Result<Option<PaginatedRequestParams>, String> {
+    match args.get("cursor") {
+        None => Ok(None),
+        Some(Value::String(cursor)) => {
+            let params = PaginatedRequestParams::default().with_cursor(Some(cursor.clone()));
+            Ok(Some(params))
+        }
+        Some(_) => Err("invalid_argument: cursor must be a string".into()),
+    }
+}
+
+fn wire(result: impl Serialize) -> Value {
+    serde_json::to_value(result).unwrap_or_default()
+}
+
 #[derive(Debug, Clone)]
 struct Status {
     state: State,
@@ -556,7 +599,14 @@ struct Info {
     tools_listed: bool,
     /// Tool name to its annotations, for the tools that were not skipped.
     tools: BTreeMap<String, Option<Value>>,
+    /// The tools the listing skipped.
     skipped: Vec<Skipped>,
+    /// The wanted prompts in server order; `view` fills `registered`.
+    prompts: Vec<PromptView>,
+    prompts_skipped: Vec<Skipped>,
+    /// The resource functions the registry holds; `view` fills `registered`.
+    resource_fns: Vec<ResourceFnView>,
+    list_errors: ListErrors,
 }
 
 const UNAPPROVED: &str = "this entry is not the one an operator approved: review it on the MCP servers page, or call mcp-client::servers::approve";
@@ -590,6 +640,8 @@ struct Server {
     notes_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<ListChanged>>,
     /// A call answered -32602 asks the server task to list the tools again.
     relist: Notify,
+    /// The same for a prompt call and the prompts.
+    relist_prompts: Notify,
     task: Mutex<Option<(oneshot::Sender<()>, JoinHandle<()>)>>,
     /// The stderr of every process this server started, across restarts.
     ring: Arc<Mutex<StderrRing>>,
@@ -679,6 +731,7 @@ impl Server {
             notes,
             notes_rx: tokio::sync::Mutex::new(notes_rx),
             relist: Notify::new(),
+            relist_prompts: Notify::new(),
             task: Mutex::default(),
             ring: Arc::default(),
             facts: Mutex::new(ProcessFacts {
@@ -900,8 +953,10 @@ impl Server {
         let mut stable = pin!(sleep(self.timings.stable_after));
         let mut stable_seen = false;
         let mut last_relist: Option<Instant> = None;
+        let mut last_prompt_relist: Option<Instant> = None;
+        let interval = self.timings.relist_min_interval;
         let (stopped, open, exit) = loop {
-            let relist = tokio::select! {
+            let due = tokio::select! {
                 _ = &mut *stop => break (true, true, None),
                 _ = status.wait_for(|s| s.state != State::Ready) => break (false, true, None),
                 _ = &mut ended => {
@@ -920,22 +975,36 @@ impl Server {
                         self.facts.lock().unwrap().policy.on_stable();
                         self.emit(EventKind::Process);
                     }
-                    false
+                    None
                 }
-                // Prompts and resources are not served by this version.
-                Some(change) = notes.recv() => matches!(change, ListChanged::Tools),
+                Some(change) = notes.recv() => Some(change),
                 _ = self.relist.notified() => {
-                    let interval = self.timings.relist_min_interval;
-                    last_relist.is_none_or(|t| t.elapsed() >= interval)
+                    let due = last_relist.is_none_or(|t| t.elapsed() >= interval);
+                    due.then_some(ListChanged::Tools)
+                }
+                _ = self.relist_prompts.notified() => {
+                    let due = last_prompt_relist.is_none_or(|t| t.elapsed() >= interval);
+                    due.then_some(ListChanged::Prompts)
                 }
             };
-            if relist {
+            if let Some(first) = due {
                 // This re-list covers every change queued so far, so a burst
-                // costs one; a change that arrives during it gets its own.
-                while notes.try_recv().is_ok() {}
-                last_relist = Some(Instant::now());
+                // costs one per kind; a change that arrives during it gets its own.
+                let mut due = vec![first];
+                while let Ok(change) = notes.try_recv() {
+                    if !due.contains(&change) {
+                        due.push(change);
+                    }
+                }
+                let now = Some(Instant::now());
+                if due.contains(&ListChanged::Tools) {
+                    last_relist = now;
+                }
+                if due.contains(&ListChanged::Prompts) {
+                    last_prompt_relist = now;
+                }
                 tokio::select! {
-                    _ = self.relist_tools() => {}
+                    _ = self.relist(&due) => {}
                     _ = &mut *stop => break (true, true, None),
                 }
             }
@@ -1008,7 +1077,152 @@ impl Server {
             info.tools = tool_views(&wanted);
             info.skipped = skipped;
         }
-        self.reconcile(wanted).await;
+        // A function goes away only when its own list drops it.
+        let (prompt_ids, resource_ids) = (self.prefix("prompts"), self.prefix("resources"));
+        let untouched = |id: &str| id.starts_with(&prompt_ids) || id.starts_with(&resource_ids);
+        self.reconcile(wanted, &untouched).await;
+    }
+
+    /// `mcp::<server>::<kind>::`, the start of every id of that kind.
+    fn prefix(&self, kind: &str) -> String {
+        format!("mcp::{}::{kind}::", self.name)
+    }
+
+    /// Lists each changed kind again, in turn.
+    async fn relist(self: &Arc<Self>, due: &[ListChanged]) {
+        for change in due {
+            match change {
+                ListChanged::Tools => self.relist_tools().await,
+                ListChanged::Prompts => self.relist_prompts().await,
+                ListChanged::Resources => self.recheck_templates().await,
+            }
+        }
+    }
+
+    /// `prompts/list` on the live session, as functions. A failure is
+    /// returned as its scrubbed text.
+    async fn list_prompts(&self, peer: &Peer<RoleClient>) -> Result<PromptList, String> {
+        let limit = self.timings.list;
+        let listed = match timeout(limit, peer.list_all_prompts()).await {
+            Ok(Ok(prompts)) => serde_json::to_value(prompts)
+                .and_then(serde_json::from_value::<Vec<PromptInfo>>)
+                .map_err(|e| e.to_string()),
+            Ok(Err(e)) => Err(service_text(&e)),
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let prompts = listed.map_err(|m| scrub(&m, &self.secrets.values()))?;
+        let (wanted, skipped) = prompt_wanted(&self.name, &prompts);
+        let prefix = self.prefix("prompts");
+        let mut seen = HashSet::new();
+        let views = prompts
+            .iter()
+            .filter(|p| wanted.contains_key(&format!("{prefix}{}", p.name)))
+            .filter(|p| seen.insert(p.name.as_str()))
+            .map(|p| {
+                let args = p.arguments.as_deref().unwrap_or(&[]);
+                let required = args.iter().filter(|a| a.required == Some(true)).count();
+                PromptView {
+                    name: p.name.clone(),
+                    function_id: format!("{prefix}{}", p.name),
+                    registered: false,
+                    title: p.title.clone(),
+                    arguments: args.len() as u32,
+                    required: required as u32,
+                }
+            })
+            .collect();
+        Ok(PromptList {
+            wanted,
+            skipped,
+            views,
+        })
+    }
+
+    /// Puts a prompt listing (`None`: prompts not advertised) in `info` and
+    /// returns the prompt functions it wants; `None` when it failed, and the
+    /// prompts stay as they were.
+    fn take_prompts(&self, listed: Option<Result<PromptList, String>>) -> Option<WantedSet> {
+        let mut info = self.info.lock().unwrap();
+        let (wanted, error) = match listed {
+            Some(Ok(list)) => {
+                (info.prompts, info.prompts_skipped) = (list.views, list.skipped);
+                (Some(list.wanted), None)
+            }
+            Some(Err(e)) => (None, Some(e)),
+            None => {
+                (info.prompts, info.prompts_skipped) = (vec![], vec![]);
+                (Some(WantedSet::new()), None)
+            }
+        };
+        note_list(&self.name, "prompts", &mut info.list_errors.prompts, error);
+        wanted
+    }
+
+    /// Whether the first page of `resources/templates/list` holds a
+    /// template; method-not-found is none. A failure is returned as its
+    /// scrubbed text and noted in `list_errors.templates`.
+    async fn has_template(&self, peer: &Peer<RoleClient>) -> Result<bool, String> {
+        let limit = self.timings.list;
+        let listed = match timeout(limit, peer.list_resource_templates(None)).await {
+            Ok(Ok(page)) => Ok(!page.resource_templates.is_empty()),
+            Ok(Err(ServiceError::McpError(e)))
+                if e.code == rmcp::model::ErrorCode::METHOD_NOT_FOUND =>
+            {
+                Ok(false)
+            }
+            Ok(Err(e)) => Err(scrub(&service_text(&e), &self.secrets.values())),
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let error = listed.as_ref().err().cloned();
+        let mut info = self.info.lock().unwrap();
+        note_list(
+            &self.name,
+            "resource templates",
+            &mut info.list_errors.templates,
+            error,
+        );
+        listed
+    }
+
+    /// `prompts/list` again, then the reconcile of the prompt functions
+    /// only. A failure leaves them as they were.
+    async fn relist_prompts(self: &Arc<Self>) {
+        let Some(peer) = self.peer.read().unwrap().clone() else {
+            return;
+        };
+        if !self.info.lock().unwrap().capabilities.prompts {
+            return;
+        }
+        let listed = self.list_prompts(&peer).await;
+        let Some(wanted) = self.take_prompts(Some(listed)) else {
+            return;
+        };
+        let prefix = self.prefix("prompts");
+        self.reconcile(wanted, &|id| !id.starts_with(&prefix)).await;
+    }
+
+    /// The first template page again, then the reconcile of the templates
+    /// function only. A `tools` event goes out every time, changed or not:
+    /// an open page reloads its resource list on it.
+    async fn recheck_templates(self: &Arc<Self>) {
+        let Some(peer) = self.peer.read().unwrap().clone() else {
+            return;
+        };
+        if !self.info.lock().unwrap().capabilities.resources {
+            return;
+        }
+        let id = templates_id(&self.name);
+        let changed = match self.has_template(&peer).await {
+            Ok(has) => {
+                let mut wanted = resource_wanted(&self.name, has);
+                wanted.retain(|k, _| *k == id);
+                self.reconcile(wanted, &|x| x != id).await
+            }
+            Err(_) => false,
+        };
+        if !changed {
+            self.emit(EventKind::Tools);
+        }
     }
 
     /// Classifies a failed request and applies its state rule: a rejected
@@ -1173,30 +1387,53 @@ impl Server {
             .as_str()
             .filter(|t| !t.trim().is_empty())
             .map(String::from);
-        let (wanted, skipped) = tool_wanted(&self.name, &tools, instructions.is_some());
+        let (mut wanted, skipped) = tool_wanted(&self.name, &tools, instructions.is_some());
+        let caps = &handshake["capabilities"];
+        let capabilities = CapabilitiesView {
+            resources: !caps["resources"].is_null(),
+            prompts: !caps["prompts"].is_null(),
+        };
         {
             let mut info = self.info.lock().unwrap();
-            let caps = &handshake["capabilities"];
             let server_info = &handshake["serverInfo"];
-            *info = Info {
-                protocol_version: handshake["protocolVersion"].as_str().map(String::from),
-                server_info: server_info.is_object().then(|| ServerInfoView {
-                    name: server_info["name"].as_str().unwrap_or("").into(),
-                    title: server_info["title"].as_str().map(String::from),
-                    version: server_info["version"].as_str().unwrap_or("").into(),
-                }),
-                instructions,
-                capabilities: CapabilitiesView {
-                    resources: !caps["resources"].is_null(),
-                    prompts: !caps["prompts"].is_null(),
-                },
-                tools_listed: true,
-                tools: tool_views(&wanted),
-                skipped,
-            };
+            info.protocol_version = handshake["protocolVersion"].as_str().map(String::from);
+            info.server_info = server_info.is_object().then(|| ServerInfoView {
+                name: server_info["name"].as_str().unwrap_or("").into(),
+                title: server_info["title"].as_str().map(String::from),
+                version: server_info["version"].as_str().unwrap_or("").into(),
+            });
+            info.instructions = instructions;
+            info.capabilities = capabilities.clone();
+            info.tools_listed = true;
+            info.tools = tool_views(&wanted);
+            info.skipped = skipped;
+            if !capabilities.resources {
+                info.list_errors.templates = None;
+            }
+        }
+        // A kind no longer advertised wants nothing and is not left
+        // untouched, so its functions go.
+        let listed = match capabilities.prompts {
+            true => Some(self.list_prompts(&peer).await),
+            false => None,
+        };
+        let prompt_fns = self.take_prompts(listed);
+        let template = match capabilities.resources {
+            true => Some(self.has_template(&peer).await),
+            false => None,
+        };
+        let prompts_failed = prompt_fns.is_none();
+        let template_failed = matches!(template, Some(Err(_)));
+        wanted.extend(prompt_fns.unwrap_or_default());
+        if let Some(template) = template {
+            wanted.extend(resource_wanted(&self.name, template.unwrap_or(false)));
         }
         *self.peer.write().unwrap() = Some(peer);
-        self.reconcile(wanted).await;
+        let (prefix, templates) = (self.prefix("prompts"), templates_id(&self.name));
+        let untouched = |id: &str| {
+            (prompts_failed && id.starts_with(&prefix)) || (template_failed && id == templates)
+        };
+        self.reconcile(wanted, &untouched).await;
         self.set(State::Ready, None, None);
         Ok(Live { session, process })
     }
@@ -1414,20 +1651,45 @@ impl Server {
         (State::Unavailable, Stage::Connect, code, message)
     }
 
-    /// The one caller of `Registry::apply`.
-    async fn reconcile(self: &Arc<Self>, wanted: WantedSet) {
+    /// The one caller of `Registry::apply`: an id absent from `wanted` for
+    /// which `untouched` holds stays as it is. Whether anything changed.
+    async fn reconcile(
+        self: &Arc<Self>,
+        wanted: WantedSet,
+        untouched: &(dyn Fn(&str) -> bool + Sync),
+    ) -> bool {
         let plan = self
             .registry
-            .apply(&*self.host, wanted, &|_| false, &|w| self.handler_for(w))
+            .apply(&*self.host, wanted, untouched, &|w| self.handler_for(w))
             .await;
         for id in &plan.lost_read_only {
             tracing::warn!(
                 "`{id}` is no longer marked read-only by its server; an approval-gate allow rule for it stays in force until someone updates the rules"
             );
         }
-        if !(plan.remove.is_empty() && plan.change.is_empty() && plan.add.is_empty()) {
+        let ids = [
+            ("list", list_id(&self.name)),
+            ("read", read_id(&self.name)),
+            ("templates", templates_id(&self.name)),
+        ];
+        let mut held = Vec::new();
+        for (name, function_id) in ids {
+            if self.registry.target(&function_id).await.is_some() {
+                let name = name.into();
+                let registered = false;
+                held.push(ResourceFnView {
+                    name,
+                    function_id,
+                    registered,
+                });
+            }
+        }
+        self.info.lock().unwrap().resource_fns = held;
+        let changed = !(plan.remove.is_empty() && plan.change.is_empty() && plan.add.is_empty());
+        if changed {
             self.emit(EventKind::Tools);
         }
+        changed
     }
 
     fn handler_for(self: &Arc<Self>, wanted: &Wanted) -> Handler {
@@ -1435,57 +1697,41 @@ impl Server {
         let server = Arc::downgrade(self);
         let name = self.name.clone();
         let target = wanted.target.clone();
+        let declared: Arc<BTreeSet<String>> = Arc::new(
+            wanted.def.request_format["properties"]
+                .as_object()
+                .map(|p| p.keys().cloned().collect())
+                .unwrap_or_default(),
+        );
         Arc::new(move |payload| {
             let (server, name, target) = (server.upgrade(), name.clone(), target.clone());
+            let declared = declared.clone();
             Box::pin(async move {
                 let Some(server) = server else {
                     return Err(format!("`{name}` MCP server was removed"));
                 };
-                let out = server.call(&target, payload).await;
+                let out = server.call(&target, &declared, payload).await;
                 out.map_err(|e| scrub(&e, &server.secrets.values()))
             })
         })
     }
 
-    async fn call(&self, target: &Target, payload: Value) -> Result<Value, String> {
-        let status = self.status.borrow().clone();
-        let peer = self.peer.read().unwrap().clone();
-        let (State::Ready, Some(peer)) = (status.state, peer) else {
-            let for_secs = now_ms().saturating_sub(status.since) / 1000;
-            let state = status.state.as_str();
-            let failure = CallFailure::Unavailable { state, for_secs };
-            return Err(failure_text(&self.name, &failure));
-        };
-        let (name, declared) = match target {
-            Target::Tool { name, declared } => (name, declared),
-            Target::Instructions => {
-                let text = self.info.lock().unwrap().instructions.clone();
-                return Ok(json!({"content": [{"type": "text", "text": text}]}));
-            }
-            _ => {
-                return Err(format!(
-                    "{target:?} is not supported by this version of mcp-client"
-                ));
-            }
-        };
-        let params =
-            CallToolRequestParams::new(name.clone()).with_arguments(strip_args(payload, declared));
-        let limit = self.timings.call;
-        let failure = match timeout(limit, peer.call_tool(params)).await {
-            Ok(Ok(result)) => {
-                let ctx = BlockCtx {
-                    server: &self.name,
-                    read_registered: false,
-                    asked_uri: None,
-                    many: false,
-                };
-                let result = serde_json::to_value(result).unwrap_or_default();
-                return tool_result(&result, &ctx);
-            }
+    /// One request within `limit`. A failure applies its state rule and comes
+    /// back as its text; a -32602 also asks for the re-list `relist` serves.
+    async fn send<T>(
+        &self,
+        limit: Duration,
+        request: impl Future<Output = Result<T, ServiceError>>,
+        relist: Option<&Notify>,
+    ) -> Result<T, String> {
+        let failure = match timeout(limit, request).await {
+            Ok(Ok(result)) => return Ok(result),
             Ok(Err(e)) => {
                 let failure = self.request_failed(&e);
-                if matches!(failure, CallFailure::JsonRpc { code: -32602, .. }) {
-                    self.relist.notify_one();
+                if let (CallFailure::JsonRpc { code: -32602, .. }, Some(relist)) =
+                    (&failure, relist)
+                {
+                    relist.notify_one();
                 }
                 failure
             }
@@ -1494,6 +1740,75 @@ impl Server {
             },
         };
         Err(failure_text(&self.name, &failure))
+    }
+
+    /// `declared`: the properties of the function's request schema.
+    async fn call(
+        &self,
+        target: &Target,
+        declared: &BTreeSet<String>,
+        payload: Value,
+    ) -> Result<Value, String> {
+        let status = self.status.borrow().clone();
+        let peer = self.peer.read().unwrap().clone();
+        let (State::Ready, Some(peer)) = (status.state, peer) else {
+            let for_secs = now_ms().saturating_sub(status.since) / 1000;
+            let state = status.state.as_str();
+            let failure = CallFailure::Unavailable { state, for_secs };
+            return Err(failure_text(&self.name, &failure));
+        };
+        let args = strip_args(payload, declared);
+        let ctx = BlockCtx {
+            server: &self.name,
+            read_registered: self.registry.target(&read_id(&self.name)).await.is_some(),
+            asked_uri: None,
+            many: false,
+        };
+        let (list, call) = (self.timings.list, self.timings.call);
+        // One call sends one request: a list page never follows `next_cursor`.
+        match target {
+            Target::Instructions => {
+                let text = self.info.lock().unwrap().instructions.clone();
+                Ok(json!({"content": [{"type": "text", "text": text}]}))
+            }
+            Target::Tool { name, .. } => {
+                let params = CallToolRequestParams::new(name.clone()).with_arguments(args);
+                let result = self.send(call, peer.call_tool(params), Some(&self.relist));
+                tool_result(&wire(result.await?), &ctx)
+            }
+            Target::ResourceList => {
+                let page = peer.list_resources(page_params(&args)?);
+                Ok(resources::list_page(&wire(
+                    self.send(list, page, None).await?,
+                )))
+            }
+            Target::ResourceTemplates => {
+                let page = peer.list_resource_templates(page_params(&args)?);
+                Ok(resources::templates_page(&wire(
+                    self.send(list, page, None).await?,
+                )))
+            }
+            Target::ResourceRead => {
+                let Some(Value::String(uri)) = args.get("uri") else {
+                    return Err("invalid_argument: uri must be a string".into());
+                };
+                let read = peer.read_resource(ReadResourceRequestParams::new(uri.clone()));
+                let result = self.send(call, read, None).await?;
+                Ok(read_result(&wire(result), uri, &ctx))
+            }
+            Target::Prompt { name } => {
+                let params = GetPromptRequestParams::new(name.clone())
+                    .with_arguments(prompts::coerce(&args)?);
+                let get = peer.get_prompt_once(params);
+                let response = self.send(call, get, Some(&self.relist_prompts)).await?;
+                let GetPromptResponse::Complete(result) = response else {
+                    return Err(
+                        "MCP error: the prompt asked for input this client does not provide".into(),
+                    );
+                };
+                Ok(prompt_result(&wire(result), &ctx))
+            }
+        }
     }
 
     fn view(&self, registered: &HashSet<String>) -> ServerView {
@@ -1549,12 +1864,31 @@ impl Server {
             server_info: info.server_info.clone(),
             tools_listed: info.tools_listed,
             tools,
-            skipped: info.skipped.clone(),
+            skipped: info
+                .skipped
+                .iter()
+                .chain(&info.prompts_skipped)
+                .cloned()
+                .collect(),
             has_instructions: info.instructions.is_some(),
             capabilities: info.capabilities.clone(),
-            resource_functions: vec![],
-            prompts: vec![],
-            list_errors: ListErrors::default(),
+            resource_functions: info
+                .resource_fns
+                .iter()
+                .map(|f| ResourceFnView {
+                    registered: registered.contains(&f.function_id),
+                    ..f.clone()
+                })
+                .collect(),
+            prompts: info
+                .prompts
+                .iter()
+                .map(|p| PromptView {
+                    registered: registered.contains(&p.function_id),
+                    ..p.clone()
+                })
+                .collect(),
+            list_errors: info.list_errors.clone(),
             login: None,
             process: self.is_stdio().then(|| {
                 let f = self.facts.lock().unwrap();

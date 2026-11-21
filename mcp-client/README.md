@@ -111,6 +111,17 @@ An entry with `command`, and optionally `args`, `env` and `cwd`, starts a local 
 - `III_MCP_CLIENT_STDIO=off` in the worker's environment rejects every stdio entry as `config_error`.
 - The children are not killed when the worker itself is SIGKILLed. A server that exits when its stdin closes goes with it; any other keeps running until it is stopped by hand.
 
+## Resources and prompts
+
+- A server that advertises `resources` gets `mcp::<server>::resources::list` and `mcp::<server>::resources::read`, and `mcp::<server>::resources::templates` when it lists a resource template.
+- A server that advertises `prompts` gets one `mcp::<server>::prompts::<prompt>` per prompt. Every argument is a string; a number or a boolean is sent as its text.
+- `list` and `templates` return one server page per call. To get the next page, pass the `next_cursor` of the last one as `cursor`.
+- Results are capped at 120 KiB. A read is cut. A page drops its descriptions first, then its last items, and says `truncated: true`. A prompt drops its later messages and says how many.
+- A prompt whose name cannot be a function id is skipped and shown with the reason under `skipped` in `mcp-client::servers::list` and on the MCP servers page.
+- Subscriptions, argument completion and template expansion are not supported. To read from a template, fill in its variables yourself and read the uri.
+- A failed prompt or template listing keeps the functions of that kind as they were, shows the error under `list_errors` and leaves the server `ready`.
+- Resource bodies and prompt messages are untrusted text from the server, like tool results.
+
 ## Security
 
 - An entry runs only after an operator approved exactly that entry. A changed entry is `unapproved` until `mcp-client::servers::approve`: nothing connects and no secret is read. Turning `disabled` on or off needs no new approval. Approvals live in the vault secret `MCP_CLIENT_APPROVALS`.
