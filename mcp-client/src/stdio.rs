@@ -1,16 +1,27 @@
-//! Building blocks of the stdio runtime: the child's environment, the
-//! stderr ring and the restart policy.
+//! The stdio runtime: the child's environment, its spawn in its own process
+//! group, the stderr ring and the restart policy.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::ErrorKind;
+use std::path::Path;
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(windows)]
+use process_wrap::tokio::JobObject;
+#[cfg(unix)]
+use process_wrap::tokio::ProcessGroup;
+use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use schemars::JsonSchema;
 use serde::Serialize;
-use tokio::time::Instant;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
+use tokio::time::{Instant, timeout};
 
 use crate::config::StdioEntry;
 use crate::refs::Resolved;
-use crate::server::{Backoff, Timings};
+use crate::server::{Backoff, ErrorCode, ExitInfo, ServerError, Timings, now_ms};
 use crate::translate::scrub;
 
 /// The only names a stdio child inherits from the worker's environment.
@@ -49,6 +60,155 @@ pub fn child_env(
         env.insert(k.clone(), resolved.text(v));
     }
     env.into_iter().collect()
+}
+
+/// A started child and its three pipes.
+pub struct Spawned {
+    pub stdout: ChildStdout,
+    pub stdin: ChildStdin,
+    pub stderr: ChildStderr,
+    pub child: ChildGuard,
+    pub pid: Option<u32>,
+}
+
+/// Runs the entry's command directly, no shell, in its own process group
+/// (a job object on Windows), with `child_env` as its whole environment.
+pub fn spawn(
+    entry: &StdioEntry,
+    resolved: &Resolved,
+    worker_cwd: &Path,
+) -> Result<Spawned, ServerError> {
+    let failed = |message: String| ServerError::new(ErrorCode::SpawnFailed, message);
+    let cwd = entry.cwd.as_deref().unwrap_or(worker_cwd);
+    // Checked first: a missing directory is `NotFound` too, like a missing command.
+    if !cwd.is_dir() {
+        let cwd = cwd.display();
+        return Err(failed(format!("working directory `{cwd}` does not exist")));
+    }
+    let env = child_env(&|k| std::env::var(k).ok(), entry, resolved);
+    let mut command = CommandWrap::with_new(&entry.command, |c| {
+        c.args(entry.args.iter().map(|a| resolved.text(a)))
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+    });
+    command.wrap(KillOnDrop);
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    #[cfg(windows)]
+    command.wrap(JobObject);
+    let command_name = &entry.command;
+    let mut child = command.spawn().map_err(|e| match e.kind() {
+        // With `env_clear`, the program is looked up on the child's PATH.
+        ErrorKind::NotFound => {
+            let path = env
+                .iter()
+                .find(|(k, _)| k == "PATH")
+                .map(|(_, v)| v.as_str());
+            let path = path.unwrap_or_default();
+            failed(format!(
+                "command `{command_name}` not found on PATH `{path}`"
+            ))
+        }
+        _ => failed(format!("could not start `{command_name}`: {e}")),
+    })?;
+    let pipes = (
+        child.stdin().take(),
+        child.stdout().take(),
+        child.stderr().take(),
+    );
+    let (Some(stdin), Some(stdout), Some(stderr)) = pipes else {
+        unreachable!("all three pipes are piped");
+    };
+    let pid = child.id();
+    Ok(Spawned {
+        stdout,
+        stdin,
+        stderr,
+        child: ChildGuard {
+            child,
+            exited: false,
+        },
+        pid,
+    })
+}
+
+/// Owns a started child; dropping it kills the child's whole group.
+pub struct ChildGuard {
+    child: Box<dyn ChildWrapper>,
+    exited: bool,
+}
+
+impl ChildGuard {
+    /// Waits for the child to exit, then kills what is left of its group.
+    pub async fn wait(&mut self) -> ExitInfo {
+        let status = self.child.wait().await;
+        if !self.exited {
+            // A group kill on Unix: a wrapper that dies takes what it started with it.
+            let _ = self.child.start_kill();
+            self.exited = true;
+        }
+        match status {
+            Ok(status) => ExitInfo {
+                code: status.code(),
+                #[cfg(unix)]
+                signal: std::os::unix::process::ExitStatusExt::signal(&status),
+                #[cfg(not(unix))]
+                signal: None,
+            },
+            Err(_) => ExitInfo {
+                code: None,
+                signal: None,
+            },
+        }
+    }
+
+    /// SIGTERM to the group, `grace` to exit, then SIGKILL to the group. On
+    /// Windows, `grace` to exit, then the job is terminated. The caller has
+    /// already closed stdin.
+    pub async fn stop(mut self, grace: Duration) -> ExitInfo {
+        #[cfg(unix)]
+        if !self.exited {
+            let _ = self.child.signal(libc::SIGTERM);
+        }
+        if let Ok(exit) = timeout(grace, self.wait()).await {
+            return exit;
+        }
+        let _ = self.child.start_kill();
+        self.wait().await
+    }
+}
+
+impl Drop for ChildGuard {
+    /// `KillOnDrop` reaches the one child pid only; the group needs this.
+    fn drop(&mut self) {
+        if !self.exited {
+            let _ = self.child.start_kill();
+        }
+    }
+}
+
+/// Feeds the ring with the child's stderr until EOF. A line is read up to a
+/// bound, so a child that never writes a newline cannot grow the buffer.
+pub async fn read_stderr(stderr: ChildStderr, ring: Arc<Mutex<StderrRing>>, secrets: Vec<String>) {
+    let mut reader = BufReader::new(stderr);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let bound = 16 * LINE_BYTES as u64;
+        match (&mut reader).take(bound).read_until(b'\n', &mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        // Lossy: one invalid byte must not end the reader.
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.strip_suffix('\n').unwrap_or(&line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        ring.lock().unwrap().push(now_ms(), line, &secrets);
+    }
 }
 
 const RING_LINES: usize = 500;

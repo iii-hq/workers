@@ -32,14 +32,16 @@ use tokio::time::{Instant, sleep, timeout};
 
 use crate::approvals::{APPROVALS_REF, APPROVALS_SECRET, Approvals, is_fingerprint};
 use crate::config::{
-    Auth, Checked, Entry, HttpEntry, RawConfig, Transport, check_entry, check_url_text, fingerprint,
+    Auth, Checked, Entry, HttpEntry, RawConfig, STDIO_OFF, StdioEntry, Transport, check_entry,
+    check_url_text, fingerprint,
 };
 use crate::functions::SecretChange;
 use crate::host::{EventKind, Handler, Host, ServerEvent};
 use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
-use crate::refs::{Ref, Store, Text, event_matches, ref_error, resolve_all};
+use crate::refs::{Ref, Resolved, Store, Text, event_matches, ref_error, resolve_all};
+use crate::stdio::{self, ChildGuard, StderrRing};
 use crate::translate::{
     BlockCtx, CallFailure, ServerSecrets, failure_text, scrub, strip_args, tool_result,
 };
@@ -298,7 +300,7 @@ pub fn retry_after_secs(value: Option<&str>) -> Option<Duration> {
     value.parse().ok().map(Duration::from_secs)
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -348,6 +350,57 @@ impl ClientHandler for Notifier {
 
     async fn on_resource_list_changed(&self, _: NotificationContext<RoleClient>) {
         let _ = self.tx.send(ListChanged::Resources);
+    }
+}
+
+/// A stdio server's child and the task reading its stderr.
+struct Process {
+    child: ChildGuard,
+    reader: Reader,
+}
+
+/// The stderr reader of one child; aborted when dropped.
+struct Reader(JoinHandle<()>);
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// A ready session, and for stdio the process behind it.
+struct Live {
+    session: Session,
+    process: Option<Process>,
+}
+
+/// The exit of the session's process; never, for http.
+async fn exited(process: &mut Option<Process>) -> ExitInfo {
+    match process {
+        Some(p) => p.child.wait().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn exit_text(exit: &ExitInfo) -> String {
+    match (exit.code, exit.signal) {
+        (Some(code), _) => format!("exited with code {code}"),
+        (None, Some(signal)) => format!("killed by signal {signal}"),
+        (None, None) => "exited".into(),
+    }
+}
+
+/// A failed handshake's text, with nothing a response body could put in it.
+fn init_text(e: &ClientInitializeError) -> String {
+    match e {
+        ClientInitializeError::JsonRpcError(d) => {
+            format!("MCP error {}: {}", d.code.0, d.message)
+        }
+        ClientInitializeError::TransportError { error, .. } => transport_text(error),
+        // Their text prints what the server sent.
+        ClientInitializeError::ExpectedInitResponse(_)
+        | ClientInitializeError::ExpectedInitResult(_) => "unexpected response".into(),
+        _ => e.to_string(),
     }
 }
 
@@ -500,6 +553,7 @@ struct Server {
     host: Arc<dyn Host>,
     approvals: Arc<Approvals>,
     timings: Timings,
+    worker_cwd: PathBuf,
     status: watch::Sender<Status>,
     registry: Registry,
     info: Mutex<Info>,
@@ -516,6 +570,8 @@ struct Server {
     /// A call answered -32602 asks the server task to list the tools again.
     relist: Notify,
     task: Mutex<Option<(oneshot::Sender<()>, JoinHandle<()>)>>,
+    /// The stderr of every process this server started, across restarts.
+    ring: Arc<Mutex<StderrRing>>,
 }
 
 /// The state an entry starts in, from what its config alone says.
@@ -523,6 +579,11 @@ fn first_status(name: &str, checked: &Checked) -> (State, Option<Stage>, Option<
     let fail = |state, stage, code, message: String| {
         (state, Some(stage), Some(ServerError::new(code, message)))
     };
+    // Rule 9 fires only with stdio off; nothing is resolved or spawned.
+    if checked.errors.iter().any(|i| i.message == STDIO_OFF) {
+        let code = ErrorCode::StdioDisabled;
+        return fail(State::ConfigError, Stage::Config, code, STDIO_OFF.into());
+    }
     let Some(entry) = &checked.entry else {
         let message = checked
             .errors
@@ -541,12 +602,7 @@ fn first_status(name: &str, checked: &Checked) -> (State, Option<Stage>, Option<
         return (State::Disabled, None, None);
     }
     match &entry.transport {
-        Transport::Stdio(_) => fail(
-            State::ConfigError,
-            Stage::Connect,
-            ErrorCode::StdioDisabled,
-            "stdio servers are not supported by this version of mcp-client".into(),
-        ),
+        Transport::Stdio(_) => (State::Connecting, Some(Stage::Secret), None),
         Transport::Http(http) => match http.auth {
             Auth::ClientCredentials { .. } => fail(
                 State::ConfigError,
@@ -591,6 +647,7 @@ impl Server {
             host: host.clone(),
             approvals: approvals.clone(),
             timings: opts.timings,
+            worker_cwd: opts.worker_cwd.clone(),
             status: watch::channel(status).0,
             registry: Registry::new(),
             info: Mutex::default(),
@@ -601,6 +658,7 @@ impl Server {
             notes_rx: tokio::sync::Mutex::new(notes_rx),
             relist: Notify::new(),
             task: Mutex::default(),
+            ring: Arc::default(),
         });
         server.emit(EventKind::State);
         if state == State::Connecting {
@@ -718,11 +776,8 @@ impl Server {
                 _ = &mut stop => return,
             };
             let wait = match attempt {
-                Ok(session) => {
-                    if self
-                        .serve(session, &mut stop, &mut notes, &mut backoff)
-                        .await
-                    {
+                Ok(live) => {
+                    if self.serve(live, &mut stop, &mut notes, &mut backoff).await {
                         return;
                     }
                     None
@@ -745,30 +800,37 @@ impl Server {
     }
 
     /// Serves a ready session until `stop` (true) or until the server
-    /// leaves `ready` (false), then closes the session.
+    /// leaves `ready` (false), then closes the session and stops its process.
     async fn serve(
         self: &Arc<Self>,
-        session: Session,
+        live: Live,
         stop: &mut oneshot::Receiver<()>,
         notes: &mut mpsc::UnboundedReceiver<ListChanged>,
         backoff: &mut Backoff,
     ) -> bool {
+        let Live {
+            session,
+            mut process,
+        } = live;
         let cancel = session.cancellation_token();
         let mut ended = pin!(session.waiting());
         let mut status = self.status.subscribe();
         let mut stable = pin!(sleep(self.timings.stable_after));
         let mut stable_seen = false;
         let mut last_relist: Option<Instant> = None;
-        let (stopped, open) = loop {
+        let (stopped, open, exit) = loop {
             let relist = tokio::select! {
-                _ = &mut *stop => break (true, true),
-                _ = status.wait_for(|s| s.state != State::Ready) => break (false, true),
+                _ = &mut *stop => break (true, true, None),
+                _ = status.wait_for(|s| s.state != State::Ready) => break (false, true, None),
                 _ = &mut ended => {
-                    let message = format!("the MCP session with {} ended", self.name);
-                    let (state, code) = (State::Unavailable, ErrorCode::ConnectFailed);
-                    self.leave_ready(state, Stage::Connect, code, message);
-                    break (false, false);
+                    if process.is_none() {
+                        let message = format!("the MCP session with {} ended", self.name);
+                        let (state, code) = (State::Unavailable, ErrorCode::ConnectFailed);
+                        self.leave_ready(state, Stage::Connect, code, message);
+                    }
+                    break (false, false, None);
                 }
+                exit = exited(&mut process) => break (false, true, Some(exit)),
                 _ = &mut stable, if !stable_seen => {
                     stable_seen = true;
                     backoff.reset();
@@ -788,16 +850,42 @@ impl Server {
                 last_relist = Some(Instant::now());
                 tokio::select! {
                     _ = self.relist_tools() => {}
-                    _ = &mut *stop => break (true, true),
+                    _ = &mut *stop => break (true, true, None),
                 }
             }
         };
         self.peer.write().unwrap().take();
         if open {
+            // Closes the child's stdin too. A stdio session ends with its
+            // process: waiting for it here would add to the stop grace.
             cancel.cancel();
-            let _ = timeout(self.timings.stop_grace, ended).await;
+            if process.is_none() {
+                let _ = timeout(self.timings.stop_grace, ended).await;
+            }
+        }
+        if let Some(Process { child, mut reader }) = process {
+            let exit = match exit {
+                Some(exit) => exit,
+                None => child.stop(self.timings.stop_grace).await,
+            };
+            // Any end but a stop is the process ending, closed stdout included.
+            if !stopped {
+                let message = self.with_stderr(exit_text(&exit), &mut reader).await;
+                let (state, code) = (State::Unavailable, ErrorCode::Exited);
+                self.leave_ready(state, Stage::Connect, code, message);
+            }
         }
         stopped
+    }
+
+    /// `head`, then the last stderr line once the reader reached EOF, or
+    /// after 500 ms: a grandchild may hold the pipe open.
+    async fn with_stderr(&self, head: String, reader: &mut Reader) -> String {
+        let _ = timeout(Duration::from_millis(500), &mut reader.0).await;
+        match self.ring.lock().unwrap().last() {
+            Some(line) => format!("{head}: {line}"),
+            None => head,
+        }
     }
 
     /// `tools/list` again on the live session, then the reconcile. A failure
@@ -840,10 +928,16 @@ impl Server {
     /// transport failure is an outage, and anything else fails this request
     /// only. The registry is never touched.
     fn request_failed(&self, error: &ServiceError) -> CallFailure {
-        let failure = match &self.spec().checked.entry {
+        let spec = self.spec();
+        let failure = match &spec.checked.entry {
             Some(entry) => classify_call_error(error, entry),
             None => CallFailure::Transport(service_text(error)),
         };
+        let stdio = spec
+            .checked
+            .entry
+            .as_ref()
+            .is_some_and(|e| matches!(e.transport, Transport::Stdio(_)));
         let (state, stage, code) = match &failure {
             CallFailure::CredentialRejected { .. } | CallFailure::NoSignIn => (
                 State::AuthFailed,
@@ -858,7 +952,9 @@ impl Server {
                     ErrorCode::LoginRequired,
                 )
             }
-            CallFailure::Transport(_) => {
+            // A stdio pipe fails when its process ends, which `serve` reports
+            // as `exited` with the code.
+            CallFailure::Transport(_) if !stdio => {
                 (State::Unavailable, Stage::Connect, ErrorCode::ConnectFailed)
             }
             _ => return failure,
@@ -902,15 +998,12 @@ impl Server {
 
     /// One attempt, from the secrets to `ready`. `Err` carries the wait a
     /// 429 asked for.
-    async fn connect(self: &Arc<Self>) -> Result<Session, Option<Duration>> {
+    async fn connect(self: &Arc<Self>) -> Result<Live, Option<Duration>> {
         let spec = self.spec();
         let Some(entry) = spec.checked.entry.as_ref() else {
             return Err(None);
         };
-        let Transport::Http(http) = &entry.transport else {
-            return Err(None);
-        };
-        // The gate: nothing is resolved or sent for an entry no operator approved.
+        // The gate: nothing is resolved, sent or spawned for an entry no operator approved.
         if let Err(e) = self.approvals.load(&*self.host).await {
             let error = ref_error(APPROVALS_REF, e);
             self.set(State::Connecting, Some(Stage::Approval), Some(error));
@@ -943,6 +1036,93 @@ impl Server {
             }
         };
         self.secrets.set_resolved(resolved.secrets());
+        let (session, process) = match &entry.transport {
+            Transport::Http(http) => (self.open_http(entry, http, &resolved).await?, None),
+            Transport::Stdio(stdio) => {
+                let (session, process) = self.open_stdio(stdio, &resolved).await?;
+                (session, Some(process))
+            }
+        };
+        let peer = session.peer().clone();
+        peer.set_response_cache_config(ClientCacheConfig::disabled())
+            .await;
+        let handshake = peer
+            .peer_info()
+            .and_then(|i| serde_json::to_value(&*i).ok())
+            .unwrap_or_default();
+
+        self.progress(Stage::Tools);
+        let limit = self.timings.list;
+        let listed = match timeout(limit, peer.list_all_tools()).await {
+            Ok(Ok(tools)) => serde_json::to_value(tools)
+                .and_then(serde_json::from_value::<Vec<ToolInfo>>)
+                .map_err(|e| e.to_string()),
+            Ok(Err(e)) => Err(service_text(&e)),
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let tools = match listed {
+            Ok(tools) => tools,
+            Err(message) => {
+                self.fail(
+                    State::Unavailable,
+                    Stage::Tools,
+                    ErrorCode::ListFailed,
+                    message,
+                );
+                self.close(session).await;
+                if let Some(process) = process {
+                    process.child.stop(self.timings.stop_grace).await;
+                }
+                return Err(None);
+            }
+        };
+        let instructions = handshake["instructions"]
+            .as_str()
+            .filter(|t| !t.trim().is_empty())
+            .map(String::from);
+        let (wanted, skipped) = tool_wanted(&self.name, &tools, instructions.is_some());
+        {
+            let mut info = self.info.lock().unwrap();
+            let caps = &handshake["capabilities"];
+            let server_info = &handshake["serverInfo"];
+            *info = Info {
+                protocol_version: handshake["protocolVersion"].as_str().map(String::from),
+                server_info: server_info.is_object().then(|| ServerInfoView {
+                    name: server_info["name"].as_str().unwrap_or("").into(),
+                    title: server_info["title"].as_str().map(String::from),
+                    version: server_info["version"].as_str().unwrap_or("").into(),
+                }),
+                instructions,
+                capabilities: CapabilitiesView {
+                    resources: !caps["resources"].is_null(),
+                    prompts: !caps["prompts"].is_null(),
+                },
+                tools_listed: true,
+                tools: tool_views(&wanted),
+                skipped,
+            };
+        }
+        *self.peer.write().unwrap() = Some(peer);
+        self.reconcile(wanted).await;
+        self.set(State::Ready, None, None);
+        Ok(Live { session, process })
+    }
+
+    fn notifier(&self) -> Notifier {
+        Notifier {
+            info: client_config(),
+            tx: self.notes.clone(),
+            _secrets: self.secrets.clone(),
+        }
+    }
+
+    /// The http transport from the resolved entry, then the handshake.
+    async fn open_http(
+        &self,
+        entry: &Entry,
+        http: &HttpEntry,
+        resolved: &Resolved,
+    ) -> Result<Session, Option<Duration>> {
         let url = resolved.text(&http.url);
         if let Text::Ref(r) = &http.url
             && let Err(m) = check_url_text(&url)
@@ -982,17 +1162,12 @@ impl Server {
 
         self.progress(Stage::Connect);
         let limit = self.timings.http_handshake;
-        let notifier = Notifier {
-            info: client_config(),
-            tx: self.notes.clone(),
-            _secrets: self.secrets.clone(),
-        };
-        let session = match timeout(limit, notifier.serve(transport)).await {
-            Ok(Ok(session)) => session,
+        match timeout(limit, self.notifier().serve(transport)).await {
+            Ok(Ok(session)) => Ok(session),
             Ok(Err(e)) => {
                 let (state, stage, code, message) = self.handshake_failure(&e, entry, http);
                 self.fail(state, stage, code, message);
-                return Err(retry_wait(&e));
+                Err(retry_wait(&e))
             }
             Err(_) => {
                 self.fail(
@@ -1001,69 +1176,54 @@ impl Server {
                     ErrorCode::HandshakeFailed,
                     self.no_answer(limit),
                 );
-                return Err(None);
+                Err(None)
             }
-        };
-        let peer = session.peer().clone();
-        peer.set_response_cache_config(ClientCacheConfig::disabled())
-            .await;
-        let handshake = peer
-            .peer_info()
-            .and_then(|i| serde_json::to_value(&*i).ok())
-            .unwrap_or_default();
-
-        self.progress(Stage::Tools);
-        let limit = self.timings.list;
-        let listed = match timeout(limit, peer.list_all_tools()).await {
-            Ok(Ok(tools)) => serde_json::to_value(tools)
-                .and_then(serde_json::from_value::<Vec<ToolInfo>>)
-                .map_err(|e| e.to_string()),
-            Ok(Err(e)) => Err(service_text(&e)),
-            Err(_) => Err(self.no_answer(limit)),
-        };
-        let tools = match listed {
-            Ok(tools) => tools,
-            Err(message) => {
-                self.fail(
-                    State::Unavailable,
-                    Stage::Tools,
-                    ErrorCode::ListFailed,
-                    message,
-                );
-                self.close(session).await;
-                return Err(None);
-            }
-        };
-        let instructions = handshake["instructions"]
-            .as_str()
-            .filter(|t| !t.trim().is_empty())
-            .map(String::from);
-        let (wanted, skipped) = tool_wanted(&self.name, &tools, instructions.is_some());
-        {
-            let mut info = self.info.lock().unwrap();
-            let caps = &handshake["capabilities"];
-            let server_info = &handshake["serverInfo"];
-            *info = Info {
-                protocol_version: handshake["protocolVersion"].as_str().map(String::from),
-                server_info: server_info.is_object().then(|| ServerInfoView {
-                    name: server_info["name"].as_str().unwrap_or("").into(),
-                    title: server_info["title"].as_str().map(String::from),
-                    version: server_info["version"].as_str().unwrap_or("").into(),
-                }),
-                instructions,
-                capabilities: CapabilitiesView {
-                    resources: !caps["resources"].is_null(),
-                    prompts: !caps["prompts"].is_null(),
-                },
-                tools_listed: true,
-                tools: tool_views(&wanted),
-                skipped,
-            };
         }
-        *self.peer.write().unwrap() = Some(peer);
-        self.reconcile(wanted).await;
-        self.set(State::Ready, None, None);
-        Ok(session)
+    }
+
+    /// Spawns the child, starts its stderr reader, then the handshake over
+    /// its stdout and stdin. A child that exits first is `exited`.
+    async fn open_stdio(
+        &self,
+        stdio: &StdioEntry,
+        resolved: &Resolved,
+    ) -> Result<(Session, Process), Option<Duration>> {
+        self.progress(Stage::Connect);
+        let spawned = match stdio::spawn(stdio, resolved, &self.worker_cwd) {
+            Ok(spawned) => spawned,
+            Err(e) => {
+                self.set(State::Unavailable, Some(Stage::Connect), Some(e));
+                return Err(None);
+            }
+        };
+        let mut child = spawned.child;
+        let ring = self.ring.clone();
+        let read = stdio::read_stderr(spawned.stderr, ring, resolved.secrets());
+        let mut reader = Reader(tokio::spawn(read));
+        let limit = self.timings.stdio_start;
+        let handshake = self.notifier().serve((spawned.stdout, spawned.stdin));
+        let (exit, failure) = tokio::select! {
+            served = timeout(limit, handshake) => match served {
+                Ok(Ok(session)) => return Ok((session, Process { child, reader })),
+                // stdout EOF usually fails `serve` before the exit is reaped.
+                Ok(Err(e)) => {
+                    let exit = timeout(Duration::from_millis(500), child.wait()).await;
+                    (exit.ok(), format!("MCP handshake failed: {}", init_text(&e)))
+                }
+                Err(_) => (None, format!("no MCP handshake after {} s", limit.as_secs())),
+            },
+            exit = child.wait() => (Some(exit), String::new()),
+        };
+        let (code, head) = match exit {
+            Some(exit) => (ErrorCode::Exited, exit_text(&exit)),
+            None => {
+                child.stop(self.timings.stop_grace).await;
+                (ErrorCode::HandshakeFailed, failure)
+            }
+        };
+        let message = self.with_stderr(head, &mut reader).await;
+        self.fail(State::Unavailable, Stage::Connect, code, message);
+        Err(None)
     }
 
     fn no_answer(&self, limit: Duration) -> String {
@@ -1145,19 +1305,7 @@ impl Server {
                 let message = format!("could not reach {target}: {cause}");
                 (ErrorCode::ConnectFailed, message)
             }
-            _ => {
-                let text = match e {
-                    ClientInitializeError::JsonRpcError(d) => {
-                        format!("MCP error {}: {}", d.code.0, d.message)
-                    }
-                    ClientInitializeError::TransportError { error, .. } => transport_text(error),
-                    // Their text prints what the server sent.
-                    ClientInitializeError::ExpectedInitResponse(_)
-                    | ClientInitializeError::ExpectedInitResult(_) => "unexpected response".into(),
-                    _ => e.to_string(),
-                };
-                (ErrorCode::HandshakeFailed, text)
-            }
+            _ => (ErrorCode::HandshakeFailed, init_text(e)),
         };
         (State::Unavailable, Stage::Connect, code, message)
     }

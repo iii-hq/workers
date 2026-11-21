@@ -92,14 +92,83 @@ pub async fn connect_unapproved(host: &Arc<FakeHost>, config: Value) -> Arc<Mana
 }
 
 fn manager(host: &Arc<FakeHost>, timings: Timings) -> Arc<Manager> {
-    // reqwest panics building a client when no rustls provider is installed.
-    let _ = rustls::crypto::ring::default_provider().install_default();
     let options = ManagerOptions {
         stdio_enabled: true,
         timings,
         worker_cwd: std::env::current_dir().unwrap(),
     };
+    manager_opts(host, options)
+}
+
+fn manager_opts(host: &Arc<FakeHost>, options: ManagerOptions) -> Arc<Manager> {
+    // reqwest panics building a client when no rustls provider is installed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     Manager::new(host.clone(), options)
+}
+
+/// `connect_with` with every option: approves every entry of `config`, then
+/// applies it.
+pub async fn connect_opts(
+    host: &Arc<FakeHost>,
+    config: &Value,
+    opts: ManagerOptions,
+) -> Arc<Manager> {
+    let manager = manager_opts(host, opts);
+    apply(&manager, config.clone()).await;
+    manager
+}
+
+/// `fast_timings` with room for a cold fixture start, and a budget and
+/// backoff no test resets by accident.
+pub fn stdio_timings() -> Timings {
+    let s = Duration::from_secs;
+    Timings {
+        stdio_start: s(10),
+        list: s(10),
+        call: s(10),
+        stop_grace: Duration::from_millis(500),
+        stable_after: s(60),
+        budget_starts: 5,
+        ..fast_timings()
+    }
+}
+
+/// Polls `check` every 20 ms; whether it came true within `within`.
+pub async fn until<F, Fut>(within: Duration, check: F) -> bool
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let deadline = Instant::now() + within;
+    loop {
+        if check().await {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The one module that names the fake stdio server.
+#[cfg(feature = "test-fixtures")]
+pub mod stdio_fixture {
+    use super::*;
+
+    pub const BIN: &str = env!("CARGO_BIN_EXE_fake-mcp-stdio");
+
+    pub fn cfg(env: Value) -> Value {
+        json!({"mcpServers": {"fake": {"command": BIN, "env": env}}})
+    }
+
+    pub fn opts(timings: Timings) -> ManagerOptions {
+        ManagerOptions {
+            stdio_enabled: true,
+            timings,
+            worker_cwd: std::env::temp_dir(),
+        }
+    }
 }
 
 /// Approves every entry of `config` as an operator would, then applies it
