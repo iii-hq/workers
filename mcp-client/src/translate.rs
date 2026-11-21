@@ -62,6 +62,14 @@ impl ServerSecrets {
         }
     }
 
+    /// The values that came from references: those the server uses now.
+    pub fn resolved(&self) -> Vec<String> {
+        self.resolved
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn values(&self) -> Vec<String> {
         let mut values = self
             .resolved

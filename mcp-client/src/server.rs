@@ -539,6 +539,13 @@ fn server_message(message: &str) -> String {
     message[..message.floor_char_boundary(MESSAGE_CAP)].to_string()
 }
 
+/// A listing as `T`s. The error may quote what the server sent: cut like
+/// its messages.
+fn listing<T: serde::de::DeserializeOwned>(list: impl Serialize) -> Result<Vec<T>, String> {
+    let parsed = serde_json::to_value(list).and_then(serde_json::from_value);
+    parsed.map_err(|e| server_message(&e.to_string()))
+}
+
 /// A JSON-RPC error without its `data`, which is whatever the server sent.
 fn rpc_text(e: &rmcp::ErrorData) -> String {
     format!("MCP error {}: {}", e.code.0, server_message(&e.message))
@@ -1174,9 +1181,7 @@ impl Server {
         };
         let limit = self.timings.list;
         let listed = match timeout(limit, conn.peer.list_all_tools()).await {
-            Ok(Ok(tools)) => serde_json::to_value(tools)
-                .and_then(serde_json::from_value::<Vec<ToolInfo>>)
-                .map_err(|e| e.to_string()),
+            Ok(Ok(tools)) => listing::<ToolInfo>(tools),
             Ok(Err(e)) => Err(failure_text(
                 &self.name,
                 &self.request_failed(self.classify(&e)),
@@ -1228,9 +1233,7 @@ impl Server {
     async fn list_prompts(&self, peer: &Peer<RoleClient>) -> Result<PromptList, String> {
         let limit = self.timings.list;
         let listed = match timeout(limit, peer.list_all_prompts()).await {
-            Ok(Ok(prompts)) => serde_json::to_value(prompts)
-                .and_then(serde_json::from_value::<Vec<PromptInfo>>)
-                .map_err(|e| e.to_string()),
+            Ok(Ok(prompts)) => listing::<PromptInfo>(prompts),
             Ok(Err(e)) => Err(service_text(&e)),
             Err(_) => Err(self.no_answer(limit)),
         };
@@ -1505,9 +1508,7 @@ impl Server {
         self.progress(Stage::Tools);
         let limit = self.timings.list;
         let listed = match timeout(limit, peer.list_all_tools()).await {
-            Ok(Ok(tools)) => serde_json::to_value(tools)
-                .and_then(serde_json::from_value::<Vec<ToolInfo>>)
-                .map_err(|e| e.to_string()),
+            Ok(Ok(tools)) => listing::<ToolInfo>(tools),
             Ok(Err(e)) => Err(service_text(&e)),
             Err(_) => Err(self.no_answer(limit)),
         };
@@ -2378,9 +2379,8 @@ impl Manager {
             }
             let unchanged = state == State::Ready
                 && match resolve_all(&*self.host, &refs).await {
-                    // shortcut: compares the whole set, exact while nothing calls `add`;
-                    // compare only the resolved part once a minted token is added.
-                    Ok(resolved) => resolved.secrets() == server.secrets.values(),
+                    // A minted token is no reference value.
+                    Ok(resolved) => resolved.secrets() == server.secrets.resolved(),
                     Err(_) => false,
                 };
             if !unchanged {
@@ -2448,6 +2448,21 @@ mod tests {
 
         let data = Some(json!({"token": "data-only-value"}));
         assert_eq!(service_text(&rpc("boom", data)), "MCP error -32000: boom");
+    }
+
+    #[test]
+    fn a_listing_error_is_cut_like_a_server_message() {
+        let prompts = json!([{"name": "p", "arguments": "x".repeat(3 * MESSAGE_CAP)}]);
+        let raw = serde_json::from_value::<Vec<PromptInfo>>(prompts.clone()).err();
+        assert!(
+            raw.unwrap().to_string().len() > MESSAGE_CAP,
+            "the error quotes the value"
+        );
+        let cut = listing::<PromptInfo>(prompts).err().unwrap();
+        assert!(
+            cut.starts_with("invalid type") && cut.len() <= MESSAGE_CAP,
+            "{cut}"
+        );
     }
 
     #[test]

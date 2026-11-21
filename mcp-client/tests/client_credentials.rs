@@ -1,8 +1,10 @@
 mod support;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use mcp_client::auth::{Minter, http_client, mint, token_request_body};
+use mcp_client::functions::SecretChange;
 use mcp_client::server::{ErrorCode, Manager, State};
 use serde_json::{Value, json};
 use support::mcp_mock::{McpMock, echo_mock};
@@ -349,4 +351,31 @@ async fn an_unapproved_entry_mints_nothing_until_approved() {
     manager.approve("srv", None).await.unwrap();
     settle(&manager, State::Ready).await;
     assert_eq!(mock.token_requests().await.len(), 1);
+}
+
+fn change(name: &str) -> SecretChange {
+    SecretChange {
+        name: Some(name.into()),
+        reference: Some(format!("secret://{name}")),
+        action: Some("rotated".into()),
+    }
+}
+
+#[tokio::test]
+async fn a_secret_change_restarts_only_when_a_value_in_use_changed() {
+    let (mock, host, manager) = cc_ready().await;
+    manager.on_secret_change(&change("OTHER")).await;
+    // Names the client secret, whose value is the same: the minted token
+    // is no reference value and does not count.
+    manager.on_secret_change(&change("APP_SECRET")).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(mock.requests("initialize").await.len(), 1, "no restart");
+    assert_eq!(mock.token_requests().await.len(), 1);
+
+    host.set_secret("secret://APP_SECRET", "shh-2");
+    manager.on_secret_change(&change("APP_SECRET")).await;
+    settle(&manager, State::Ready).await;
+    let minted = mock.token_requests().await;
+    assert_eq!(minted.len(), 2, "{minted:?}");
+    assert!(minted[1].contains("client_secret=shh-2"), "{minted:?}");
 }
