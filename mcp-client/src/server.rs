@@ -395,6 +395,9 @@ fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
             return CallFailure::RateLimited { retry_after };
         }
         // Its text carries the response body: matched, never passed on.
+        Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP 403") => {
+            return CallFailure::InsufficientScope { scope: None };
+        }
         Some(HttpError::UnexpectedServerResponse(t)) => t.starts_with("HTTP 401"),
         _ => false,
     };

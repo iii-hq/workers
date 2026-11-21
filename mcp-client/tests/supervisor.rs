@@ -188,18 +188,23 @@ async fn rejected_credential_on_a_call_sets_auth_failed_and_keeps_functions() {
     assert!(unregistered(&host).is_empty());
 }
 
-#[tokio::test]
-async fn a_401_without_a_challenge_on_a_call_never_shows_its_body() {
-    let (mock, host, manager) = ready().await;
-    // McpMock answers with an empty body, so this mounts one that has a body.
+/// Answers `tools/call` with `status`, no `WWW-Authenticate` and a body:
+/// McpMock's own answers have an empty body.
+async fn calls_answer_with_a_body(mock: &McpMock, status: u16) {
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::body_partial_json(
             json!({"method": "tools/call"}),
         ))
-        .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("BODY-SENTINEL"))
+        .respond_with(wiremock::ResponseTemplate::new(status).set_body_string("BODY-SENTINEL"))
         .with_priority(1)
         .mount(mock.server())
         .await;
+}
+
+#[tokio::test]
+async fn a_401_without_a_challenge_on_a_call_never_shows_its_body() {
+    let (mock, host, manager) = ready().await;
+    calls_answer_with_a_body(&mock, 401).await;
     let error = host.call(ECHO, json!({})).await.unwrap_err();
     assert_eq!(
         error,
@@ -207,6 +212,18 @@ async fn a_401_without_a_challenge_on_a_call_never_shows_its_body() {
     );
     let row = settle(&manager, State::AuthFailed).await;
     assert!(!row.to_string().contains("BODY-SENTINEL"), "{row}");
+}
+
+#[tokio::test]
+async fn a_403_without_a_challenge_on_a_call_stays_ready_and_never_shows_its_body() {
+    let (mock, host, manager) = ready().await;
+    calls_answer_with_a_body(&mock, 403).await;
+    let error = host.call(ECHO, json!({})).await.unwrap_err();
+    assert_eq!(error, "insufficient scope: srv refused the call");
+    let listed = serde_json::to_string(&manager.list().await).unwrap();
+    assert!(!listed.contains("BODY-SENTINEL"), "{listed}");
+    assert_eq!(server(&manager, "srv").await["state"], "ready");
+    assert!(unregistered(&host).is_empty());
 }
 
 #[tokio::test]
