@@ -52,7 +52,7 @@ import {
 } from './presentation'
 import { ServerContents } from './ServerContents'
 import { ServerList } from './ServerList'
-import { approveEntry, removeEntry, type SaveDeps, saveEntry, setDisabled } from './save'
+import { approveEntry, removeEntry, type SaveDeps, saveBefore, saveEntry, setDisabled, shareEntry } from './save'
 import type { Issue, Selection, Server, ServersList } from './types'
 import { useServers } from './use-servers'
 
@@ -60,6 +60,7 @@ const SKELETON_ROWS = [0, 1, 2, 3]
 const COLUMN_OF: Record<Level, number> = { servers: 1, contents: 2, detail: 3 }
 const NO_ISSUES: Issue[] = []
 const WORKER_DOWN = 'The mcp-client worker is not running'
+const CONFIG_DOWN = 'The configuration worker cannot be reached'
 
 /** Column 3 for the Process row, until its own view exists. */
 function ServerFacts({ server }: { server: Server }) {
@@ -94,7 +95,8 @@ export function McpServersPage({
   const [adding, setAdding] = useState(false)
   // What the open view reports: refused JSON text, or the Edit as JSON text.
   const [viewDirty, setViewDirty] = useState(false)
-  const [jsonOpen, setJsonOpen] = useState(false)
+  // Edit as JSON's map as it opened: a refresh that cannot read the config leaves the view and its edits.
+  const [jsonOpen, setJsonOpen] = useState<Record<string, unknown> | null>(null)
   const [errors, setErrors] = useState<Issue[]>(NO_ISSUES)
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -136,6 +138,11 @@ export function McpServersPage({
   const base = !adding && loaded && loaded[0] === selection.server ? loaded[1] : stored
   const formDirty = draft !== null && (adding || selection.server !== null) && draftDirty(draft, base)
   const dirty = viewDirty || formDirty
+  // One save, approve, share, turn on or remove at a time, so two confirms never run at once.
+  const working = busy || saving
+  // Where the person is now: a save that resolves after they moved on leaves the form alone.
+  const here = useRef({ server: selection.server, adding })
+  here.current = { server: selection.server, adding }
 
   const deps = useMemo<SaveDeps>(
     () => ({
@@ -170,10 +177,10 @@ export function McpServersPage({
   )
   // Leaving a server, the new server or the JSON with unsaved edits asks first.
   const pickServer = async (next: Selection) => {
-    const switching = jsonOpen || (next.server !== null && (adding || next.server !== selection.server))
+    const switching = jsonOpen !== null || (next.server !== null && (adding || next.server !== selection.server))
     if (switching) {
       if (!(await confirmLeave())) return false
-      setJsonOpen(false)
+      setJsonOpen(null)
       setErrors(NO_ISSUES)
       setFailure(null)
       if (next.server !== null) {
@@ -189,7 +196,7 @@ export function McpServersPage({
   }
   const onAdd = useCallback(async () => {
     if (!(await leave.current())) return
-    setJsonOpen(false)
+    setJsonOpen(null)
     setErrors(NO_ISSUES)
     setFailure(null)
     setAdding(true)
@@ -200,29 +207,36 @@ export function McpServersPage({
   useEffect(() => setDirty?.(dirty ? 'MCP server' : false), [dirty, setDirty])
 
   const onSave = async () => {
-    if (!draft) return
+    if (!draft || working) return
     const { name } = draft
     if (adding && data.config && name in data.config) {
       setErrors([{ path: `/mcpServers/${name}`, message: `A server named \`${name}\` already exists.` }])
       return
     }
-    const before = adding || !server ? null : { entry: data.config?.[name], fingerprint: server.fingerprint }
     const entry = entryFromDraft(draft)
+    // The view the save started from: the add, or the selected server.
+    const stillHere = () =>
+      adding ? here.current.adding : !here.current.adding && here.current.server === selection.server
+    const fail = (detail: string) =>
+      stillHere() ? setFailure({ headline: 'Could not save', detail }) : announce(`${name} was not saved: ${detail}`)
     setSaving(true)
     setFailure(null)
     try {
-      const result = await saveEntry(deps, name, entry, before)
+      const result = await saveEntry(deps, name, entry, saveBefore(adding, name, data.config, data.list?.servers))
+      if (result.message) fail(result.message)
+      if (result.saved) {
+        data.refresh()
+        announce(`${name} saved`)
+      }
+      if (!stillHere()) return
       setErrors(result.errors)
-      if (result.message) setFailure({ headline: 'Could not save', detail: result.message })
       if (!result.saved) return
       // What was saved is the new base: a draft still equal to it is clean, one edited meanwhile stays dirty.
       setLoaded([name, entry])
       setAdding(false)
       setSelection({ server: name, item: { kind: 'connection' } })
-      data.refresh()
-      announce(`${name} saved`)
     } catch (err) {
-      setFailure({ headline: 'Could not save', detail: errorMessage(err) })
+      fail(errorMessage(err))
     } finally {
       setSaving(false)
     }
@@ -242,6 +256,7 @@ export function McpServersPage({
   }
   // Approve, Share, Turn on and Remove: one at a time, a failure shown above the form.
   const attempt = async (headline: string, run: () => Promise<boolean | undefined>) => {
+    if (working) return
     setBusy(true)
     setFailure(null)
     try {
@@ -258,20 +273,8 @@ export function McpServersPage({
       await setDisabled(api, s.name, false)
       return true
     })
-  // Names only: no secret value is read or shown.
   const share = (s: Server) =>
-    attempt('Could not share', async () => {
-      const refs = entryRefs(data.config?.[s.name])
-      const go = await confirm({
-        title: 'Share with mcp-client?',
-        confirmLabel: 'Share',
-        description: <Lines lines={refs} />,
-      })
-      if (!go) return false
-      for (const ref of refs) await api.shareSecret(ref)
-      await api.reconnect(s.name)
-      return true
-    })
+    attempt('Could not share', () => shareEntry(deps, s.name, entryRefs(data.config?.[s.name])))
   const remove = (s: Server) =>
     attempt('Could not remove', async () => {
       if (!(await removeEntry(deps, s))) return false
@@ -282,17 +285,17 @@ export function McpServersPage({
       return true
     })
   const openJson = async () => {
-    if (!(await confirmLeave())) return
+    if (!data.config || !(await confirmLeave())) return
     setAdding(false)
     setDraft(null)
     setErrors(NO_ISSUES)
     setFailure(null)
     setSelection({ server: null, item: null })
-    setJsonOpen(true)
+    setJsonOpen(data.config)
     setLevel('contents')
   }
   const closeJson = () => {
-    setJsonOpen(false)
+    setJsonOpen(null)
     setLevel('servers')
     data.refresh()
   }
@@ -406,7 +409,7 @@ export function McpServersPage({
       id: 'edit-json',
       label: 'Edit as JSON',
       icon: <FileJson size={16} />,
-      disabled: !data.config || jsonOpen,
+      disabled: !data.config || jsonOpen !== null,
       onSelect: () => void openJson(),
     },
     { id: 'copy-json', label: 'Copy as JSON', icon: <Copy size={16} />, disabled: !data.config, onSelect: copyJson },
@@ -465,14 +468,9 @@ export function McpServersPage({
           </div>
         </div>
         <PageBody side={panelSide}>
-          {state === 'config_down' ? (
+          {state === 'config_down' && !jsonOpen ? (
             <PageMain className="mcp-ui-whole">
-              <StatusPanel
-                variant="alert"
-                headline="The configuration worker cannot be reached"
-                detail={data.configError}
-                action={retry}
-              />
+              <StatusPanel variant="alert" headline={CONFIG_DOWN} detail={data.configError} action={retry} />
             </PageMain>
           ) : (
             <>
@@ -498,8 +496,14 @@ export function McpServersPage({
                 />
               </PageSidebar>
               <PageMain className="mcp-ui-main">
-                {jsonOpen && data.config ? (
-                  <JsonView api={api} deps={deps} mcpServers={data.config} onClose={closeJson} setDirty={onDirty} />
+                {jsonOpen ? (
+                  <JsonView
+                    deps={deps}
+                    mcpServers={jsonOpen}
+                    onClose={closeJson}
+                    setDirty={onDirty}
+                    blocked={data.workerDown ? WORKER_DOWN : data.configDown ? CONFIG_DOWN : null}
+                  />
                 ) : state === 'worker_down' && !adding ? (
                   <div className="mcp-ui-whole">
                     <StatusPanel
@@ -611,7 +615,7 @@ export function McpServersPage({
                                     <Button
                                       size="sm"
                                       variant={bar ? 'secondary' : 'primary'}
-                                      disabled={busy}
+                                      disabled={working}
                                       onClick={() => void share(server)}
                                     >
                                       Share
@@ -624,13 +628,18 @@ export function McpServersPage({
                                   api={api}
                                   server={server}
                                   entry={data.config?.[server.name]}
-                                  busy={busy}
+                                  busy={working}
                                   quiet={bar}
                                   onApprove={() => void approve(server)}
                                 />
                               ) : null}
                               {server && !adding && server.state === 'disabled' ? (
-                                <Button variant="ghost" size="sm" disabled={busy} onClick={() => void turnOn(server)}>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={working}
+                                  onClick={() => void turnOn(server)}
+                                >
                                   Turn on
                                 </Button>
                               ) : null}

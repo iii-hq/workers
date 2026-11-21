@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { Api } from '../src/api'
+import { mapAsJson, readMapEdit } from '../src/config-model'
 import {
   approveEntry,
   effectSentences,
   needsConfirm,
   removeEntry,
   type SaveDeps,
+  saveBefore,
   saveEntry,
+  saveMap,
   secretIssues,
   setDisabled,
+  shareEntry,
 } from '../src/save'
 import type { Issue, ServerValidation } from '../src/types'
 import { server as srv } from './fixtures/servers'
@@ -39,6 +43,7 @@ function fake(
     blockCount?: number
     blockCountError?: Error
     removeBlock?: { ok: boolean; reason?: string; count: number }
+    missing?: string
   } = {},
 ) {
   const calls: string[] = []
@@ -62,6 +67,18 @@ function fake(
     readConfig: async () => {
       calls.push('readConfig')
       return { id: 'mcp-client', mcpServers: SPEC }
+    },
+    secretConsumers: async (reference: string) => {
+      calls.push(`read:${reference}`)
+      if (reference === opts.missing) throw new Error('`GONE` is not in the vault.')
+      return ['database']
+    },
+    grantSecret: async (reference: string, consumers: string[]) => {
+      calls.push(`share:${reference}:${consumers.join(',')}`)
+    },
+    reconnect: async (server: string) => {
+      calls.push(`reconnect:${server}`)
+      return { state: 'connecting' }
     },
   } as unknown as Api
   const deps: SaveDeps = {
@@ -313,5 +330,122 @@ describe('secretIssues', () => {
     ]
     const errors = tails.map((tail) => ({ path: `/mcpServers/a/${tail}`, message: 'm' }))
     expect(secretIssues(errors)).toEqual(errors.slice(0, 4))
+  })
+})
+
+describe('saveBefore', () => {
+  const config = { a: { url: 'A' }, b: { url: 'B' } }
+  const a = srv({ name: 'a', fingerprint: 'fa' })
+  const b = srv({ name: 'b', fingerprint: 'fb' })
+
+  it('takes the entry and the fingerprint of the server being saved, never of another one', () => {
+    expect(saveBefore(false, 'a', config, [b, a])).toEqual({ entry: { url: 'A' }, fingerprint: 'fa' })
+    expect(saveBefore(false, 'b', config, [b, a])).toEqual({ entry: { url: 'B' }, fingerprint: 'fb' })
+  })
+
+  it('has nothing before an add, a name the worker does not list, or one not in the config', () => {
+    expect(saveBefore(true, 'a', config, [a])).toEqual(null)
+    expect(saveBefore(false, 'a', config, [b])).toEqual(null)
+    expect(saveBefore(false, 'c', config, [srv({ name: 'c' })])).toEqual(null)
+    expect(saveBefore(false, 'a', null, undefined)).toEqual(null)
+  })
+})
+
+describe('saveMap', () => {
+  const shown = { a: { url: 'A' }, b: { url: 'B' } }
+  const listed = [srv({ name: 'a', fingerprint: 'fp1' }), srv({ name: 'b' })]
+
+  it('goes through removed and changed names in name order; a new name has nothing before it', async () => {
+    const f = fake()
+    const edit = { candidate: { a: { url: 'A2' }, c: { url: 'C' } }, changed: ['a', 'c'], removed: ['b'] }
+    expect(await saveMap(f.deps, shown, edit, listed)).toEqual({ saved: true, issues: [] })
+    expect(f.calls).toEqual([
+      'validate',
+      // a: the listed fingerprint is the validated one, so no approve
+      'validate',
+      'write:a',
+      // b: removed
+      'blockCount',
+      'confirm',
+      'write:b',
+      // c: new, so the gate is read and the person asked
+      'validate',
+      'blockCount',
+      'confirm',
+      'approve:c:fp1',
+      'write:c',
+    ])
+  })
+
+  it('stops at the first entry the person declines', async () => {
+    const f = fake({ confirm: false })
+    const edit = { candidate: { ...shown, c: { url: 'C' }, d: { url: 'D' } }, changed: ['c', 'd'], removed: [] }
+    expect(await saveMap(f.deps, shown, edit, listed)).toEqual({ saved: false, issues: [] })
+    expect(f.calls).toEqual(['validate', 'validate', 'blockCount', 'confirm'])
+  })
+
+  it('notes a removed name the worker does not list, and removes nothing for it', async () => {
+    const f = fake()
+    const edit = { candidate: shown, changed: [], removed: ['x'] }
+    expect(await saveMap(f.deps, { ...shown, x: {} }, edit, listed)).toEqual({
+      saved: true,
+      issues: [{ path: '', message: 'x: not removed, the worker does not list it' }],
+    })
+    expect(f.calls).toEqual(['validate'])
+  })
+
+  it('stops before any write when the map does not validate', async () => {
+    const issue = { path: '/mcpServers/c/url', message: 'must be https' }
+    const f = fake({ validation: { ...VALID, ok: false, errors: [issue] } })
+    const edit = { candidate: { ...shown, c: { url: 'C' } }, changed: ['c'], removed: [] }
+    const result = await saveMap(f.deps, shown, edit, listed)
+    expect(result.saved).toEqual(false)
+    expect(result.issues).toContainEqual(issue)
+    expect(f.calls).toEqual(['validate'])
+  })
+
+  it('never writes an entry left as shown, its hidden value and all', async () => {
+    const stored = {
+      linear: { type: 'http', url: 'https://mcp.linear.app/mcp', auth: { type: 'bearer', token: 'LITERAL' } },
+      b: { url: 'B' },
+    }
+    const edit = readMapEdit(stored, mapAsJson(stored).replace('"B"', '"B2"'))
+    if ('issues' in edit) throw new Error(`refused: ${JSON.stringify(edit.issues)}`)
+    const f = fake()
+    await saveMap(f.deps, stored, edit, [
+      srv({ name: 'linear', fingerprint: 'fp1' }),
+      srv({ name: 'b', fingerprint: 'fp1' }),
+    ])
+    expect(f.written).toEqual({ b: { url: 'B2' } })
+  })
+})
+
+describe('shareEntry', () => {
+  const refs = ['env://GH_TOKEN', 'secret://LINEAR_API_KEY']
+
+  it('asks once, reads every reference, then shares each and reconnects', async () => {
+    const f = fake()
+    expect(await shareEntry(f.deps, 'linear', refs)).toEqual(true)
+    expect(f.confirms).toEqual([{ title: 'Share with mcp-client?', lines: refs }])
+    expect(f.calls).toEqual([
+      'confirm',
+      'read:env://GH_TOKEN',
+      'read:secret://LINEAR_API_KEY',
+      'share:env://GH_TOKEN:database',
+      'share:secret://LINEAR_API_KEY:database',
+      'reconnect:linear',
+    ])
+  })
+
+  it('a missing second reference writes nothing', async () => {
+    const f = fake({ missing: 'secret://LINEAR_API_KEY' })
+    await expect(shareEntry(f.deps, 'linear', refs)).rejects.toThrow('`GONE` is not in the vault.')
+    expect(f.calls).toEqual(['confirm', 'read:env://GH_TOKEN', 'read:secret://LINEAR_API_KEY'])
+  })
+
+  it('shares nothing when the person declines', async () => {
+    const f = fake({ confirm: false })
+    expect(await shareEntry(f.deps, 'linear', refs)).toEqual(false)
+    expect(f.calls).toEqual(['confirm'])
   })
 })

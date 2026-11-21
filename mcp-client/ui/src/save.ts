@@ -40,6 +40,20 @@ export function needsConfirm(before: { fingerprint: string } | null, after: Serv
   return changed && (Boolean(after.effects.runs) || after.effects.sends.length > 0)
 }
 
+/** What a save compares against: the stored entry and the fingerprint of the server named `name`, never of the
+ * one selected; nothing for an add, or for a name the config or the worker does not hold. */
+export function saveBefore(
+  adding: boolean,
+  name: string,
+  config: Record<string, unknown> | null,
+  servers: Server[] | undefined,
+): { entry: unknown; fingerprint: string } | null {
+  const server = servers?.find((s) => s.name === name)
+  return adding || !server || !config || !(name in config)
+    ? null
+    : { entry: config[name], fingerprint: server.fingerprint }
+}
+
 const validated = async (api: Api, name: string, entry: unknown) =>
   (await api.validate({ [name]: entry })).servers[name] as ServerValidation | undefined
 
@@ -118,6 +132,43 @@ export async function removeEntry(deps: SaveDeps, server: Server): Promise<boole
     if (!removed.ok) throw new Error(gateError('removed', 'removed', String(removed.reason)))
   }
   await deps.api.writeEntry(server.name, null)
+  return true
+}
+
+/** Edit as JSON's save: the whole map validated, then each removed or changed name, in name order, through
+ * `removeEntry` or `saveEntry`. The first one declined or failed stops the rest. */
+export async function saveMap(
+  deps: SaveDeps,
+  shown: Record<string, unknown>,
+  edit: { candidate: Record<string, unknown>; changed: string[]; removed: string[] },
+  listed: Server[],
+): Promise<{ saved: boolean; issues: Issue[]; message?: string }> {
+  const { servers } = await deps.api.validate(edit.candidate)
+  const errors = Object.values(servers).flatMap((v) => v.errors)
+  if (errors.length > 0) return { saved: false, issues: errors }
+  const notes: Issue[] = []
+  for (const name of [...edit.removed, ...edit.changed].sort()) {
+    const server = listed.find((s) => s.name === name)
+    if (edit.removed.includes(name)) {
+      if (!server) notes.push({ path: '', message: `${name}: not removed, the worker does not list it` })
+      else if (!(await removeEntry(deps, server))) return { saved: false, issues: notes }
+      continue
+    }
+    const entry = edit.candidate[name] as Record<string, unknown>
+    const result = await saveEntry(deps, name, entry, saveBefore(false, name, shown, listed))
+    if (!result.saved) return { saved: false, issues: [...notes, ...result.errors], message: result.message }
+  }
+  return { saved: true, issues: notes }
+}
+
+/** Share an entry's references with mcp-client, after one confirm that names them (names only, never a value).
+ * Every reference is read before any is written, so a missing one leaves every grant as it was. */
+export async function shareEntry(deps: SaveDeps, name: string, refs: string[]): Promise<boolean> {
+  if (!(await deps.confirm({ title: 'Share with mcp-client?', lines: refs }))) return false
+  const consumers: string[][] = []
+  for (const ref of refs) consumers.push(await deps.api.secretConsumers(ref))
+  for (const [i, ref] of refs.entries()) await deps.api.grantSecret(ref, consumers[i])
+  await deps.api.reconnect(name)
   return true
 }
 

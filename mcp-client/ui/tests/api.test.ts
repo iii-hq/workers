@@ -120,6 +120,21 @@ describe('createApi', () => {
     expect(calls.map((c) => c.fn)).toEqual(['secrets::get'])
   })
 
+  it('shareSecret reads no grant on an env variable as none, and shares it', async () => {
+    const { iii, calls } = fakeIii({ 'secrets::get': () => null, 'secrets::access': () => ({}) })
+    await createApi(iii).shareSecret('env://GH_TOKEN')
+    expect(calls.map((c) => [c.fn, c.payload])).toEqual([
+      ['secrets::get', { name: 'GH_TOKEN', store: 'env' }],
+      ['secrets::access', { name: 'GH_TOKEN', consumers: ['mcp-client'], store: 'env' }],
+    ])
+  })
+
+  it('shareSecret refuses a vault name with no secret and writes nothing', async () => {
+    const { iii, calls } = fakeIii({ 'secrets::get': () => null, 'secrets::access': () => ({}) })
+    await expect(createApi(iii).shareSecret('secret://GONE')).rejects.toThrow('`GONE` is not in the vault.')
+    expect(calls.map((c) => c.fn)).toEqual(['secrets::get'])
+  })
+
   it('call uses the real function id and a 130 s timeout', async () => {
     const { iii, calls } = fakeIii({ 'mcp::linear::whoami': () => ({ content: [] }) })
     await createApi(iii).call('mcp::linear::whoami', {})

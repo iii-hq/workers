@@ -14,12 +14,18 @@ import type {
 const WORKER = 'mcp-client'
 /** Past the worker's own 120 s call timeout, so its error arrives first. */
 const CALL_TIMEOUT_MS = 130000
-const SECRETS_TIMEOUT_MS = 10000
+const SECRETS = { timeoutMs: 10000 }
 
 type Json = Record<string, unknown>
 
 const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value)
 const serversOf = (root: unknown): Json => (isObject(root) && isObject(root.mcpServers) ? root.mcpServers : {})
+/** `secrets::*` names a secret by its bare name, and an `env://` one by the env store too. */
+const secretArgs = (reference: string): { name: string; store?: string } => {
+  const at = reference.indexOf('://')
+  const name = reference.slice(at + 3)
+  return reference.slice(0, at).toLowerCase() === 'env' ? { name, store: 'env' } : { name }
+}
 
 export type Api = ReturnType<typeof createApi>
 
@@ -50,6 +56,28 @@ export function createApi(iii: ExtensionIii) {
     const root = await readRoot(id)
     const value = { ...(isObject(root) ? root : {}), mcpServers: change(serversOf(root)) }
     await iii.call('configuration::set', { id, value })
+  }
+
+  /** Who may read the secret behind `reference` now. No value is read. An env variable with no grant reads as
+   * none (it can be shared whether or not it is set); a vault name with no secret is refused. */
+  const secretConsumers = async (reference: string): Promise<string[]> => {
+    const args = secretArgs(reference)
+    const meta = await iii.call<{ consumers?: unknown } | null>('secrets::get', args, SECRETS)
+    if (meta == null) {
+      if (args.store) return []
+      throw new Error(`\`${args.name}\` is not in the vault.`)
+    }
+    // Sending a list without the ones already there would revoke them.
+    if (!Array.isArray(meta.consumers)) throw new Error(`secrets::get returned no consumer list for ${args.name}`)
+    return meta.consumers.map(String)
+  }
+  /** `secrets::access` replaces the list: send the one just read, mcp-client added. */
+  const grantSecret = async (reference: string, consumers: string[]): Promise<void> => {
+    await iii.call(
+      'secrets::access',
+      { ...secretArgs(reference), consumers: [...new Set([...consumers, WORKER])] },
+      SECRETS,
+    )
   }
 
   return {
@@ -89,19 +117,10 @@ export function createApi(iii: ExtensionIii) {
         return next
       }),
     writeConfig: (mcpServers: Json) => writeServers(() => mcpServers),
-    /** Let mcp-client read the secret behind `reference`. `secrets::access` replaces the consumer list, so the
-     * list sent is the one just read plus mcp-client; a failed read writes nothing. No value is read. */
-    shareSecret: async (reference: string): Promise<void> => {
-      const at = reference.indexOf('://')
-      const name = reference.slice(at + 3)
-      const store = reference.slice(0, at).toLowerCase() === 'env' ? { store: 'env' } : {}
-      const options = { timeoutMs: SECRETS_TIMEOUT_MS }
-      const { consumers } = await iii.call<{ consumers?: unknown }>('secrets::get', { name, ...store }, options)
-      // Sending a list without the ones already there would revoke them.
-      if (!Array.isArray(consumers)) throw new Error(`secrets::get returned no consumer list for ${name}`)
-      const next = [...new Set([...consumers.map(String), WORKER])]
-      await iii.call('secrets::access', { name, consumers: next, ...store }, options)
-    },
+    secretConsumers,
+    grantSecret,
+    /** Let mcp-client read the secret behind `reference`: read, then grant. A failed read writes nothing. */
+    shareSecret: async (reference: string): Promise<void> => grantSecret(reference, await secretConsumers(reference)),
     call: (functionId: string, payload: Json) => iii.call(functionId, payload, { timeoutMs: CALL_TIMEOUT_MS }),
   }
 }

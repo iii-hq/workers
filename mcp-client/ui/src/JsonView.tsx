@@ -1,27 +1,27 @@
 import { Button, CodeEditor, StatusPanel } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
-import type { Api } from './api'
 import { SaveBar } from './ConnectionView'
 import { mapAsJson, readMapEdit } from './config-model'
-import { removeEntry, type SaveDeps, saveEntry, secretIssues } from './save'
+import { type SaveDeps, saveMap, secretIssues } from './save'
 import type { Issue } from './types'
 
 /** Edit as JSON: every entry in one editor, saved entry by entry through the same sequence as the form. A
- * value in a secret position shows hidden; an entry left as shown is no change. */
+ * value in a secret position shows hidden; an entry left as shown is no change. `blocked` says why Save cannot
+ * run. */
 export function JsonView({
-  api,
   deps,
   mcpServers,
   onClose,
   setDirty,
+  blocked,
   onMoveSecrets,
 }: {
-  api: Api
   deps: SaveDeps
   mcpServers: Record<string, unknown>
   onClose: () => void
   setDirty: (dirty: boolean) => void
+  blocked: string | null
   onMoveSecrets?: (text: string) => void
 }) {
   // The map the text showed: an edit is read against it, not against a refresh that came later.
@@ -42,29 +42,10 @@ export function JsonView({
     if ('issues' in read) return setIssues(read.issues)
     setSaving(true)
     try {
-      const { servers } = await api.validate(read.candidate)
-      const errors = Object.values(servers).flatMap((v) => v.errors)
-      setIssues(errors)
-      if (errors.length > 0) return
-      const listed = (await api.listServers()).servers
-      const notes: Issue[] = []
-      // Name order across both kinds; the first declined or failed one stops the rest.
-      for (const name of [...read.removed, ...read.changed].sort()) {
-        const server = listed.find((s) => s.name === name)
-        if (read.removed.includes(name)) {
-          if (!server) notes.push({ path: '', message: `${name}: not removed, the worker does not list it` })
-          else if (!(await removeEntry(deps, server))) return
-          continue
-        }
-        const before = server && name in shown ? { entry: shown[name], fingerprint: server.fingerprint } : null
-        const result = await saveEntry(deps, name, read.candidate[name] as Record<string, unknown>, before)
-        if (!result.saved) {
-          setIssues(result.errors)
-          setFailure(result.message ?? null)
-          return
-        }
-      }
-      if (notes.length > 0) return setIssues(notes)
+      const result = await saveMap(deps, shown, read, (await deps.api.listServers()).servers)
+      setIssues(result.issues)
+      setFailure(result.message ?? null)
+      if (!result.saved || result.issues.length > 0) return
       setDirty(false)
       onClose()
     } catch (err) {
@@ -107,7 +88,7 @@ export function JsonView({
         </ul>
       ) : null}
       {dirty || saving ? (
-        <SaveBar onSave={() => void save()} onDiscard={discard} saving={saving} blocked={null} />
+        <SaveBar onSave={() => void save()} onDiscard={discard} saving={saving} blocked={blocked} />
       ) : null}
     </div>
   )
