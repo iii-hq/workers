@@ -846,22 +846,31 @@ impl Server {
             };
             let (wait, stable) = match attempt {
                 Ok(live) => match self.serve(live, &mut stop, &mut notes, &mut backoff).await {
-                    Some(stable) => (None, stable),
+                    Some(stable) => (None, Some(stable)),
                     None => return,
                 },
-                Err(wait) => (wait, false),
+                Err(wait) => (wait, None),
             };
             // `connecting` after a failed attempt: the approvals could not be read.
-            let state = self.status.borrow().state;
+            let (state, stage) = {
+                let s = self.status.borrow();
+                (s.state, s.stage)
+            };
             if !matches!(state, State::Unavailable | State::Connecting) {
                 let _ = (&mut stop).await;
                 return;
             }
+            // A spawn, an exit, and a handshake or first listing that failed
+            // are failed starts; a failed approval or secret step is not.
+            let start = match stable {
+                Some(stable) => Some(stable),
+                None => matches!(stage, Some(Stage::Connect | Stage::Tools)).then_some(false),
+            };
             // A 429's `Retry-After` as sent: a reconnect or a change cuts it short.
-            let wait = match wait {
-                Some(wait) => wait,
-                None if stdio => self.schedule(stable),
-                None => backoff.next(),
+            let wait = match (wait, start) {
+                (Some(wait), _) => wait,
+                (None, Some(stable)) if stdio => self.schedule(stable),
+                _ => backoff.next(),
             };
             tokio::select! {
                 _ = sleep(wait) => {}
@@ -1713,10 +1722,9 @@ impl Manager {
 
     /// The stderr tail of a stdio server; an http server has none.
     pub async fn logs(&self, server: &str) -> Result<Logs, String> {
-        let servers = self.servers.lock().await;
-        let s = servers
-            .get(server)
-            .ok_or_else(|| format!("no server named `{server}`"))?;
+        // Not held while reading: an apply holds it across a stop.
+        let s = self.servers.lock().await.get(server).cloned();
+        let s = s.ok_or_else(|| format!("no server named `{server}`"))?;
         let (lines, dropped) = match s.is_stdio() {
             true => s.ring.lock().unwrap().snapshot(),
             false => (vec![], 0),

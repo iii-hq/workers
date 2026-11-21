@@ -628,3 +628,43 @@ async fn a_changed_env_secret_restarts_the_process() {
     assert!(rotated, "{}", server(&m, "fake").await);
     m.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_secret_that_cannot_be_read_is_not_a_failed_start() {
+    let host = FakeHost::new();
+    host.set_secret("secret://FAKE_TOKEN", "v1");
+    let raw = RawConfig::from_value(&cfg(json!({"API_TOKEN": "secret://FAKE_TOKEN"})));
+    let m = Manager::new(host.clone(), opts(stdio_timings()));
+    m.approve("fake", Some(&fingerprint(&raw.0["fake"])))
+        .await
+        .unwrap();
+    // The approvals are loaded; every attempt now fails at the secret step.
+    host.set_unreachable(true);
+    m.apply_config(raw).await;
+    // More attempts than the budget of 5 allows before a cooldown.
+    let retried = until(Duration::from_secs(5), || async {
+        host.resolve_count("secret://FAKE_TOKEN") >= 6
+    })
+    .await;
+    let v = server(&m, "fake").await;
+    assert!(retried, "{v}");
+    assert_eq!(
+        (&v["state"], &v["stage"], &v["error"]["code"]),
+        (
+            &json!("unavailable"),
+            &json!("secret"),
+            &json!("connect_failed")
+        ),
+        "{v}"
+    );
+    let p = &v["process"];
+    assert_eq!(p["restarts"], 0, "{v}");
+    assert!(p["started_at"].is_null() && p["pid"].is_null(), "{v}");
+    assert!(p["next_restart_at"].is_null(), "{v}");
+    let process = ServerEvent {
+        server: "fake".into(),
+        kind: EventKind::Process,
+    };
+    assert!(!host.events().contains(&process), "a process was spawned");
+    m.shutdown().await;
+}
