@@ -217,6 +217,11 @@ fn capped(value: Value, max_bytes: usize) -> (Value, usize, bool) {
     if text.len() <= max_bytes {
         return (value, chars, false);
     }
+    // A whole value keeps its handles for the caller; this cut text is one the
+    // harness cannot look inside, so withhold the keys before the cut.
+    let mut keys = Vec::new();
+    pipe::stream_access_keys(&value, &mut keys);
+    let text = pipe::withhold_access_keys(text, &keys);
     let mut end = max_bytes;
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
@@ -592,6 +597,38 @@ mod tests {
         let (obj, _, truncated) = capped(json!({ "k": "v" }), 2);
         assert!(truncated);
         assert_eq!(obj, json!("{\""));
+    }
+
+    #[tokio::test]
+    async fn a_capped_entry_withholds_stream_handle_keys() {
+        // Transforms never touch the bus, so a disconnected client is fine.
+        let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
+        let handle = json!({ "channel_id": "c1", "access_key": "secret-key", "direction": "read" });
+        // A `shell::fs::read` return, padded past the cap.
+        let read = json!({ "content": handle, "size": 16, "tail": "x".repeat(400) });
+        let req = parse(json!({ "max_entry_bytes": 400, "calls": [
+            { "function": "fp::get", "payload": { "value": read, "path": "" } },
+        ]}));
+        let response = run(iii, req).await.unwrap();
+        let BatchResult::Ok {
+            result: Value::String(text),
+            truncated: true,
+            ..
+        } = &response.results[0]
+        else {
+            panic!("expected a capped entry, got {:?}", response.results[0]);
+        };
+        assert!(!text.contains("secret-key"), "{text}");
+        assert!(text.contains("coder::read-file"), "{text}");
+        assert!(text.contains(r#""channel_id":"c1""#), "{text}");
+        assert!(text.contains(r#""direction":"read""#), "{text}");
+        // Keys sort, so `access_key` leads a handle: a cut at 30 bytes lands in it.
+        let (cut, _, _) = capped(json!({ "content": handle }), 30);
+        assert!(!cut.as_str().unwrap().contains("secr"), "{cut}");
+        // A whole result stays the value; the harness withholds its handles.
+        let (whole, _, truncated) = capped(json!({ "content": handle }), 16_384);
+        assert!(!truncated);
+        assert_eq!(whole["content"]["access_key"], "secret-key");
     }
 
     #[test]
