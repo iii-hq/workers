@@ -47,8 +47,10 @@ adapt to).
    operator configured).
 4. Pure short-circuits (`decision::pre_policy_allow`): `full` → continue;
    `approved_always` hit → continue (every mode); `auto` + `always_allow`
-   hit → continue. Allow-list entries match by equality fast-path or `*`
-   glob (seed entries are documented as "ids / globs").
+   hit → continue. `always_allow` entries match by equality fast-path or `*`
+   glob (seed entries are documented as "ids / globs"); `approved_always`
+   entries match by equality only, since an approval prompt stores the held
+   call's id as it arrived.
 5. Config rules fallback: `allow` → continue; `deny` → deny with the permissions
    envelope reason; no match → **hold**.
 6. Hold path:
