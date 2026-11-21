@@ -6,7 +6,6 @@ import {
   ListItem,
   type LiveAnnouncement,
   LiveRegion,
-  MetaRow,
   PageBody,
   PageHeader,
   type PageHeaderMenuItem,
@@ -38,6 +37,7 @@ import {
 } from './config-model'
 import { FunctionDetail } from './FunctionDetail'
 import { JsonView } from './JsonView'
+import { ProcessView } from './ProcessView'
 import {
   announcements,
   functionRows,
@@ -52,6 +52,7 @@ import {
 } from './presentation'
 import { ServerContents } from './ServerContents'
 import { ServerList } from './ServerList'
+import { SignIn } from './SignIn'
 import { approveEntry, removeEntry, type SaveDeps, saveBefore, saveEntry, setDisabled, shareEntry } from './save'
 import type { Issue, Selection, Server, ServersList } from './types'
 import { useServers } from './use-servers'
@@ -61,21 +62,6 @@ const COLUMN_OF: Record<Level, number> = { servers: 1, contents: 2, detail: 3 }
 const NO_ISSUES: Issue[] = []
 const WORKER_DOWN = 'The mcp-client worker is not running'
 const CONFIG_DOWN = 'The configuration worker cannot be reached'
-
-/** Column 3 for the Process row, until its own view exists. */
-function ServerFacts({ server }: { server: Server }) {
-  return (
-    <MetaRow
-      items={[
-        { label: 'Transport', value: server.transport },
-        { label: 'Target', value: server.target },
-        { label: 'Authentication', value: server.auth },
-        { label: 'Protocol', value: server.protocol_version },
-        { label: 'Server', value: server.server_info && `${server.server_info.name} ${server.server_info.version}` },
-      ].filter((item) => item.value)}
-    />
-  )
-}
 
 /** The MCP servers page: the path row over servers, their contents and one thing in depth. */
 export function McpServersPage({
@@ -101,6 +87,8 @@ export function McpServersPage({
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<{ headline: string; detail: string } | null>(null)
+  // Raised by a row's Sign in; the Connection view's SignIn starts an attempt on the raise.
+  const [startSignal, setStartSignal] = useState(0)
   const { confirm, dialog } = useConfirm()
   const [col1, setCol1] = usePaneState('mcp-client:col1', 288)
   const { ref: narrowRef, narrow } = useContainerNarrow()
@@ -325,7 +313,12 @@ export function McpServersPage({
     else if (s && action === 'review') void approve(s)
     else if (s && action === 'turn_on') void turnOn(s)
     else if (s && action === 'share') void share(s)
+    else if (action === 'sign_in') setStartSignal((n) => n + 1)
   }
+  // A raise is delivered once: a SignIn mounted later never reads it as a new one.
+  useEffect(() => {
+    if (startSignal > 0) setStartSignal(0)
+  }, [startSignal])
   const back = (to: Level, label: string) =>
     narrow ? (
       <Button
@@ -416,6 +409,10 @@ export function McpServersPage({
     { id: 'refresh', label: 'Refresh', icon: <RefreshCw size={16} />, onSelect: data.refresh },
   ]
   const bar = dirty || saving
+  const cwdOf = (name: string) => {
+    const cwd = (data.config?.[name] as { cwd?: unknown } | null | undefined)?.cwd
+    return typeof cwd === 'string' ? cwd : null
+  }
   const panel = server ? presentServer(server, 0).panel : null
 
   return (
@@ -643,9 +640,14 @@ export function McpServersPage({
                                   Turn on
                                 </Button>
                               ) : null}
+                              {server && !adding ? (
+                                <SignIn api={api} server={server} startSignal={startSignal} quiet={bar} />
+                              ) : null}
                             </ConnectionView>
                           ) : null}
-                          {server && item?.kind === 'process' ? <ServerFacts server={server} /> : null}
+                          {server && item?.kind === 'process' ? (
+                            <ProcessView key={server.name} api={api} server={server} cwd={cwdOf(server.name)} />
+                          ) : null}
                           {server && fnRow ? (
                             <FunctionDetail api={api} server={server} row={fnRow} host={host} commands={commands} />
                           ) : null}

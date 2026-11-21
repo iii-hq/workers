@@ -1,6 +1,17 @@
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
 import { type AccessClass, serverAccess } from './access'
-import type { AuthKind, EngineFunction, ProcessInfo, Selection, Server, ServerState, ServersList, Stage } from './types'
+import type {
+  AuthKind,
+  EngineFunction,
+  LoginInfo,
+  LoginStart,
+  ProcessInfo,
+  Selection,
+  Server,
+  ServerState,
+  ServersList,
+  Stage,
+} from './types'
 import type { ServersData } from './use-servers'
 
 /** Server state to the words and tones of the page: the spec's "States and
@@ -279,6 +290,90 @@ export function processRowText(process: ProcessInfo | null, now: number): string
   if (process?.pid == null) return 'not running'
   const up = process.started_at == null ? null : `up ${formatDuration(now - process.started_at)}`
   return ['running', `pid ${process.pid}`, up].filter(Boolean).join(' · ')
+}
+
+const NONE = '—'
+const secondsUntil = (at: number, now: number) => Math.max(0, Math.ceil((at - now) / 1000))
+
+/** The stdio process view's facts, in the order the view lists them. */
+export function processFacts(p: ProcessInfo, now: number): { label: string; value: string }[] {
+  const exit = p.last_exit
+  return [
+    { label: 'State', value: p.pid != null ? 'running' : p.next_restart_at != null ? 'restarting' : 'stopped' },
+    { label: 'Pid', value: p.pid == null ? NONE : String(p.pid) },
+    {
+      label: 'Uptime',
+      value: p.pid == null || p.started_at == null ? NONE : formatDuration(now - p.started_at),
+    },
+    { label: 'Restarts', value: `${p.restarts} of ${p.restart_budget}` },
+    {
+      label: 'Next restart',
+      value: p.next_restart_at == null ? NONE : `in ${secondsUntil(p.next_restart_at, now)} s`,
+    },
+    {
+      label: 'Last exit',
+      value: exit?.code != null ? `code ${exit.code}` : exit?.signal != null ? `signal ${exit.signal}` : NONE,
+    },
+  ]
+}
+
+const LOOPBACK = /^127(\.\d{1,3}){3}$/
+
+/** The authorize URL as a link the page may open: https with no userinfo, or http on a loopback host. */
+export function safeAuthorizeLink(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    if (parsed.username || parsed.password) return null
+    const loopback = parsed.hostname === 'localhost' || parsed.hostname === '[::1]' || LOOPBACK.test(parsed.hostname)
+    return parsed.protocol === 'https:' || (parsed.protocol === 'http:' && loopback) ? parsed.href : null
+  } catch {
+    return null
+  }
+}
+
+/** `9:42`: the minutes and seconds left, never below `0:00`. */
+export function countdown(expiresAt: number, now: number): string {
+  const left = secondsUntil(expiresAt, now)
+  return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+}
+
+export type LoginPhase = 'idle' | 'starting' | 'waiting' | 'resumed' | 'finishing' | 'failed'
+
+/** What the sign-in view may show. The authorize URL lives only in the start reply this tab holds (`held`):
+ * after a reload the pending login resumes from the worker with no link. */
+export function signInView(input: {
+  login: LoginInfo | null
+  held: LoginStart | null
+  busy: 'start' | 'finish' | null
+  error: string | null
+  now: number
+}): {
+  phase: LoginPhase
+  link: string | null
+  canCopyLink: boolean
+  timer: boolean
+  paste: boolean
+  startAgain: boolean
+} {
+  const { login, held, busy, error, now } = input
+  const pending = login?.pending === true
+  const phase: LoginPhase =
+    error !== null || (pending && login.expires_at <= now)
+      ? 'failed'
+      : busy === 'start'
+        ? 'starting'
+        : busy === 'finish'
+          ? 'finishing'
+          : pending && held
+            ? 'waiting'
+            : pending
+              ? 'resumed'
+              : 'idle'
+  // A URL the page will not open is not offered for copying either.
+  const link = phase === 'waiting' && held ? safeAuthorizeLink(held.authorize_url) : null
+  // Finishing keeps the waiting view in place, its buttons disabled.
+  const open = phase === 'waiting' || phase === 'resumed' || phase === 'finishing'
+  return { phase, link, canCopyLink: link !== null, timer: open, paste: open, startAgain: phase === 'resumed' }
 }
 
 export interface FunctionRow {

@@ -938,3 +938,94 @@
 [data-iii-ui="mcp-client"] .mcp-ui-issues span {
   color: var(--color-alert-strong);
 }
+
+/* ── column 3, sign-in and the stdio process ───────────────────────── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* A sign-in under way is the view's task: one bordered block above the entry's form. */
+[data-iii-ui="mcp-client"] .mcp-ui-signin:is([data-phase="waiting"], [data-phase="resumed"], [data-phase="finishing"]) {
+  padding: 12px 16px 16px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin .mcp-ui-result-status {
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin details > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+/* The redirect URI: its name, the address in mono, its copy button. */
+[data-iii-ui="mcp-client"] .mcp-ui-cwd {
+  padding-inline: 12px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin details p,
+[data-iii-ui="mcp-client"] .mcp-ui-cwd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin code,
+[data-iii-ui="mcp-client"] .mcp-ui-cwd > :last-child {
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin code,
+[data-iii-ui="mcp-client"] .mcp-ui-cwd code {
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin form {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 6px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin label {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin form > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin form input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+/* The tail scrolls as one block, so the stream's own pane is not capped inside it. */
+[data-iii-ui="mcp-client"] .mcp-ui-stderr {
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 0 12px 10px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stderr pre {
+  max-height: none;
+  overflow: visible;
+}
+/* The stream's label stays in view while its lines scroll under it. */
+[data-iii-ui="mcp-client"] .mcp-ui-stderr > * > :first-child {
+  position: sticky;
+  top: 0;
+  padding-block: 10px 4px;
+  background: var(--color-panel);
+}

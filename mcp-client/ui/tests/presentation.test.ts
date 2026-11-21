@@ -5,6 +5,7 @@ import {
   blocksOf,
   byName,
   connectionRowText,
+  countdown,
   countLabel,
   drawsWhole,
   elapsedText,
@@ -21,6 +22,7 @@ import {
   pageState,
   pathHeads,
   presentServer,
+  processFacts,
   processRowText,
   resourceMeta,
   resultSummary,
@@ -28,13 +30,15 @@ import {
   runConfirm,
   STAGES,
   STATE_WORD,
+  safeAuthorizeLink,
   searchNote,
+  signInView,
   skippedText,
   stageTrack,
   statusBarText,
   uniqueBy,
 } from '../src/presentation'
-import type { EngineFunction, Item, Server, Skipped } from '../src/types'
+import type { EngineFunction, Item, LoginStart, Server, Skipped } from '../src/types'
 import type { ServersData } from '../src/use-servers'
 import { docs, list, NOW, server, server as srv, stdio } from './fixtures/servers'
 
@@ -597,5 +601,136 @@ describe('advertisesText', () => {
     expect(advertisesText(srv())).toEqual('tools')
     expect(advertisesText(docs())).toEqual('tools · resources · prompts')
     expect(advertisesText(srv({ tools_listed: false }))).toEqual('none')
+  })
+})
+
+describe('safeAuthorizeLink', () => {
+  it('accepts https without userinfo, and http only for a loopback host', () => {
+    for (const url of [
+      'https://linear.app/oauth/authorize?client_id=x',
+      'http://127.0.0.1:9000/authorize',
+      'http://localhost:9000/authorize',
+      'http://[::1]:9000/authorize',
+    ]) {
+      expect(safeAuthorizeLink(url)).toEqual(url)
+    }
+    for (const url of [
+      'http://linear.app/oauth/authorize',
+      'https://user:pw@linear.app/x',
+      'https://user@linear.app/x',
+      'http://user@127.0.0.1/x',
+      'http://127.0.0.1.evil.example/x',
+      'javascript:alert(1)',
+      'not a url',
+      '',
+    ]) {
+      expect(safeAuthorizeLink(url)).toEqual(null)
+    }
+  })
+})
+
+describe('countdown', () => {
+  const now = 1_800_000_000_000
+
+  it('counts minutes and seconds down to zero', () => {
+    expect(countdown(now + 582_000, now)).toEqual('9:42')
+    expect(countdown(now + 600_000, now)).toEqual('10:00')
+    expect(countdown(now + 4_100, now)).toEqual('0:05')
+    expect(countdown(now - 1, now)).toEqual('0:00')
+  })
+})
+
+describe('signInView', () => {
+  const now = 1_800_000_000_000
+  const pending = { pending: true, expires_at: now + 582_000 }
+  const held: LoginStart = {
+    authorize_url: 'https://linear.app/oauth/authorize?state=s',
+    redirect_uri: 'http://127.0.0.1:3111/mcp-client/oauth/callback',
+    expires_at: now + 582_000,
+  }
+  const view = (over: Partial<Parameters<typeof signInView>[0]>) =>
+    signInView({ login: null, held: null, busy: null, error: null, now, ...over })
+
+  it('shows the link only while this tab holds the start reply', () => {
+    expect(view({ login: pending, held })).toEqual({
+      phase: 'waiting',
+      link: held.authorize_url,
+      canCopyLink: true,
+      timer: true,
+      paste: true,
+      startAgain: false,
+    })
+  })
+
+  it('resumes after a reload with the timer, the paste field and Start again, and no link', () => {
+    expect(view({ login: pending })).toEqual({
+      phase: 'resumed',
+      link: null,
+      canCopyLink: false,
+      timer: true,
+      paste: true,
+      startAgain: true,
+    })
+  })
+
+  it('offers no link the browser should not open', () => {
+    expect(view({ login: pending, held: { ...held, authorize_url: 'http://linear.app/x' } })).toMatchObject({
+      phase: 'waiting',
+      link: null,
+      canCopyLink: false,
+    })
+  })
+
+  it('covers the other phases', () => {
+    expect(view({}).phase).toEqual('idle')
+    expect(view({ busy: 'start' }).phase).toEqual('starting')
+    expect(view({ login: pending, held, busy: 'finish' }).phase).toEqual('finishing')
+    expect(view({ error: 'state mismatch' })).toMatchObject({ phase: 'failed', link: null, timer: false })
+    expect(view({ login: { pending: true, expires_at: now - 1 }, held })).toMatchObject({ phase: 'failed', link: null })
+  })
+})
+
+describe('processFacts', () => {
+  const now = 1_800_000_000_000
+  const values = (facts: { label: string; value: string }[]) => facts.map((fact) => fact.value)
+
+  it('lists the facts of a running process', () => {
+    const facts = processFacts(
+      {
+        pid: 48213,
+        started_at: now - 8_040_000,
+        restarts: 2,
+        restart_budget: 5,
+        next_restart_at: null,
+        last_exit: { code: 1, signal: null },
+      },
+      now,
+    )
+    expect(facts.map((fact) => fact.label)).toEqual(['State', 'Pid', 'Uptime', 'Restarts', 'Next restart', 'Last exit'])
+    expect(values(facts)).toEqual(['running', '48213', '2h 14m', '2 of 5', '—', 'code 1'])
+  })
+
+  it('lists the facts of one waiting to restart', () => {
+    expect(
+      values(
+        processFacts(
+          {
+            pid: null,
+            started_at: null,
+            restarts: 5,
+            restart_budget: 5,
+            next_restart_at: now + 7_200,
+            last_exit: { code: null, signal: 9 },
+          },
+          now,
+        ),
+      ),
+    ).toEqual(['restarting', '—', '—', '5 of 5', 'in 8 s', 'signal 9'])
+    expect(
+      processFacts(
+        { pid: null, started_at: null, restarts: 0, restart_budget: 5, next_restart_at: null, last_exit: null },
+        now,
+      )[0],
+    ).toEqual({ label: 'State', value: 'stopped' })
   })
 })

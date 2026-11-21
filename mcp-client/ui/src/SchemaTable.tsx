@@ -30,7 +30,7 @@ import type { CSSProperties } from 'react'
 
 const MAX_DEPTH = 3
 
-function CopyIconButton({ value, label }: { value: string; label: string }) {
+export function CopyIconButton({ value, label }: { value: string; label: string }) {
   const { state, copy } = useCopyFlash(value, 2000)
   const copied = state === 'copied'
   return (
