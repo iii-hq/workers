@@ -320,7 +320,10 @@ does not finish its upgrade headers within 10 s is closed.
 Hot reload: a `host`/`port` change rebinds the public listener (last-good on
 bind failure — the previous listener *and* config are kept); everything else
 (`engine_url`, `rbac.*`, `middleware_function_id`, `expose_worker_internals`)
-takes effect on the next connection.
+takes effect on the next connection. One exception: a reload that makes the
+proxy call a new middleware, auth or hook id closes the open sessions pinned
+to a namespace (close 1012), which may hold that id there; they reconnect
+under the new ids.
 
 ## Observers
 

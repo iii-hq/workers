@@ -627,21 +627,15 @@ impl Interceptor {
         // The middleware resolves in the namespace of the call it wraps, and a
         // pinned session's own namespace is its pin: hosting the id there would
         // hand that session's calls, with their context, to the session.
-        // shortcut: reads the ids of the configuration snapshot taken at the upgrade, so a hot reload that renames them does not unregister what an open pinned connection holds; close pinned connections on such a reload when an operator renames these ids at run time.
-        if self.session.registration_namespace.is_some() {
-            let rbac = &self.config.rbac;
-            let held = [
-                self.config.middleware_function_id.as_deref(),
-                rbac.auth_function_id.as_deref(),
-                rbac.on_function_registration_function_id.as_deref(),
-                rbac.on_observer_registration_function_id.as_deref(),
-            ];
-            if held.contains(&Some(engine_id.as_str())) {
-                tracing::warn!(
-                    "refusing to register {engine_id} in a pinned namespace: the proxy calls it"
-                );
-                return DownstreamAction::Drop;
-            }
+        // The ids are those of the snapshot taken at the upgrade: a reload
+        // that makes the proxy call another id closes the session (`proxy.rs`).
+        if self.session.registration_namespace.is_some()
+            && self.config.called_ids().contains(&Some(engine_id.as_str()))
+        {
+            tracing::warn!(
+                "refusing to register {engine_id} in a pinned namespace: the proxy calls it"
+            );
+            return DownstreamAction::Drop;
         }
         self.registered_ids.lock().await.insert(engine_id.clone());
         {

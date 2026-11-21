@@ -119,6 +119,7 @@ pub async fn handle_connection(
     // Interceptor's `reply_tx` — spawning avoids a head-of-line deadlock).
     let (reply_tx, mut reply_rx) = mpsc::channel::<String>(128);
 
+    let pinned = session.registration_namespace.is_some();
     let interceptor = Arc::new(Interceptor::new(
         state.iii.clone(),
         cfg.clone(),
@@ -322,6 +323,18 @@ pub async fn handle_connection(
     let closed_by_proxy = tokio::select! {
         closed = client_to_engine => closed,
         _ = engine_to_client => false,
+        _ = called_id_added(&state, &cfg), if pinned => {
+            tracing::info!("a reload changed an id the proxy calls; closing the pinned session");
+            // The engine drops the session's functions with its connection:
+            // that one goes first. `try_send`: a client that stopped reading
+            // must not keep them alive.
+            engine_writer.abort();
+            let _ = client_out.try_send(AxumMessage::Close(Some(AxumCloseFrame {
+                code: 1012, // service restart: the worker reconnects
+                reason: "configuration changed".into(),
+            })));
+            true
+        }
     };
 
     // A proxy-initiated close queued its answer and a Close: let the writer
@@ -339,6 +352,30 @@ pub async fn handle_connection(
     engine_writer.abort();
     reply_forwarder.abort();
     // _guard (ActiveGuard) drops here → live-connection gauge decremented.
+}
+
+/// Resolves when a reload makes the proxy call an id that `admitted` does not
+/// name. A pinned session admitted under `admitted` was never refused that id:
+/// it may hold it in its pin, where the middleware of a call into that
+/// namespace resolves, and its stale snapshot would still let it register it.
+/// It subscribes before the first check, so a reload during the upgrade counts.
+// shortcut: the engine drops a closed session's functions a moment after the new ids apply, so a call made in between can still reach one; make the reload wait for these closes if ids are ever renamed under hostile pinned sessions.
+async fn called_id_added(state: &ProxyState, admitted: &crate::config::WorkerConfig) {
+    let mut changes = crate::configuration::config_changes();
+    let refused = admitted.called_ids();
+    loop {
+        let live = state.config.read().await.clone();
+        if live
+            .called_ids()
+            .iter()
+            .any(|id| id.is_some() && !refused.contains(id))
+        {
+            return;
+        }
+        if changes.changed().await.is_err() {
+            return std::future::pending().await;
+        }
+    }
 }
 
 /// How long the engine may take to answer a pin declaration.
@@ -521,6 +558,41 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("INVALID_NAMESPACE"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_adds_a_called_id_ends_the_wait_of_a_pinned_session() {
+        use crate::config::WorkerConfig;
+        let admitted = WorkerConfig {
+            middleware_function_id: Some("mesh::middleware".into()),
+            ..WorkerConfig::default()
+        };
+        let iii = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        let cell = Arc::new(tokio::sync::RwLock::new(Arc::new(admitted.clone())));
+        let state = ProxyState::new(cell.clone(), iii);
+        let wait = called_id_added(&state, &admitted);
+        tokio::pin!(wait);
+
+        // Dropping an id, or a key that names none, leaves the session open.
+        let mut next = admitted.clone();
+        next.middleware_function_id = None;
+        next.expose_worker_internals = true;
+        crate::configuration::apply_config(&cell, next.clone()).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut wait)
+                .await
+                .is_err()
+        );
+
+        // An id the session was never refused closes it.
+        next.middleware_function_id = Some("probe::next-mw".into());
+        crate::configuration::apply_config(&cell, next).await;
+        tokio::time::timeout(Duration::from_secs(5), &mut wait)
+            .await
+            .expect("the renamed middleware ends the wait");
     }
 
     #[test]

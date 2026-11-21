@@ -19,7 +19,8 @@
 //!
 //! A session pinned to a namespace (`Bearer pinned`) is probed apart: it
 //! registers in its pin when silent past the grace window, is closed when it
-//! declares another namespace, cannot host the middleware, keeps the metadata
+//! declares another namespace, cannot host the middleware (and is closed by a
+//! reload that renames the middleware to an id it holds), keeps the metadata
 //! its worker declares, and serves an SDK worker's functions and observers
 //! there.
 
@@ -277,6 +278,8 @@ async fn boot_env(rbac: &str, seed: &str, engine_env: &[(&str, &str)]) -> Option
         .arg("--config")
         .arg(&seed_path)
         .env_remove("III_URL")
+        // The reload probe sets the entry under the built-in id.
+        .env_remove("III_CONFIG_NAME")
         .env("HOME", &dir)
         .stdout(proxy_log.try_clone().expect("clone proxy log"))
         .stderr(proxy_log)
@@ -1087,6 +1090,19 @@ async fn redeclare_pin_child() {
     ))
     .await
     .unwrap();
+    // The row must exist first, or the last assertion holds for a function
+    // that never registered. Read on the catalog: the engine acks a
+    // registration (`functionregistered`) only to a worker that declared
+    // `observe.v1`, and this one declares nothing.
+    let mut held = rows(&h.support, "probe::redeclare").await;
+    for _ in 0..50 {
+        if !held.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+        held = rows(&h.support, "probe::redeclare").await;
+    }
+    assert_eq!(held, ["laptop"]);
     let rejected = request(
         &mut ws,
         json!({ "type": "invokefunction", "function_id": "engine::workers::register",
@@ -1097,17 +1113,16 @@ async fn redeclare_pin_child() {
     .await;
     // `orders` is a grant key: accepted before the pin.
     assert_eq!(rejected["code"], "NAMESPACE_FORBIDDEN");
-    assert!(
-        timeout(Duration::from_secs(5), async {
-            while let Some(Ok(m)) = ws.next().await {
-                if m.is_close() {
-                    break;
-                }
+    let closed = timeout(Duration::from_secs(5), async {
+        while let Some(Ok(m)) = ws.next().await {
+            if m.is_close() {
+                return true;
             }
-        })
-        .await
-        .is_ok()
-    );
+        }
+        false // EOF or a read error is not the Close the proxy owes
+    })
+    .await;
+    assert!(matches!(closed, Ok(true)), "no Close frame: {closed:?}");
     // The engine drops the registration when the proxy drops the connection.
     let mut left = rows(&h.support, "probe::redeclare").await;
     for _ in 0..50 {
@@ -1155,6 +1170,68 @@ async fn pinned_middleware_child() {
         assert_eq!(rows(&h.support, id).await, ["default"], "{id}");
     }
     assert!(rows(&h.support, "probe::evil").await.is_empty());
+}
+
+#[test]
+fn a_reload_that_renames_the_middleware_closes_a_pinned_session() {
+    run_isolated_child("pinned_reload_child");
+}
+
+#[tokio::test]
+#[ignore = "isolated subprocess invoked by a_reload_that_renames_the_middleware_closes_a_pinned_session"]
+async fn pinned_reload_child() {
+    let Some(h) = boot_pinned("").await else {
+        return;
+    };
+    // Admitted while the middleware is `test::middleware`: this id is free.
+    let mut ws = raw_client_with(h.proxy_port, "Bearer pinned").await;
+    ws.send(Message::text(
+        json!({ "type": "registerfunction", "id": "probe::next-mw" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    sleep(Duration::from_millis(1500)).await;
+    assert_eq!(rows(&h.support, "probe::next-mw").await, ["laptop"]);
+
+    // The operator renames the middleware to the id the session holds.
+    let mut value = h
+        .support
+        .call(call("configuration::get", json!({ "id": "rbac-proxy" })))
+        .await
+        .expect("configuration::get")["value"]
+        .clone();
+    value["middleware_function_id"] = json!("probe::next-mw");
+    h.support
+        .call(call(
+            "configuration::set",
+            json!({ "id": "rbac-proxy", "value": value }),
+        ))
+        .await
+        .expect("configuration::set");
+
+    // The session is closed, and the engine drops what it held with it.
+    let closed = timeout(Duration::from_secs(5), async {
+        while let Some(Ok(m)) = ws.next().await {
+            if m.is_close() {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert!(
+        matches!(closed, Ok(true)),
+        "the pinned session stayed open: {closed:?}"
+    );
+    let mut left = rows(&h.support, "probe::next-mw").await;
+    for _ in 0..50 {
+        if left.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+        left = rows(&h.support, "probe::next-mw").await;
+    }
+    assert!(left.is_empty(), "{left:?}");
 }
 
 #[test]
@@ -1264,20 +1341,6 @@ async fn pinned_sdk_child() {
     }
     assert_eq!(answer.expect("probe::hello in laptop")["hello"], "laptop");
 
-    let workers = h
-        .support
-        .call(call("engine::workers::list", json!({})))
-        .await
-        .expect("engine::workers::list on the engine");
-    assert!(
-        workers["workers"]
-            .as_array()
-            .expect("workers")
-            .iter()
-            .any(|w| w["name"] == "rbac-proxy:laptop::pinned-sdk"),
-        "{workers}"
-    );
-
     let observer = h.support.observe(
         Source::function("probe::hello").namespace("laptop"),
         "api::sink",
@@ -1302,4 +1365,18 @@ async fn pinned_sdk_child() {
         sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(row["worker_name"], "rbac-proxy:laptop::pinned-sdk", "{row}");
+
+    let workers = h
+        .support
+        .call(call("engine::workers::list", json!({})))
+        .await
+        .expect("engine::workers::list on the engine");
+    assert!(
+        workers["workers"]
+            .as_array()
+            .expect("workers")
+            .iter()
+            .any(|w| w["name"] == "rbac-proxy:laptop::pinned-sdk"),
+        "{workers}"
+    );
 }
