@@ -153,8 +153,6 @@ export function ObserversPage({
     (fn: FunctionRef) => functionsById.get(functionKey(fn))?.description ?? undefined,
     [functionsById],
   )
-  const manyNamespaces = new Set((catalog.data?.functions ?? []).map((fn) => fn.namespace)).size > 1
-
   const partitioned = useMemo(() => {
     if (!catalog.data) return { groups: [] as SourceGroup[], plumbing: [] as ObserverInfo[] }
     // Plumbing (per-tab delivery handlers, injected-UI assets, config
@@ -207,6 +205,9 @@ export function ObserversPage({
     return { groups, plumbing }
   }, [catalog.data, functionsById, showInternal])
   const allGroups = partitioned.groups
+  // From the finished groups, so a heading synthesized for an observer in
+  // another namespace is told apart from the listed copy.
+  const manyNamespaces = new Set(allGroups.map((group) => group.source.namespace)).size > 1
 
   // The filter offers the worker names the catalogue itself carries:
   // whoever hosts an observed function or registered an observer.
