@@ -5,6 +5,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{InitOptions, register_worker};
 use mcp_client::host::EngineHost;
 use mcp_client::server::{Manager, ManagerOptions, Timings};
+use mcp_client::translate::ScrubWriter;
 use mcp_client::{configuration, functions, log_directives, stdio_allowed};
 use tracing_subscriber::EnvFilter;
 
@@ -28,7 +29,10 @@ fn main() -> anyhow::Result<()> {
     let directives = log_directives(std::env::var("RUST_LOG").ok().as_deref());
     let filter =
         EnvFilter::try_new(&directives).unwrap_or_else(|_| EnvFilter::new(log_directives(None)));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(ScrubWriter(std::io::stderr))
+        .init();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?

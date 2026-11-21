@@ -1,9 +1,106 @@
 //! Pure translation of MCP wire JSON into the blocks the harness shows, the
-//! per-result size cap, and the texts of call failures.
+//! per-result size cap, the texts of call failures, and the secret scrub of
+//! every text and log line.
 
 use std::collections::BTreeSet;
+use std::io;
+use std::sync::{Arc, Mutex, Weak};
 
 use serde_json::{Map, Value, json};
+use tracing_subscriber::fmt::MakeWriter;
+
+pub const REDACTED: &str = "[redacted]";
+
+/// Replaces each non-empty secret in `text` with `[redacted]`, longest first
+/// so a value that contains another goes whole. A secret that parses as a URL
+/// is also replaced in its normalised form, the one reqwest prints.
+pub fn scrub(text: &str, secrets: &[String]) -> String {
+    let mut all: Vec<String> = Vec::new();
+    for secret in secrets.iter().filter(|s| !s.is_empty()) {
+        if let Ok(url) = url::Url::parse(secret) {
+            all.push(url.into());
+        }
+        all.push(secret.clone());
+    }
+    all.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    all.iter()
+        .fold(text.to_string(), |t, s| t.replace(s.as_str(), REDACTED))
+}
+
+static LIVE: Mutex<Vec<Weak<ServerSecrets>>> = Mutex::new(Vec::new());
+
+/// The secret values one server task knows: those its references resolved
+/// to, and those minted or loaded later. No `Debug`: the values are secrets.
+#[derive(Default)]
+pub struct ServerSecrets {
+    resolved: Mutex<Vec<String>>,
+    added: Mutex<Vec<String>>,
+}
+
+impl ServerSecrets {
+    /// A new set, read by `all_secrets` for as long as it lives.
+    pub fn new() -> Arc<ServerSecrets> {
+        let set = Arc::new(ServerSecrets::default());
+        let mut live = LIVE.lock().unwrap();
+        live.retain(|w| w.strong_count() > 0);
+        live.push(Arc::downgrade(&set));
+        set
+    }
+
+    /// Replaces the values that came from references.
+    pub fn set_resolved(&self, values: Vec<String>) {
+        *self.resolved.lock().unwrap() = values;
+    }
+
+    /// A value minted or loaded after the references were resolved.
+    pub fn add(&self, value: &str) {
+        let mut added = self.added.lock().unwrap();
+        if !value.is_empty() && !added.iter().any(|v| v == value) {
+            added.push(value.into());
+        }
+    }
+
+    pub fn values(&self) -> Vec<String> {
+        let mut values = self.resolved.lock().unwrap().clone();
+        values.extend(self.added.lock().unwrap().iter().cloned());
+        values
+    }
+}
+
+/// The values of every live set.
+pub fn all_secrets() -> Vec<String> {
+    let mut live = LIVE.lock().unwrap();
+    live.retain(|w| w.strong_count() > 0);
+    live.iter()
+        .filter_map(Weak::upgrade)
+        .flat_map(|s| s.values())
+        .collect()
+}
+
+/// A log writer that replaces every value of `all_secrets` before the bytes
+/// reach the inner writer. The fmt layer writes one whole event per
+/// `write_all`, so a value is never split across two writes.
+pub struct ScrubWriter<M>(pub M);
+
+impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for ScrubWriter<M> {
+    type Writer = ScrubWriter<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        ScrubWriter(self.0.make_writer())
+    }
+}
+
+impl<W: io::Write> io::Write for ScrubWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let text = scrub(&String::from_utf8_lossy(buf), &all_secrets());
+        self.0.write_all(text.as_bytes())?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
 
 /// Cap per result, measured on the JSON-escaped size of the text. The harness
 /// caps a result at 256 KiB counting `content` and `details` together, so each
@@ -524,6 +621,27 @@ mod tests {
             "linear MCP request failed: HTTP 400 Bad Request"
         );
         assert_eq!(t(NoSignIn), "linear answered 401 and offers no sign-in");
+    }
+
+    #[test]
+    fn scrub_replaces_every_secret_and_a_url_in_its_normalised_form() {
+        let secrets = vec![
+            "tok-123".to_string(),
+            "HTTP://Example.COM/mcp?k=abc".to_string(),
+            String::new(),
+        ];
+        assert_eq!(
+            scrub("Bearer tok-123, again tok-123", &secrets),
+            "Bearer [redacted], again [redacted]"
+        );
+        assert_eq!(
+            scrub(
+                "error sending request for url (http://example.com/mcp?k=abc)",
+                &secrets
+            ),
+            "error sending request for url ([redacted])"
+        );
+        assert_eq!(scrub("nothing here", &secrets), "nothing here");
     }
 
     #[test]

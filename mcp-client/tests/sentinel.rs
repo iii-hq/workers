@@ -1,0 +1,182 @@
+//! A known token set as every credential must show up in no log line, no
+//! `servers::list` reply and no error text.
+
+mod support;
+
+use std::io;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use mcp_client::server::{Manager, State};
+use mcp_client::translate::ScrubWriter;
+use serde_json::{Value, json};
+use support::mcp_mock::McpMock;
+use support::{ECHO, FakeHost, WAIT, connect, server, tool};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::MakeWriter;
+
+pub const SENTINEL: &str = "sentinel-7f3a9c-do-not-print";
+
+/// Every line the worker's own filter lets through at `RUST_LOG=trace`, as
+/// the production writer prints it.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for Captured {
+    type Writer = Captured;
+
+    fn make_writer(&'a self) -> Captured {
+        self.clone()
+    }
+}
+
+impl Captured {
+    /// The one subscriber of this test binary, shared by every case.
+    fn install() -> &'static Captured {
+        static CAPTURED: OnceLock<Captured> = OnceLock::new();
+        CAPTURED.get_or_init(|| {
+            let captured = Captured::default();
+            tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::new(mcp_client::log_directives(Some("trace"))))
+                .with_ansi(false)
+                .with_writer(ScrubWriter(captured.clone()))
+                .try_init()
+                .expect("the sentinel binary installs the only subscriber");
+            captured
+        })
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// `srv` on `url` with the sentinel as its bearer token and its secret header.
+fn guarded(url: &str) -> Value {
+    json!({"type": "http", "url": url, "headers": {"X-API-Key": "secret://HDR"},
+           "auth": {"type": "bearer", "token": "secret://TOK"}})
+}
+
+fn sentinel_host() -> Arc<FakeHost> {
+    let host = FakeHost::new();
+    host.set_secret("secret://TOK", SENTINEL);
+    host.set_secret("secret://HDR", SENTINEL);
+    host
+}
+
+async fn settle(manager: &Arc<Manager>, name: &str, state: State) {
+    let reached = manager.wait_for(name, state, WAIT).await;
+    assert!(reached, "{}", server(manager, name).await);
+}
+
+async fn listed(manager: &Arc<Manager>) -> String {
+    serde_json::to_string(&manager.list().await).unwrap()
+}
+
+#[tokio::test]
+async fn sentinel_token_appears_nowhere() {
+    let logs = Captured::install();
+    let mock = McpMock::start().await;
+    mock.tools(json!([tool("echo")])).await;
+    let host = sentinel_host();
+    // A URL that carries its key; nothing listens there.
+    host.set_secret(
+        "secret://URL",
+        &format!("http://127.0.0.1:1/mcp?k={SENTINEL}"),
+    );
+    let config = json!({"mcpServers": {
+        "srv": guarded(&mock.url()),
+        "keyed": {"type": "http", "url": "secret://URL"},
+    }});
+    let manager = connect(&host, config).await;
+    settle(&manager, "srv", State::Ready).await;
+    settle(&manager, "keyed", State::Unavailable).await;
+    // The sentinel really is in play.
+    let sent = mock.headers_of("initialize").await;
+    assert_eq!(sent[0]["authorization"], format!("Bearer {SENTINEL}"));
+    assert_eq!(sent[0]["x-api-key"], SENTINEL);
+
+    let mut seen = vec![listed(&manager).await];
+    // The server echoes the credential.
+    let echoed = format!("bad token {SENTINEL}");
+    mock.on_call_error("echo", -32000, &echoed).await;
+    seen.push(host.call(ECHO, json!({})).await.unwrap_err());
+    mock.http_status("tools/call", 429, &[("retry-after", "3")])
+        .await;
+    seen.push(host.call(ECHO, json!({})).await.unwrap_err());
+    let challenge = r#"Bearer error="invalid_token""#;
+    mock.http_status("tools/call", 401, &[("www-authenticate", challenge)])
+        .await;
+    seen.push(host.call(ECHO, json!({})).await.unwrap_err());
+    settle(&manager, "srv", State::AuthFailed).await;
+    seen.push(host.call(ECHO, json!({})).await.unwrap_err());
+    seen.push(listed(&manager).await);
+    manager.shutdown().await;
+
+    for text in &seen {
+        assert!(!text.contains(SENTINEL), "{text}");
+    }
+    assert!(
+        seen[0].contains("secret://URL"),
+        "a URL that is a reference is shown as the reference"
+    );
+    let log = logs.text();
+    assert!(
+        log.contains("mcp_client"),
+        "the capture saw none of this crate's lines"
+    );
+    assert!(!log.contains(SENTINEL), "{log}");
+}
+
+#[tokio::test]
+async fn a_secret_url_stays_out_of_the_log_when_its_server_goes_away() {
+    let logs = Captured::install();
+    let mock = McpMock::start().await;
+    mock.tools(json!([tool("echo")])).await;
+    let host = FakeHost::new();
+    host.set_secret("secret://LIVE_URL", &format!("{}?k={SENTINEL}", mock.url()));
+    let config = json!({"mcpServers": {"live": {"type": "http", "url": "secret://LIVE_URL"}}});
+    let manager = connect(&host, config).await;
+    settle(&manager, "live", State::Ready).await;
+    let mut seen = vec![listed(&manager).await];
+    // Its listener closes: the session DELETE of the shutdown fails.
+    drop(mock);
+    seen.push(listed(&manager).await);
+    manager.shutdown().await;
+
+    for text in &seen {
+        assert!(!text.contains(SENTINEL), "{text}");
+    }
+    let log = logs.text();
+    assert!(!log.contains(SENTINEL), "{log}");
+}
+
+/// Pins rmcp's own redirect policy (same-origin 307 and 308 only), which an
+/// rmcp upgrade could change without any other suite noticing.
+#[tokio::test]
+async fn a_cross_origin_redirect_gets_no_credential() {
+    let logs = Captured::install();
+    let (first, second) = (McpMock::start().await, McpMock::start().await);
+    first.tools(json!([tool("echo")])).await;
+    let host = sentinel_host();
+    let manager = connect(&host, json!({"mcpServers": {"srv": guarded(&first.url())}})).await;
+    settle(&manager, "srv", State::Ready).await;
+    let location = second.url();
+    first
+        .http_status("tools/call", 307, &[("location", location.as_str())])
+        .await;
+    assert!(host.call(ECHO, json!({})).await.is_err());
+    assert_eq!(second.request_count().await, 0);
+    manager.shutdown().await;
+    assert!(!logs.text().contains(SENTINEL));
+}

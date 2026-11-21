@@ -40,7 +40,9 @@ use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
 use crate::refs::{Ref, Store, Text, event_matches, ref_error, resolve_all};
-use crate::translate::{BlockCtx, CallFailure, failure_text, strip_args, tool_result};
+use crate::translate::{
+    BlockCtx, CallFailure, ServerSecrets, failure_text, scrub, strip_args, tool_result,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -302,16 +304,6 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Replaces each secret value in `text` with `[redacted]`, longest first so a
-/// value that contains another goes whole.
-fn scrub(text: &str, secrets: &[String]) -> String {
-    let mut secrets: Vec<&String> = secrets.iter().filter(|s| !s.is_empty()).collect();
-    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    secrets
-        .iter()
-        .fold(text.to_string(), |t, s| t.replace(s.as_str(), "[redacted]"))
-}
-
 fn client_config() -> ClientConfig {
     ClientConfig::new(
         ClientCapabilities::default(),
@@ -336,6 +328,9 @@ enum ListChanged {
 struct Notifier {
     info: ClientConfig,
     tx: mpsc::UnboundedSender<ListChanged>,
+    /// rmcp's session task holds this until its last log line (the session
+    /// DELETE), which may come after the server itself is gone.
+    _secrets: Arc<ServerSecrets>,
 }
 
 impl ClientHandler for Notifier {
@@ -508,8 +503,9 @@ struct Server {
     status: watch::Sender<Status>,
     registry: Registry,
     info: Mutex<Info>,
-    /// The resolved reference values, replaced in every text this server shows.
-    secrets: Mutex<Vec<String>>,
+    /// Replaced in every error this server stores or a handler returns, and
+    /// in every log line of the process.
+    secrets: Arc<ServerSecrets>,
     /// A no-`auth` entry the server answered with a sign-in challenge.
     challenged: AtomicBool,
     peer: RwLock<Option<Peer<RoleClient>>>,
@@ -598,7 +594,7 @@ impl Server {
             status: watch::channel(status).0,
             registry: Registry::new(),
             info: Mutex::default(),
-            secrets: Mutex::default(),
+            secrets: ServerSecrets::new(),
             challenged: AtomicBool::default(),
             peer: RwLock::default(),
             notes,
@@ -664,6 +660,11 @@ impl Server {
         stage: Option<Stage>,
         error: Option<ServerError>,
     ) {
+        let error = error.map(|mut e| {
+            e.message = scrub(&e.message, &self.secrets.values());
+            e
+        });
+        let logged = error.as_ref().map(|e| e.message.clone());
         let code = |e: &Option<ServerError>| e.as_ref().map(|e| e.code);
         let changed = self.status.send_if_modified(|s| {
             if !from(s.state) {
@@ -677,6 +678,13 @@ impl Server {
             changed
         });
         if changed {
+            if let Some(message) = logged {
+                tracing::warn!(
+                    "`{}` MCP server is {}: {message}",
+                    self.name,
+                    state.as_str()
+                );
+            }
             self.emit(EventKind::State);
         }
     }
@@ -803,7 +811,7 @@ impl Server {
             Ok(Ok(tools)) => serde_json::to_value(tools)
                 .and_then(serde_json::from_value::<Vec<ToolInfo>>)
                 .map_err(|e| e.to_string()),
-            Ok(Err(e)) => Err(self.failure_message(&self.request_failed(&e))),
+            Ok(Err(e)) => Err(failure_text(&self.name, &self.request_failed(&e))),
             Err(_) => Err(self.no_answer(limit)),
         };
         let tools = match listed {
@@ -824,13 +832,6 @@ impl Server {
             info.skipped = skipped;
         }
         self.reconcile(wanted).await;
-    }
-
-    fn failure_message(&self, failure: &CallFailure) -> String {
-        scrub(
-            &failure_text(&self.name, failure),
-            &self.secrets.lock().unwrap(),
-        )
     }
 
     /// Classifies a failed request and applies its state rule: a rejected
@@ -861,7 +862,7 @@ impl Server {
             }
             _ => return failure,
         };
-        self.leave_ready(state, stage, code, self.failure_message(&failure));
+        self.leave_ready(state, stage, code, failure_text(&self.name, &failure));
         failure
     }
 
@@ -940,8 +941,7 @@ impl Server {
                 return Err(None);
             }
         };
-        let secrets = resolved.secrets();
-        *self.secrets.lock().unwrap() = secrets.clone();
+        self.secrets.set_resolved(resolved.secrets());
         let url = resolved.text(&http.url);
         if let Text::Ref(r) = &http.url
             && let Err(m) = check_url_text(&url)
@@ -984,12 +984,12 @@ impl Server {
         let notifier = Notifier {
             info: client_config(),
             tx: self.notes.clone(),
+            _secrets: self.secrets.clone(),
         };
         let session = match timeout(limit, notifier.serve(transport)).await {
             Ok(Ok(session)) => session,
             Ok(Err(e)) => {
-                let (state, stage, code, message) =
-                    self.handshake_failure(&e, entry, http, &secrets);
+                let (state, stage, code, message) = self.handshake_failure(&e, entry, http);
                 self.fail(state, stage, code, message);
                 return Err(retry_wait(&e));
             }
@@ -1017,7 +1017,7 @@ impl Server {
             Ok(Ok(tools)) => serde_json::to_value(tools)
                 .and_then(serde_json::from_value::<Vec<ToolInfo>>)
                 .map_err(|e| e.to_string()),
-            Ok(Err(e)) => Err(scrub(&service_text(&e), &secrets)),
+            Ok(Err(e)) => Err(service_text(&e)),
             Err(_) => Err(self.no_answer(limit)),
         };
         let tools = match listed {
@@ -1075,7 +1075,6 @@ impl Server {
         e: &ClientInitializeError,
         entry: &Entry,
         http: &HttpEntry,
-        secrets: &[String],
     ) -> (State, Stage, ErrorCode, String) {
         let auth = entry.auth_kind();
         let chain: Vec<&(dyn Error + 'static)> = match e {
@@ -1142,7 +1141,7 @@ impl Server {
                     .last()
                     .map_or_else(|| "no HTTP answer".into(), |c| c.to_string());
                 let target = entry.target();
-                let message = format!("could not reach {target}: {}", scrub(&cause, secrets));
+                let message = format!("could not reach {target}: {cause}");
                 (ErrorCode::ConnectFailed, message)
             }
             _ => {
@@ -1156,7 +1155,7 @@ impl Server {
                     | ClientInitializeError::ExpectedInitResult(_) => "unexpected response".into(),
                     _ => e.to_string(),
                 };
-                (ErrorCode::HandshakeFailed, scrub(&text, secrets))
+                (ErrorCode::HandshakeFailed, text)
             }
         };
         (State::Unavailable, Stage::Connect, code, message)
@@ -1190,7 +1189,7 @@ impl Server {
                     return Err(format!("`{name}` MCP server was removed"));
                 };
                 let out = server.call(&target, payload).await;
-                out.map_err(|e| scrub(&e, &server.secrets.lock().unwrap()))
+                out.map_err(|e| scrub(&e, &server.secrets.values()))
             })
         })
     }
@@ -1482,7 +1481,9 @@ impl Manager {
             }
             let unchanged = state == State::Ready
                 && match resolve_all(&*self.host, &refs).await {
-                    Ok(resolved) => resolved.secrets() == *server.secrets.lock().unwrap(),
+                    // shortcut: compares the whole set, exact while nothing calls `add`;
+                    // compare only the resolved part once a minted token is added.
+                    Ok(resolved) => resolved.secrets() == server.secrets.values(),
                     Err(_) => false,
                 };
             if !unchanged {
