@@ -60,11 +60,12 @@ export function splitMessageBlocks(
     const line = lines[i]
     const marker = FENCE.exec(line)?.[1]
     if (fence) {
-      // A fence closes on a bare run of its own character, at least as long.
+      // A fence closes on a bare run of its own character, at least as long,
+      // followed only by spaces or tabs (CommonMark; trim() would also eat U+00A0).
       if (
         marker?.[0] === fence[0] &&
         marker.length >= fence.length &&
-        line.trim() === marker
+        /^[ \t]*$/.test(line.slice(line.indexOf(marker) + marker.length))
       )
         fence = ''
       kept.push(line)

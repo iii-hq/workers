@@ -94,6 +94,13 @@ describe('splitMessageBlocks', () => {
     expect(split(`${code}\n\n${fence('{"a":1}')}`).prose).toBe(code)
   })
 
+  it('does not close a fence on a marker followed by a non-breaking space', () => {
+    const text = `~~~\n~~~ \n\n${fence('{}')}\n\n~~~`
+    expect(split(text)).toEqual({ prose: text, blocks: [] })
+    // Spaces and tabs after the marker still close it.
+    expect(split(`~~~\n~~~ \t\n\n${fence('{}')}`).blocks).toHaveLength(1)
+  })
+
   it('keeps the indent of an indented code block in the prose', () => {
     expect(split(`    example\n\n${fence('{}')}\n`).prose).toBe('    example')
     expect(split(`${fence('{}')}\n\n    example`).prose).toBe('    example')
