@@ -154,10 +154,10 @@ pub fn escaped_len(text: &str, levels: u8) -> usize {
 }
 
 /// Longest prefix on a char boundary whose escaped length fits `budget`.
-fn cut_prefix(text: &str, budget: usize) -> &str {
+fn cut_prefix(text: &str, budget: usize, levels: u8) -> &str {
     let mut used = 0;
     for (i, c) in text.char_indices() {
-        used += char_cost(c, 1);
+        used += char_cost(c, levels);
         if used > budget {
             return &text[..i];
         }
@@ -245,13 +245,19 @@ pub fn block(item: &Value, ctx: &BlockCtx) -> Value {
 const BLOCK_OVERHEAD: usize = 32;
 
 pub fn cap_blocks(blocks: Vec<Value>, cut_note: &str) -> Vec<Value> {
-    let mut left = CAP_BYTES;
+    cap_to(blocks, CAP_BYTES, cut_note, 1).0
+}
+
+/// Keeps blocks while their `levels`-times escaped size fits `budget`; the
+/// block that crosses is cut and ends the list. The flag tells a cut.
+fn cap_to(blocks: Vec<Value>, budget: usize, cut_note: &str, levels: u8) -> (Vec<Value>, bool) {
+    let mut left = budget;
     let mut out = Vec::new();
     for mut b in blocks {
         let oh = if out.is_empty() { 0 } else { BLOCK_OVERHEAD };
         if b["type"] == "image" {
             let data = b["data"].as_str().unwrap_or("");
-            let n = escaped_len(data, 1);
+            let n = escaped_len(data, levels);
             if n + oh <= left {
                 left -= n + oh;
                 out.push(b);
@@ -262,17 +268,108 @@ pub fn cap_blocks(blocks: Vec<Value>, cut_note: &str) -> Vec<Value> {
             b = text_block(format!("[image {mime}, {n} bytes, not shown]"));
         }
         let text = b["text"].as_str().unwrap_or("");
-        let n = escaped_len(text, 1);
+        let n = escaped_len(text, levels);
         if n + oh <= left {
             left -= n + oh;
             out.push(b);
         } else {
-            let cut = format!("{}\n{cut_note}", cut_prefix(text, left.saturating_sub(oh)));
+            let cut = format!(
+                "{}\n{cut_note}",
+                cut_prefix(text, left.saturating_sub(oh), levels)
+            );
             out.push(text_block(cut));
+            return (out, true);
+        }
+    }
+    (out, false)
+}
+
+pub const READ_CUT_NOTE: &str = "resource cut at 120 KiB";
+pub const PROMPT_CUT_NOTE: &str = "prompt cut at 120 KiB";
+
+/// JSON framing of one prompt message, counted twice.
+const MESSAGE_OVERHEAD: usize = 128;
+
+fn array<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+}
+
+/// A `resources/read` result as `{content: [...]}`.
+pub fn read_result(result: &Value, asked_uri: &str, ctx: &BlockCtx) -> Value {
+    let items = array(result, "contents");
+    let ctx = BlockCtx {
+        asked_uri: Some(asked_uri),
+        many: items.len() > 1,
+        ..*ctx
+    };
+    let blocks = items.iter().map(|i| block(i, &ctx)).collect();
+    json!({"content": cap_blocks(blocks, READ_CUT_NOTE)})
+}
+
+/// A `prompts/get` result. It has no top-level `content`, so the harness
+/// shows its JSON as one text block: texts count twice over.
+pub fn prompt_result(result: &Value, ctx: &BlockCtx) -> Value {
+    let ctx = BlockCtx {
+        asked_uri: None,
+        many: false,
+        ..*ctx
+    };
+    let messages = array(result, "messages");
+    let mut left = CAP_BYTES;
+    let mut out: Vec<Value> = Vec::new();
+    for m in messages {
+        let b = block(m.get("content").unwrap_or(&Value::Null), &ctx);
+        let (mut blocks, cut) = cap_to(
+            vec![b],
+            left.saturating_sub(MESSAGE_OVERHEAD),
+            PROMPT_CUT_NOTE,
+            2,
+        );
+        let cost = blocks.iter().map(|b| match b["type"] == "image" {
+            true => escaped_len(b["data"].as_str().unwrap_or(""), 2),
+            false => escaped_len(b["text"].as_str().unwrap_or(""), 2),
+        });
+        left = left.saturating_sub(cost.sum::<usize>() + MESSAGE_OVERHEAD);
+        let dropped = messages.len() - out.len() - 1;
+        if cut && dropped > 0 {
+            blocks.push(text_block(format!("[{dropped} later messages dropped]")));
+        }
+        out.push(json!({"role": m["role"], "content": blocks}));
+        if cut {
             break;
         }
     }
-    out
+    let mut res = json!({"messages": out});
+    if let Some(d) = str_field(result, "description") {
+        res["description"] = json!(d);
+    }
+    res
+}
+
+/// Caps a list page measured as the harness holds it: its JSON inside a text
+/// block. Descriptions go first, then items from the end.
+pub fn cap_page(mut page: Value, key: &str) -> Value {
+    let size = |p: &Value| escaped_len(&p.to_string(), 1);
+    if size(&page) <= CAP_BYTES {
+        return page;
+    }
+    if let Some(items) = page.get_mut(key).and_then(Value::as_array_mut) {
+        for i in items.iter_mut().filter_map(Value::as_object_mut) {
+            i.remove("description");
+        }
+    }
+    let mut total = size(&page);
+    while total > CAP_BYTES {
+        let Some(item) = page[key].as_array_mut().and_then(Vec::pop) else {
+            break;
+        };
+        // the item's own escaped JSON plus its comma
+        total = total.saturating_sub(escaped_len(&item.to_string(), 1) + 1);
+    }
+    page["truncated"] = json!(true);
+    page
 }
 
 pub fn tool_result(result: &Value, ctx: &BlockCtx) -> Result<Value, String> {
@@ -289,7 +386,7 @@ pub fn tool_result(result: &Value, ctx: &BlockCtx) -> Result<Value, String> {
         if texts.is_empty() {
             return Err("the tool reported an error without a message".to_string());
         }
-        return Err(cut_prefix(&texts.join("\n"), CAP_BYTES).to_string());
+        return Err(cut_prefix(&texts.join("\n"), CAP_BYTES, 1).to_string());
     }
     let mut blocks: Vec<Value> = items.iter().map(|i| block(i, ctx)).collect();
     if blocks.is_empty()
@@ -689,5 +786,142 @@ mod tests {
                 .unwrap()
                 .ends_with(TOOL_CUT_HINT)
         );
+    }
+
+    fn items(n: usize, name_len: usize, desc_len: usize) -> Value {
+        let rows: Vec<Value> = (0..n)
+            .map(|i| json!({"uri": format!("file:///{i}"), "name": "n".repeat(name_len), "description": "d".repeat(desc_len)}))
+            .collect();
+        json!({"resources": rows, "next_cursor": "c"})
+    }
+    fn msg(role: &str, t: &str) -> Value {
+        json!({"role": role, "content": {"type": "text", "text": t}})
+    }
+
+    #[test]
+    fn a_read_marks_the_uri_only_when_it_has_to() {
+        let one = json!({"contents": [{"uri": "file:///a.txt", "mimeType": "text/plain", "text": "alpha"}]});
+        assert_eq!(
+            read_result(&one, "file:///a.txt", &ctx()),
+            json!({"content": [text("alpha")]})
+        );
+        let r = read_result(&one, "file:///asked", &ctx());
+        assert!(
+            r["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("[file:///a.txt]")
+        );
+        let pair = json!({"contents": [{"uri": "file:///pair/1", "text": "one"}, {"uri": "file:///pair/2", "text": "two"}]});
+        let r = read_result(&pair, "file:///pair", &ctx());
+        let c = r["content"].as_array().unwrap();
+        assert_eq!(c.len(), 2);
+        let (a, b) = (
+            c[0]["text"].as_str().unwrap(),
+            c[1]["text"].as_str().unwrap(),
+        );
+        assert!(a.starts_with("[file:///pair/1]") && a.ends_with("one"));
+        assert!(b.starts_with("[file:///pair/2]") && b.ends_with("two"));
+    }
+
+    #[test]
+    fn a_read_over_the_cap_is_cut_with_its_own_note() {
+        let big = json!({"contents": [{"uri": "file:///a", "text": "é".repeat(100_000)}]});
+        let r = read_result(&big, "file:///a", &ctx());
+        let t = r["content"][0]["text"].as_str().unwrap();
+        assert!(t.ends_with(READ_CUT_NOTE));
+        assert!(
+            t.len() <= CAP_BYTES + READ_CUT_NOTE.len() + 2,
+            "{}",
+            t.len()
+        );
+    }
+
+    #[test]
+    fn a_prompt_keeps_roles_order_and_one_block_per_message() {
+        let wire = json!({"description": "D", "messages": [msg("user", "hi"),
+            {"role": "assistant", "content": {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}}]});
+        assert_eq!(
+            prompt_result(&wire, &ctx()),
+            json!({"description": "D", "messages": [
+            {"role": "user", "content": [text("hi")]},
+            {"role": "assistant", "content": [{"type": "image", "mime": "image/png", "data": "iVBORw0KGgo="}]}]})
+        );
+        assert!(
+            prompt_result(&json!({"messages": []}), &ctx())
+                .get("description")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_prompt_over_the_cap_cuts_one_block_and_drops_the_rest() {
+        let t = "x".repeat(60_000);
+        let roles = ["user", "assistant", "user", "assistant", "user"];
+        let wire = json!({"messages": roles.iter().map(|r| msg(r, &t)).collect::<Vec<_>>()});
+        let out = prompt_result(&wire, &ctx());
+        let m = out["messages"].as_array().unwrap();
+        assert_eq!(m.len(), 3);
+        assert_eq!(m[1]["content"][0]["text"].as_str().unwrap().len(), 60_000);
+        let cut = m[2]["content"][0]["text"].as_str().unwrap();
+        assert!(cut.ends_with(PROMPT_CUT_NOTE) && cut.len() < 60_000);
+        assert_eq!(m[2]["content"][1], text("[2 later messages dropped]"));
+    }
+
+    #[test]
+    fn a_page_under_the_cap_is_untouched() {
+        let p = items(3, 10, 10);
+        assert_eq!(cap_page(p.clone(), "resources"), p);
+    }
+
+    #[test]
+    fn a_page_over_the_cap_loses_descriptions_first() {
+        let out = cap_page(items(700, 10, 200), "resources");
+        let rows = out["resources"].as_array().unwrap();
+        assert_eq!(rows.len(), 700);
+        assert!(
+            rows.iter()
+                .all(|r| r.get("description").is_none() && r.get("uri").is_some())
+        );
+        assert_eq!(
+            (&out["truncated"], &out["next_cursor"]),
+            (&json!(true), &json!("c"))
+        );
+    }
+
+    #[test]
+    fn then_items_are_cut_from_the_end() {
+        let out = cap_page(items(3000, 100, 0), "resources");
+        assert!(serde_json::to_vec(&out).unwrap().len() <= CAP_BYTES);
+        let rows = out["resources"].as_array().unwrap();
+        assert!(!rows.is_empty() && rows.len() < 3000);
+        assert_eq!(
+            rows[rows.len() - 1]["uri"],
+            format!("file:///{}", rows.len() - 1)
+        );
+        assert_eq!(out["truncated"], true);
+        assert_eq!(
+            cap_page(json!({"templates": []}), "templates"),
+            json!({"templates": []})
+        );
+    }
+
+    #[test]
+    fn typed_results_hold_under_the_harness_measure() {
+        let raw: String = "\"\\\n".chars().cycle().take(100_000).collect();
+        let read = read_result(
+            &json!({"contents": [{"uri": "file:///a", "text": raw}]}),
+            "file:///a",
+            &ctx(),
+        );
+        let prompt = prompt_result(
+            &json!({"messages": [msg("user", &raw), msg("assistant", &raw)]}),
+            &ctx(),
+        );
+        let rows: Vec<Value> = (0..3000).map(|i| json!({"uri": format!("file:///{i}"), "name": raw[..40].to_string(), "description": raw[..60].to_string()})).collect();
+        let page = cap_page(json!({"resources": rows}), "resources");
+        for r in [read, prompt, page] {
+            assert!(harness_bytes(&r) <= 262_144, "{}", harness_bytes(&r));
+        }
     }
 }
