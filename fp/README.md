@@ -37,7 +37,7 @@ harness registers the hook function. The worker also observes
 
 | function | lodash | request |
 |---|---|---|
-| `fp::pipe` | — | `{ through: [{function, payload?, into?}], preview_chars? }` |
+| `fp::pipe` | — | `{ through: [{function, payload?, into?, namespace?}], preview_chars? }` |
 | `fp::batch` | — | `{ calls: [{id?, function, payload?, namespace?, timeout_ms?}], concurrency?, stop_on_error?, timeout_ms?, max_entry_bytes?, max_calls? }` — independent calls, every answer in place (experimental) |
 | `fp::get` | `_.get` | `{ value, path }` — JSON pointer; a miss names the available keys |
 | `fp::pick` | `_.pick` | `{ value, paths }` — subset an object by top-level keys |
@@ -116,6 +116,7 @@ fp::pipe { through: [
   value_preview }` (`preview_chars` sizes the preview, default 400, capped at
   8000 — the receipt must never become the bulk channel it replaces).
 - A failing step stops the pipe; the error carries the completed-step trail.
+- A step may name the `namespace` of its function (default: this worker's); while the approval gate runs, a step in another namespace is refused, so call it directly with `namespace`.
 
 ## The batch (experimental)
 

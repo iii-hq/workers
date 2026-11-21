@@ -132,13 +132,6 @@ fn call_args(call: &BatchCall, fs_scope: Option<&Value>) -> Result<Value, String
     pipe::bus_step_args(&call.function, args, fs_scope)
 }
 
-/// The namespace a call names when it is not `own` (a blank one is no namespace).
-fn other_namespace<'a>(call: &'a BatchCall, own: &str) -> Option<&'a str> {
-    call.namespace
-        .as_deref()
-        .filter(|ns| !ns.trim().is_empty() && *ns != own)
-}
-
 fn validate_with_approval_gate(
     req: &BatchRequest,
     approval_gate_running: bool,
@@ -154,7 +147,9 @@ fn validate_with_approval_gate(
         }
         // The approver sees `fp::batch` in this worker's namespace only, so a
         // call elsewhere would run unapproved there.
-        if approval_gate_running && let Some(ns) = other_namespace(call, own_namespace) {
+        if approval_gate_running
+            && let Some(ns) = pipe::other_namespace(call.namespace.as_deref(), own_namespace)
+        {
             problems.push(format!(
                 "call {} ({f}): a call in namespace {ns} must be approved in that namespace — \
                  call {f} directly with \"namespace\": \"{ns}\" instead of through fp::batch",
@@ -189,11 +184,7 @@ fn validate_with_approval_gate(
 }
 
 pub fn validate(req: &BatchRequest) -> Result<Vec<String>, String> {
-    // What `register_worker` resolves when, as in main.rs, no namespace option is set.
-    let own = std::env::var("III_NAMESPACE")
-        .ok()
-        .filter(|ns| !ns.trim().is_empty());
-    validate_with_approval_gate(req, true, own.as_deref().unwrap_or("default"))
+    validate_with_approval_gate(req, true, &pipe::env_namespace())
 }
 
 fn error_parts(error: &iii_sdk::Error) -> (String, String) {
@@ -250,10 +241,11 @@ async fn one(
                 action: None,
                 timeout_ms: Some(timeout_ms),
             };
-            let request: CallRequestWithMetadata = match call.namespace {
-                Some(namespace) => request.namespace(namespace),
-                None => request.into(),
-            };
+            let request: CallRequestWithMetadata =
+                match pipe::named_namespace(call.namespace.as_deref()) {
+                    Some(namespace) => request.namespace(namespace),
+                    None => request.into(),
+                };
             iii.call(request).await.map_err(|e| error_parts(&e))
         }
     };
@@ -302,7 +294,7 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
             // unknown state fails closed.
             let gate = if req.calls.iter().any(|c| {
                 (c.function.starts_with("database::") && c.function != "database::query")
-                    || other_namespace(c, &own).is_some()
+                    || pipe::other_namespace(c.namespace.as_deref(), &own).is_some()
             }) {
                 pipe::approval_gate_running(&iii).await.unwrap_or(true)
             } else {
