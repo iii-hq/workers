@@ -6,6 +6,7 @@ use crate::driver::{
 use crate::error::DbError;
 use crate::pool::PostgresPool;
 use crate::value::{JsonParam, RowValue};
+use bytes::BufMut;
 use postgres_types::{ToSql, Type};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -43,7 +44,7 @@ pub async fn query(
             None => (
                 tx.query(&stmt, bound_refs.as_slice())
                     .await
-                    .map_err(map_err)?,
+                    .map_err(map_err_read_only)?,
                 false,
             ),
             Some(max) => {
@@ -55,7 +56,10 @@ pub async fn query(
                     .await
                     .map_err(map_err)?;
                 let fetch = i32::try_from(max.saturating_add(1)).unwrap_or(i32::MAX);
-                let mut rows = tx.query_portal(&portal, fetch).await.map_err(map_err)?;
+                let mut rows = tx
+                    .query_portal(&portal, fetch)
+                    .await
+                    .map_err(map_err_read_only)?;
                 let truncated = rows.len() as u64 > max;
                 rows.truncate(max as usize);
                 (rows, truncated)
@@ -127,37 +131,64 @@ impl ToSql for PgBind {
         // `ty`, an `i64.to_sql(INT4, ...)` writes 8 bytes where the server
         // expects 4, producing SQLSTATE 22P03 (invalid_binary_representation).
         // Coerce numeric variants to the column's actual type before binding.
+        // json / jsonb (also through a domain): the parameter is a JSON
+        // document. A string is JSON text, sent as its own bytes so key
+        // order, number precision and depth survive; the server validates
+        // it. Any other value is that JSON value. `null` is SQL NULL.
+        let mut base = ty;
+        while let postgres_types::Kind::Domain(inner) = base.kind() {
+            base = inner;
+        }
+        if matches!(*base, Type::JSON | Type::JSONB) {
+            let doc = match self {
+                PgBind::Json(v) => return v.to_sql(base, out),
+                PgBind::Null => return Ok(postgres_types::IsNull::Yes),
+                PgBind::Text(s) => {
+                    if *base == Type::JSONB {
+                        out.put_u8(1); // jsonb wire format version
+                    }
+                    out.extend_from_slice(s.as_bytes());
+                    return Ok(postgres_types::IsNull::No);
+                }
+                PgBind::Bool(b) => JsonValue::Bool(*b),
+                PgBind::Int(i) => JsonValue::from(*i),
+                PgBind::Float(f) => serde_json::Number::from_f64(*f)
+                    .map(JsonValue::Number)
+                    .ok_or("a non-finite number is not JSON")?,
+            };
+            return doc.to_sql(base, out);
+        }
         match self {
             PgBind::Null => Ok(postgres_types::IsNull::Yes),
-            PgBind::Bool(b) => b.to_sql(ty, out),
-            PgBind::Int(i) => match *ty {
+            PgBind::Bool(b) => b.to_sql(base, out),
+            PgBind::Int(i) => match *base {
                 // Reject overflow rather than silently wrapping. Without
                 // try_from, `(*i as i16)` truncates 40000 → -25536 and writes
                 // it to the column; that's silent data corruption with no
                 // server-side error since the wire bytes are technically valid.
                 Type::INT2 => i16::try_from(*i)
                     .map_err(|_| format!("value {i} out of range for INT2 (i16)").into())
-                    .and_then(|v: i16| v.to_sql(ty, out)),
+                    .and_then(|v: i16| v.to_sql(base, out)),
                 Type::INT4 => i32::try_from(*i)
                     .map_err(|_| format!("value {i} out of range for INT4 (i32)").into())
-                    .and_then(|v: i32| v.to_sql(ty, out)),
-                Type::INT8 => i.to_sql(ty, out),
-                Type::FLOAT4 => (*i as f32).to_sql(ty, out),
-                Type::FLOAT8 => (*i as f64).to_sql(ty, out),
-                _ => i.to_sql(ty, out),
+                    .and_then(|v: i32| v.to_sql(base, out)),
+                Type::INT8 => i.to_sql(base, out),
+                Type::FLOAT4 => (*i as f32).to_sql(base, out),
+                Type::FLOAT8 => (*i as f64).to_sql(base, out),
+                _ => i.to_sql(base, out),
             },
-            PgBind::Float(f) => match *ty {
-                Type::FLOAT4 => (*f as f32).to_sql(ty, out),
-                _ => f.to_sql(ty, out),
+            PgBind::Float(f) => match *base {
+                Type::FLOAT4 => (*f as f32).to_sql(base, out),
+                _ => f.to_sql(base, out),
             },
-            PgBind::Text(s) => s.to_sql(ty, out),
+            PgBind::Text(s) => s.to_sql(base, out),
             // A JSON array for an array parameter (`$1::int[]`) is the array
             // itself, not a json document.
-            PgBind::Json(v @ JsonValue::Array(_)) => match ty.kind() {
+            PgBind::Json(v @ JsonValue::Array(_)) => match base.kind() {
                 postgres_types::Kind::Array(member) => encode_pg_array(member, v, out),
-                _ => v.to_sql(ty, out),
+                _ => v.to_sql(base, out),
             },
-            PgBind::Json(v) => v.to_sql(ty, out),
+            PgBind::Json(v) => v.to_sql(base, out),
         }
     }
 
@@ -180,7 +211,6 @@ fn encode_pg_array(
     value: &JsonValue,
     out: &mut bytes::BytesMut,
 ) -> Result<postgres_types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
-    use bytes::BufMut;
     let mut dims = Vec::new();
     let mut cur = value;
     while let JsonValue::Array(items) = cur {
@@ -275,12 +305,40 @@ pub(crate) fn map_err(e: tokio_postgres::Error) -> DbError {
     }
 }
 
+/// `map_err` for a statement run on the read-only surface: a write refused by
+/// the read-only transaction (25006) says where writes go.
+fn map_err_read_only(e: tokio_postgres::Error) -> DbError {
+    let mut err = map_err(e);
+    if let DbError::DriverError {
+        code: Some(c),
+        message,
+        ..
+    } = &mut err
+        && c == "25006"
+    {
+        message.push_str(
+            "; database::query only runs read-only SQL (a function it calls may write) — use database::execute",
+        );
+    }
+    err
+}
+
 /// The server's own words for a database error — message, detail, hint and
 /// the object it concerns — instead of tokio-postgres' bare "db error".
-/// Only what the server reports; bound parameter values are never added.
+/// Only what the server or the encoder reports. That can quote the caller's own
+/// values (an out-of-range number, `Token "x" is invalid`, a unique
+/// violation's `Key (…)=(…)`); nothing else is added.
 pub(crate) fn pg_error_text(e: &tokio_postgres::Error) -> String {
     let Some(db) = e.as_db_error() else {
-        return e.to_string();
+        // Client-side failures (a parameter that cannot be encoded) keep
+        // their cause in `source()`, which Display leaves out.
+        let mut out = e.to_string();
+        let mut cause = std::error::Error::source(e);
+        while let Some(c) = cause {
+            out.push_str(&format!(": {c}"));
+            cause = c.source();
+        }
+        return out;
     };
     let mut out = db.message().to_string();
     if let Some(detail) = db.detail() {
@@ -1545,5 +1603,250 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(&result.rows[0].0[0], RowValue::Int(42)));
+    }
+
+    fn opts() -> crate::driver::ReadOptions {
+        crate::driver::ReadOptions {
+            timeout_ms: 30_000,
+            ..Default::default()
+        }
+    }
+
+    fn driver_message(e: DbError) -> String {
+        match e {
+            DbError::DriverError { message, .. } => message,
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_parameter_rule_without_a_server() {
+        let bind = |p: PgBind| {
+            let mut out = bytes::BytesMut::new();
+            p.to_sql(&Type::JSONB, &mut out).map(|_| out.to_vec())
+        };
+        // jsonb wire format: version byte 1, then the document's text.
+        let doc = br#"{"a":1}"#;
+        let want = [&[1u8][..], doc].concat();
+        assert_eq!(bind(PgBind::Text(r#"{"a":1}"#.into())).unwrap(), want);
+        assert_eq!(
+            bind(PgBind::Json(serde_json::json!({"a": 1}))).unwrap(),
+            want
+        );
+        assert_eq!(bind(PgBind::Int(5)).unwrap(), [&[1u8][..], b"5"].concat());
+        assert_eq!(
+            bind(PgBind::Text("\"x\"".into())).unwrap(),
+            [&[1u8][..], b"\"x\""].concat()
+        );
+        // JSON text goes through untouched: no re-serialization.
+        let raw = r#"{ "b":1, "id":12345678901234567890123, "b":2 }"#;
+        assert_eq!(
+            bind(PgBind::Text(raw.into())).unwrap(),
+            [&[1u8][..], raw.as_bytes()].concat()
+        );
+        // json (not jsonb) carries no version byte.
+        let mut out = bytes::BytesMut::new();
+        PgBind::Text(raw.into())
+            .to_sql(&Type::JSON, &mut out)
+            .unwrap();
+        assert_eq!(&out[..], raw.as_bytes());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_jsonb_parameter_takes_json_text_and_documents() {
+        let Some(p) = fresh_pool().await else { return };
+        let r = query(
+            &p,
+            "SELECT $1::jsonb AS a, $2::jsonb AS b, $3::jsonb AS c",
+            &[
+                JsonParam::Text(r#"{"k":[1,2]}"#.into()),
+                JsonParam::Json(serde_json::json!({"k": 1})),
+                JsonParam::Int(7),
+            ],
+            opts(),
+        )
+        .await
+        .unwrap();
+        let cell = |i: usize| r.rows[0].0[i].clone();
+        assert_eq!(cell(0), RowValue::Json(serde_json::json!({"k": [1, 2]})));
+        assert_eq!(cell(1), RowValue::Json(serde_json::json!({"k": 1})));
+        assert_eq!(cell(2), RowValue::Json(serde_json::json!(7)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_jsonb_parameter_rejects_text_that_is_not_json() {
+        let Some(p) = fresh_pool().await else { return };
+        let err = query(
+            &p,
+            "SELECT $1::jsonb",
+            &[JsonParam::Text("not json".into())],
+            opts(),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            DbError::DriverError { code, message, .. } => {
+                assert_eq!(code.as_deref(), Some("22P02"));
+                assert!(message.contains("json"), "{message}");
+            }
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_json_text_keeps_its_bytes_and_jsonb_its_precision() {
+        let Some(p) = fresh_pool().await else { return };
+        let raw = r#"{"b":1,  "id":12345678901234567890123,"p":0.1000000000000000000001,"b":2}"#;
+        let r = query(
+            &p,
+            "SELECT $1::json::text AS j, ($2::jsonb)::text AS b",
+            &[JsonParam::Text(raw.into()), JsonParam::Text(raw.into())],
+            opts(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.rows[0].0[0], RowValue::Text(raw.into()));
+        match &r.rows[0].0[1] {
+            RowValue::Text(t) => {
+                assert!(t.contains("12345678901234567890123"), "{t}");
+                assert!(t.contains("0.1000000000000000000001"), "{t}");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+        let deep = format!("{}1{}", "[".repeat(200), "]".repeat(200));
+        let r = query(
+            &p,
+            "SELECT ($1::jsonb)::text",
+            &[JsonParam::Text(deep.clone())],
+            opts(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.rows[0].0[0], RowValue::Text(deep));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_jsonb_null_is_sql_null_and_the_string_null_is_json_null() {
+        let Some(p) = fresh_pool().await else { return };
+        let r = query(
+            &p,
+            "SELECT $1::jsonb IS NULL AS a, $2::jsonb IS NULL AS b, $2::jsonb AS c",
+            &[JsonParam::Null, JsonParam::Text("null".into())],
+            opts(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.rows[0].0[0], RowValue::Bool(true));
+        assert_eq!(r.rows[0].0[1], RowValue::Bool(false));
+        assert_eq!(r.rows[0].0[2], RowValue::Json(serde_json::Value::Null));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_jsonb_array_and_domain_parameters() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP DOMAIN IF EXISTS db_dj", &[], &[]).await;
+        execute(&p, "CREATE DOMAIN db_dj AS jsonb", &[], &[])
+            .await
+            .unwrap();
+        let r = query(
+            &p,
+            "SELECT $1::jsonb[] AS a, $2::db_dj AS d, $3::db_dj AS e",
+            &[
+                JsonParam::Json(serde_json::json!(["{\"k\":1}", {"k": 2}, 3])),
+                JsonParam::Text(r#"{"k":1}"#.into()),
+                JsonParam::Json(serde_json::json!({"k": 2})),
+            ],
+            opts(),
+        )
+        .await
+        .unwrap();
+        match &r.rows[0].0[0] {
+            RowValue::Json(v) => assert_eq!(*v, serde_json::json!([{"k": 1}, {"k": 2}, 3])),
+            other => panic!("expected Json, got {other:?}"),
+        }
+        assert_eq!(r.rows[0].0[1], RowValue::Json(serde_json::json!({"k": 1})));
+        assert_eq!(r.rows[0].0[2], RowValue::Json(serde_json::json!({"k": 2})));
+        let _ = execute(&p, "DROP DOMAIN db_dj", &[], &[]).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_query_write_says_to_use_execute() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_ro_t", &[], &[]).await;
+        execute(&p, "CREATE TABLE db_ro_t (n INT)", &[], &[])
+            .await
+            .unwrap();
+        for max_rows in [None, Some(10)] {
+            let err = query(
+                &p,
+                "INSERT INTO db_ro_t (n) VALUES (1) RETURNING n",
+                &[],
+                crate::driver::ReadOptions {
+                    timeout_ms: 30_000,
+                    max_rows,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+            match err {
+                DbError::DriverError { code, message, .. } => {
+                    assert_eq!(code.as_deref(), Some("25006"));
+                    assert!(message.contains("read-only transaction"), "{message}");
+                    assert!(message.contains("database::execute"), "{message}");
+                }
+                other => panic!("expected DriverError, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_error_text_includes_the_encoder_cause() {
+        let Some(p) = fresh_pool().await else { return };
+        let m = driver_message(
+            query(&p, "SELECT $1::int2", &[JsonParam::Int(40000)], opts())
+                .await
+                .unwrap_err(),
+        );
+        assert!(m.contains("out of range for INT2"), "{m}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_domains_over_arrays_and_ints_bind_like_their_base() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP DOMAIN IF EXISTS db_dja", &[], &[]).await;
+        let _ = execute(&p, "DROP DOMAIN IF EXISTS db_di", &[], &[]).await;
+        execute(&p, "CREATE DOMAIN db_dja AS int4[]", &[], &[])
+            .await
+            .unwrap();
+        execute(&p, "CREATE DOMAIN db_di AS int4", &[], &[])
+            .await
+            .unwrap();
+        let r = query(
+            &p,
+            "SELECT $1::db_dja AS a, $2::db_di AS i",
+            &[
+                JsonParam::Json(serde_json::json!([1, 2])),
+                JsonParam::Int(7),
+            ],
+            opts(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(&r.rows[0].0[1], RowValue::Int(7)));
+        let _ = execute(&p, "DROP DOMAIN db_dja", &[], &[]).await;
+        let _ = execute(&p, "DROP DOMAIN db_di", &[], &[]).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_error_carries_the_servers_message_not_db_error() {
+        let Some(p) = fresh_pool().await else { return };
+        let m = driver_message(
+            query(&p, "SELECT * FROM db_no_such_table", &[], opts())
+                .await
+                .unwrap_err(),
+        );
+        assert!(m.contains("db_no_such_table"), "{m}");
+        assert_ne!(m, "db error");
     }
 }
