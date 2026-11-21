@@ -103,22 +103,27 @@ pub async fn resolve_all(host: &dyn Host, refs: &[Ref]) -> Result<Resolved, Serv
         if resolved.values.contains_key(&key) {
             continue;
         }
-        let value = host.resolve(&key).await.map_err(|e| match e {
-            SecretError::NotFound => {
-                ServerError::new(ErrorCode::SecretMissing, format!("`{key}` is not set"))
-            }
-            SecretError::Forbidden => ServerError::new(
-                ErrorCode::SecretNotShared,
-                format!("`{key}` is not shared with `mcp-client`"),
-            ),
-            SecretError::Unreachable(text) => ServerError::new(
-                ErrorCode::ConnectFailed,
-                format!("could not resolve `{key}`: {text}"),
-            ),
-        })?;
+        let value = host.resolve(&key).await.map_err(|e| ref_error(&key, e))?;
         resolved.values.insert(key, value);
     }
     Ok(resolved)
+}
+
+/// A failed read of the reference `key`: names it, never a value.
+pub fn ref_error(key: &str, e: SecretError) -> ServerError {
+    match e {
+        SecretError::NotFound => {
+            ServerError::new(ErrorCode::SecretMissing, format!("`{key}` is not set"))
+        }
+        SecretError::Forbidden => ServerError::new(
+            ErrorCode::SecretNotShared,
+            format!("`{key}` is not shared with `mcp-client`"),
+        ),
+        SecretError::Unreachable(text) => ServerError::new(
+            ErrorCode::ConnectFailed,
+            format!("could not resolve `{key}`: {text}"),
+        ),
+    }
 }
 
 /// Whether a `secrets::on-changed` event names one of `refs`: by its `ref`

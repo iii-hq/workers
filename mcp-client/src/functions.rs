@@ -14,9 +14,11 @@ use serde_json::{Value, json};
 
 use crate::config::{Effects, Issue, check_entry};
 use crate::host::{EventKind, ServerEvent};
-use crate::server::{Manager, ServersList};
+use crate::server::{Manager, ServersList, State};
 
 pub const SERVERS_LIST: &str = "mcp-client::servers::list";
+pub const SERVERS_APPROVE: &str = "mcp-client::servers::approve";
+pub const SERVERS_RECONNECT: &str = "mcp-client::servers::reconnect";
 pub const CONFIG_VALIDATE: &str = "mcp-client::config::validate";
 pub const ON_SERVERS_CHANGED: &str = "mcp-client::on-servers-changed";
 pub const ON_SECRET_CHANGE: &str = "mcp-client::on-secret-change";
@@ -36,8 +38,10 @@ const OPERATOR: Flags = Flags {
 
 /// One row per function `register_all` registers. A function whose payloads
 /// carry a credential is `observable: false`; an event source is `private`.
-const FLAGS: [(&str, Flags); 4] = [
+const FLAGS: [(&str, Flags); 6] = [
     (SERVERS_LIST, OPERATOR),
+    (SERVERS_APPROVE, OPERATOR),
+    (SERVERS_RECONNECT, OPERATOR),
     (CONFIG_VALIDATE, OPERATOR),
     (ON_SECRET_CHANGE, OPERATOR),
     (
@@ -72,6 +76,29 @@ fn with_flags(id: &str, f: RegisterFunction) -> RegisterFunction {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmptyRequest {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ServerRequest {
+    pub server: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ApproveRequest {
+    pub server: String,
+    /// The fingerprint `config::validate` gave for the entry; without it, the
+    /// entry as loaded.
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ApproveResponse {
+    pub approved: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StateResponse {
+    pub state: State,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ValidateRequest {
@@ -206,6 +233,16 @@ pub fn catalog() -> Vec<(&'static str, Value, Value)> {
             schema_value::<ServersList>(),
         ),
         (
+            SERVERS_APPROVE,
+            schema_value::<ApproveRequest>(),
+            schema_value::<ApproveResponse>(),
+        ),
+        (
+            SERVERS_RECONNECT,
+            schema_value::<ServerRequest>(),
+            schema_value::<StateResponse>(),
+        ),
+        (
             CONFIG_VALIDATE,
             schema_value::<ValidateRequest>(),
             schema_value::<ValidateResponse>(),
@@ -236,6 +273,34 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
         RegisterFunction::new_async(move |_: EmptyRequest| {
             let m = m.clone();
             async move { Ok::<ServersList, Error>(m.list().await) }
+        }),
+    );
+    let m = manager.clone();
+    register(
+        iii,
+        SERVERS_APPROVE,
+        "Approve an MCP server entry: the given fingerprint (from mcp-client::config::validate), else the entry as loaded. Only an approved entry runs.",
+        RegisterFunction::new_async(move |request: ApproveRequest| {
+            let m = m.clone();
+            async move {
+                m.approve(&request.server, request.fingerprint.as_deref())
+                    .await
+                    .map_err(Error::Handler)?;
+                Ok::<ApproveResponse, Error>(ApproveResponse { approved: true })
+            }
+        }),
+    );
+    let m = manager.clone();
+    register(
+        iii,
+        SERVERS_RECONNECT,
+        "Connect an MCP server again now, with a fresh backoff. A disabled, unapproved or invalid entry is returned as it is.",
+        RegisterFunction::new_async(move |request: ServerRequest| {
+            let m = m.clone();
+            async move {
+                let state = m.reconnect(&request.server).await.map_err(Error::Handler)?;
+                Ok::<StateResponse, Error>(StateResponse { state })
+            }
         }),
     );
     let stdio_enabled = manager.stdio_enabled();
@@ -380,6 +445,19 @@ mod tests {
         assert!(
             serde_json::from_value::<ValidateRequest>(
                 json!({ "_caller_worker_id": "w1", "mcpServers": {} })
+            )
+            .is_ok()
+        );
+        let approve: ApproveRequest =
+            serde_json::from_value(json!({ "_caller_worker_id": "w1", "server": "linear" }))
+                .unwrap();
+        assert_eq!(
+            (approve.server.as_str(), approve.fingerprint),
+            ("linear", None)
+        );
+        assert!(
+            serde_json::from_value::<ServerRequest>(
+                json!({ "_caller_worker_id": "w1", "server": "linear" })
             )
             .is_ok()
         );

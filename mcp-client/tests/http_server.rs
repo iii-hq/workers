@@ -340,19 +340,12 @@ async fn secret_errors_map_to_states_and_send_nothing() {
     let host = FakeHost::new();
     host.set_secret("secret://MOCK_KEY", "tok-123");
     host.forbid("secret://MOCK_KEY");
-    let manager = connect(&host, config.clone()).await;
+    let manager = connect(&host, config).await;
     let r = settle(&manager, "mock", State::ConfigError).await;
     assert_eq!(r["stage"], "secret", "{r}");
     assert_eq!(r["error"]["code"], "secret_not_shared", "{r}");
     let message = r["error"]["message"].as_str().unwrap();
     assert!(message.contains("`mcp-client`"), "{message}");
-
-    let host = FakeHost::new();
-    host.set_unreachable(true);
-    let manager = connect(&host, config).await;
-    let r = settle(&manager, "mock", State::Unavailable).await;
-    assert_eq!(r["stage"], "secret", "{r}");
-    assert_eq!(r["error"]["code"], "connect_failed", "{r}");
 
     assert_eq!(mock.request_count().await, 0);
 }

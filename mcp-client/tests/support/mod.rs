@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mcp_client::config::RawConfig;
+use mcp_client::config::{RawConfig, fingerprint};
 use mcp_client::host::{FunctionDef, Handler, Host, Registration, SecretError, ServerEvent};
 use mcp_client::server::{Manager, ManagerOptions, Timings};
 use serde_json::{Value, json};
@@ -77,7 +77,21 @@ pub async fn connect(host: &Arc<FakeHost>, config: Value) -> Arc<Manager> {
     connect_with(host, config, fast_timings()).await
 }
 
+/// Approves every entry of `config`, then applies it.
 pub async fn connect_with(host: &Arc<FakeHost>, config: Value, timings: Timings) -> Arc<Manager> {
+    let manager = manager(host, timings);
+    apply(&manager, config).await;
+    manager
+}
+
+/// Applies `config` with nothing approved.
+pub async fn connect_unapproved(host: &Arc<FakeHost>, config: Value) -> Arc<Manager> {
+    let manager = manager(host, fast_timings());
+    manager.apply_config(RawConfig::from_value(&config)).await;
+    manager
+}
+
+fn manager(host: &Arc<FakeHost>, timings: Timings) -> Arc<Manager> {
     // reqwest panics building a client when no rustls provider is installed.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let options = ManagerOptions {
@@ -85,14 +99,20 @@ pub async fn connect_with(host: &Arc<FakeHost>, config: Value, timings: Timings)
         timings,
         worker_cwd: std::env::current_dir().unwrap(),
     };
-    let manager = Manager::new(host.clone(), options);
-    manager.apply_config(RawConfig::from_value(&config)).await;
-    manager
+    Manager::new(host.clone(), options)
 }
 
-/// Applies `config` as the configuration entry would.
+/// Approves every entry of `config` as an operator would, then applies it
+/// as the configuration entry would.
 pub async fn apply(manager: &Arc<Manager>, config: Value) {
-    manager.apply_config(RawConfig::from_value(&config)).await;
+    let raw = RawConfig::from_value(&config);
+    for (name, value) in &raw.0 {
+        manager
+            .approve(name, Some(&fingerprint(value)))
+            .await
+            .unwrap();
+    }
+    manager.apply_config(raw).await;
 }
 
 /// That server's object of `servers::list`.

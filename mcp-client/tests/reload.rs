@@ -169,3 +169,23 @@ async fn secret_change_is_the_way_out_of_config_error_and_auth_failed() {
     settle(&manager, "srv", State::Ready).await;
     assert!(unregistered(&host).is_empty());
 }
+
+#[tokio::test]
+async fn a_disabled_entry_shows_nothing_of_its_last_session() {
+    let mock = mock().await;
+    mock.instructions("Use echo first.").await;
+    let host = FakeHost::new();
+    let entry = json!({"type": "http", "url": mock.url()});
+    let manager = connect(&host, json!({"mcpServers": {"srv": entry}})).await;
+    settle(&manager, "srv", State::Ready).await;
+
+    let mut off = entry.clone();
+    off["disabled"] = json!(true);
+    apply(&manager, json!({"mcpServers": {"srv": off}})).await;
+    let row = settle(&manager, "srv", State::Disabled).await;
+    assert_eq!(row["tools"], json!([]), "{row}");
+    assert_eq!(row["tools_listed"], false, "{row}");
+    assert_eq!(row["server_info"], Value::Null, "{row}");
+    assert_eq!(row["protocol_version"], Value::Null, "{row}");
+    assert_eq!(row["has_instructions"], false, "{row}");
+}

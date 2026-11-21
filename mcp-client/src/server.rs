@@ -30,15 +30,16 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 
+use crate::approvals::{APPROVALS_REF, APPROVALS_SECRET, Approvals, is_fingerprint};
 use crate::config::{
-    Auth, Checked, Entry, HttpEntry, RawConfig, Transport, check_entry, check_url_text,
+    Auth, Checked, Entry, HttpEntry, RawConfig, Transport, check_entry, check_url_text, fingerprint,
 };
 use crate::functions::SecretChange;
 use crate::host::{EventKind, Handler, Host, ServerEvent};
 use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
-use crate::refs::{Text, event_matches, resolve_all};
+use crate::refs::{Ref, Store, Text, event_matches, ref_error, resolve_all};
 use crate::translate::{BlockCtx, CallFailure, failure_text, strip_args, tool_result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -489,6 +490,8 @@ struct Info {
     skipped: Vec<Skipped>,
 }
 
+const UNAPPROVED: &str = "this entry is not the one an operator approved: review it on the MCP servers page, or call mcp-client::servers::approve";
+
 /// An entry as configured and as checked.
 struct Spec {
     raw: Value,
@@ -500,6 +503,7 @@ struct Server {
     /// Replaced when the entry changes; the server and its registry stay.
     spec: RwLock<Arc<Spec>>,
     host: Arc<dyn Host>,
+    approvals: Arc<Approvals>,
     timings: Timings,
     status: watch::Sender<Status>,
     registry: Registry,
@@ -566,7 +570,13 @@ fn first_status(name: &str, checked: &Checked) -> (State, Option<Stage>, Option<
 }
 
 impl Server {
-    fn start(host: &Arc<dyn Host>, opts: &ManagerOptions, name: &str, raw: &Value) -> Arc<Server> {
+    fn start(
+        host: &Arc<dyn Host>,
+        approvals: &Arc<Approvals>,
+        opts: &ManagerOptions,
+        name: &str,
+        raw: &Value,
+    ) -> Arc<Server> {
         let checked = check_entry(name, raw, opts.stdio_enabled);
         let (state, stage, error) = first_status(name, &checked);
         let (notes, notes_rx) = mpsc::unbounded_channel();
@@ -583,6 +593,7 @@ impl Server {
                 checked,
             })),
             host: host.clone(),
+            approvals: approvals.clone(),
             timings: opts.timings,
             status: watch::channel(status).0,
             registry: Registry::new(),
@@ -625,6 +636,7 @@ impl Server {
         let (state, stage, error) = first_status(&self.name, &self.spec().checked);
         if state == State::Disabled {
             self.registry.clear().await;
+            *self.info.lock().unwrap() = Info::default();
         }
         self.set(state, stage, error);
         if state == State::Connecting {
@@ -709,7 +721,9 @@ impl Server {
                 }
                 Err(wait) => wait,
             };
-            if self.status.borrow().state != State::Unavailable {
+            // `connecting` after a failed attempt: the approvals could not be read.
+            let state = self.status.borrow().state;
+            if !matches!(state, State::Unavailable | State::Connecting) {
                 let _ = (&mut stop).await;
                 return;
             }
@@ -867,6 +881,17 @@ impl Server {
         self.peer.write().unwrap().take();
     }
 
+    /// Closes the session and moves to `unapproved`; the registry stays.
+    async fn unapprove(&self) {
+        let state = self.status.borrow().state;
+        if matches!(state, State::Disabled | State::ConfigError) {
+            return;
+        }
+        self.halt().await;
+        let code = ErrorCode::Unapproved;
+        self.fail(State::Unapproved, Stage::Approval, code, UNAPPROVED.into());
+    }
+
     /// Stops the task, closes its session and unregisters every function.
     async fn stop(&self) {
         self.halt().await;
@@ -883,6 +908,25 @@ impl Server {
         let Transport::Http(http) = &entry.transport else {
             return Err(None);
         };
+        // The gate: nothing is resolved or sent for an entry no operator approved.
+        if let Err(e) = self.approvals.load(&*self.host).await {
+            let error = ref_error(APPROVALS_REF, e);
+            self.set(State::Connecting, Some(Stage::Approval), Some(error));
+            return Err(None);
+        }
+        let approved = || {
+            self.approvals
+                .is_approved(&self.name, &spec.checked.fingerprint)
+        };
+        if !approved() {
+            let code = ErrorCode::Unapproved;
+            self.fail(State::Unapproved, Stage::Approval, code, UNAPPROVED.into());
+            // An approve between the check and `fail` saw no `unapproved` to restart.
+            if !approved() {
+                return Err(None);
+            }
+            self.set(State::Connecting, Some(Stage::Secret), None);
+        }
         // Resolved again on every attempt.
         self.progress(Stage::Secret);
         let resolved = match resolve_all(&*self.host, &entry.refs()).await {
@@ -1245,7 +1289,9 @@ impl Server {
             stage: status.stage,
             since: status.since,
             error: status.error,
-            approved: true,
+            approved: self
+                .approvals
+                .is_approved(&self.name, &spec.checked.fingerprint),
             fingerprint: spec.checked.fingerprint.clone(),
             protocol_version: info.protocol_version.clone(),
             server_info: info.server_info.clone(),
@@ -1265,6 +1311,7 @@ impl Server {
 
 pub struct Manager {
     host: Arc<dyn Host>,
+    approvals: Arc<Approvals>,
     opts: ManagerOptions,
     /// Serialises config applies and secret changes.
     servers: tokio::sync::Mutex<BTreeMap<String, Arc<Server>>>,
@@ -1274,6 +1321,7 @@ impl Manager {
     pub fn new(host: Arc<dyn Host>, opts: ManagerOptions) -> Arc<Manager> {
         Arc::new(Manager {
             host,
+            approvals: Arc::new(Approvals::new()),
             opts,
             servers: tokio::sync::Mutex::default(),
         })
@@ -1291,15 +1339,22 @@ impl Manager {
             .into_iter()
             .partition(|(name, _)| raw.0.contains_key(name));
         *servers = kept;
-        join_all(removed.values().map(|s| async move {
+        join_all(removed.iter().map(|(name, s)| async move {
             s.stop().await;
             s.emit(EventKind::State);
+            self.approvals.clear_pending(name);
+            if let Err(e) = self.approvals.forget(&*self.host, name).await {
+                tracing::warn!("forgetting the approval of removed `{name}` failed: {e}");
+            }
         }))
         .await;
         let mut restarts = Vec::new();
         for (name, value) in raw.0 {
+            if servers.get(&name).is_some_and(|s| s.spec().raw == value) {
+                continue;
+            }
+            self.promote(&name, &fingerprint(&value)).await;
             match servers.get(&name) {
-                Some(s) if s.spec().raw == value => {}
                 Some(s) => {
                     let checked = check_entry(&name, &value, self.opts.stdio_enabled);
                     let spec = Spec {
@@ -1310,7 +1365,8 @@ impl Manager {
                     restarts.push(async move { s.restart(Some(spec)).await });
                 }
                 None => {
-                    let server = Server::start(&self.host, &self.opts, &name, &value);
+                    let server =
+                        Server::start(&self.host, &self.approvals, &self.opts, &name, &value);
                     servers.insert(name, server);
                 }
             }
@@ -1318,11 +1374,87 @@ impl Manager {
         join_all(restarts).await;
     }
 
+    /// Writes the pending approval an arriving entry matches, before its
+    /// task starts.
+    async fn promote(&self, name: &str, fingerprint: &str) {
+        if self.approvals.pending(name).as_deref() != Some(fingerprint) {
+            return;
+        }
+        self.approvals.clear_pending(name);
+        if let Err(e) = self.approvals.approve(&*self.host, name, fingerprint).await {
+            tracing::warn!("saving the approval of `{name}` failed, it stays unapproved: {e}");
+        }
+    }
+
+    /// Approves `fingerprint` for `name`, or the entry as loaded. A new
+    /// fingerprint for a running, approved entry (an edit approved before
+    /// its write) waits in memory for that write and revokes nothing.
+    pub async fn approve(&self, name: &str, fingerprint: Option<&str>) -> Result<(), String> {
+        let servers = self.servers.lock().await;
+        let loaded = servers.get(name);
+        let current = loaded.map(|s| s.spec().checked.fingerprint.clone());
+        let fingerprint = match (fingerprint, &current) {
+            (Some(fp), _) if !is_fingerprint(fp) => {
+                return Err("`fingerprint` must be 64 lower-case hex characters".into());
+            }
+            (Some(fp), _) => fp.to_string(),
+            (None, Some(current)) => current.clone(),
+            (None, None) => return Err(format!("no MCP server named `{name}` is configured")),
+        };
+        if let Some(current) = &current
+            && *current != fingerprint
+            && self.approvals.is_approved(name, current)
+        {
+            self.approvals.set_pending(name, &fingerprint);
+            return Ok(());
+        }
+        self.approvals
+            .approve(&*self.host, name, &fingerprint)
+            .await?;
+        if let Some(s) = loaded
+            && current == Some(fingerprint)
+        {
+            let state = s.status.borrow().state;
+            if state == State::Unapproved {
+                s.restart(None).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Starts the server again with a fresh backoff and budget. A disabled,
+    /// unapproved or invalid entry is left as it is.
+    pub async fn reconnect(&self, name: &str) -> Result<State, String> {
+        let servers = self.servers.lock().await;
+        let s = servers
+            .get(name)
+            .ok_or_else(|| format!("no MCP server named `{name}` is configured"))?;
+        let state = s.status.borrow().state;
+        if matches!(state, State::Disabled | State::Unapproved) || s.spec().checked.entry.is_none()
+        {
+            return Ok(state);
+        }
+        s.restart(None).await;
+        let state = s.status.borrow().state;
+        Ok(state)
+    }
+
     /// Resolves again the references of each server whose entry names the
     /// changed one, and restarts it when a value changed or it is not
     /// `ready`: the way out of `auth_failed` and of a secret `config_error`.
+    /// A change of the approvals goes to the tamper check only.
     pub async fn on_secret_change(&self, change: &SecretChange) {
         let servers = self.servers.lock().await;
+        let approvals = Ref {
+            store: Store::Secret,
+            name: APPROVALS_SECRET.into(),
+        };
+        if event_matches(change, &[approvals]) {
+            if self.approvals.on_change(&*self.host).await {
+                join_all(servers.values().map(|s| s.unapprove())).await;
+            }
+            return;
+        }
         let mut restarts = Vec::new();
         for server in servers.values() {
             let spec = server.spec();
