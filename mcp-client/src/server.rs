@@ -6,14 +6,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};
+use rmcp::model::{
+    CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
+};
 use rmcp::service::{ClientCacheConfig, ClientInitializeError, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{Peer, RoleClient, ServiceExt};
+use rmcp::{Peer, RoleClient, ServiceError, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -23,7 +25,7 @@ use crate::host::{EventKind, Handler, Host, ServerEvent};
 use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
-use crate::translate::{CallFailure, failure_text};
+use crate::translate::{BlockCtx, CallFailure, failure_text, strip_args, tool_result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -551,8 +553,67 @@ impl Server {
         self.emit(EventKind::Tools);
     }
 
-    fn handler_for(self: &Arc<Self>, _wanted: &Wanted) -> Handler {
-        Arc::new(|_payload| Box::pin(async { Err("not implemented".into()) }))
+    fn handler_for(self: &Arc<Self>, wanted: &Wanted) -> Handler {
+        // Weak: the host holds the handler, and the server holds the host.
+        let server = Arc::downgrade(self);
+        let name = self.name.clone();
+        let target = wanted.target.clone();
+        Arc::new(move |payload| {
+            let (server, name, target) = (server.upgrade(), name.clone(), target.clone());
+            Box::pin(async move {
+                match server {
+                    Some(server) => server.call(&target, payload).await,
+                    None => Err(format!("`{name}` MCP server was removed")),
+                }
+            })
+        })
+    }
+
+    async fn call(&self, target: &Target, payload: Value) -> Result<Value, String> {
+        let status = self.status.borrow().clone();
+        let peer = self.peer.read().unwrap().clone();
+        let (State::Ready, Some(peer)) = (status.state, peer) else {
+            let for_secs = now_ms().saturating_sub(status.since) / 1000;
+            let state = status.state.as_str();
+            let failure = CallFailure::Unavailable { state, for_secs };
+            return Err(failure_text(&self.name, &failure));
+        };
+        let (name, declared) = match target {
+            Target::Tool { name, declared } => (name, declared),
+            Target::Instructions => {
+                let text = self.info.lock().unwrap().instructions.clone();
+                return Ok(json!({"content": [{"type": "text", "text": text}]}));
+            }
+            _ => {
+                return Err(format!(
+                    "{target:?} is not supported by this version of mcp-client"
+                ));
+            }
+        };
+        let params =
+            CallToolRequestParams::new(name.clone()).with_arguments(strip_args(payload, declared));
+        let limit = self.timings.call;
+        let failure = match timeout(limit, peer.call_tool(params)).await {
+            Ok(Ok(result)) => {
+                let ctx = BlockCtx {
+                    server: &self.name,
+                    read_registered: false,
+                    asked_uri: None,
+                    many: false,
+                };
+                let result = serde_json::to_value(result).unwrap_or_default();
+                return tool_result(&result, &ctx);
+            }
+            Ok(Err(ServiceError::McpError(e))) => CallFailure::JsonRpc {
+                code: e.code.0,
+                message: e.message.into(),
+            },
+            Ok(Err(e)) => CallFailure::Transport(e.to_string()),
+            Err(_) => CallFailure::Timeout {
+                secs: limit.as_secs(),
+            },
+        };
+        Err(failure_text(&self.name, &failure))
     }
 
     fn view(&self, registered: &HashSet<String>) -> ServerView {
@@ -695,7 +756,6 @@ async fn stop_all(servers: &mut Servers) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn wire_names_are_snake_case() {

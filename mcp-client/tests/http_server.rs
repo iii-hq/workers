@@ -200,3 +200,85 @@ async fn applying_the_same_config_twice_does_not_reconnect() {
     assert_eq!(mock.requests("initialize").await.len(), 1);
     assert_eq!(server(&manager, "mock").await["state"], "ready");
 }
+
+#[tokio::test]
+async fn call_strips_engine_keys_and_translates_the_result() {
+    let mock = McpMock::start().await;
+    mock.tools(tools()).await;
+    mock.instructions("Use echo first.").await;
+    mock.on_call("echo", json!({"content": [{"type": "text", "text": "hi"}]}))
+        .await;
+    let (host, _manager) = ready(&mock).await;
+
+    let out = host
+        .call(
+            "mcp::mock::echo",
+            json!({ "text": "hi", "_caller_worker_id": "w1" }),
+        )
+        .await;
+    assert_eq!(
+        out,
+        Ok(json!({ "content": [{ "type": "text", "text": "hi" }] }))
+    );
+    let sent = &mock.requests("tools/call").await[0]["params"];
+    assert_eq!(sent["name"], "echo");
+    assert_eq!(sent["arguments"], json!({ "text": "hi" }));
+
+    host.call("mcp::mock::echo", json!("not an object"))
+        .await
+        .unwrap();
+    let sent = &mock.requests("tools/call").await[1]["params"];
+    assert_eq!(sent["arguments"], json!({}));
+
+    assert_eq!(
+        host.call("mcp::mock::instructions", json!({})).await,
+        Ok(json!({ "content": [{ "type": "text", "text": "Use echo first." }] }))
+    );
+}
+
+#[tokio::test]
+async fn tool_errors_come_back_as_err() {
+    let mock = McpMock::start().await;
+    mock.tools(tools()).await;
+    mock.on_call(
+        "fail",
+        json!({"content": [{"type": "text", "text": "boom"}], "isError": true}),
+    )
+    .await;
+    mock.on_call_error("echo", -32602, "team is required").await;
+    mock.on_call_error("save_thing", -32000, "nope").await;
+    let (host, manager) = ready(&mock).await;
+
+    assert_eq!(
+        host.call("mcp::mock::fail", json!({})).await,
+        Err("boom".into())
+    );
+    assert_eq!(
+        host.call("mcp::mock::echo", json!({"text": "x"})).await,
+        Err("invalid_argument: team is required".into())
+    );
+    assert_eq!(
+        host.call("mcp::mock::save_thing", json!({})).await,
+        Err("MCP error -32000: nope".into())
+    );
+    assert_eq!(server(&manager, "mock").await["state"], "ready");
+}
+
+#[tokio::test]
+async fn a_call_past_the_limit_says_outcome_unknown() {
+    let mock = McpMock::start().await;
+    mock.tools(tools()).await;
+    mock.on_call("echo", json!({"content": []})).await;
+    mock.delay("tools/call", Duration::from_secs(3)).await;
+    let (host, manager) = ready(&mock).await;
+
+    let error = host
+        .call("mcp::mock::echo", json!({"text": "x"}))
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("outcome unknown: check before retrying a write"),
+        "{error}"
+    );
+    assert_eq!(server(&manager, "mock").await["state"], "ready");
+}
