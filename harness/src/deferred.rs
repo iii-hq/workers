@@ -383,7 +383,8 @@ pub async fn resolve(
             )
             .await?;
             let trusted_roots = union_roots(
-                session_grants,
+                crate::filesystem_scope::session_grants_in(&namespace, &implicit, &session_grants)
+                    .to_vec(),
                 req.fs_scope
                     .as_ref()
                     .map(|s| s.grants.clone())

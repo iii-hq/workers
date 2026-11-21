@@ -80,6 +80,13 @@ A pattern is `<namespace>/<pattern>` to match the id only in that namespace, or 
 qualifier must be a plain namespace (no glob characters, and not empty as in `/shell::exec`) and
 must be followed by an id pattern that does not start with `/` (`laptop//shell::exec` is
 rejected); otherwise the policy is rejected and every call is denied.
+A pattern that starts with `hub::` or `peer::` uses a mesh id prefix that no longer exists, and
+also rejects the policy: a mesh function keeps its id and lives in the namespace of its machine, so
+`peer::laptop::shell::exec` becomes `laptop/shell::exec`, `hub::shell::exec` becomes
+`hub/shell::exec`, and `peer::*` becomes one pattern per machine, such as `laptop/*`.
+For now a `functions.deny` glob written for a mesh id's old spelling (`laptop::shell::exec`,
+`*::shell::pty::*`) still denies the call, and observing it, in another namespace, ahead of every allow; write
+`<namespace>/<pattern>`, since a later release drops the old spellings.
 A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's own
 `<adapter>::<op>` (`sandbox-libkrun`, or the adapter `sandbox::adapter::info` reports). A
 `functions.deny` glob or a hook's `functions` glob matching either id covers both;
@@ -692,7 +699,10 @@ input as the previous one left it. A `<namespace>/<pattern>` entry in
 `functions` matches one engine namespace; a bare pattern matches every
 namespace. A qualifier with glob characters, an empty one or a doubled slash
 (`*/shell::*`, `/shell::*`, `laptop//shell::*`) reads as bare, with a one-time
-warning, so the hook still runs in every namespace. A harness older than this one matches no call for a
+warning, so the hook still runs in every namespace. For now an entry written for a mesh id's old
+spelling (`laptop::shell::*`, `hub::shell::*`, `peer::*`) still matches the call in that other
+namespace, with a one-time warning; write `<namespace>/<pattern>`, since a later release drops the
+old spellings. A harness older than this one matches no call for a
 `<namespace>/<pattern>` entry and skips the hook; register one only after a
 hook input carried `own_namespace`. A target answers
 `{ decision, reason?, mutations?, annotations? }`.
@@ -767,6 +777,11 @@ Under the `workspace` boundary an approved `git worktree add` also moves the
 boundary there, for sub-agents too. A send that names a root still wins, so a
 client must adopt the mirrored root or its next send moves the session back. A
 re-tasked sub-agent keeps its own root unless the spawn names one.
+
+A folder granted for the session (`harness::filesystem::grant`) is stamped only
+on a call in the namespace a call without `namespace` runs in. A call in
+another namespace carries the session's root and only the folders its own
+release grants, so the folder is asked for again there, per call.
 
 ### Agent observers
 

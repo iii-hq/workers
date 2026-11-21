@@ -844,7 +844,11 @@ async fn handle(
             req.function_id
         )));
     }
-    if !policy.allows(&req.function_id) {
+    let allowed = match explicit_namespace(&req) {
+        Some(namespace) => policy.allows_in(namespace, &req.function_id),
+        None => policy.allows(&req.function_id),
+    };
+    if !allowed {
         return Err(HarnessError::InvalidRequest(format!(
             "observing `{0}` is not permitted by this session's dispatch policy: an observer \
              reads every call of the function it observes, so the policy must allow `{0}`",
@@ -1812,18 +1816,21 @@ impl SourceHost {
     }
 }
 
+/// The namespace the agent named for the source, blank meaning none.
+fn explicit_namespace(req: &ObserveRequest) -> Option<&str> {
+    req.namespace
+        .as_deref()
+        .map(str::trim)
+        .filter(|namespace| !namespace.is_empty())
+}
+
 /// Resolve the source namespace: the agent's explicit one, else the first of
 /// this harness's namespace, `default` and Compose's that hosts the function.
 /// When none does yet, the observer waits in this harness's namespace
 /// (Compose's for a `compose::*` function). Fail-open: a probe error that is
 /// not a definitive NOT_FOUND stops probing and leaves the namespace unset.
 async fn resolve_source_namespace(deps: &Deps, req: &ObserveRequest) -> SourceHost {
-    if let Some(namespace) = req
-        .namespace
-        .as_deref()
-        .map(str::trim)
-        .filter(|namespace| !namespace.is_empty())
-    {
+    if let Some(namespace) = explicit_namespace(req) {
         return SourceHost {
             namespace: Some(namespace.to_string()),
             unhosted_in: Vec::new(),
@@ -3095,6 +3102,40 @@ pub(crate) mod tests {
         let error = result.details["error"].as_str().unwrap();
         assert!(error.contains("dispatch policy"), "{error}");
         assert!(error.contains("router::provider::stream"), "{error}");
+    }
+
+    /// A deny in the old mesh spelling or the `<namespace>/` form still
+    /// refuses observing that function in the namespace the agent names.
+    #[tokio::test]
+    async fn a_namespace_deny_refuses_observing_there() {
+        let deps = disconnected_deps();
+        let engine = deps.engine().await;
+        for deny in ["laptop::shell::exec", "*::shell::*", "laptop/shell::exec"] {
+            let policy = CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".to_string()],
+                deny: vec![deny.to_string()],
+                expose: Default::default(),
+            }));
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                invoke(
+                    &deps,
+                    &engine,
+                    &policy,
+                    OBSERVE_ID,
+                    None,
+                    &json!({ "function_id": "shell::exec", "namespace": "laptop" }),
+                    "owner",
+                    false,
+                    None,
+                ),
+            )
+            .await
+            .expect("the refusal completes locally");
+            assert!(result.is_error, "{deny}");
+            let error = result.details["error"].as_str().unwrap();
+            assert!(error.contains("dispatch policy"), "{deny}: {error}");
+        }
     }
 
     /// A post-turn validator names its validator as the target; without one

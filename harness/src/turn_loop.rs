@@ -2276,7 +2276,7 @@ async fn finish_step(
                 &call.function_id,
                 call_args.clone(),
                 filesystem_root.as_deref(),
-                &session_grants,
+                crate::filesystem_scope::session_grants_in(&namespace, &implicit, &session_grants),
                 filesystem_boundary,
             );
             let (eff_args, pre_ann) = match deps
@@ -2301,7 +2301,11 @@ async fn finish_step(
                         &call.function_id,
                         arguments,
                         filesystem_root.as_deref(),
-                        &session_grants,
+                        crate::filesystem_scope::session_grants_in(
+                            &namespace,
+                            &implicit,
+                            &session_grants,
+                        ),
                         filesystem_boundary,
                     );
                     (arguments, annotations)
