@@ -99,8 +99,12 @@ export function splitMessageBlocks(
   }
   if (blocks.length === 0) return { prose: text, blocks }
   return {
-    // No blank-line collapse: it would rewrite fenced code in the prose.
-    prose: kept.join('\n').trim(),
+    // No blank-line collapse: it would rewrite fenced code in the prose. Only
+    // the leading blank lines go, so an indented code block keeps its indent.
+    prose: kept
+      .join('\n')
+      .replace(/^(?:[ \t]*\n)+/, '')
+      .trimEnd(),
     blocks,
   }
 }

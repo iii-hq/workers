@@ -94,6 +94,11 @@ describe('splitMessageBlocks', () => {
     expect(split(`${code}\n\n${fence('{"a":1}')}`).prose).toBe(code)
   })
 
+  it('keeps the indent of an indented code block in the prose', () => {
+    expect(split(`    example\n\n${fence('{}')}\n`).prose).toBe('    example')
+    expect(split(`${fence('{}')}\n\n    example`).prose).toBe('    example')
+  })
+
   it('needs the block to stand as its own paragraph', () => {
     for (const text of [
       `<workflow_input note="${NOTE}">\n{"a":1}`,
