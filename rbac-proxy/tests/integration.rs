@@ -1190,8 +1190,15 @@ async fn pinned_reload_child() {
     ))
     .await
     .unwrap();
-    sleep(Duration::from_millis(1500)).await;
-    assert_eq!(rows(&h.support, "probe::next-mw").await, ["laptop"]);
+    let mut held = rows(&h.support, "probe::next-mw").await;
+    for _ in 0..50 {
+        if !held.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+        held = rows(&h.support, "probe::next-mw").await;
+    }
+    assert_eq!(held, ["laptop"]);
 
     // The operator renames the middleware to the id the session holds.
     let mut value = h
