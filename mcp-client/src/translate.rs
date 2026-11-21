@@ -351,11 +351,13 @@ pub fn prompt_result(result: &Value, ctx: &BlockCtx) -> Value {
         }
     }
     let dropped = messages.len() - out.len();
-    if dropped > 0
-        && let Some(last) = out.last_mut()
-        && let Some(c) = last["content"].as_array_mut()
-    {
-        c.push(text_block(format!("[{dropped} later messages dropped]")));
+    if dropped > 0 {
+        let note = text_block(format!("[{dropped} later messages dropped]"));
+        match out.last_mut().and_then(|m| m["content"].as_array_mut()) {
+            Some(c) => c.push(note),
+            // Nothing fit: the note is the one message, never a silent `[]`.
+            None => out.push(json!({"role": "user", "content": [note]})),
+        }
     }
     res["messages"] = json!(out);
     res
@@ -375,6 +377,14 @@ pub fn cap_page(mut page: Value, key: &str) -> Value {
     }
     // room for the `,"truncated":true` member that is added below
     let room = CAP_BYTES - ",\"truncated\":true".len();
+    // A cursor too large for a page of its own goes before any row, so the
+    // rows that fit survive.
+    if let Some(cursor) = page.get("next_cursor")
+        && size(&json!({ key: [], "next_cursor": cursor })) > room
+        && let Some(p) = page.as_object_mut()
+    {
+        p.remove("next_cursor");
+    }
     let mut total = size(&page);
     while total > room {
         let Some(item) = page[key].as_array_mut().and_then(Vec::pop) else {
@@ -382,12 +392,6 @@ pub fn cap_page(mut page: Value, key: &str) -> Value {
         };
         // the item's own escaped JSON plus its comma
         total = total.saturating_sub(escaped_len(&item.to_string(), 1) + 1);
-    }
-    if total > room {
-        // the cursor alone is too large to keep
-        if let Some(p) = page.as_object_mut() {
-            p.remove("next_cursor");
-        }
     }
     page["truncated"] = json!(true);
     page
@@ -952,8 +956,36 @@ mod tests {
             json!({"resources": [{"uri": "file:///a", "name": "a"}], "next_cursor": raw.repeat(2)}),
             "resources",
         );
+        // A description that takes the whole budget still says what it dropped.
+        assert_eq!(
+            long_desc["messages"],
+            json!([{"role": "user", "content": [text("[1 later messages dropped]")]}])
+        );
         for r in [read, prompt, page, flood, long_desc, cursor] {
             assert!(harness_bytes(&r) <= 262_144, "{}", harness_bytes(&r));
         }
+    }
+
+    #[test]
+    fn a_prompt_with_no_room_for_a_message_says_so() {
+        let wire = json!({"messages": [msg(&"r".repeat(CAP_BYTES), "hi"), msg("user", "x")]});
+        let out = prompt_result(&wire, &ctx());
+        assert_eq!(
+            out["messages"],
+            json!([{"role": "user", "content": [text("[2 later messages dropped]")]}])
+        );
+    }
+
+    #[test]
+    fn an_oversized_cursor_goes_before_any_row() {
+        let rows: Vec<Value> = (0..100)
+            .map(|i| json!({"uri": format!("file:///{i}"), "name": "n"}))
+            .collect();
+        let page = json!({"resources": rows, "next_cursor": "c".repeat(200_000)});
+        let out = cap_page(page, "resources");
+        assert_eq!(out["resources"].as_array().unwrap().len(), 100);
+        assert!(out.get("next_cursor").is_none());
+        assert_eq!(out["truncated"], true);
+        assert!(harness_bytes(&out) <= 262_144, "{}", harness_bytes(&out));
     }
 }
