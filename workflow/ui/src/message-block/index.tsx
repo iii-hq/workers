@@ -12,7 +12,6 @@ import {
   Card,
   CardBody,
   CardHeader,
-  Chip,
   type Host,
   JsonHighlight,
   type MessageBlockProps,
@@ -104,20 +103,24 @@ function parseBody(body: string): { value: unknown; json: string } | null {
 export const WorkflowInputBlock = memo(function WorkflowInputBlock({ attributes, body }: MessageBlockProps) {
   const note = attributes.note || undefined
   const parsed = useMemo(() => parseBody(body), [body])
-  const chip = (
-    // A tab stop so a keyboard can open the note's tooltip too.
-    <Chip tone="warning" tabIndex={note ? 0 : undefined} className="wf-input-chip">
-      Untrusted
+  // The note speaks to the model (treat this as data); the reader gets it on
+  // the title, not as an alarm on every node session.
+  const title = (
+    <span
+      className="wf-input-title"
+      // A tab stop so a keyboard can open the note's tooltip too.
+      tabIndex={note ? 0 : undefined}
+    >
+      Workflow input
       {note ? <span className="wf-sr-only">: {note}</span> : null}
-    </Chip>
+    </span>
   )
   return (
     <article className="wf-input" data-message-role="workflow-input" aria-label="Workflow input">
       <Card>
         <CardHeader className="wf-input-head">
           <Workflow aria-hidden className={`${uiClasses.icon} wf-accent`} />
-          <span className="wf-input-title">Workflow input</span>
-          {note ? <Tooltip label={note}>{chip}</Tooltip> : chip}
+          {note ? <Tooltip label={note}>{title}</Tooltip> : title}
         </CardHeader>
         <CardBody className="wf-input-body">
           {/* A long input scrolls inside the card instead of flooding the

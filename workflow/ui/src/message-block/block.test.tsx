@@ -16,11 +16,6 @@ vi.mock('@iii-dev/console-ui', () => {
     Card: Div,
     CardHeader: Div,
     CardBody: Div,
-    Chip: ({ children, tone, ...props }: HTMLAttributes<HTMLSpanElement> & { tone?: string }) => (
-      <span data-tone={tone} {...props}>
-        {children}
-      </span>
-    ),
     Tooltip: ({ label, children }: { label?: ReactNode; children?: ReactNode }) => (
       <span data-tooltip={String(label)}>{children}</span>
     ),
@@ -131,19 +126,21 @@ describe('workflow input card', () => {
     expect(container.querySelector('dl')).toBeNull()
   })
 
-  it('carries the note in the chip tooltip and its screen-reader text', async () => {
+  it('carries the note in the title tooltip and its screen-reader text, with no alarm chip', async () => {
     await render('{"a":1}')
-    const chip = container.querySelector('[data-tone="warning"]')
-    expect(chip?.textContent).toBe(`Untrusted: ${NOTE}`)
-    expect(chip?.getAttribute('tabindex')).toBe('0')
-    expect(chip?.parentElement?.getAttribute('data-tooltip')).toBe(NOTE)
+    const title = container.querySelector('.wf-input-title')
+    expect(title?.textContent).toBe(`Workflow input: ${NOTE}`)
+    expect(title?.getAttribute('tabindex')).toBe('0')
+    expect(title?.parentElement?.getAttribute('data-tooltip')).toBe(NOTE)
+    // The header holds the title alone: no chip beside it.
+    expect(container.querySelector('.wf-input-head')?.textContent).toBe(`Workflow input: ${NOTE}`)
   })
 
-  it('shows a bare chip without a note', async () => {
+  it('shows the bare title without a note', async () => {
     await render('{"a":1}', {})
-    const chip = container.querySelector('[data-tone="warning"]')
-    expect(chip?.textContent).toBe('Untrusted')
-    expect(chip?.hasAttribute('tabindex')).toBe(false)
+    const title = container.querySelector('.wf-input-title')
+    expect(title?.textContent).toBe('Workflow input')
+    expect(title?.hasAttribute('tabindex')).toBe(false)
     expect(container.querySelector('[data-tooltip]')).toBeNull()
   })
 

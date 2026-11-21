@@ -328,10 +328,7 @@
   font-weight: 500;
   letter-spacing: 0.06em;
 }
-[data-iii-ui="workflow"] .wf-input-chip {
-  flex-shrink: 0;
-}
-[data-iii-ui="workflow"] .wf-input-chip:focus-visible,
+[data-iii-ui="workflow"] .wf-input-title:focus-visible,
 [data-iii-ui="workflow"] .wf-input-summary:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
