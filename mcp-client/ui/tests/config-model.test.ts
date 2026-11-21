@@ -9,7 +9,12 @@ import {
   emptyDraft,
   entryFromDraft,
   fieldErrors,
+  hideLiterals,
+  literalSecrets,
+  literalSecretsError,
   REFERENCE,
+  referenceOnly,
+  renameRow,
   sameJson,
   secretVaultName,
 } from '../src/config-model'
@@ -18,6 +23,9 @@ import spec from './fixtures/spec-config.json'
 const SPEC = spec as Record<string, Record<string, unknown>>
 const rt = (name: string, entry: unknown) => entryFromDraft(draftFromEntry(name, entry))
 const servers = (text: string) => (JSON.parse(text) as { mcpServers: Record<string, unknown> }).mcpServers
+// A stored value that no output of the page may hold.
+const LITERAL = 'abc999'
+const HIDDEN = '<hidden: store it as a secret>'
 
 describe('draftFromEntry and entryFromDraft', () => {
   it.each(Object.keys(SPEC))('%s survives the round trip', (name) => {
@@ -155,13 +163,126 @@ describe('copyAsJson', () => {
       bad: { type: 'http', url: 'https://x/mcp', headers: { Authorization: 'Bearer abc123' } },
       worse: { type: 'http', url: 'https://x/mcp', auth: { type: 'bearer', token: 'abc456' } },
       env: { type: 'stdio', command: 'x', env: { GITHUB_TOKEN: 'abc789' } },
+      keyed: { type: 'http', url: 'https://x/mcp', apiKey: 'secret://K' },
+      leaky: { type: 'http', url: 'https://x/mcp', apiKey: `sk-${LITERAL}` },
     })
     expect(text).not.toMatch(/secret:\/\/|env:\/\//)
-    for (const value of ['abc123', 'abc456', 'abc789']) expect(text).not.toContain(value)
+    for (const value of ['abc123', 'abc456', 'abc789', LITERAL]) expect(text).not.toContain(value)
     const copied = servers(text) as Record<string, Record<string, Record<string, unknown>>>
     expect(copied.bad.headers.Authorization).toEqual('${BAD_AUTHORIZATION}')
     expect(copied.worse.headers.Authorization).toEqual('Bearer ${WORSE_TOKEN}')
     expect(copied.env.env.GITHUB_TOKEN).toEqual('${ENV_GITHUB_TOKEN}')
+    expect(copied.keyed.apiKey).toEqual('${K}')
+    expect(copied.leaky.apiKey).toEqual('${LEAKY_APIKEY}')
+  })
+
+  it('writes a field the form does not show as other clients read it; args stay as written', () => {
+    const text = copyAsJson({
+      a: {
+        type: 'stdio',
+        command: 'x',
+        args: ['--key', LITERAL],
+        apiKey: `sk-${LITERAL}`,
+        region: 'env://REGION',
+        note: 'plain',
+        timeout: 30,
+      },
+    })
+    expect(servers(text).a).toEqual({
+      type: 'stdio',
+      command: 'x',
+      args: ['--key', LITERAL],
+      apiKey: '${A_APIKEY}',
+      region: '${REGION}',
+      note: 'plain',
+      timeout: 30,
+    })
+  })
+})
+
+describe('secret positions', () => {
+  const entry = {
+    type: 'http',
+    url: 'https://x/mcp',
+    headers: { Authorization: `Bearer ${LITERAL}`, 'X-Workspace': LITERAL, 'X-API-Key': 'secret://K', Cookie: '' },
+    env: { GITHUB_TOKEN: LITERAL, HOME: '/home/me' },
+    auth: { type: 'client_credentials', client_id: LITERAL, client_secret: LITERAL, token: 'env://T' },
+    apiKey: `sk-${LITERAL}`,
+    note: LITERAL,
+    timeout: 30,
+  }
+
+  it('literalSecrets names every value in a secret position, never the value', () => {
+    const paths = literalSecrets(entry)
+    expect(paths).toEqual(['headers/Authorization', 'env/GITHUB_TOKEN', 'auth/client_secret', 'apiKey'])
+    expect(paths.join(' ')).not.toContain(LITERAL)
+    expect(literalSecrets({ auth: { type: 'bearer', token: LITERAL } })).toEqual(['auth/token'])
+    expect(literalSecrets({ auth: { type: 'oauth', client_secret: LITERAL } })).toEqual(['auth/client_secret'])
+    expect(literalSecrets({ auth: LITERAL })).toEqual(['auth'])
+    for (const name of Object.keys(SPEC)) expect(literalSecrets(SPEC[name])).toEqual([])
+    for (const bad of [null, 42, LITERAL, [LITERAL], { headers: LITERAL, env: [LITERAL] }]) {
+      expect(literalSecrets(bad)).toEqual([])
+    }
+  })
+
+  it('literalSecretsError refuses an entry with a value and names its paths', () => {
+    expect(literalSecretsError({ auth: { type: 'bearer', token: LITERAL } })).toEqual(
+      'auth/token holds a value. Use secret://NAME or env://NAME.',
+    )
+    const error = literalSecretsError(entry)
+    expect(error).toEqual(
+      'headers/Authorization, env/GITHUB_TOKEN, auth/client_secret, apiKey hold a value. Use secret://NAME or env://NAME.',
+    )
+    expect(literalSecretsError(SPEC.search)).toBeNull()
+  })
+
+  it('renameRow clears a value when the new name looks secret', () => {
+    expect(renameRow({ name: 'X-Trace', value: LITERAL }, 'Authorization')).toEqual({
+      name: 'Authorization',
+      value: '',
+    })
+    expect(renameRow({ name: 'X', value: 'secret://K' }, 'X-Token')).toEqual({ name: 'X-Token', value: 'secret://K' })
+    expect(renameRow({ name: 'X', value: '' }, 'Cookie')).toEqual({ name: 'Cookie', value: '' })
+    expect(renameRow({ name: 'X', value: LITERAL }, 'X-Trace')).toEqual({ name: 'X-Trace', value: LITERAL })
+  })
+
+  it('draftFromEntry reads a value in a known secret position as empty', () => {
+    const draft = draftFromEntry('a', entry)
+    expect(draft.headers).toEqual([
+      { name: 'Authorization', value: '' },
+      { name: 'X-Workspace', value: LITERAL },
+      { name: 'X-API-Key', value: 'secret://K' },
+      { name: 'Cookie', value: '' },
+    ])
+    expect(draft.env).toEqual([
+      { name: 'GITHUB_TOKEN', value: '' },
+      { name: 'HOME', value: '/home/me' },
+    ])
+    expect(draft.clientCredentials).toMatchObject({ client_id: LITERAL, client_secret: '' })
+    const bearer = { type: 'http', url: 'https://x/mcp', auth: { type: 'bearer', token: LITERAL } }
+    expect(draftFromEntry('a', bearer).bearer.token).toEqual('')
+    const oauth = { type: 'http', url: 'https://x/mcp', auth: { type: 'oauth', client_secret: LITERAL } }
+    expect(draftFromEntry('a', oauth).oauth.client_secret).toEqual('')
+    expect(draftFromEntry('a', SPEC.linear).bearer.token).toEqual('secret://LINEAR_API_KEY')
+  })
+
+  it('referenceOnly lets a reference through and nothing else', () => {
+    expect(referenceOnly('secret://K')).toEqual('secret://K')
+    expect(referenceOnly('env://K')).toEqual('env://K')
+    expect(referenceOnly('')).toEqual('')
+    expect(referenceOnly(LITERAL)).toEqual('')
+    expect(referenceOnly(`secret://K ${LITERAL}`)).toEqual('')
+  })
+
+  it('keeps a secret-named field the form does not show, and hides its value when shown', () => {
+    const draft = draftFromEntry('a', { type: 'http', url: 'https://x/mcp', apiKey: `sk-${LITERAL}`, timeout: 30 })
+    expect(entryFromDraft(draft).apiKey).toEqual(`sk-${LITERAL}`)
+    const shown = hideLiterals(entryFromDraft(draft))
+    expect(shown).toEqual({ type: 'http', url: 'https://x/mcp', apiKey: HIDDEN, timeout: 30 })
+    expect(JSON.stringify(hideLiterals(entry))).not.toMatch(/Bearer|sk-/)
+    expect(hideLiterals(entry)).toMatchObject({ note: LITERAL, headers: { 'X-API-Key': 'secret://K', Cookie: '' } })
+    expect(literalSecrets(shown)).toEqual(['apiKey'])
+    expect(hideLiterals(SPEC.linear)).toEqual(SPEC.linear)
   })
 })
 

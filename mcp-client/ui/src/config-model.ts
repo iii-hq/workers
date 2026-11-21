@@ -33,6 +33,10 @@ export const REFERENCE = /^(secret|env):\/\/[A-Za-z_][A-Za-z0-9_.-]{0,127}$/i
 
 const KNOWN = new Set(['type', 'url', 'headers', 'command', 'args', 'env', 'cwd', 'disabled'])
 const AUTH_MODES = new Set(['bearer', 'client_credentials', 'oauth'])
+const AUTH_SECRETS = new Set(['token', 'client_secret'])
+/** What the JSON view shows in place of a value in a secret position; itself a value, so an edit that
+ * keeps it is refused. */
+const HIDDEN = '<hidden: store it as a secret>'
 
 const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value)
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -40,13 +44,22 @@ const isEmpty = (value: unknown) =>
   value === '' || (Array.isArray(value) && value.length === 0) || (isObject(value) && Object.keys(value).length === 0)
 /** The fields with a value: an empty optional field is left out of the entry. */
 const filled = (fields: Json): Json => Object.fromEntries(Object.entries(fields).filter(([, value]) => !isEmpty(value)))
+/** A value in a secret position as the page may hold or show it: a whole reference, else `''`. */
+export const referenceOnly = (value: string): string => (REFERENCE.test(value) ? value : '')
+const literal = (value: string) => value !== '' && !REFERENCE.test(value)
+// Each row is read as if just named, so a secret-named row holds a reference or ''.
 const rowsOf = (value: unknown): KV[] =>
-  isObject(value) ? Object.entries(value).map(([name, v]) => ({ name, value: str(v) })) : []
+  isObject(value) ? Object.entries(value).map(([name, v]) => renameRow({ name, value: str(v) }, name)) : []
 const mapOf = (rows: KV[]): Json =>
   Object.fromEntries(rows.filter((row) => row.name !== '').map((row) => [row.name, row.value]))
-/** `blank`'s keys read from `from` as strings; `blank` itself when there is nothing to read. */
+/** `blank`'s keys read from `from` as strings, a secret as a reference only; `blank` itself when there is
+ * nothing to read. */
 const read = <T extends Record<string, string>>(blank: T, from: Json | null): T =>
-  from ? (Object.fromEntries(Object.keys(blank).map((key) => [key, str(from[key])])) as T) : blank
+  from
+    ? (Object.fromEntries(
+        Object.keys(blank).map((key) => [key, AUTH_SECRETS.has(key) ? referenceOnly(str(from[key])) : str(from[key])]),
+      ) as T)
+    : blank
 const placeholder = (name: string) => `\${${name}}`
 const referenceName = (value: string) => value.slice(value.indexOf('://') + 3)
 
@@ -69,8 +82,9 @@ export function emptyDraft(): Draft {
   }
 }
 
-/** The form's draft of a stored entry. A field of the wrong JSON type reads as empty; an `auth` the form
- * cannot show stays in `extra` with every unknown field. */
+/** The form's draft of a stored entry. A field of the wrong JSON type reads as empty, and so does a value in
+ * a secret position the form shows (the worker refuses it anyway); an `auth` the form cannot show stays in
+ * `extra` with every unknown field. */
 export function draftFromEntry(name: string, entry: unknown): Draft {
   const e = isObject(entry) ? entry : {}
   const auth = isObject(e.auth) && AUTH_MODES.has(str(e.auth.type)) ? e.auth : null
@@ -122,28 +136,82 @@ export function entryFromDraft(draft: Draft): Json {
   return entry
 }
 
+/** A header or env row under a new name: a value that is no reference is dropped once the name looks
+ * like a credential. */
+export const renameRow = (row: KV, name: string): KV => ({
+  name,
+  value: looksSecretName(name) ? referenceOnly(row.value) : row.value,
+})
+
+/** `entry` with `swap` applied to every string in a secret position: a secret-named header or env value,
+ * `auth.token`, `auth.client_secret`, and a secret-named field the form does not show. */
+function mapSecrets(entry: Json, swap: (value: string, path: string) => string): Json {
+  const within = (prefix: string, value: Json, secret: (name: string) => boolean) =>
+    Object.fromEntries(
+      Object.entries(value).map(([name, v]) => [
+        name,
+        typeof v === 'string' && secret(name) ? swap(v, `${prefix}/${name}`) : v,
+      ]),
+    )
+  return Object.fromEntries(
+    Object.entries(entry).map(([key, value]) => [
+      key,
+      (key === 'headers' || key === 'env') && isObject(value)
+        ? within(key, value, looksSecretName)
+        : key === 'auth' && isObject(value)
+          ? within(key, value, (name) => AUTH_SECRETS.has(name))
+          : typeof value === 'string' && !KNOWN.has(key) && looksSecretName(key)
+            ? swap(value, key)
+            : value,
+    ]),
+  )
+}
+
+/** The paths (never the values) of every value in a secret position that is not a reference. */
+export function literalSecrets(entry: unknown): string[] {
+  const paths: string[] = []
+  if (!isObject(entry)) return paths
+  mapSecrets(entry, (value, path) => {
+    if (literal(value)) paths.push(path)
+    return value
+  })
+  return paths
+}
+
+/** Why the page refuses `entry`, or null: it holds a value where only a reference may stand. */
+export function literalSecretsError(entry: unknown): string | null {
+  const paths = literalSecrets(entry)
+  if (paths.length === 0) return null
+  return `${paths.join(', ')} ${paths.length === 1 ? 'holds' : 'hold'} a value. Use secret://NAME or env://NAME.`
+}
+
+/** `entry` as the JSON view shows it: a value in a secret position hidden, a reference as written. */
+export const hideLiterals = (entry: Json): Json => mapSecrets(entry, (value) => (literal(value) ? HIDDEN : value))
+
 /** One entry as other clients read it. A literal in a secret position is replaced by the vault name the
  * importer would give it, so the copy holds no value even when one was stored from the CLI. */
 function portable(server: string, entry: unknown): Json {
   const draft = draftFromEntry(server, entry)
   const ref = (value: string) => (REFERENCE.test(value) ? placeholder(referenceName(value)) : value)
-  const mask = (rows: KV[]) =>
-    rows.map(({ name, value }) => ({
-      name,
-      value: REFERENCE.test(value) || !looksSecretName(name) ? ref(value) : placeholder(secretVaultName(server, name)),
-    }))
+  const masked = (name: string, value: string) =>
+    REFERENCE.test(value) || !looksSecretName(name) ? ref(value) : placeholder(secretVaultName(server, name))
+  const mask = (rows: KV[]) => rows.map(({ name, value }) => ({ name, value: masked(name, value) }))
   const headers = mask(draft.headers)
   if (draft.authMode === 'bearer') {
     const { token } = draft.bearer
     const name = REFERENCE.test(token) ? referenceName(token) : secretVaultName(server, 'TOKEN')
     headers.push({ name: 'Authorization', value: `Bearer ${placeholder(name)}` })
   }
-  const { auth: _, ...extra } = draft.extra
+  const { auth: _, ...rest } = draft.extra
+  const extra = Object.fromEntries(
+    Object.entries(rest).map(([key, value]) => [key, typeof value === 'string' ? masked(key, value) : value]),
+  )
   const out = entryFromDraft({
     ...draft,
     // shortcut: a literal url is copied as written; mask it here if validation ever lets a secret query through.
     url: ref(draft.url),
     headers,
+    // args are no secret position: a reference becomes `${NAME}`, the rest is copied as written.
     args: draft.args.map(ref),
     env: mask(draft.env),
     disabled: false,

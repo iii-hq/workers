@@ -1,7 +1,7 @@
 import { Button, IconButton, Input, type InputProps, type SecretKeyFieldProps } from '@iii-dev/console-ui'
 import { Plus, X } from 'lucide-react'
 import { type ComponentType, useId, useState } from 'react'
-import { type KV, REFERENCE, secretVaultName } from './config-model'
+import { type KV, REFERENCE, referenceOnly, renameRow, secretVaultName } from './config-model'
 import { looksSecretName } from './secret-names'
 
 const CONSUMERS = ['mcp-client']
@@ -17,8 +17,8 @@ const WORDS = {
   },
 }
 
-/** The input of a secret position on a console without `SecretKeyField`: it takes only `''` or a whole
- * reference. Any other text stays here, so a pasted value never reaches the draft. */
+/** The input of a secret position on a console without `SecretKeyField`: it takes and shows only `''` or a
+ * whole reference. Other text the person types stays here, so a pasted value never reaches the draft. */
 function ReferenceInput({ value, onChange, ...input }: InputProps) {
   const id = useId()
   const [stray, setStray] = useState<string | null>(null)
@@ -26,7 +26,7 @@ function ReferenceInput({ value, onChange, ...input }: InputProps) {
     <>
       <Input
         {...input}
-        value={stray ?? value}
+        value={stray ?? referenceOnly(value)}
         aria-invalid={stray !== null || input['aria-invalid'] || undefined}
         aria-describedby={
           [input['aria-describedby'], stray === null ? null : id].filter(Boolean).join(' ') || undefined
@@ -67,7 +67,7 @@ export function SecretValue({
     <SecretKeyField
       name={vault}
       label={label}
-      value={value || undefined}
+      value={referenceOnly(value) || undefined}
       consumers={CONSUMERS}
       environment
       disabled={disabled}
@@ -95,8 +95,7 @@ export function KeyValueRows({
 }) {
   const id = useId()
   const words = WORDS[kind]
-  const set = (i: number, change: Partial<KV>) =>
-    onChange(rows.map((row, j) => (j === i ? { ...row, ...change } : row)))
+  const set = (i: number, next: KV) => onChange(rows.map((row, j) => (j === i ? next : row)))
   return (
     <fieldset className="mcp-ui-kv" aria-label={words.group}>
       {rows.map((row, i) => {
@@ -107,7 +106,7 @@ export function KeyValueRows({
           'aria-invalid': error ? (true as const) : undefined,
           'aria-describedby': error ? `${id}-${i}` : undefined,
           value: row.value,
-          onChange: (next: string) => set(i, { value: next }),
+          onChange: (next: string) => set(i, { ...row, value: next }),
         }
         return (
           <div key={i} className="mcp-ui-kv-row" data-card={(secret && SecretKeyField !== undefined) || undefined}>
@@ -115,7 +114,7 @@ export function KeyValueRows({
               className="mcp-ui-kv-name"
               aria-label={words.name}
               value={row.name}
-              onChange={(next) => set(i, { name: next })}
+              onChange={(next) => set(i, renameRow(row, next))}
             />
             {secret ? (
               <SecretValue

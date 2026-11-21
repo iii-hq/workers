@@ -14,9 +14,18 @@ import {
   StatusPanel,
 } from '@iii-dev/console-ui'
 import { Plus, X } from 'lucide-react'
-import { type ComponentType, type ReactNode, useEffect, useState } from 'react'
+import { type ComponentType, type ReactNode, useEffect, useRef, useState } from 'react'
 import type { Api } from './api'
-import { type Draft, draftDirty, draftFromEntry, entryFromDraft, fieldErrors, secretVaultName } from './config-model'
+import {
+  type Draft,
+  draftDirty,
+  draftFromEntry,
+  entryFromDraft,
+  fieldErrors,
+  hideLiterals,
+  literalSecretsError,
+  secretVaultName,
+} from './config-model'
 import { KeyValueRows, SecretValue } from './KeyValueRows'
 import { advertisesText, stageTrack } from './presentation'
 import { parsePayload } from './schema-form'
@@ -37,7 +46,8 @@ const AUTH_MODES = [
   { value: 'oauth' as const, label: 'Sign in', icon: false as const },
 ]
 
-const pretty = (value: unknown) => JSON.stringify(value, null, 2)
+/** The JSON view's text of a draft: a value in a secret position hidden. */
+const jsonText = (draft: Draft) => JSON.stringify(hideLiterals(entryFromDraft(draft)), null, 2)
 
 /** Column 3 for Connection: how far the connection got, the entry's form (or its JSON), and what the server
  * negotiated. `children` sits between the stage track and the form. */
@@ -63,11 +73,20 @@ export function ConnectionView({
 }) {
   // The JSON view's text and why it is not an entry; null while the form shows.
   const [json, setJson] = useState<{ text: string; error: string | null } | null>(null)
+  // The draft the JSON text shows: any other draft reaching the open view is a reload, and rewrites the text.
+  const shown = useRef(draft)
   const SecretKeyField = host.components?.SecretKeyField as ComponentType<SecretKeyFieldProps> | undefined
   const fe = fieldErrors(errors, draft.name)
   const set = (change: Partial<Draft>) => onDraft({ ...draft, ...change })
+  // Refused JSON text is an edit the draft does not hold yet.
+  const refused = Boolean(json?.error)
 
-  useEffect(() => setDirty(draftDirty(draft, stored)), [draft, stored, setDirty])
+  useEffect(() => setDirty(draftDirty(draft, stored) || refused), [draft, stored, refused, setDirty])
+  useEffect(() => {
+    if (draft === shown.current) return
+    shown.current = draft
+    setJson((open) => (open && !open.error ? { text: jsonText(draft), error: null } : open))
+  }, [draft])
 
   const field = (
     path: string,
@@ -262,10 +281,15 @@ export function ConnectionView({
     </>
   )
 
+  // An entry with a value in a secret position is refused like a parse error: the draft never holds one.
   const editJson = (value: string) => {
     const parsed = parsePayload(value)
-    if ('payload' in parsed) onDraft(draftFromEntry(draft.name, parsed.payload))
-    setJson({ text: value, error: 'error' in parsed ? parsed.error : null })
+    const error = 'error' in parsed ? parsed.error : literalSecretsError(parsed.payload)
+    if (error === null && 'payload' in parsed) {
+      shown.current = draftFromEntry(draft.name, parsed.payload)
+      onDraft(shown.current)
+    }
+    setJson({ text: value, error })
   }
 
   return (
@@ -291,7 +315,7 @@ export function ConnectionView({
           value={json ? 'json' : 'form'}
           options={MODES}
           onChange={(mode) => {
-            if (!json?.error) setJson(mode === 'json' ? { text: pretty(entryFromDraft(draft)), error: null } : null)
+            if (!json?.error) setJson(mode === 'json' ? { text: jsonText(draft), error: null } : null)
           }}
         />
         {fe[''] ? <StatusPanel variant="alert" headline={fe['']} /> : null}

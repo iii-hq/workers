@@ -23,8 +23,8 @@ import { ChevronLeft, Copy, FileJson, Plug, Plus, RefreshCw } from 'lucide-react
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from './api'
 import { ConnectionView } from './ConnectionView'
-import { currentRow, focusColumn } from './columns'
-import { type Draft, draftFromEntry, emptyDraft } from './config-model'
+import { currentRow, focusColumn, onColumnKeys } from './columns'
+import { type Draft, draftFromEntry, emptyDraft, sameJson } from './config-model'
 import { FunctionDetail } from './FunctionDetail'
 import {
   announcements,
@@ -135,9 +135,13 @@ export function McpServersPage({
     [setDirty],
   )
 
-  // A refresh of the entry reaches the form, unless the form holds an edit.
+  // A refresh that changed the entry reaches the form, unless the form holds an edit. Every fetch builds a new
+  // config, so the content is compared: an unchanged refresh keeps the draft and its rows not yet filled in.
+  const loaded = useRef<unknown>(undefined)
   useEffect(() => {
-    if (!adding && !dirty && selection.server !== null) setDraft(draftFromEntry(selection.server, stored))
+    if (adding || dirty || selection.server === null || sameJson(loaded.current, [selection.server, stored])) return
+    loaded.current = [selection.server, stored]
+    setDraft(draftFromEntry(selection.server, stored))
   }, [adding, dirty, selection.server, stored])
   const pickItem = (next: Selection) => {
     setSelection(next)
@@ -349,8 +353,19 @@ export function McpServersPage({
                         <>
                           {back('servers', 'MCP servers')}
                           {adding ? (
-                            <List role="group" aria-label="New server contents" className="mcp-ui-list" data-column="2">
-                              <ListItem className="mcp-ui-pin" {...currentRow(true)} label="Connection" />
+                            <List
+                              role="group"
+                              aria-label="New server contents"
+                              className="mcp-ui-list"
+                              data-column="2"
+                              onKeyDown={onColumnKeys}
+                            >
+                              <ListItem
+                                className="mcp-ui-pin"
+                                {...currentRow(true)}
+                                label="Connection"
+                                onClick={() => pickItem({ server: null, item: { kind: 'connection' } })}
+                              />
                             </List>
                           ) : server ? (
                             <ServerContents
