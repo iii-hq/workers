@@ -25,14 +25,16 @@ iii call secrets::import --json '{"name": "LINEAR_API_KEY", "source": "dotenv", 
 
 ```bash
 # 2. Add the server.
-iii call configuration::set --json '{"id": "mcp-client", "value": {"mcpServers": {"linear": {
+iii call configuration::set --json '{"id": "default-mcp-client", "value": {"mcpServers": {"linear": {
   "type": "http", "url": "https://mcp.linear.app/mcp",
   "auth": {"type": "bearer", "token": "secret://LINEAR_API_KEY"}}}}}'
 ```
 
 ```json
-{"old_value": {"mcpServers": {}}, "new_value": {"mcpServers": {"linear": {…}}}}
+{"new_value": {"mcpServers": {"linear": {…}}}, "old_value": {"mcpServers": {}}}
 ```
+
+Under Compose the configuration id is `<namespace>-mcp-client`, the name Compose puts in `III_CONFIG_NAME` (`default-mcp-client` in the default namespace); `iii call configuration::list` shows it.
 
 ```bash
 # 3. Approve it: until then nothing connects and the key is not read.
@@ -58,7 +60,7 @@ With an API key Linear offers no `whoami` tool: `get_user` with `"me"` reads the
 
 ## Configuration
 
-The worker reads one configuration entry: `III_CONFIG_NAME` when it is set, else `mcp-client`. Its value is the map other MCP clients use:
+The worker reads one configuration entry: the name in `III_CONFIG_NAME` (under Compose `<namespace>-mcp-client`, e.g. `default-mcp-client`), or `mcp-client` when the worker runs alone. Its value is the map other MCP clients use:
 
 ```json
 {"mcpServers": {"<name>": {"type": "http", "url": "https://…", "headers": {}, "auth": {}}}}
