@@ -282,3 +282,167 @@ async fn a_call_past_the_limit_says_outcome_unknown() {
     );
     assert_eq!(server(&manager, "mock").await["state"], "ready");
 }
+
+fn bearer(mock: &McpMock) -> Value {
+    json!({"url": mock.url(), "auth": {"type": "bearer", "token": "secret://MOCK_KEY"}})
+}
+
+async fn settle(manager: &Arc<Manager>, name: &str, state: State) -> Value {
+    let reached = manager.wait_for(name, state, WAIT).await;
+    let row = server(manager, name).await;
+    assert!(reached, "{row}");
+    row
+}
+
+#[tokio::test]
+async fn bearer_and_headers_are_sent_and_never_listed() {
+    let mock = McpMock::start().await;
+    mock.tools(tools()).await;
+    mock.on_call("echo", json!({"content": []})).await;
+    let host = FakeHost::new();
+    host.set_secret("secret://MOCK_KEY", "tok-123");
+    host.set_secret("env://WS_KEY", "k-9");
+    let mut entry = bearer(&mock);
+    entry["headers"] = json!({"X-API-Key": "env://WS_KEY", "X-Workspace": "acme"});
+    let manager = connect(&host, cfg(json!({ "mock": entry }))).await;
+    settle(&manager, "mock", State::Ready).await;
+    host.call("mcp::mock::echo", json!({"text": "x"}))
+        .await
+        .unwrap();
+
+    for method in ["initialize", "tools/list", "tools/call"] {
+        let headers = &mock.headers_of(method).await[0];
+        assert_eq!(headers["authorization"], "Bearer tok-123", "{method}");
+        assert_eq!(headers["x-api-key"], "k-9", "{method}");
+        assert_eq!(headers["x-workspace"], "acme", "{method}");
+    }
+    let listed = serde_json::to_string(&manager.list().await).unwrap();
+    assert!(
+        !listed.contains("tok-123") && !listed.contains("k-9"),
+        "{listed}"
+    );
+    assert_eq!(server(&manager, "mock").await["auth"], "bearer");
+}
+
+#[tokio::test]
+async fn secret_errors_map_to_states_and_send_nothing() {
+    let mock = McpMock::start().await;
+    let config = cfg(json!({ "mock": bearer(&mock) }));
+
+    let host = FakeHost::new();
+    let manager = connect(&host, config.clone()).await;
+    let r = settle(&manager, "mock", State::ConfigError).await;
+    assert_eq!(r["stage"], "secret", "{r}");
+    assert_eq!(r["error"]["code"], "secret_missing", "{r}");
+    let message = r["error"]["message"].as_str().unwrap();
+    assert!(message.contains("`secret://MOCK_KEY`"), "{message}");
+
+    let host = FakeHost::new();
+    host.set_secret("secret://MOCK_KEY", "tok-123");
+    host.forbid("secret://MOCK_KEY");
+    let manager = connect(&host, config.clone()).await;
+    let r = settle(&manager, "mock", State::ConfigError).await;
+    assert_eq!(r["stage"], "secret", "{r}");
+    assert_eq!(r["error"]["code"], "secret_not_shared", "{r}");
+    let message = r["error"]["message"].as_str().unwrap();
+    assert!(message.contains("`mcp-client`"), "{message}");
+
+    let host = FakeHost::new();
+    host.set_unreachable(true);
+    let manager = connect(&host, config).await;
+    let r = settle(&manager, "mock", State::Unavailable).await;
+    assert_eq!(r["stage"], "secret", "{r}");
+    assert_eq!(r["error"]["code"], "connect_failed", "{r}");
+
+    assert_eq!(mock.request_count().await, 0);
+}
+
+#[tokio::test]
+async fn a_401_is_needs_login_without_auth_and_auth_failed_with_a_credential() {
+    let mock = McpMock::start().await;
+    mock.http_status(
+        "initialize",
+        401,
+        &[(
+            "WWW-Authenticate",
+            r#"Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource""#,
+        )],
+    )
+    .await;
+    let host = FakeHost::new();
+    host.set_secret("secret://MOCK_KEY", "tok-123");
+    let manager = connect(
+        &host,
+        cfg(json!({
+            "auto": {"url": mock.url()},
+            "keyed": bearer(&mock),
+            "hdr": {"url": mock.url(), "headers": {"X-API-Key": "secret://MOCK_KEY"}}
+        })),
+    )
+    .await;
+
+    let auto = settle(&manager, "auto", State::NeedsLogin).await;
+    assert_eq!(auto["stage"], "authorize", "{auto}");
+    assert_eq!(auto["auth"], "oauth", "{auto}");
+    assert_eq!(
+        auto["error"],
+        json!({"code": "login_required", "message": "sign-in required, an operator must sign in on the MCP servers page"})
+    );
+    let rejected = json!({"code": "credential_rejected", "message": "credential rejected, an operator must fix `secret://MOCK_KEY`"});
+    let keyed = settle(&manager, "keyed", State::AuthFailed).await;
+    assert_eq!(keyed["stage"], "authorize", "{keyed}");
+    assert_eq!(keyed["auth"], "bearer", "{keyed}");
+    assert_eq!(keyed["error"], rejected);
+    let hdr = settle(&manager, "hdr", State::AuthFailed).await;
+    assert_eq!(hdr["auth"], "header", "{hdr}");
+    assert_eq!(hdr["error"], rejected);
+    assert!(host.registered_ids().is_empty());
+
+    mock.http_status("initialize", 401, &[]).await;
+    let host = FakeHost::new();
+    let manager = connect(&host, cfg(json!({"plain": {"url": mock.url()}}))).await;
+    let plain = settle(&manager, "plain", State::AuthFailed).await;
+    assert_eq!(plain["auth"], "none", "{plain}");
+    assert_eq!(
+        plain["error"],
+        json!({"code": "credential_rejected", "message": "plain answered 401 and offers no sign-in"})
+    );
+}
+
+#[tokio::test]
+async fn a_connect_error_never_carries_a_resolved_value() {
+    let host = FakeHost::new();
+    host.set_secret(
+        "secret://MOCK_URL",
+        "http://127.0.0.1:1/mcp?key=tok-123-sentinel",
+    );
+    let manager = connect(&host, cfg(json!({"m": {"url": "secret://MOCK_URL"}}))).await;
+    let r = settle(&manager, "m", State::Unavailable).await;
+    assert_eq!(r["stage"], "connect", "{r}");
+    assert_eq!(r["error"]["code"], "connect_failed", "{r}");
+    assert_eq!(r["target"], "secret://MOCK_URL", "{r}");
+    let message = r["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("could not reach secret://MOCK_URL: "),
+        "{message}"
+    );
+    assert!(
+        !r.to_string().contains("sentinel") && !r.to_string().contains("127.0.0.1:1"),
+        "{r}"
+    );
+}
+
+#[tokio::test]
+async fn a_url_reference_that_resolves_to_plain_http_is_refused() {
+    let host = FakeHost::new();
+    host.set_secret("secret://MOCK_URL", "http://mcp.example.com/mcp");
+    let manager = connect(&host, cfg(json!({"m": {"url": "secret://MOCK_URL"}}))).await;
+    let r = settle(&manager, "m", State::ConfigError).await;
+    assert_eq!(r["stage"], "secret", "{r}");
+    assert_eq!(r["error"]["code"], "invalid_config", "{r}");
+    assert_eq!(
+        r["error"]["message"],
+        "the address stored in `secret://MOCK_URL` must be https, or http on a loopback host"
+    );
+    assert!(!r.to_string().contains("mcp.example.com"), "{r}");
+}

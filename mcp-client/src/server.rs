@@ -1,17 +1,23 @@
 //! One task per configured server: connect, list, register, call; and the
 //! wire types of `servers::list`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::error::Error;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use http::{HeaderName, HeaderValue};
 use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
 };
 use rmcp::service::{ClientCacheConfig, ClientInitializeError, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::streamable_http_client::{
+    AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
+    StreamableHttpError,
+};
 use rmcp::{Peer, RoleClient, ServiceError, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,11 +26,14 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use crate::config::{Auth, Checked, RawConfig, Transport, check_entry};
+use crate::config::{
+    Auth, Checked, Entry, HttpEntry, RawConfig, Transport, check_entry, check_url_text,
+};
 use crate::host::{EventKind, Handler, Host, ServerEvent};
 use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
+use crate::refs::{Text, resolve_all};
 use crate::translate::{BlockCtx, CallFailure, failure_text, strip_args, tool_result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -250,6 +259,16 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Replaces each secret value in `text` with `[redacted]`, longest first so a
+/// value that contains another goes whole.
+fn scrub(text: &str, secrets: &[String]) -> String {
+    let mut secrets: Vec<&String> = secrets.iter().filter(|s| !s.is_empty()).collect();
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    secrets
+        .iter()
+        .fold(text.to_string(), |t, s| t.replace(s.as_str(), "[redacted]"))
+}
+
 fn client_config() -> ClientConfig {
     ClientConfig::new(
         ClientCapabilities::default(),
@@ -290,6 +309,10 @@ struct Server {
     status: watch::Sender<Status>,
     registry: Registry,
     info: Mutex<Info>,
+    /// The resolved reference values, replaced in every text this server shows.
+    secrets: Mutex<Vec<String>>,
+    /// A no-`auth` entry the server answered with a sign-in challenge.
+    challenged: AtomicBool,
     peer: RwLock<Option<Peer<RoleClient>>>,
     task: Mutex<Option<(oneshot::Sender<()>, JoinHandle<()>)>>,
 }
@@ -360,6 +383,8 @@ impl Server {
             status: watch::channel(status).0,
             registry: Registry::new(),
             info: Mutex::default(),
+            secrets: Mutex::default(),
+            challenged: AtomicBool::default(),
             peer: RwLock::default(),
             task: Mutex::default(),
         });
@@ -428,30 +453,64 @@ impl Server {
         let Transport::Http(http) = &entry.transport else {
             return None;
         };
-        let url = match &http.url {
-            crate::refs::Text::Literal(s) => s.clone(),
-            crate::refs::Text::Ref(r) => r.to_string(),
+        let resolved = match resolve_all(&*self.host, &entry.refs()).await {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                let state = match e.code {
+                    ErrorCode::ConnectFailed => State::Unavailable,
+                    _ => State::ConfigError,
+                };
+                self.set(state, Some(Stage::Secret), Some(e));
+                return None;
+            }
         };
-        let transport = StreamableHttpClientTransport::from_config(
-            StreamableHttpClientTransportConfig::with_uri(url),
-        );
+        let secrets = resolved.secrets();
+        *self.secrets.lock().unwrap() = secrets.clone();
+        let url = resolved.text(&http.url);
+        if let Text::Ref(r) = &http.url
+            && let Err(m) = check_url_text(&url)
+        {
+            let message = format!("the address stored in `{r}` {m}");
+            self.fail(
+                State::ConfigError,
+                Stage::Secret,
+                ErrorCode::InvalidConfig,
+                message,
+            );
+            return None;
+        }
+        let mut headers = HashMap::new();
+        for (name, text) in &http.headers {
+            let parsed = HeaderName::from_bytes(name.as_bytes())
+                .ok()
+                .zip(HeaderValue::from_str(&resolved.text(text)).ok());
+            let Some((header, mut value)) = parsed else {
+                let message = format!("header `{name}` is not a valid HTTP header value");
+                self.fail(
+                    State::ConfigError,
+                    Stage::Secret,
+                    ErrorCode::InvalidConfig,
+                    message,
+                );
+                return None;
+            };
+            value.set_sensitive(matches!(text, Text::Ref(_)));
+            headers.insert(header, value);
+        }
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url).custom_headers(headers);
+        if let Auth::Bearer { token } = &http.auth {
+            config = config.auth_header(resolved.text(&Text::Ref(token.clone())));
+        }
+        let transport = StreamableHttpClientTransport::from_config(config);
+
         self.set(State::Connecting, Some(Stage::Connect), None);
         let limit = self.timings.http_handshake;
         let session = match timeout(limit, client_config().serve(transport)).await {
             Ok(Ok(session)) => session,
             Ok(Err(e)) => {
-                let message = match &e {
-                    ClientInitializeError::JsonRpcError(d) => {
-                        format!("MCP error {}: {}", d.code.0, d.message)
-                    }
-                    _ => e.to_string(),
-                };
-                self.fail(
-                    State::Unavailable,
-                    Stage::Connect,
-                    ErrorCode::HandshakeFailed,
-                    message,
-                );
+                let (state, stage, code, message) =
+                    self.handshake_failure(&e, entry, http, &secrets);
+                self.fail(state, stage, code, message);
                 return None;
             }
             Err(_) => {
@@ -478,7 +537,7 @@ impl Server {
             Ok(Ok(tools)) => serde_json::to_value(tools)
                 .and_then(serde_json::from_value::<Vec<ToolInfo>>)
                 .map_err(|e| e.to_string()),
-            Ok(Err(e)) => Err(e.to_string()),
+            Ok(Err(e)) => Err(scrub(&e.to_string(), &secrets)),
             Err(_) => Err(self.no_answer(limit)),
         };
         let tools = match listed {
@@ -539,6 +598,105 @@ impl Server {
         format!("no answer from {} within {} s", self.name, limit.as_secs())
     }
 
+    /// The row of the connect sequence a failed handshake stops at.
+    fn handshake_failure(
+        &self,
+        e: &ClientInitializeError,
+        entry: &Entry,
+        http: &HttpEntry,
+        secrets: &[String],
+    ) -> (State, Stage, ErrorCode, String) {
+        type HttpError = StreamableHttpError<reqwest::Error>;
+        let auth = entry.auth_kind();
+        let chain: Vec<&(dyn Error + 'static)> = match e {
+            ClientInitializeError::TransportError { error, .. } => {
+                let top: &(dyn Error + 'static) = error.error.as_ref();
+                std::iter::successors(Some(top), |&x| x.source()).collect()
+            }
+            _ => vec![],
+        };
+        let challenged = chain.iter().any(|x| x.is::<AuthRequiredError>());
+        let scope = chain
+            .iter()
+            .find_map(|x| x.downcast_ref::<InsufficientScopeError>());
+        let http_error = chain.first().and_then(|x| x.downcast_ref::<HttpError>());
+        // Its text carries the response body: matched, never passed on.
+        let bare_401 = matches!(http_error,
+            Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP 401"));
+        let rejected = |failure: CallFailure| {
+            let message = failure_text(&self.name, &failure);
+            (
+                State::AuthFailed,
+                Stage::Authorize,
+                ErrorCode::CredentialRejected,
+                message,
+            )
+        };
+        if challenged && auth == "none" {
+            self.challenged.store(true, Ordering::Relaxed);
+            let message = failure_text(&self.name, &CallFailure::LoginRequired);
+            return (
+                State::NeedsLogin,
+                Stage::Authorize,
+                ErrorCode::LoginRequired,
+                message,
+            );
+        }
+        if (challenged || bare_401) && matches!(auth, "bearer" | "header") {
+            let reference = match &http.auth {
+                Auth::Bearer { token } => token.to_string(),
+                _ => http
+                    .headers
+                    .values()
+                    .find_map(|v| match v {
+                        Text::Ref(r) => Some(r.to_string()),
+                        Text::Literal(_) => None,
+                    })
+                    .unwrap_or_default(),
+            };
+            return rejected(CallFailure::CredentialRejected { reference });
+        }
+        if bare_401 {
+            let message = format!("{} answered 401 and offers no sign-in", self.name);
+            return (
+                State::AuthFailed,
+                Stage::Authorize,
+                ErrorCode::CredentialRejected,
+                message,
+            );
+        }
+        if let Some(s) = scope {
+            let scope = s.required_scope.clone();
+            return rejected(CallFailure::InsufficientScope { scope });
+        }
+        let (code, message) = match http_error {
+            Some(HttpError::HttpStatus(s)) if s.status == 429 => {
+                let retry_after = s.retry_after.clone();
+                let failure = CallFailure::RateLimited { retry_after };
+                (ErrorCode::RateLimited, failure_text(&self.name, &failure))
+            }
+            Some(HttpError::Client(e)) => {
+                // reqwest's own text holds the resolved URL; its causes do not.
+                let cause = std::iter::successors(e.source(), |&x| x.source())
+                    .last()
+                    .map_or_else(|| "no HTTP answer".into(), |c| c.to_string());
+                let target = entry.target();
+                let message = format!("could not reach {target}: {}", scrub(&cause, secrets));
+                (ErrorCode::ConnectFailed, message)
+            }
+            _ => {
+                let text = match e {
+                    ClientInitializeError::JsonRpcError(d) => {
+                        format!("MCP error {}: {}", d.code.0, d.message)
+                    }
+                    _ => e.to_string(),
+                };
+                (ErrorCode::HandshakeFailed, scrub(&text, secrets))
+            }
+        };
+        (State::Unavailable, Stage::Connect, code, message)
+    }
+
     /// The one caller of `Registry::apply`.
     async fn reconcile(self: &Arc<Self>, wanted: WantedSet) {
         let plan = self
@@ -561,10 +719,11 @@ impl Server {
         Arc::new(move |payload| {
             let (server, name, target) = (server.upgrade(), name.clone(), target.clone());
             Box::pin(async move {
-                match server {
-                    Some(server) => server.call(&target, payload).await,
-                    None => Err(format!("`{name}` MCP server was removed")),
-                }
+                let Some(server) = server else {
+                    return Err(format!("`{name}` MCP server was removed"));
+                };
+                let out = server.call(&target, payload).await;
+                out.map_err(|e| scrub(&e, &server.secrets.lock().unwrap()))
             })
         })
     }
@@ -625,7 +784,11 @@ impl Server {
                     Transport::Http(_) => "http",
                     Transport::Stdio(_) => "stdio",
                 };
-                (transport, entry.target(), entry.auth_kind())
+                let auth = match self.challenged.load(Ordering::Relaxed) {
+                    true => "oauth",
+                    false => entry.auth_kind(),
+                };
+                (transport, entry.target(), auth)
             }
             None => {
                 let command = self.raw.get("command");

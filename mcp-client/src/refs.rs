@@ -1,4 +1,8 @@
+use std::collections::BTreeMap;
 use std::fmt;
+
+use crate::host::{Host, SecretError};
+use crate::server::{ErrorCode, ServerError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Store {
@@ -56,6 +60,53 @@ impl Text {
     pub fn parse(s: &str) -> Text {
         Ref::parse(s).map_or_else(|| Text::Literal(s.into()), Text::Ref)
     }
+}
+
+/// The values of an entry's references, keyed by reference text. No `Debug`:
+/// the values are secrets.
+#[derive(Default)]
+pub struct Resolved {
+    pub values: BTreeMap<String, String>,
+}
+
+impl Resolved {
+    pub fn text(&self, t: &Text) -> String {
+        match t {
+            Text::Literal(s) => s.clone(),
+            Text::Ref(r) => self.values.get(&r.to_string()).cloned().unwrap_or_default(),
+        }
+    }
+
+    pub fn secrets(&self) -> Vec<String> {
+        self.values.values().cloned().collect()
+    }
+}
+
+/// Resolves each distinct reference once, in order, stopping at the first
+/// failure.
+pub async fn resolve_all(host: &dyn Host, refs: &[Ref]) -> Result<Resolved, ServerError> {
+    let mut resolved = Resolved::default();
+    for r in refs {
+        let key = r.to_string();
+        if resolved.values.contains_key(&key) {
+            continue;
+        }
+        let value = host.resolve(&key).await.map_err(|e| match e {
+            SecretError::NotFound => {
+                ServerError::new(ErrorCode::SecretMissing, format!("`{key}` is not set"))
+            }
+            SecretError::Forbidden => ServerError::new(
+                ErrorCode::SecretNotShared,
+                format!("`{key}` is not shared with `mcp-client`"),
+            ),
+            SecretError::Unreachable(text) => ServerError::new(
+                ErrorCode::ConnectFailed,
+                format!("could not resolve `{key}`: {text}"),
+            ),
+        })?;
+        resolved.values.insert(key, value);
+    }
+    Ok(resolved)
 }
 
 /// Whether a header or env name probably carries a credential. The TypeScript
