@@ -1409,10 +1409,23 @@ pub(super) fn functions_match(binding: &HookBinding, namespace: &str, function_i
         return false;
     }
     let ids = Some(ids.as_slice());
-    globs_match(ids, function_id)
+    if globs_match(ids, function_id)
         || crate::policy::sandbox_op_aliases(function_id)
             .iter()
             .any(|alias| globs_match(ids, alias))
+    {
+        return true;
+    }
+    let old = crate::policy::old_mesh_spellings(namespace, function_id)
+        .iter()
+        .any(|spelling| globs_match(ids, spelling));
+    if old {
+        warn_filter_once(
+            &binding.target,
+            "matched a call by its old mesh spelling; write <namespace>/<pattern>",
+        );
+    }
+    old
 }
 
 /// Logs a malformed binding filter entry, once per entry.
@@ -1794,6 +1807,26 @@ mod tests {
         assert!(functions_match(&on_laptop, "laptop", "shell::exec"));
         assert!(!functions_match(&on_laptop, "desk", "shell::exec"));
         assert!(functions_match(&binding("gate", 0), "desk", "shell::exec"));
+    }
+
+    #[test]
+    fn an_old_mesh_spelling_still_fires_a_binding() {
+        let own = crate::clients::engine::resolve_namespace("shell::exec", None);
+        let gate = |glob: &str| HookBinding {
+            functions: Some(vec![glob.into()]),
+            ..binding("gate", 0)
+        };
+        let on_laptop = gate("laptop::shell::*");
+        assert!(functions_match(&on_laptop, "laptop", "shell::exec"));
+        assert!(!functions_match(&on_laptop, "desk", "shell::exec"));
+        let on_peers = gate("peer::*");
+        assert!(functions_match(&on_peers, "desk", "shell::exec"));
+        assert!(!functions_match(&on_peers, "hub", "shell::exec"));
+        let on_hub = gate("hub::shell::*");
+        assert!(functions_match(&on_hub, "hub", "shell::exec"));
+        for binding in [on_laptop, on_peers, on_hub] {
+            assert!(!functions_match(&binding, &own, "shell::exec"));
+        }
     }
 
     #[test]
