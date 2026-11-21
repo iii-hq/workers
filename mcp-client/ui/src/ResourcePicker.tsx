@@ -4,7 +4,7 @@ import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { useEffect, useId, useRef, useState } from 'react'
 import type { Api } from './api'
 import { currentRow } from './columns'
-import { firstVariable, matchesQuery, middleTruncate, resourceMeta, searchNote } from './presentation'
+import { firstVariable, matchesQuery, middleTruncate, resourceMeta, searchNote, uniqueBy } from './presentation'
 import type { Resource, ResourcePage, ResourceTemplate, Server } from './types'
 
 /** Per-tab handler id of the open picker's live read (the host namespaces it `::<browserId>`). */
@@ -80,7 +80,7 @@ export function ResourcePicker({
   const data = live.data
   const held = more?.first === data ? more : null
   const cursor = held ? held.cursor : data?.page?.next_cursor
-  const resources = [...(data?.page?.resources ?? []), ...(held?.resources ?? [])]
+  const resources = uniqueBy([...(data?.page?.resources ?? []), ...(held?.resources ?? [])], (r) => r.uri)
 
   const loadMore = () => {
     if (data === null || cursor === undefined) return
@@ -119,7 +119,8 @@ export function ResourcePicker({
   }, [picked, uri])
 
   const shown = resources.filter((r) => matchesQuery(query, r.name, r.uri))
-  const templates = (data?.templates ?? []).filter((t) => matchesQuery(query, t.name, t.uri_template))
+  const allTemplates = uniqueBy(data?.templates ?? [], (t) => t.uri_template)
+  const templates = allTemplates.filter((t) => matchesQuery(query, t.name, t.uri_template))
   const note = searchNote(resources.length, cursor !== undefined)
 
   let list = null
@@ -144,7 +145,7 @@ export function ResourcePicker({
         {listed && resources.length === 0 ? (
           <p className="mcp-ui-quiet-line">This server lists no resources. Type a uri to read one.</p>
         ) : null}
-        {resources.length + data.templates.length > 0 ? (
+        {resources.length + allTemplates.length > 0 ? (
           <div className="mcp-ui-field">
             <SearchField aria-label="Filter resources" value={query} onChange={setQuery} />
             {note ? <p className="mcp-ui-quiet-line">{note}</p> : null}

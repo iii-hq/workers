@@ -30,6 +30,7 @@ import {
   searchNote,
   skippedText,
   statusBarText,
+  uniqueBy,
 } from '../src/presentation'
 import type { EngineFunction, Item, Server, Skipped } from '../src/types'
 import type { ServersData } from '../src/use-servers'
@@ -526,5 +527,23 @@ describe('resource read and prompt run', () => {
     expect(resourceMeta('text/plain', 2048)).toBe('text/plain · 2.0 KiB')
     expect(resourceMeta(undefined, 5)).toBe('5 B')
     expect(resourceMeta(undefined, undefined)).toBe('')
+  })
+
+  it('keeps one row per uri across pages, the first in place', () => {
+    const row = (uri: string, name = uri) => ({ uri, name })
+    const loaded = [row('file:///a'), row('file:///b')]
+    const page = [row('file:///b', 'b again'), row('file:///c')]
+    expect(uniqueBy([...loaded, ...page], (r) => r.uri)).toEqual([row('file:///a'), row('file:///b'), row('file:///c')])
+    const template = (uri_template: string, name: string) => ({ uri_template, name })
+    expect(
+      uniqueBy(
+        [
+          template('file:///{name}.txt', 'Text file'),
+          template('repo://{owner}', 'Repo'),
+          template('file:///{name}.txt', 'Again'),
+        ],
+        (t) => t.uri_template,
+      ),
+    ).toEqual([template('file:///{name}.txt', 'Text file'), template('repo://{owner}', 'Repo')])
   })
 })

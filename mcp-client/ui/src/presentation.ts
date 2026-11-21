@@ -462,6 +462,17 @@ export function matchesQuery(query: string, ...texts: string[]): boolean {
   return !q || texts.some((text) => text.toLowerCase().includes(q))
 }
 
+/** Rows with one per key, the first in place: a list that moved between two pages repeats a row. */
+export function uniqueBy<T>(rows: T[], key: (row: T) => string): T[] {
+  const seen = new Set<string>()
+  return rows.filter((row) => {
+    const k = key(row)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
 /** A picker row's trailing meta: the MIME type and the size, each when the server sent it. */
 export function resourceMeta(mime: string | undefined, size: number | undefined): string {
   return [mime, size === undefined ? null : formatBytes(size)].filter(Boolean).join(' · ')
