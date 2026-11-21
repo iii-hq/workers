@@ -16,12 +16,13 @@
 //!   middleware, and streaming-drain timeouts read inside the handler and
 //!   `http::on-request`'s deliver hook.
 //!
-//! The CORS layer and the `ConcurrencyLimitLayer` are baked into the axum
-//! `Router` at build time, but the server holds it behind a swappable
+//! The CORS layer and the concurrency limit are baked into the axum `Router`
+//! at build time, but the server holds it behind a swappable
 //! [`crate::server::HotRouter`] (Phase A). On a **same-address** config change,
 //! [`on_config_change`] rebuilds those layers via
 //! [`crate::server::rebuild_layers`], so `cors` / `concurrency_request_limit`
-//! also take effect live without dropping the listener.
+//! also take effect live without dropping the listener. The limit's slots
+//! survive a rebuild that leaves `concurrency_request_limit` unchanged.
 //!
 //! A `host` / `port` change **rebinds** the listener live (Phase B): the new
 //! address is bound first (a failed bind keeps the old server), the new server

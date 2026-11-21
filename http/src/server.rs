@@ -3,7 +3,7 @@
 //! with graceful shutdown.
 //!
 //! Ported from the in-engine `iii-http` `RestApiWorker` (`api_core.rs`):
-//! `build_cors_layer`, the `ConcurrencyLimitLayer` stack and
+//! `build_cors_layer`, the concurrency limit and
 //! the `axum::serve` + `with_graceful_shutdown` task. Routes are dynamic: every
 //! request hits `dynamic_handler`, which calls `http::on-request`, whose
 //! deliver hook matches routes from the shared [`RouteTable`] at request time,
@@ -49,10 +49,10 @@ use axum::{
 use futures::Future;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::sync::{Mutex, RwLock, Semaphore, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tower::Service;
-use tower::limit::ConcurrencyLimitLayer;
+use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::RestApiConfig;
@@ -71,10 +71,32 @@ const ALLOW_ORIGIN_ANY: &str = "*";
 /// Mirrors the engine's `OLD_SERVER_HARD_STOP_GRACE`.
 const OLD_SERVER_HARD_STOP_GRACE: Duration = Duration::from_secs(2);
 
-/// Shared, swappable axum `Router`. Held behind an `RwLock` so a config change
+/// Shared, swappable [`Layers`]. Held behind an `RwLock` so a config change
 /// can rebuild the layered router (see [`rebuild_layers`]) while the listener
 /// keeps running; the [`HotRouter`] reads it per request.
-pub type RouterCell = Arc<RwLock<Router>>;
+pub type RouterCell = Arc<RwLock<Layers>>;
+
+/// The layered router, and the slots its concurrency limit hands out: one
+/// semaphore for every path and both listeners, kept across rebuilds while
+/// `concurrency_request_limit` stays the same, so the requests holding or
+/// waiting for a slot still count against the limit after a reload.
+pub struct Layers {
+    pub router: Router,
+    limit: usize,
+    slots: Arc<Semaphore>,
+}
+
+impl Layers {
+    pub fn new(snapshot: &RestApiConfig) -> Self {
+        let limit = snapshot.concurrency_request_limit;
+        let slots = Arc::new(Semaphore::new(limit));
+        Self {
+            router: build_router(snapshot, slots.clone()),
+            limit,
+            slots,
+        }
+    }
+}
 
 /// Control handle for the CURRENTLY-running server task: its graceful-shutdown
 /// sender, its abort handle (safety-net hard stop), the bound address, and the
@@ -152,13 +174,14 @@ pub fn build_cors_layer(config: &RestApiConfig) -> CorsLayer {
 /// extension), so the router itself carries only the reloadable layers. The
 /// [`HotRouter`] also applies the request timeout, around the wait for a
 /// concurrency slot.
-pub fn build_router(snapshot: &RestApiConfig) -> Router {
+pub fn build_router(snapshot: &RestApiConfig, slots: Arc<Semaphore>) -> Router {
     let cors = build_cors_layer(snapshot);
-    let concurrency = ConcurrencyLimitLayer::new(snapshot.concurrency_request_limit);
+    // `fallback` serves `/`, `/{*rest}` and the catch-all as separate
+    // routes, each layered on its own: they share the one semaphore.
+    let concurrency = GlobalConcurrencyLimitLayer::with_semaphore(slots);
 
     // `with_state` builds the layers once, here: a router left with its
-    // handler unbuilt builds them again for every request, which gives every
-    // request a concurrency limit of its own.
+    // handler unbuilt builds them again for every request.
     Router::new()
         .fallback(handler::dynamic_handler)
         .layer(cors)
@@ -171,7 +194,13 @@ pub fn build_router(snapshot: &RestApiConfig) -> Router {
 /// concurrency layers; the listener is untouched. Called on a same-address
 /// config change (see [`crate::configuration::on_config_change`]).
 pub async fn rebuild_layers(router: &RouterCell, snapshot: &RestApiConfig) {
-    *router.write().await = build_router(snapshot);
+    let mut layers = router.write().await;
+    if layers.limit != snapshot.concurrency_request_limit {
+        // The requests holding the old slots finish on them.
+        *layers = Layers::new(snapshot);
+    } else {
+        layers.router = build_router(snapshot, layers.slots.clone());
+    }
 }
 
 /// A `tower::Service` that dispatches each request through the current
@@ -264,7 +293,7 @@ async fn dispatch(
     }
     let router_clone = {
         let router_guard = router_arc.read().await;
-        router_guard.clone()
+        router_guard.router.clone()
     };
 
     let router_with_extension = router_clone.layer(Extension(state));
@@ -326,7 +355,7 @@ pub async fn serve(
         Some(binding) => Some(TcpListener::bind((binding.host.as_str(), binding.port)).await?),
         None => None,
     };
-    let router: RouterCell = Arc::new(RwLock::new(build_router(&snapshot)));
+    let router: RouterCell = Arc::new(RwLock::new(Layers::new(&snapshot)));
     let webhook_router = HotRouter {
         inner: router.clone(),
         state: Arc::new(AppState {
