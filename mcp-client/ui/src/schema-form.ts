@@ -135,10 +135,13 @@ export function optionalLabel(required: number, optional: number): string {
   return `${optional} ${required > 0 ? 'more ' : ''}optional input${optional === 1 ? '' : 's'}`
 }
 
+const said = (names: string[], what: string) => `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} ${what}`
+
 /** What Run says when required inputs are missing. */
-export function requiredText(names: string[]): string {
-  return `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} required`
-}
+export const requiredText = (names: string[]): string => said(names, 'required')
+
+/** Why Run and the switch to JSON wait: these `json` fields hold text that does not parse. */
+export const invalidText = (names: string[]): string => said(names, 'not valid JSON')
 
 /** The JSON view's text as the payload, or why it cannot be one; the view keeps the text either way. */
 export function parsePayload(text: string): { payload: Record<string, unknown> } | { error: string } {

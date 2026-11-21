@@ -21,6 +21,7 @@ import {
   type FormField,
   fieldsFromSchema,
   fieldText,
+  invalidText,
   missingRequired,
   optionalLabel,
   parsePayload,
@@ -55,25 +56,28 @@ function Field({
   field,
   payload,
   onPayload,
+  bad,
+  onBad,
   running,
 }: {
   field: FormField
   payload: Payload
   onPayload: (next: Payload) => void
+  bad: boolean
+  onBad: (name: string, bad: boolean) => void
   running: boolean
 }) {
   const id = useId()
   const [text, setText] = useState(() => fieldText(payload, field))
-  const [badJson, setBadJson] = useState(false)
   const write = (raw: string | boolean | null) => onPayload(setField(payload, field, raw))
   const type = (raw: string) => {
     setText(raw)
     try {
       write(raw)
-      setBadJson(false)
+      onBad(field.name, false)
     } catch {
-      // Only a `json` field throws: its last value that parsed stays in the payload.
-      setBadJson(true)
+      // Only a `json` field throws: the panel holds Run until its text parses.
+      onBad(field.name, true)
     }
   }
 
@@ -89,6 +93,8 @@ function Field({
         emptyLabel="Unset"
         onClear={() => write('')}
         placeholder={field.hint}
+        // The disabled fieldset alone does not hold it: Base UI's trigger opens on press without asking the fieldset.
+        disabled={running}
       />
     )
   } else if (field.kind === 'boolean') {
@@ -115,7 +121,7 @@ function Field({
           readOnly={running}
           aria-label={field.label}
         />
-        {badJson ? <p className="mcp-ui-input-error">Not valid JSON</p> : null}
+        {bad ? <p className="mcp-ui-input-error">Not valid JSON</p> : null}
       </>
     )
   } else {
@@ -169,6 +175,8 @@ export function TestPanel({
   // The JSON view's text and why it is not a payload; null while the form shows.
   const [json, setJson] = useState<{ text: string; error: string | null } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // The `json` fields whose text does not parse.
+  const [bad, setBad] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
   const seq = useRef(0)
@@ -189,6 +197,12 @@ export function TestPanel({
     setPayload(next)
     setNotice(null)
   }
+  const markBad = (name: string, isBad: boolean) =>
+    setBad((names) =>
+      names.includes(name) === isBad ? names : isBad ? [...names, name] : names.filter((n) => n !== name),
+    )
+  // Text that does not parse, in the JSON view or a field, holds Run and keeps the view as it is.
+  const stuck = Boolean(json?.error) || bad.length > 0
   const editJson = (text: string) => {
     const parsed = parsePayload(text)
     if ('payload' in parsed) update(parsed.payload)
@@ -196,7 +210,7 @@ export function TestPanel({
   }
 
   const run = async () => {
-    if (running || confirming.current || json?.error) return
+    if (running || confirming.current || stuck) return
     trigger.current = document.activeElement
     const missing = missingRequired(schema, payload)
     if (missing.length > 0) {
@@ -257,7 +271,15 @@ export function TestPanel({
 
   const { required, optional } = fieldsFromSchema(schema)
   const field = (f: FormField) => (
-    <Field key={f.name} field={f} payload={payload} onPayload={update} running={running} />
+    <Field
+      key={f.name}
+      field={f}
+      payload={payload}
+      onPayload={update}
+      bad={bad.includes(f.name)}
+      onBad={markBad}
+      running={running}
+    />
   )
 
   return (
@@ -270,9 +292,16 @@ export function TestPanel({
               aria-label="Input mode"
               value={json ? 'json' : 'form'}
               options={MODES}
-              onChange={(mode) => setJson(mode === 'json' ? { text: pretty(payload), error: null } : null)}
+              onChange={(mode) => {
+                if (!stuck) setJson(mode === 'json' ? { text: pretty(payload), error: null } : null)
+              }}
             />
           )}
+          {bad.length > 0 ? (
+            <p className="mcp-ui-input-error" role="alert">
+              {invalidText(bad)}
+            </p>
+          ) : null}
           {json ? (
             <>
               <CodeEditor
@@ -308,7 +337,7 @@ export function TestPanel({
             </fieldset>
           )}
           <div className="mcp-ui-run">
-            <Button onClick={() => void run()} disabled={running || Boolean(json?.error)}>
+            <Button onClick={() => void run()} disabled={running || stuck}>
               {label}
             </Button>
             <KeyCombo binding="Mod+Enter" />

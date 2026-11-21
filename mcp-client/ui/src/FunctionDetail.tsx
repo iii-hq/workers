@@ -2,6 +2,7 @@ import {
   Button,
   type Host,
   type PageRenderProps,
+  ShadcnTabsContent,
   Skeleton,
   StatusPanel,
   Tabs,
@@ -84,7 +85,11 @@ export function FunctionDetail({
         if (mine === seq.current) setContract({ functionId, info, error: null })
       },
       (err) => {
-        if (mine === seq.current) setContract({ functionId, info: null, error: errorMessage(err) })
+        // A failed re-read (a reconnect) keeps the contract already held: the Test panel and its run stay.
+        if (mine !== seq.current) return
+        setContract((prev) =>
+          prev?.functionId === functionId && prev.info ? prev : { functionId, info: null, error: errorMessage(err) },
+        )
       },
     )
   }, [api, functionId, server, attempt])
@@ -122,7 +127,9 @@ export function FunctionDetail({
               Input schema
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="test">
+          {/* Kept mounted (hidden) under Input schema, so a run, its result and the payload survive a look at
+              the schema. The house TabsContent is this same part; only its typing lacks `keepMounted`. */}
+          <ShadcnTabsContent value="test" keepMounted>
             {held?.info && access ? (
               <TestPanel
                 key={functionId}
@@ -137,7 +144,7 @@ export function FunctionDetail({
             ) : (
               skeleton
             )}
-          </TabsContent>
+          </ShadcnTabsContent>
           <TabsContent value="schema">
             {held?.info ? (
               <SchemaTable schema={schema} label="Input" empty="This function declares no input schema." />

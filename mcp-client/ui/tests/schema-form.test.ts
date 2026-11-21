@@ -3,6 +3,7 @@ import {
   type FormField,
   fieldsFromSchema,
   fieldText,
+  invalidText,
   missingRequired,
   optionalLabel,
   parsePayload,
@@ -149,6 +150,11 @@ describe('setField and fieldText', () => {
   it('says which required inputs are missing', () => {
     expect(requiredText(['team'])).toBe('team is required')
     expect(requiredText(['title', 'team'])).toBe('title, team are required')
+  })
+
+  it('says which JSON fields do not parse', () => {
+    expect(invalidText(['links'])).toBe('links is not valid JSON')
+    expect(invalidText(['links', 'patch'])).toBe('links, patch are not valid JSON')
   })
 
   it('reads the JSON view as a payload object or says why not', () => {
