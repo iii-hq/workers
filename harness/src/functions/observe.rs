@@ -441,6 +441,7 @@ fn agent_call_forbidden(function_id: &str) -> bool {
             "provider::openai-codex::login::",
             "provider::openai-codex::auth::",
             "provider-openai-codex::state::",
+            "mcp-client::",
         ]
         .iter()
         .any(|prefix| function_id.starts_with(prefix))
@@ -2814,6 +2815,10 @@ pub(crate) mod tests {
         "provider-openai-codex::state::future-operation",
         // Its payload names a binding: a direct call would deliver into it.
         crate::functions::observer_deliver::DELIVER_ID,
+        // Operator-only: approving an entry lets the worker run a command or
+        // send a stored secret, and a sign-in mints a credential.
+        "mcp-client::servers::approve",
+        "mcp-client::login::start",
     ];
 
     pub(crate) fn disconnected_deps() -> Deps {
