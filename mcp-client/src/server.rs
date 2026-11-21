@@ -1094,9 +1094,12 @@ impl Server {
             };
             if let Some((seen, reply)) = asked {
                 let current = self.peer.read().unwrap().clone();
+                let ready = self.status.borrow().state == State::Ready;
                 let answer = match current {
                     // Recovered since that call was sent.
                     Some(conn) if !Arc::ptr_eq(&conn, &seen) => Ok(conn),
+                    // A failed recovery, or anything else, left `ready` first.
+                    _ if !ready => Err(self.unavailable()),
                     _ => {
                         let reopened = tokio::select! {
                             reopened = self.reopen(&mut resolved, minter) => reopened,

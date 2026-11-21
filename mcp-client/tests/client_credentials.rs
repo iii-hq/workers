@@ -152,6 +152,22 @@ async fn two_concurrent_401s_cause_one_re_mint() {
 }
 
 #[tokio::test]
+async fn a_failed_recovery_is_not_tried_again_by_a_concurrent_call() {
+    let (mock, host, manager) = cc_ready().await;
+    mock.require_bearer("never-issued").await;
+    let (a, b) = tokio::join!(host.call(ECHO, json!({})), host.call(ECHO, json!({})));
+    let mut errors = [a.unwrap_err(), b.unwrap_err()];
+    errors.sort();
+    assert_eq!(errors[1], SECRET_REJECTED, "{errors:?}");
+    assert!(
+        errors[0].starts_with("`srv` MCP unavailable (`auth_failed`)"),
+        "{errors:?}"
+    );
+    assert_eq!(mock.token_requests().await.len(), 2, "one re-mint");
+    settle(&manager, State::AuthFailed).await;
+}
+
+#[tokio::test]
 async fn a_timeout_is_not_retried() {
     let (mock, host, manager) = cc_ready().await;
     mock.delay("tools/call", fast_timings().call * 3).await;
