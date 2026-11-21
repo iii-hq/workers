@@ -267,9 +267,10 @@ jobs:
           done
 
       # memory: the rule editor's save merges and retries; workflow: the chat
-      # cards and the Context section. Installed by the pre-build.
+      # cards and the Context section; mcp-client: the page's rules
+      # (presentation, access, schema form). Installed by the pre-build.
       - name: UI tests
-        if: matrix.worker == 'memory' || matrix.worker == 'workflow'
+        if: matrix.worker == 'memory' || matrix.worker == 'workflow' || matrix.worker == 'mcp-client'
         working-directory: ${{ matrix.worker }}/ui
         run: pnpm test
 

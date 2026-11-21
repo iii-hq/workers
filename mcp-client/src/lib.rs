@@ -12,6 +12,7 @@ pub mod resources;
 pub mod server;
 pub mod stdio;
 pub mod translate;
+pub mod ui;
 
 /// The `III_MCP_CLIENT_STDIO` switch: only `off` (trimmed, any case) turns
 /// stdio servers off.

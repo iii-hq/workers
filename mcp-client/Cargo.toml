@@ -26,6 +26,9 @@ test-fixtures = ["rmcp/server", "rmcp/transport-io"]
 [dependencies]
 iii-sdk = "=0.26.0"
 iii-config-client = { path = "../crates/config-client" }
+# Worker-side injectable console UI (content function + one ade::ui::asset
+# observer per asset + hot-reload watcher) — direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
 rmcp = { version = "=3.11.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider", "transport-child-process", "auth"] }
 # ring, not aws-lc-rs: no C build on musl, armv7 and Windows.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }

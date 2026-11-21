@@ -7,7 +7,7 @@ use iii_sdk::{IIIClient, InitOptions, ObserverHandle, register_worker};
 use mcp_client::host::EngineHost;
 use mcp_client::server::{Manager, ManagerOptions, Timings};
 use mcp_client::translate::ScrubWriter;
-use mcp_client::{configuration, functions, log_directives, stdio_allowed};
+use mcp_client::{configuration, functions, log_directives, stdio_allowed, ui};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -87,6 +87,8 @@ async fn boot(iii: &Arc<IIIClient>, manager: &Arc<Manager>) -> ObserverHandle {
         tracing::warn!(%error, "could not register the configuration entry");
     }
     functions::register_all(iii, manager);
+    ui::register(iii);
+    iii_console_ui::register_configuration_identity(iii, "mcp-client", configuration::config_id());
     let route = functions::observe_callback_route(iii);
     match configuration::fetch_config(iii).await {
         Ok(raw) => manager.apply_config(raw).await,
