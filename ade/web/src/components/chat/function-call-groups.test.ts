@@ -93,25 +93,26 @@ describe('functionCallGroups', () => {
     expect(rows[1]).toEqual({ kind: 'message', message: liveThought })
   })
 
-  it('groups calls across completed thoughts once their surface is hidden', () => {
-    const settledThought = thought('settled')
-    const rows = functionCallGroups([call('c1'), settledThought, call('c2')])
+  it('keeps a finished thought as a row without splitting the call group', () => {
+    const doneThought = thought('done')
+    const rows = functionCallGroups([call('c1'), doneThought, call('c2')])
 
-    expect(rows).toHaveLength(1)
+    expect(rows.map((row) => row.kind)).toEqual([
+      'function-call-group',
+      'message',
+    ])
     expect(rows[0]).toMatchObject({
       kind: 'function-call-group',
       calls: [{ id: 'c1' }, { id: 'c2' }],
     })
+    expect(rows[1]).toEqual({ kind: 'message', message: doneThought })
   })
 
-  it('keeps the group identity stable while a completed thought exits', () => {
+  it('keeps the group identity stable once a thought finishes', () => {
     const liveThought = thought('settled', true)
     const settledThought = thought('settled')
     const liveRows = functionCallGroups([call('c1'), liveThought])
-    const rows = functionCallGroups(
-      [call('c1'), settledThought, call('c2')],
-      new Set(['settled']),
-    )
+    const rows = functionCallGroups([call('c1'), settledThought, call('c2')])
 
     expect(rows.map((row) => row.kind)).toEqual([
       'function-call-group',
@@ -133,10 +134,7 @@ describe('functionCallGroups', () => {
     const liveThought = thought('leading', true)
     const settledThought = thought('leading')
     const liveRows = functionCallGroups([liveThought])
-    const exitRows = functionCallGroups(
-      [settledThought, call('c1')],
-      new Set(['leading']),
-    )
+    const exitRows = functionCallGroups([settledThought, call('c1')])
 
     expect(liveRows).toEqual([{ kind: 'message', message: liveThought }])
     expect(exitRows.map((row) => row.kind)).toEqual([

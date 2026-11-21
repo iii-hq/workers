@@ -1627,7 +1627,7 @@ function WorkspacePanes({
                   }}
                 />
               ) : null}
-              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
+              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-b-sm sm:border">
                 {screen === null ? (
                   <EmptyPane
                     screenOptions={emptyPaneOptions}
@@ -1854,6 +1854,10 @@ export function ConfigurationOverlay({
   return (
     <Dialog
       open
+      // A full-page sheet has no "outside": a press on a worker form's
+      // portaled popup (a select's list, a menu) must not close settings.
+      // Back and Escape are the ways out.
+      disablePointerDismissal
       onOpenChange={(open) => {
         if (!open) onClose()
       }}

@@ -44,6 +44,7 @@ import {
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { retireChatDraftSeed } from '@/lib/chat-draft-seeds'
+import { summarizeChatTitle } from '@/lib/chat-title'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
@@ -3112,14 +3113,59 @@ export function useConversations(
     [patchConversation],
   )
 
+  /* The first ask names the chat twice: at once with its opening words
+     (appendMessageToConversation), then with a short heading the chat's
+     model writes. The heading replaces the words only while they are still
+     the title, so a rename made in the meantime wins. */
+  const requestHeading = useCallback(
+    (id: string, prompt: string, model: ModelId | null, derived: string) => {
+      void getIiiClient()
+        .then((client) =>
+          summarizeChatTitle(client, { sessionId: id, prompt, model }),
+        )
+        .then((heading) => {
+          const current = conversationsRef.current.find((c) => c.id === id)
+          if (
+            !heading ||
+            !current ||
+            current.titleManual ||
+            current.title !== derived ||
+            heading === derived
+          )
+            return
+          editMeta(id, (c) => ({ ...c, title: heading }), heading)
+        })
+        .catch(() => {})
+    },
+    [editMeta],
+  )
+
   const appendMessage = useCallback(
-    (id: string, message: Message) =>
+    (id: string, message: Message) => {
+      const before = conversationsRef.current.find((c) => c.id === id)
       patchConversation(id, (c) =>
         c.sessionMetadata?.read_only === true
           ? c
           : appendMessageToConversation(c, message),
-      ),
-    [patchConversation],
+      )
+      if (
+        serverEnabled &&
+        before &&
+        before.sessionMetadata?.read_only !== true &&
+        !before.titleManual &&
+        message.role === 'user' &&
+        !message.command &&
+        before.messages.every((m) => m.role !== 'user')
+      ) {
+        requestHeading(
+          id,
+          message.content,
+          before.model,
+          deriveTitle(message.content),
+        )
+      }
+    },
+    [patchConversation, requestHeading, serverEnabled],
   )
 
   const updateMessage = useCallback(

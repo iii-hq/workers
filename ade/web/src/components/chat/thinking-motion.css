@@ -3,19 +3,9 @@
   --chat-thought-visible-lines: 5;
   --chat-thought-mask-size: 1.25em;
   --chat-thought-enter-duration: var(--motion-duration-panel, 220ms);
-  --chat-thought-exit-duration: var(--duration-quick, 150ms);
 
   display: grid;
   grid-template-rows: 1fr;
-  opacity: 1;
-  filter: blur(0);
-  transform: translateY(0);
-  transition:
-    grid-template-rows var(--chat-thought-exit-duration)
-    var(--motion-ease-exit, ease-in),
-    opacity var(--chat-thought-exit-duration) var(--motion-ease-exit, ease-in),
-    filter var(--chat-thought-exit-duration) var(--motion-ease-exit, ease-in),
-    transform var(--chat-thought-exit-duration) var(--motion-ease-exit, ease-in);
 }
 
 .chat-thought[data-state="streaming"] {
@@ -23,13 +13,10 @@
     var(--motion-ease-enter, ease-out) both;
 }
 
-.chat-thought[data-state="settling"] {
-  grid-template-rows: 0fr;
-  opacity: 0;
-  filter: blur(var(--blur-small, 2px));
-  pointer-events: none;
-  transform: translateY(calc(var(--distance-micro, 4px) * -1));
-  will-change: opacity, filter, transform;
+/* A finished thought is one folded line in the transcript's quiet tone;
+   its chevron and label are the whole affordance. */
+.chat-thought[data-state="done"] .chat-thought__summary {
+  color: var(--color-ink-faint);
 }
 
 .chat-thought__presence-inner {
@@ -190,7 +177,6 @@
 @media (prefers-reduced-motion: reduce) {
   .chat-thought,
   .chat-thought[data-state="streaming"],
-  .chat-thought[data-state="settling"],
   .chat-thought__viewport,
   .chat-model-waiting__label[data-motion="entering"],
   .chat-model-waiting__label[data-motion="exiting"] {

@@ -5,12 +5,12 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
   IconButton,
-  StatusBar,
   uiClasses,
   WorkerConfigurationDialog,
   type WorkerConfigurationPanelProps,
 } from '@iii-dev/console-ui'
-import { ArrowLeft, Info, TriangleAlert } from 'lucide-react'
+import { usePaneState } from '@iii-dev/console-ui/hooks'
+import { ArrowLeft, ChevronDown, Info, Scale, TriangleAlert } from 'lucide-react'
 import {
   type ComponentType,
   type KeyboardEvent,
@@ -32,7 +32,7 @@ import {
   message,
   readJudgeSettings,
 } from './engine'
-import { type ConfigureTarget, JudgesPanel, providerTarget } from './judges'
+import { type ConfigureTarget, JUDGE_OFF, JudgesPanel, providerTarget } from './judges'
 
 /**
  * Session metadata key the harness reads at the start of every turn and
@@ -46,6 +46,9 @@ const PICKER_PAGE = uiClasses.motionPickerPage ?? 'iii-ui-motion-picker-page'
 const PAGE_TRANSITION_MS = 250
 /** A burst of engine changes (a worker registering its functions) reads once. */
 const LIVE_DEBOUNCE_MS = 300
+/** Once the intro is dismissed it stays dismissed, in this browser. */
+const INTRO_SEEN_KEY = 'judge-ui-session-intro-seen'
+
 /** The hub's configuration entry under its default name. */
 const HUB_CONFIGURATION = 'judge'
 /** Every provider's configuration entry under its default name starts with this. */
@@ -75,6 +78,31 @@ let liveSeq = 0
 
 type Page = 'judges' | 'add' | 'configure'
 
+/**
+ * What the judge is, the first time the picker opens: nobody has to know
+ * the word to send a message, and Default needs no key, so the picker is
+ * where the idea gets explained, once.
+ */
+function JudgeIntro({ onDismiss }: { onDismiss(): void }) {
+  return (
+    <div className="judge-ui-session-intro" role="note">
+      <span className="judge-ui-session-mark" aria-hidden="true">
+        <Scale size={16} aria-hidden />
+      </span>
+      <span className="judge-ui-session-intro-copy">
+        <span className="judge-ui-session-intro-title">What a judge does</span>
+        <span>
+          It answers the agent’s small questions, like which function fits or whether the arguments match, with a
+          fast model instead of the chat model. Default uses the judge in the judge settings; Off asks none.
+        </span>
+        <Button variant="ghost" size="sm" className="judge-ui-session-intro-dismiss" onClick={onDismiss}>
+          Got it
+        </Button>
+      </span>
+    </div>
+  )
+}
+
 /** What the judge is and where a session's choice takes effect. */
 function JudgeHelp() {
   return (
@@ -92,7 +120,8 @@ function JudgeHelp() {
         </span>
       </span>
       <span className="judge-ui-session-help-foot">
-        A change applies from the next turn. Default follows the judge settings.
+        A change applies from the next turn. Default uses the judge in the judge settings; Off asks no judge, and
+        each of these falls back to working without one.
       </span>
     </span>
   )
@@ -169,6 +198,7 @@ export function JudgeSessionPicker({
   const stored = typeof raw === 'string' && raw ? raw : undefined
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState<Page>('judges')
+  const [introSeen, setIntroSeen] = usePaneState(INTRO_SEEN_KEY, false)
   // The settings page keeps its content while it slides out.
   const [configuring, setConfiguring] = useState<ConfigureTarget | null>(null)
   const [shownConfiguring, setShownConfiguring] = useState<ConfigureTarget | null>(null)
@@ -390,7 +420,7 @@ export function JudgeSessionPicker({
     setOpen(false)
     // A local provider loads its model on first use: start that now, not on
     // the session's next turn, whose short judge calls would time out on it.
-    if (value) {
+    if (value && value !== JUDGE_OFF) {
       iii.call('judge::models::list', { provider: value, timeout_ms: 1_000 }, { timeoutMs: 10_000 }).catch(() => {})
     }
   }
@@ -408,7 +438,10 @@ export function JudgeSessionPicker({
   }
 
   // What this session's judge resolves to, and why it would not be used.
-  const effective = stored ?? settings?.provider
+  const off = stored === JUDGE_OFF
+  // The trigger's words; a narrow pane shows only the glyph, so the title says them too.
+  const choiceLabel = off ? 'No judge' : (stored ?? 'Default judge')
+  const effective = off ? undefined : (stored ?? settings?.provider)
   const effectiveEntry = providers?.find((entry) => entry.provider === effective)
   const warning =
     !effective || !providers || listError
@@ -439,17 +472,19 @@ export function JudgeSessionPicker({
         <DropdownMenuTrigger
           className="judge-ui-session-trigger"
           data-warning={warning ? true : undefined}
-          aria-label={`Judge provider for this session: ${stored ?? 'default'}${warning ? `. ${warning}` : ''}`}
-          title={warning ?? 'Judge provider for this session'}
+          aria-label={`Judge for this session: ${off ? 'off' : (stored ?? `default${settings?.provider ? ` (${settings.provider})` : ''}`)}${warning ? `. ${warning}` : ''}`}
+          title={warning ?? `Judge for this session: ${choiceLabel}`}
         >
-          {warning ? <TriangleAlert size={16} aria-hidden /> : null}
-          judge · {stored ?? 'default'}
+          {warning ? <TriangleAlert size={16} aria-hidden /> : <Scale size={16} aria-hidden />}
+          <span className="judge-ui-session-trigger-label">{choiceLabel}</span>
+          <ChevronDown size={16} aria-hidden />
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="end" className="judge-ui-session-menu" aria-label="Judge for this session">
           {/* biome-ignore lint/a11y/noStaticElementInteractions: only keeps keys from the menu's own navigation */}
           <div className="judge-ui-session-pages" onKeyDown={keepKeys}>
             <PickerPage page="judges" active={page === 'judges'}>
               <JudgesPanel
+                intro={introSeen ? null : <JudgeIntro onDismiss={() => setIntroSeen(true)} />}
                 providers={providers}
                 settings={settings}
                 stored={stored}
@@ -458,9 +493,6 @@ export function JudgeSessionPicker({
                 onConfigure={configure}
                 onAdd={openAdd}
               />
-              <StatusBar as="footer" className="judge-ui-session-footer">
-                Applies from this session’s next turn
-              </StatusBar>
             </PickerPage>
             <PickerPage page="add" active={page === 'add'}>
               <SubpageHeader
@@ -522,7 +554,7 @@ export function JudgeSessionPicker({
         tooltipSide="top"
         className="judge-ui-session-help-button"
       >
-        <Info size={16} aria-hidden />
+        <Info size={16} strokeWidth={1.5} aria-hidden />
       </IconButton>
       <WorkerConfigurationDialog configurationId={settingsDialog} onClose={() => setSettingsDialog(null)} />
     </span>
