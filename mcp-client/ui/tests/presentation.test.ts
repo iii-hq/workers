@@ -8,9 +8,12 @@ import {
   drawsWhole,
   elapsedText,
   filterRows,
+  firstVariable,
   functionRows,
   highlightable,
   jsonText,
+  matchesQuery,
+  messagesOf,
   metaLine,
   middleTruncate,
   narrowLevel,
@@ -18,11 +21,13 @@ import {
   pathHeads,
   presentServer,
   processRowText,
+  resourceMeta,
   resultSummary,
   rowGroups,
   runConfirm,
   STAGES,
   STATE_WORD,
+  searchNote,
   skippedText,
   statusBarText,
 } from '../src/presentation'
@@ -476,5 +481,50 @@ describe('test results', () => {
       title: 'Run `delete_comment` on linear? This tool is destructive and can change data.',
       tone: 'danger',
     })
+  })
+})
+
+describe('resource read and prompt run', () => {
+  it('finds the first template variable', () => {
+    expect(firstVariable('file:///{name}.txt')).toEqual({ start: 8, end: 14 })
+    expect(firstVariable('repo://{owner}/{repo}')).toEqual({ start: 7, end: 14 })
+    expect(firstVariable('file:///README.md')).toBeNull()
+    expect(firstVariable('file:///{}')).toBeNull()
+  })
+
+  it('says when the search covers only what is loaded', () => {
+    expect(searchNote(200, true)).toBe('Searching 200 loaded resources')
+    expect(searchNote(1, true)).toBe('Searching 1 loaded resource')
+    expect(searchNote(200, false)).toBeNull()
+  })
+
+  it('reads prompt messages with authored role labels', () => {
+    expect(
+      messagesOf({
+        description: 'Review code',
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'Review this' }] },
+          { role: 'assistant', content: [{ type: 'image', mime: 'image/png', data: 'AA' }, { type: 'audio' }] },
+        ],
+      }),
+    ).toEqual({
+      description: 'Review code',
+      messages: [
+        { role: 'User', blocks: [{ type: 'text', text: 'Review this' }] },
+        { role: 'Assistant', blocks: [{ type: 'image', mime: 'image/png', data: 'AA' }] },
+      ],
+    })
+    expect(messagesOf({ messages: [] })).toEqual({ description: null, messages: [] })
+    expect(messagesOf({ content: [] })).toEqual({ description: null, messages: [] })
+  })
+
+  it('filters picker rows by any of their texts and reads their meta', () => {
+    expect(matchesQuery(' README ', 'readme', 'file:///a.txt')).toBe(true)
+    expect(matchesQuery('a.txt', 'readme', 'file:///a.txt')).toBe(true)
+    expect(matchesQuery('b.txt', 'readme', 'file:///a.txt')).toBe(false)
+    expect(matchesQuery('', 'readme')).toBe(true)
+    expect(resourceMeta('text/plain', 2048)).toBe('text/plain · 2.0 KiB')
+    expect(resourceMeta(undefined, 5)).toBe('5 B')
+    expect(resourceMeta(undefined, undefined)).toBe('')
   })
 })

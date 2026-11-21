@@ -427,6 +427,46 @@ export function blocksOf(result: unknown): Block[] {
   )
 }
 
+export interface MessageView {
+  role: 'User' | 'Assistant'
+  blocks: Block[]
+}
+
+/** A prompt result as the Messages view draws it: each message's blocks kept as a tool result's are. */
+export function messagesOf(result: unknown): { description: string | null; messages: MessageView[] } {
+  const record = isRecord(result) ? result : {}
+  const messages = Array.isArray(record.messages) ? record.messages : []
+  return {
+    description: typeof record.description === 'string' ? record.description : null,
+    messages: messages.map((message) => ({
+      role: isRecord(message) && message.role === 'assistant' ? 'Assistant' : 'User',
+      blocks: blocksOf(message),
+    })),
+  }
+}
+
+/** Where the cursor goes in a resource template: the first `{variable}`, braces included. */
+export function firstVariable(template: string): { start: number; end: number } | null {
+  const match = /\{[^}]+\}/.exec(template)
+  return match ? { start: match.index, end: match.index + match[0].length } : null
+}
+
+/** The picker's search filters loaded rows only; it says so while the server holds more pages. */
+export function searchNote(loaded: number, more: boolean): string | null {
+  return more ? `Searching ${count(loaded, 'loaded resource', 'loaded resources')}` : null
+}
+
+/** Whether any of a picker row's texts (its name, its uri) holds the query, case-insensitively. */
+export function matchesQuery(query: string, ...texts: string[]): boolean {
+  const q = query.trim().toLowerCase()
+  return !q || texts.some((text) => text.toLowerCase().includes(q))
+}
+
+/** A picker row's trailing meta: the MIME type and the size, each when the server sent it. */
+export function resourceMeta(mime: string | undefined, size: number | undefined): string {
+  return [mime, size === undefined ? null : formatBytes(size)].filter(Boolean).join(' · ')
+}
+
 /** The Result status line: messages for a prompt, blocks and their size for a tool, else the JSON size. */
 export function resultSummary(result: unknown, ms: number): string {
   const head = `OK · ${elapsedText(ms)}`

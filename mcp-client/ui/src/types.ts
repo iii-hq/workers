@@ -145,6 +145,32 @@ export interface LoginStart {
   expires_at: number
 }
 
+/** One row of `mcp::<server>::resources::list`; an optional field the server did not send is absent. */
+export interface Resource {
+  uri: string
+  name: string
+  title?: string
+  description?: string
+  mime_type?: string
+  size?: number
+}
+
+/** One page of `resources::list`; `next_cursor` only while the server holds more. */
+export interface ResourcePage {
+  resources: Resource[]
+  next_cursor?: string
+  truncated?: boolean
+}
+
+/** One row of `mcp::<server>::resources::templates`. */
+export interface ResourceTemplate {
+  uri_template: string
+  name: string
+  title?: string
+  description?: string
+  mime_type?: string
+}
+
 /** One row of `engine::functions::list`. */
 export interface EngineFunction {
   function_id: string

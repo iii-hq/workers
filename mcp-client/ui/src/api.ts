@@ -52,6 +52,8 @@ export function createApi(iii: ExtensionIii) {
   }
 
   return {
+    /** The client itself, for a view that observes a source of its own. */
+    iii,
     listServers: () => iii.call<ServersList>(`${WORKER}::servers::list`, {}),
     reconnect: (server: string) => iii.call<{ state: ServerState }>(`${WORKER}::servers::reconnect`, { server }),
     approve: (server: string, fingerprint?: string) =>

@@ -15,6 +15,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { serverAccess } from './access'
 import type { Api } from './api'
 import { type FunctionRow, functionName, metaLine } from './presentation'
+import { ResourcePicker } from './ResourcePicker'
 import { SchemaTable } from './SchemaTable'
 import { TestPanel } from './TestPanel'
 import type { FunctionInfo, Server } from './types'
@@ -98,6 +99,8 @@ export function FunctionDetail({
   const held = contract?.functionId === functionId ? contract : null
   const schema = held?.info ? (held.info.request_schema ?? null) : undefined
   const skeleton = SKELETON_LINES.map((n) => <Skeleton key={n} className="mcp-ui-skeleton-line" />)
+  // `resources::read` and a prompt swap the Test words; the read also its Input half (the uri picker).
+  const reads = access?.kind === 'resource' && access.name === 'resources::read'
 
   return (
     <div className="mcp-ui-detail">
@@ -140,6 +143,19 @@ export function FunctionDetail({
                 schema={held.info.request_schema}
                 access={access}
                 commands={commands}
+                runLabel={reads ? 'Read resource' : access.kind === 'prompt' ? 'Get prompt' : undefined}
+                input={
+                  reads
+                    ? (payload, setPayload) => (
+                        <ResourcePicker
+                          api={api}
+                          server={server}
+                          uri={typeof payload.uri === 'string' ? payload.uri : ''}
+                          onUri={(uri) => setPayload(uri ? { uri } : {})}
+                        />
+                      )
+                    : undefined
+                }
               />
             ) : (
               skeleton
