@@ -3,15 +3,56 @@
 pub mod mcp_mock;
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mcp_client::config::RawConfig;
 use mcp_client::host::{FunctionDef, Handler, Host, Registration, SecretError, ServerEvent};
 use mcp_client::server::{Manager, ManagerOptions, Timings};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub const WAIT: Duration = Duration::from_secs(5);
+
+pub const ECHO: &str = "mcp::srv::echo";
+
+/// A tool of a `tools/list` reply with no parameters.
+pub fn tool(name: &str) -> Value {
+    json!({"name": name, "description": name, "inputSchema": {"type": "object", "properties": {}}})
+}
+
+/// The config with one http server `srv` that sends `secret://K` as a bearer token.
+pub fn bearer(url: &str) -> Value {
+    json!({"mcpServers": {"srv": {"type": "http", "url": url, "auth": {"type": "bearer", "token": "secret://K"}}}})
+}
+
+pub fn hi() -> Value {
+    json!({"content": [{"type": "text", "text": "hi"}]})
+}
+
+/// The ids of the `RegOp::Unregister` ops, in order.
+pub fn unregistered(host: &FakeHost) -> Vec<String> {
+    host.ops()
+        .into_iter()
+        .filter_map(|op| match op {
+            RegOp::Unregister(id) => Some(id),
+            RegOp::Register(_) => None,
+        })
+        .collect()
+}
+
+/// Polls `check` every 10 ms for 5 s, then panics with `what`.
+pub async fn eventually<F, Fut>(what: &str, check: F)
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !check().await {
+        assert!(Instant::now() < deadline, "timed out waiting: {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
 
 /// The production timings scaled down so a test waits milliseconds.
 pub fn fast_timings() -> Timings {

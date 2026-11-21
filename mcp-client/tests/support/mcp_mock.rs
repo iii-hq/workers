@@ -4,7 +4,7 @@
 //! checked by tests/http_server.rs:
 //! - every POST carries `Accept: text/event-stream, application/json`, and a
 //!   200 with `Content-Type: application/json` is a complete answer, so this
-//!   mock answers JSON, never SSE;
+//!   mock answers JSON, and SSE only for `on_call_notifying`;
 //! - a notification POST must come back 202, so `notifications/*` get 202 with
 //!   an empty body;
 //! - the GET stream is opened only when the `initialize` answer carried
@@ -34,6 +34,8 @@ struct Settings {
     instructions: Option<String>,
     /// Per tool name: the `result` or `error` member of the JSON-RPC answer.
     calls: HashMap<String, Value>,
+    /// Per tool name: the notification sent before the answer, on an SSE stream.
+    notify: HashMap<String, String>,
     statuses: HashMap<String, (u16, Vec<(String, String)>)>,
     delays: HashMap<String, Duration>,
 }
@@ -56,6 +58,7 @@ impl Respond for Responder {
                     t.insert_header(k.as_str(), v.as_str())
                 })
         } else if let Some(id) = body.get("id") {
+            let tool = body["params"]["name"].as_str().unwrap_or("");
             let mut reply = match method {
                 "initialize" => {
                     let mut result = json!({
@@ -71,14 +74,22 @@ impl Respond for Responder {
                 "tools/list" => json!({"result": {"tools": s.tools.clone().unwrap_or(json!([]))}}),
                 "tools/call" => s
                     .calls
-                    .get(body["params"]["name"].as_str().unwrap_or(""))
+                    .get(tool)
                     .cloned()
                     .unwrap_or_else(|| rpc_error(-32602, "unknown tool")),
                 _ => rpc_error(-32601, "method not found"),
             };
             reply["jsonrpc"] = json!("2.0");
             reply["id"] = id.clone();
-            let answer = ResponseTemplate::new(200).set_body_json(reply);
+            let notification = s.notify.get(tool).filter(|_| method == "tools/call");
+            let answer = match notification {
+                Some(n) => {
+                    let first = json!({"jsonrpc": "2.0", "method": n});
+                    let events = format!("data: {first}\n\ndata: {reply}\n\n");
+                    ResponseTemplate::new(200).set_body_raw(events, "text/event-stream")
+                }
+                None => ResponseTemplate::new(200).set_body_json(reply),
+            };
             if method == "initialize" {
                 answer.insert_header("Mcp-Session-Id", "mock-session")
             } else {
@@ -118,6 +129,11 @@ impl McpMock {
         McpMock { server, settings }
     }
 
+    /// For a test that mounts its own `Mock` in front of this one.
+    pub fn server(&self) -> &MockServer {
+        &self.server
+    }
+
     pub fn url(&self) -> String {
         format!("{}/mcp", self.server.uri())
     }
@@ -144,6 +160,15 @@ impl McpMock {
         self.settings()
             .calls
             .insert(tool.into(), rpc_error(code, message));
+    }
+
+    /// Answers a call of `tool` on an SSE stream: first the `notification`,
+    /// then `result`.
+    pub async fn on_call_notifying(&self, tool: &str, result: Value, notification: &str) {
+        self.on_call(tool, result).await;
+        self.settings()
+            .notify
+            .insert(tool.into(), notification.into());
     }
 
     /// Answers `method` with `status`, `headers` and an empty body until

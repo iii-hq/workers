@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::PathBuf;
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,19 +13,21 @@ use http::{HeaderName, HeaderValue};
 use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
 };
-use rmcp::service::{ClientCacheConfig, ClientInitializeError, RunningService};
+use rmcp::service::{
+    ClientCacheConfig, ClientInitializeError, NotificationContext, RunningService,
+};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
     StreamableHttpError,
 };
-use rmcp::{Peer, RoleClient, ServiceError, ServiceExt};
+use rmcp::{ClientHandler, Peer, RoleClient, ServiceError, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep, timeout};
 
 use crate::config::{
     Auth, Checked, Entry, HttpEntry, RawConfig, Transport, check_entry, check_url_text,
@@ -253,6 +256,43 @@ pub struct ExitInfo {
     pub signal: Option<i32>,
 }
 
+/// The wait between two failed attempts: `min`, doubling, capped at `max`.
+pub struct Backoff {
+    min: Duration,
+    max: Duration,
+    next: Duration,
+}
+
+impl Backoff {
+    pub fn new(min: Duration, max: Duration) -> Self {
+        Backoff {
+            min,
+            max,
+            next: min,
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Duration {
+        let wait = self.next.min(self.max);
+        self.next = wait.saturating_mul(2);
+        wait
+    }
+
+    pub fn reset(&mut self) {
+        self.next = self.min;
+    }
+}
+
+/// A `Retry-After` value given as a number of seconds; an HTTP date is `None`.
+pub fn retry_after_secs(value: Option<&str>) -> Option<Duration> {
+    let value = value?.trim();
+    if !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok().map(Duration::from_secs)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -277,7 +317,122 @@ fn client_config() -> ClientConfig {
     .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
 }
 
-type Session = RunningService<RoleClient, ClientConfig>;
+type Session = RunningService<RoleClient, Notifier>;
+
+type HttpError = StreamableHttpError<reqwest::Error>;
+
+/// The list a server said changed.
+enum ListChanged {
+    Tools,
+    Prompts,
+    Resources,
+}
+
+/// The rmcp handler of a session: hands list-changed notifications to the
+/// server task.
+struct Notifier {
+    info: ClientConfig,
+    tx: mpsc::UnboundedSender<ListChanged>,
+}
+
+impl ClientHandler for Notifier {
+    fn get_info(&self) -> ClientConfig {
+        self.info.clone()
+    }
+
+    async fn on_tool_list_changed(&self, _: NotificationContext<RoleClient>) {
+        let _ = self.tx.send(ListChanged::Tools);
+    }
+
+    async fn on_prompt_list_changed(&self, _: NotificationContext<RoleClient>) {
+        let _ = self.tx.send(ListChanged::Prompts);
+    }
+
+    async fn on_resource_list_changed(&self, _: NotificationContext<RoleClient>) {
+        let _ = self.tx.send(ListChanged::Resources);
+    }
+}
+
+/// The reference a 401 blames: the bearer token, else the first secret header.
+fn credential_ref(http: &HttpEntry) -> Option<String> {
+    if let Auth::Bearer { token } = &http.auth {
+        return Some(token.to_string());
+    }
+    http.headers.values().find_map(|v| match v {
+        Text::Ref(r) => Some(r.to_string()),
+        Text::Literal(_) => None,
+    })
+}
+
+/// The wait a 429 at connect asks for.
+fn retry_wait(e: &ClientInitializeError) -> Option<Duration> {
+    let ClientInitializeError::TransportError { error, .. } = e else {
+        return None;
+    };
+    match error.error.downcast_ref::<HttpError>() {
+        Some(HttpError::HttpStatus(s)) if s.status == 429 => {
+            retry_after_secs(s.retry_after.as_deref())
+        }
+        _ => None,
+    }
+}
+
+fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
+    let e = match error {
+        ServiceError::McpError(e) => {
+            return CallFailure::JsonRpc {
+                code: e.code.0,
+                message: e.message.to_string(),
+            };
+        }
+        ServiceError::TransportSend(e) => e,
+        other => return CallFailure::Transport(other.to_string()),
+    };
+    // `HttpStatus` is `#[error(transparent)]`: only this downcast finds a 429.
+    let unauthorized = match e.error.downcast_ref::<HttpError>() {
+        Some(HttpError::HttpStatus(s)) if s.status == 429 => {
+            let retry_after = s.retry_after.clone();
+            return CallFailure::RateLimited { retry_after };
+        }
+        // Its text carries the response body: matched, never passed on.
+        Some(HttpError::UnexpectedServerResponse(t)) => t.starts_with("HTTP 401"),
+        _ => false,
+    };
+    let top: &(dyn Error + 'static) = e.error.as_ref();
+    let mut challenged = false;
+    for x in std::iter::successors(Some(top), |&x| x.source()) {
+        if let Some(s) = x.downcast_ref::<InsufficientScopeError>() {
+            let scope = s.required_scope.clone();
+            return CallFailure::InsufficientScope { scope };
+        }
+        challenged |= x.is::<AuthRequiredError>();
+    }
+    if !(unauthorized || challenged) {
+        return CallFailure::Transport(error.to_string());
+    }
+    let reference = match &entry.transport {
+        Transport::Http(http) => credential_ref(http),
+        Transport::Stdio(_) => None,
+    };
+    match reference {
+        Some(reference) => CallFailure::CredentialRejected { reference },
+        None => CallFailure::LoginRequired,
+    }
+}
+
+/// Tool name to its annotations, for the tools a listing wants.
+fn tool_views(wanted: &WantedSet) -> BTreeMap<String, Option<Value>> {
+    wanted
+        .values()
+        .filter_map(|w| match &w.target {
+            Target::Tool { name, .. } => Some((
+                name.clone(),
+                w.def.metadata.pointer("/mcp/annotations").cloned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 struct Status {
@@ -314,6 +469,10 @@ struct Server {
     /// A no-`auth` entry the server answered with a sign-in challenge.
     challenged: AtomicBool,
     peer: RwLock<Option<Peer<RoleClient>>>,
+    /// Each session's `Notifier` holds a clone; the server task reads them.
+    notes: mpsc::UnboundedSender<ListChanged>,
+    /// A call answered -32602 asks the server task to list the tools again.
+    relist: Notify,
     task: Mutex<Option<(oneshot::Sender<()>, JoinHandle<()>)>>,
 }
 
@@ -368,6 +527,7 @@ impl Server {
     fn start(host: &Arc<dyn Host>, opts: &ManagerOptions, name: &str, raw: &Value) -> Arc<Server> {
         let checked = check_entry(name, raw, opts.stdio_enabled);
         let (state, stage, error) = first_status(name, &checked);
+        let (notes, notes_rx) = mpsc::unbounded_channel();
         let status = Status {
             state,
             stage,
@@ -386,12 +546,14 @@ impl Server {
             secrets: Mutex::default(),
             challenged: AtomicBool::default(),
             peer: RwLock::default(),
+            notes,
+            relist: Notify::new(),
             task: Mutex::default(),
         });
         server.emit(EventKind::State);
         if state == State::Connecting {
             let (stop, stopped) = oneshot::channel();
-            let handle = tokio::spawn(server.clone().run(stopped));
+            let handle = tokio::spawn(server.clone().run(stopped, notes_rx));
             *server.task.lock().unwrap() = Some((stop, handle));
         }
         server
@@ -405,30 +567,211 @@ impl Server {
     }
 
     fn set(&self, state: State, stage: Option<Stage>, error: Option<ServerError>) {
-        self.status.send_modify(|s| {
+        self.set_if(|_| true, state, stage, error);
+    }
+
+    /// Sets the status when `from` holds for the current state. A `state`
+    /// event goes out only when the state, the stage or the error code changed.
+    fn set_if(
+        &self,
+        from: impl FnOnce(State) -> bool,
+        state: State,
+        stage: Option<Stage>,
+        error: Option<ServerError>,
+    ) {
+        let code = |e: &Option<ServerError>| e.as_ref().map(|e| e.code);
+        let changed = self.status.send_if_modified(|s| {
+            if !from(s.state) {
+                return false;
+            }
+            let changed = s.state != state || s.stage != stage || code(&s.error) != code(&error);
             if s.state != state {
                 s.since = now_ms();
             }
-            s.state = state;
-            s.stage = stage;
-            s.error = error;
+            (s.state, s.stage, s.error) = (state, stage, error);
+            changed
         });
-        self.emit(EventKind::State);
+        if changed {
+            self.emit(EventKind::State);
+        }
     }
 
     fn fail(&self, state: State, stage: Stage, code: ErrorCode, message: String) {
         self.set(state, Some(stage), Some(ServerError::new(code, message)));
     }
 
-    async fn run(self: Arc<Self>, mut stop: oneshot::Receiver<()>) {
-        let session = tokio::select! {
-            session = self.connect() => session,
-            _ = &mut stop => return,
-        };
-        if let Some(session) = session {
-            let _ = stop.await;
-            self.close(session).await;
+    /// A connect's progress; a retry stays `unavailable` until it is `ready`.
+    fn progress(&self, stage: Stage) {
+        let state = State::Connecting;
+        self.set_if(|s| s == state, state, Some(stage), None);
+    }
+
+    /// Leaves `ready`; a server that already left it keeps its status.
+    fn leave_ready(&self, state: State, stage: Stage, code: ErrorCode, message: String) {
+        let error = Some(ServerError::new(code, message));
+        self.set_if(|s| s == State::Ready, state, Some(stage), error);
+    }
+
+    /// Connects, serves and reconnects until `stop`. Only `unavailable` is
+    /// tried again; every other failure waits for a change from outside.
+    async fn run(
+        self: Arc<Self>,
+        mut stop: oneshot::Receiver<()>,
+        mut notes: mpsc::UnboundedReceiver<ListChanged>,
+    ) {
+        let mut backoff = Backoff::new(self.timings.backoff_min, self.timings.backoff_max);
+        loop {
+            let attempt = tokio::select! {
+                attempt = self.connect() => attempt,
+                _ = &mut stop => return,
+            };
+            let wait = match attempt {
+                Ok(session) => {
+                    if self
+                        .serve(session, &mut stop, &mut notes, &mut backoff)
+                        .await
+                    {
+                        return;
+                    }
+                    None
+                }
+                Err(wait) => wait,
+            };
+            if self.status.borrow().state != State::Unavailable {
+                let _ = (&mut stop).await;
+                return;
+            }
+            // A 429's `Retry-After` as sent: a reconnect or a change cuts it short.
+            let wait = wait.unwrap_or_else(|| backoff.next());
+            tokio::select! {
+                _ = sleep(wait) => {}
+                _ = &mut stop => return,
+            }
         }
+    }
+
+    /// Serves a ready session until `stop` (true) or until the server
+    /// leaves `ready` (false), then closes the session.
+    async fn serve(
+        self: &Arc<Self>,
+        session: Session,
+        stop: &mut oneshot::Receiver<()>,
+        notes: &mut mpsc::UnboundedReceiver<ListChanged>,
+        backoff: &mut Backoff,
+    ) -> bool {
+        // The connect just listed: what came before it is stale.
+        while notes.try_recv().is_ok() {}
+        let cancel = session.cancellation_token();
+        let mut ended = pin!(session.waiting());
+        let mut status = self.status.subscribe();
+        let mut stable = pin!(sleep(self.timings.stable_after));
+        let mut stable_seen = false;
+        let mut last_relist: Option<Instant> = None;
+        let (stopped, open) = loop {
+            let relist = tokio::select! {
+                _ = &mut *stop => break (true, true),
+                _ = status.wait_for(|s| s.state != State::Ready) => break (false, true),
+                _ = &mut ended => {
+                    let message = format!("the MCP session with {} ended", self.name);
+                    let (state, code) = (State::Unavailable, ErrorCode::ConnectFailed);
+                    self.leave_ready(state, Stage::Connect, code, message);
+                    break (false, false);
+                }
+                _ = &mut stable, if !stable_seen => {
+                    stable_seen = true;
+                    backoff.reset();
+                    false
+                }
+                // Prompts and resources are not served by this version.
+                Some(change) = notes.recv() => matches!(change, ListChanged::Tools),
+                _ = self.relist.notified() => {
+                    let interval = self.timings.relist_min_interval;
+                    last_relist.is_none_or(|t| t.elapsed() >= interval)
+                }
+            };
+            if relist {
+                last_relist = Some(Instant::now());
+                tokio::select! {
+                    _ = self.relist_tools() => {}
+                    _ = &mut *stop => break (true, true),
+                }
+            }
+        };
+        self.peer.write().unwrap().take();
+        if open {
+            cancel.cancel();
+            let _ = timeout(self.timings.stop_grace, ended).await;
+        }
+        stopped
+    }
+
+    /// `tools/list` again on the live session, then the reconcile. A failure
+    /// leaves the registry as it was.
+    async fn relist_tools(self: &Arc<Self>) {
+        let Some(peer) = self.peer.read().unwrap().clone() else {
+            return;
+        };
+        let limit = self.timings.list;
+        let listed = match timeout(limit, peer.list_all_tools()).await {
+            Ok(Ok(tools)) => serde_json::to_value(tools)
+                .and_then(serde_json::from_value::<Vec<ToolInfo>>)
+                .map_err(|e| e.to_string()),
+            Ok(Err(e)) => Err(self.failure_message(&self.request_failed(&e))),
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let tools = match listed {
+            Ok(tools) => tools,
+            Err(message) => {
+                tracing::warn!(
+                    "listing the tools of `{}` again failed, its functions stay as they were: {message}",
+                    self.name
+                );
+                return;
+            }
+        };
+        let has_instructions = self.info.lock().unwrap().instructions.is_some();
+        let (wanted, skipped) = tool_wanted(&self.name, &tools, has_instructions);
+        {
+            let mut info = self.info.lock().unwrap();
+            info.tools = tool_views(&wanted);
+            info.skipped = skipped;
+        }
+        self.reconcile(wanted).await;
+    }
+
+    fn failure_message(&self, failure: &CallFailure) -> String {
+        scrub(
+            &failure_text(&self.name, failure),
+            &self.secrets.lock().unwrap(),
+        )
+    }
+
+    /// Classifies a failed request and applies its state rule: a rejected
+    /// credential or a sign-in challenge stops the server, an unclassified
+    /// transport failure is an outage. The registry is never touched.
+    fn request_failed(&self, error: &ServiceError) -> CallFailure {
+        let failure = match &self.checked.entry {
+            Some(entry) => classify_call_error(error, entry),
+            None => CallFailure::Transport(error.to_string()),
+        };
+        let (state, stage, code) = match &failure {
+            CallFailure::CredentialRejected { .. } => (
+                State::AuthFailed,
+                Stage::Authorize,
+                ErrorCode::CredentialRejected,
+            ),
+            CallFailure::LoginRequired => (
+                State::NeedsLogin,
+                Stage::Authorize,
+                ErrorCode::LoginRequired,
+            ),
+            CallFailure::Transport(_) => {
+                (State::Unavailable, Stage::Connect, ErrorCode::ConnectFailed)
+            }
+            _ => return failure,
+        };
+        self.leave_ready(state, stage, code, self.failure_message(&failure));
+        failure
     }
 
     async fn close(&self, mut session: Session) {
@@ -448,11 +791,17 @@ impl Server {
         self.registry.clear().await;
     }
 
-    async fn connect(self: &Arc<Self>) -> Option<Session> {
-        let entry = self.checked.entry.as_ref()?;
-        let Transport::Http(http) = &entry.transport else {
-            return None;
+    /// One attempt, from the secrets to `ready`. `Err` carries the wait a
+    /// 429 asked for.
+    async fn connect(self: &Arc<Self>) -> Result<Session, Option<Duration>> {
+        let Some(entry) = self.checked.entry.as_ref() else {
+            return Err(None);
         };
+        let Transport::Http(http) = &entry.transport else {
+            return Err(None);
+        };
+        // Resolved again on every attempt.
+        self.progress(Stage::Secret);
         let resolved = match resolve_all(&*self.host, &entry.refs()).await {
             Ok(resolved) => resolved,
             Err(e) => {
@@ -461,7 +810,7 @@ impl Server {
                     _ => State::ConfigError,
                 };
                 self.set(state, Some(Stage::Secret), Some(e));
-                return None;
+                return Err(None);
             }
         };
         let secrets = resolved.secrets();
@@ -477,7 +826,7 @@ impl Server {
                 ErrorCode::InvalidConfig,
                 message,
             );
-            return None;
+            return Err(None);
         }
         let mut headers = HashMap::new();
         for (name, text) in &http.headers {
@@ -492,7 +841,7 @@ impl Server {
                     ErrorCode::InvalidConfig,
                     message,
                 );
-                return None;
+                return Err(None);
             };
             value.set_sensitive(matches!(text, Text::Ref(_)));
             headers.insert(header, value);
@@ -503,15 +852,19 @@ impl Server {
         }
         let transport = StreamableHttpClientTransport::from_config(config);
 
-        self.set(State::Connecting, Some(Stage::Connect), None);
+        self.progress(Stage::Connect);
         let limit = self.timings.http_handshake;
-        let session = match timeout(limit, client_config().serve(transport)).await {
+        let notifier = Notifier {
+            info: client_config(),
+            tx: self.notes.clone(),
+        };
+        let session = match timeout(limit, notifier.serve(transport)).await {
             Ok(Ok(session)) => session,
             Ok(Err(e)) => {
                 let (state, stage, code, message) =
                     self.handshake_failure(&e, entry, http, &secrets);
                 self.fail(state, stage, code, message);
-                return None;
+                return Err(retry_wait(&e));
             }
             Err(_) => {
                 self.fail(
@@ -520,7 +873,7 @@ impl Server {
                     ErrorCode::HandshakeFailed,
                     self.no_answer(limit),
                 );
-                return None;
+                return Err(None);
             }
         };
         let peer = session.peer().clone();
@@ -531,7 +884,7 @@ impl Server {
             .and_then(|i| serde_json::to_value(&*i).ok())
             .unwrap_or_default();
 
-        self.set(State::Connecting, Some(Stage::Tools), None);
+        self.progress(Stage::Tools);
         let limit = self.timings.list;
         let listed = match timeout(limit, peer.list_all_tools()).await {
             Ok(Ok(tools)) => serde_json::to_value(tools)
@@ -550,7 +903,7 @@ impl Server {
                     message,
                 );
                 self.close(session).await;
-                return None;
+                return Err(None);
             }
         };
         let instructions = handshake["instructions"]
@@ -575,23 +928,14 @@ impl Server {
                     prompts: !caps["prompts"].is_null(),
                 },
                 tools_listed: true,
-                tools: wanted
-                    .values()
-                    .filter_map(|w| match &w.target {
-                        Target::Tool { name, .. } => Some((
-                            name.clone(),
-                            w.def.metadata.pointer("/mcp/annotations").cloned(),
-                        )),
-                        _ => None,
-                    })
-                    .collect(),
+                tools: tool_views(&wanted),
                 skipped,
             };
         }
         *self.peer.write().unwrap() = Some(peer);
         self.reconcile(wanted).await;
         self.set(State::Ready, None, None);
-        Some(session)
+        Ok(session)
     }
 
     fn no_answer(&self, limit: Duration) -> String {
@@ -606,7 +950,6 @@ impl Server {
         http: &HttpEntry,
         secrets: &[String],
     ) -> (State, Stage, ErrorCode, String) {
-        type HttpError = StreamableHttpError<reqwest::Error>;
         let auth = entry.auth_kind();
         let chain: Vec<&(dyn Error + 'static)> = match e {
             ClientInitializeError::TransportError { error, .. } => {
@@ -642,18 +985,9 @@ impl Server {
                 message,
             );
         }
-        if (challenged || bare_401) && matches!(auth, "bearer" | "header") {
-            let reference = match &http.auth {
-                Auth::Bearer { token } => token.to_string(),
-                _ => http
-                    .headers
-                    .values()
-                    .find_map(|v| match v {
-                        Text::Ref(r) => Some(r.to_string()),
-                        Text::Literal(_) => None,
-                    })
-                    .unwrap_or_default(),
-            };
+        if (challenged || bare_401)
+            && let Some(reference) = credential_ref(http)
+        {
             return rejected(CallFailure::CredentialRejected { reference });
         }
         if bare_401 {
@@ -708,7 +1042,9 @@ impl Server {
                 "`{id}` is no longer marked read-only by its server; an approval-gate allow rule for it stays in force until someone updates the rules"
             );
         }
-        self.emit(EventKind::Tools);
+        if !(plan.remove.is_empty() && plan.change.is_empty() && plan.add.is_empty()) {
+            self.emit(EventKind::Tools);
+        }
     }
 
     fn handler_for(self: &Arc<Self>, wanted: &Wanted) -> Handler {
@@ -763,11 +1099,13 @@ impl Server {
                 let result = serde_json::to_value(result).unwrap_or_default();
                 return tool_result(&result, &ctx);
             }
-            Ok(Err(ServiceError::McpError(e))) => CallFailure::JsonRpc {
-                code: e.code.0,
-                message: e.message.into(),
-            },
-            Ok(Err(e)) => CallFailure::Transport(e.to_string()),
+            Ok(Err(e)) => {
+                let failure = self.request_failed(&e);
+                if matches!(failure, CallFailure::JsonRpc { code: -32602, .. }) {
+                    self.relist.notify_one();
+                }
+                failure
+            }
             Err(_) => CallFailure::Timeout {
                 secs: limit.as_secs(),
             },
