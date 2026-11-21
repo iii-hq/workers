@@ -66,6 +66,18 @@ rules:
   - '!secrets::access'
   - '!secrets::import'
   - '!secrets::on-config-change'
+  # mcp-client. Documentation: the approval gate enforces rules only from its
+  # own configuration entry, where an operator applies these from the MCP
+  # servers page. mcp-client::* is the operator surface (approve an entry, sign
+  # in, read a process's stderr); the harness refuses it whatever the policy
+  # says. The reads below are keyed to a server named exactly `linear`.
+  - '!mcp-client::*'
+  - 'mcp::linear::list_*'
+  - 'mcp::linear::get_*'
+  - mcp::linear::search_documentation
+  - mcp::linear::whoami
+  - mcp::linear::extract_images
+  - mcp::linear::instructions
   # queue's engine event handler (functions/workers available): wakes waits
   # for a target function and the engine-restart check; engine dispatch only.
   - '!queue::on-engine-change'

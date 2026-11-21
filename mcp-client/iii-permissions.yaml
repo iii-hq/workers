@@ -1,0 +1,10 @@
+# Documentation. The approval gate enforces these only after an operator applies them from the MCP servers page.
+version: 1
+rules:
+  - '!mcp-client::*'
+  - 'mcp::linear::list_*'
+  - 'mcp::linear::get_*'
+  - mcp::linear::search_documentation
+  - mcp::linear::whoami
+  - mcp::linear::extract_images
+  - mcp::linear::instructions
