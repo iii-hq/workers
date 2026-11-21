@@ -5,7 +5,9 @@ pub const CAPPED_LOG_TARGETS: [&str; 4] = ["rmcp", "reqwest", "hyper", "h2"];
 /// Builds the `EnvFilter` directive string from `RUST_LOG`. A more specific
 /// directive beats a capped one, and a span or field filter enables every
 /// event inside the span whatever its target, so a user directive survives
-/// only when it is plain `target=level` text for an uncapped target.
+/// only when it is plain `target=level` text for an uncapped target. Targets
+/// match as string prefixes and the longer one wins, so `rmcp:=trace` would
+/// beat `rmcp=info`: any target starting `<capped>:` is dropped too.
 pub fn log_directives(rust_log: Option<&str>) -> String {
     let mut kept: Vec<String> = rust_log
         .unwrap_or("")
@@ -18,7 +20,7 @@ pub fn log_directives(rust_log: Option<&str>) -> String {
             let target = d.split('=').next().unwrap_or("");
             let capped = CAPPED_LOG_TARGETS
                 .iter()
-                .any(|t| target == *t || target.starts_with(&format!("{t}::")));
+                .any(|t| target == *t || target.starts_with(&format!("{t}:")));
             !d.is_empty() && plain && !capped
         })
         .map(String::from)
@@ -66,6 +68,14 @@ mod tests {
         assert_eq!(
             log_directives(Some("hyper_util=debug")),
             format!("hyper_util=debug,{CAPS}")
+        );
+        assert_eq!(
+            log_directives(Some("rmcp:=trace,h2:")),
+            format!("info,{CAPS}")
+        );
+        assert_eq!(
+            log_directives(Some("debug,reqwest:=trace,hyper::proto:=trace")),
+            format!("debug,{CAPS}")
         );
         // Span and field filters go.
         assert_eq!(
