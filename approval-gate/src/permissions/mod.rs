@@ -133,6 +133,44 @@ impl Permissions {
         }
         Decision::NeedsApproval
     }
+
+    /// [`Self::check_in`] for a call whose implicit namespace is `implicit`,
+    /// plus the old mesh spelling of a call in another namespace.
+    pub fn check_call(
+        &self,
+        namespace: Option<&str>,
+        implicit: Option<&str>,
+        function_id: &str,
+        args: &Value,
+        mode: PermissionMode,
+    ) -> Decision {
+        // Before machines were namespaces the hub saw this call as `<namespace>::<id>`, and only
+        // a rule written for that spelling matched it. Such a deny wins over every allow, as it
+        // did when it was the only rule in play.
+        // shortcut: reads any other namespace as a possible old prefix, so a namespace named like
+        // the head of an id is over-denied (`!shell::*` denies every call in a namespace called
+        // `shell`); delete with the prefix strips, one release after the mesh release (follow-up ticket).
+        if let Some(ns) = namespace.filter(|ns| Some(*ns) != implicit) {
+            let old_spelling = format!("{ns}::{function_id}");
+            for rule in &self.rules {
+                if rule.action != Action::Deny
+                    || rule.namespace.is_some()
+                    || !rule_applies_in_mode(rule, mode)
+                    || !match_function_id(rule, &old_spelling)
+                {
+                    continue;
+                }
+                let (outcome, matched) = match_constraints(args, &rule.constraints);
+                if outcome != ConstraintMatch::Mismatch {
+                    return Decision::Deny {
+                        rule_id: rule.rule_id.clone(),
+                        matched_constraint: matched,
+                    };
+                }
+            }
+        }
+        self.check_in(namespace, function_id, args, mode)
+    }
 }
 
 /// Parse one rule from a JSON config value.
@@ -510,6 +548,103 @@ mod tests {
             let err = Permissions::compile(&[spec]).unwrap_err().to_string();
             assert!(err.contains(message), "{err}");
         }
+    }
+
+    #[test]
+    fn a_rule_in_an_old_mesh_form_is_an_error_that_names_the_new_form() {
+        for rule in [
+            "!peer::laptop::shell::exec",
+            "hub::shell::exec",
+            "!peer::*",
+            "!hub::*",
+            "desk/peer::laptop::x",
+        ] {
+            let err = Permissions::compile(&[RuleSpec::Shorthand(rule.into())])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("<namespace>/<function id>") && err.contains("laptop/shell::exec"),
+                "{rule}: {err}"
+            );
+        }
+        let structured: Vec<RuleSpec> = parse_rules_from_config(
+            &json!([{ "function": "peer::laptop::coder::*", "action": "deny" }]),
+        );
+        assert!(Permissions::compile(&structured).is_err());
+        // Ids that only contain the words compile.
+        Permissions::compile(&[
+            RuleSpec::Shorthand("github::peer::list".into()),
+            RuleSpec::Shorthand("hubspot::sync".into()),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn a_deny_in_the_old_mesh_spelling_still_denies_in_another_namespace() {
+        let rules = |rules: &[&str]| {
+            Permissions::compile(
+                &rules
+                    .iter()
+                    .map(|r| RuleSpec::Shorthand((*r).into()))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        // The bare allow is listed first: before namespaces it never matched `laptop::shell::exec`.
+        let p = rules(&[
+            "shell::*",
+            "!laptop::shell::exec",
+            "!desk::*",
+            "!*::shell::pty::*",
+        ]);
+        let gate = |ns: &str, id: &str| {
+            p.check_call(
+                Some(ns),
+                Some("proj"),
+                id,
+                &json!({}),
+                PermissionMode::Manual,
+            )
+        };
+        for (ns, id) in [
+            ("laptop", "shell::exec"),
+            ("desk", "shell::exec"),
+            ("laptop", "shell::pty::open"),
+        ] {
+            assert!(matches!(gate(ns, id), Decision::Deny { .. }), "{ns} {id}");
+        }
+        // The implicit namespace reads the rules as written.
+        assert!(matches!(
+            gate("proj", "shell::exec"),
+            Decision::Allow { .. }
+        ));
+        assert!(matches!(
+            gate("proj", "shell::pty::open"),
+            Decision::Allow { .. }
+        ));
+        // A harness that names no namespace: as written too.
+        assert!(matches!(
+            p.check_call(
+                None,
+                None,
+                "shell::exec",
+                &json!({}),
+                PermissionMode::Manual
+            ),
+            Decision::Allow { .. }
+        ));
+        // An allow in the old spelling grants nothing.
+        let allow = rules(&["laptop::coder::read-file"]);
+        assert!(matches!(
+            allow.check_call(
+                Some("laptop"),
+                Some("proj"),
+                "coder::read-file",
+                &json!({}),
+                PermissionMode::Manual
+            ),
+            Decision::NeedsApproval
+        ));
     }
 
     #[test]
