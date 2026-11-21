@@ -282,69 +282,88 @@ fn string_array(v: &Value) -> Option<Vec<&str>> {
     v.as_array()?.iter().map(Value::as_str).collect()
 }
 
-/// Rule 4 (and rule 3 on the auth URLs).
+fn auth_known(a: &serde_json::Map<String, Value>) -> Option<&'static [&'static str]> {
+    Some(match a.get("type").and_then(Value::as_str)? {
+        "bearer" => &["type", "token"],
+        "client_credentials" => &["type", "token_url", "client_id", "client_secret", "scope"],
+        "oauth" => &[
+            "type",
+            "scopes",
+            "client_id",
+            "client_secret",
+            "client_metadata_url",
+        ],
+        _ => return None,
+    })
+}
+
+/// Rule 3 on the auth URLs.
+fn check_auth_urls(sink: &mut Sink, a: &serde_json::Map<String, Value>) {
+    match a.get("type").and_then(Value::as_str) {
+        Some("client_credentials") => {
+            if let v @ Some(_) = present(a, "token_url") {
+                url_field(sink, "/auth/token_url", v, false, false);
+            }
+        }
+        Some("oauth") => {
+            if let v @ Some(_) = present(a, "client_metadata_url") {
+                url_field(sink, "/auth/client_metadata_url", v, true, false);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Rule 4.
 fn check_auth(sink: &mut Sink, auth: &Value) {
     let Some(a) = auth.as_object() else {
         return sink.err("/auth", OBJECT);
     };
-    let known: &[&str] = match a.get("type").and_then(Value::as_str) {
+    match a.get("type").and_then(Value::as_str) {
         Some("bearer") => {
             if !is_ref(a.get("token")) {
                 sink.err("/auth/token", REF_ONLY);
             }
-            &["type", "token"]
         }
         Some("client_credentials") => {
-            match present(a, "token_url") {
-                None => sink.err("/auth/token_url", "required for client_credentials"),
-                v => url_field(sink, "/auth/token_url", v, false, false),
+            if !is_ref(a.get("client_secret")) {
+                sink.err("/auth/client_secret", REF_ONLY);
+            }
+            if present(a, "token_url").is_none() {
+                sink.err("/auth/token_url", "required for client_credentials");
             }
             match present(a, "client_id") {
                 None => sink.err("/auth/client_id", "required for client_credentials"),
                 Some(v) if !v.is_string() => sink.err("/auth/client_id", STRING),
                 Some(_) => {}
             }
-            if !is_ref(a.get("client_secret")) {
-                sink.err("/auth/client_secret", REF_ONLY);
-            }
             if present(a, "scope").is_some_and(|v| !v.is_string()) {
                 sink.err("/auth/scope", STRING);
             }
-            &["type", "token_url", "client_id", "client_secret", "scope"]
         }
         Some("oauth") => {
-            if present(a, "scopes").is_some_and(|v| string_array(v).is_none()) {
-                sink.err("/auth/scopes", "must be an array of strings");
+            if present(a, "client_secret").is_some() && !is_ref(a.get("client_secret")) {
+                sink.err("/auth/client_secret", REF_ONLY);
             }
             if present(a, "client_id").is_some_and(|v| !v.is_string()) {
                 sink.err("/auth/client_id", STRING);
             }
-            if present(a, "client_secret").is_some() && !is_ref(a.get("client_secret")) {
-                sink.err("/auth/client_secret", REF_ONLY);
+            if present(a, "scopes").is_some_and(|v| string_array(v).is_none()) {
+                sink.err("/auth/scopes", "must be an array of strings");
             }
-            if let v @ Some(_) = present(a, "client_metadata_url") {
-                url_field(sink, "/auth/client_metadata_url", v, true, false);
-            }
-            &[
-                "type",
-                "scopes",
-                "client_id",
-                "client_secret",
-                "client_metadata_url",
-            ]
         }
-        _ => {
-            return sink.err(
-                "/auth/type",
-                "unknown auth type; use `bearer`, `client_credentials` or `oauth`",
-            );
-        }
-    };
-    for k in a.keys().filter(|k| !known.contains(&k.as_str())) {
-        sink.warn(&format!("/auth/{}", esc(k)), "unknown field, ignored");
+        _ => sink.err(
+            "/auth/type",
+            "unknown auth type; use `bearer`, `client_credentials` or `oauth`",
+        ),
     }
 }
 
+fn reserved_header(lower: &str) -> bool {
+    TRANSPORT_HEADERS.contains(&lower) || lower.starts_with("mcp-")
+}
+
+/// Rule 5.
 fn check_headers(sink: &mut Sink, headers: &Value, has_auth: bool) {
     let Some(h) = headers.as_object() else {
         return sink.err("/headers", OBJECT);
@@ -354,7 +373,7 @@ fn check_headers(sink: &mut Sink, headers: &Value, has_auth: bool) {
         let lower = name.to_ascii_lowercase();
         if http::HeaderName::from_bytes(name.as_bytes()).is_err() {
             sink.err(&at, "not a valid HTTP header name");
-        } else if TRANSPORT_HEADERS.contains(&lower.as_str()) || lower.starts_with("mcp-") {
+        } else if reserved_header(&lower) {
             sink.err(&at, "set by the transport, cannot be configured");
         } else if lower == "authorization" && has_auth {
             sink.err(
@@ -363,23 +382,64 @@ fn check_headers(sink: &mut Sink, headers: &Value, has_auth: bool) {
             );
         } else if !v.is_string() {
             sink.err(&at, STRING);
-        } else if !is_ref(Some(v)) && looks_secret_name(name) {
-            sink.err(&at, NO_LITERAL);
         }
     }
 }
 
-fn check_env(sink: &mut Sink, env: &Value) {
-    let Some(e) = env.as_object() else {
-        return sink.err("/env", OBJECT);
+/// Rule 6: a literal under a name that looks like a credential.
+fn check_literals(sink: &mut Sink, o: &serde_json::Map<String, Value>, http: bool, has_auth: bool) {
+    let (key, section) = if http {
+        ("headers", "/headers")
+    } else {
+        ("env", "/env")
     };
-    for (name, v) in e {
-        let at = format!("/env/{}", esc(name));
-        if !v.is_string() {
-            sink.err(&at, STRING);
-        } else if !is_ref(Some(v)) && looks_secret_name(name) {
-            sink.err(&at, NO_LITERAL);
+    let Some(m) = present(o, key).and_then(Value::as_object) else {
+        return;
+    };
+    for (name, v) in m {
+        let lower = name.to_ascii_lowercase();
+        let skipped = http
+            && (http::HeaderName::from_bytes(name.as_bytes()).is_err()
+                || reserved_header(&lower)
+                || lower == "authorization" && has_auth);
+        if !skipped && v.is_string() && !is_ref(Some(v)) && looks_secret_name(name) {
+            sink.err(&format!("{section}/{}", esc(name)), NO_LITERAL);
         }
+    }
+}
+
+/// Rule 7 for a stdio entry.
+fn check_stdio(sink: &mut Sink, o: &serde_json::Map<String, Value>) {
+    if !o
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| !c.trim().is_empty())
+    {
+        sink.err("/command", "must be a non-empty string");
+    }
+    if present(o, "args").is_some_and(|v| string_array(v).is_none()) {
+        sink.err("/args", "must be an array of strings");
+    }
+    if present(o, "cwd").is_some_and(|v| {
+        !v.as_str()
+            .is_some_and(|s| std::path::Path::new(s).is_absolute())
+    }) {
+        sink.err("/cwd", "must be an absolute path");
+    }
+    match present(o, "env") {
+        None => {}
+        Some(Value::Object(e)) => {
+            for name in e.iter().filter(|(_, v)| !v.is_string()).map(|(k, _)| k) {
+                sink.err(&format!("/env/{}", esc(name)), STRING);
+            }
+        }
+        Some(_) => sink.err("/env", OBJECT),
+    }
+    if present(o, "auth").is_some() {
+        sink.err(
+            "/auth",
+            "auth is for http servers; a stdio server takes credentials through `env`",
+        );
     }
 }
 
@@ -387,7 +447,7 @@ fn check_env(sink: &mut Sink, env: &Value) {
 fn walk_expansions(sink: &mut Sink, v: &Value, at: &str) {
     match v {
         Value::String(s) => {
-            if s.find("${").is_some_and(|i| s[i..].contains('}')) {
+            if s.contains("${") {
                 sink.err(at, "use `env://VAR` instead of `${VAR}`");
             }
         }
@@ -484,42 +544,52 @@ fn host_of(url: &str) -> String {
 }
 
 fn effects(e: &Entry) -> Effects {
-    let sends = |host_of_ref: &dyn Fn(&Ref) -> String| {
-        e.refs()
-            .into_iter()
-            .map(|r| SendEffect {
-                host: host_of_ref(&r),
-                reference: r.to_string(),
-            })
-            .collect()
+    let mut sends: Vec<SendEffect> = Vec::new();
+    let mut add = |r: &Ref, host: &str| {
+        let row = SendEffect {
+            reference: r.to_string(),
+            host: host.into(),
+        };
+        if !sends.contains(&row) {
+            sends.push(row);
+        }
     };
-    match &e.transport {
-        Transport::Stdio(_) => Effects {
-            runs: Some(e.target()),
-            sends: sends(&|_| "process".into()),
-        },
+    let runs = match &e.transport {
+        Transport::Stdio(s) => {
+            for t in s.args.iter().chain(s.env.values()) {
+                if let Text::Ref(r) = t {
+                    add(r, "process");
+                }
+            }
+            Some(e.target())
+        }
         Transport::Http(h) => {
             let url_host = match &h.url {
                 Text::Ref(r) => r.to_string(),
                 Text::Literal(s) => host_of(s),
             };
-            let token_host = match &h.auth {
+            for t in std::iter::once(&h.url).chain(h.headers.values()) {
+                if let Text::Ref(r) = t {
+                    add(r, &url_host);
+                }
+            }
+            match &h.auth {
+                Auth::Bearer { token } => add(token, &url_host),
                 Auth::ClientCredentials {
                     token_url,
                     client_secret,
                     ..
-                } => Some((client_secret.clone(), host_of(token_url))),
-                _ => None,
-            };
-            Effects {
-                runs: None,
-                sends: sends(&|r| match &token_host {
-                    Some((secret, host)) if secret == r => host.clone(),
-                    _ => url_host.clone(),
-                }),
+                } => add(client_secret, &host_of(token_url)),
+                Auth::OAuth {
+                    client_secret: Some(s),
+                    ..
+                } => add(s, &url_host),
+                _ => {}
             }
+            None
         }
-    }
+    };
+    Effects { runs, sends }
 }
 
 /// SHA-256 hex over the canonical JSON of the seven keys an operator approves.
@@ -547,11 +617,15 @@ pub fn check_entry(name: &str, raw: &Value, stdio_enabled: bool) -> Checked {
                 "server name must be 1 to 24 characters: lower-case letters, digits and hyphens, not starting with a hyphen",
             );
         }
-        let http = check_transport(&mut sink, o);
+        let http = transport_kind(&mut sink, o);
+        if let Some(http) = http {
+            check_transport(&mut sink, o, http);
+        }
         walk_expansions(&mut sink, raw, "");
         if http == Some(false) && !stdio_enabled {
             sink.err("", STDIO_OFF);
         }
+        warn_unknown(&mut sink, o, http);
         if sink.errors.is_empty() {
             entry = http.and_then(|h| build(name, o, h));
         }
@@ -568,101 +642,90 @@ pub fn check_entry(name: &str, raw: &Value, stdio_enabled: bool) -> Checked {
     }
 }
 
-/// Rules 2 to 7 and 10; `Some(true)` is an http entry, `Some(false)` stdio,
-/// `None` a rule 2 error.
-fn check_transport(sink: &mut Sink, o: &serde_json::Map<String, Value>) -> Option<bool> {
+/// Rule 2; `Some(true)` is an http entry, `Some(false)` stdio, `None` an error.
+fn transport_kind(sink: &mut Sink, o: &serde_json::Map<String, Value>) -> Option<bool> {
     let (url, command) = (present(o, "url").is_some(), present(o, "command").is_some());
     let http = match (url, command) {
         (true, true) => {
             sink.err("", "set `url` or `command`, not both");
-            None
+            return None;
         }
         (false, false) => {
             sink.err("", "set `url` (http) or `command` (stdio)");
-            None
+            return None;
         }
-        _ => Some(url),
+        _ => url,
     };
     let declared = present(o, "type").map(|t| t.as_str().unwrap_or(""));
-    let http = match (http, declared) {
-        (Some(_), Some("http" | "streamable-http")) if !url => {
+    match declared {
+        None => Some(http),
+        Some("http" | "streamable-http") if !http => {
             sink.err("/type", "type `http` needs `url`");
             None
         }
-        (Some(_), Some("stdio")) if url => {
+        Some("stdio") if http => {
             sink.err("/type", "type `stdio` needs `command`");
             None
         }
-        (Some(h), Some("http" | "streamable-http" | "stdio") | None) => Some(h),
-        (Some(_), Some(t @ ("sse" | "ws"))) => {
+        Some("http" | "streamable-http" | "stdio") => Some(http),
+        Some(t @ ("sse" | "ws")) => {
             sink.err(
                 "/type",
                 &format!("type `{t}` is not supported; use `http` or `stdio`"),
             );
             None
         }
-        (Some(_), Some(_)) => {
+        Some(_) => {
             sink.err("/type", "unknown type; use `http` or `stdio`");
             None
         }
-        (None, _) => None,
-    };
-    let http = http?;
+    }
+}
+
+/// Rules 3 to 7 once the transport is known.
+fn check_transport(sink: &mut Sink, o: &serde_json::Map<String, Value>, http: bool) {
     let auth = present(o, "auth");
     if http {
         url_field(sink, "/url", o.get("url"), false, true);
+        if let Some(a) = auth.and_then(Value::as_object) {
+            check_auth_urls(sink, a);
+        }
         if let Some(a) = auth {
             check_auth(sink, a);
         }
         if let Some(h) = present(o, "headers") {
             check_headers(sink, h, auth.is_some());
         }
-    } else {
-        if !o
-            .get("command")
-            .and_then(Value::as_str)
-            .is_some_and(|c| !c.trim().is_empty())
-        {
-            sink.err("/command", "must be a non-empty string");
-        }
-        if present(o, "args").is_some_and(|v| string_array(v).is_none()) {
-            sink.err("/args", "must be an array of strings");
-        }
-        if present(o, "cwd").is_some_and(|v| {
-            !v.as_str()
-                .is_some_and(|s| std::path::Path::new(s).is_absolute())
-        }) {
-            sink.err("/cwd", "must be an absolute path");
-        }
-        if let Some(e) = present(o, "env") {
-            check_env(sink, e);
-        }
-        if auth.is_some() {
-            sink.err(
-                "/auth",
-                "auth is for http servers; a stdio server takes credentials through `env`",
-            );
-        }
+    }
+    check_literals(sink, o, http, auth.is_some());
+    if !http {
+        check_stdio(sink, o);
     }
     if present(o, "disabled").is_some_and(|v| !v.is_boolean()) {
         sink.err("/disabled", "must be true or false");
     }
-    let ignored = if http {
-        ("an http", ["args", "env", "cwd"].as_slice())
-    } else {
-        ("a stdio", ["headers"].as_slice())
-    };
+}
+
+/// Rule 10; the "ignored on" warnings need a known transport.
+fn warn_unknown(sink: &mut Sink, o: &serde_json::Map<String, Value>, http: Option<bool>) {
     for k in o.keys() {
+        let at = format!("/{}", esc(k));
         if !KNOWN_FIELDS.contains(&k.as_str()) {
-            sink.warn(&format!("/{}", esc(k)), "unknown field, ignored");
-        } else if ignored.1.contains(&k.as_str()) {
-            sink.warn(
-                &format!("/{}", esc(k)),
-                &format!("ignored on {} entry", ignored.0),
-            );
+            sink.warn(&at, "unknown field, ignored");
+        } else if http == Some(true) && ["args", "env", "cwd"].contains(&k.as_str()) {
+            sink.warn(&at, "ignored on an http entry");
+        } else if http == Some(false) && k == "headers" {
+            sink.warn(&at, "ignored on a stdio entry");
         }
     }
-    Some(http)
+    if http == Some(true)
+        && let Some(a) = present(o, "auth").and_then(Value::as_object)
+        && let Some(known) = auth_known(a)
+    {
+        for k in a.keys().filter(|k| !known.contains(&k.as_str())) {
+            sink.warn(&format!("/auth/{}", esc(k)), "unknown field, ignored");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -804,6 +867,7 @@ mod tests {
     const NO_LITERAL: &str =
         "a literal is not allowed here; store the value in the vault and use `secret://NAME`";
     const URL: &str = "https://x.example/mcp";
+    const LOOPBACK_MSG: &str = "must be https, or http on a loopback host";
 
     fn check(name: &str, raw: Value) -> Checked {
         check_entry(name, &raw, true)
@@ -1119,6 +1183,11 @@ mod tests {
                 "use `env://VAR` instead of `${VAR}`",
             ),
             (
+                json!({"command": "npx", "args": ["--dir=${HOME"]}),
+                "/args/0",
+                "use `env://VAR` instead of `${VAR}`",
+            ),
+            (
                 json!({"url": url, "note": {"deep": ["${X}"]}}),
                 "/note/deep/0",
                 "use `env://VAR` instead of `${VAR}`",
@@ -1270,6 +1339,78 @@ mod tests {
         assert_eq!(
             serde_json::to_value(send("secret://T", "process")).unwrap(),
             json!({"ref": "secret://T", "host": "process"})
+        );
+    }
+
+    #[test]
+    fn unknown_fields_warn_even_after_a_transport_error() {
+        let c = check(
+            "s",
+            json!({"type": "sse", "url": URL, "headersHelper": "x"}),
+        );
+        assert_eq!(c.errors.len(), 1, "{c:?}");
+        assert_eq!(
+            c.warnings,
+            vec![Issue {
+                path: "/mcpServers/s/headersHelper".into(),
+                message: "unknown field, ignored".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_shared_reference_is_listed_once_per_host() {
+        let raw = json!({"url": "https://mcp.example/mcp", "headers": {"X-Key": "secret://S"},
+            "auth": {"type": "client_credentials",
+                "token_url": "https://api.linear.app/oauth/token", "client_id": "id",
+                "client_secret": "secret://S"}});
+        assert_eq!(
+            check("s", raw).effects.sends,
+            vec![
+                send("secret://S", "mcp.example"),
+                send("secret://S", "api.linear.app")
+            ]
+        );
+    }
+
+    #[test]
+    fn issues_come_in_the_order_of_the_rules() {
+        let c = check(
+            "s",
+            json!({"url": "http://example.com/mcp", "note": "${X}", "timeout": 1,
+                "headers": {"Content-Type": "x", "X-Key": "abc"},
+                "auth": {"type": "client_credentials", "audience": "x",
+                    "token_url": "https://t.example/token?api_key=1"}}),
+        );
+        let issue = |path: &str, message: &str| Issue {
+            path: format!("/mcpServers/s{path}"),
+            message: message.into(),
+        };
+        assert_eq!(
+            c.errors,
+            vec![
+                issue("/url", LOOPBACK_MSG),
+                issue(
+                    "/auth/token_url",
+                    "query parameter `api_key` looks like a secret; make the whole value a reference (`secret://NAME`)"
+                ),
+                issue("/auth/client_secret", REF_ONLY),
+                issue("/auth/client_id", "required for client_credentials"),
+                issue(
+                    "/headers/Content-Type",
+                    "set by the transport, cannot be configured"
+                ),
+                issue("/headers/X-Key", NO_LITERAL),
+                issue("/note", "use `env://VAR` instead of `${VAR}`"),
+            ]
+        );
+        assert_eq!(
+            c.warnings,
+            vec![
+                issue("/note", "unknown field, ignored"),
+                issue("/timeout", "unknown field, ignored"),
+                issue("/auth/audience", "unknown field, ignored"),
+            ]
         );
     }
 }
