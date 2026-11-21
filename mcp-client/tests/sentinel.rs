@@ -6,9 +6,11 @@ mod support;
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use mcp_client::server::{Manager, State};
+use mcp_client::functions::handle_callback;
+use mcp_client::server::{LoginStart, Manager, State};
 use mcp_client::translate::ScrubWriter;
 use serde_json::{Value, json};
+use support::as_mock::{self, AsMock, age_stored_token, challenged, frame, query, with};
 use support::mcp_mock::McpMock;
 use support::{ECHO, FakeHost, WAIT, connect, server, tool};
 use tracing_subscriber::EnvFilter;
@@ -26,6 +28,10 @@ const REDIRECT_TOKEN: &str = "redirect-4a61f2-do-not-print";
 /// The env secret the stdio case's child prints to its stderr.
 #[cfg(feature = "test-fixtures")]
 const STDERR_KEY: &str = "stderrkey-5c19e7-do-not-print";
+/// Before `as_mock::MARK` in every code and token of the login case.
+const LOGIN_TAG: &str = "login-e83b06-";
+/// Before `as_mock::MARK` in every code and token of the tokens case.
+const TOKENS_TAG: &str = "tokens-3c7d52-";
 
 /// Every line the worker's own filter lets through at `RUST_LOG=trace`, as
 /// the production writer prints it.
@@ -94,6 +100,24 @@ async fn settle(manager: &Arc<Manager>, name: &str, state: State) {
 
 async fn listed(manager: &Arc<Manager>) -> String {
     serde_json::to_string(&manager.list().await).unwrap()
+}
+
+/// Starts a sign-in of `srv` and finishes it through the callback route.
+async fn sign_in_by_route(m: &Arc<Manager>, host: &FakeHost, as_mock: &AsMock) -> LoginStart {
+    let start = m.login_start("srv").await.unwrap();
+    let callback = as_mock.authorize_redirect(&start.authorize_url);
+    handle_callback(m, host, frame(&callback)).await;
+    settle(m, "srv", State::Ready).await;
+    start
+}
+
+/// The `servers::list` reply, then, once `m` is shut down, the captured log,
+/// `errors` and every event emitted, as one text.
+async fn haystack(logs: &Captured, m: &Arc<Manager>, host: &FakeHost, errors: &[String]) -> String {
+    let list = listed(m).await;
+    m.shutdown().await;
+    let events = serde_json::to_string(&host.events()).unwrap();
+    format!("{}\n{list}\n{}\n{events}", logs.text(), errors.join("\n"))
 }
 
 #[tokio::test]
@@ -198,6 +222,78 @@ async fn a_cross_origin_redirect_gets_no_credential() {
     assert!(
         !log.contains(REDIRECT_TOKEN) && !log.contains(SENTINEL),
         "{log}"
+    );
+}
+
+#[tokio::test]
+async fn authorize_url_and_code_appear_in_no_log_status_or_error() {
+    let logs = Captured::install();
+    let (_mock, as_mock, host, m) = challenged().await;
+    as_mock.tag(LOGIN_TAG).await;
+    let start = m.login_start("srv").await.unwrap();
+    let q = query(&start.authorize_url);
+    let good = as_mock.authorize_redirect(&start.authorize_url);
+    let mut errors = Vec::new();
+    for (key, value) in [("state", "not-the-state"), ("iss", "https://evil.example")] {
+        let refused = m.login_complete(&with(&good, key, Some(value))).await;
+        errors.push(refused.expect_err("a tampered callback was refused"));
+    }
+    let start2 = sign_in_by_route(&m, &host, &as_mock).await;
+    let haystack = haystack(logs, &m, &host, &errors).await;
+    for value in [
+        start.authorize_url.as_str(),
+        &q["state"],
+        &q["code_challenge"],
+        &start2.authorize_url,
+        LOGIN_TAG,
+        as_mock::MARK,
+    ] {
+        assert!(
+            !haystack.contains(value),
+            "leaked: a login value reached a log, a status or an error"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tokens_appear_in_no_log_status_or_error() {
+    let logs = Captured::install();
+    let (mock, as_mock, host, m) = challenged().await;
+    as_mock.tag(TOKENS_TAG).await;
+    sign_in_by_route(&m, &host, &as_mock).await;
+    age_stored_token(&host);
+    assert!(
+        host.call(ECHO, json!({})).await.is_ok(),
+        "the refreshed call failed"
+    );
+    // The server echoes the bearer token it was sent.
+    let sent = mock.headers_of("tools/call").await;
+    let bearer = sent.last().and_then(|h| h.get("authorization"));
+    let token = bearer
+        .and_then(|b| b.strip_prefix("Bearer "))
+        .unwrap()
+        .to_string();
+    mock.on_call_error("echo", -32000, &format!("bad token {token}"))
+        .await;
+    let mut errors = vec![host.call(ECHO, json!({})).await.unwrap_err()];
+    as_mock.reject_refresh().await;
+    age_stored_token(&host);
+    errors.push(host.call(ECHO, json!({})).await.unwrap_err());
+    assert_eq!(m.sign_out("srv").await, Ok(State::NeedsLogin));
+    assert!(
+        as_mock.token_requests().await.len() >= 3,
+        "the code exchange, the refresh and the refused refresh"
+    );
+    let haystack = haystack(logs, &m, &host, &errors).await;
+    for value in [TOKENS_TAG, as_mock::MARK] {
+        assert!(
+            !haystack.contains(value),
+            "leaked: a token reached a log, a status or an error"
+        );
+    }
+    assert!(
+        !haystack.contains("code_verifier"),
+        "leaked: a token request reached a log, a status or an error"
     );
 }
 

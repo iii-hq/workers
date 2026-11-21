@@ -7,13 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Capture, IIIClient, Observed, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, Observed, ObserverHandle, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::auth;
 use crate::config::{Effects, Issue, check_entry};
-use crate::host::{EventKind, ServerEvent};
+use crate::host::{EventKind, Host, ServerEvent};
 use crate::server::{LoginStart, Logs, Manager, ServersList, State};
 
 pub const SERVERS_LIST: &str = "mcp-client::servers::list";
@@ -27,6 +28,7 @@ pub const LOGIN_START: &str = "mcp-client::login::start";
 pub const LOGIN_COMPLETE: &str = "mcp-client::login::complete";
 pub const LOGIN_CANCEL: &str = "mcp-client::login::cancel";
 pub const LOGIN_SIGN_OUT: &str = "mcp-client::login::sign-out";
+pub const OAUTH_CALLBACK: &str = "mcp-client::oauth-callback";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Flags {
@@ -43,7 +45,7 @@ const OPERATOR: Flags = Flags {
 
 /// One row per function `register_all` registers. A function whose payloads
 /// carry a credential is `observable: false`; an event source is `private`.
-const FLAGS: [(&str, Flags); 11] = [
+const FLAGS: [(&str, Flags); 12] = [
     (SERVERS_LIST, OPERATOR),
     (SERVERS_APPROVE, OPERATOR),
     (SERVERS_RECONNECT, OPERATOR),
@@ -79,6 +81,13 @@ const FLAGS: [(&str, Flags); 11] = [
     ),
     (LOGIN_CANCEL, OPERATOR),
     (LOGIN_SIGN_OUT, OPERATOR),
+    (
+        OAUTH_CALLBACK,
+        Flags {
+            observable: false,
+            ..OPERATOR
+        },
+    ),
 ];
 
 /// Panics for an id with no row, so nothing registers without one.
@@ -144,6 +153,80 @@ pub struct LoginCompleteResponse {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct EmptyResponse {}
+
+/// The http worker's frame of a callback request; only the query is read.
+/// No `Debug`: the query carries the code and `state`.
+#[derive(Deserialize, JsonSchema)]
+pub struct CallbackRequest {
+    #[serde(default)]
+    pub query_params: HashMap<String, String>,
+}
+
+/// The reply the http worker sends as it is.
+#[derive(Serialize, JsonSchema)]
+pub struct HttpReply {
+    pub status_code: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: String,
+}
+
+/// The address `login_complete` reads: `redirect_uri` with the `code`,
+/// `state` and `iss` the callback carried; every other parameter dropped.
+pub fn callback_url_from(query: &HashMap<String, String>, redirect_uri: &str) -> String {
+    let mut pairs = url::form_urlencoded::Serializer::new(String::new());
+    for key in ["code", "state", "iss"] {
+        if let Some(value) = query.get(key) {
+            pairs.append_pair(key, value);
+        }
+    }
+    format!("{redirect_uri}?{}", pairs.finish())
+}
+
+/// The one page of the callback route, whatever the request held: it
+/// reflects nothing.
+pub fn callback_page() -> HttpReply {
+    HttpReply {
+        status_code: 200,
+        headers: BTreeMap::from([
+            ("cache-control".into(), "no-store".into()),
+            ("content-type".into(), "text/html; charset=utf-8".into()),
+        ]),
+        body: "<!doctype html><meta charset=\"utf-8\"><title>MCP sign-in</title><p>You can close this tab and return to the MCP servers page.</p>".into(),
+    }
+}
+
+/// The callback route. Success and failure answer the same page: the outcome
+/// reaches the operator through the `login` and `state` events, and nothing
+/// about the request is logged.
+pub async fn handle_callback(
+    manager: &Manager,
+    host: &dyn Host,
+    request: CallbackRequest,
+) -> HttpReply {
+    let redirect_uri = auth::redirect_uri(host.http_port().await);
+    let url = callback_url_from(&request.query_params, &redirect_uri);
+    let _ = manager.login_complete(&url).await;
+    callback_page()
+}
+
+/// Serves `OAUTH_CALLBACK` on the http worker's `GET` callback path. The
+/// observer stays pending until the http worker takes it; one warning if it
+/// has not within 30 s.
+pub fn observe_callback_route(iii: &Arc<IIIClient>) -> ObserverHandle {
+    let route = Source::function("http::on-request")
+        .args(json!({"method": "GET", "path": auth::CALLBACK_PATH}));
+    let handle = iii.observe(route, OAUTH_CALLBACK);
+    let watch = handle.clone();
+    tokio::spawn(async move {
+        let ready = tokio::time::timeout(Duration::from_secs(30), watch.ready()).await;
+        if !matches!(ready, Ok(Ok(()))) {
+            tracing::warn!(
+                "the http worker did not take the sign-in callback route; finish sign-in by pasting the address on the MCP servers page"
+            );
+        }
+    });
+    handle
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ValidateRequest {
@@ -327,6 +410,11 @@ pub fn catalog() -> Vec<(&'static str, Value, Value)> {
             schema_value::<ServerRequest>(),
             schema_value::<StateResponse>(),
         ),
+        (
+            OAUTH_CALLBACK,
+            schema_value::<CallbackRequest>(),
+            schema_value::<HttpReply>(),
+        ),
     ]
 }
 
@@ -470,6 +558,19 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
             }
         }),
     );
+    let m = manager.clone();
+    register(
+        iii,
+        OAUTH_CALLBACK,
+        "Internal: the sign-in callback route on the http worker; finishes the sign-in the address's state started and answers one static page.",
+        RegisterFunction::new_async(move |request: CallbackRequest| {
+            let m = m.clone();
+            async move {
+                let host = m.host();
+                Ok::<HttpReply, Error>(handle_callback(&m, host.as_ref(), request).await)
+            }
+        }),
+    );
     // Pending while the secrets worker is absent; lives until disposed.
     iii.observe(secret_change_source(), ON_SECRET_CHANGE);
 }
@@ -569,6 +670,62 @@ mod tests {
         assert_eq!(change.name.as_deref(), Some("LINEAR_API_KEY"));
         assert_eq!(change.reference.as_deref(), Some("secret://LINEAR_API_KEY"));
         assert!(catalog().iter().any(|(id, ..)| *id == ON_SECRET_CHANGE));
+    }
+
+    #[test]
+    fn the_callback_page_is_static_and_not_cached() {
+        let page = callback_page();
+        assert_eq!(page.status_code, 200);
+        assert_eq!(
+            page.headers,
+            BTreeMap::from([
+                ("cache-control".to_string(), "no-store".to_string()),
+                (
+                    "content-type".to_string(),
+                    "text/html; charset=utf-8".to_string()
+                ),
+            ])
+        );
+        assert_eq!(
+            page.body,
+            "<!doctype html><meta charset=\"utf-8\"><title>MCP sign-in</title><p>You can close this tab and return to the MCP servers page.</p>"
+        );
+    }
+
+    #[test]
+    fn the_callback_request_reads_the_http_frame_and_ignores_the_rest() {
+        let request: CallbackRequest = serde_json::from_value(json!({
+            "query_params": {"code": "c", "state": "s"}, "path_params": {}, "headers": {"host": "x"},
+            "path": "/mcp-client/oauth/callback", "method": "GET", "body": null,
+            "request_body": {"channel_id": "a"}, "response": {"channel_id": "b"}, "_caller_worker_id": "http"
+        }))
+        .unwrap();
+        assert_eq!(request.query_params["state"], "s");
+        assert!(
+            serde_json::from_value::<CallbackRequest>(json!({}))
+                .unwrap()
+                .query_params
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_callback_url_carries_code_state_and_iss_only() {
+        const CB: &str = "http://127.0.0.1:3111/mcp-client/oauth/callback";
+        let query = HashMap::from([
+            ("state".to_string(), "s 1".to_string()),
+            ("code".to_string(), "c&d".to_string()),
+            ("iss".to_string(), "https://as.example".to_string()),
+            ("junk".to_string(), "x".to_string()),
+        ]);
+        assert_eq!(
+            callback_url_from(&query, CB),
+            "http://127.0.0.1:3111/mcp-client/oauth/callback?code=c%26d&state=s+1&iss=https%3A%2F%2Fas.example"
+        );
+        assert_eq!(
+            callback_url_from(&HashMap::new(), CB),
+            "http://127.0.0.1:3111/mcp-client/oauth/callback?"
+        );
     }
 
     #[test]

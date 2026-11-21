@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{IIIClient, InitOptions, register_worker};
+use iii_sdk::{IIIClient, InitOptions, ObserverHandle, register_worker};
 use mcp_client::host::EngineHost;
 use mcp_client::server::{Manager, ManagerOptions, Timings};
 use mcp_client::translate::ScrubWriter;
@@ -68,11 +68,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             worker_cwd: std::env::current_dir()?,
         },
     );
-    let booted = tokio::select! {
-        () = boot(&iii, &manager) => true,
-        () = &mut shutdown => false,
+    // The callback route's handle is held until shutdown.
+    let route = tokio::select! {
+        route = boot(&iii, &manager) => Some(route),
+        () = &mut shutdown => None,
     };
-    if booted {
+    if route.is_some() {
         shutdown.await;
     }
     manager.shutdown().await;
@@ -80,12 +81,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn boot(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
+async fn boot(iii: &Arc<IIIClient>, manager: &Arc<Manager>) -> ObserverHandle {
     // Interface capture boots with no configuration worker: go on with no servers.
     if let Err(error) = configuration::register_config(iii).await {
         tracing::warn!(%error, "could not register the configuration entry");
     }
     functions::register_all(iii, manager);
+    let route = functions::observe_callback_route(iii);
     match configuration::fetch_config(iii).await {
         Ok(raw) => manager.apply_config(raw).await,
         Err(error) => tracing::warn!(%error, "could not read the configuration entry; no servers"),
@@ -94,6 +96,7 @@ async fn boot(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
     configuration::register_config_observer(iii, manager.clone())
         .run()
         .await;
+    route
 }
 
 #[cfg(unix)]

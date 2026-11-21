@@ -2551,6 +2551,11 @@ impl Manager {
         self.opts.stdio_enabled
     }
 
+    /// The host this manager was built with.
+    pub fn host(&self) -> Arc<dyn Host> {
+        self.host.clone()
+    }
+
     /// Restarts only the entries whose raw value changed: an equal entry
     /// sees no reconnect, no registry operation and no event.
     pub async fn apply_config(self: &Arc<Self>, raw: RawConfig) {

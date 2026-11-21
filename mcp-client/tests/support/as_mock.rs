@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use mcp_client::functions::CallbackRequest;
 use mcp_client::server::{Manager, State};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -30,6 +31,8 @@ struct Tokens {
     hold_metadata: Option<Duration>,
     metadata_gets: usize,
     registrations: usize,
+    /// Put before `MARK` in every code and token issued.
+    tag: String,
     /// Every token request: when it arrived, its form body and its
     /// `Authorization` header.
     requests: Vec<(Instant, String, Option<String>)>,
@@ -135,11 +138,11 @@ impl AsMock {
                         .set_body_json(json!({"error": "invalid_grant"}));
                 }
                 t.issued += 1;
-                let n = t.issued;
-                let access = format!("at-{n}-{MARK}");
+                let (n, tag) = (t.issued, t.tag.clone());
+                let access = format!("at-{n}-{tag}{MARK}");
                 (t.current, t.expired) = (Some(access.clone()), false);
                 let reply = json!({"access_token": access, "token_type": "Bearer",
-                    "expires_in": 3600, "refresh_token": format!("rt-{n}-{MARK}")});
+                    "expires_in": 3600, "refresh_token": format!("rt-{n}-{tag}{MARK}")});
                 let answer = ResponseTemplate::new(200).set_body_json(reply);
                 match t.hold_refresh.filter(|_| refresh) {
                     Some(by) => answer.set_delay(by),
@@ -155,12 +158,19 @@ impl AsMock {
     /// The callback URL a browser would end on after `authorize_url`.
     pub fn authorize_redirect(&self, authorize_url: &str) -> String {
         let asked = query(authorize_url);
+        let tag = self.tokens.lock().unwrap().tag.clone();
         let mut url = url::Url::parse(&asked["redirect_uri"]).unwrap();
         url.query_pairs_mut()
-            .append_pair("code", &format!("code-{MARK}"))
+            .append_pair("code", &format!("code-{tag}{MARK}"))
             .append_pair("state", &asked["state"])
             .append_pair("iss", &self.base);
         url.into()
+    }
+
+    /// Puts `tag` before `MARK` in every later code and token, so a case's
+    /// values are its own.
+    pub async fn tag(&self, tag: &str) {
+        self.tokens.lock().unwrap().tag = tag.into();
     }
 
     /// The gate refuses the current access token until the next one is issued.
@@ -225,6 +235,13 @@ pub fn open(mock: &McpMock) -> Value {
 /// The entry `srv` on `mock` with `auth`.
 pub fn oauth(mock: &McpMock, auth: Value) -> Value {
     json!({"mcpServers": {"srv": {"type": "http", "url": mock.url(), "auth": auth}}})
+}
+
+/// The frame the http worker sends the callback route for `callback_url`.
+pub fn frame(callback_url: &str) -> CallbackRequest {
+    CallbackRequest {
+        query_params: query(callback_url),
+    }
 }
 
 pub fn query(url: &str) -> HashMap<String, String> {

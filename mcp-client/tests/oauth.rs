@@ -4,12 +4,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mcp_client::config::RawConfig;
-use mcp_client::functions::SecretChange;
+use mcp_client::functions::{
+    CallbackRequest, HttpReply, SecretChange, callback_page, handle_callback,
+};
 use mcp_client::host::EventKind;
 use mcp_client::server::{Manager, State};
 use serde_json::{Value, json};
 use support::as_mock::{
-    AsMock, age_stored_token, challenged, oauth, query, refreshes, sign_in, stored, with,
+    AsMock, age_stored_token, challenged, frame, oauth, query, refreshes, sign_in, stored, with,
 };
 use support::mcp_mock::echo_mock;
 use support::{
@@ -28,6 +30,11 @@ async fn settle(m: &Arc<Manager>, name: &str, state: State) -> Value {
     let row = server(m, name).await;
     assert!(reached, "{row}");
     row
+}
+
+/// Whether `reply` is the one static page of the callback route.
+fn same_page(reply: &HttpReply) -> bool {
+    serde_json::to_value(reply).unwrap() == serde_json::to_value(callback_page()).unwrap()
 }
 
 fn refresh_token(host: &FakeHost) -> String {
@@ -564,4 +571,35 @@ async fn a_tampered_approval_list_drops_the_pending_login() {
     assert_eq!(row["login"], Value::Null, "{row}");
     assert_eq!(m.login_complete(&good).await.unwrap_err(), NONE_WAITING);
     assert!(as_mock.token_requests().await.is_empty());
+}
+
+#[tokio::test]
+async fn the_callback_route_completes_a_sign_in() {
+    let (_mock, as_mock, host, m) = challenged().await;
+    let start = m.login_start("srv").await.unwrap();
+    let good = as_mock.authorize_redirect(&start.authorize_url);
+    assert!(same_page(
+        &handle_callback(&m, host.as_ref(), frame(&good)).await
+    ));
+    settle(&m, "srv", State::Ready).await;
+}
+
+#[tokio::test]
+async fn the_callback_route_answers_the_same_page_and_consumes_nothing_on_a_bad_state() {
+    let (_mock, as_mock, host, m) = challenged().await;
+    let start = m.login_start("srv").await.unwrap();
+    let good = as_mock.authorize_redirect(&start.authorize_url);
+    let wrong = frame(&with(&good, "state", Some("not-the-state")));
+    assert!(same_page(&handle_callback(&m, host.as_ref(), wrong).await));
+    let empty = CallbackRequest {
+        query_params: Default::default(),
+    };
+    assert!(same_page(&handle_callback(&m, host.as_ref(), empty).await));
+    assert!(as_mock.token_requests().await.is_empty());
+    assert_eq!(server(&m, "srv").await["login"]["pending"], true);
+
+    assert!(same_page(
+        &handle_callback(&m, host.as_ref(), frame(&good)).await
+    ));
+    settle(&m, "srv", State::Ready).await;
 }

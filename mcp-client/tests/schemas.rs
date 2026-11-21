@@ -1,4 +1,5 @@
 use mcp_client::functions::{CONFIG_VALIDATE, ON_SERVERS_CHANGED, SERVERS_LIST, catalog, flags};
+use serde_json::Value;
 
 /// The keys `collect_worker_interface.py` takes as a typed schema.
 const DEFINING: [&str; 9] = [
@@ -84,5 +85,49 @@ fn registration_flags_carry_the_security_rules() {
         assert!(f.internal, "{id}");
         assert_eq!(f.observable, !NOT_OBSERVABLE.contains(&id), "{id}");
         assert_eq!(f.private, id == ON_SERVERS_CHANGED, "{id}");
+    }
+}
+
+/// The keys of a schema's `properties`, in serde_json order (sorted).
+fn property_keys(schema: &Value) -> Vec<&str> {
+    let properties = schema["properties"].as_object();
+    properties.map_or(vec![], |p| p.keys().map(String::as_str).collect())
+}
+
+#[test]
+fn login_and_callback_functions_have_typed_schemas() {
+    type Keys = Option<&'static [&'static str]>;
+    let rows: [(&str, Keys, Keys); 5] = [
+        (
+            "mcp-client::login::start",
+            Some(&["server"]),
+            Some(&["authorize_url", "expires_at", "redirect_uri"]),
+        ),
+        (
+            "mcp-client::login::complete",
+            Some(&["callback_url"]),
+            Some(&["server", "state"]),
+        ),
+        ("mcp-client::login::cancel", Some(&["server"]), None),
+        ("mcp-client::login::sign-out", None, Some(&["state"])),
+        (
+            "mcp-client::oauth-callback",
+            Some(&["query_params"]),
+            Some(&["body", "headers", "status_code"]),
+        ),
+    ];
+    let catalog = catalog();
+    for (id, request, response) in rows {
+        let found = catalog.iter().find(|(listed, ..)| *listed == id);
+        let (_, request_schema, response_schema) =
+            found.unwrap_or_else(|| panic!("{id} missing from the catalog"));
+        for (side, keys, schema) in [
+            ("request", request, request_schema),
+            ("response", response, response_schema),
+        ] {
+            if let Some(keys) = keys {
+                assert_eq!(property_keys(schema), keys, "{id} {side}");
+            }
+        }
     }
 }
