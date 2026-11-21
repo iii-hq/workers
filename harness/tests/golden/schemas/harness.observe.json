@@ -8,7 +8,7 @@
         "description": "What a delivery dispatches. `function_id` is any iii function — `harness::send` for a wake, anything else for a mechanical reaction. Strict: an unknown key (sub-agent fields such as `task`) is refused when the agent observes, never silently dropped.",
         "properties": {
           "event_into": {
-            "description": "JSON pointer where the event lands inside the payload (default `/event`).",
+            "description": "JSON pointer where the event lands inside the payload (default `/event`). It walks objects by key and arrays by index: `/through/0/payload/value` seeds the first step of an `fp::pipe`.",
             "type": [
               "string",
               "null"

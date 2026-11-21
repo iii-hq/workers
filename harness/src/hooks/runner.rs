@@ -1120,15 +1120,24 @@ async fn chain_post_turn(
     for binding in bindings {
         if let Some(template) = &binding.payload {
             // Template mode: no hook input, no mutations — a verdict.
+            let pointer = binding.result_into.as_deref().unwrap_or("/value");
             let payload = crate::functions::observer_deliver::inject_at(
                 template.clone(),
-                binding.result_into.as_deref().unwrap_or("/value"),
+                pointer,
                 result.clone(),
-            );
-            match invoker
-                .invoke_value(binding, HookPoint::PostTurn.input_name(), payload)
-                .await
-            {
+            )
+            .map_err(|e| {
+                format!("`result_into` `{pointer}` cannot be written into `payload`: {e}")
+            });
+            let response = match payload {
+                Ok(payload) => {
+                    invoker
+                        .invoke_value(binding, HookPoint::PostTurn.input_name(), payload)
+                        .await
+                }
+                Err(message) => Err(message),
+            };
+            match response {
                 Ok(response) => match validation_verdict(&response) {
                     Some(true) => {}
                     Some(false) => {

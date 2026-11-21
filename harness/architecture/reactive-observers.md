@@ -90,7 +90,10 @@ can reach you. The notification carries the observed call's output (for an
 event source, the event).
 
 **Call a function** — `target: { function_id, payload?, event_into? }`. The
-event is injected into the template at `event_into` (default `/event`).
+event is injected into the template at `event_into` (default `/event`), a JSON
+pointer that walks objects by key and arrays by index: `/through/0/payload/value`
+seeds the first step of an `fp::pipe`. A pointer the template cannot take is
+refused when you observe.
 Deterministic, token-free, no session — and its **result is discarded**; it
 cannot reach you. Gated twice: your dispatch policy, and the approval gate,
 because a delivered call runs outside any turn and can never prompt a human.
