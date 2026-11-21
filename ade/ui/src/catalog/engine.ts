@@ -24,6 +24,8 @@ export { type ObserverInfo, observerInfo }
 
 export interface FunctionSummary {
   function_id: string
+  /** Engine namespace it is registered in; `default` when the row names none. */
+  namespace: string
   worker_name: string
   description?: string | null
   /** JSON Schema of the args its observers pass; absent when it takes none. */
@@ -40,6 +42,24 @@ export interface FunctionDetail extends FunctionSummary {
   request_schema?: unknown
   response_schema?: unknown
   metadata?: unknown
+}
+
+/** One function's identity: an id can be registered once per namespace. */
+export function functionKey(fn: { namespace: string; function_id: string }): string {
+  return `${fn.namespace}/${fn.function_id}`
+}
+
+/**
+ * The listed function a recorded call names, when only one namespace holds
+ * its id. Null when several do: a span names the id only, so which copy ran
+ * would be a guess, and the copy opened is the copy Run calls.
+ */
+export function soleCopy<T extends { namespace: string; function_id: string }>(
+  functions: readonly T[],
+  functionId: string,
+): T | null {
+  const copies = functions.filter((fn) => fn.function_id === functionId)
+  return copies.length === 1 ? copies[0] : null
 }
 
 /** An event source: a function its worker calls with the event (private), or one that takes args. */
@@ -92,6 +112,7 @@ function functionSummary(row: unknown): FunctionSummary | null {
   if (!function_id) return null
   const summary: FunctionSummary = {
     function_id,
+    namespace: str(row.namespace) ?? 'default',
     worker_name: str(row.worker_name) ?? 'unknown',
     description: description(row.description),
   }
@@ -120,9 +141,11 @@ export async function listFunctions(
 export async function functionInfo(
   host: Host,
   functionId: string,
+  namespace: string,
 ): Promise<FunctionDetail> {
   const out = await host.iii.call('engine::functions::info', {
     function_id: functionId,
+    namespace,
   })
   const base = functionSummary(out)
   if (!base) throw new Error(`engine::functions::info returned no detail`)
@@ -201,12 +224,12 @@ export async function invoke(
   host: Host,
   functionId: string,
   payload: Record<string, unknown>,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; namespace?: string } = {},
 ): Promise<InvokeOutcome> {
   const started = performance.now()
   const timeoutMs = options.timeoutMs ?? INVOKE_TIMEOUT_MS
   try {
-    const data = await host.iii.call(functionId, payload, { timeoutMs })
+    const data = await host.iii.call(functionId, payload, { timeoutMs, namespace: options.namespace })
     return { ok: true, durationMs: performance.now() - started, data }
   } catch (err) {
     const message = errorMessage(err)

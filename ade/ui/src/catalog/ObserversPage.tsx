@@ -45,6 +45,7 @@ import {
   disposeObserver,
   type FunctionSummary,
   functionInfo,
+  functionKey,
   isEventSource,
   listFunctions,
   listObservers,
@@ -95,7 +96,11 @@ import {
   useGroupToggle,
 } from './widgets'
 
-type Selection = { kind: 'function'; id: string } | { kind: 'observer'; observer: ObserverInfo }
+type Selection =
+  | { kind: 'function'; function_id: string; namespace: string }
+  | { kind: 'observer'; observer: ObserverInfo }
+
+type FunctionRef = { function_id: string; namespace: string }
 
 interface SourceGroup {
   /** The observed function; a synthesized row when the list does not carry it. */
@@ -139,11 +144,16 @@ export function ObserversPage({
     catalog.reload,
   )
 
+  // By `functionKey`: the same id in two namespaces is two functions.
   const functionsById = useMemo(
-    () => new Map<string, FunctionSummary>((catalog.data?.functions ?? []).map((f) => [f.function_id, f])),
+    () => new Map<string, FunctionSummary>((catalog.data?.functions ?? []).map((f) => [functionKey(f), f])),
     [catalog.data],
   )
-  const describeFunction = useCallback((id: string) => functionsById.get(id)?.description ?? undefined, [functionsById])
+  const describeFunction = useCallback(
+    (fn: FunctionRef) => functionsById.get(functionKey(fn))?.description ?? undefined,
+    [functionsById],
+  )
+  const manyNamespaces = new Set((catalog.data?.functions ?? []).map((fn) => fn.namespace)).size > 1
 
   const partitioned = useMemo(() => {
     if (!catalog.data) return { groups: [] as SourceGroup[], plumbing: [] as ObserverInfo[] }
@@ -158,9 +168,10 @@ export function ObserversPage({
         plumbing.push(observer)
         continue
       }
-      const bucket = bySource.get(observer.function_id)
+      const key = functionKey(observer)
+      const bucket = bySource.get(key)
       if (bucket) bucket.push(observer)
-      else bySource.set(observer.function_id, [observer])
+      else bySource.set(key, [observer])
     }
 
     const sources = new Map<string, FunctionSummary>()
@@ -169,17 +180,18 @@ export function ObserversPage({
     for (const fn of catalog.data.functions) {
       if (!isEventSource(fn) || fn.function_id.startsWith('ade::ui::')) continue
       if (!showInternal && isInternalSource(fn)) continue
-      sources.set(fn.function_id, fn)
+      sources.set(functionKey(fn), fn)
     }
     // An observed function the list does not carry (another namespace, or
     // hidden from this session) still needs a home: synthesize a heading
     // rather than dropping its rows.
-    for (const id of bySource.keys()) {
-      if (!sources.has(id)) {
+    for (const [key, [first]] of bySource) {
+      if (!sources.has(key)) {
         sources.set(
-          id,
-          functionsById.get(id) ?? {
-            function_id: id,
+          key,
+          functionsById.get(key) ?? {
+            function_id: first.function_id,
+            namespace: first.namespace,
             worker_name: 'unknown',
             description: null,
           },
@@ -189,7 +201,7 @@ export function ObserversPage({
 
     const groups = [...sources.values()].map((source) => ({
       source,
-      observers: (bySource.get(source.function_id) ?? []).sort((a, b) => summarize(a).localeCompare(summarize(b))),
+      observers: (bySource.get(functionKey(source)) ?? []).sort((a, b) => summarize(a).localeCompare(summarize(b))),
     }))
     plumbing.sort((a, b) => a.target.function_id.localeCompare(b.target.function_id))
     return { groups, plumbing }
@@ -237,13 +249,20 @@ export function ObserversPage({
   // Most sources have no observers; expanding all of them buries the ones
   // that are observed, so a function opens by default only when something
   // observes it.
-  const observerCounts = useMemo(() => new Map(groups.map((g) => [g.source.function_id, g.observers.length])), [groups])
-  const groupState = useGroupToggle((id) => (observerCounts.get(id) ?? 0) > 0)
-  const anyOpen = groups.some((g) => groupState.isOpen(g.source.function_id))
+  const observerCounts = useMemo(
+    () => new Map(groups.map((g) => [functionKey(g.source), g.observers.length])),
+    [groups],
+  )
+  const groupState = useGroupToggle((key) => (observerCounts.get(key) ?? 0) > 0)
+  const anyOpen = groups.some((g) => groupState.isOpen(functionKey(g.source)))
   const foldAll = () => groupState.setAll(!anyOpen)
 
-  const selectFunction = (id: string) =>
-    setSelected((prev) => (prev?.kind === 'function' && prev.id === id ? null : { kind: 'function', id }))
+  const selectFunction = (fn: FunctionRef) =>
+    setSelected((prev) =>
+      prev?.kind === 'function' && functionKey(prev) === functionKey(fn)
+        ? null
+        : { kind: 'function', function_id: fn.function_id, namespace: fn.namespace },
+    )
   const selectObserver = (observer: ObserverInfo) =>
     setSelected((prev) =>
       prev?.kind === 'observer' && prev.observer.id === observer.id ? null : { kind: 'observer', observer },
@@ -254,7 +273,8 @@ export function ObserversPage({
   useEffect(() => {
     if (!catalog.data || !selected) return
     if (selected.kind === 'function') {
-      const exists = functionsById.has(selected.id) || catalog.data.observers.some((o) => o.function_id === selected.id)
+      const key = functionKey(selected)
+      const exists = functionsById.has(key) || catalog.data.observers.some((o) => functionKey(o) === key)
       if (!exists) setSelected(null)
       return
     }
@@ -388,19 +408,21 @@ export function ObserversPage({
           <>
             {groups.map((group) => {
               const id = group.source.function_id
+              const key = functionKey(group.source)
+              const label = manyNamespaces ? key : id
               const spec = familyOf(id)
-              const open = groupState.isOpen(id)
+              const open = groupState.isOpen(key)
               return (
-                <section key={id} className="console-catalog-section" aria-label={id}>
+                <section key={key} className="console-catalog-section" aria-label={label}>
                   <TreeRow
                     icon={<FamilyIcon family={spec.family} tone={spec.tone} />}
-                    id={id}
-                    tooltip={`${id}\n${familyName(spec)} · ${group.source.worker_name}`}
+                    id={label}
+                    tooltip={`${label}\n${familyName(spec)} · ${group.source.worker_name}`}
                     count={group.observers.length}
                     open={open}
-                    onToggle={() => groupState.toggle(id)}
-                    selected={selected?.kind === 'function' && selected.id === id}
-                    onSelect={() => selectFunction(id)}
+                    onToggle={() => groupState.toggle(key)}
+                    selected={selected?.kind === 'function' && functionKey(selected) === key}
+                    onSelect={() => selectFunction(group.source)}
                   />
                   {open
                     ? group.observers.map((observer) => {
@@ -479,10 +501,11 @@ export function ObserversPage({
           />
         ) : selected.kind === 'function' ? (
           <SourceDocument
-            key={selected.id}
+            key={functionKey(selected)}
             host={host}
-            functionId={selected.id}
-            observerCount={catalog.data?.observers.filter((o) => o.function_id === selected.id).length ?? 0}
+            functionId={selected.function_id}
+            namespace={selected.namespace}
+            observerCount={catalog.data?.observers.filter((o) => functionKey(o) === functionKey(selected)).length ?? 0}
             onBack={() => setSelected(null)}
           />
         ) : (
@@ -490,7 +513,7 @@ export function ObserversPage({
             key={selected.observer.id}
             host={host}
             observer={selected.observer}
-            description={describeFunction(selected.observer.target.function_id)}
+            description={describeFunction(selected.observer.target)}
             onBack={() => setSelected(null)}
             onDisposed={() => {
               setSelected(null)
@@ -518,7 +541,7 @@ function isInternalSource(fn: FunctionSummary): boolean {
  */
 function observerRowText(
   observer: ObserverInfo,
-  describe: (id: string) => string | undefined,
+  describe: (fn: FunctionRef) => string | undefined,
 ): { primary: ReactNode; tooltip: string } {
   const target = observer.target.function_id
   const state = observer.state === 'active' ? '' : ` (${observer.state})`
@@ -530,7 +553,7 @@ function observerRowText(
     }
   }
   if (!target) return { primary: 'No target function', tooltip: `No target${state}` }
-  const description = describe(target)
+  const description = describe(observer.target)
   return {
     primary: <IdText id={target} />,
     tooltip: `→ ${target}${state}${description ? `\n${description}` : ''}`,
@@ -548,15 +571,17 @@ function stateDot(state: string): RowDot {
 function SourceDocument({
   host,
   functionId,
+  namespace,
   observerCount,
   onBack,
 }: {
   host: Host
   functionId: string
+  namespace: string
   observerCount: number
   onBack: () => void
 }) {
-  const load = useCallback(() => functionInfo(host, functionId), [host, functionId])
+  const load = useCallback(() => functionInfo(host, functionId, namespace), [host, functionId, namespace])
   const detail = useResource(load)
   const spec = familyOf(functionId)
   const data = detail.data
@@ -662,7 +687,10 @@ function ObserverDocument({
   // the target opens on the shape the target receives: the event under
   // a legacy `deliver: output` (an older engine), the call's input under
   // `deliver: input`.
-  const load = useCallback(() => functionInfo(host, observer.function_id), [host, observer.function_id])
+  const load = useCallback(
+    () => functionInfo(host, observer.function_id, observer.namespace),
+    [host, observer.function_id, observer.namespace],
+  )
   const source = useResource(load)
   const [confirming, setConfirming] = useState(false)
   const { state: copyState, copy } = useCopyFlash(observer.id, 2000)
@@ -780,6 +808,7 @@ function ObserverDocument({
             <InvokePanel
               host={host}
               functionId={target}
+              namespace={observer.target.namespace}
               requestSchema={targetSchema}
               label={spec.family === 'cron' ? 'Run now' : 'Call target'}
               runningLabel={spec.family === 'cron' ? 'Running…' : 'Calling…'}

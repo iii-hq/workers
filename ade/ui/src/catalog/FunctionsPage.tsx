@@ -65,18 +65,20 @@ import {
   useState,
 } from 'react'
 import { ActivityFeed, agoLabel, formatDuration } from './ActivityFeed'
-import { asCliCommand, cliArgs } from './cli-command'
+import { asCliCommand, cliArgs, cliNamespace } from './cli-command'
 import { nextCronRun, untilLabel } from './cron'
 import {
   type FunctionDetail,
   type FunctionSummary,
   functionInfo,
+  functionKey,
   isEventSource,
   listFunctions,
   listObservers,
   listWorkers,
   type ObserverInfo,
   type SpanEvent,
+  soleCopy,
   useLiveSignals,
   useResource,
 } from './engine'
@@ -128,6 +130,7 @@ export function FunctionsPage({
 }) {
   const [showInternal, setShowInternal] = useState(false)
   const [search, setSearch] = useState('')
+  // A `functionKey`: the same id in two namespaces is two functions.
   const [selected, setSelected] = useState<string | null>(null)
   const groupState = useGroupToggle(alwaysOpen)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -149,6 +152,9 @@ export function FunctionsPage({
   const activity = useLiveActivity(host)
 
   const functions = catalog.data?.functions ?? null
+  const selectedFn = functions?.find((fn) => functionKey(fn) === selected) ?? null
+  // The namespace is noise on a bus that has only one.
+  const manyNamespaces = new Set((functions ?? []).map((fn) => fn.namespace)).size > 1
 
   // Ids that appeared on the last tick, so an arrival is visible instead of
   // silently changing the row count. The first load is not "new".
@@ -156,7 +162,7 @@ export function FunctionsPage({
   const seenRef = useRef<Set<string> | null>(null)
   useEffect(() => {
     if (!functions) return
-    const ids = new Set(functions.map((f) => f.function_id))
+    const ids = new Set(functions.map(functionKey))
     const previous = seenRef.current
     seenRef.current = ids
     if (!previous) return
@@ -213,7 +219,7 @@ export function FunctionsPage({
   // Returning to the list is less surprising than leaving a stale document
   // on screen for a function that no longer exists.
   useEffect(() => {
-    if (selected && catalog.data && !catalog.data.functions.some((fn) => fn.function_id === selected)) {
+    if (selected && catalog.data && !catalog.data.functions.some((fn) => functionKey(fn) === selected)) {
       setSelected(null)
     }
   }, [catalog.data, selected])
@@ -371,18 +377,23 @@ export function FunctionsPage({
               />
               {!groupState.isOpen(group.label)
                 ? null
-                : group.items.map((fn) => (
-                    <CatalogRow
-                      key={fn.function_id}
-                      primary={<IdText id={fn.function_id} />}
-                      tooltip={fn.description ? `${fn.function_id}\n${fn.description}` : fn.function_id}
-                      meta={<LastCallMeta span={activity.lastCall.get(fn.function_id)} />}
-                      dot={activity.pulsing.has(fn.function_id) ? 'live' : 'idle'}
-                      arrived={arrived.has(fn.function_id)}
-                      selected={selected === fn.function_id}
-                      onClick={() => setSelected((prev) => (prev === fn.function_id ? null : fn.function_id))}
-                    />
-                  ))}
+                : group.items.map((fn) => {
+                    const key = functionKey(fn)
+                    const label = manyNamespaces ? key : fn.function_id
+                    return (
+                      <CatalogRow
+                        key={key}
+                        primary={<IdText id={label} />}
+                        tooltip={fn.description ? `${label}\n${fn.description}` : label}
+                        // shortcut: spans name the function id only, so two copies of an id share one activity dot; key them by namespace when spans carry it.
+                        meta={<LastCallMeta span={activity.lastCall.get(fn.function_id)} />}
+                        dot={activity.pulsing.has(fn.function_id) ? 'live' : 'idle'}
+                        arrived={arrived.has(key)}
+                        selected={selected === key}
+                        onClick={() => setSelected((prev) => (prev === key ? null : key))}
+                      />
+                    )
+                  })}
             </section>
           ))
         )}
@@ -390,13 +401,15 @@ export function FunctionsPage({
         )
       }
       main={
-        selected ? (
+        selectedFn ? (
           <FunctionDocument
-            key={selected}
+            key={functionKey(selectedFn)}
             host={host}
-            functionId={selected}
+            functionId={selectedFn.function_id}
+            namespace={selectedFn.namespace}
+            showNamespace={manyNamespaces || selectedFn.namespace !== 'default'}
             runtimeOf={runtimeOf}
-            lastCall={activity.lastCall.get(selected)}
+            lastCall={activity.lastCall.get(selectedFn.function_id)}
             onBack={() => setSelected(null)}
             onWorker={(worker) => {
               setSelected(null)
@@ -410,7 +423,13 @@ export function FunctionsPage({
             workers={workerCounts}
             runtimeOf={runtimeOf}
             listed={functions}
-            onSelect={setSelected}
+            // Spans name the id only (the shortcut above): an id in several
+            // namespaces narrows the list to its copies for the operator to pick.
+            onSelect={(id) => {
+              const fn = soleCopy(functions ?? [], id)
+              if (fn) setSelected(functionKey(fn))
+              else setSearch(id)
+            }}
             onWorker={setSearch}
           />
         )
@@ -629,6 +648,8 @@ function breakable(id: string): ReactNode {
 function FunctionDocument({
   host,
   functionId,
+  namespace,
+  showNamespace,
   runtimeOf,
   lastCall,
   onBack,
@@ -637,6 +658,9 @@ function FunctionDocument({
 }: {
   host: Host
   functionId: string
+  namespace: string
+  /** Off on a bus with only `default`, where the namespace is noise. */
+  showNamespace: boolean
   /** Worker name → runtime, from the page-level workers list. */
   runtimeOf: (worker: string) => string | undefined
   lastCall?: SpanEvent
@@ -645,7 +669,7 @@ function FunctionDocument({
   onWorker: (worker: string) => void
   invokeRunRef: MutableRefObject<(() => void) | null>
 }) {
-  const load = useCallback(() => functionInfo(host, functionId), [host, functionId])
+  const load = useCallback(() => functionInfo(host, functionId, namespace), [host, functionId, namespace])
   const detail = useResource(load)
   // Observers of this function, and observers whose target it is: one read,
   // split here, live on observer state changes.
@@ -655,10 +679,10 @@ function FunctionDocument({
   const related = useMemo(() => {
     const all = observers.data ?? []
     return {
-      of: all.filter((o) => o.function_id === functionId),
-      into: all.filter((o) => o.target.function_id === functionId),
+      of: all.filter((o) => o.function_id === functionId && o.namespace === namespace),
+      into: all.filter((o) => o.target.function_id === functionId && o.target.namespace === namespace),
     }
-  }, [observers.data, functionId])
+  }, [observers.data, functionId, namespace])
   // Selecting a function opens on its contract, not on the editor: the first
   // question an operator has is what the function takes and returns, and a
   // JSON box answers neither. Run is the next tab, and the contract's Call
@@ -713,7 +737,18 @@ function FunctionDocument({
         menuLabel="More function actions"
         onBack={onBack}
         backLabel="Back to functions"
-        stats={data ? functionStats({ detail: data, related, language, lastCall, onWorker }) : undefined}
+        stats={
+          data
+            ? functionStats({
+                detail: data,
+                namespace: showNamespace ? namespace : undefined,
+                related,
+                language,
+                lastCall,
+                onWorker,
+              })
+            : undefined
+        }
       />
 
       {detail.error ? (
@@ -744,7 +779,7 @@ function FunctionDocument({
             <ShadcnTabsTrigger value="calls">Calls</ShadcnTabsTrigger>
           </ShadcnTabsList>
           <ShadcnTabsContent value="contract" className="console-catalog-panel">
-            <FunctionContract detail={data} onEdit={() => setTab('run')} />
+            <FunctionContract detail={data} namespace={namespace} onEdit={() => setTab('run')} />
           </ShadcnTabsContent>
           <ShadcnTabsContent value="run" className="console-catalog-panel">
             {data.private ? (
@@ -756,6 +791,7 @@ function FunctionDocument({
               <InvokePanel
                 host={host}
                 functionId={functionId}
+                namespace={namespace}
                 requestSchema={data.request_schema}
                 prefill={prefill}
                 label="Run"
@@ -798,12 +834,15 @@ interface RelatedObservers {
  */
 function functionStats({
   detail,
+  namespace,
   related,
   language,
   lastCall,
   onWorker,
 }: {
   detail: FunctionDetail
+  /** Shown first when set: Run calls this copy and no other. */
+  namespace?: string
   related: RelatedObservers
   language?: string
   lastCall?: SpanEvent
@@ -821,7 +860,8 @@ function functionStats({
     .filter((d): d is Date => d !== null)
     .sort((a, b) => a.getTime() - b.getTime())[0]
 
-  const items: Stat[] = [
+  const items: Stat[] = namespace ? [{ label: 'Namespace', value: namespace, mono: true }] : []
+  items.push(
     {
       label: 'Worker',
       mono: true,
@@ -836,7 +876,7 @@ function functionStats({
         </button>
       ),
     },
-  ]
+  )
   if (language) items.push({ label: 'Runtime', value: language, mono: true })
   items.push({
     label: 'Runs on',
@@ -874,7 +914,15 @@ function functionStats({
  * metadata the worker attached — and, beside it on a wide pane, the call
  * itself as a payload and as a terminal line.
  */
-function FunctionContract({ detail, onEdit }: { detail: FunctionDetail; onEdit: () => void }) {
+function FunctionContract({
+  detail,
+  namespace,
+  onEdit,
+}: {
+  detail: FunctionDetail
+  namespace: string
+  onEdit: () => void
+}) {
   const hasMetadata =
     detail.metadata !== undefined &&
     detail.metadata !== null &&
@@ -882,7 +930,7 @@ function FunctionContract({ detail, onEdit }: { detail: FunctionDetail; onEdit: 
 
   const template = templateFromSchema(detail.request_schema)
   const payload = parseOr(template, {})
-  const command = asCliCommand(detail.function_id, payload)
+  const command = asCliCommand(detail.function_id, payload, namespace)
 
   return (
     <div className="console-fn-contract">
@@ -913,7 +961,12 @@ function FunctionContract({ detail, onEdit }: { detail: FunctionDetail; onEdit: 
         <CodeBlock language="json" icon={<Braces aria-hidden />} copy={template} copyLabel="Copy payload">
           <JsonHighlight code={template} className="snippet-json" />
         </CodeBlock>
-        <TerminalSnippet functionId={detail.function_id} args={cliArgs(payload)} copy={command} />
+        <TerminalSnippet
+          functionId={detail.function_id}
+          namespaceFlag={cliNamespace(namespace)}
+          args={cliArgs(payload)}
+          copy={command}
+        />
       </aside>
     </div>
   )

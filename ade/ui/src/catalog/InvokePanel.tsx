@@ -43,6 +43,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function InvokePanel({
   host,
   functionId,
+  namespace,
   requestSchema,
   label = 'Call',
   runningLabel = 'Calling…',
@@ -52,6 +53,7 @@ export function InvokePanel({
 }: {
   host: Host
   functionId: string
+  namespace: string
   requestSchema: unknown
   /** Verb on the button — the observers page calls an observer's target. */
   label?: string
@@ -78,7 +80,7 @@ export function InvokePanel({
     setAttempts([])
     setInvalid(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [functionId, schemaKey])
+  }, [functionId, namespace, schemaKey])
 
   useEffect(() => {
     if (!prefill) return
@@ -138,7 +140,7 @@ export function InvokePanel({
         durationMs: Date.now() - startedAt,
         error: 'Stopped waiting. The worker may still be running it; check the Calls tab.',
       })
-    void invoke(host, functionId, payload).then(settle)
+    void invoke(host, functionId, payload, { namespace }).then(settle)
   }
   const stop = () => stopRef.current?.()
 
@@ -211,7 +213,7 @@ export function InvokePanel({
           </Button>
         ) : null}
         <CopyButton
-          value={asCliCommand(functionId, safeJson(body))}
+          value={asCliCommand(functionId, safeJson(body), namespace)}
           label="Copy as command"
           title="Copies this exact call as an `iii call …` line for the terminal"
         />
