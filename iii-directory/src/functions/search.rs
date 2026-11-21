@@ -1402,14 +1402,12 @@ pub async fn search_functions(
     // This search's judge route, bound to its own handle: a concurrent search
     // that sees another catalog never reroutes this one's judge calls.
     let deps = &Deps {
-        judge: deps.judge.in_namespace(call_namespace(
-            &tools,
-            judge_contract::FUNCTION_ID,
-            &deps.own_namespace(),
-        )),
+        judge: deps.judge.in_namespace(
+            call_namespace(&tools, judge_contract::FUNCTION_ID, &deps.own_namespace()).flatten(),
+        ),
         ..deps.clone()
     };
-    let judge = judge_deadline(&cfg, &tools, &deps.judge);
+    let judge = judge_deadline(&cfg, &tools, &deps.judge, &deps.own_namespace());
     let fingerprint = tool_fingerprint(&tools);
     // The `namespace` filter, for a harness that sends its own namespace;
     // a blank one is no filter.
@@ -1916,38 +1914,47 @@ fn observer_candidate(row: &Value) -> Option<ObserverCandidate> {
     })
 }
 
-/// The judge lane runs only when configured AND `judge::evaluate` is in the
-/// live catalog; the catalog refreshes on every registration push, so an
-/// absent judge worker costs no round trip.
 /// The judge deadline for this search, or `None` when every lane should
-/// rank locally: another mode is configured, `judge::evaluate` is not in the
-/// live catalog (refreshed on every registration push, so an absent judge
-/// costs no round trip), or a recent failure paused the judge.
+/// rank locally: another mode is configured, the live catalog (refreshed on
+/// every registration push, so an absent judge costs no round trip) holds
+/// `judge::evaluate` in neither `own` nor `default`, or a recent failure
+/// paused the judge.
 fn judge_deadline(
     cfg: &SkillsConfig,
     catalog: &[ToolSchema],
     judge: &JudgeSearch,
+    own: &str,
 ) -> Option<tokio::time::Instant> {
     (cfg.function_search_mode == FunctionSearchMode::Judge
         && judge.available()
-        && catalog
-            .iter()
-            .any(|tool| tool.name == judge_contract::FUNCTION_ID))
+        && call_namespace(catalog, judge_contract::FUNCTION_ID, own).is_some())
     .then(|| {
         tokio::time::Instant::now()
             + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms)
     })
 }
 
-/// The namespace a worker in `own` must name to call `function_id`: `None`
-/// (its own) when `own` holds the id or the catalog places it nowhere, else
-/// the first namespace that holds it.
-pub fn call_namespace(catalog: &[ToolSchema], function_id: &str, own: &str) -> Option<String> {
+/// The namespace a worker in `own` must name to call `function_id`:
+/// `Some(None)` (its own) when `own` holds the id or the catalog places it
+/// nowhere, `Some(Some("default"))` when `default` holds it and `own` does
+/// not, `None` when the catalog lacks the id or only other namespaces hold it.
+pub fn call_namespace(
+    catalog: &[ToolSchema],
+    function_id: &str,
+    own: &str,
+) -> Option<Option<String>> {
     let tool = catalog.iter().find(|tool| tool.name == function_id)?;
-    if tool.namespaces.iter().any(|namespace| namespace == own) {
-        return None;
+    // Never the first namespace that happens to hold the id. A namespace can
+    // be another machine (mesh), and whoever registers the id there would
+    // receive this worker's calls. `default` is the operator's.
+    let holds = |namespace: &str| tool.namespaces.iter().any(|held| held == namespace);
+    if tool.namespaces.is_empty() || holds(own) {
+        Some(None)
+    } else if holds("default") {
+        Some(Some("default".to_string()))
+    } else {
+        None
     }
-    tool.namespaces.first().cloned()
 }
 
 /// Per capability, the documents the judge scores. A corpus of at most
@@ -2261,7 +2268,7 @@ async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkO
     let cfg = deps.config.load_full();
     let tools = deps.catalog.read().await.clone();
     let fingerprint = tool_fingerprint(&tools);
-    let judge = judge_deadline(&cfg, &tools, &deps.judge);
+    let judge = judge_deadline(&cfg, &tools, &deps.judge, &deps.own_namespace());
     let mut total = BenchmarkOutcome {
         hybrid_complete: cfg.function_search_mode != FunctionSearchMode::Lexical,
         judge_complete: judge.is_some(),
@@ -2953,18 +2960,41 @@ mod tests {
     }
 
     #[test]
-    fn call_namespace_stays_unqualified_when_own_namespace_holds_the_id() {
-        let judge = |ns: &[&str]| vec![namespaced("judge::evaluate", ns)];
+    fn call_namespace_is_own_then_default_never_another() {
+        let route = |ns: &[&str]| {
+            call_namespace(
+                &[namespaced("judge::evaluate", ns)],
+                "judge::evaluate",
+                "proj",
+            )
+        };
+        assert_eq!(route(&["default", "proj"]), Some(None));
+        // `alpha` sorts before `default` and must not win: a namespace can be another machine.
         assert_eq!(
-            call_namespace(&judge(&["default", "proj"]), "judge::evaluate", "proj"),
-            None
+            route(&["alpha", "default"]),
+            Some(Some("default".to_string()))
         );
-        assert_eq!(
-            call_namespace(&judge(&["default", "hub"]), "judge::evaluate", "proj").as_deref(),
-            Some("default")
-        );
-        assert_eq!(call_namespace(&judge(&[]), "judge::evaluate", "proj"), None);
+        assert_eq!(route(&["alpha"]), None);
+        assert_eq!(route(&["alpha", "laptop"]), None);
+        assert_eq!(route(&[]), Some(None)); // a catalog that places the id nowhere
         assert_eq!(call_namespace(&[], "judge::evaluate", "proj"), None);
+    }
+
+    #[test]
+    fn a_judge_held_only_elsewhere_is_no_judge() {
+        let cfg = SkillsConfig::default();
+        let judge = JudgeSearch::default();
+        let deadline = |ns: &[&str]| {
+            judge_deadline(
+                &cfg,
+                &[namespaced(judge_contract::FUNCTION_ID, ns)],
+                &judge,
+                "proj",
+            )
+        };
+        assert!(deadline(&["laptop"]).is_none());
+        assert!(deadline(&["default"]).is_some());
+        assert!(deadline(&["proj"]).is_some());
     }
 
     #[test]
