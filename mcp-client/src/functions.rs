@@ -1,22 +1,25 @@
 //! The operator functions (`mcp-client::*`), their wire types, and the one
 //! table of their registration flags.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Capture, IIIClient, Observed, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::{Effects, Issue, check_entry};
-use crate::host::ServerEvent;
+use crate::host::{EventKind, ServerEvent};
 use crate::server::{Manager, ServersList};
 
 pub const SERVERS_LIST: &str = "mcp-client::servers::list";
 pub const CONFIG_VALIDATE: &str = "mcp-client::config::validate";
 pub const ON_SERVERS_CHANGED: &str = "mcp-client::on-servers-changed";
+pub const ON_SECRET_CHANGE: &str = "mcp-client::on-secret-change";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Flags {
@@ -33,9 +36,10 @@ const OPERATOR: Flags = Flags {
 
 /// One row per function `register_all` registers. A function whose payloads
 /// carry a credential is `observable: false`; an event source is `private`.
-const FLAGS: [(&str, Flags); 3] = [
+const FLAGS: [(&str, Flags); 4] = [
     (SERVERS_LIST, OPERATOR),
     (CONFIG_VALIDATE, OPERATOR),
+    (ON_SECRET_CHANGE, OPERATOR),
     (
         ON_SERVERS_CHANGED,
         Flags {
@@ -91,6 +95,79 @@ pub struct ServerValidation {
     pub effects: Effects,
 }
 
+/// A `secrets::on-changed` event: names a reference, never its value.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SecretChange {
+    pub name: Option<String>,
+    #[serde(rename = "ref")]
+    pub reference: Option<String>,
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Ack {
+    pub ok: bool,
+}
+
+/// `secrets::on-changed`, the event as the envelope's output. No filters:
+/// the set of references changes with the config, so `event_matches` picks.
+pub fn secret_change_source() -> Source {
+    Source::function("secrets::on-changed").capture([Capture::Output])
+}
+
+type Sink = Arc<dyn Fn(ServerEvent) + Send + Sync>;
+
+/// One delivery per `(server, kind)` per window: the first push at once,
+/// and one more when the window ends if pushes arrived inside it.
+pub struct Coalescer {
+    sink: Sink,
+    /// The open windows, each marked when a push arrived inside it.
+    open: Arc<Mutex<HashMap<(String, EventKind), bool>>>,
+}
+
+impl Coalescer {
+    pub fn new(sink: Sink) -> Arc<Coalescer> {
+        Arc::new(Coalescer {
+            sink,
+            open: Arc::default(),
+        })
+    }
+
+    pub fn push(&self, event: ServerEvent) {
+        let key = (event.server.clone(), event.kind);
+        match self.open.lock().unwrap().entry(key.clone()) {
+            Entry::Occupied(mut window) => {
+                window.insert(true);
+                return;
+            }
+            Entry::Vacant(window) => {
+                window.insert(false);
+            }
+        }
+        (self.sink)(event);
+        let (open, sink) = (self.open.clone(), self.sink.clone());
+        let window = Duration::from_millis(match key.1 {
+            EventKind::Stderr => 1_000,
+            _ => 100,
+        });
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(window).await;
+                {
+                    let mut open = open.lock().unwrap();
+                    // Clears the mark of a window that goes on.
+                    if open.get_mut(&key).map(std::mem::take) != Some(true) {
+                        open.remove(&key);
+                        return;
+                    }
+                }
+                let (server, kind) = key.clone();
+                sink(ServerEvent { server, kind });
+            }
+        });
+    }
+}
+
 pub fn validate_map(request: &ValidateRequest, stdio_enabled: bool) -> ValidateResponse {
     let servers = request
         .mcp_servers
@@ -138,6 +215,11 @@ pub fn catalog() -> Vec<(&'static str, Value, Value)> {
             schema_value::<ServerEvent>(),
             schema_value::<ServerEvent>(),
         ),
+        (
+            ON_SECRET_CHANGE,
+            schema_value::<Observed<Value, SecretChange>>(),
+            schema_value::<Ack>(),
+        ),
     ]
 }
 
@@ -173,6 +255,24 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
             |event: ServerEvent| async move { Ok::<ServerEvent, Error>(event) },
         ),
     );
+    let m = manager.clone();
+    register(
+        iii,
+        ON_SECRET_CHANGE,
+        "Internal: reconnect the MCP servers that send a secret:// or env:// value that was set, rotated or deleted.",
+        RegisterFunction::new_async(move |observed: Observed<Value, SecretChange>| {
+            let m = m.clone();
+            async move {
+                let Some(change) = observed.output else {
+                    return Ok::<Ack, Error>(Ack { ok: false });
+                };
+                m.on_secret_change(&change).await;
+                Ok(Ack { ok: true })
+            }
+        }),
+    );
+    // Pending while the secrets worker is absent; lives until disposed.
+    iii.observe(secret_change_source(), ON_SECRET_CHANGE);
 }
 
 #[cfg(test)]
@@ -203,6 +303,73 @@ mod tests {
         let bad = &response["servers"]["bad"];
         assert_eq!(bad["ok"], false, "{bad}");
         assert_eq!(bad["errors"][0]["path"], "/mcpServers/bad/auth/token");
+    }
+
+    #[test]
+    fn every_flagged_function_is_in_the_catalog() {
+        // `mcp-client::on-config-change` is in neither: config-client registers it.
+        let mut flagged: Vec<&str> = FLAGS.iter().map(|(id, _)| *id).collect();
+        let mut listed: Vec<&str> = catalog().into_iter().map(|(id, ..)| id).collect();
+        flagged.sort();
+        listed.sort();
+        assert_eq!(flagged, listed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn coalescer_delivers_the_first_and_the_last_event_of_a_window() {
+        use tokio::time::sleep;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let coalescer =
+            Coalescer::new(Arc::new(move |e: ServerEvent| sink.lock().unwrap().push(e)));
+        let count = || seen.lock().unwrap().len();
+        let event = |server: &str, kind| ServerEvent {
+            server: server.into(),
+            kind,
+        };
+        for _ in 0..50 {
+            coalescer.push(event("a", EventKind::State));
+        }
+        coalescer.push(event("a", EventKind::Tools));
+        coalescer.push(event("b", EventKind::State));
+        tokio::task::yield_now().await;
+        assert_eq!(count(), 3, "one per (server, kind), at once");
+        sleep(Duration::from_millis(99)).await;
+        assert_eq!(count(), 3);
+        sleep(Duration::from_millis(2)).await;
+        assert_eq!(
+            count(),
+            4,
+            "the 49 folded pushes are one delivery when the window ends"
+        );
+        assert_eq!(seen.lock().unwrap()[3], event("a", EventKind::State));
+        sleep(Duration::from_millis(300)).await;
+        assert_eq!(count(), 4, "nothing pending, nothing sent");
+        coalescer.push(event("a", EventKind::Stderr));
+        coalescer.push(event("a", EventKind::Stderr));
+        tokio::task::yield_now().await;
+        assert_eq!(count(), 5);
+        sleep(Duration::from_millis(999)).await;
+        assert_eq!(count(), 5, "stderr has a one-second window");
+        sleep(Duration::from_millis(2)).await;
+        assert_eq!(count(), 6);
+    }
+
+    #[test]
+    fn secret_change_is_read_from_the_observed_output() {
+        // `fingerprint` and `updated_at` are fields of the event this worker does not read.
+        let observed: iii_sdk::Observed<Value, SecretChange> = serde_json::from_value(json!({
+            "observer_id": "obs-1", "activation_id": "act-1", "function_id": "secrets::on-changed",
+            "invocation_id": "inv-1", "status": "success", "started_at_ms": 1, "duration_ms": 0.5,
+            "output": {"name": "LINEAR_API_KEY", "ref": "secret://LINEAR_API_KEY", "action": "rotated",
+                       "fingerprint": "9f2c", "updated_at": "2026-10-29T12:00:00Z"}
+        }))
+        .unwrap();
+        let change = observed.output.unwrap();
+        assert_eq!(change.name.as_deref(), Some("LINEAR_API_KEY"));
+        assert_eq!(change.reference.as_deref(), Some("secret://LINEAR_API_KEY"));
+        assert!(catalog().iter().any(|(id, ..)| *id == ON_SECRET_CHANGE));
     }
 
     #[test]

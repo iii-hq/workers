@@ -8,10 +8,12 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::FunctionRef;
-use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::functions::{Coalescer, ON_SERVERS_CHANGED};
 
 pub type CallFuture = Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 pub type Handler = Arc<dyn Fn(Value) -> CallFuture + Send + Sync>;
@@ -44,7 +46,7 @@ pub struct ServerEvent {
     pub kind: EventKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     State,
@@ -79,6 +81,7 @@ pub trait Host: Send + Sync + 'static {
 /// The `Host` of a running worker: every method is one engine call.
 pub struct EngineHost {
     iii: Arc<IIIClient>,
+    events: Arc<Coalescer>,
 }
 
 struct EngineRegistration(FunctionRef);
@@ -111,7 +114,25 @@ fn mcp_ids(list: &Value) -> HashSet<String> {
 
 impl EngineHost {
     pub fn new(iii: Arc<IIIClient>) -> Arc<EngineHost> {
-        Arc::new(EngineHost { iii })
+        let engine = iii.clone();
+        // Unobserved also before `WorkerRegistered` and on an engine without
+        // observe v2, where calling the private function would fail.
+        let events = Coalescer::new(Arc::new(move |event: ServerEvent| {
+            if !engine.is_observed(ON_SERVERS_CHANGED) {
+                return;
+            }
+            let iii = engine.clone();
+            tokio::spawn(async move {
+                let request = CallRequest {
+                    action: Some(CallAction::Void),
+                    ..CallRequest::new(ON_SERVERS_CHANGED, json!(event))
+                };
+                if let Err(error) = iii.call(request).await {
+                    tracing::debug!(%error, "{ON_SERVERS_CHANGED} call failed");
+                }
+            });
+        }));
+        Arc::new(EngineHost { iii, events })
     }
 
     async fn call(
@@ -189,11 +210,7 @@ impl Host for EngineHost {
     }
 
     fn emit(&self, event: ServerEvent) {
-        let iii = self.iii.clone();
-        tokio::spawn(async move {
-            let request = CallRequest::new(crate::functions::ON_SERVERS_CHANGED, json!(event));
-            let _ = iii.call(request).await;
-        });
+        self.events.push(event);
     }
 
     async fn http_port(&self) -> Option<u16> {

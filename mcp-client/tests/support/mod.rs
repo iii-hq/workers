@@ -90,6 +90,11 @@ pub async fn connect_with(host: &Arc<FakeHost>, config: Value, timings: Timings)
     manager
 }
 
+/// Applies `config` as the configuration entry would.
+pub async fn apply(manager: &Arc<Manager>, config: Value) {
+    manager.apply_config(RawConfig::from_value(&config)).await;
+}
+
 /// That server's object of `servers::list`.
 pub async fn server(manager: &Arc<Manager>, name: &str) -> Value {
     let list = serde_json::to_value(manager.list().await).unwrap();

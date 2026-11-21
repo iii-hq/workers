@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::functions::SecretChange;
 use crate::host::{Host, SecretError};
 use crate::server::{ErrorCode, ServerError};
 
@@ -120,6 +121,16 @@ pub async fn resolve_all(host: &dyn Host, refs: &[Ref]) -> Result<Resolved, Serv
     Ok(resolved)
 }
 
+/// Whether a `secrets::on-changed` event names one of `refs`: by its `ref`
+/// when that parses, else by its name in either store.
+pub fn event_matches(event: &SecretChange, refs: &[Ref]) -> bool {
+    if let Some(r) = event.reference.as_deref().and_then(Ref::parse) {
+        return refs.contains(&r);
+    }
+    let name = event.name.as_deref();
+    name.is_some_and(|name| refs.iter().any(|r| r.name == name))
+}
+
 /// Whether a header or env name probably carries a credential. The TypeScript
 /// twin shares the name vector in its tests.
 pub fn looks_secret_name(name: &str) -> bool {
@@ -178,6 +189,38 @@ mod tests {
         ] {
             assert!(Ref::parse(not_a_ref).is_none(), "{not_a_ref:?}");
         }
+    }
+
+    fn event(name: Option<&str>, reference: Option<&str>) -> SecretChange {
+        SecretChange {
+            name: name.map(String::from),
+            reference: reference.map(String::from),
+            action: Some("rotated".into()),
+        }
+    }
+
+    #[test]
+    fn event_matches_by_ref_and_falls_back_to_the_name() {
+        let refs = [
+            Ref::parse("secret://LINEAR_API_KEY").unwrap(),
+            Ref::parse("env://HTTPS_PROXY").unwrap(),
+        ];
+        assert!(event_matches(
+            &event(None, Some("SECRET://LINEAR_API_KEY")),
+            &refs
+        ));
+        // The same name in the other store is another secret.
+        assert!(!event_matches(
+            &event(Some("LINEAR_API_KEY"), Some("env://LINEAR_API_KEY")),
+            &refs
+        ));
+        // Without `ref`, the name matches in either store.
+        assert!(event_matches(&event(Some("HTTPS_PROXY"), None), &refs));
+        assert!(!event_matches(
+            &event(Some("OTHER"), Some("secret://OTHER")),
+            &refs
+        ));
+        assert!(!event_matches(&event(None, None), &refs));
     }
 
     #[test]

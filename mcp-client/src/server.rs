@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::future::join_all;
 use http::{HeaderName, HeaderValue};
 use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
@@ -32,11 +33,12 @@ use tokio::time::{Instant, sleep, timeout};
 use crate::config::{
     Auth, Checked, Entry, HttpEntry, RawConfig, Transport, check_entry, check_url_text,
 };
+use crate::functions::SecretChange;
 use crate::host::{EventKind, Handler, Host, ServerEvent};
 use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
-use crate::refs::{Text, resolve_all};
+use crate::refs::{Text, event_matches, resolve_all};
 use crate::translate::{BlockCtx, CallFailure, failure_text, strip_args, tool_result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -487,10 +489,16 @@ struct Info {
     skipped: Vec<Skipped>,
 }
 
-struct Server {
-    name: String,
+/// An entry as configured and as checked.
+struct Spec {
     raw: Value,
     checked: Checked,
+}
+
+struct Server {
+    name: String,
+    /// Replaced when the entry changes; the server and its registry stay.
+    spec: RwLock<Arc<Spec>>,
     host: Arc<dyn Host>,
     timings: Timings,
     status: watch::Sender<Status>,
@@ -503,6 +511,8 @@ struct Server {
     peer: RwLock<Option<Peer<RoleClient>>>,
     /// Each session's `Notifier` holds a clone; the server task reads them.
     notes: mpsc::UnboundedSender<ListChanged>,
+    /// Held by the running task, so a restarted task reads the same channel.
+    notes_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<ListChanged>>,
     /// A call answered -32602 asks the server task to list the tools again.
     relist: Notify,
     task: Mutex<Option<(oneshot::Sender<()>, JoinHandle<()>)>>,
@@ -568,8 +578,10 @@ impl Server {
         };
         let server = Arc::new(Server {
             name: name.into(),
-            raw: raw.clone(),
-            checked,
+            spec: RwLock::new(Arc::new(Spec {
+                raw: raw.clone(),
+                checked,
+            })),
             host: host.clone(),
             timings: opts.timings,
             status: watch::channel(status).0,
@@ -579,16 +591,45 @@ impl Server {
             challenged: AtomicBool::default(),
             peer: RwLock::default(),
             notes,
+            notes_rx: tokio::sync::Mutex::new(notes_rx),
             relist: Notify::new(),
             task: Mutex::default(),
         });
         server.emit(EventKind::State);
         if state == State::Connecting {
-            let (stop, stopped) = oneshot::channel();
-            let handle = tokio::spawn(server.clone().run(stopped, notes_rx));
-            *server.task.lock().unwrap() = Some((stop, handle));
+            server.spawn();
         }
         server
+    }
+
+    fn spec(&self) -> Arc<Spec> {
+        self.spec.read().unwrap().clone()
+    }
+
+    /// Starts the task, with a fresh backoff.
+    fn spawn(self: &Arc<Self>) {
+        let (stop, stopped) = oneshot::channel();
+        let handle = tokio::spawn(self.clone().run(stopped));
+        *self.task.lock().unwrap() = Some((stop, handle));
+    }
+
+    /// Stops the task and starts it again on `spec`, or on the entry it has.
+    /// The registry stays and the next listing reconciles it; only a
+    /// disabled entry loses its functions.
+    async fn restart(self: &Arc<Self>, spec: Option<Spec>) {
+        self.halt().await;
+        if let Some(spec) = spec {
+            self.challenged.store(false, Ordering::Relaxed);
+            *self.spec.write().unwrap() = Arc::new(spec);
+        }
+        let (state, stage, error) = first_status(&self.name, &self.spec().checked);
+        if state == State::Disabled {
+            self.registry.clear().await;
+        }
+        self.set(state, stage, error);
+        if state == State::Connecting {
+            self.spawn();
+        }
     }
 
     fn emit(&self, kind: EventKind) {
@@ -646,11 +687,8 @@ impl Server {
 
     /// Connects, serves and reconnects until `stop`. Only `unavailable` is
     /// tried again; every other failure waits for a change from outside.
-    async fn run(
-        self: Arc<Self>,
-        mut stop: oneshot::Receiver<()>,
-        mut notes: mpsc::UnboundedReceiver<ListChanged>,
-    ) {
+    async fn run(self: Arc<Self>, mut stop: oneshot::Receiver<()>) {
+        let mut notes = self.notes_rx.lock().await;
         let mut backoff = Backoff::new(self.timings.backoff_min, self.timings.backoff_max);
         loop {
             // The connect lists the tools: what came before it is stale.
@@ -786,7 +824,7 @@ impl Server {
     /// transport failure is an outage, and anything else fails this request
     /// only. The registry is never touched.
     fn request_failed(&self, error: &ServiceError) -> CallFailure {
-        let failure = match &self.checked.entry {
+        let failure = match &self.spec().checked.entry {
             Some(entry) => classify_call_error(error, entry),
             None => CallFailure::Transport(service_text(error)),
         };
@@ -818,8 +856,8 @@ impl Server {
         let _ = timeout(self.timings.stop_grace, session.close()).await;
     }
 
-    /// Stops the task, closes its session and unregisters every function.
-    async fn stop(&self) {
+    /// Stops the task and closes its session; the registry stays.
+    async fn halt(&self) {
         let task = self.task.lock().unwrap().take();
         if let Some((stop, handle)) = task {
             let _ = stop.send(());
@@ -827,13 +865,19 @@ impl Server {
             let _ = handle.await;
         }
         self.peer.write().unwrap().take();
+    }
+
+    /// Stops the task, closes its session and unregisters every function.
+    async fn stop(&self) {
+        self.halt().await;
         self.registry.clear().await;
     }
 
     /// One attempt, from the secrets to `ready`. `Err` carries the wait a
     /// 429 asked for.
     async fn connect(self: &Arc<Self>) -> Result<Session, Option<Duration>> {
-        let Some(entry) = self.checked.entry.as_ref() else {
+        let spec = self.spec();
+        let Some(entry) = spec.checked.entry.as_ref() else {
             return Err(None);
         };
         let Transport::Http(http) = &entry.transport else {
@@ -1159,7 +1203,8 @@ impl Server {
     fn view(&self, registered: &HashSet<String>) -> ServerView {
         let status = self.status.borrow().clone();
         let info = self.info.lock().unwrap();
-        let (transport, target, auth) = match &self.checked.entry {
+        let spec = self.spec();
+        let (transport, target, auth) = match &spec.checked.entry {
             Some(entry) => {
                 let transport = match entry.transport {
                     Transport::Http(_) => "http",
@@ -1172,9 +1217,9 @@ impl Server {
                 (transport, entry.target(), auth)
             }
             None => {
-                let command = self.raw.get("command");
+                let command = spec.raw.get("command");
                 let transport = if command.is_some() { "stdio" } else { "http" };
-                let target = self.raw.get("url").or(command).and_then(Value::as_str);
+                let target = spec.raw.get("url").or(command).and_then(Value::as_str);
                 (transport, target.unwrap_or("").to_string(), "none")
             }
         };
@@ -1201,7 +1246,7 @@ impl Server {
             since: status.since,
             error: status.error,
             approved: true,
-            fingerprint: self.checked.fingerprint.clone(),
+            fingerprint: spec.checked.fingerprint.clone(),
             protocol_version: info.protocol_version.clone(),
             server_info: info.server_info.clone(),
             tools_listed: info.tools_listed,
@@ -1218,16 +1263,11 @@ impl Server {
     }
 }
 
-#[derive(Default)]
-struct Servers {
-    applied: Option<RawConfig>,
-    by_name: BTreeMap<String, Arc<Server>>,
-}
-
 pub struct Manager {
     host: Arc<dyn Host>,
     opts: ManagerOptions,
-    servers: tokio::sync::Mutex<Servers>,
+    /// Serialises config applies and secret changes.
+    servers: tokio::sync::Mutex<BTreeMap<String, Arc<Server>>>,
 }
 
 impl Manager {
@@ -1243,17 +1283,68 @@ impl Manager {
         self.opts.stdio_enabled
     }
 
+    /// Restarts only the entries whose raw value changed: an equal entry
+    /// sees no reconnect, no registry operation and no event.
     pub async fn apply_config(self: &Arc<Self>, raw: RawConfig) {
         let mut servers = self.servers.lock().await;
-        if servers.applied.as_ref() == Some(&raw) {
-            return;
+        let (kept, removed): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut *servers)
+            .into_iter()
+            .partition(|(name, _)| raw.0.contains_key(name));
+        *servers = kept;
+        join_all(removed.values().map(|s| async move {
+            s.stop().await;
+            s.emit(EventKind::State);
+        }))
+        .await;
+        let mut restarts = Vec::new();
+        for (name, value) in raw.0 {
+            match servers.get(&name) {
+                Some(s) if s.spec().raw == value => {}
+                Some(s) => {
+                    let checked = check_entry(&name, &value, self.opts.stdio_enabled);
+                    let spec = Spec {
+                        raw: value,
+                        checked,
+                    };
+                    let s = s.clone();
+                    restarts.push(async move { s.restart(Some(spec)).await });
+                }
+                None => {
+                    let server = Server::start(&self.host, &self.opts, &name, &value);
+                    servers.insert(name, server);
+                }
+            }
         }
-        stop_all(&mut servers).await;
-        for (name, value) in &raw.0 {
-            let server = Server::start(&self.host, &self.opts, name, value);
-            servers.by_name.insert(name.clone(), server);
+        join_all(restarts).await;
+    }
+
+    /// Resolves again the references of each server whose entry names the
+    /// changed one, and restarts it when a value changed or it is not
+    /// `ready`: the way out of `auth_failed` and of a secret `config_error`.
+    pub async fn on_secret_change(&self, change: &SecretChange) {
+        let servers = self.servers.lock().await;
+        let mut restarts = Vec::new();
+        for server in servers.values() {
+            let spec = server.spec();
+            let Some(entry) = &spec.checked.entry else {
+                continue;
+            };
+            let state = server.status.borrow().state;
+            let refs = entry.refs();
+            if matches!(state, State::Disabled | State::Unapproved) || !event_matches(change, &refs)
+            {
+                continue;
+            }
+            let unchanged = state == State::Ready
+                && match resolve_all(&*self.host, &refs).await {
+                    Ok(resolved) => resolved.secrets() == *server.secrets.lock().unwrap(),
+                    Err(_) => false,
+                };
+            if !unchanged {
+                restarts.push(server.restart(None));
+            }
         }
-        servers.applied = Some(raw);
+        join_all(restarts).await;
     }
 
     pub async fn list(&self) -> ServersList {
@@ -1263,11 +1354,7 @@ impl Manager {
         ServersList {
             stdio_enabled: self.opts.stdio_enabled,
             callback_url: format!("http://127.0.0.1:{port}/mcp-client/oauth/callback"),
-            servers: servers
-                .by_name
-                .values()
-                .map(|s| s.view(&registered))
-                .collect(),
+            servers: servers.values().map(|s| s.view(&registered)).collect(),
         }
     }
 
@@ -1276,7 +1363,6 @@ impl Manager {
             .servers
             .lock()
             .await
-            .by_name
             .get(server)
             .map(|s| s.status.subscribe());
         let Some(mut status) = status else {
@@ -1287,14 +1373,9 @@ impl Manager {
     }
 
     pub async fn shutdown(&self) {
-        stop_all(&mut *self.servers.lock().await).await;
+        let mut servers = self.servers.lock().await;
+        join_all(std::mem::take(&mut *servers).values().map(|s| s.stop())).await;
     }
-}
-
-async fn stop_all(servers: &mut Servers) {
-    let stopping = std::mem::take(&mut servers.by_name);
-    futures::future::join_all(stopping.values().map(|s| s.stop())).await;
-    servers.applied = None;
 }
 
 #[cfg(test)]

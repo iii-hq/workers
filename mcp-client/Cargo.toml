@@ -46,6 +46,8 @@ libc = "0.2"
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
+# `start_paused` for the timing tests.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"
