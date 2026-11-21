@@ -14,21 +14,20 @@ import {
   StatusPanel,
 } from '@iii-dev/console-ui'
 import { Plus, X } from 'lucide-react'
-import { type ComponentType, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ComponentType, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import type { Api } from './api'
 import {
   type Draft,
   draftDirty,
-  draftFromEntry,
   entryFromDraft,
   fieldErrors,
   hideLiterals,
-  literalSecretsError,
+  readEntryEdit,
   secretVaultName,
 } from './config-model'
 import { KeyValueRows, SecretValue } from './KeyValueRows'
 import { advertisesText, stageTrack } from './presentation'
-import { parsePayload } from './schema-form'
+import { effectSentences } from './save'
 import type { Issue, Server } from './types'
 
 const MODES = [
@@ -49,6 +48,86 @@ const AUTH_MODES = [
 /** The JSON view's text of a draft: a value in a secret position hidden. */
 const jsonText = (draft: Draft) => JSON.stringify(hideLiterals(entryFromDraft(draft)), null, 2)
 
+/** Sentences, one per line, in a panel's detail or a confirm's description. */
+export const Lines = ({ lines }: { lines: string[] }) =>
+  lines.map((line) => (
+    <span key={line} className="mcp-ui-line">
+      {line}
+    </span>
+  ))
+
+/** The save bar: Discard, and Save as the view's one default button. `blocked` says why Save cannot run. */
+export function SaveBar({
+  onSave,
+  onDiscard,
+  saving,
+  blocked,
+}: {
+  onSave: () => void
+  onDiscard: () => void
+  saving: boolean
+  blocked: string | null
+}) {
+  return (
+    <div className="mcp-ui-save-bar">
+      <span>Unsaved changes</span>
+      {blocked ? <span>{blocked}</span> : null}
+      <Button variant="ghost" size="sm" disabled={saving} onClick={onDiscard}>
+        Discard
+      </Button>
+      <Button size="sm" disabled={saving || blocked !== null} onClick={onSave}>
+        {saving ? 'Saving…' : 'Save'}
+      </Button>
+    </div>
+  )
+}
+
+/** What an entry changed outside the page would do once approved, and Approve. `quiet` while the save bar
+ * shows: Save is then the view's default button. */
+export function ReviewPanel({
+  api,
+  server,
+  entry,
+  busy,
+  onApprove,
+  quiet = false,
+}: {
+  api: Api
+  server: Server
+  entry: unknown
+  busy: boolean
+  onApprove: () => void
+  quiet?: boolean
+}) {
+  const [lines, setLines] = useState<string[]>([])
+  const seq = useRef(0)
+  // Every refresh hands over a new entry object: only a changed entry is validated again, and the lines shown
+  // stay until the new ones arrive (Approve asks again with fresh ones).
+  const text = useMemo(() => JSON.stringify(entry), [entry])
+  useEffect(() => {
+    const mine = ++seq.current
+    api.validate({ [server.name]: JSON.parse(text ?? 'null') }).then(
+      ({ servers }) => {
+        const effects = servers[server.name]?.effects
+        if (mine === seq.current && effects) setLines(effectSentences(effects))
+      },
+      () => {},
+    )
+  }, [api, server.name, text])
+  return (
+    <StatusPanel
+      variant="warn"
+      headline="Review needed"
+      detail={<Lines lines={['This entry was changed outside this page.', ...lines]} />}
+      action={
+        <Button size="sm" variant={quiet ? 'secondary' : 'primary'} disabled={busy} onClick={onApprove}>
+          Approve
+        </Button>
+      }
+    />
+  )
+}
+
 /** Column 3 for Connection: how far the connection got, the entry's form (or its JSON), and what the server
  * negotiated. `children` sits between the stage track and the form. */
 export function ConnectionView({
@@ -60,6 +139,11 @@ export function ConnectionView({
   setDirty,
   stored,
   children,
+  onSave,
+  onDiscard,
+  onRemove,
+  saving,
+  blocked,
 }: {
   api: Api
   host: Host
@@ -70,6 +154,11 @@ export function ConnectionView({
   setDirty: (dirty: boolean) => void
   stored: unknown
   children?: ReactNode
+  onSave: () => void
+  onDiscard: () => void
+  onRemove: (() => void) | null
+  saving: boolean
+  blocked: string | null
 }) {
   // The JSON view's text and why it is not an entry; null while the form shows.
   const [json, setJson] = useState<{ text: string; error: string | null } | null>(null)
@@ -79,9 +168,11 @@ export function ConnectionView({
   const fe = fieldErrors(errors, draft.name)
   const set = (change: Partial<Draft>) => onDraft({ ...draft, ...change })
   // Refused JSON text is an edit the draft does not hold yet.
-  const refused = Boolean(json?.error)
+  const dirty = draftDirty(draft, stored) || Boolean(json?.error)
 
-  useEffect(() => setDirty(draftDirty(draft, stored) || refused), [draft, stored, refused, setDirty])
+  useEffect(() => setDirty(dirty), [dirty, setDirty])
+  // Refused text leaves with the view: the page's dirty state is then the draft's alone.
+  useEffect(() => () => setDirty(false), [setDirty])
   useEffect(() => {
     if (draft === shown.current) return
     shown.current = draft
@@ -281,15 +372,18 @@ export function ConnectionView({
     </>
   )
 
-  // An entry with a value in a secret position is refused like a parse error: the draft never holds one.
   const editJson = (value: string) => {
-    const parsed = parsePayload(value)
-    const error = 'error' in parsed ? parsed.error : literalSecretsError(parsed.payload)
-    if (error === null && 'payload' in parsed) {
-      shown.current = draftFromEntry(draft.name, parsed.payload)
-      onDraft(shown.current)
+    const read = readEntryEdit(draft, value)
+    if (read.draft) {
+      shown.current = read.draft
+      onDraft(read.draft)
     }
-    setJson({ text: value, error })
+    setJson({ text: value, error: read.error })
+  }
+  // The refused text goes too: the draft the page puts back rewrites it.
+  const discard = () => {
+    setJson((open) => (open ? { ...open, error: null } : open))
+    onDiscard()
   }
 
   return (
@@ -334,6 +428,7 @@ export function ConnectionView({
           form
         )}
       </section>
+      {dirty || saving ? <SaveBar onSave={onSave} onDiscard={discard} saving={saving} blocked={blocked} /> : null}
       {server?.protocol_version ? (
         <MetaRow
           className="mcp-ui-facts"
@@ -348,6 +443,11 @@ export function ConnectionView({
             { label: 'Advertises', value: advertisesText(server) },
           ].filter((item) => item.value)}
         />
+      ) : null}
+      {onRemove ? (
+        <Button variant="ghost" size="sm" onClick={onRemove}>
+          Remove server
+        </Button>
       ) : null}
     </div>
   )

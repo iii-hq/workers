@@ -17,15 +17,27 @@ import {
   Skeleton,
   StatusBar,
   StatusPanel,
+  useConfirm,
 } from '@iii-dev/console-ui'
+import { copyText, errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, useCopyFlash, usePaneState } from '@iii-dev/console-ui/hooks'
-import { ChevronLeft, Copy, FileJson, Plug, Plus, RefreshCw } from 'lucide-react'
+import { ChevronLeft, Copy, FileJson, Plug, Plus, RefreshCw, X } from 'lucide-react'
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from './api'
-import { ConnectionView } from './ConnectionView'
+import { ConnectionView, Lines, ReviewPanel } from './ConnectionView'
 import { currentRow, focusColumn, onColumnKeys } from './columns'
-import { type Draft, draftFromEntry, emptyDraft, sameJson } from './config-model'
+import {
+  copyAsJson,
+  type Draft,
+  draftDirty,
+  draftFromEntry,
+  emptyDraft,
+  entryFromDraft,
+  entryRefs,
+  sameJson,
+} from './config-model'
 import { FunctionDetail } from './FunctionDetail'
+import { JsonView } from './JsonView'
 import {
   announcements,
   functionRows,
@@ -33,18 +45,21 @@ import {
   narrowLevel,
   pageState,
   pathHeads,
+  presentServer,
   type RowActionId,
   statusBarText,
   type Tone,
 } from './presentation'
 import { ServerContents } from './ServerContents'
 import { ServerList } from './ServerList'
+import { approveEntry, removeEntry, type SaveDeps, saveEntry, setDisabled } from './save'
 import type { Issue, Selection, Server, ServersList } from './types'
 import { useServers } from './use-servers'
 
 const SKELETON_ROWS = [0, 1, 2, 3]
 const COLUMN_OF: Record<Level, number> = { servers: 1, contents: 2, detail: 3 }
 const NO_ISSUES: Issue[] = []
+const WORKER_DOWN = 'The mcp-client worker is not running'
 
 /** Column 3 for the Process row, until its own view exists. */
 function ServerFacts({ server }: { server: Server }) {
@@ -77,7 +92,14 @@ export function McpServersPage({
   // The Connection form's draft: of the selected server, or of the server being added.
   const [draft, setDraft] = useState<Draft | null>(null)
   const [adding, setAdding] = useState(false)
-  const [dirty, setDirtyState] = useState(false)
+  // What the open view reports: refused JSON text, or the Edit as JSON text.
+  const [viewDirty, setViewDirty] = useState(false)
+  const [jsonOpen, setJsonOpen] = useState(false)
+  const [errors, setErrors] = useState<Issue[]>(NO_ISSUES)
+  const [saving, setSaving] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<{ headline: string; detail: string } | null>(null)
+  const { confirm, dialog } = useConfirm()
   const [col1, setCol1] = usePaneState('mcp-client:col1', 288)
   const { ref: narrowRef, narrow } = useContainerNarrow()
   const root = useRef<HTMLDivElement | null>(null)
@@ -108,48 +130,198 @@ export function McpServersPage({
   // No import flow and no agent-access status yet: their buttons, commands and row stay hidden.
   const onImport = undefined as (() => void) | undefined
   const accessRow = null as { tone: Tone; text: string } | null
+  // The entry the draft was loaded from or last saved as: an edit is measured against it, so a change made
+  // outside the page is no edit, and dirty matches the draft the page holds whichever view is open.
+  const [loaded, setLoaded] = useState<[string, unknown] | null>(null)
+  const base = !adding && loaded && loaded[0] === selection.server ? loaded[1] : stored
+  const formDirty = draft !== null && (adding || selection.server !== null) && draftDirty(draft, base)
+  const dirty = viewDirty || formDirty
+
+  const deps = useMemo<SaveDeps>(
+    () => ({
+      api,
+      // Save, Approve or Remove: the title's verb names the button.
+      confirm: ({ title, lines, tone }) =>
+        confirm({
+          title,
+          tone,
+          confirmLabel: title.slice(0, title.indexOf(' ')),
+          description: lines.length > 0 ? <Lines lines={lines} /> : undefined,
+        }),
+      // stub: the Agent access view replaces these
+      removeBlock: async () => ({ ok: true, count: 0 }),
+      blockCount: async () => 0,
+    }),
+    [api, confirm],
+  )
+  const announce = (text: string) => setAnnouncement((last) => ({ seq: (last?.seq ?? 0) + 1, text, urgency: 'polite' }))
+  const confirmLeave = async () =>
+    !dirty ||
+    confirm({
+      title: `Discard changes to ${jsonOpen ? 'the JSON' : draft?.name || 'the new server'}?`,
+      confirmLabel: 'Discard',
+    })
+  const leave = useRef(confirmLeave)
+  leave.current = confirmLeave
 
   const reconnect = useCallback(
     (name: string) => void api.reconnect(name).then(data.refresh, data.refresh),
     [api, data.refresh],
   )
-  const pickServer = (next: Selection) => {
-    if (next.server !== null) {
-      setAdding(false)
-      setDraft(draftFromEntry(next.server, data.config?.[next.server]))
+  // Leaving a server, the new server or the JSON with unsaved edits asks first.
+  const pickServer = async (next: Selection) => {
+    const switching = jsonOpen || (next.server !== null && (adding || next.server !== selection.server))
+    if (switching) {
+      if (!(await confirmLeave())) return false
+      setJsonOpen(false)
+      setErrors(NO_ISSUES)
+      setFailure(null)
+      if (next.server !== null) {
+        const entry = data.config?.[next.server] ?? null
+        setAdding(false)
+        setLoaded([next.server, entry])
+        setDraft(draftFromEntry(next.server, entry))
+      }
     }
     setSelection(next)
     setLevel('contents')
+    return true
   }
-  const onAdd = useCallback(() => {
+  const onAdd = useCallback(async () => {
+    if (!(await leave.current())) return
+    setJsonOpen(false)
+    setErrors(NO_ISSUES)
+    setFailure(null)
     setAdding(true)
     setDraft(emptyDraft())
     setSelection({ server: null, item: { kind: 'connection' } })
     setLevel('detail')
   }, [])
-  const onDirty = useCallback(
-    (next: boolean) => {
-      setDirtyState(next)
-      setDirty?.(next ? 'MCP server' : false)
-    },
-    [setDirty],
-  )
+  useEffect(() => setDirty?.(dirty ? 'MCP server' : false), [dirty, setDirty])
+
+  const onSave = async () => {
+    if (!draft) return
+    const { name } = draft
+    if (adding && data.config && name in data.config) {
+      setErrors([{ path: `/mcpServers/${name}`, message: `A server named \`${name}\` already exists.` }])
+      return
+    }
+    const before = adding || !server ? null : { entry: data.config?.[name], fingerprint: server.fingerprint }
+    const entry = entryFromDraft(draft)
+    setSaving(true)
+    setFailure(null)
+    try {
+      const result = await saveEntry(deps, name, entry, before)
+      setErrors(result.errors)
+      if (result.message) setFailure({ headline: 'Could not save', detail: result.message })
+      if (!result.saved) return
+      // What was saved is the new base: a draft still equal to it is clean, one edited meanwhile stays dirty.
+      setLoaded([name, entry])
+      setAdding(false)
+      setSelection({ server: name, item: { kind: 'connection' } })
+      data.refresh()
+      announce(`${name} saved`)
+    } catch (err) {
+      setFailure({ headline: 'Could not save', detail: errorMessage(err) })
+    } finally {
+      setSaving(false)
+    }
+  }
+  const onDiscard = () => {
+    setErrors(NO_ISSUES)
+    setFailure(null)
+    if (selection.server !== null) {
+      setLoaded([selection.server, stored])
+      setDraft(draftFromEntry(selection.server, stored))
+    } else {
+      setAdding(false)
+      setDraft(null)
+      setSelection({ server: null, item: null })
+      setLevel('servers')
+    }
+  }
+  // Approve, Share, Turn on and Remove: one at a time, a failure shown above the form.
+  const attempt = async (headline: string, run: () => Promise<boolean | undefined>) => {
+    setBusy(true)
+    setFailure(null)
+    try {
+      if ((await run()) !== false) data.refresh()
+    } catch (err) {
+      setFailure({ headline, detail: errorMessage(err) })
+    } finally {
+      setBusy(false)
+    }
+  }
+  const approve = (s: Server) => attempt('Could not approve', () => approveEntry(deps, s))
+  const turnOn = (s: Server) =>
+    attempt('Could not turn on', async () => {
+      await setDisabled(api, s.name, false)
+      return true
+    })
+  // Names only: no secret value is read or shown.
+  const share = (s: Server) =>
+    attempt('Could not share', async () => {
+      const refs = entryRefs(data.config?.[s.name])
+      const go = await confirm({
+        title: 'Share with mcp-client?',
+        confirmLabel: 'Share',
+        description: <Lines lines={refs} />,
+      })
+      if (!go) return false
+      for (const ref of refs) await api.shareSecret(ref)
+      await api.reconnect(s.name)
+      return true
+    })
+  const remove = (s: Server) =>
+    attempt('Could not remove', async () => {
+      if (!(await removeEntry(deps, s))) return false
+      setSelection({ server: null, item: null })
+      setDraft(null)
+      setLevel('servers')
+      announce(`${s.name} removed`)
+      return true
+    })
+  const openJson = async () => {
+    if (!(await confirmLeave())) return
+    setAdding(false)
+    setDraft(null)
+    setErrors(NO_ISSUES)
+    setFailure(null)
+    setSelection({ server: null, item: null })
+    setJsonOpen(true)
+    setLevel('contents')
+  }
+  const closeJson = () => {
+    setJsonOpen(false)
+    setLevel('servers')
+    data.refresh()
+  }
+  const copyJson = () => {
+    if (data.config)
+      void copyText(copyAsJson(data.config)).then((ok) => announce(ok ? 'Config copied as JSON' : 'Could not copy'))
+  }
+  const onDirty = useCallback((next: boolean) => setViewDirty(next), [])
 
   // A refresh that changed the entry reaches the form, unless the form holds an edit. Every fetch builds a new
   // config, so the content is compared: an unchanged refresh keeps the draft and its rows not yet filled in.
-  const loaded = useRef<unknown>(undefined)
+  // A missing entry is not loaded: a server just added is not in the config until the refresh lands.
   useEffect(() => {
-    if (adding || dirty || selection.server === null || sameJson(loaded.current, [selection.server, stored])) return
-    loaded.current = [selection.server, stored]
+    if (adding || dirty || selection.server === null || stored === null || sameJson(loaded, [selection.server, stored]))
+      return
+    setLoaded([selection.server, stored])
     setDraft(draftFromEntry(selection.server, stored))
-  }, [adding, dirty, selection.server, stored])
+  }, [adding, dirty, selection.server, stored, loaded])
   const pickItem = (next: Selection) => {
     setSelection(next)
     setLevel('detail')
   }
-  const onAction = (name: string, action: RowActionId) => {
-    pickServer({ server: name, item: { kind: 'connection' } })
+  const onAction = async (name: string, action: RowActionId) => {
+    if (!(await pickServer({ server: name, item: { kind: 'connection' } }))) return
+    const s = data.list?.servers.find((row) => row.name === name)
     if (action === 'retry' || action === 'restart') reconnect(name)
+    else if (s && action === 'review') void approve(s)
+    else if (s && action === 'turn_on') void turnOn(s)
+    else if (s && action === 'share') void share(s)
   }
   const back = (to: Level, label: string) =>
     narrow ? (
@@ -230,10 +402,18 @@ export function McpServersPage({
     </Button>
   )
   const menu: PageHeaderMenuItem[] = [
-    { id: 'edit-json', label: 'Edit as JSON', icon: <FileJson size={16} />, disabled: true, onSelect: () => {} },
-    { id: 'copy-json', label: 'Copy as JSON', icon: <Copy size={16} />, disabled: true, onSelect: () => {} },
+    {
+      id: 'edit-json',
+      label: 'Edit as JSON',
+      icon: <FileJson size={16} />,
+      disabled: !data.config || jsonOpen,
+      onSelect: () => void openJson(),
+    },
+    { id: 'copy-json', label: 'Copy as JSON', icon: <Copy size={16} />, disabled: !data.config, onSelect: copyJson },
     { id: 'refresh', label: 'Refresh', icon: <RefreshCw size={16} />, onSelect: data.refresh },
   ]
+  const bar = dirty || saving
+  const panel = server ? presentServer(server, 0).panel : null
 
   return (
     <div
@@ -264,10 +444,17 @@ export function McpServersPage({
             {state === 'loading' ? null : <span>{heads.firstMeta}</span>}
           </div>
           <div className="mcp-ui-path-head">
+            {jsonOpen ? <b>Edit as JSON</b> : null}
             {heads.second ? <code>{heads.second}</code> : null}
             {heads.secondMeta ? <span>{heads.secondMeta}</span> : null}
           </div>
           <div className="mcp-ui-path-head">
+            {jsonOpen ? (
+              <Button variant="ghost" size="sm" onClick={async () => (await confirmLeave()) && closeJson()}>
+                <X size={16} aria-hidden />
+                Close
+              </Button>
+            ) : null}
             {heads.thirdIsId ? <code>{heads.third}</code> : heads.third ? <b>{heads.third}</b> : null}
             {heads.thirdIsId ? (
               <Button variant="ghost" size="sm" onClick={copyFlash.copy}>
@@ -311,7 +498,9 @@ export function McpServersPage({
                 />
               </PageSidebar>
               <PageMain className="mcp-ui-main">
-                {state === 'worker_down' && !adding ? (
+                {jsonOpen && data.config ? (
+                  <JsonView api={api} deps={deps} mcpServers={data.config} onClose={closeJson} setDirty={onDirty} />
+                ) : state === 'worker_down' && !adding ? (
                   <div className="mcp-ui-whole">
                     <StatusPanel
                       variant="alert"
@@ -388,7 +577,7 @@ export function McpServersPage({
                         <>
                           {selection.server ? back('contents', selection.server) : null}
                           {adding ? back('contents', 'New server') : null}
-                          {(server || adding) && item?.kind === 'connection' && draft ? (
+                          {(server || adding || selection.server) && item?.kind === 'connection' && draft ? (
                             <ConnectionView
                               key={adding ? '' : selection.server}
                               api={api}
@@ -396,10 +585,56 @@ export function McpServersPage({
                               server={server}
                               draft={draft}
                               onDraft={setDraft}
-                              errors={NO_ISSUES}
+                              errors={errors}
                               setDirty={onDirty}
-                              stored={stored}
-                            />
+                              stored={base}
+                              onSave={() => void onSave()}
+                              onDiscard={onDiscard}
+                              onRemove={server && !adding ? () => void remove(server) : null}
+                              saving={saving}
+                              blocked={data.workerDown ? WORKER_DOWN : null}
+                            >
+                              {failure ? (
+                                <StatusPanel
+                                  variant="alert"
+                                  role="alert"
+                                  headline={failure.headline}
+                                  detail={failure.detail}
+                                />
+                              ) : null}
+                              {server && !adding && server.error?.code === 'secret_not_shared' && panel ? (
+                                <StatusPanel
+                                  variant="alert"
+                                  headline={panel.headline}
+                                  detail={panel.next}
+                                  action={
+                                    <Button
+                                      size="sm"
+                                      variant={bar ? 'secondary' : 'primary'}
+                                      disabled={busy}
+                                      onClick={() => void share(server)}
+                                    >
+                                      Share
+                                    </Button>
+                                  }
+                                />
+                              ) : null}
+                              {server && !adding && server.state === 'unapproved' ? (
+                                <ReviewPanel
+                                  api={api}
+                                  server={server}
+                                  entry={data.config?.[server.name]}
+                                  busy={busy}
+                                  quiet={bar}
+                                  onApprove={() => void approve(server)}
+                                />
+                              ) : null}
+                              {server && !adding && server.state === 'disabled' ? (
+                                <Button variant="ghost" size="sm" disabled={busy} onClick={() => void turnOn(server)}>
+                                  Turn on
+                                </Button>
+                              ) : null}
+                            </ConnectionView>
                           ) : null}
                           {server && item?.kind === 'process' ? <ServerFacts server={server} /> : null}
                           {server && fnRow ? (
@@ -424,6 +659,7 @@ export function McpServersPage({
         ) : null}
       </PageShell>
       <LiveRegion announcement={announcement} />
+      {dialog}
     </div>
   )
 }

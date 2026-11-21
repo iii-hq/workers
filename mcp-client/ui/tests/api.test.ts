@@ -84,6 +84,42 @@ describe('createApi', () => {
     expect((await api.listFunctions('linear')).map((f) => f.function_id)).toEqual(['mcp::linear::whoami'])
   })
 
+  it('shareSecret adds mcp-client and keeps every consumer that was there', async () => {
+    const { iii, calls } = fakeIii({
+      'secrets::get': () => ({ consumers: ['database'] }),
+      'secrets::access': () => ({}),
+    })
+    await createApi(iii).shareSecret('secret://DB_KEY')
+    const sent = calls.map((c) => [c.fn, c.payload])
+    expect(sent).toEqual([
+      ['secrets::get', { name: 'DB_KEY' }],
+      ['secrets::access', { name: 'DB_KEY', consumers: ['database', 'mcp-client'] }],
+    ])
+  })
+
+  it('shareSecret names the env store for an env reference', async () => {
+    const { iii, calls } = fakeIii({
+      'secrets::get': () => ({ consumers: [] }),
+      'secrets::access': () => ({}),
+    })
+    await createApi(iii).shareSecret('env://GH_TOKEN')
+    const sent = calls.map((c) => [c.fn, c.payload])
+    expect(sent).toEqual([
+      ['secrets::get', { name: 'GH_TOKEN', store: 'env' }],
+      ['secrets::access', { name: 'GH_TOKEN', consumers: ['mcp-client'], store: 'env' }],
+    ])
+  })
+
+  it('shareSecret writes nothing when the read fails', async () => {
+    const { iii, calls } = fakeIii({
+      'secrets::get': () => {
+        throw new Error('no such secret')
+      },
+    })
+    await expect(createApi(iii).shareSecret('secret://GONE')).rejects.toThrow('no such secret')
+    expect(calls.map((c) => c.fn)).toEqual(['secrets::get'])
+  })
+
   it('call uses the real function id and a 130 s timeout', async () => {
     const { iii, calls } = fakeIii({ 'mcp::linear::whoami': () => ({ content: [] }) })
     await createApi(iii).call('mcp::linear::whoami', {})

@@ -1,3 +1,4 @@
+import { parsePayload } from './schema-form'
 import { looksSecretName } from './secret-names'
 import type { Issue } from './types'
 
@@ -270,6 +271,66 @@ export function changedEntries(
       .filter((name) => !(name in after))
       .sort(),
   }
+}
+
+/** Every reference an entry names, at any depth, each once and sorted: what Share asks to share. */
+export function entryRefs(entry: unknown): string[] {
+  const refs = new Set<string>()
+  const walk = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (REFERENCE.test(value)) refs.add(value)
+    } else if (Array.isArray(value)) value.forEach(walk)
+    else if (isObject(value)) Object.values(value).forEach(walk)
+  }
+  walk(entry)
+  return [...refs].sort()
+}
+
+/** The per-server JSON switch's text read against the draft it shows. The shown text, hidden values and all,
+ * is no edit; an edit that keeps a value in a secret position is refused, so the draft never holds one. */
+export function readEntryEdit(draft: Draft, text: string): { draft: Draft | null; error: string | null } {
+  const parsed = parsePayload(text)
+  if ('error' in parsed) return { draft: null, error: parsed.error }
+  if (sameJson(parsed.payload, hideLiterals(entryFromDraft(draft)))) return { draft: null, error: null }
+  const error = literalSecretsError(parsed.payload)
+  return error ? { draft: null, error } : { draft: draftFromEntry(draft.name, parsed.payload), error: null }
+}
+
+const hideAll = (mcpServers: Record<string, unknown>) =>
+  Object.fromEntries(Object.entries(mcpServers).map(([name, e]) => [name, isObject(e) ? hideLiterals(e) : e]))
+const pointer = (name: string) => `/mcpServers/${name.replace(/~/g, '~0').replace(/\//g, '~1')}`
+
+/** The whole map as Edit as JSON shows it: every value in a secret position hidden. */
+export const mapAsJson = (mcpServers: Record<string, unknown>): string =>
+  JSON.stringify({ mcpServers: hideAll(mcpServers) }, null, 2)
+
+export const READ_MAP_ROOT = 'The text must be a JSON object with an object under mcpServers.'
+
+/** Edit as JSON's text read against the map it showed (`mapAsJson(stored)`). An entry left as shown is no
+ * change and goes to validation as stored, so its hidden values never come back from the text; a changed
+ * entry that holds a value in a secret position is refused, one issue per entry, before anything is sent. */
+export function readMapEdit(
+  stored: Record<string, unknown>,
+  text: string,
+): { issues: Issue[] } | { candidate: Record<string, unknown>; changed: string[]; removed: string[] } {
+  let root: unknown
+  try {
+    root = JSON.parse(text)
+  } catch (err) {
+    return { issues: [{ path: '', message: `Not valid JSON: ${(err as Error).message}` }] }
+  }
+  const edited = isObject(root) ? root.mcpServers : undefined
+  if (!isObject(edited)) return { issues: [{ path: '', message: READ_MAP_ROOT }] }
+  const { changed, removed } = changedEntries(hideAll(stored), edited)
+  const issues = changed.flatMap((name) => {
+    const message = literalSecretsError(edited[name])
+    return message ? [{ path: pointer(name), message }] : []
+  })
+  if (issues.length > 0) return { issues }
+  const candidate = Object.fromEntries(
+    Object.keys(edited).map((name) => [name, changed.includes(name) ? edited[name] : stored[name]]),
+  )
+  return { candidate, changed, removed }
 }
 
 /** `<SERVER>_<FIELD>`: upper-case, anything outside `[A-Z0-9_]` as `_`, never a leading digit. */

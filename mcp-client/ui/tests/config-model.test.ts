@@ -8,11 +8,16 @@ import {
   draftFromEntry,
   emptyDraft,
   entryFromDraft,
+  entryRefs,
   fieldErrors,
   hideLiterals,
   literalSecrets,
   literalSecretsError,
+  mapAsJson,
+  READ_MAP_ROOT,
   REFERENCE,
+  readEntryEdit,
+  readMapEdit,
   referenceOnly,
   renameRow,
   sameJson,
@@ -353,5 +358,63 @@ describe('helpers', () => {
     for (const text of ['', 'abc', 'Bearer secret://X', 'secret://', 'secret://A B', '${X}']) {
       expect(REFERENCE.test(text)).toEqual(false)
     }
+  })
+})
+
+describe('entryRefs', () => {
+  it('lists every reference of an entry once, sorted, and no literal', () => {
+    expect(
+      entryRefs({
+        url: 'https://x/mcp',
+        auth: { type: 'bearer', token: 'secret://B_KEY' },
+        headers: { 'X-API-Key': 'env://A_KEY', 'X-Workspace': 'acme' },
+        args: ['secret://B_KEY', '--flag'],
+      }),
+    ).toEqual(['env://A_KEY', 'secret://B_KEY'])
+    expect(entryRefs(null)).toEqual([])
+  })
+})
+
+describe('the JSON views read an edit against the text they showed', () => {
+  // A stored value the page hides: an unknown secret-named key, and a bearer token.
+  const stored = {
+    a: { type: 'http', url: 'https://a.example/mcp', api_key: LITERAL },
+    b: { type: 'http', url: 'https://b.example/mcp', auth: { type: 'bearer', token: LITERAL } },
+    linear: SPEC.linear,
+  }
+
+  it('readEntryEdit reads the shown text, hidden values and all, as no edit', () => {
+    const draft = draftFromEntry('a', stored.a)
+    const shown = JSON.stringify(hideLiterals(entryFromDraft(draft)), null, 2)
+    expect(shown).toContain(HIDDEN)
+    expect(readEntryEdit(draft, shown)).toEqual({ draft: null, error: null })
+    const edited = { ...hideLiterals(entryFromDraft(draft)), url: 'https://c.example/mcp' }
+    expect(readEntryEdit(draft, JSON.stringify(edited))).toEqual({
+      draft: null,
+      error: 'api_key holds a value. Use secret://NAME or env://NAME.',
+    })
+    const fixed = { ...edited, api_key: 'secret://A_KEY' }
+    expect(readEntryEdit(draft, JSON.stringify(fixed))).toEqual({ draft: draftFromEntry('a', fixed), error: null })
+    expect(readEntryEdit(draft, '{').error).toMatch(/^Not valid JSON/)
+  })
+
+  it('readMapEdit passes untouched hidden entries through and refuses a value in a changed one', () => {
+    const shown = mapAsJson(stored)
+    expect(shown).not.toContain(LITERAL)
+    expect(readMapEdit(stored, shown)).toEqual({ candidate: stored, changed: [], removed: [] })
+    const servers = (JSON.parse(shown) as { mcpServers: Record<string, Record<string, unknown>> }).mcpServers
+    const linear = { ...SPEC.linear, url: 'https://linear.example/mcp' }
+    const { a: _, ...edited } = { ...servers, linear }
+    expect(readMapEdit(stored, JSON.stringify({ mcpServers: edited }))).toEqual({
+      candidate: { b: stored.b, linear },
+      changed: ['linear'],
+      removed: ['a'],
+    })
+    const kept = { ...servers, b: { ...servers.b, url: 'https://c.example/mcp' } }
+    expect(readMapEdit(stored, JSON.stringify({ mcpServers: kept }))).toEqual({
+      issues: [{ path: '/mcpServers/b', message: 'auth/token holds a value. Use secret://NAME or env://NAME.' }],
+    })
+    expect(readMapEdit(stored, '[]')).toEqual({ issues: [{ path: '', message: READ_MAP_ROOT }] })
+    expect(readMapEdit(stored, '{').issues?.[0].message).toMatch(/^Not valid JSON/)
   })
 })

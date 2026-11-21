@@ -14,6 +14,7 @@ import type {
 const WORKER = 'mcp-client'
 /** Past the worker's own 120 s call timeout, so its error arrives first. */
 const CALL_TIMEOUT_MS = 130000
+const SECRETS_TIMEOUT_MS = 10000
 
 type Json = Record<string, unknown>
 
@@ -88,6 +89,19 @@ export function createApi(iii: ExtensionIii) {
         return next
       }),
     writeConfig: (mcpServers: Json) => writeServers(() => mcpServers),
+    /** Let mcp-client read the secret behind `reference`. `secrets::access` replaces the consumer list, so the
+     * list sent is the one just read plus mcp-client; a failed read writes nothing. No value is read. */
+    shareSecret: async (reference: string): Promise<void> => {
+      const at = reference.indexOf('://')
+      const name = reference.slice(at + 3)
+      const store = reference.slice(0, at).toLowerCase() === 'env' ? { store: 'env' } : {}
+      const options = { timeoutMs: SECRETS_TIMEOUT_MS }
+      const { consumers } = await iii.call<{ consumers?: unknown }>('secrets::get', { name, ...store }, options)
+      // Sending a list without the ones already there would revoke them.
+      if (!Array.isArray(consumers)) throw new Error(`secrets::get returned no consumer list for ${name}`)
+      const next = [...new Set([...consumers.map(String), WORKER])]
+      await iii.call('secrets::access', { name, consumers: next, ...store }, options)
+    },
     call: (functionId: string, payload: Json) => iii.call(functionId, payload, { timeoutMs: CALL_TIMEOUT_MS }),
   }
 }
