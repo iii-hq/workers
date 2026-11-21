@@ -11,6 +11,7 @@
 //! the classes that must never ride on worker authority. Database writes are
 //! refused only when the approval gate is present.
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -548,8 +549,19 @@ pub(crate) fn stream_access_keys(value: &Value, keys: &mut Vec<String>) {
 /// never escapes), so a step that cuts a key (fp::take, fp::split) shows its
 /// parts; withhold in those transforms if a pipe ever needs to cut one.
 pub(crate) fn withhold_access_keys(text: String, keys: &[String]) -> String {
-    keys.iter()
-        .fold(text, |text, key| text.replace(key, WITHHELD_ACCESS_KEY))
+    if keys.is_empty() {
+        return text;
+    }
+    // One pass, longest key first: a key that holds another is never cut into
+    // pieces, and the inserted notes are never scanned again.
+    match AhoCorasick::builder()
+        .match_kind(MatchKind::LeftmostLongest)
+        .build(keys)
+    {
+        Ok(keys) => keys.replace_all(&text, &vec![WITHHELD_ACCESS_KEY; keys.patterns_len()]),
+        // Fail closed: text that could not be searched never leaves fp.
+        Err(_) => WITHHELD_ACCESS_KEY.to_string(),
+    }
 }
 
 fn preview_of(value: &Value, max_chars: usize, access_keys: &[String]) -> String {
@@ -1389,5 +1401,17 @@ mod tests {
         stream_access_keys(&json!({ "access_key": "kept", "channel": "c1" }), &mut none);
         stream_access_keys(&json!({ "channel_id": "c1", "access_key": "" }), &mut none);
         assert!(none.is_empty(), "{none:?}");
+    }
+
+    #[test]
+    fn keys_are_withheld_longest_first_in_one_pass() {
+        // The short key is listed first; a key-by-key pass would leave "def".
+        let keys = ["abc".to_string(), "abcdef".to_string()];
+        let out = withhold_access_keys("x abcdef y abc abcdef".into(), &keys);
+        assert_eq!(out.matches(WITHHELD_ACCESS_KEY).count(), 3, "{out}");
+        assert!(!out.contains("abc") && !out.contains("def"), "{out}");
+        // A key that also occurs inside the note leaves the note whole.
+        let out = withhold_access_keys("k=read".into(), &["read".to_string()]);
+        assert_eq!(out, format!("k={WITHHELD_ACCESS_KEY}"));
     }
 }
