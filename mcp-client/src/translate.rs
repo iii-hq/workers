@@ -318,33 +318,46 @@ pub fn prompt_result(result: &Value, ctx: &BlockCtx) -> Value {
     };
     let messages = array(result, "messages");
     let mut left = CAP_BYTES;
+    let mut res = json!({});
+    if let Some(d) = str_field(result, "description") {
+        let d = if escaped_len(d, 2) <= left {
+            d.to_string()
+        } else {
+            format!("{}\n{PROMPT_CUT_NOTE}", cut_prefix(d, left, 2))
+        };
+        left = left.saturating_sub(escaped_len(&d, 2));
+        res["description"] = json!(d);
+    }
     let mut out: Vec<Value> = Vec::new();
     for m in messages {
-        let b = block(m.get("content").unwrap_or(&Value::Null), &ctx);
-        let (mut blocks, cut) = cap_to(
-            vec![b],
-            left.saturating_sub(MESSAGE_OVERHEAD),
-            PROMPT_CUT_NOTE,
-            2,
-        );
-        let cost = blocks.iter().map(|b| match b["type"] == "image" {
-            true => escaped_len(b["data"].as_str().unwrap_or(""), 2),
-            false => escaped_len(b["text"].as_str().unwrap_or(""), 2),
-        });
-        left = left.saturating_sub(cost.sum::<usize>() + MESSAGE_OVERHEAD);
-        let dropped = messages.len() - out.len() - 1;
-        if cut && dropped > 0 {
-            blocks.push(text_block(format!("[{dropped} later messages dropped]")));
+        let role = str_field(m, "role").unwrap_or("user");
+        let framing = MESSAGE_OVERHEAD + escaped_len(role, 2);
+        if left <= framing {
+            break;
         }
-        out.push(json!({"role": m["role"], "content": blocks}));
+        let b = block(m.get("content").unwrap_or(&Value::Null), &ctx);
+        let (blocks, cut) = cap_to(vec![b], left - framing, PROMPT_CUT_NOTE, 2);
+        let cost: usize = blocks
+            .iter()
+            .map(|b| match b["type"] == "image" {
+                true => escaped_len(b["data"].as_str().unwrap_or(""), 2),
+                false => escaped_len(b["text"].as_str().unwrap_or(""), 2),
+            })
+            .sum();
+        left = left.saturating_sub(cost + framing);
+        out.push(json!({"role": role, "content": blocks}));
         if cut {
             break;
         }
     }
-    let mut res = json!({"messages": out});
-    if let Some(d) = str_field(result, "description") {
-        res["description"] = json!(d);
+    let dropped = messages.len() - out.len();
+    if dropped > 0
+        && let Some(last) = out.last_mut()
+        && let Some(c) = last["content"].as_array_mut()
+    {
+        c.push(text_block(format!("[{dropped} later messages dropped]")));
     }
+    res["messages"] = json!(out);
     res
 }
 
@@ -360,13 +373,21 @@ pub fn cap_page(mut page: Value, key: &str) -> Value {
             i.remove("description");
         }
     }
+    // room for the `,"truncated":true` member that is added below
+    let room = CAP_BYTES - ",\"truncated\":true".len();
     let mut total = size(&page);
-    while total > CAP_BYTES {
+    while total > room {
         let Some(item) = page[key].as_array_mut().and_then(Vec::pop) else {
             break;
         };
         // the item's own escaped JSON plus its comma
         total = total.saturating_sub(escaped_len(&item.to_string(), 1) + 1);
+    }
+    if total > room {
+        // the cursor alone is too large to keep
+        if let Some(p) = page.as_object_mut() {
+            p.remove("next_cursor");
+        }
     }
     page["truncated"] = json!(true);
     page
@@ -920,7 +941,18 @@ mod tests {
         );
         let rows: Vec<Value> = (0..3000).map(|i| json!({"uri": format!("file:///{i}"), "name": raw[..40].to_string(), "description": raw[..60].to_string()})).collect();
         let page = cap_page(json!({"resources": rows}), "resources");
-        for r in [read, prompt, page] {
+        let empties =
+            json!({"messages": (0..5_000).map(|_| msg("assistant", "")).collect::<Vec<_>>()});
+        let flood = prompt_result(&empties, &ctx());
+        let long_desc = prompt_result(
+            &json!({"description": raw.repeat(2), "messages": [msg("user", "hi")]}),
+            &ctx(),
+        );
+        let cursor = cap_page(
+            json!({"resources": [{"uri": "file:///a", "name": "a"}], "next_cursor": raw.repeat(2)}),
+            "resources",
+        );
+        for r in [read, prompt, page, flood, long_desc, cursor] {
             assert!(harness_bytes(&r) <= 262_144, "{}", harness_bytes(&r));
         }
     }
