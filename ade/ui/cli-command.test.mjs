@@ -93,3 +93,11 @@ test('a body that is not an object has no arguments', () => {
   assert.equal(asCliCommand('a::b', null), 'iii call a::b')
   assert.equal(asCliCommand('a::b', [1, 2]), 'iii call a::b')
 })
+
+// `iii call` resolves an id in `default` unless `-n` names another
+// namespace, so a copy in another namespace needs the flag to be the same call.
+test('a namespace other than default goes as -n', () => {
+  assert.equal(asCliCommand('shell::exec', { command: 'ls' }, 'laptop'), 'iii call -n laptop shell::exec command=ls')
+  assert.equal(asCliCommand('shell::exec', { command: 'ls' }, 'default'), 'iii call shell::exec command=ls')
+  assert.equal(asCliCommand('shell::exec', {}, 'my box'), `iii call -n 'my box' shell::exec`)
+})
