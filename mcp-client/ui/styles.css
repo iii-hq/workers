@@ -78,6 +78,35 @@
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+/* A server row holds its pick button and, beside it, the fix action. The pick fills the row
+   (the row's own padding moves into it), so the whole row picks. */
+[data-iii-ui="mcp-client"] .mcp-ui-server {
+  gap: 0;
+  padding: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-fix {
+  margin-right: 12px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-pick {
+  display: flex;
+  flex: 1;
+  align-self: stretch;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-pick:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: -1px;
+}
 [data-iii-ui="mcp-client"] .mcp-ui-row[data-tone="warn"] .iii-ui-list-item__description {
   color: var(--color-warn-strong);
 }
@@ -268,6 +297,9 @@
 [data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"] .mcp-ui-row {
   height: 44px;
   padding-block: 2px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"] .mcp-ui-server {
+  padding-block: 0;
 }
 [data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"][data-level="servers"] .mcp-ui-main,
 [data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"]:not([data-level="servers"]) .mcp-ui-col1,

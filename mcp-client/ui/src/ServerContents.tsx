@@ -83,7 +83,13 @@ export function ServerContents({
         <SearchField className="mcp-ui-search-field" aria-label="Filter functions" value={query} onChange={setQuery} />
         <span className="mcp-ui-count">{countText}</span>
       </div>
-      <List aria-label={`${server.name} contents`} className="mcp-ui-list" data-column="2" onKeyDown={onColumnKeys}>
+      <List
+        role="group"
+        aria-label={`${server.name} contents`}
+        className="mcp-ui-list"
+        data-column="2"
+        onKeyDown={onColumnKeys}
+      >
         {panel ? (
           <StatusPanel className="mcp-ui-panel" variant={panel.variant} headline={panel.headline} detail={panel.next} />
         ) : null}

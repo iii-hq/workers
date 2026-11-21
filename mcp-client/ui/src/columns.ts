@@ -1,7 +1,8 @@
 import type { KeyboardEvent } from 'react'
 
-/** The marks of a selected row: `data-selected` is what the shared list's roving Tab stop and row
- * style read, `aria-current` what assistive tech reads. No listbox roles: a row may hold a button. */
+/** The marks of a selected row's button: `data-selected` is what the shared list's roving Tab stop
+ * and row style read, `aria-current` what assistive tech reads. No listbox roles: an option's
+ * children are presentational, so a fix button beside the pick would be lost. */
 export const currentRow = (selected: boolean) => ({
   'data-selected': selected || undefined,
   'aria-current': selected || undefined,

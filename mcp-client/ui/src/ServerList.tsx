@@ -1,8 +1,9 @@
 import { Button, List, ListItem, Skeleton, StatusDot } from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { Download, Plus } from 'lucide-react'
-import type { KeyboardEvent } from 'react'
+import type { ReactNode } from 'react'
 import { currentRow, onColumnKeys } from './columns'
-import { byName, pageState, presentServer, type RowActionId } from './presentation'
+import { byName, pageState, presentServer, type RowActionId, type Tone } from './presentation'
 import type { Selection } from './types'
 import type { ServersData } from './use-servers'
 
@@ -26,25 +27,43 @@ export function ServerList({
 }) {
   const state = pageState(data)
   const now = Date.now()
-  const select = (server: string) => onSelect({ server, item: { kind: 'connection' } })
-  const row = (server: string) => ({
-    as: 'div' as const,
-    'data-list-roving': '',
-    'data-level': 'server',
-    className: 'mcp-ui-row',
-    ...currentRow(server === selection.server),
-    label: server,
-    onClick: () => select(server),
-    onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => {
-      if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return
-      event.preventDefault()
-      select(server)
-    },
-  })
+  // The row is the shared list-item look; its pick button and its fix action are siblings in it,
+  // since a button inside a button (or inside an option) is lost to assistive tech.
+  const row = (name: string, tone: Tone, pulse = false, description?: string, count?: string, action?: ReactNode) => {
+    const selected = name === selection.server
+    return (
+      <div
+        key={name}
+        className={`${uiClasses.listItem} mcp-ui-row mcp-ui-server`}
+        data-selected={selected || undefined}
+        data-tone={tone}
+      >
+        <button
+          type="button"
+          className="mcp-ui-pick"
+          data-list-item=""
+          data-list-roving=""
+          data-level="server"
+          {...currentRow(selected)}
+          onClick={() => onSelect({ server: name, item: { kind: 'connection' } })}
+        >
+          <span className={uiClasses.listItemIcon}>
+            <StatusDot tone={tone} pulse={pulse} />
+          </span>
+          <span className={uiClasses.listItemContent}>
+            <span className={uiClasses.listItemTitle}>{name}</span>
+            {description ? <span className={uiClasses.listItemDescription}>{description}</span> : null}
+          </span>
+          {count ? <span className={uiClasses.listItemMeta}>{count}</span> : null}
+        </button>
+        {action}
+      </div>
+    )
+  }
 
   return (
     <>
-      <List aria-label="MCP servers" className="mcp-ui-list" data-column="1" onKeyDown={onColumnKeys}>
+      <List role="group" aria-label="MCP servers" className="mcp-ui-list" data-column="1" onKeyDown={onColumnKeys}>
         {state === 'loading'
           ? SKELETON_ROWS.map((n) => (
               <ListItem
@@ -60,35 +79,29 @@ export function ServerList({
           : state === 'worker_down'
             ? Object.keys(data.config ?? {})
                 .sort(byName)
-                .map((name) => <ListItem key={name} {...row(name)} leading={<StatusDot tone="ghost" />} />)
+                .map((name) => row(name, 'ghost'))
             : [...(data.list?.servers ?? [])]
                 .sort((a, b) => byName(a.name, b.name))
                 .map((server) => {
                   const { dot, pulse, description, action } = presentServer(server, now)
-                  return (
-                    <ListItem
-                      key={server.name}
-                      {...row(server.name)}
-                      data-tone={dot}
-                      leading={<StatusDot tone={dot} pulse={pulse} />}
-                      description={description}
-                      trailing={
-                        action ? (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              onAction(server.name, action.id)
-                            }}
-                          >
-                            {action.label}
-                          </Button>
-                        ) : server.tools_listed ? (
-                          String(server.tools.length)
-                        ) : null
-                      }
-                    />
+                  // One trailing thing: the fix, else the tool count once the tools are listed.
+                  const count = !action && server.tools_listed ? String(server.tools.length) : undefined
+                  return row(
+                    server.name,
+                    dot,
+                    pulse,
+                    description,
+                    count,
+                    action ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="mcp-ui-fix"
+                        onClick={() => onAction(server.name, action.id)}
+                      >
+                        {action.label}
+                      </Button>
+                    ) : null,
                   )
                 })}
       </List>
