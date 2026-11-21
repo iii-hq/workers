@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "iii-http"
-version = "0.23.5"
+version = "0.23.6"
 dependencies = [
  "anyhow",
  "axum",
@@ -2121,7 +2121,6 @@ dependencies = [
  "http-body",
  "http-body-util",
  "pin-project-lite",
- "tokio",
  "tower",
  "tower-layer",
  "tower-service",
