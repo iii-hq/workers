@@ -6,6 +6,7 @@ pub mod host;
 pub mod reconcile;
 pub mod refs;
 pub mod server;
+pub mod stdio;
 pub mod translate;
 
 /// The `III_MCP_CLIENT_STDIO` switch: only `off` (trimmed, any case) turns
