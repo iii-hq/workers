@@ -14,11 +14,12 @@ use serde_json::{Value, json};
 
 use crate::config::{Effects, Issue, check_entry};
 use crate::host::{EventKind, ServerEvent};
-use crate::server::{Manager, ServersList, State};
+use crate::server::{Logs, Manager, ServersList, State};
 
 pub const SERVERS_LIST: &str = "mcp-client::servers::list";
 pub const SERVERS_APPROVE: &str = "mcp-client::servers::approve";
 pub const SERVERS_RECONNECT: &str = "mcp-client::servers::reconnect";
+pub const PROCESS_LOGS: &str = "mcp-client::process::logs";
 pub const CONFIG_VALIDATE: &str = "mcp-client::config::validate";
 pub const ON_SERVERS_CHANGED: &str = "mcp-client::on-servers-changed";
 pub const ON_SECRET_CHANGE: &str = "mcp-client::on-secret-change";
@@ -38,10 +39,17 @@ const OPERATOR: Flags = Flags {
 
 /// One row per function `register_all` registers. A function whose payloads
 /// carry a credential is `observable: false`; an event source is `private`.
-const FLAGS: [(&str, Flags); 6] = [
+const FLAGS: [(&str, Flags); 7] = [
     (SERVERS_LIST, OPERATOR),
     (SERVERS_APPROVE, OPERATOR),
     (SERVERS_RECONNECT, OPERATOR),
+    (
+        PROCESS_LOGS,
+        Flags {
+            observable: false,
+            ..OPERATOR
+        },
+    ),
     (CONFIG_VALIDATE, OPERATOR),
     (ON_SECRET_CHANGE, OPERATOR),
     (
@@ -243,6 +251,11 @@ pub fn catalog() -> Vec<(&'static str, Value, Value)> {
             schema_value::<StateResponse>(),
         ),
         (
+            PROCESS_LOGS,
+            schema_value::<ServerRequest>(),
+            schema_value::<Logs>(),
+        ),
+        (
             CONFIG_VALIDATE,
             schema_value::<ValidateRequest>(),
             schema_value::<ValidateResponse>(),
@@ -301,6 +314,16 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
                 let state = m.reconnect(&request.server).await.map_err(Error::Handler)?;
                 Ok::<StateResponse, Error>(StateResponse { state })
             }
+        }),
+    );
+    let m = manager.clone();
+    register(
+        iii,
+        PROCESS_LOGS,
+        "The last 500 stderr lines of a stdio MCP server, with its secrets redacted, and how many older lines were dropped. An http server has none.",
+        RegisterFunction::new_async(move |request: ServerRequest| {
+            let m = m.clone();
+            async move { m.logs(&request.server).await.map_err(Error::Handler) }
         }),
     );
     let stdio_enabled = manager.stdio_enabled();

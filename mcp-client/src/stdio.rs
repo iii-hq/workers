@@ -195,11 +195,12 @@ impl Drop for ChildGuard {
 /// chunks of at most `READ_BOUND`, so one without a newline cannot grow the
 /// buffer. A longer line keeps only its first chunk: the ring keeps 4 KiB of
 /// it anyway, and a later chunk pushed on its own could start with the tail
-/// of a secret that no longer matches.
+/// of a secret that no longer matches. `on_line` runs after each push.
 pub async fn read_stderr(
     stderr: impl AsyncRead + Unpin,
     ring: Arc<Mutex<StderrRing>>,
     secrets: Vec<String>,
+    on_line: impl Fn(),
 ) {
     let mut reader = BufReader::new(stderr);
     let mut buf = Vec::new();
@@ -220,6 +221,7 @@ pub async fn read_stderr(
         let line = line.strip_suffix('\n').unwrap_or(&line);
         let line = line.strip_suffix('\r').unwrap_or(line);
         ring.lock().unwrap().push(now_ms(), line, &secrets);
+        on_line();
     }
 }
 
@@ -426,7 +428,13 @@ mod tests {
         input.push_str(&"b".repeat(100));
         input.push_str("\nnext line\n");
         let ring = Arc::new(Mutex::new(StderrRing::new()));
-        read_stderr(input.as_bytes(), ring.clone(), vec![secret.to_string()]).await;
+        read_stderr(
+            input.as_bytes(),
+            ring.clone(),
+            vec![secret.to_string()],
+            || {},
+        )
+        .await;
         let (lines, dropped) = ring.lock().unwrap().snapshot();
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(

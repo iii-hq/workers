@@ -5,10 +5,11 @@
 mod support;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mcp_client::config::{RawConfig, StdioEntry, fingerprint};
 use mcp_client::functions::SecretChange;
+use mcp_client::host::{EventKind, ServerEvent};
 use mcp_client::refs::{Resolved, Text};
 use mcp_client::server::{Manager, ManagerOptions, State, Timings};
 use serde_json::{Value, json};
@@ -23,6 +24,13 @@ fn held() -> Timings {
         backoff_max: Duration::from_secs(5),
         ..stdio_timings()
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 const READY: Duration = Duration::from_secs(10);
@@ -423,5 +431,200 @@ async fn an_unapproved_stdio_entry_spawns_nothing_until_approved() {
     #[cfg(unix)]
     assert!(until(Duration::from_millis(1500), || async { !alive(child) }).await);
     let _ = child;
+    m.shutdown().await;
+}
+
+#[tokio::test]
+async fn process_is_reported_in_servers_list() {
+    let host = FakeHost::new();
+    let m = ready(&host, json!({})).await;
+    let child = pid(&host, "FAKE_MCP_PID").await;
+    let v = server(&m, "fake").await;
+    let p = &v["process"];
+    assert_eq!(p["pid"], json!(child), "{v}");
+    assert!(p["started_at"].as_u64().unwrap() <= now_ms(), "{v}");
+    assert_eq!(
+        (&p["restarts"], &p["restart_budget"]),
+        (&json!(0), &json!(5)),
+        "{v}"
+    );
+    assert!(p["next_restart_at"].is_null(), "{v}");
+    assert!(p["last_exit"].is_null(), "{v}");
+    let process = ServerEvent {
+        server: "fake".into(),
+        kind: EventKind::Process,
+    };
+    assert!(host.events().contains(&process));
+    m.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_kill_is_reported_as_a_signal_with_the_next_restart() {
+    let host = FakeHost::new();
+    let m = connect_opts(&host, &cfg(json!({})), opts(held())).await;
+    reached(&m, "fake", State::Ready).await;
+    let child = pid(&host, "FAKE_MCP_PID").await;
+    // SAFETY: a signal to the fixture's own pid, read from its environment.
+    assert_eq!(unsafe { libc::kill(child, libc::SIGKILL) }, 0);
+    let v = reached(&m, "fake", State::Unavailable).await;
+    let p = &v["process"];
+    assert_eq!(v["error"]["message"], "killed by signal 9", "{v}");
+    assert_eq!(p["last_exit"], json!({"code": null, "signal": 9}), "{v}");
+    assert!(p["pid"].is_null(), "{v}");
+    assert_eq!(p["restarts"], 1, "{v}");
+    assert!(p["next_restart_at"].as_u64().unwrap() > now_ms(), "{v}");
+    m.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_budget_is_spent_then_cooldown_and_reconnect_resets_it() {
+    let host = FakeHost::new();
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("knobs");
+    // Every start dies at once.
+    std::fs::write(&state, "FAKE_MCP_EXIT_AFTER_MS=0\nFAKE_MCP_EXIT_CODE=2\n").unwrap();
+    let ms = Duration::from_millis;
+    let timings = Timings {
+        backoff_min: ms(10),
+        backoff_max: ms(40),
+        budget_starts: 3,
+        budget_window: Duration::from_secs(60),
+        cooldown: Duration::from_secs(30),
+        ..stdio_timings()
+    };
+    let config = cfg(json!({"FAKE_MCP_STATE_FILE": state}));
+    let m = connect_opts(&host, &config, opts(timings)).await;
+    let process = async || server(&m, "fake").await["process"].clone();
+    let spent = until(Duration::from_secs(10), || async {
+        process().await["restarts"] == 3
+    })
+    .await;
+    let v = server(&m, "fake").await;
+    assert!(spent, "{v}");
+    let p = &v["process"];
+    assert_eq!(
+        (&v["state"], &v["error"]["code"]),
+        (&json!("unavailable"), &json!("exited")),
+        "{v}"
+    );
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(message.starts_with("exited with code 2"), "{v}");
+    assert_eq!(p["last_exit"]["code"], 2, "{v}");
+    assert_eq!(p["restart_budget"], 3, "{v}");
+    // In the cooldown, not in the backoff.
+    assert!(
+        p["next_restart_at"].as_u64().unwrap() > now_ms() + 20_000,
+        "{v}"
+    );
+    let started = p["started_at"].clone();
+    tokio::time::sleep(ms(300)).await;
+    assert_eq!(
+        process().await["started_at"],
+        started,
+        "a start in cooldown"
+    );
+    // The state file is read at each start.
+    std::fs::write(&state, "").unwrap();
+    m.reconnect("fake").await.unwrap();
+    let v = reached(&m, "fake", State::Ready).await;
+    assert_eq!(v["process"]["restarts"], 0, "{v}");
+    m.shutdown().await;
+}
+
+#[tokio::test]
+async fn staying_ready_resets_the_budget_and_a_later_exit_is_not_a_failed_start() {
+    let host = FakeHost::new();
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("knobs");
+    std::fs::write(&state, "FAKE_MCP_EXIT_AFTER_MS=0\n").unwrap();
+    // Never in cooldown here.
+    let timings = Timings {
+        stable_after: Duration::from_millis(200),
+        budget_starts: 100,
+        ..stdio_timings()
+    };
+    let config = cfg(json!({"FAKE_MCP_STATE_FILE": state}));
+    let m = connect_opts(&host, &config, opts(timings)).await;
+    let restarts = async || server(&m, "fake").await["process"]["restarts"].as_u64();
+    let failing = until(Duration::from_secs(10), || async {
+        restarts().await >= Some(2)
+    })
+    .await;
+    assert!(failing, "{}", server(&m, "fake").await);
+    std::fs::write(&state, "").unwrap();
+    reached(&m, "fake", State::Ready).await;
+    let reset = until(Duration::from_secs(2), || async {
+        restarts().await == Some(0)
+    })
+    .await;
+    assert!(reset, "{}", server(&m, "fake").await);
+    // After the 200 ms of `ready`.
+    let first = pid(&host, "FAKE_MCP_PID").await;
+    let exit = host.call("mcp::fake::exit", json!({"code": 1})).await;
+    assert!(exit.is_err(), "{exit:?}");
+    let restarted = until(Duration::from_secs(10), || async {
+        let out = host
+            .call("mcp::fake::env", json!({"name": "FAKE_MCP_PID"}))
+            .await;
+        out.is_ok_and(|v| v["content"][0]["text"] != json!(first.to_string()))
+    })
+    .await;
+    assert!(restarted, "{}", server(&m, "fake").await);
+    assert_eq!(restarts().await, Some(0), "{}", server(&m, "fake").await);
+    m.shutdown().await;
+}
+
+#[tokio::test]
+async fn logs_return_the_tail_and_stderr_events_fire() {
+    let host = FakeHost::new();
+    let m = ready(&host, json!({"FAKE_MCP_STDERR_BANNER": "hello from fake"})).await;
+    assert_eq!(text(&host, "stderr", json!({"text": "second"})).await, "ok");
+    let two = until(Duration::from_secs(2), || async {
+        m.logs("fake").await.unwrap().lines.len() == 2
+    })
+    .await;
+    let logs = m.logs("fake").await.unwrap();
+    assert!(two, "{logs:?}");
+    let texts: Vec<&str> = logs.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["hello from fake", "second"]);
+    assert!(logs.lines[0].ts > 0, "{logs:?}");
+    assert_eq!(logs.dropped, 0);
+    let stderr = ServerEvent {
+        server: "fake".into(),
+        kind: EventKind::Stderr,
+    };
+    let fired = until(Duration::from_secs(2), || async {
+        host.events().contains(&stderr)
+    })
+    .await;
+    assert!(fired, "{:?}", host.events());
+    // stderr output never changes the state.
+    assert_eq!(server(&m, "fake").await["state"], "ready");
+    assert_eq!(m.logs("nope").await.unwrap_err(), "no server named `nope`");
+    m.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_changed_env_secret_restarts_the_process() {
+    let host = FakeHost::new();
+    host.set_secret("secret://FAKE_TOKEN", "v1");
+    let m = ready(&host, json!({"API_TOKEN": "secret://FAKE_TOKEN"})).await;
+    assert_eq!(text(&host, "env", json!({"name": "API_TOKEN"})).await, "v1");
+    host.set_secret("secret://FAKE_TOKEN", "v2");
+    let change = SecretChange {
+        name: Some("FAKE_TOKEN".into()),
+        reference: Some("secret://FAKE_TOKEN".into()),
+        action: Some("set".into()),
+    };
+    m.on_secret_change(&change).await;
+    let rotated = until(Duration::from_secs(10), || async {
+        let out = host
+            .call("mcp::fake::env", json!({"name": "API_TOKEN"}))
+            .await;
+        out.is_ok_and(|v| v["content"][0]["text"] == "v2")
+    })
+    .await;
+    assert!(rotated, "{}", server(&m, "fake").await);
     m.shutdown().await;
 }

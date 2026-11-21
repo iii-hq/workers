@@ -76,7 +76,7 @@ A server name matches `^[a-z0-9][a-z0-9-]{0,23}$`. Each entry is checked on its 
 | `auth` | `{"type": "bearer", "token": "secret://NAME"}`. The token must be a reference. Without `auth` the worker sends no credential. |
 | `disabled` | `true` keeps the entry but connects nothing and registers nothing. |
 
-stdio entries and the other `auth` types are not run by this release.
+The other `auth` types are not run by this release. An entry with `command` instead of `url` runs a local process: see stdio servers below.
 
 **References.** `secret://NAME` reads the vault; `env://NAME` reads the secrets worker's env store (the project's `.env`, or the secrets worker's own environment). `NAME` matches `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`. A reference is the whole value, never part of a longer string: `"Bearer secret://X"` is a literal, and a literal is refused where a credential belongs. The secret must be shared with `mcp-client` (`"consumers": ["mcp-client"]`).
 
@@ -98,6 +98,18 @@ stdio entries and the other `auth` types are not run by this release.
 A server that leaves `ready` keeps its functions registered. Until it is back, a call answers `` `<server>` MCP unavailable (`<state>`) `` with how long it has been so.
 
 **Fixed limits**, none configurable: 120 s per call, after which the outcome is unknown; 120 KiB per result, longer text is cut and ends with a hint to narrow the query; reconnect backoff from 1 s, doubling to 60 s.
+
+## stdio servers
+
+An entry with `command`, and optionally `args`, `env` and `cwd`, starts a local MCP server and talks to it over its stdin and stdout.
+
+- The command runs directly, never through a shell, and must be on the worker's `PATH`: an `npx` server needs Node where the worker runs.
+- The child's environment is cleared. It holds only `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`, `LANG`, `LC_ALL` and `TMPDIR` from the worker (on Windows `APPDATA`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`, `PROCESSOR_ARCHITECTURE`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME` and `USERPROFILE`), plus the entry's `env`, whose values may be references.
+- An `args` item that is a reference is resolved into the command line, where anyone who can list the host's processes can read it. Pass a secret through `env` instead.
+- A failed start (the process exits or its handshake fails before 60 s of `ready`) is retried after 1 s, doubling to 60 s, and after five failed starts in ten minutes only one try is made every five minutes, until 60 s of `ready` or `mcp-client::servers::reconnect` resets both.
+- The last 500 stderr lines, each cut at 4 KiB, are kept with the entry's secrets replaced by `[redacted]`. `mcp-client::process::logs` returns them, and `mcp-client::servers::list` shows the process under `process`: its pid, its last exit, the failed starts counted against the budget and the time of the next start.
+- `III_MCP_CLIENT_STDIO=off` in the worker's environment rejects every stdio entry as `config_error`.
+- The children are not killed when the worker itself is SIGKILLed. A server that exits when its stdin closes goes with it; any other keeps running until it is stopped by hand.
 
 ## Security
 

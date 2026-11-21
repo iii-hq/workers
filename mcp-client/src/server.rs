@@ -41,7 +41,7 @@ use crate::reconcile::{
     Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
 };
 use crate::refs::{Ref, Resolved, Store, Text, event_matches, ref_error, resolve_all};
-use crate::stdio::{self, ChildGuard, StderrRing};
+use crate::stdio::{self, ChildGuard, LogLine, RestartPolicy, StderrRing};
 use crate::translate::{
     BlockCtx, CallFailure, ServerSecrets, failure_text, scrub, strip_args, tool_result,
 };
@@ -261,6 +261,23 @@ pub struct ProcessView {
 pub struct ExitInfo {
     pub code: Option<i32>,
     pub signal: Option<i32>,
+}
+
+/// A stdio server's stderr tail, redacted when it was read.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Logs {
+    pub lines: Vec<LogLine>,
+    /// Lines pushed out of the ring.
+    pub dropped: u64,
+}
+
+/// What `ProcessView` shows, and the policy that spaces the starts.
+struct ProcessFacts {
+    policy: RestartPolicy,
+    pid: Option<u32>,
+    started_at: Option<u64>,
+    next_restart_at: Option<u64>,
+    last_exit: Option<ExitInfo>,
 }
 
 /// The wait between two failed attempts: `min`, doubling, capped at `max`.
@@ -576,6 +593,7 @@ struct Server {
     task: Mutex<Option<(oneshot::Sender<()>, JoinHandle<()>)>>,
     /// The stderr of every process this server started, across restarts.
     ring: Arc<Mutex<StderrRing>>,
+    facts: Mutex<ProcessFacts>,
 }
 
 /// The state an entry starts in, from what its config alone says.
@@ -663,6 +681,13 @@ impl Server {
             relist: Notify::new(),
             task: Mutex::default(),
             ring: Arc::default(),
+            facts: Mutex::new(ProcessFacts {
+                policy: RestartPolicy::new(&opts.timings),
+                pid: None,
+                started_at: None,
+                next_restart_at: None,
+                last_exit: None,
+            }),
         });
         server.emit(EventKind::State);
         if state == State::Connecting {
@@ -675,6 +700,44 @@ impl Server {
         self.spec.read().unwrap().clone()
     }
 
+    fn is_stdio(&self) -> bool {
+        let spec = self.spec();
+        let entry = spec.checked.entry.as_ref();
+        entry.is_some_and(|e| matches!(e.transport, Transport::Stdio(_)))
+    }
+
+    fn spawned(&self, pid: Option<u32>) {
+        {
+            let mut f = self.facts.lock().unwrap();
+            (f.pid, f.started_at) = (pid, Some(now_ms()));
+        }
+        self.emit(EventKind::Process);
+    }
+
+    fn ended(&self, exit: &ExitInfo) {
+        {
+            let mut f = self.facts.lock().unwrap();
+            (f.pid, f.last_exit) = (None, Some(exit.clone()));
+        }
+        self.emit(EventKind::Process);
+    }
+
+    /// The wait before the next start, kept as `next_restart_at`. An exit
+    /// after `stable_after` of `ready` is not a failed start.
+    fn schedule(&self, stable: bool) -> Duration {
+        let wait = {
+            let mut f = self.facts.lock().unwrap();
+            let wait = match stable {
+                true => self.timings.backoff_min,
+                false => f.policy.on_failed_start(Instant::now()),
+            };
+            f.next_restart_at = Some(now_ms() + wait.as_millis() as u64);
+            wait
+        };
+        self.emit(EventKind::Process);
+        wait
+    }
+
     /// Starts the task, with a fresh backoff.
     fn spawn(self: &Arc<Self>) {
         let (stop, stopped) = oneshot::channel();
@@ -682,11 +745,12 @@ impl Server {
         *self.task.lock().unwrap() = Some((stop, handle));
     }
 
-    /// Stops the task and starts it again on `spec`, or on the entry it has.
-    /// The registry stays and the next listing reconciles it; only a
-    /// disabled entry loses its functions.
+    /// Stops the task and starts it again on `spec`, or on the entry it has,
+    /// with a fresh restart budget. The registry stays and the next listing
+    /// reconciles it; only a disabled entry loses its functions.
     async fn restart(self: &Arc<Self>, spec: Option<Spec>) {
         self.halt().await;
+        self.facts.lock().unwrap().policy.reset();
         if let Some(spec) = spec {
             self.challenged.store(false, Ordering::Relaxed);
             *self.spec.write().unwrap() = Arc::new(spec);
@@ -772,6 +836,7 @@ impl Server {
     async fn run(self: Arc<Self>, mut stop: oneshot::Receiver<()>) {
         let mut notes = self.notes_rx.lock().await;
         let mut backoff = Backoff::new(self.timings.backoff_min, self.timings.backoff_max);
+        let stdio = self.is_stdio();
         loop {
             // The connect lists the tools: what came before it is stale.
             while notes.try_recv().is_ok() {}
@@ -779,14 +844,12 @@ impl Server {
                 attempt = self.connect() => attempt,
                 _ = &mut stop => return,
             };
-            let wait = match attempt {
-                Ok(live) => {
-                    if self.serve(live, &mut stop, &mut notes, &mut backoff).await {
-                        return;
-                    }
-                    None
-                }
-                Err(wait) => wait,
+            let (wait, stable) = match attempt {
+                Ok(live) => match self.serve(live, &mut stop, &mut notes, &mut backoff).await {
+                    Some(stable) => (None, stable),
+                    None => return,
+                },
+                Err(wait) => (wait, false),
             };
             // `connecting` after a failed attempt: the approvals could not be read.
             let state = self.status.borrow().state;
@@ -795,23 +858,29 @@ impl Server {
                 return;
             }
             // A 429's `Retry-After` as sent: a reconnect or a change cuts it short.
-            let wait = wait.unwrap_or_else(|| backoff.next());
+            let wait = match wait {
+                Some(wait) => wait,
+                None if stdio => self.schedule(stable),
+                None => backoff.next(),
+            };
             tokio::select! {
                 _ = sleep(wait) => {}
                 _ = &mut stop => return,
             }
+            self.facts.lock().unwrap().next_restart_at = None;
         }
     }
 
-    /// Serves a ready session until `stop` (true) or until the server
-    /// leaves `ready` (false), then closes the session and stops its process.
+    /// Serves a ready session until `stop` (`None`) or until the server
+    /// leaves `ready` (whether it was `ready` for `stable_after`), then
+    /// closes the session and stops its process.
     async fn serve(
         self: &Arc<Self>,
         live: Live,
         stop: &mut oneshot::Receiver<()>,
         notes: &mut mpsc::UnboundedReceiver<ListChanged>,
         backoff: &mut Backoff,
-    ) -> bool {
+    ) -> Option<bool> {
         let Live {
             session,
             mut process,
@@ -838,6 +907,10 @@ impl Server {
                 _ = &mut stable, if !stable_seen => {
                     stable_seen = true;
                     backoff.reset();
+                    if process.is_some() {
+                        self.facts.lock().unwrap().policy.on_stable();
+                        self.emit(EventKind::Process);
+                    }
                     false
                 }
                 // Prompts and resources are not served by this version.
@@ -872,6 +945,7 @@ impl Server {
                 Some(exit) => exit,
                 None => child.stop(self.timings.stop_grace).await,
             };
+            self.ended(&exit);
             // Any end but a stop is the process ending, closed stdout included.
             if !stopped {
                 let message = self.with_stderr(exit_text(&exit), &mut reader).await;
@@ -879,7 +953,7 @@ impl Server {
                 self.leave_ready(state, Stage::Connect, code, message);
             }
         }
-        stopped
+        (!stopped).then_some(stable_seen)
     }
 
     /// `head`, then the child's last stderr line once the reader reached
@@ -938,11 +1012,7 @@ impl Server {
             Some(entry) => classify_call_error(error, entry),
             None => CallFailure::Transport(service_text(error)),
         };
-        let stdio = spec
-            .checked
-            .entry
-            .as_ref()
-            .is_some_and(|e| matches!(e.transport, Transport::Stdio(_)));
+        let stdio = self.is_stdio();
         let (state, stage, code) = match &failure {
             CallFailure::CredentialRejected { .. } | CallFailure::NoSignIn => (
                 State::AuthFailed,
@@ -982,6 +1052,9 @@ impl Server {
             let _ = handle.await;
         }
         self.peer.write().unwrap().take();
+        // A child the stop caught mid-connect went with its guard.
+        let mut f = self.facts.lock().unwrap();
+        (f.pid, f.next_restart_at) = (None, None);
     }
 
     /// Closes the session and moves to `unapproved`; the registry stays.
@@ -1081,7 +1154,8 @@ impl Server {
                 self.fail(State::Unavailable, stage, code, message);
                 self.close(session).await;
                 if let Some(process) = process {
-                    process.child.stop(self.timings.stop_grace).await;
+                    let exit = process.child.stop(self.timings.stop_grace).await;
+                    self.ended(&exit);
                 }
                 return Err(None);
             }
@@ -1207,9 +1281,15 @@ impl Server {
             }
         };
         let mut child = spawned.child;
+        self.spawned(spawned.pid);
         let from = self.ring.lock().unwrap().pushed();
         let ring = self.ring.clone();
-        let read = stdio::read_stderr(spawned.stderr, ring, resolved.secrets());
+        let (host, server) = (self.host.clone(), self.name.clone());
+        let on_line = move || {
+            let (server, kind) = (server.clone(), EventKind::Stderr);
+            host.emit(ServerEvent { server, kind });
+        };
+        let read = stdio::read_stderr(spawned.stderr, ring, resolved.secrets(), on_line);
         let mut reader = Reader {
             task: tokio::spawn(read),
             from,
@@ -1228,13 +1308,14 @@ impl Server {
             },
             exit = child.wait() => (Some(exit), String::new()),
         };
-        let (code, head) = match exit {
-            Some(exit) => (ErrorCode::Exited, exit_text(&exit)),
+        let (code, head, exit) = match exit {
+            Some(exit) => (ErrorCode::Exited, exit_text(&exit), exit),
             None => {
-                child.stop(self.timings.stop_grace).await;
-                (ErrorCode::HandshakeFailed, failure)
+                let exit = child.stop(self.timings.stop_grace).await;
+                (ErrorCode::HandshakeFailed, failure, exit)
             }
         };
+        self.ended(&exit);
         let message = self.with_stderr(head, &mut reader).await;
         self.fail(State::Unavailable, Stage::Connect, code, message);
         Err(None)
@@ -1466,7 +1547,17 @@ impl Server {
             prompts: vec![],
             list_errors: ListErrors::default(),
             login: None,
-            process: None,
+            process: self.is_stdio().then(|| {
+                let f = self.facts.lock().unwrap();
+                ProcessView {
+                    pid: f.pid,
+                    started_at: f.started_at,
+                    restarts: f.policy.restarts(),
+                    restart_budget: f.policy.budget(),
+                    next_restart_at: f.next_restart_at,
+                    last_exit: f.last_exit.clone(),
+                }
+            }),
         }
     }
 }
@@ -1618,6 +1709,19 @@ impl Manager {
         s.restart(None).await;
         let state = s.status.borrow().state;
         Ok(state)
+    }
+
+    /// The stderr tail of a stdio server; an http server has none.
+    pub async fn logs(&self, server: &str) -> Result<Logs, String> {
+        let servers = self.servers.lock().await;
+        let s = servers
+            .get(server)
+            .ok_or_else(|| format!("no server named `{server}`"))?;
+        let (lines, dropped) = match s.is_stdio() {
+            true => s.ring.lock().unwrap().snapshot(),
+            false => (vec![], 0),
+        };
+        Ok(Logs { lines, dropped })
     }
 
     /// Resolves again the references of each server whose entry names the

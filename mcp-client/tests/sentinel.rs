@@ -23,6 +23,9 @@ const KEYED_KEY: &str = "keyedkey-2b8e41-do-not-print";
 const LIVE_KEY: &str = "livekey-9d05c7-do-not-print";
 /// The bearer token and secret header of the redirect case.
 const REDIRECT_TOKEN: &str = "redirect-4a61f2-do-not-print";
+/// The env secret the stdio case's child prints to its stderr.
+#[cfg(feature = "test-fixtures")]
+const STDERR_KEY: &str = "stderrkey-5c19e7-do-not-print";
 
 /// Every line the worker's own filter lets through at `RUST_LOG=trace`, as
 /// the production writer prints it.
@@ -196,4 +199,69 @@ async fn a_cross_origin_redirect_gets_no_credential() {
         !log.contains(REDIRECT_TOKEN) && !log.contains(SENTINEL),
         "{log}"
     );
+}
+
+#[cfg(feature = "test-fixtures")]
+#[tokio::test]
+async fn sentinel_is_redacted_from_stderr_and_process_logs() {
+    use std::time::Duration;
+
+    use mcp_client::server::Timings;
+    use support::stdio_fixture::{cfg, opts};
+    use support::{connect_opts, stdio_timings, until};
+
+    let captured = Captured::install();
+    let host = FakeHost::new();
+    host.set_secret("secret://FAKE_TOKEN", STDERR_KEY);
+    let config = cfg(json!({"API_TOKEN": "secret://FAKE_TOKEN"}));
+    let held = Timings {
+        backoff_min: Duration::from_secs(5),
+        backoff_max: Duration::from_secs(5),
+        ..stdio_timings()
+    };
+    let m = connect_opts(&host, &config, opts(held)).await;
+    let ready = m
+        .wait_for("fake", State::Ready, Duration::from_secs(10))
+        .await;
+    assert!(ready, "{}", server(&m, "fake").await);
+    // The child holds the secret in its env and prints it, as a real server's debug line would.
+    let line = format!("token={STDERR_KEY} end");
+    host.call("mcp::fake::stderr", json!({"text": line}))
+        .await
+        .unwrap();
+    let redacted = until(Duration::from_secs(2), || async {
+        let logs = m.logs("fake").await.unwrap();
+        logs.lines.iter().any(|l| l.text == "token=[redacted] end")
+    })
+    .await;
+    assert!(redacted, "{:?}", m.logs("fake").await);
+    let exit_error = host
+        .call("mcp::fake::exit", json!({"code": 3}))
+        .await
+        .unwrap_err();
+    assert!(m.wait_for("fake", State::Unavailable, WAIT).await);
+    let list = listed(&m).await;
+    assert!(
+        list.contains("exited with code 3: token=[redacted] end"),
+        "{list}"
+    );
+    let unavailable = host
+        .call("mcp::fake::echo", json!({"text": "x"}))
+        .await
+        .unwrap_err();
+    let logs = serde_json::to_string(&m.logs("fake").await.unwrap()).unwrap();
+    m.shutdown().await;
+    let log = captured.text();
+    for (what, text) in [
+        ("servers::list", &list),
+        ("process::logs", &logs),
+        ("exit error", &exit_error),
+        ("unavailable error", &unavailable),
+        ("log", &log),
+    ] {
+        assert!(
+            !text.contains(STDERR_KEY) && !text.contains(SENTINEL),
+            "{what} holds the secret: {text}"
+        );
+    }
 }
