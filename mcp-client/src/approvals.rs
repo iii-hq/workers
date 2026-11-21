@@ -161,22 +161,21 @@ impl Approvals {
 
     /// Re-reads after a change event. A text other than the one this worker
     /// last read or wrote (or a failed read) unapproves every entry until a
-    /// new approve call; `true` then.
+    /// new approve call; `true` then. Before the first load every change is
+    /// foreign: this worker has written nothing yet.
     pub async fn on_change(&self, host: &dyn Host) -> bool {
         let _op = self.op.lock().await;
-        if !self.memory().loaded {
-            // The boot load has yet to happen and will read this text.
-            return false;
-        }
         let read = read(host).await;
         {
             let mut memory = self.memory();
             match read {
-                Ok(text) if text == memory.text => return false,
+                Ok(text) if memory.loaded && text == memory.text => return false,
                 // Remembered, so the same foreign text is reported once.
                 Ok(text) => memory.text = text,
                 Err(_) => {}
             }
+            // Fails closed: the load that comes later trusts nothing it reads.
+            memory.loaded = true;
             memory.approved.clear();
         }
         tracing::warn!(

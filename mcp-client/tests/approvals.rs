@@ -193,7 +193,8 @@ async fn disabled_flip_needs_no_new_approval() {
     manager
         .apply_config(RawConfig::from_value(&json!({"mcpServers": {"srv": off}})))
         .await;
-    settle(&manager, State::Disabled).await;
+    let view = settle(&manager, State::Disabled).await;
+    assert_eq!(view["approved"], true, "{view}");
     manager
         .apply_config(RawConfig::from_value(&bearer(&mock.url())))
         .await;
@@ -235,6 +236,45 @@ async fn foreign_write_to_the_approvals_unapproves_everything() {
     manager.shutdown().await;
     let manager = connect_unapproved(&host, bearer(&mock.url())).await;
     settle(&manager, State::Ready).await;
+}
+
+#[tokio::test]
+async fn a_foreign_approval_before_the_first_load_is_not_trusted() {
+    let mock = mock().await;
+    let host = host();
+    let manager = connect_unapproved(&host, json!({"mcpServers": {}})).await;
+    let fp = fingerprint(&entry(&mock.url()));
+    host.set_secret("secret://MCP_CLIENT_APPROVALS", &stored(&[("srv", &fp)]));
+    manager.on_secret_change(&approvals_changed()).await;
+    manager
+        .apply_config(RawConfig::from_value(&bearer(&mock.url())))
+        .await;
+    settle(&manager, State::Unapproved).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(mock.request_count().await, 0);
+    assert_eq!(host.resolve_count("secret://K"), 0);
+}
+
+#[tokio::test]
+async fn approvals_are_read_at_start_without_any_entry() {
+    let host = host();
+    let manager = connect_unapproved(&host, json!({"mcpServers": {}})).await;
+    let reads = || host.resolve_count("secret://MCP_CLIENT_APPROVALS");
+    eventually("the approvals are read at start", || async { reads() == 1 }).await;
+    tokio::time::sleep(fast_timings().backoff_max * 2).await;
+    assert_eq!(reads(), 1, "read once");
+    manager.shutdown().await;
+
+    // Unreadable: tried again with backoff until the worker shuts down.
+    let host = FakeHost::new();
+    host.set_unreachable(true);
+    let manager = connect_unapproved(&host, json!({"mcpServers": {}})).await;
+    let reads = || host.resolve_count("secret://MCP_CLIENT_APPROVALS");
+    eventually("the read is retried", || async { reads() >= 3 }).await;
+    manager.shutdown().await;
+    let after = reads();
+    tokio::time::sleep(fast_timings().backoff_max * 2).await;
+    assert_eq!(reads(), after, "shutdown stops the retry");
 }
 
 #[tokio::test]

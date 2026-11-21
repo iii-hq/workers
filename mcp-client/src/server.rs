@@ -1315,15 +1315,28 @@ pub struct Manager {
     opts: ManagerOptions,
     /// Serialises config applies and secret changes.
     servers: tokio::sync::Mutex<BTreeMap<String, Arc<Server>>>,
+    /// The start-up load of the approvals, retried until it succeeds.
+    load: JoinHandle<()>,
 }
 
 impl Manager {
+    /// Starts reading the approvals at once, whatever the config holds, so a
+    /// write by anyone else after the start is seen as one.
     pub fn new(host: Arc<dyn Host>, opts: ManagerOptions) -> Arc<Manager> {
+        let approvals = Arc::new(Approvals::new());
+        let (h, a, t) = (host.clone(), approvals.clone(), opts.timings);
+        let load = tokio::spawn(async move {
+            let mut backoff = Backoff::new(t.backoff_min, t.backoff_max);
+            while a.load(&*h).await.is_err() {
+                sleep(backoff.next()).await;
+            }
+        });
         Arc::new(Manager {
             host,
-            approvals: Arc::new(Approvals::new()),
+            approvals,
             opts,
             servers: tokio::sync::Mutex::default(),
+            load,
         })
     }
 
@@ -1505,6 +1518,7 @@ impl Manager {
     }
 
     pub async fn shutdown(&self) {
+        self.load.abort();
         let mut servers = self.servers.lock().await;
         join_all(std::mem::take(&mut *servers).values().map(|s| s.stop())).await;
     }
