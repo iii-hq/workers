@@ -4,7 +4,7 @@
  * unregistering restores what it shadowed, and removal is idempotent.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type {
   RegisteredConfigForm,
   RegisteredObserverActivityRenderer,
@@ -14,12 +14,14 @@ import type {
 } from './ui-slots'
 import {
   getExtConfigForm,
+  getExtMessageBlockRenderers,
   getExtObserverActivityRenderers,
   getExtOverlays,
   getExtProviderConfigForm,
   getExtSessionChips,
   isExtConfigFormPending,
   registerExtConfigForm,
+  registerExtMessageBlockRenderer,
   registerExtObserverActivityRenderer,
   registerExtOverlay,
   registerExtProviderConfigForm,
@@ -182,5 +184,36 @@ describe('observer activity renderer slot', () => {
 
     offB()
     expect(getExtObserverActivityRenderers()).toEqual([])
+  })
+})
+
+describe('message block renderer slot', () => {
+  const block = (tag: string, path: string) =>
+    registerExtMessageBlockRenderer({
+      tag,
+      path,
+      scope: path.split('/')[0],
+      render: () => null,
+    })
+
+  it('looks renderers up by tag, the last registration winning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const offA = block('workflow_input', 'workflow/page.js')
+    const offB = block('review_note', 'review/page.js')
+    const offC = block('workflow_input', 'other/page.js')
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const byTag = getExtMessageBlockRenderers()
+    expect([...byTag.keys()]).toEqual(['workflow_input', 'review_note'])
+    expect(byTag.get('workflow_input')?.path).toBe('other/page.js')
+
+    offC()
+    expect(getExtMessageBlockRenderers().get('workflow_input')?.path).toBe(
+      'workflow/page.js',
+    )
+    offA()
+    offB()
+    expect(getExtMessageBlockRenderers().size).toBe(0)
+    warn.mockRestore()
   })
 })

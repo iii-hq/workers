@@ -15,6 +15,7 @@ import type {
   ContextSectionRegistration,
   FunctionCallRenderer,
   MentionRendererRegistration,
+  MessageBlockRendererRegistration,
   ObserverActivityRenderer,
   OverlayRegistration,
   PageRegistration,
@@ -107,6 +108,13 @@ export interface RegisteredOverlay extends OverlayRegistration {
   path: string
 }
 
+/** `render` comes pre-wrapped by the loader (scope element + ErrorBoundary). */
+export interface RegisteredMessageBlockRenderer
+  extends MessageBlockRendererRegistration {
+  scope: string
+  path: string
+}
+
 /** Unwrapped: the preview card scopes it and falls back to the generic card. */
 export interface RegisteredMentionRenderer extends MentionRendererRegistration {
   scope: string
@@ -189,6 +197,7 @@ const composerActionsStore = createStore<RegisteredComposerAction>()
 const composerControlsStore = createStore<RegisteredComposerControl>()
 const overlaysStore = createStore<RegisteredOverlay>()
 const mentionRenderersStore = createStore<RegisteredMentionRenderer>()
+const messageBlockRenderersStore = createStore<RegisteredMessageBlockRenderer>()
 const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
 
 /**
@@ -337,6 +346,22 @@ export function registerExtMentionRenderer(
   return mentionRenderersStore.add(entry)
 }
 
+/** Duplicate tag: last registration wins in `useExtMessageBlockRenderers`. */
+export function registerExtMessageBlockRenderer(
+  entry: RegisteredMessageBlockRenderer,
+): () => void {
+  const duplicate = messageBlockRenderersStore
+    .get()
+    .find((renderer) => renderer.tag === entry.tag)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate message block renderer for '<${entry.tag}>' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return messageBlockRenderersStore.add(entry)
+}
+
 export function getExtPages(): readonly RegisteredPage[] {
   return pagesStore.get()
 }
@@ -454,6 +479,37 @@ export function useExtMentionRenderer(
     }
     return undefined
   }, [renderers, provider])
+}
+
+function messageBlockRenderersByTag(
+  renderers: readonly RegisteredMessageBlockRenderer[],
+): ReadonlyMap<string, RegisteredMessageBlockRenderer> {
+  return new Map(renderers.map((renderer) => [renderer.tag, renderer]))
+}
+
+/** Message-block renderers by tag; last registration wins. */
+export function getExtMessageBlockRenderers(): ReadonlyMap<
+  string,
+  RegisteredMessageBlockRenderer
+> {
+  return messageBlockRenderersByTag(messageBlockRenderersStore.get())
+}
+
+/**
+ * Message-block renderers by tag, the last registration winning. Memoized on
+ * the store snapshot, so the lookup holds while the transcript re-renders per
+ * streamed token.
+ */
+export function useExtMessageBlockRenderers(): ReadonlyMap<
+  string,
+  RegisteredMessageBlockRenderer
+> {
+  const renderers = useSyncExternalStore(
+    messageBlockRenderersStore.subscribe,
+    messageBlockRenderersStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => messageBlockRenderersByTag(renderers), [renderers])
 }
 
 export function useExtPages(): readonly RegisteredPage[] {

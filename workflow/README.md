@@ -531,7 +531,10 @@ The worker ships its console UI into any running console (the injectable-UI
 protocol): a Workflow section in the chat's Context panel, which lists the
 chat's runs with `workflow::list` and follows each with `workflow::status`, and
 the chat cards for `workflow::start`, `workflow::status`, `workflow::stop` and
-`workflow::node-result`. It is built from `ui/` (`build.rs` runs `pnpm install
+`workflow::node-result`. It also renders the `<workflow_input>` block a node
+session opens with as a card (readable rows, the JSON one click away) through
+the console's message-block slot; a console without that slot shows the raw
+tag. It is built from `ui/` (`build.rs` runs `pnpm install
 && pnpm build` when `ui/dist/` is missing or stale; `SKIP_UI_BUILD=1` uses it
 as is) and embedded in the binary (`src/ui.rs`). For the dev loop, set
 `III_WORKFLOW_UI_WATCH` to the build output directory (or `1` for `ui/dist`)

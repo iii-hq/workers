@@ -27,6 +27,7 @@ import {
 } from './ui-loader'
 import {
   getExtConfigForm,
+  getExtMessageBlockRenderers,
   getExtObserverActivityRenderers,
   getExtPage,
   getExtProviderConfigForm,
@@ -441,6 +442,57 @@ describe('host.panels.openScreen', () => {
   })
 })
 
+describe('host.chat.registerMessageBlockRenderer', () => {
+  it('validates the tag, scopes the render and disposes with the script', async () => {
+    let host: Parameters<SetupFn>[0] | undefined
+    const harness = createHarness({
+      importModule: vi.fn(async () => ({
+        default(next: Parameters<SetupFn>[0]) {
+          host = next
+        },
+      })),
+    })
+    harness.emit({
+      op: 'sync',
+      assets: [{ path: 'workflow/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(host).toBeDefined())
+    const chat = (host as Parameters<SetupFn>[0]).chat
+    const Block = ({ body }: { body: string }) => <pre>{body}</pre>
+
+    for (const tag of ['Workflow', '1x', 'a b', '', 7]) {
+      expect(() =>
+        chat.registerMessageBlockRenderer({
+          tag: tag as string,
+          render: Block,
+        }),
+      ).toThrow(/registerMessageBlockRenderer/)
+    }
+    expect(() =>
+      chat.registerMessageBlockRenderer({
+        tag: 'workflow_input',
+      } as unknown as Parameters<typeof chat.registerMessageBlockRenderer>[0]),
+    ).toThrow(/render/)
+    expect(getExtMessageBlockRenderers().size).toBe(0)
+
+    chat.registerMessageBlockRenderer({ tag: 'workflow_input', render: Block })
+    const registered = getExtMessageBlockRenderers().get('workflow_input')
+    expect(registered).toMatchObject({
+      scope: 'workflow',
+      path: 'workflow/page.js',
+    })
+    const Render = registered?.render ?? (() => null)
+    expect(
+      renderToStaticMarkup(
+        <Render tag="workflow_input" attributes={{}} body="42" />,
+      ),
+    ).toMatch(/data-iii-ui="workflow".*<pre>42<\/pre>/)
+
+    harness.stop()
+    expect(getExtMessageBlockRenderers().size).toBe(0)
+  })
+})
+
 describe('host.chat.compose', () => {
   async function loadHost(hash: string) {
     vi.stubGlobal('window', { location: { hash }, open: vi.fn() })
@@ -538,14 +590,22 @@ describe('host.chat.compose', () => {
     // The person last typed in chat B; the card in chat A answers.
     markComposerUsed('b')
     expect(
-      host.chat.compose({ text: 'Q: yes', submit: true, sessionId: 'session-a' }),
+      host.chat.compose({
+        text: 'Q: yes',
+        submit: true,
+        sessionId: 'session-a',
+      }),
     ).toBe('composed')
     expect(seen).toEqual(['a:Q: yes:true'])
 
     // A chat whose composer is not mounted takes nothing, and no other
     // chat does either.
     expect(
-      host.chat.compose({ text: 'Q: no', submit: true, sessionId: 'session-c' }),
+      host.chat.compose({
+        text: 'Q: no',
+        submit: true,
+        sessionId: 'session-c',
+      }),
     ).toBe('unavailable')
     expect(seen).toEqual(['a:Q: yes:true'])
 
