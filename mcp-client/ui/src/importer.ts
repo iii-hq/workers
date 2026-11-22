@@ -610,7 +610,9 @@ export function finalEntry(
   for (const s of row.secrets) set(s.path, store(s.vaultName, s.value))
   for (const n of row.needs) {
     const value = values[n.path] ?? ''
-    const vault = n.password && value !== '' && !REFERENCE.test(value)
+    // A references-only template is a plain input, but what is typed over it may be the credential itself.
+    const credential = holdsCredential(value) || (n.path.startsWith('/args/') && secretArgValue(value) !== undefined)
+    const vault = value !== '' && !REFERENCE.test(value) && (n.password || credential)
     set(n.path, vault ? store(secretVaultName(row.name, fieldOf(n.path, row.entry.args)), value) : value)
   }
   return {

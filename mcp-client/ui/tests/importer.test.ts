@@ -688,6 +688,34 @@ describe('dialog rules', () => {
       { name: 'GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN', value: FAKE },
     ])
   })
+  it('finalEntry stores a credential typed into a references-only need, and keeps any other typed value', () => {
+    const typed = (server: Record<string, unknown>, value: string) => {
+      const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
+      expect(r.needs.map((n) => n.password)).toEqual([false])
+      return finalEntry(r, { [r.needs[0].path]: value })
+    }
+    const cases: [Record<string, unknown>, string, (entry: Record<string, unknown>) => unknown][] = [
+      [
+        { command: 'srv', env: { DATABASE_URL: 'postgres://${DB_USER}:${DB_PASS}@db/app' } },
+        'postgres://' + 'app:' + FAKE + '@db/app',
+        (entry) => (entry.env as Record<string, unknown>).DATABASE_URL,
+      ],
+      [{ command: 'srv', args: ['--token=${X}'] }, `--token=${FAKE}`, (entry) => (entry.args as unknown[])[0]],
+      [
+        { command: 'srv', args: ['Authorization: Bearer ${T}'] },
+        `Authorization: Bearer ${FAKE}`,
+        (entry) => (entry.args as unknown[])[0],
+      ],
+    ]
+    for (const [server, value, at] of cases) {
+      const out = typed(server, value)
+      expect(at(out.entry)).toMatch(/^secret:\/\//)
+      expect(out.toStore.map((s) => s.value)).toEqual([value])
+      expect(JSON.stringify(out.entry)).not.toContain(FAKE)
+    }
+    const tenant = typed({ url: 'https://x.example.com/${TENANT}/mcp' }, 'https://x.example.com/acme/mcp')
+    expect([tenant.entry.url, tenant.toStore]).toEqual(['https://x.example.com/acme/mcp', []])
+  })
   it('renameRow re-derives the status and the vault names nobody edited', () => {
     const single = parse('single.json').rows[0]
     expect(renameRow(single, ' weather ', ['weather'])).toMatchObject({ name: 'weather', status: 'replaces' })
