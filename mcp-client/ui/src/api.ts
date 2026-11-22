@@ -33,16 +33,8 @@ export type Api = ReturnType<typeof createApi>
 /** Every call the page makes: the worker's functions, its configuration entry and the engine's function list. */
 export function createApi(iii: ExtensionIii) {
   let kept: string | null = null
-  // The fallback is not kept, so a worker that starts later is asked again.
-  const configId = async () => {
-    if (kept) return kept
-    try {
-      kept = await resolveConfigurationId(iii, WORKER)
-      return kept
-    } catch {
-      return WORKER
-    }
-  }
+  // Never a guessed id: a failed call rejects, writes nothing, and the next call asks again.
+  const configId = async () => (kept ??= await resolveConfigurationId(iii, WORKER))
   const readRoot = async (id: string): Promise<unknown> => {
     try {
       return (await iii.call<{ value?: unknown }>('configuration::get', { id, raw: true }))?.value
@@ -121,7 +113,6 @@ export function createApi(iii: ExtensionIii) {
         else next[name] = entry
         return next
       }),
-    writeConfig: (mcpServers: Json) => writeServers(() => mcpServers),
     secretConsumers,
     grantSecret,
     shareSecret,

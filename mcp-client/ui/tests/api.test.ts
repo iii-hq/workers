@@ -23,6 +23,7 @@ const stored = {
   other: 1,
 }
 const get = () => ({ value: structuredClone(stored) })
+const ID = { 'mcp-client::configuration-id': () => ({ id: 'mcp-client' }) }
 
 describe('createApi', () => {
   it('reads the entry raw under the id the worker reports', async () => {
@@ -34,30 +35,29 @@ describe('createApi', () => {
     expect(calls[1]).toMatchObject({ fn: 'configuration::get', payload: { id: 'mcp-client-dev', raw: true } })
   })
 
-  it('falls back to the id mcp-client when the worker is not running', async () => {
-    const { iii, calls } = fakeIii({ 'configuration::get': get })
+  it('never guesses the id: without one it reads and writes nothing, and asks again next time', async () => {
+    const { iii, calls } = fakeIii({ 'configuration::get': get, 'configuration::set': () => ({}) })
     const api = createApi(iii)
-    expect((await api.readConfig()).id).toBe('mcp-client')
-    expect(calls.at(-1)?.payload).toEqual({ id: 'mcp-client', raw: true })
-    // The fallback is not kept: the next read asks the worker again.
-    await api.readConfig()
-    expect(calls.filter((c) => c.fn === 'mcp-client::configuration-id')).toHaveLength(2)
+    await expect(api.readConfig()).rejects.toThrow()
+    await expect(api.writeEntry('linear', null)).rejects.toThrow()
+    expect(calls.map((c) => c.fn)).toEqual(['mcp-client::configuration-id', 'mcp-client::configuration-id'])
   })
 
   it('reads a missing entry and a root that is not an object as no servers', async () => {
     const missing = fakeIii({
+      ...ID,
       'configuration::get': () => {
         throw { code: 'NOT_FOUND', message: 'no entry mcp-client' }
       },
     })
     expect((await createApi(missing.iii).readConfig()).mcpServers).toEqual({})
     // biome-ignore lint/suspicious/noTemplateCurlyInString: an unresolved reference, stored as text
-    const text = fakeIii({ 'configuration::get': () => ({ value: '${X}' }) })
+    const text = fakeIii({ ...ID, 'configuration::get': () => ({ value: '${X}' }) })
     expect((await createApi(text.iii).readConfig()).mcpServers).toEqual({})
   })
 
   it('writeEntry re-reads and changes only that entry', async () => {
-    const { iii, calls } = fakeIii({ 'configuration::get': get, 'configuration::set': () => ({}) })
+    const { iii, calls } = fakeIii({ ...ID, 'configuration::get': get, 'configuration::set': () => ({}) })
     const api = createApi(iii)
     await api.writeEntry('docs', { command: 'uvx' })
     expect(calls.at(-1)).toEqual({
