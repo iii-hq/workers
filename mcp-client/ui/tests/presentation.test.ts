@@ -71,7 +71,7 @@ describe('presentServer', () => {
     [server(), 'ok', false, 'mcp.linear.app · API key', null],
     [server({ auth: 'none' }), 'ok', false, 'mcp.linear.app', null],
     [server({ auth: 'client_credentials' }), 'ok', false, 'mcp.linear.app · Client credentials', null],
-    [server({ auth: 'oauth' }), 'ok', false, 'mcp.linear.app · Signed in', null],
+    [server({ auth: 'oauth' }), 'ok', false, 'mcp.linear.app · Sign-in', null],
     [server({ target: 'secret://LINEAR_URL' }), 'ok', false, 'secret://LINEAR_URL · API key', null],
     [stdio(), 'ok', false, 'stdio · pid 48213', null],
     [server({ state: 'connecting', stage: 'secret' }), 'accent', true, 'Connecting… · Secret', null],
@@ -355,6 +355,7 @@ describe('column 2', () => {
     })
     expect(connectionRowText(server())).toBe('HTTP · API key · protocol 2025-11-25')
     expect(connectionRowText(stdio({ protocol_version: null }))).toBe('stdio')
+    expect(connectionRowText(server({ auth: 'oauth', state: 'needs_login', protocol_version: null }))).toBe('HTTP · Sign-in')
     const proc = stdio().process
     expect(processRowText(proc, NOW)).toBe('running · pid 48213 · up 2h 14m')
     expect(processRowText(proc && { ...proc, pid: null, started_at: null }, NOW)).toBe('not running')

@@ -52,7 +52,8 @@ const AUTH_WORDS: Record<AuthKind, string> = {
   bearer: 'API key',
   header: 'API key',
   client_credentials: 'Client credentials',
-  oauth: 'Signed in',
+  // The method, like the others: a server that needs sign-in is not signed in.
+  oauth: 'Sign-in',
 }
 
 const ATTENTION: readonly ServerState[] = ['needs_login', 'auth_failed', 'config_error', 'unavailable', 'unapproved']
