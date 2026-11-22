@@ -35,7 +35,7 @@ use crate::store::{
     Activity, Board, BoardStore, Comment, ConfigCell, Pill, Ticket, config_snapshot,
 };
 
-pub const FUNCTION_IDS: [&str; 29] = [
+pub const FUNCTION_IDS: [&str; 32] = [
     "kanban::config::info",
     "kanban::board::get",
     "kanban::ticket::create",
@@ -49,6 +49,9 @@ pub const FUNCTION_IDS: [&str; 29] = [
     "kanban::comment::create",
     "kanban::comment::list",
     "kanban::activity::list",
+    "kanban::question::answer",
+    "kanban::question::list",
+    "kanban::question::record",
     "kanban::sessions::links",
     "kanban::agent::list",
     "kanban::project::list",
@@ -97,7 +100,7 @@ pub struct BoardGetInput {
     /// Skip this many tickets of each column before `limit`: the next page of a long column starts at the rows you have. Each column's `total` says how many there are.
     #[serde(default)]
     pub offset: Option<u64>,
-    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count, open_questions) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
     /// Only the subtasks of this ticket (uuid or key); empty string = tickets that are not subtasks.
@@ -142,7 +145,7 @@ pub struct TicketCreateInput {
     /// Who is making the change. Defaults to `user`.
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count, open_questions) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -178,7 +181,7 @@ pub struct TicketListInput {
     /// Skip this many tickets before `limit`: the next page starts at the rows you have. `total` says how many there are.
     #[serde(default)]
     pub offset: Option<u64>,
-    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count, open_questions) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
     /// Only the subtasks of this ticket (uuid or key); empty string = tickets that are not subtasks.
@@ -192,8 +195,10 @@ pub struct TicketListInput {
     pub release_id: Option<String>,
 }
 
-fn double_option<'de, D: Deserializer<'de>>(de: D) -> Result<Option<Option<String>>, D::Error> {
-    Option::<String>::deserialize(de).map(Some)
+fn double_option<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    de: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(de).map(Some)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -234,7 +239,7 @@ pub struct TicketUpdateInput {
     pub release: Option<Option<String>>,
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count, open_questions) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -250,7 +255,7 @@ pub struct TicketMoveInput {
     pub index: Option<u64>,
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count, open_questions) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -275,7 +280,7 @@ pub struct CommentCreateInput {
     /// Agent profile id, or `user`. Defaults to `user`.
     #[serde(default)]
     pub author: Option<String>,
-    /// Return the ticket as its compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the ticket as its compact row (id, key, title, status, priority, assignee, comment_count, open_questions) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -305,8 +310,9 @@ pub struct CommentListInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ActivityListInput {
-    /// Ticket uuid or human-readable key (KAN-1, case-insensitive).
-    pub ticket_id: String,
+    /// Ticket uuid or key. Omit for board-wide activity, newest first.
+    #[serde(default)]
+    pub ticket_id: Option<String>,
     #[serde(default)]
     pub types: Option<Vec<String>>,
     #[serde(default)]
@@ -347,6 +353,9 @@ pub struct ProjectCreateInput {
     /// blue | purple | teal | green | amber | rose.
     #[serde(default)]
     pub color: Option<String>,
+    /// GitHub repositories as owner/name; null clears on update.
+    #[serde(default)]
+    pub repos: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -363,6 +372,9 @@ pub struct ProjectUpdateInput {
     /// blue | purple | teal | green | amber | rose, or null to clear.
     #[serde(default, deserialize_with = "double_option")]
     pub color: Option<Option<String>>,
+    /// GitHub repositories as owner/name; null clears on update.
+    #[serde(default, deserialize_with = "double_option")]
+    pub repos: Option<Option<Vec<String>>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1279,6 +1291,7 @@ async fn project_create(ctx: Arc<Ctx>, input: ProjectCreateInput) -> Result<Proj
         description: input.description,
         lead: input.lead.map(Some),
         color: input.color.map(Some),
+        repos: input.repos.map(Some),
     };
     let outcome = apply(&ctx, "ticket.updated", |board, context, at| {
         Ok(Outcome::silent(plan::create_project(
@@ -1295,6 +1308,7 @@ async fn project_update(ctx: Arc<Ctx>, input: ProjectUpdateInput) -> Result<Proj
         description: input.description,
         lead: input.lead,
         color: input.color,
+        repos: input.repos,
     };
     let outcome = apply(&ctx, "ticket.updated", |board, context, at| {
         Ok(Outcome::silent(plan::update_project(
@@ -1529,7 +1543,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::create",
-        "Create a ticket on the board and return it; pass compact to get back only its compact row (id, key, title, status, priority, assignee, comment_count). Optionally make it a subtask (parent), or file it under a project or release (id or name).",
+        "Create a ticket on the board and return it; pass compact to get back only its compact row (id, key, title, status, priority, assignee, comment_count, open_questions). Optionally make it a subtask (parent), or file it under a project or release (id or name).",
         ticket_create,
     );
     register(
@@ -1541,7 +1555,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::list",
-        "List tickets in board order, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); offset and limit page the result and total counts every match; compact rows carry only id, key, title, status, priority, assignee and comment_count.",
+        "List tickets in board order, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); offset and limit page the result and total counts every match; compact rows carry only id, key, title, status, priority, assignee, comment_count and open_questions.",
         ticket_list,
     );
     register(
@@ -1589,8 +1603,26 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::activity::list",
-        "Read a ticket's activity timeline: field changes, lane moves, deletion and comment events, oldest first.",
+        "Read activity narrowed by types, since and limit: one ticket oldest first, or omit ticket_id for the whole board newest first.",
         activity_list,
+    );
+    register(
+        ctx,
+        "kanban::question::answer",
+        "Answer or dismiss a harness question from its ticket; forwards to the harness with by.channel kanban. People only; the harness delivers and emits the authoritative settlement.",
+        crate::questions::answer,
+    );
+    register(
+        ctx,
+        "kanban::question::list",
+        "List mirrored questions and recorded choices with their derived state and answer reply, newest first; filter by state, project or release and page with cursor. Merge client-side with harness::ask::list for authoritative transient state.",
+        crate::questions::list_questions,
+    );
+    register(
+        ctx,
+        "kanban::question::record",
+        "Record a material choice made by an agent without asking: append a question and its answer atomically, tagged recorded_by with the profile. Does not answer a harness ask.",
+        crate::questions::record_question,
     );
     register(
         ctx,
@@ -1607,7 +1639,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::project::list",
-        "List projects with their live ticket counts (total, done, per column). Archived projects only with include_archived.",
+        "List projects with their repositories, open_questions and live ticket counts (total, done, per column). Archived projects only with include_archived.",
         project_list,
     );
     register(
@@ -1619,7 +1651,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::project::update",
-        "Rename a project or change its description, lead or color (null clears lead and color). The id accepts the project id or its name.",
+        "Rename a project or change its description, lead, color or repos (owner/name; null clears lead, color or repos). The id accepts the project id or its name.",
         project_update,
     );
     register(
@@ -1637,7 +1669,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::release::list",
-        "List releases by target date then name, each with its derived status (planned, active, released), live ticket counts, how many tickets were reopened after shipping, and a per-project breakdown.",
+        "List releases by target date then name, each with open_questions and its derived status (planned, active, released), live ticket counts, how many tickets were reopened after shipping, and a per-project breakdown.",
         release_list,
     );
     register(

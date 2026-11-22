@@ -16,6 +16,7 @@ tickets on this board.
 - [Quickstart](#quickstart)
 - [Configuration](#configuration)
 - [Subtasks, releases and projects](#subtasks-releases-and-projects)
+- [Questions and decisions](#questions-and-decisions)
 - [Board dispatch](#board-dispatch)
 - [Event functions](#event-functions)
 - [Console pages](#console-pages)
@@ -120,6 +121,11 @@ iii call kanban::ticket::move --json '{"id":"KAN-1","status":"in_review","actor"
 tickets that mention it, found by key (`KAN-12`) in titles, descriptions and
 comments.
 
+`kanban::activity::list` takes optional `ticket_id`, `types`, `since` and
+`limit`. With a ticket it returns that ticket's history oldest first. Without
+`ticket_id` it returns activity across the whole board newest first, which is
+the catch-up feed for the control tower.
+
 Every change also records **which agent session made it**. The harness runs
 each agent turn with `iii.session.id` (and the turn id, `iii.message.id`) in
 the call's baggage; the activity entry a write appends carries them as
@@ -200,10 +206,10 @@ on it (`[{ "icon": "calendar", "text": "Fri 17:00" }]`, `icon` a lucide icon
 name), set whole on `ticket::create` and `ticket::update` and drawn on the card
 and the ticket page.
 
-`board.json` is now version 2. The first write that upgrades a version 1 file
-keeps the original as `board.v1.json` next to it; going back to an older
-kanban drops projects, releases and subtask links on its next write, so restore
-that copy if you must downgrade.
+`board.json` is now version 3. The first write that upgrades an older file
+keeps the original beside it as `board.v<N>.json`; upgrading version 2 creates
+`board.v2.json`. A version 2 worker refuses a version 3 file, so it cannot
+silently drop question, answer or repository fields.
 
 ## Subtasks, releases and projects
 
@@ -237,10 +243,12 @@ the parent's project or release; the console prefills them when you add a
 subtask from the parent, and you can change them.
 
 **Projects.** A project has a name, description, optional lead (an agent
-profile or `user`) and color. It is `active` or `archived`; an archived
+profile or `user`), color and `repos: ["owner/name"]`. Repositories are
+optional and `kanban::project::update` accepts `null` to clear them. The project is
+`active` or `archived`; an archived
 project refuses new references but keeps its tickets, and `restore` brings it
-back. `kanban::project::list` returns each project with `total`, `done` and a
-count per column.
+back. `kanban::project::list` returns each project with `total`, `done`,
+`open_questions` and a count per column.
 
 **Releases.** A release has a name, description and one optional target date
 (`YYYY-MM-DD`). Its status is derived, never set: `released` once `released_at`
@@ -248,7 +256,8 @@ is set, `active` when some live ticket in it is outside the first column,
 `planned` otherwise. The board sorts releases by target date (undated last),
 then by name with numbers in order (Phase 2 before Phase 10). A release does
 not belong to a project; `kanban::release::list` breaks each one down by
-project instead. Shipping closes the release: when tickets are not done,
+project instead. The release and each project breakdown include
+`open_questions`. Shipping closes the release: when tickets are not done,
 `kanban::release::ship` fails with "N tickets are not done; choose where they go
 (move_open_to)" until you pass `move_open_to`, either another release (which
 must exist, differ from this one and not be released) or `null` to take them out
@@ -282,12 +291,15 @@ iii call kanban::label::convert --json '{"label":"phase-2","into":"release","nam
 
 | Function | What it does | Agents |
 |---|---|---|
-| `kanban::project::list` | Projects with status, totals and column counts; `include_archived` adds archived ones. | allowed |
-| `kanban::release::list` | Releases with derived status, totals, `reopened` and the per-project breakdown. | allowed |
+| `kanban::project::list` | Projects with status, totals, `open_questions`, repositories and column counts; `include_archived` adds archived ones. | allowed |
+| `kanban::release::list` | Releases with derived status, totals, `open_questions`, `reopened` and the per-project breakdown. | allowed |
 | `kanban::project::create` | Create a project. | denied, except a create whose `lead` is `deepwork` (the deepwork kit files each run under its own project) |
 | `kanban::project::update` / `archive` / `restore` | Manage a project. | denied |
 | `kanban::release::create` / `update` / `ship` / `reopen` / `delete` | Manage a release. | denied |
 | `kanban::label::convert` | Put the tickets with a label into a project or release. | denied |
+| `kanban::question::list` | Read mirrored questions and recorded choices. | allowed |
+| `kanban::question::record` | Record a material choice the calling agent made alone. | allowed |
+| `kanban::question::answer` | Forward a person's answer to the harness. | denied |
 
 `kanban::ticket::list` and `kanban::board::get` also filter by `parent_id`,
 `project_id` and `release_id` (an empty string means none), and the board
@@ -295,6 +307,59 @@ returns `projects` and `releases` next to its columns. Agents read projects and
 releases and can set `parent`, `project` and `release` on tickets; planning
 them is a human's call in the console, which `iii-permissions.yaml` enforces
 (the one exception: a deepwork run creates its own project).
+
+## Questions and decisions
+
+The harness owns live question state. Kanban observes `harness::on-ask` and
+`harness::on-ask-settled` and mirrors a linked ask into append-only comments.
+The root comment carries `question: { session_id, question_id, questions,
+about, asked_at }`, with `asked_at` as Unix epoch milliseconds. Its answer
+reply carries `answer: { answer_text, by, outcome }`. A withdrawal has no human
+answer in the harness: its text says "Withdrawn by the asker." and `by` is
+`null` when attribution is absent. Outcomes are `answered`,
+`dismissed`, `withdrawn`, `expired_default` and `not_delivered`. The question
+body begins with `⛔ Needs you` and includes its options as plain text for
+agents and older clients. The mirror writes no question pill; ticket, project
+and release views derive `open_questions` from questions without an answer
+reply.
+
+`kanban::question::answer { ticket_id, comment_id, answers | dismissed,
+user }` validates that the comment is the ticket's mirrored question, then
+forwards it to `harness::ask::answer` with
+`by: { channel: "kanban", user }`. `answers` is the harness's structured list:
+each item has `header` and the appropriate `choice`, `choices`, `other` or
+`skipped` field. This is a person-only action; harness delivery and settlement
+remain authoritative.
+
+`kanban::question::list { state?, project?, release?, limit?, cursor? }`
+returns `{ questions: [{ comment, state, answer }], count, cursor }`, newest
+first. Stored states are `open`, the five outcome names above, and `recorded`.
+The UI merges this decision log with `harness::ask::list`; transient harness
+states such as `answering` and `expired` win while the ask is live.
+
+Ask from a root session with `harness::ask`, including `about.ticket`,
+`about.why` and the recommended option when the work is on a card. A sub-agent
+reports its question as blocked to its parent, which asks the person. Keep
+working where the answer is not needed, and withdraw an obsolete question with
+`harness::ask::withdraw`. A run-health problem that prevents progress calls for
+a `run_health` question with an expiry default instead of ending blocked.
+
+An agent records a material choice it made without asking with
+`kanban::question::record { ticket_id, questions, answer_text, recorded_by,
+session_id?, about? }`. It appends the question and answer together and marks
+the row `recorded`; it does not answer a harness ask. Use your profile id as
+`recorded_by`. A pull request for a card names the card key in its title or
+branch so the control tower can link it.
+
+Question mirror and record writes emit the existing `kanban::on-comment` and
+`kanban::on-change` events in comment order. There are no separate public kanban
+question events; the two internal observer sinks are
+`kanban::question::on-ask` and `kanban::question::on-ask-settled`.
+Observers stay pending while the harness is absent. After configuration loads,
+boot reconciliation pages through `harness::ask::list`, retrying every five
+seconds until the full replay succeeds. Question and answer comment timestamps
+retain `asked_at` and `settled_at`; ticket/activity timestamps mark the mirror
+write.
 
 ## Board dispatch
 

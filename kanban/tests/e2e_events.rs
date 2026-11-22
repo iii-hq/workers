@@ -97,7 +97,7 @@ async fn connect(name: &str) -> Option<Arc<IIIClient>> {
 /// The kanban worker as `main` boots it, minus the configuration worker and
 /// the UIs: the event functions with their hooks, then the catalog, with the
 /// board in `folder`.
-fn boot_owner(iii: &Arc<IIIClient>, folder: &std::path::Path) {
+fn boot_owner(iii: &Arc<IIIClient>, folder: &std::path::Path) -> Arc<Ctx> {
     let config = KanbanConfig {
         data_path: folder.join("data").to_string_lossy().into_owned(),
         agents_path: folder.join("agents").to_string_lossy().into_owned(),
@@ -105,12 +105,14 @@ fn boot_owner(iii: &Arc<IIIClient>, folder: &std::path::Path) {
     };
     let config = Arc::new(RwLock::new(config));
     events::register(iii);
-    functions::register_functions(&Arc::new(Ctx {
+    let ctx = Arc::new(Ctx {
         iii: iii.clone(),
         store: BoardStore::new(config.clone()),
         config,
         dispatch: Default::default(),
-    }));
+    });
+    functions::register_functions(&ctx);
+    ctx
 }
 
 /// Registers `id` on `iii`; every payload it receives lands in the result.
@@ -555,5 +557,197 @@ async fn targets_get_the_event_with_the_observer_metadata_and_callers_get_the_ev
         let _ = handle.dispose().await;
     }
     consumer.shutdown_async().await;
+    owner.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn question_observers_and_boot_reconciliation_use_the_harness_contract() {
+    use iii_kanban::questions;
+    let _slot = ENGINE_SLOT.lock().await;
+    let Some(owner) = connect("kanban-e2e-questions").await else {
+        return;
+    };
+    let folder = tempfile::tempdir().unwrap();
+    let ctx = boot_owner(&owner, folder.path());
+    questions::register(&ctx);
+    let Some(harness) = connect("kanban-e2e-harness").await else {
+        owner.shutdown_async().await;
+        return;
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let key = create_ticket(&owner, "linked by session metadata").await;
+    let other = create_ticket(&owner, "settled before ask").await;
+
+    let comment_events = recorder(&owner, "e2e::question-comments");
+    let comments_handle = owner.observe(
+        Source::function(ON_COMMENT_FN).args(json!({"ticket_id":other})),
+        "e2e::question-comments",
+    );
+    settled(&comments_handle).await.unwrap();
+    // Before the harness comes up, the observers remain pending and replay retries.
+    assert!(questions::reconcile(&ctx).await.is_err());
+    questions::spawn_reconcile(ctx.clone());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let pending = json!({
+        "session_id":"session-1","question_id":"call-1","turn_id":"turn-1",
+        "asked_at":1795262400000_i64,"about":{},"state":"open","on_expiry":"block",
+        "questions":[{"header":"Builds","question":"Isolate?","multi_select":false,
+            "options":[{"label":"Yes","recommended":true},{"label":"No"}]}]
+    });
+    let mut settled = pending.clone();
+    settled["question_id"] = json!("call-2");
+    settled["about"] = json!({"ticket":other});
+    settled["state"] = json!("answered");
+    settled["outcome"] = json!("answered");
+    settled["by"] = json!({"channel":"chat","user":"Pat"});
+    settled["answer_text"] = json!("Yes");
+    settled["settled_at"] = json!(1795262460000_i64);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let repeated = Arc::new(Mutex::new(false));
+    let requests = calls.clone();
+    let repeat = repeated.clone();
+    let first = pending.clone();
+    let second = settled.clone();
+    harness.register_function(
+        "harness::ask::list",
+        RegisterFunction::new(move |request: Value| {
+            requests.lock().unwrap().push(request.clone());
+            Ok::<_, Error>(if *repeat.lock().unwrap() {
+                json!({"entries":[],"cursor":"loop"})
+            } else if request["cursor"].is_null() {
+                json!({"entries":[first],"cursor":"page-2"})
+            } else {
+                assert_eq!(request["cursor"], "page-2");
+                json!({"entries":[second]})
+            })
+        }),
+    );
+    let session_calls = Arc::new(Mutex::new(Vec::new()));
+    let sessions = session_calls.clone();
+    let fallback_key = key.clone();
+    harness.register_function(
+        "session::get",
+        RegisterFunction::new(move |request: Value| {
+            sessions.lock().unwrap().push(request);
+            Ok::<_, Error>(json!({"meta":{"metadata":{"kanban_ticket":fallback_key}}}))
+        }),
+    );
+    for source in ["harness::on-ask", "harness::on-ask-settled"] {
+        harness.register_function(
+            source,
+            RegisterFunction::new(|entry: Value| Ok::<_, Error>(entry)),
+        );
+    }
+    let answers = recorder(&harness, "harness::ask::answer");
+    // Retry is five seconds; wait for the complete two-page boot replay.
+    let mut complete = false;
+    for _ in 0..100 {
+        let board = ctx.store.read().await.unwrap();
+        if board
+            .tickets
+            .values()
+            .map(|ticket| ticket.comments.len())
+            .sum::<usize>()
+            == 3
+            && taken(&comment_events).len() == 2
+        {
+            complete = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(complete, "boot retry did not replay both pages");
+    arrived(&[("question pair", &comment_events)]).await;
+    let pair = taken(&comment_events);
+    assert_eq!(pair.len(), 2);
+    assert!(pair[0]["comment"]["question"].is_object());
+    assert_eq!(pair[1]["comment"]["parent_id"], pair[0]["comment"]["id"]);
+    assert_eq!(pair[0]["ticket"]["open_questions"], 1);
+    assert_eq!(pair[1]["ticket"]["open_questions"], 0);
+    assert_eq!(taken(&calls).len(), 2);
+    let mut sessions = taken(&session_calls);
+    sessions[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("_caller_worker_id");
+    assert_eq!(sessions, vec![json!({"session_id":"session-1"})]);
+    let ticket = call(&owner, "kanban::ticket::get", json!({"id":key})).await;
+    assert_eq!(ticket["open_questions"], 1);
+    let comment_id = ticket["comments"][0]["id"].clone();
+    let other_ticket = call(&owner, "kanban::ticket::get", json!({"id":other})).await;
+    assert_eq!(other_ticket["open_questions"], 0);
+    assert_eq!(
+        other_ticket["comments"][0]["created_at"],
+        "2026-11-21T12:00:00.000Z"
+    );
+    assert_eq!(
+        other_ticket["comments"][1]["created_at"],
+        "2026-11-21T12:01:00.000Z"
+    );
+    // A second replay is idempotent, including the fallback-linked entry.
+    questions::reconcile(&ctx).await.unwrap();
+    assert_eq!(taken(&session_calls).len(), 1);
+    call(&owner,"kanban::question::answer",json!({"ticket_id":key,"comment_id":comment_id,"answers":[{"header":"Builds","choice":"Yes"}],"user":"Pat"})).await;
+    let mut forwarded = taken(&answers);
+    forwarded[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("_caller_worker_id");
+    assert_eq!(
+        forwarded,
+        vec![
+            json!({"session_id":"session-1","question_id":"call-1","answers":[{"header":"Builds","choice":"Yes"}],"by":{"channel":"kanban","user":"Pat"}})
+        ]
+    );
+    assert_eq!(
+        call(&owner, "kanban::ticket::get", json!({"id":key})).await["open_questions"],
+        1
+    );
+    let mut event = settled.clone();
+    event["question_id"] = json!("call-1");
+    event["about"] = json!({});
+    call(&harness, "harness::on-ask-settled", event).await;
+    let mut closed = false;
+    for _ in 0..50 {
+        if call(&owner, "kanban::ticket::get", json!({"id":key})).await["open_questions"] == 0 {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(closed, "settled observer did not deliver its input entry");
+    call(&harness, "harness::on-ask", pending).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        call(&owner, "kanban::ticket::get", json!({"id":key})).await["comments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let recorded = call(&owner,"kanban::question::record",json!({"ticket_id":key,"questions":[{"header":"Storage","question":"Where?"}],"answer_text":"Existing store","recorded_by":"backend-engineer"})).await;
+    assert_eq!(recorded["state"], "recorded");
+    assert_eq!(recorded["comment"]["recorded_by"], "backend-engineer");
+    let assumptions = call(
+        &owner,
+        "kanban::question::list",
+        json!({"state":"recorded"}),
+    )
+    .await;
+    assert_eq!(assumptions["count"], 1);
+    assert_eq!(
+        assumptions["questions"][0]["answer"]["answer"]["answer_text"],
+        "Existing store"
+    );
+    comments_handle.dispose().await.unwrap();
+    *repeated.lock().unwrap() = true;
+    assert!(
+        questions::reconcile(&ctx)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("repeated its cursor")
+    );
+    harness.shutdown_async().await;
     owner.shutdown_async().await;
 }

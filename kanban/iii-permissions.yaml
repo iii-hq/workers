@@ -8,6 +8,9 @@ rules:
   - '!kanban::native-ui'
   - '!kanban::on-config-change'
   - '!kanban::dispatch::on-turn-completed'
+  - '!kanban::question::on-ask'
+  - '!kanban::question::on-ask-settled'
+  - '!kanban::question::answer'
   # Deleting and restoring a ticket is the human's call, made from the
   # ticket screen (see skills/tickets/kanban-tickets.md). Agents move tickets.
   - '!kanban::ticket::delete'
@@ -48,6 +51,8 @@ rules:
   - kanban::release::list
   - kanban::comment::create
   - kanban::comment::list
+  - kanban::question::list
+  - kanban::question::record
   - kanban::activity::list
   - kanban::sessions::links
   - kanban::agent::list

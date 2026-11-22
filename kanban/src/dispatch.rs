@@ -952,6 +952,7 @@ mod tests {
             description: String::new(),
             lead: None,
             color: None,
+            repos: None,
             source_label: None,
             created_at: "t".into(),
             updated_at: "t".into(),
