@@ -63,6 +63,10 @@ impl From<String> for MessageInput {
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
+    /// Refuse a missing session and never ensure/create it. Durable ask
+    /// delivery uses this so an answer cannot resurrect a deleted session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_existing_session: bool,
     /// Explicit continuation of a user entry on this session's active path.
     /// Resolved and bounded by Harness; never inferred from message text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -440,6 +444,15 @@ async fn start_with_delivery_lock(
         Some(session_id) => writable_session_metadata(&session, session_id).await?,
         None => None,
     };
+    let require_existing = req
+        .options
+        .as_ref()
+        .is_some_and(|o| o.require_existing_session);
+    if require_existing && existing_metadata.is_none() {
+        return Err(HarnessError::InvalidRequest(
+            "require_existing_session needs an existing session_id".into(),
+        ));
+    }
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -610,6 +623,7 @@ async fn start_with_delivery_lock(
         super::delete_session_tree::ensure_live(deps, id).await?;
     }
     let session_id = match &req.session_id {
+        Some(id) if require_existing => id.clone(),
         Some(id) => {
             let ensured = session
                 .ensure(id, title.as_deref(), metadata.as_ref(), kind.as_deref())
@@ -1003,6 +1017,11 @@ async fn try_enqueue(
     };
     let topology = deps.topology.lock().await;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
+    if !deps.session().await.exists(session_id).await? {
+        return Err(HarnessError::InvalidRequest(
+            "cannot queue a message into a deleted session".into(),
+        ));
+    }
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
     drop(topology);
     // Fire-and-forget: lets clients (e.g. the console's queued strip) refresh

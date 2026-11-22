@@ -75,6 +75,15 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<CompactRequest, CompactOutcome>(COMPACT_ID),
         spec::<SpawnRequest, SpawnResponse>(SPAWN_ID),
         spec::<AskRequest, AskResponse>(ASK_ID),
+        spec::<crate::ask_store::AnswerRequest, crate::ask_store::Entry>(
+            crate::ask_store::ANSWER_ID,
+        ),
+        spec::<crate::ask_store::WithdrawRequest, crate::ask_store::Entry>(
+            crate::ask_store::WITHDRAW_ID,
+        ),
+        spec::<crate::ask_store::ListRequest, crate::ask_store::ListResponse>(
+            crate::ask_store::LIST_ID,
+        ),
         spec::<ObserveRequest, ObserveResponse>(OBSERVE_ID),
         spec::<UnobserveRequest, UnobserveResponse>(UNOBSERVE_ID),
         spec::<TurnStepPayload, TurnStepResult>(TURN_ID),

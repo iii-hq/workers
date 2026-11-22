@@ -184,6 +184,10 @@
             ],
             "description": "Ask the harness to pick the effort from the model's catalog row instead of naming one: `lowest` is the model's lowest reasoning effort (never `off`), or the provider default when the model offers no effort choices. Exclusive with `thinking_level` and `provider_options`; the choice is returned as `reasoning` on the send response."
           },
+          "require_existing_session": {
+            "description": "Refuse a missing session and never ensure/create it. Durable ask delivery uses this so an answer cannot resurrect a deleted session.",
+            "type": "boolean"
+          },
           "skills": {
             "description": "Exact skill ids advertised to the model; omitted or empty means all on a new session (existing: omitted inherits, empty resets).",
             "items": {

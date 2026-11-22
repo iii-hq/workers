@@ -66,6 +66,19 @@ pub async fn handle(
     // rather than have it re-create the record.
     let _activity = deps.turn_activity.guard(&event.session_id).await;
     let _lock = deps.locks.guard(&event.session_id).await;
+    let _topology = deps.topology.lock().await;
+    for row in
+        crate::state::list_queued(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?
+    {
+        crate::state::delete_queued(
+            &deps.iii,
+            &event.session_id,
+            &row.id,
+            cfg.session_timeout_ms,
+        )
+        .await?;
+    }
+    crate::ask_store::purge(deps, &event.session_id).await?;
     crate::state::delete_turn(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     Ok(SessionDeletedAck {
         ok: true,

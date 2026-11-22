@@ -11,6 +11,8 @@ struct Data {
     messages: BTreeMap<String, Vec<Value>>,
     calls: Vec<(String, Value)>,
     fail_appends: usize,
+    gone: bool,
+    delete_on_append: bool,
 }
 impl Data {
     fn get(&self, scope: &str, key: &str) -> Value {
@@ -41,7 +43,7 @@ impl Data {
                 self.state.remove(&(scope.into(), key.into()));
                 Ok(json!({}))
             }
-            "state::list" => Ok(json!(
+            "state::list" | "harness::state::list" => Ok(json!(
                 self.state
                     .iter()
                     .filter(|((s, _), _)| s == scope)
@@ -57,6 +59,7 @@ impl Data {
                 }
                 Ok(json!({"swapped":swapped,"current":old}))
             }
+            "session::get" if self.gone => Ok(Value::Null),
             "session::get" => Ok(json!({"meta":{"session_id":session,"metadata":{}}})),
             "session::ensure" => {
                 Ok(json!({"created":false,"meta":{"session_id":session,"metadata":{}}}))
@@ -66,6 +69,12 @@ impl Data {
                 Ok(json!({"messages":self.messages.get(session).cloned().unwrap_or_default()}))
             }
             "session::append" => {
+                if self.delete_on_append {
+                    self.gone = true;
+                }
+                if self.gone {
+                    return Err("session not found".into());
+                }
                 if self.fail_appends > 0 {
                     self.fail_appends -= 1;
                     return Err("session append unavailable".into());
@@ -746,5 +755,148 @@ async fn a_send_into_a_failed_session_continues_it_with_the_same_identity() {
             .to_string()
             .contains("Continue from where you stopped."),
         "{messages:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn existing_only_send_never_ensures_a_session() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Completed).await;
+    let mut req = request("s", "answer", Some("ask:s/q"), None);
+    req.options.get_or_insert_default().require_existing_session = true;
+    handle(&stack.deps, req.clone()).await.unwrap();
+    assert_eq!(stack.data.lock().unwrap().messages["s"].len(), 1);
+    stack.data.lock().unwrap().gone = true;
+    let err = handle(&stack.deps, req).await.unwrap_err();
+    assert!(
+        err.to_string().contains("require_existing_session"),
+        "{err}"
+    );
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(id, _)| matches!(id.as_str(), "session::ensure" | "session::create"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_running_turn_cannot_queue_into_a_deleted_session() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Running).await;
+    stack.data.lock().unwrap().gone = true;
+    let err = inject(
+        &stack.deps,
+        "s",
+        AgentMessage::user_text("answer"),
+        Some("answer-entry"),
+        None,
+    )
+    .await
+    .err()
+    .expect("a missing session must refuse the queued delivery");
+    assert!(err.to_string().contains("deleted session"), "{err}");
+    assert!(
+        crate::state::list_queued(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ask_deleted_during_send_is_not_recreated_or_reported_delivered() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Completed).await;
+    let deps = stack.deps.clone();
+    stack.deps.iii.register_function(
+        crate::functions::SEND_ID,
+        iii_sdk::RegisterFunction::new_async(move |req: SendRequest| {
+            let deps = deps.clone();
+            async move { handle(&deps, req).await.map_err(iii_sdk::Error::from) }
+        }),
+    );
+    let req = serde_json::from_value(json!({"questions":[{"header":"Builds","question":"How?","options":[{"label":"Isolate"},{"label":"Allow-list"}]}]})).unwrap();
+    crate::ask_store::accept(&stack.deps, "s", "t", "q", &req)
+        .await
+        .unwrap();
+    stack.data.lock().unwrap().delete_on_append = true;
+    let answer = serde_json::from_value(json!({"session_id":"s","question_id":"q", "answers":[{"header":"Builds","choice":"Isolate"}],"by":{"channel":"tower"}})).unwrap();
+    let closed = crate::ask_store::answer(&stack.deps, answer).await.unwrap();
+    assert_eq!(
+        closed.outcome,
+        Some(crate::ask_store::Outcome::NotDelivered)
+    );
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(id, _)| matches!(id.as_str(), "session::ensure" | "session::create"))
+    );
+    assert!(
+        stack
+            .data
+            .lock()
+            .unwrap()
+            .messages
+            .get("s")
+            .is_none_or(Vec::is_empty)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_purges_asks_and_queued_answers() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Running).await;
+    let req = serde_json::from_value(json!({"questions":[{"header":"Builds","question":"How?","options":[{"label":"Isolate"},{"label":"Allow-list"}]}]})).unwrap();
+    crate::ask_store::accept(&stack.deps, "s", "t", "q", &req)
+        .await
+        .unwrap();
+    handle(
+        &stack.deps,
+        request("s", "queued answer", Some("ask:s/q"), None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        crate::state::list_queued(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    stack.data.lock().unwrap().gone = true;
+    crate::functions::on_session_deleted::handle(
+        &stack.deps,
+        crate::functions::on_session_deleted::SessionDeletedEvent {
+            session_id: "s".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::ask_store::list(&stack.deps, crate::ask_store::ListRequest::default())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    assert!(
+        crate::state::list_queued(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        crate::state::get_turn(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .is_none()
     );
 }

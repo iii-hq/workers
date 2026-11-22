@@ -1,43 +1,4 @@
-/**
- * Injected function-call renderer for `harness::ask`, registered through
- * `host.functionCalls` with `metadata.display: true`, so the card stays
- * visible in the chat feed while the raw call details stay collapsed.
- *
- * The card draws the questions from the result `details` (`parseAsk`): per
- * question a fieldset with the header chip (a long header ends in an
- * ellipsis and shows whole on hover), the question, a Skip toggle, a
- * checkbox per option (one control for both kinds: a single-select question
- * ticks one box and clears the rest) with the description under each label,
- * and a single-line "Other" field. A skipped question sends
- * `Header: (skipped)` and takes no pick. The foot has Dismiss, which sends
- * the dismissal notice instead of answers, and Send, which hands the
- * formatted answer to the composer of the card's own chat
- * (`host.chat.compose` with the card's `sessionId`, submitted; never the
- * chat used last, which with several open may be another session); either
- * starts the next turn.
- *
- * Send is not proof of sending: `compose` returns nothing and the composer
- * drops a submit while it is blocked, keeping the text as a draft. So after
- * Send (or Dismiss) the card waits with its buttons disabled and re-reads
- * the session a bounded number of times; the send landed when the text is
- * parked in the queue, the session is on another turn, or the same turn
- * stepped on (`sendLanded` in lib/ask). Then the card records the outcome
- * through `harness::ask::settle` and closes; when the last read still shows
- * nothing landed, it says so and takes an answer again.
- *
- * Open vs settled: only a settlement closes a card, read from
- * `harness::ask::settlements` on mount, when the tab becomes visible again,
- * when focus enters an open card, and whenever the session changes while
- * the card is open (`watchAskSession`: its settlement row is written, or one
- * of its turns starts or ends), so a card settled in another tab closes on
- * its own, before a second send. The session moving to a later turn does
- * not close it: the person may have typed something else in the chat, and
- * the question still needs its answer. The card then says the chat moved on
- * (as soon as that turn starts) and keeps taking an answer, or a dismissal.
- *
- * Anything `parseAsk` rejects (a refused ask, a running call) returns null
- * and falls through to the console's default card.
- */
+/** Durable asks use the harness reservation; only absent entries use the legacy composer. */
 
 import {
   Badge,
@@ -49,18 +10,16 @@ import {
   type Host,
   Input,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { Check } from 'lucide-react'
-import {
-  type FocusEvent,
-  type FormEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from 'react'
+import { type FocusEvent, type FormEvent, useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   askCardState,
+  type AskEntry,
+  mayDismiss,
+  readAskEntry,
+  recommendedSelection,
+  structuredAnswers,
   type AskOutcome,
   type AskQuestionView,
   type AskSelection,
@@ -86,56 +45,60 @@ const CALL_TIMEOUT_MS = 5000
 /** Session re-reads after a Send, in ms after it: bounded, not polling. */
 const CONFIRM_READS_MS = [500, 1500, 3000] as const
 
-/**
- * Whether this card's question is settled, and a function to re-read it.
- * A settlement, once seen, sticks: a later read that fails (or an older
- * harness without the function) cannot reopen a settled card. `markSettled`
- * is for this card's own confirmed send.
- */
 function useSettlement(host: Host, sessionId: string, questionId: string) {
   const [settlement, setSettlement] = useState<AskOutcome | undefined>(undefined)
-  const mounted = useRef(true)
+  const [entry, setEntry] = useState<AskEntry | null | undefined>(undefined)
+  const [readFailed, setReadFailed] = useState(false)
+  const latest = useRef(0)
 
-  const read = useCallback((): Promise<void> => {
-    return host.iii
-      .call(SETTLEMENTS_ID, { session_id: sessionId }, { timeoutMs: CALL_TIMEOUT_MS })
-      .then(settlementsOf, () => undefined)
-      .then((settled) => {
-        const outcome = settled?.get(questionId)
-        if (mounted.current && outcome !== undefined) setSettlement(outcome)
-      })
+  const read = useCallback(async () => {
+    const request = ++latest.current
+    try {
+      const next = await readAskEntry(host.iii, sessionId, questionId)
+      const legacy =
+        next === null
+          ? settlementsOf(
+              await host.iii.call(SETTLEMENTS_ID, { session_id: sessionId }, { timeoutMs: CALL_TIMEOUT_MS }),
+            )
+          : undefined
+      if (request !== latest.current) return
+      setEntry((previous) => next ?? previous ?? null)
+      setReadFailed(false)
+      if (legacy?.has(questionId)) setSettlement(legacy.get(questionId))
+    } catch {
+      if (request === latest.current) setReadFailed(true)
+    }
   }, [host, sessionId, questionId])
+
+  const acceptEntry = useCallback((next: AskEntry) => {
+    latest.current += 1
+    setEntry(next)
+    setReadFailed(false)
+  }, [])
 
   const markSettled = useCallback(
     (outcome: AskOutcome) => {
       setSettlement(outcome)
-      // Best effort: the local state already reflects a confirmed send; a
-      // lost write only means the card reopens after a reload.
       host.iii
-        .call(
-          SETTLE_ID,
-          { session_id: sessionId, question_id: questionId, outcome },
-          { timeoutMs: CALL_TIMEOUT_MS },
-        )
+        .call(SETTLE_ID, { session_id: sessionId, question_id: questionId, outcome }, { timeoutMs: CALL_TIMEOUT_MS })
         .catch(() => undefined)
     },
     [host, sessionId, questionId],
   )
 
   useEffect(() => {
-    mounted.current = true
     void read()
     const onVisibility = () => {
       if (document.visibilityState === 'visible') void read()
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
-      mounted.current = false
+      latest.current += 1
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [read])
 
-  return [settlement, read, markSettled] as const
+  return { settlement, entry, readFailed, read, markSettled, acceptEntry }
 }
 
 /**
@@ -195,9 +158,7 @@ function QuestionFields({
   const locked = disabled || skipped
 
   const toggle = (label: string, checked: boolean) => {
-    const picked = checked
-      ? [...selection.picked, label]
-      : selection.picked.filter((picked) => picked !== label)
+    const picked = checked ? [...selection.picked, label] : selection.picked.filter((picked) => picked !== label)
     onChange({ ...selection, picked })
   }
   // Single-select ticks one box at a time: ticking an option clears the
@@ -206,7 +167,11 @@ function QuestionFields({
   const pickOnly = (label: string, checked: boolean) =>
     onChange(checked ? { picked: [label], other: '' } : { ...selection, picked: [] })
   const setOther = (other: string) =>
-    onChange(question.multiSelect ? { ...selection, other } : { picked: [], other })
+    onChange(
+      question.multiSelect
+        ? { ...selection, other }
+        : { picked: other ? [] : recommendedSelection(question).picked, other },
+    )
 
   return (
     <fieldset className="harness-ui-ask-q" data-skipped={skipped || undefined}>
@@ -244,7 +209,7 @@ function QuestionFields({
             <div key={option.label} className="harness-ui-ask-option">
               <Checkbox
                 className="harness-ui-ask-choice"
-                label={option.label}
+                label={`${option.label}${option.recommended ? ' (Recommended)' : ''}`}
                 checked={checked}
                 disabled={locked}
                 aria-describedby={descriptionId}
@@ -282,13 +247,7 @@ function QuestionFields({
 }
 
 /** Read-only question: every option listed, the chosen ones checked. */
-function QuestionSummary({
-  question,
-  selection,
-}: {
-  question: AskQuestionView
-  selection?: AskSelection
-}) {
+function QuestionSummary({ question, selection }: { question: AskQuestionView; selection?: AskSelection }) {
   const headingId = useId()
   const skipped = selection?.skipped === true
   const other = skipped ? '' : selection?.other?.trim()
@@ -307,22 +266,14 @@ function QuestionSummary({
           const counts = !skipped && (question.multiSelect || !other)
           const chosen = counts && (selection?.picked.includes(option.label) ?? false)
           return (
-            <li
-              key={option.label}
-              className="harness-ui-ask-summary-row"
-              data-chosen={chosen || undefined}
-            >
-              <span className="harness-ui-ask-mark">
-                {chosen ? <Check size={16} aria-hidden /> : null}
-              </span>
+            <li key={option.label} className="harness-ui-ask-summary-row" data-chosen={chosen || undefined}>
+              <span className="harness-ui-ask-mark">{chosen ? <Check size={16} aria-hidden /> : null}</span>
               <span className="harness-ui-ask-summary-text">
                 <span>
                   {chosen ? <span className="harness-ui-ask-sr">Chosen: </span> : null}
                   {option.label}
                 </span>
-                {option.description ? (
-                  <span className="harness-ui-ask-desc">{option.description}</span>
-                ) : null}
+                {option.description ? <span className="harness-ui-ask-desc">{option.description}</span> : null}
               </span>
             </li>
           )
@@ -346,17 +297,19 @@ function QuestionSummary({
 }
 
 function AskCard({ host, view }: { host: Host; view: AskView }) {
-  const [settlement, recheckSettlement, markSettled] = useSettlement(
-    host,
-    view.sessionId,
-    view.questionId,
-  )
+  const {
+    settlement,
+    entry,
+    readFailed,
+    read: recheckSettlement,
+    markSettled,
+    acceptEntry,
+  } = useSettlement(host, view.sessionId, view.questionId)
   const [turn, knownTurn, rereadTurn] = useTurnPosition(host, view.sessionId)
-  const [selections, setSelections] = useState<AskSelection[]>(() =>
-    view.questions.map(() => ({ picked: [] })),
-  )
+  const [selections, setSelections] = useState<AskSelection[]>(() => view.questions.map(recommendedSelection))
   const [phase, setPhase] = useState<SendPhase>('idle')
   const [intent, setIntent] = useState<AskOutcome>('answered')
+  const [sendError, setSendError] = useState('')
   const hintId = useId()
   const confirmation = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -373,22 +326,29 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
   )
 
   const canCompose = typeof host.chat?.compose === 'function'
-  const state = askCardState(settlement, phase)
-  const settled = state === 'answered' || state === 'dismissed'
+  const state = askCardState(entry === null ? settlement : undefined, phase, entry)
+  const settled = state === 'answered' || state === 'dismissed' || state === 'withdrawn'
   const sending = state === 'sending'
-  const interactive = canCompose && !settled
+  const interactive = !settled && (entry !== null || canCompose)
+  const loading = entry === undefined
+  const about = entry?.about ?? view.about
+  const allowDismiss = mayDismiss({ ...view, about })
   // This card's own send is what settled it, so the summary can show what
   // was chosen.
   const sentHere = settled && phase === 'sending'
   const text = formatAnswer(view, selections)
+  const answeredSelections =
+    entry?.answers?.map((answer) => ({
+      picked: answer.choices ?? (answer.choice ? [answer.choice] : []),
+      other: answer.other,
+      skipped: answer.skipped,
+    })) ?? (sentHere ? selections : undefined)
 
   // While the card is open, every change to its session re-reads it: a
   // settlement written anywhere (another tab answered) closes the card, and
   // a turn starting or ending shows the "moved on" note as it happens. One
   // scope per mounted card, so the same card in two panes keeps two handlers.
-  const [watchScope] = useState(
-    () => `${view.questionId}-${Math.random().toString(36).slice(2, 10)}`,
-  )
+  const [watchScope] = useState(() => `${view.questionId}-${Math.random().toString(36).slice(2, 10)}`)
   useEffect(() => {
     if (settled) return
     return watchAskSession(host.iii, view.sessionId, watchScope, (change) => {
@@ -422,35 +382,45 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
     setPhase('unconfirmed')
   }
 
-  const send = (sent: string, outcome: AskOutcome) => {
-    if (!interactive || sending || pending.current) return
-    const before = knownTurn.current
-    try {
-      // Addressed to this card's own chat: with several chats open, the one
-      // used last may be another session, and the answer must not land there.
-      const result = host.chat?.compose?.({
-        text: sent,
-        submit: true,
-        sessionId: view.sessionId,
-      })
-      if (result === 'unavailable' || result === 'ambiguous') {
-        setPhase('failed')
-        return
-      }
-    } catch {
-      setPhase('failed')
-      return
-    }
+  const send = async (sent: string, outcome: AskOutcome) => {
+    if (!interactive || sending || pending.current || loading) return
     pending.current = true
     setIntent(outcome)
+    setSendError('')
     setPhase('sending')
-    void confirmSend(before, sent, outcome)
+    try {
+      // Re-read before sending: a stale tab must never choose the legacy path.
+      const current = await readAskEntry(host.iii, view.sessionId, view.questionId)
+      if (current !== null || entry) {
+        if (current !== null) acceptEntry(current)
+        const answered = await host.iii.call('harness::ask::answer', {
+          session_id: view.sessionId,
+          question_id: view.questionId,
+          ...(outcome === 'dismissed' ? { dismissed: true } : { answers: structuredAnswers(view, selections) }),
+          by: { channel: 'chat' },
+        })
+        acceptEntry(answered as AskEntry)
+        pending.current = false
+        return
+      }
+      const before = knownTurn.current
+      const result = host.chat?.compose?.({ text: sent, submit: true, sessionId: view.sessionId })
+      if (!canCompose || result === 'unavailable' || result === 'ambiguous') {
+        throw new Error('The chat composer is unavailable.')
+      }
+      void confirmSend(before, sent, outcome)
+    } catch (error) {
+      pending.current = false
+      setPhase('failed')
+      setSendError(errorMessage(error))
+      void recheckSettlement()
+    }
   }
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (text === null) return
-    send(text, 'answered')
+    void send(text, 'answered')
   }
 
   // Focus arriving from outside an open card re-reads the session, so a
@@ -465,14 +435,17 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
   }
 
   let note: string
-  if (state === 'answered') note = sentHere ? 'Sent as your reply.' : ''
+  if (state === 'withdrawn') note = 'Withdrawn by the asker.'
+  else if (state === 'answered')
+    note = entry?.by ? `Answered by ${entry.by.user ?? entry.by.channel}.` : sentHere ? 'Sent as your reply.' : ''
   else if (state === 'dismissed') note = 'Dismissed without answering.'
-  else if (!canCompose) note = 'Type your answer in the chat to reply.'
-  else if (state === 'sending')
-    note = intent === 'dismissed' ? 'Dismissing…' : 'Sending your answer…'
+  else if (loading) note = readFailed ? 'Could not load this question. Retry to answer.' : 'Loading question…'
+  else if (entry === null && !canCompose) note = 'Type your answer in the chat to reply.'
+  else if (state === 'sending') note = intent === 'dismissed' ? 'Dismissing…' : 'Sending your answer…'
   else if (state === 'not-sent') note = 'Not sent yet. Check the chat composer.'
-  else if (state === 'failed') note = "Couldn't send. Type your answer in the chat instead."
-  else if (movedOn(view, turn)) note = 'The chat moved on. You can still answer, or dismiss.'
+  else if (state === 'failed') note = sendError || 'Could not send. Try again.'
+  else if (entry?.state === 'expired') note = 'The deadline passed. You can still answer.'
+  else if (movedOn(view, turn)) note = 'The chat moved on. Your answer still arrives as a message.'
   else note = text === null ? 'Answer or skip each question to send.' : ''
 
   return (
@@ -484,20 +457,28 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
       onSubmit={submit}
       onFocus={onFocus}
     >
+      {about?.class ? <p className="harness-ui-ask-note">Question · {about.class.replaceAll('_', ' ')}</p> : null}
+      {about?.why ? <p className="harness-ui-ask-note">{about.why}</p> : null}
+      {about?.ticket || about?.blocks?.length ? (
+        <p className="harness-ui-ask-note">
+          {about.ticket ? `Card: ${about.ticket}. ` : ''}
+          {about.blocks?.length ? `Blocks: ${about.blocks.join(', ')}.` : ''}
+        </p>
+      ) : null}
       {view.questions.map((question, index) =>
         interactive ? (
           <QuestionFields
             key={`${index}:${question.header}`}
             question={question}
             selection={selections[index] ?? { picked: [] }}
-            disabled={sending}
+            disabled={sending || loading}
             onChange={(next) => update(index, next)}
           />
         ) : (
           <QuestionSummary
             key={`${index}:${question.header}`}
             question={question}
-            selection={sentHere && state === 'answered' ? selections[index] : undefined}
+            selection={state === 'answered' ? answeredSelections?.[index] : undefined}
           />
         ),
       )}
@@ -507,25 +488,32 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
         </span>
         {state === 'answered' ? (
           <Badge variant="ok">Answered</Badge>
-        ) : state === 'dismissed' ? (
-          <Badge>Dismissed</Badge>
+        ) : state === 'dismissed' || state === 'withdrawn' ? (
+          <Badge>{state === 'withdrawn' ? 'Withdrawn' : 'Dismissed'}</Badge>
         ) : interactive ? (
           <>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={sending}
-              aria-describedby={hintId}
-              onClick={() => send(DISMISS_TEXT, 'dismissed')}
-            >
-              Dismiss
-            </Button>
+            {readFailed ? (
+              <Button type="button" variant="secondary" size="sm" onClick={() => void recheckSettlement()}>
+                Retry
+              </Button>
+            ) : null}
+            {allowDismiss ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={sending || loading}
+                aria-describedby={hintId}
+                onClick={() => void send(DISMISS_TEXT, 'dismissed')}
+              >
+                Let the agent decide
+              </Button>
+            ) : null}
             <Button
               type="submit"
               variant="primary"
               size="sm"
-              disabled={text === null || sending}
+              disabled={text === null || sending || loading}
               aria-describedby={hintId}
             >
               Send
@@ -540,7 +528,7 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
 export function createAskRenderer(host: Host): FunctionCallRenderer {
   const render = (message: FunctionCallMessage) => {
     const view = parseAsk(message)
-    return view ? <AskCard key={view.questionId} host={host} view={view} /> : null
+    return view ? <AskCard key={`${view.sessionId}/${view.questionId}`} host={host} view={view} /> : null
   }
   return {
     id: 'harness/page.js#ask',

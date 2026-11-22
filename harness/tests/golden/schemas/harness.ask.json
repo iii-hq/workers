@@ -3,6 +3,77 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "AskAbout": {
+        "properties": {
+          "blocks": {
+            "description": "Cards whose work waits on this answer.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "class": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AskClass"
+              }
+            ],
+            "default": "scope",
+            "description": "The decision class used to derive urgency."
+          },
+          "ticket": {
+            "description": "The card this question concerns.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "description": "One paragraph explaining why the answer is needed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AskClass": {
+        "enum": [
+          "security",
+          "publish",
+          "external_cost",
+          "data",
+          "scope",
+          "run_health",
+          "routine"
+        ],
+        "type": "string"
+      },
+      "AskExpiry": {
+        "anyOf": [
+          {
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/definitions/AskExpiryBlock"
+          }
+        ]
+      },
+      "AskExpiryBlock": {
+        "enum": [
+          "block"
+        ],
+        "type": "string"
+      },
       "AskOption": {
         "properties": {
           "description": {
@@ -17,6 +88,10 @@
             "maxLength": 80,
             "minLength": 1,
             "type": "string"
+          },
+          "recommended": {
+            "description": "Marks the agent's preferred choice. At most one option per question.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -60,6 +135,31 @@
       }
     },
     "properties": {
+      "about": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AskAbout"
+          }
+        ],
+        "description": "What this decision concerns and what it blocks."
+      },
+      "expires_in_min": {
+        "description": "Minutes until the expiry action runs. Omitted asks wait forever.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "on_expiry": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AskExpiry"
+          }
+        ],
+        "description": "What to do at expiry. Defaults to leaving the question open and telling the agent that it must not decide for the user."
+      },
       "questions": {
         "description": "1-4 questions shown together on one card; the answer arrives as the user's next message, one line per question.",
         "items": {
@@ -79,6 +179,77 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "AskAbout": {
+        "properties": {
+          "blocks": {
+            "description": "Cards whose work waits on this answer.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "class": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AskClass"
+              }
+            ],
+            "default": "scope",
+            "description": "The decision class used to derive urgency."
+          },
+          "ticket": {
+            "description": "The card this question concerns.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "description": "One paragraph explaining why the answer is needed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AskClass": {
+        "enum": [
+          "security",
+          "publish",
+          "external_cost",
+          "data",
+          "scope",
+          "run_health",
+          "routine"
+        ],
+        "type": "string"
+      },
+      "AskExpiry": {
+        "anyOf": [
+          {
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/definitions/AskExpiryBlock"
+          }
+        ]
+      },
+      "AskExpiryBlock": {
+        "enum": [
+          "block"
+        ],
+        "type": "string"
+      },
       "AskOption": {
         "properties": {
           "description": {
@@ -93,6 +264,10 @@
             "maxLength": 80,
             "minLength": 1,
             "type": "string"
+          },
+          "recommended": {
+            "description": "Marks the agent's preferred choice. At most one option per question.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -148,6 +323,20 @@
     },
     "description": "What an accepted ask records as its result `details`: the card the UI draws and the ids it uses to tell an open question from an answered one.",
     "properties": {
+      "about": {
+        "$ref": "#/definitions/AskAbout"
+      },
+      "expires_in_min": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "on_expiry": {
+        "$ref": "#/definitions/AskExpiry"
+      },
       "question_id": {
         "description": "The function-call id of this ask.",
         "type": "string"
@@ -166,7 +355,7 @@
         "$ref": "#/definitions/AskStatus"
       },
       "turn_id": {
-        "description": "The turn that asked; once the session's current turn differs, the question has been answered.",
+        "description": "The turn that asked; the question remains open if the session moves on.",
         "type": "string"
       }
     },

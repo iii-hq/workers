@@ -318,10 +318,14 @@ impl Stack {
                 }
             }),
         );
-        stubs.register_function(
-            "state::list",
-            RegisterFunction::new_async(|_: Value| async { Ok::<_, iii_sdk::Error>(json!([])) }),
-        );
+        for function_id in ["state::list", "harness::state::list"] {
+            stubs.register_function(
+                function_id,
+                RegisterFunction::new_async(|_: Value| async {
+                    Ok::<_, iii_sdk::Error>(json!([]))
+                }),
+            );
+        }
         let (w, g) = (world.clone(), gate.clone());
         stubs.register_function(
             "context::compact",

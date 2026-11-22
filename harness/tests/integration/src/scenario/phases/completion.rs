@@ -255,13 +255,23 @@ impl ScenarioRunner<'_> {
         if action.function_id == crate::fixtures::OBSERVE_ACTION {
             return observe_probe_action(services, &payload, deadline).await;
         }
-        services
+        let output = services
             .client()
             .call_until_deadline(&action.function_id, payload, deadline)
             .await
             .map_err(|error| {
                 RunError::runner(RunPhase::Await, "fire probe action", anyhow::anyhow!(error))
             })?;
+        if let Some(expected) = &action.expected_output {
+            let matched = crate::matcher::evaluate("probe output", expected, Some(&output));
+            if !matched.passed {
+                return Err(RunError::new(
+                    RunPhase::Await,
+                    crate::runtime::RunErrorKind::Contract,
+                    matched.detail,
+                ));
+            }
+        }
         Ok(())
     }
 
