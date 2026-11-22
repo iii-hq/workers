@@ -132,8 +132,13 @@ export async function removeEntry(deps: SaveDeps, server: Server): Promise<boole
     throw new Error(gateError('removed', 'checked', errorMessage(err)))
   })
   const fns = serverAccess(server).length
+  // Only what this server has: a stdio or API-key server has no sign-in to clear.
+  const parts = [
+    fns > 0 ? `${plural(fns, 'function goes', 'functions go')} away` : null,
+    server.auth === 'oauth' ? 'sign-in is cleared' : null,
+  ].filter(Boolean)
   const lines = [
-    `Its ${plural(fns, 'function goes', 'functions go')} away and its sign-in is cleared.`,
+    ...(parts.length > 0 ? [`Its ${parts.join(' and its ')}.`] : []),
     ...(count > 0 ? [`Its ${plural(count, 'approval-gate rule is', 'approval-gate rules are')} removed too.`] : []),
   ]
   if (!(await deps.confirm({ title: `Remove ${server.name}?`, tone: 'danger', lines }))) return false

@@ -285,7 +285,7 @@ describe('removeEntry', () => {
     registered: true,
     annotations: null,
   }))
-  const linear = srv({ name: 'linear', tools })
+  const linear = srv({ name: 'linear', tools, auth: 'oauth' })
 
   it('removes the block, then the entry', async () => {
     const f = fake({ blockCount: 41 })
@@ -299,6 +299,13 @@ describe('removeEntry', () => {
       },
     ])
     expect(f.written.linear).toEqual(null)
+  })
+
+  it('says only what the server has: no sign-in for an API key, no functions when none are listed', async () => {
+    const f = fake()
+    await removeEntry(f.deps, srv({ name: 'k', tools }))
+    await removeEntry(f.deps, srv({ name: 'e', tools: [], auth: 'none' }))
+    expect(f.confirms.map((c) => c.lines)).toEqual([['Its 69 functions go away.'], []])
   })
 
   it('says nothing about rules when there are none, and keeps the entry when declined', async () => {
