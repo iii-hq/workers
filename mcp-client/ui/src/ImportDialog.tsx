@@ -152,7 +152,7 @@ export function ImportDialog({
   )
   const say = (message: string) => scrub(message, hidden)
   const effective = rows.map((r, i): ImportRow => (skip[i] ? { ...r, status: 'skipped' } : r))
-  const cross = crossRowBlockers(effective)
+  const cross = crossRowBlockers(effective, values)
   const blockers = effective.map((r, i) => [...rowBlockers(r, values[i] ?? {}), ...cross[i]])
   const targets = effective.flatMap((r, i) => (r.status === 'skipped' ? [] : [i]))
   const ready = targets.length > 0 && targets.every((i) => blockers[i].length === 0)
@@ -380,8 +380,14 @@ export function ImportDialog({
                 <ul className="mcp-ui-issues">
                   {errors.map((issue, k) => (
                     <li key={k}>
-                      <code>{issue.path}</code>
-                      <span>{say(issue.message)}</span>
+                      <span>
+                        {issue.path ? (
+                          <>
+                            <code>{issue.path}</code>:{' '}
+                          </>
+                        ) : null}
+                        {say(issue.message)}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -398,7 +404,7 @@ export function ImportDialog({
       <DialogContent
         className="mcp-ui-import"
         showCloseButton={phase !== 'importing'}
-        aria-busy={!editing || undefined}
+        aria-busy={phase === 'importing' || undefined}
         // The editor mounts late and hidden, so its autoFocus misses and focus falls back to the dialog: until the
         // person acts, hand it on.
         onFocus={(e) => {

@@ -718,7 +718,7 @@ describe('dialog rules', () => {
   it('crossRowBlockers finds a name or a vault name another row of the import holds', () => {
     const keyed = row(parse('cursor.json'), 'keyed')
     const other = renameRow(keyed, 'other', [])
-    expect(crossRowBlockers([keyed, renameRow(other, ' keyed ', [])])).toEqual([
+    expect(crossRowBlockers([keyed, renameRow(other, ' keyed ', [])], [{}, {}])).toEqual([
       [],
       ['Another server in this import is named `keyed`'],
     ])
@@ -726,15 +726,41 @@ describe('dialog rules', () => {
       ...other,
       secrets: [{ ...other.secrets[0], vaultName: 'KEYED_API_KEY', value }],
     })
-    expect(crossRowBlockers([keyed, vault('another-fake')])).toEqual([
+    expect(crossRowBlockers([keyed, vault('another-fake')], [{}, {}])).toEqual([
       [],
       ['Vault name `KEYED_API_KEY` is used by another server in this import'],
     ])
     // One value under one vault name is one secret: no blocker.
-    expect(crossRowBlockers([keyed, vault(FAKE)])).toEqual([[], []])
+    expect(crossRowBlockers([keyed, vault(FAKE)], [{}, {}])).toEqual([[], []])
     // A skipped row takes no part.
     const asana = row(parse('claude-code.json'), 'asana')
-    expect(crossRowBlockers([{ ...asana, name: 'keyed' }, keyed])).toEqual([[], []])
+    expect(crossRowBlockers([{ ...asana, name: 'keyed' }, keyed], [{}, {}])).toEqual([[], []])
+  })
+  it('crossRowBlockers reads the vault names typed passwords will take, not only the pasted secrets', () => {
+    // `a` + `B_TOKEN` and `a-b` + `token` both default to A_B_TOKEN.
+    const { rows } = parseImport(
+      JSON.stringify({
+        a: { command: 'x', env: { B_TOKEN: 'your-token' } },
+        'a-b': { url: 'https://api.example.com/mcp', headers: { Authorization: 'Bearer your-token' } },
+      }),
+      [],
+    )
+    expect(rows.map((r) => r.needs.map((n) => [n.path, n.password]))).toEqual([
+      [['/env/B_TOKEN', true]],
+      [['/auth/token', true]],
+    ])
+    expect(crossRowBlockers(rows, [{ '/env/B_TOKEN': FAKE }, { '/auth/token': 'another-fake' }])).toEqual([
+      [],
+      ['Vault name `A_B_TOKEN` is used by another server in this import'],
+    ])
+    expect(crossRowBlockers(rows, [{ '/env/B_TOKEN': FAKE }, { '/auth/token': FAKE }])).toEqual([[], []])
+    // A pasted secret renamed onto the name a typed password takes.
+    const keyed = row(parse('cursor.json'), 'keyed')
+    const moved = { ...keyed, secrets: [{ ...keyed.secrets[0], vaultName: 'A_B_TOKEN' }] }
+    expect(crossRowBlockers([rows[1], moved], [{ '/auth/token': 'another-fake' }, {}])).toEqual([
+      [],
+      ['Vault name `A_B_TOKEN` is used by another server in this import'],
+    ])
   })
   it('startValues starts a password need empty, never from its masked original', () => {
     const masked = parseImport(JSON.stringify({ x: { url: '${BASE}/mcp?api_key=' + FAKE } }), []).rows[0]

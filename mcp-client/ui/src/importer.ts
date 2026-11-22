@@ -657,17 +657,17 @@ export function rowBlockers(row: ImportRow, values: Record<string, string>): str
 }
 
 /** What stops each row because of an earlier one in the same import: a name, or a vault name held with another
- * value. One list per row, by index; a skipped row takes no part. */
-export function crossRowBlockers(rows: ImportRow[]): string[][] {
+ * value, typed passwords included. One list per row, by index; a skipped row takes no part. */
+export function crossRowBlockers(rows: ImportRow[], values: Record<string /* need path */, string>[]): string[][] {
   const names = new Set<string>()
   const vault = new Map<string, string>()
-  return rows.map((row) => {
+  return rows.map((row, i) => {
     if (row.status === 'skipped') return []
     const out: string[] = []
     const name = row.name.trim()
     if (name !== '' && names.has(name)) out.push(`Another server in this import is named \`${name}\``)
     names.add(name)
-    const mine = new Map(row.secrets.map((s) => [s.vaultName, s.value]))
+    const mine = new Map(finalEntry(row, values[i] ?? {}).toStore.map((s) => [s.name, s.value]))
     for (const [n, value] of mine) {
       if (vault.has(n) && vault.get(n) !== value)
         out.push(`Vault name \`${n}\` is used by another server in this import`)
