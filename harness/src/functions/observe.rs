@@ -360,7 +360,8 @@ pub async fn invoke(
             ),
             crate::functions::observers_list::OBSERVERS_LIST_ID
             | crate::functions::observers_list::OBSERVERS_DISPOSE_ID
-            | crate::ask_store::WITHDRAW_ID => {
+            | crate::ask_store::WITHDRAW_ID
+            | crate::functions::link_card::ID => {
                 // In-turn controls always target their caller. External console
                 // calls bypass this chokepoint and continue supplying session_id.
                 let args = with_caller_session_id(arguments, session_id);

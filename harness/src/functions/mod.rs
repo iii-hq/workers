@@ -10,6 +10,7 @@ pub mod delete_session_tree;
 pub mod filesystem;
 pub mod function_call;
 pub mod function_resolve;
+pub mod link_card;
 pub mod metrics;
 pub mod observe;
 pub mod observer_deliver;
@@ -339,6 +340,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         crate::ask_store::LIST_ID,
         "List durable asks, including closed entries, with optional session and state filters.",
         |d, r| async move { crate::ask_store::list(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        link_card::ID,
+        "Link the calling session tree's root to a kanban card without replacing other session metadata.",
+        |d, r| async move { link_card::handle(&d, r).await },
     );
     // Catalog-visible so the model finds the observe controls; the turn loop
     // intercepts the calls, and these handlers only answer direct calls

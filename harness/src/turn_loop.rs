@@ -1723,14 +1723,21 @@ async fn generate_step(
 
     // Re-acquire the lock before any further turn-record write, then refresh
     // the durable fields allowed to change while generation held no lock:
-    // abort, an explicit skill filter from a raced send, and a wake merged
-    // into this turn. The frozen skill baseline remains the one used for this
+    // abort, function policy, an explicit skill filter from a raced send, and a
+    // wake merged into this turn. The frozen skill baseline remains the one used for this
     // generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let durable_record =
         crate::state::get_turn_unhydrated(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
             .await?;
     let durable_abort = durable_record.as_ref().is_some_and(|record| record.abort);
+    if let Some(durable) = durable_record
+        .as_ref()
+        .filter(|durable| durable.turn_id == record.turn_id)
+    {
+        record.options.functions = durable.options.functions.clone();
+        record.functions_acknowledged = durable.functions_acknowledged.clone();
+    }
     crate::skills::refresh_filter(
         &mut record.options.skill_context,
         durable_record

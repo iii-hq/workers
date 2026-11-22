@@ -98,6 +98,8 @@ pub enum AskState {
 pub struct AskEntry {
     #[serde(flatten)]
     pub question: Question,
+    #[serde(default)]
+    pub asked_by: Option<String>,
     pub state: AskState,
     #[serde(default)]
     pub answer_text: Option<String>,
@@ -166,14 +168,15 @@ fn append(
     answer: Option<Answer>,
     parent_id: Option<String>,
     recorded_by: Option<String>,
-    created_at: &str,
-    at: &str,
+    question_author: Option<String>,
+    times: (&str, &str),
 ) -> CommentResult {
+    let (created_at, at) = times;
     let (body, author) = match (&question, &answer) {
         (Some(question), _) => (
             question_body(question),
-            recorded_by
-                .clone()
+            question_author
+                .or_else(|| recorded_by.clone())
                 .unwrap_or_else(|| question.session_id.clone()),
         ),
         (_, Some(answer)) => (
@@ -286,8 +289,8 @@ pub fn mirror(
                 None,
                 None,
                 None,
-                &asked_at,
-                at,
+                entry.asked_by.clone(),
+                (&asked_at, at),
             );
             let id = result.comment.id.clone();
             added.push(result);
@@ -311,8 +314,8 @@ pub fn mirror(
             Some(answer),
             Some(comment_id),
             None,
-            &settled_at,
-            at,
+            None,
+            (&settled_at, at),
         ));
     }
     Ok(added)
@@ -371,8 +374,8 @@ pub fn record(
         None,
         None,
         Some(profile.clone()),
-        at,
-        at,
+        None,
+        (at, at),
     );
     let answer = append(
         ticket,
@@ -387,8 +390,8 @@ pub fn record(
         }),
         Some(root.comment.id.clone()),
         None,
-        at,
-        at,
+        None,
+        (at, at),
     );
     Ok(vec![root, answer])
 }

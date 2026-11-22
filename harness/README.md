@@ -94,6 +94,13 @@ A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's
 once a read of `sandbox::adapter::info` succeeds, at startup and on each registry change. If it
 fails, for example because RBAC refuses it, the harness logs a warning and the adapter's ids stay
 callable until a later read succeeds.
+
+A session whose metadata contains `side_chat_question` is additionally capped by the configured
+`side_chat_functions`, regardless of the policy supplied by a later send. Its default ceiling is
+`session::get`, `session::messages-tail`, `harness::status`, `kanban::ticket::get`,
+`kanban::ticket::list`, `kanban::question::list`, `coder::read-file`, and `memory::recall`.
+An explicit `options.functions` may narrow that list but cannot widen it.
+
 Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
 schema rejects is parsed. When the optional
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles
@@ -724,7 +731,9 @@ defaults to 100 (1–200), and `cursor` is the previous page's last key, exclusi
 Entries carry `session_id`, `question_id`, `turn_id`, `questions`, `about`,
 `asked_at` (epoch ms), `state`, `on_expiry`, optional `expires_in_min` and
 `expires_at` (epoch ms), plus `answers`, `answer_text`, `by`, `outcome`, and
-`settled_at` (epoch ms) when present. Outcomes are `answered`, `dismissed`,
+`settled_at` (epoch ms) when present. Optional `asked_by` identifies the asking
+agent profile, captured from the session's `metadata.agent_profile.id`.
+Outcomes are `answered`, `dismissed`,
 `withdrawn`, `expired_default`, and `not_delivered`.
 
 `harness::on-ask` fires when an entry is
@@ -742,6 +751,8 @@ min; default applied)` appended.
 **Agent rules.** Ask from a depth-0/root session; a sub-agent reports its
 blocked question to its parent, which consolidates and asks. When work is on
 a card, set `about` and explain `about.why`, and mark the option you recommend.
+Link the work on a card with `harness::link-card { ticket }`; a call from a
+sub-agent links its root session while preserving the root's other metadata.
 Keep working when the answer does not block the next step. Withdraw a question
 that no longer needs an answer. When a run-health issue prevents progress
 (repeated check timeouts or an unavailable service), ask a `run_health` question

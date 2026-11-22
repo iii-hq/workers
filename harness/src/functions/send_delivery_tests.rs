@@ -13,6 +13,7 @@ struct Data {
     fail_appends: usize,
     gone: bool,
     delete_on_append: bool,
+    metadata: Value,
 }
 impl Data {
     fn get(&self, scope: &str, key: &str) -> Value {
@@ -60,7 +61,7 @@ impl Data {
                 Ok(json!({"swapped":swapped,"current":old}))
             }
             "session::get" if self.gone => Ok(Value::Null),
-            "session::get" => Ok(json!({"meta":{"session_id":session,"metadata":{}}})),
+            "session::get" => Ok(json!({"meta":{"session_id":session,"metadata":self.metadata}})),
             "session::ensure" => {
                 Ok(json!({"created":false,"meta":{"session_id":session,"metadata":{}}}))
             }
@@ -220,6 +221,128 @@ impl Stack {
 }
 fn request(session: &str, text: &str, key: Option<&str>, prior: Option<&str>) -> SendRequest {
     serde_json::from_value(json!({"session_id":session,"message":text,"idempotency_key":key,"options":{"continuation_entry_id":prior}})).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_sends_intersect_explicit_and_inherited_policies() {
+    let stack = Stack::new().await;
+    stack.data.lock().unwrap().metadata = json!({"side_chat_question":"original/q"});
+    stack.reset("side", TurnStatus::Completed).await;
+    let mut req = request("side", "Discuss the pending decision", None, None);
+    req.session = Some(SessionInit {
+        metadata: Some(json!({})),
+        ..Default::default()
+    });
+    req.options.as_mut().unwrap().functions = Some(FunctionPolicy {
+        allow: vec!["*".into()],
+        deny: vec!["memory::recall".into()],
+        expose: crate::types::turn::ExposeMode::Native,
+    });
+    handle(&stack.deps, req).await.unwrap();
+    let mut turn = crate::state::get_turn(&stack.deps.iii, "side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    let functions = turn.options.functions.as_ref().unwrap();
+    let expected = WorkerConfig::default().side_chat_functions;
+    assert_eq!(functions.allow, expected);
+    assert_eq!(functions.expose, crate::types::turn::ExposeMode::Native);
+    let policy = policy::CompiledPolicy::from(Some(functions));
+    for id in [
+        "kanban::ticket::update",
+        "harness::spawn",
+        "harness::ask::answer",
+        "shell::exec",
+        "memory::recall",
+    ] {
+        assert!(!policy.allows(id), "{id}");
+    }
+    let child = policy::subset_policy(Some(functions), None).unwrap();
+    assert_eq!(child.allow, expected);
+
+    turn.status = TurnStatus::Completed;
+    crate::state::put_turn(&stack.deps.iii, &turn, 1000)
+        .await
+        .unwrap();
+    let mut cfg = (*stack.deps.cfg().await).clone();
+    cfg.side_chat_functions = vec!["session::get".into()];
+    crate::configuration::apply_config(&stack.deps.config, cfg).await;
+    handle(&stack.deps, request("side", "Another question", None, None))
+        .await
+        .unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.options.functions.unwrap().allow, ["session::get"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_sends_keep_the_explicit_function_policy() {
+    let stack = Stack::new().await;
+    stack.reset("ordinary", TurnStatus::Completed).await;
+    let mut req = request("ordinary", "Continue work", None, None);
+    let functions = FunctionPolicy {
+        allow: vec!["*".into()],
+        deny: vec![],
+        expose: Default::default(),
+    };
+    req.options.as_mut().unwrap().functions = Some(functions.clone());
+    handle(&stack.deps, req).await.unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "ordinary", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.options.functions, Some(functions));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_side_chat_sends_tighten_the_running_turn() {
+    let stack = Stack::new().await;
+    stack.reset("running-side", TurnStatus::Running).await;
+    let mut turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    turn.options.functions = Some(FunctionPolicy {
+        allow: vec!["*".into()],
+        ..Default::default()
+    });
+    crate::state::put_turn(&stack.deps.iii, &turn, 1000)
+        .await
+        .unwrap();
+    stack.data.lock().unwrap().metadata = json!({"side_chat_question":"original/q"});
+
+    let mut req = request("running-side", "Discuss the decision", None, None);
+    req.options.as_mut().unwrap().functions = turn.options.functions;
+    let out = handle(&stack.deps, req.clone()).await.unwrap();
+    assert_eq!(out.queued, Some(true));
+    let turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        turn.options.functions.unwrap().allow,
+        WorkerConfig::default().side_chat_functions
+    );
+
+    let mut cfg = (*stack.deps.cfg().await).clone();
+    cfg.side_chat_functions = vec!["session::get".into()];
+    crate::configuration::apply_config(&stack.deps.config, cfg).await;
+    handle(&stack.deps, req.clone()).await.unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.options.functions.unwrap().allow, ["session::get"]);
+
+    req.options.as_mut().unwrap().functions = Some(FunctionPolicy::default());
+    handle(&stack.deps, req).await.unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(turn.options.functions.unwrap().allow.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

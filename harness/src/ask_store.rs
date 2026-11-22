@@ -71,6 +71,9 @@ pub struct Entry {
     pub session_id: String,
     pub question_id: String,
     pub turn_id: String,
+    /// Asking agent profile id, when the session has a frozen profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<String>,
     pub questions: Vec<AskQuestion>,
     pub about: AskAbout,
     pub asked_at: i64,
@@ -206,18 +209,20 @@ pub async fn accept(
     question_id: &str,
     req: &AskRequest,
 ) -> Result<(), HarnessError> {
+    let metadata = deps.session().await.metadata_of(session_id).await?;
+    let asked_by = metadata
+        .as_ref()
+        .and_then(|meta| meta.get("agent_profile"))
+        .and_then(|profile| profile.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let mut about = req.about.clone();
     if about.ticket.is_none() {
-        about.ticket = deps
-            .session()
-            .await
-            .metadata_of(session_id)
-            .await?
-            .and_then(|meta| {
-                meta.get("kanban_ticket")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            });
+        about.ticket = metadata.as_ref().and_then(|meta| {
+            meta.get("kanban_ticket")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
     }
     let asked_at = AgentMessage::now_ms();
     let expires_at = req
@@ -234,6 +239,7 @@ pub async fn accept(
         session_id: session_id.into(),
         question_id: question_id.into(),
         turn_id: turn_id.into(),
+        asked_by,
         questions: req.questions.clone(),
         about,
         asked_at,

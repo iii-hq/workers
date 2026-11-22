@@ -1,0 +1,657 @@
+{
+  "function_id": "harness::on-ask-settled",
+  "request_format": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Answer": {
+        "additionalProperties": false,
+        "properties": {
+          "choice": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "header": {
+            "type": "string"
+          },
+          "other": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skipped": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "header"
+        ],
+        "type": "object"
+      },
+      "AnswerBy": {
+        "properties": {
+          "channel": {
+            "$ref": "#/definitions/Channel"
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "channel"
+        ],
+        "type": "object"
+      },
+      "AskAbout": {
+        "properties": {
+          "blocks": {
+            "description": "Cards whose work waits on this answer.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "class": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AskClass"
+              }
+            ],
+            "default": "scope",
+            "description": "The decision class used to derive urgency."
+          },
+          "ticket": {
+            "description": "The card this question concerns.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "description": "One paragraph explaining why the answer is needed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AskClass": {
+        "enum": [
+          "security",
+          "publish",
+          "external_cost",
+          "data",
+          "scope",
+          "run_health",
+          "routine"
+        ],
+        "type": "string"
+      },
+      "AskExpiry": {
+        "anyOf": [
+          {
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/definitions/AskExpiryBlock"
+          }
+        ]
+      },
+      "AskExpiryBlock": {
+        "enum": [
+          "block"
+        ],
+        "type": "string"
+      },
+      "AskOption": {
+        "properties": {
+          "description": {
+            "description": "Optional one-line explanation shown under the label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "The choice as the user sees and sends it, 1-80 characters, unique within its question.",
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          },
+          "recommended": {
+            "description": "Marks the agent's preferred choice. At most one option per question.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "AskQuestion": {
+        "properties": {
+          "header": {
+            "description": "Short chip label such as `Approach`; prefixes the answer line (`Approach: <label>`). No length limit: the card shows a long one with an ellipsis and the whole text on hover.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "multi_select": {
+            "default": false,
+            "description": "Let the user pick several options (checkboxes) instead of one.",
+            "type": "boolean"
+          },
+          "options": {
+            "description": "2-4 discrete choices; do not add an \"Other\" option, the UI adds a free-text one.",
+            "items": {
+              "$ref": "#/definitions/AskOption"
+            },
+            "maxItems": 4,
+            "minItems": 2,
+            "type": "array"
+          },
+          "question": {
+            "description": "The full question text shown above the options.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "header",
+          "options",
+          "question"
+        ],
+        "type": "object"
+      },
+      "AskState": {
+        "enum": [
+          "open",
+          "answering",
+          "answered",
+          "dismissed",
+          "withdrawn",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "Channel": {
+        "enum": [
+          "chat",
+          "tower",
+          "kanban",
+          "expiry"
+        ],
+        "type": "string"
+      },
+      "Outcome": {
+        "enum": [
+          "answered",
+          "dismissed",
+          "withdrawn",
+          "expired_default",
+          "not_delivered"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "about": {
+        "$ref": "#/definitions/AskAbout"
+      },
+      "answer_text": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "answers": {
+        "items": {
+          "$ref": "#/definitions/Answer"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "asked_at": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "asked_by": {
+        "description": "Asking agent profile id, when the session has a frozen profile.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "by": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AnswerBy"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "expires_at": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "expires_in_min": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "on_expiry": {
+        "$ref": "#/definitions/AskExpiry"
+      },
+      "outcome": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Outcome"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "question_id": {
+        "type": "string"
+      },
+      "questions": {
+        "items": {
+          "$ref": "#/definitions/AskQuestion"
+        },
+        "type": "array"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "settled_at": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "state": {
+        "$ref": "#/definitions/AskState"
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "about",
+      "asked_at",
+      "on_expiry",
+      "question_id",
+      "questions",
+      "session_id",
+      "state",
+      "turn_id"
+    ],
+    "title": "Entry",
+    "type": "object"
+  },
+  "response_format": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Answer": {
+        "additionalProperties": false,
+        "properties": {
+          "choice": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "header": {
+            "type": "string"
+          },
+          "other": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skipped": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "header"
+        ],
+        "type": "object"
+      },
+      "AnswerBy": {
+        "properties": {
+          "channel": {
+            "$ref": "#/definitions/Channel"
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "channel"
+        ],
+        "type": "object"
+      },
+      "AskAbout": {
+        "properties": {
+          "blocks": {
+            "description": "Cards whose work waits on this answer.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "class": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AskClass"
+              }
+            ],
+            "default": "scope",
+            "description": "The decision class used to derive urgency."
+          },
+          "ticket": {
+            "description": "The card this question concerns.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "description": "One paragraph explaining why the answer is needed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AskClass": {
+        "enum": [
+          "security",
+          "publish",
+          "external_cost",
+          "data",
+          "scope",
+          "run_health",
+          "routine"
+        ],
+        "type": "string"
+      },
+      "AskExpiry": {
+        "anyOf": [
+          {
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/definitions/AskExpiryBlock"
+          }
+        ]
+      },
+      "AskExpiryBlock": {
+        "enum": [
+          "block"
+        ],
+        "type": "string"
+      },
+      "AskOption": {
+        "properties": {
+          "description": {
+            "description": "Optional one-line explanation shown under the label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "The choice as the user sees and sends it, 1-80 characters, unique within its question.",
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          },
+          "recommended": {
+            "description": "Marks the agent's preferred choice. At most one option per question.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "AskQuestion": {
+        "properties": {
+          "header": {
+            "description": "Short chip label such as `Approach`; prefixes the answer line (`Approach: <label>`). No length limit: the card shows a long one with an ellipsis and the whole text on hover.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "multi_select": {
+            "default": false,
+            "description": "Let the user pick several options (checkboxes) instead of one.",
+            "type": "boolean"
+          },
+          "options": {
+            "description": "2-4 discrete choices; do not add an \"Other\" option, the UI adds a free-text one.",
+            "items": {
+              "$ref": "#/definitions/AskOption"
+            },
+            "maxItems": 4,
+            "minItems": 2,
+            "type": "array"
+          },
+          "question": {
+            "description": "The full question text shown above the options.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "header",
+          "options",
+          "question"
+        ],
+        "type": "object"
+      },
+      "AskState": {
+        "enum": [
+          "open",
+          "answering",
+          "answered",
+          "dismissed",
+          "withdrawn",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "Channel": {
+        "enum": [
+          "chat",
+          "tower",
+          "kanban",
+          "expiry"
+        ],
+        "type": "string"
+      },
+      "Outcome": {
+        "enum": [
+          "answered",
+          "dismissed",
+          "withdrawn",
+          "expired_default",
+          "not_delivered"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "about": {
+        "$ref": "#/definitions/AskAbout"
+      },
+      "answer_text": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "answers": {
+        "items": {
+          "$ref": "#/definitions/Answer"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "asked_at": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "asked_by": {
+        "description": "Asking agent profile id, when the session has a frozen profile.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "by": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AnswerBy"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "expires_at": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "expires_in_min": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "on_expiry": {
+        "$ref": "#/definitions/AskExpiry"
+      },
+      "outcome": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Outcome"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "question_id": {
+        "type": "string"
+      },
+      "questions": {
+        "items": {
+          "$ref": "#/definitions/AskQuestion"
+        },
+        "type": "array"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "settled_at": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "state": {
+        "$ref": "#/definitions/AskState"
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "about",
+      "asked_at",
+      "on_expiry",
+      "question_id",
+      "questions",
+      "session_id",
+      "state",
+      "turn_id"
+    ],
+    "title": "Entry",
+    "type": "object"
+  }
+}

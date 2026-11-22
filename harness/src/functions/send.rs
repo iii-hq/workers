@@ -488,12 +488,65 @@ async fn start_with_delivery_lock(
     // and a failed resolve must leave no session or budget ledger behind.
     // The one dispatch-policy rule for this send: persisted as
     // `options.functions` AND the policy its profile's contracts freeze under.
-    let functions = send_functions(
+    let mut functions = send_functions(
         &cfg,
         &req,
         prev.as_ref().and_then(|p| p.options.functions.as_ref()),
     )
     .cloned();
+    let is_side_chat = existing_metadata
+        .as_ref()
+        .or_else(|| {
+            req.session
+                .as_ref()
+                .and_then(|init| init.metadata.as_ref())
+                .and_then(Value::as_object)
+        })
+        .is_some_and(|metadata| metadata.contains_key("side_chat_question"));
+    if is_side_chat {
+        cap_side_chat_functions(&mut functions, &cfg.side_chat_functions);
+        let explicit_functions = req
+            .options
+            .as_ref()
+            .is_some_and(|options| options.functions.is_some());
+        if let Some(previous) = prev.as_ref().filter(|turn| !turn.status.is_terminal())
+            && (explicit_functions || previous.options.functions != functions)
+        {
+            // A queued send normally keeps the running policy. Tighten it
+            // under the turn's writer lock when the marker or ceiling changed.
+            with_delivery_guard(
+                &deps.locks,
+                &previous.session_id,
+                caller_holds_target_session_lock,
+                || async {
+                    if let Some(mut active) = crate::state::get_turn_unhydrated(
+                        &deps.iii,
+                        &previous.session_id,
+                        cfg.session_timeout_ms,
+                    )
+                    .await?
+                        && !active.status.is_terminal()
+                    {
+                        let mut narrowed = if explicit_functions {
+                            functions.clone()
+                        } else {
+                            active.options.functions.clone()
+                        };
+                        cap_side_chat_functions(&mut narrowed, &cfg.side_chat_functions);
+                        if active.options.functions != narrowed {
+                            active.options.functions = narrowed;
+                            active.functions_acknowledged = None;
+                            active.updated_at = AgentMessage::now_ms();
+                            crate::state::put_turn(&deps.iii, &active, cfg.session_timeout_ms)
+                                .await?;
+                        }
+                    }
+                    Ok::<(), HarnessError>(())
+                },
+            )
+            .await?;
+        }
+    }
     let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref(), functions.as_ref()).await?;
 
     // A profile-associated model is authoritative for that profile. Console
@@ -1520,6 +1573,18 @@ fn send_functions<'a>(
                 .and_then(|o| o.agent.as_ref())
                 .and(cfg.default_functions.as_ref())
         })
+}
+
+fn cap_side_chat_functions(functions: &mut Option<FunctionPolicy>, ceiling: &[String]) -> bool {
+    let Some(functions) = functions else {
+        return false;
+    };
+    let allow = policy::CompiledPolicy::from(Some(functions)).restrict_allow(ceiling);
+    if functions.allow == allow {
+        return false;
+    }
+    functions.allow = allow;
+    true
 }
 
 /// Refusal for a `skills` change on a session that has no skill context: a
@@ -3038,6 +3103,27 @@ mod tests {
 
         // A plain new send with no policy stays fail-closed, default or not.
         assert!(send_functions(&cfg, &steer, None).is_none());
+    }
+
+    #[test]
+    fn side_chat_ceiling_keeps_namespace_qualifiers_denies_and_fail_closed_policies() {
+        let ceiling = WorkerConfig::default().side_chat_functions;
+        let mut functions = Some(FunctionPolicy {
+            allow: vec!["laptop/session::*".into()],
+            deny: vec!["session::messages-tail".into()],
+            expose: Default::default(),
+        });
+        assert!(cap_side_chat_functions(&mut functions, &ceiling));
+        let policy = policy::CompiledPolicy::from(functions.as_ref());
+        assert!(policy.allows_in("laptop", "session::get"));
+        assert!(!policy.allows_in("other", "session::get"));
+        assert!(!policy.allows_in("laptop", "session::messages-tail"));
+        assert!(!cap_side_chat_functions(&mut functions, &ceiling));
+
+        functions.as_mut().unwrap().allow = vec!["[".into(), "*".into()];
+        cap_side_chat_functions(&mut functions, &ceiling);
+        assert!(functions.unwrap().allow.is_empty());
+        assert!(!cap_side_chat_functions(&mut None, &ceiling));
     }
 
     #[test]

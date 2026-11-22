@@ -44,6 +44,26 @@ fn deletion_event_schema_matches_golden() {
 }
 
 #[test]
+fn ask_event_schemas_match_goldens() {
+    let entry = harness::surface::schema_value::<harness::ask_store::Entry>();
+    for function_id in [
+        harness::events::ON_ASK_FN,
+        harness::events::ON_ASK_SETTLED_FN,
+    ] {
+        let actual = serde_json::json!({
+            "function_id": function_id,
+            "request_format": entry.clone(),
+            "response_format": entry.clone(),
+        });
+        support::check_golden(
+            &golden_file_name(function_id),
+            &(serde_json::to_string_pretty(&actual).unwrap() + "\n"),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn catalog_lists_all_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
@@ -56,6 +76,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::ask::answer",
             "harness::ask::withdraw",
             "harness::ask::list",
+            "harness::link-card",
             "harness::observe",
             "harness::unobserve",
             "harness::turn",

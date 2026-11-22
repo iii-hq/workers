@@ -261,6 +261,13 @@
         "format": "int64",
         "type": "integer"
       },
+      "asked_by": {
+        "description": "Asking agent profile id, when the session has a frozen profile.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "by": {
         "anyOf": [
           {

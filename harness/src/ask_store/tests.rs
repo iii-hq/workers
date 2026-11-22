@@ -14,6 +14,7 @@ struct Store {
     gone: bool,
     calls: Vec<String>,
     withdrawn: Option<Value>,
+    metadata: Option<Value>,
 }
 
 async fn fixture() -> (Deps, Arc<Mutex<Store>>, tokio::task::JoinHandle<()>) {
@@ -62,7 +63,11 @@ async fn fixture() -> (Deps, Arc<Mutex<Store>>, tokio::task::JoinHandle<()>) {
                     }
                     "session::get" if db.gone => Value::Null,
                     "session::get" => {
-                        json!({"meta":{"session_id":data["session_id"],"metadata":{"kanban_ticket":"KAN-597"}}})
+                        let metadata = db
+                            .metadata
+                            .clone()
+                            .unwrap_or_else(|| json!({"kanban_ticket":"KAN-597"}));
+                        json!({"meta":{"session_id":data["session_id"],"metadata":metadata}})
                     }
                     "engine::workers::list" => json!({"workers":[]}),
                     "harness::ask::withdraw" => {
@@ -131,6 +136,41 @@ fn response(session: &str, question: &str) -> AnswerRequest {
 }
 
 #[tokio::test]
+async fn asking_profile_is_stored_and_preserved_when_settled() {
+    let (deps, db, server) = fixture().await;
+    db.lock().unwrap().metadata = Some(json!({
+        "agent_profile":{"id":"backend-engineer", "name":"Backend engineer"},
+        "kanban_ticket":"KAN-597"
+    }));
+    // An explicit card must not skip looking up the asking profile.
+    let req = request(json!({"about":{"ticket":"KAN-598"}}));
+    accept(&deps, "s", "t", "q", &req).await.unwrap();
+    let entry = get(&deps, "s", "q").await.unwrap();
+    assert_eq!(entry.asked_by.as_deref(), Some("backend-engineer"));
+    assert_eq!(entry.about.ticket.as_deref(), Some("KAN-598"));
+    assert_eq!(
+        db.lock().unwrap().rows["s/q"]["asked_by"],
+        "backend-engineer"
+    );
+    db.lock().unwrap().metadata = Some(json!({"agent_profile":{"id":"other"}}));
+    accept(&deps, "s", "t", "q", &req).await.unwrap();
+    let settled = answer(&deps, response("s", "q")).await.unwrap();
+    assert_eq!(settled.asked_by.as_deref(), Some("backend-engineer"));
+    let payload = serde_json::to_value(&settled).unwrap();
+    assert_eq!(payload["asked_by"], "backend-engineer");
+    // Older entries and sessions without profiles omit attribution.
+    let mut legacy = payload;
+    legacy.as_object_mut().unwrap().remove("asked_by");
+    assert!(
+        serde_json::from_value::<Entry>(legacy)
+            .unwrap()
+            .asked_by
+            .is_none()
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn accepts_lists_counts_and_preserves_closed_entries_until_purge() {
     let (deps, db, server) = fixture().await;
     accept(&deps, "s", "t", "q", &request(json!({})))
@@ -154,6 +194,8 @@ async fn accepts_lists_counts_and_preserves_closed_entries_until_purge() {
     .unwrap();
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].about.ticket.as_deref(), Some("KAN-597"));
+    assert!(page.entries[0].asked_by.is_none());
+    assert!(db.lock().unwrap().rows["s/q"].get("asked_by").is_none());
     let page = list(
         &deps,
         ListRequest {

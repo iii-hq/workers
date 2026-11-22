@@ -76,11 +76,29 @@ fn mirror_prefers_explicit_ticket_then_session_link_and_skips_unlinked_or_invali
 }
 
 #[test]
+fn mirror_uses_asking_profile_as_author_and_falls_back_to_session() {
+    let mut board = board();
+    let mut attributed = entry(Some("KAN-1"), None);
+    attributed.asked_by = Some("backend-engineer".into());
+    questions::mirror(&mut board, &attributed, None, AT).unwrap();
+
+    let mut unattributed = entry(Some("KAN-1"), None);
+    unattributed.question.question_id = "call-2".into();
+    questions::mirror(&mut board, &unattributed, None, LATER).unwrap();
+
+    let comments = &get(&board, "KAN-1").comments;
+    assert_eq!(comments[0].author, "backend-engineer");
+    assert_eq!(comments[1].author, "session-1");
+}
+
+#[test]
 fn settle_first_appends_both_comments_in_order_and_late_events_do_not_rewrite_them() {
     let mut board = board();
-    let settled = entry(Some("KAN-1"), Some("answered"));
+    let mut settled = entry(Some("KAN-1"), Some("answered"));
+    settled.asked_by = Some("backend-engineer".into());
     let added = questions::mirror(&mut board, &settled, None, LATER).unwrap();
     assert_eq!(added.len(), 2);
+    assert_eq!(added[0].comment.author, "backend-engineer");
     assert_eq!(
         added[1].comment.parent_id.as_ref(),
         Some(&added[0].comment.id)

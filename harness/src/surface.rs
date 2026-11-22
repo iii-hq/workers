@@ -17,6 +17,7 @@ use crate::functions::{
     context_policy::{ContextPolicyRequest, ContextPolicyResponse},
     function_call::{FunctionCallRequest, FunctionCallResponse},
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
+    link_card::{LinkCardRequest, LinkCardResponse},
     metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
     observe::{
         OBSERVE_ID, ObserveRequest, ObserveResponse, UNOBSERVE_ID, UnobserveRequest,
@@ -84,6 +85,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<crate::ask_store::ListRequest, crate::ask_store::ListResponse>(
             crate::ask_store::LIST_ID,
         ),
+        spec::<LinkCardRequest, LinkCardResponse>(crate::functions::link_card::ID),
         spec::<ObserveRequest, ObserveResponse>(OBSERVE_ID),
         spec::<UnobserveRequest, UnobserveResponse>(UNOBSERVE_ID),
         spec::<TurnStepPayload, TurnStepResult>(TURN_ID),

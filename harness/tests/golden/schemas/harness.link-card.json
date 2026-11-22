@@ -1,0 +1,38 @@
+{
+  "function_id": "harness::link-card",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "default": "",
+        "description": "Stamped by the harness for an agent call; operators supply it explicitly.",
+        "type": "string"
+      },
+      "ticket": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "ticket"
+    ],
+    "title": "LinkCardRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "ticket": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "ticket"
+    ],
+    "title": "LinkCardResponse",
+    "type": "object"
+  }
+}
