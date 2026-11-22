@@ -882,6 +882,38 @@ describe('accessAction and readOnlyEndpoint', () => {
 })
 
 describe('accessLists', () => {
+  it('counts what an agent can run without a person, in the alert states too', () => {
+    const access = [
+      fa('get_issue', 'read', 'name'),
+      fa('list_issues', 'read', 'server_read'),
+      fa('save_issue', 'write', 'server_write'),
+      fa('delete_issue', 'destructive', 'server_write'),
+    ]
+    const split = (rules: unknown[], verdicts?: Record<string, Verdict>) => {
+      const st = gateStatus({ gate: { installed: true, rules }, server: srv({}), access, verdicts })
+      const out = accessLists(st, 'linear', rules, access, verdicts)
+      return { kind: st.kind, allowed: out.allowed.map((i) => i.id), ask: out.ask.map((i) => i.id) }
+    }
+    const reads = [rule(L('get_issue')), rule(L('list_issues'))]
+    expect(split([...reads, rule(L('save_issue'))])).toEqual({
+      kind: 'stale_unsafe',
+      allowed: [L('get_issue'), L('list_issues'), L('save_issue')],
+      ask: [L('delete_issue')],
+    })
+    expect(split(reads, { [L('delete_issue')]: { verdict: 'allow' } })).toEqual({
+      kind: 'overridden_write',
+      allowed: [L('get_issue'), L('list_issues'), L('delete_issue')],
+      ask: [L('save_issue')],
+    })
+    expect(split(reads, { [L('get_issue')]: { verdict: 'deny', reason: 'denied by permission rule no-get' } })).toEqual(
+      {
+        kind: 'overridden_read',
+        allowed: [L('list_issues')],
+        ask: [L('get_issue'), L('save_issue'), L('delete_issue')],
+      },
+    )
+  })
+
   it('splits what the counts cover, and lists a block it cannot judge as stored', () => {
     const access = [
       fa('get_issue', 'read', 'name'),
@@ -894,13 +926,10 @@ describe('accessLists', () => {
       [L('save_issue')]: { verdict: 'allow' },
     }
     const st = gateStatus({ gate: { installed: true, rules }, server: srv({}), access, verdicts })
-    expect(accessLists(st, 'linear', rules, access)).toEqual({
+    expect(accessLists(st, 'linear', rules, access, verdicts)).toEqual({
       block: 2,
-      allowed: [item('get_issue', 'Guessed from the name')],
-      ask: [
-        item('list_issues', 'Marked read-only by the server'),
-        item('save_issue', 'Marked as writing by the server'),
-      ],
+      allowed: [item('save_issue', 'Marked as writing by the server')],
+      ask: [item('get_issue', 'Guessed from the name'), item('list_issues', 'Marked read-only by the server')],
       toAdd: [item('list_issues', 'Marked read-only by the server')],
       toRemove: [item('gone', 'No longer listed by the server')],
       overridden: [

@@ -19,6 +19,7 @@ import {
   accessAction,
   accessConfirm,
   accessLists,
+  entryRefused,
   readOnlyEndpoint,
   reviewAccessPanel,
 } from './presentation'
@@ -64,6 +65,7 @@ export function AgentAccessView({
   gate,
   verdicts,
   busy = false,
+  onBusy,
   onChanged,
   onUseReadOnly,
 }: {
@@ -73,6 +75,8 @@ export function AgentAccessView({
   verdicts: Record<string, Verdict> | undefined
   /** A save, approve or remove of the page runs: no rule write starts beside it. */
   busy?: boolean
+  /** Raised around a rule write, so the page's own gate writes (Save, Approve, Remove) wait for it. */
+  onBusy: (busy: boolean) => void
   onChanged: () => void
   onUseReadOnly: () => void
 }) {
@@ -104,7 +108,7 @@ export function AgentAccessView({
     )
   }
 
-  const lists = gate.rules ? accessLists(status, server.name, gate.rules, access) : null
+  const lists = gate.rules ? accessLists(status, server.name, gate.rules, access, verdicts) : null
   const action = accessAction(status.kind)
   const alert = reviewAccessPanel(status, server.name)
   const listed = status.kind !== 'not_connected'
@@ -138,6 +142,7 @@ export function AgentAccessView({
     if (!(await confirm(ask))) return
     setWriting(what)
     setFailure(null)
+    onBusy(true)
     try {
       const out = await writeBlock(iii, server.name, what === 'remove' ? [] : readIds(server))
       if (!out.ok) setFailure({ retry: what, reason: out.reason ?? '' })
@@ -152,6 +157,7 @@ export function AgentAccessView({
       setFailure({ retry: what, reason: errorMessage(err) })
     } finally {
       setWriting(null)
+      onBusy(false)
       // Written or not, the page re-reads the gate: the view shows the rules as stored.
       onChanged()
     }
@@ -167,6 +173,12 @@ export function AgentAccessView({
     </Button>
   )
   const removable = lists !== null && lists.block > 0
+  const settingsButton =
+    gate.id !== null ? (
+      <Button variant="secondary" size="sm" onClick={() => setSettings(true)}>
+        Open approval-gate settings
+      </Button>
+    ) : null
 
   return (
     <div className="mcp-ui-detail mcp-ui-access">
@@ -179,11 +191,11 @@ export function AgentAccessView({
       {lists ? (
         <MetaRow className="mcp-ui-facts">
           <span>
-            <span>{status.allowed}</span> allowed without asking
+            <span>{lists.allowed.length}</span> allowed without asking
           </span>
           {listed ? (
             <span>
-              <span>{status.ask}</span> ask a person
+              <span>{lists.ask.length}</span> ask a person
             </span>
           ) : null}
           {listed && status.destructive > 0 ? (
@@ -230,14 +242,17 @@ export function AgentAccessView({
           headline={failure.retry === 'remove' ? 'Could not remove the rules' : 'Could not write the rules'}
           detail={failure.reason}
           action={
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={writing !== null || busy}
-              onClick={() => void write(failure.retry)}
-            >
-              Retry
-            </Button>
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={writing !== null || busy}
+                onClick={() => void write(failure.retry)}
+              >
+                Retry
+              </Button>
+              {entryRefused(failure.reason) ? settingsButton : null}
+            </>
           }
         />
       ) : null}
@@ -254,6 +269,7 @@ export function AgentAccessView({
             Retry
           </Button>
         ) : null}
+        {action === 'retry' ? settingsButton : null}
         {action !== 'remove' && removable ? writeButton('remove', false) : null}
       </div>
       <WorkerConfigurationDialog

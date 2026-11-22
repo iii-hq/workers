@@ -1,6 +1,6 @@
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
 import { type AccessClass, type FunctionAccess, SOURCE_TEXT, serverAccess } from './access'
-import { blockOf, type GateKind, type GateStatus } from './gate-rules'
+import { blockOf, type GateKind, type GateStatus, type Verdict } from './gate-rules'
 import type {
   AuthKind,
   EngineFunction,
@@ -748,14 +748,19 @@ const LINEAR_MCP = 'https://mcp.linear.app/mcp'
 export const readOnlyEndpoint = (target: string): string | null =>
   target === LINEAR_MCP ? `${LINEAR_MCP}/readonly` : null
 
-/** What the Agent access view lists: the reads the block allows, every other function (which asks a person),
- * the ids an update adds and removes, and what the gate decides otherwise. Before the server is listed, the
- * stored block as it is, unjudged. */
+/** The merge refused the entry itself: only the approval gate's own settings can fix it (5.6, step 3). */
+export const entryRefused = (reason: string) =>
+  reason === 'The approval-gate entry has no rules array.' || reason === 'The approval-gate entry is not an object.'
+
+/** What the Agent access view lists and counts: what an agent can run without a person, every other function
+ * (which asks a person), the ids an update adds and removes, and what the gate decides otherwise. Before the
+ * server is listed, the stored block as it is, unjudged. */
 export function accessLists(
   status: GateStatus,
   server: string,
   rules: unknown[],
   access: FunctionAccess[],
+  verdicts?: Record<string, Verdict>,
 ): {
   block: number
   allowed: AccessItem[]
@@ -766,7 +771,13 @@ export function accessLists(
 } {
   const block = [...new Set(blockOf(rules, server).ids)]
   const judged = status.kind !== 'not_connected'
-  const allowed = access.filter((fn) => fn.cls === 'read' && block.includes(fn.functionId))
+  // What an agent runs without a person: a read of the block the gate does not hold (no verdict counts as
+  // allowed), a write left in the block, and anything the gate itself allows.
+  const allowed = access.filter((fn) => {
+    const verdict = verdicts?.[fn.functionId]?.verdict
+    if (verdict === 'allow' || status.unsafe.includes(fn.functionId)) return true
+    return fn.cls === 'read' && block.includes(fn.functionId) && verdict === undefined
+  })
   return {
     block: block.length,
     allowed: judged ? allowed.map(itemOf) : block.sort(byName).map((id) => ({ id, source: '' })),

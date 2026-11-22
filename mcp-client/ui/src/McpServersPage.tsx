@@ -746,6 +746,7 @@ export function McpServersPage({
                               gate={gate}
                               verdicts={verdicts[server.name]}
                               busy={working}
+                              onBusy={setBusy}
                               onChanged={refreshGate}
                               onUseReadOnly={() => toReadOnly(server)}
                             />
