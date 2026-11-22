@@ -9,50 +9,38 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import {
   SIDE_CHAT_KEEP_KEY,
-  type SideChatQuote,
   sideChatFrom,
   sideChatMessages,
   sideChatQuotes,
 } from '@/lib/chat-aside'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { withDecisionSideChatLock } from '@/lib/decision-side-chat-lifetime'
+import { getIiiClient } from '@/lib/iii-client'
 import type { SessionMeta } from '@/lib/sessions/types'
+import type { DecisionChatRequest } from '@/types/injectable-ui'
+import { useDecisionChatBinding } from './host'
+import './decision-chat.css'
 import { formatTokenCount } from '@/lib/token-estimate'
-import type { AskQuestion, TowerQuestion } from './model'
-import type { TowerActions } from './NeedsYou'
-import { createDecisionSideChat, type DecisionNeed } from './side-chat'
-
 export function DecisionSideChat({
-  item,
-  record,
-  iii,
+  sessionId,
   onClose,
-  onUseAnswer,
-  editable,
-  closed,
 }: {
-  item: DecisionNeed
-  record?: TowerQuestion
-  iii: TowerActions
+  sessionId: string
   onClose: () => void
-  onUseAnswer: (index: number, text: string) => void
-  editable: boolean
-  closed: boolean
 }) {
   const ctx = useConversationsCtxOptional()
-  const [copy, setCopy] = useState<SessionMeta | null>(null)
-  const [quote, setQuote] = useState<SideChatQuote | null>(null)
-  const [fresh, setFresh] = useState(false)
+  const binding = useDecisionChatBinding(sessionId)
+  const request = binding?.request
   const [error, setError] = useState<string | null>(null)
-  const [attempt, setAttempt] = useState(0)
   const [keeping, setKeeping] = useState(false)
   const [kept, setKept] = useState(false)
   const [context, setContext] = useState<number | null>(null)
-  const seed = useRef({ item, record })
+  const sourceId = request?.sessionId
   const contextUsage = ctx?.backend.contextUsage
   useEffect(() => {
     let active = true
-    void contextUsage?.(item.sessionId)
+    if (!sourceId) return
+    void contextUsage?.(sourceId)
       .then((report) => {
         if (active) setContext(report?.total ?? null)
       })
@@ -60,42 +48,19 @@ export function DecisionSideChat({
     return () => {
       active = false
     }
-  }, [contextUsage, item.sessionId])
-  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt retries a failed preparation.
-  useEffect(() => {
-    let active = true
-    setError(null)
-    void createDecisionSideChat(
-      iii,
-      seed.current.item,
-      seed.current.record,
-    ).then(
-      (result) => {
-        if (!active) return
-        setCopy(result.meta)
-        setQuote(result.quote)
-        setFresh(!result.meta.forked_from)
-        setKept(result.meta.metadata?.[SIDE_CHAT_KEEP_KEY] === true)
-      },
-      (error) => {
-        if (active) setError(errorMessage(error))
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [iii, attempt])
+  }, [contextUsage, sourceId])
   const watch = ctx?.watchConversation
-  const copyId = copy?.session_id
-  useEffect(() => (copyId ? watch?.(copyId) : undefined), [copyId, watch])
-  const conversation = ctx?.conversations.find((row) => row.id === copyId)
-  const isKept =
-    kept || conversation?.sessionMetadata?.[SIDE_CHAT_KEEP_KEY] === true
+  useEffect(() => watch?.(sessionId), [sessionId, watch])
+  const conversation = ctx?.conversations.find((row) => row.id === sessionId)
+  const metadata = conversation?.sessionMetadata ?? binding?.copy.metadata
+  const isKept = kept || metadata?.[SIDE_CHAT_KEEP_KEY] === true
+  const closed = binding?.closed ?? false
   useEffect(() => {
-    if (closed && copy && !isKept) onClose()
-  }, [closed, copy, isKept, onClose])
-  const since = copy?.created_at ?? 0
-  const from = sideChatFrom(conversation ?? { sessionMetadata: copy?.metadata })
+    if (closed && !isKept) onClose()
+  }, [closed, isKept, onClose])
+  const since = binding?.copy.created_at ?? conversation?.createdAt ?? 0
+  const from = sideChatFrom({ sessionMetadata: metadata })
+  const quote = sideChatQuotes({ sessionMetadata: metadata })[0] ?? null
   const own = conversation
     ? sideChatMessages(conversation.messages, since, from)
     : []
@@ -103,22 +68,22 @@ export function DecisionSideChat({
     .filter((message) => message.role === 'assistant' && message.content.trim())
     .at(-1)
   const keep = async () => {
-    if (!copy || keeping) return
+    if (keeping) return
     setKeeping(true)
     setError(null)
     try {
-      await withDecisionSideChatLock(copy.session_id, async () => {
+      await withDecisionSideChatLock(sessionId, async () => {
+        const iii = await getIiiClient()
         const latest = await iii.call<{ meta: SessionMeta } | null>(
           'session::get',
-          { session_id: copy.session_id },
+          { session_id: sessionId },
         )
         if (!latest) throw new Error('The side chat is no longer available.')
         const metadata = { ...latest.meta.metadata, [SIDE_CHAT_KEEP_KEY]: true }
         await iii.call('session::set-meta', {
-          session_id: copy.session_id,
+          session_id: sessionId,
           metadata,
         })
-        setCopy({ ...latest.meta, metadata })
         setKept(true)
       })
     } catch (error) {
@@ -129,19 +94,22 @@ export function DecisionSideChat({
   }
   return (
     <DecisionSideChatPanel
-      title={item.sessionTitle ?? item.sessionId}
+      title={request?.sourceTitle ?? conversation?.title ?? sessionId}
       context={context}
-      fresh={fresh}
+      fresh={!from}
       kept={isKept}
       keeping={keeping}
       onKeep={() => void keep()}
       onClose={onClose}
       proposal={reply?.role === 'assistant' ? reply.content : undefined}
-      questions={item.kind === 'question' ? item.entry.questions : []}
+      questions={request?.questions}
+      held={request?.kind === 'held'}
       onUseAnswer={
-        editable && conversation?.status !== 'working' ? onUseAnswer : undefined
+        binding?.editable && !closed && conversation?.status !== 'working'
+          ? request?.onUseAnswer
+          : undefined
       }
-      canKeep={!!copy}
+      canKeep={!!conversation}
     >
       {error ? (
         <StatusPanel
@@ -149,17 +117,6 @@ export function DecisionSideChat({
           role="alert"
           headline="Side chat could not be prepared"
           detail={error}
-          action={
-            !copy ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setAttempt((value) => value + 1)}
-              >
-                Retry
-              </Button>
-            ) : undefined
-          }
         />
       ) : null}
       {conversation && ctx ? (
@@ -170,7 +127,7 @@ export function DecisionSideChat({
             since,
             fromEntry: from,
             empty: (
-              <p className="tower-muted">
+              <p className="decision-muted">
                 Ask the copy about this pending decision.
               </p>
             ),
@@ -178,7 +135,7 @@ export function DecisionSideChat({
             quote: own.some((message) => message.role === 'user')
               ? null
               : quote,
-            onQuoteSent: () => setQuote(null),
+            onQuoteSent: () => {},
             quotes: sideChatQuotes(conversation),
             onJumpToQuote: () => {},
             compact: true,
@@ -198,7 +155,7 @@ export function DecisionSideChat({
         <div
           role="status"
           aria-label="Preparing side chat"
-          className="tower-stack p-3"
+          className="flex flex-col gap-3 p-3"
         >
           <Skeleton className="h-4 w-3/4" />
           <Skeleton className="h-4 w-1/2" />
@@ -220,6 +177,7 @@ export function DecisionSideChatPanel({
   children,
   proposal,
   questions = [],
+  held,
   onUseAnswer,
 }: {
   title: string
@@ -232,20 +190,22 @@ export function DecisionSideChatPanel({
   onClose: () => void
   children: ReactNode
   proposal?: string
-  questions?: AskQuestion[]
-  onUseAnswer?: (index: number, text: string) => void
+  questions?: DecisionChatRequest['questions']
+  held?: boolean
+  onUseAnswer?: DecisionChatRequest['onUseAnswer']
 }) {
   const [target, setTarget] = useState('0')
+  const [heldChoice, setHeldChoice] = useState('Deny')
   const panel = useRef<HTMLElement>(null)
   return (
     <aside
       ref={panel}
-      className="tower-side-chat"
+      className="decision-side-chat"
       aria-label="Decision side chat"
     >
-      <div className="tower-side-chat-header">
+      <div className="decision-side-chat-header">
         <h2>Side chat</h2>
-        <span className="tower-meta">read-only copy of {title}</span>
+        <span className="decision-meta">read-only copy of {title}</span>
         <Button
           variant="ghost"
           size="sm"
@@ -259,7 +219,7 @@ export function DecisionSideChatPanel({
           <X className="size-4" />
         </IconButton>
       </div>
-      <p className="tower-side-chat-note tower-inline-note">
+      <p className="decision-side-chat-note decision-inline-note">
         <Lock className="size-4" />
         <span>
           {fresh
@@ -275,9 +235,19 @@ export function DecisionSideChatPanel({
         </span>
       </p>
       {children}
-      {proposal && questions.length && onUseAnswer ? (
-        <div className="tower-use-answer">
-          {questions.length > 1 ? (
+      {proposal || held || !onUseAnswer ? (
+        <div className="decision-use-answer">
+          {held ? (
+            <Select
+              aria-label="Held call decision to propose"
+              value={heldChoice}
+              onChange={setHeldChoice}
+              options={['Deny', 'Allow once', 'Always allow'].map((label) => ({
+                value: label,
+                label,
+              }))}
+            />
+          ) : questions.length > 1 ? (
             <Select
               aria-label="Question to fill"
               value={target}
@@ -292,6 +262,7 @@ export function DecisionSideChatPanel({
             variant="pill"
             size="sm"
             title="Uses selected text, or the latest reply."
+            disabled={!onUseAnswer || (!held && !proposal)}
             onClick={() => {
               const selection = window.getSelection()
               const selected =
@@ -301,12 +272,22 @@ export function DecisionSideChatPanel({
                 panel.current.contains(selection.focusNode)
                   ? selection.toString().trim()
                   : ''
-              onUseAnswer(Number(target), selected || proposal)
+              if (held) onUseAnswer?.(0, { option: heldChoice })
+              else {
+                const text = selected || proposal || ''
+                const option = questions[Number(target)]?.options.find(
+                  (option) => option.label === text.trim(),
+                )
+                onUseAnswer?.(
+                  Number(target),
+                  option ? { option: option.label } : { text },
+                )
+              }
             }}
           >
             Use this answer
           </Button>
-          <span className="tower-muted">
+          <span className="decision-muted">
             Fills the decision · you still send it with Answer.
           </span>
         </div>

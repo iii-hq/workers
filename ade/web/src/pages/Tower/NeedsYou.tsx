@@ -7,7 +7,15 @@ import {
   Info,
   MessageSquare,
 } from 'lucide-react'
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -28,6 +36,11 @@ import {
   formatTokenCount,
 } from '@/lib/token-estimate'
 import { chatSessionScreen } from '@/lib/workspace-tabs'
+import type {
+  DecisionChatHandle,
+  DecisionChatRequest,
+  Host,
+} from '@/types/injectable-ui'
 import {
   type AnswerState,
   answerTransition,
@@ -38,7 +51,6 @@ import {
   selectOption,
   typeAnswer,
 } from './answer-state'
-import { DecisionSideChat } from './DecisionSideChat'
 import { fetchTowerAsks, type TowerData } from './data'
 import {
   type AskEntry,
@@ -48,7 +60,11 @@ import {
   sortNeeds,
   type TowerQuestion,
 } from './model'
-import { type DecisionNeed, selectionFromSideChat } from './side-chat'
+import {
+  type DecisionNeed,
+  decisionChatRequest,
+  selectionFromSideChat,
+} from './side-chat'
 
 export type TowerActions = Pick<IiiClient, 'call'>
 const IDLE: AnswerState = { status: 'idle' }
@@ -71,11 +87,13 @@ export function AskAboutButton({
   onClick,
   disabled,
   active,
+  available = false,
 }: {
   item: NeedsYouItem
   onClick: () => void
   disabled?: boolean
   active?: boolean
+  available?: boolean
 }) {
   const ctx = useConversationsCtxOptional()
   const contextUsage = ctx?.backend.contextUsage
@@ -88,6 +106,7 @@ export function AskAboutButton({
   )
   useEffect(() => {
     let alive = true
+    if (!available) return
     void contextUsage?.(item.sessionId)
       .then((report) => {
         if (alive && report)
@@ -97,13 +116,14 @@ export function AskAboutButton({
     return () => {
       alive = false
     }
-  }, [contextUsage, item.sessionId])
+  }, [contextUsage, item.sessionId, available])
   const tokens =
     reported?.id === item.sessionId
       ? reported.tokens
       : conversation?.hydrated !== false && conversation?.messages.length
         ? estimateConversationTokens(conversation.messages)
         : null
+  if (!available) return null
   return (
     <Button
       variant="ghost"
@@ -137,6 +157,7 @@ export function AskAboutButton({
 export function NeedsYou({
   data,
   iii,
+  chat,
   user,
   initialSelectedId,
   initialAskAboutId,
@@ -145,6 +166,7 @@ export function NeedsYou({
 }: {
   data: TowerData
   iii?: TowerActions
+  chat?: Pick<Host['chat'], 'openDecisionChat' | 'rebindDecisionChat'>
   user: string
   initialSelectedId?: string | null
   initialAskAboutId?: string | null
@@ -161,13 +183,10 @@ export function NeedsYou({
   const [release, setRelease] = useState('all')
   const [query, setQuery] = useState('')
   const [drafts, setDrafts] = useState<Record<string, Selection[]>>({})
-  const [chatItem, setChatItem] = useState<DecisionNeed | null>(
-    () =>
-      data.items.find(
-        (item): item is DecisionNeed =>
-          item.id === initialAskAboutId && item.kind !== 'stalled',
-      ) ?? null,
-  )
+  const handles = useRef(new Map<string, DecisionChatHandle>())
+  const chatRequests = useRef(new Map<string, symbol>())
+  const [chatError, setChatError] = useState<string | null>(null)
+  const [heldProposals, setHeldProposals] = useState<Record<string, string>>({})
   const [filledFromChat, setFilledFromChat] = useState<string | null>(null)
   const [states, setStates] = useState<Record<string, AnswerState>>({})
   const inFlight = useRef(new Set<string>())
@@ -192,11 +211,11 @@ export function NeedsYou({
     active.current = true
     return () => {
       active.current = false
+      chatRequests.current.clear()
+      for (const handle of handles.current.values()) handle.detach()
+      handles.current.clear()
     }
   }, [])
-  useEffect(() => {
-    if (chatItem && chatItem.id !== selectedKey) setChatItem(null)
-  }, [chatItem, selectedKey])
   useEffect(() => {
     if (focused?.kind !== 'held' || data.loading.needsYou) return
     if (data.items.some((item) => item.id === focused.id)) return
@@ -228,6 +247,155 @@ export function NeedsYou({
         .toLowerCase()
         .includes(query.toLowerCase()),
   )
+  const fillFromChat = useCallback(
+    (
+      item: DecisionNeed,
+      index: number,
+      proposal: { option?: string; text?: string },
+    ) => {
+      const text = proposal.option ?? proposal.text ?? ''
+      if (item.kind === 'question') {
+        setDrafts((current) => {
+          const next = [
+            ...(current[item.id] ??
+              item.entry.questions.map(recommendedSelection)),
+          ]
+          next[index] = selectionFromSideChat(item.entry.questions[index], text)
+          return { ...current, [item.id]: next }
+        })
+      } else setHeldProposals((current) => ({ ...current, [item.id]: text }))
+      setFocused(item)
+      setFilledFromChat(item.id)
+      if (phone) handles.current.get(item.id)?.close()
+    },
+    [phone],
+  )
+  const requestFor = useCallback(
+    (item: DecisionNeed): DecisionChatRequest =>
+      decisionChatRequest(
+        item,
+        data.questions.find(
+          (row) =>
+            row.key ===
+            `${item.sessionId}/${item.kind === 'question' ? item.questionId : item.functionCallId}`,
+        ),
+        (index, proposal) => fillFromChat(item, index, proposal),
+      ),
+    [data.questions, fillFromChat],
+  )
+  const liveChatStates = useRef(
+    new Map<string, { editable: boolean; closed: boolean }>(),
+  )
+  const chatStates = useMemo(
+    () =>
+      new Map(
+        data.items.map((item) => {
+          const entry =
+            item.kind === 'question'
+              ? (data.questions.find(
+                  (row) => row.key === `${item.sessionId}/${item.questionId}`,
+                )?.harness ?? item.entry)
+              : undefined
+          const state = entry
+            ? answerTransition(states[item.id] ?? IDLE, {
+                type: 'settled',
+                entry,
+              })
+            : (states[item.id] ?? IDLE)
+          return [
+            item.id,
+            {
+              editable: ['idle', 'failed'].includes(state.status),
+              closed: [
+                'delivered',
+                'already',
+                'withdrawn',
+                'not-delivered',
+              ].includes(state.status),
+            },
+          ]
+        }),
+      ),
+    [data.items, data.questions, states],
+  )
+  liveChatStates.current = chatStates
+  useEffect(() => {
+    let mounted = true
+    for (const item of data.items) {
+      if (item.kind === 'stalled' || !chat?.rebindDecisionChat) continue
+      const token = Symbol()
+      chatRequests.current.set(item.id, token)
+      void chat
+        .rebindDecisionChat(requestFor(item))
+        .then((handle) => {
+          if (!handle) return
+          if (!mounted || chatRequests.current.get(item.id) !== token) {
+            handle.detach()
+            return
+          }
+          // A click may have opened this copy while the reload lookup was pending.
+          handles.current.get(item.id)?.detach()
+          handles.current.set(item.id, handle)
+          handle.update(
+            liveChatStates.current.get(item.id) ?? {
+              editable: false,
+              closed: true,
+            },
+          )
+        })
+        .catch((error) => {
+          if (mounted) setChatError(errorMessage(error))
+        })
+    }
+    return () => {
+      mounted = false
+    }
+  }, [chat, data.items, requestFor])
+  useEffect(() => {
+    for (const [id, handle] of handles.current) {
+      handle.update(chatStates.get(id) ?? { editable: false, closed: true })
+    }
+  }, [chatStates])
+  const openChat = useCallback(
+    async (item: DecisionNeed) => {
+      if (!chat?.openDecisionChat) return
+      setChatError(null)
+      const token = Symbol()
+      chatRequests.current.set(item.id, token)
+      try {
+        const handle = await chat.openDecisionChat(requestFor(item))
+        if (!active.current || chatRequests.current.get(item.id) !== token) {
+          handle.detach()
+          return
+        }
+        handles.current.get(item.id)?.detach()
+        handles.current.set(item.id, handle)
+        if (phone) setFocused(null)
+        handle.update(
+          liveChatStates.current.get(item.id) ?? {
+            editable: false,
+            closed: true,
+          },
+        )
+      } catch (error) {
+        if (active.current) setChatError(errorMessage(error))
+      }
+    },
+    [chat, requestFor, phone],
+  )
+  const openedInitial = useRef<string | null>(null)
+  useEffect(() => {
+    if (!initialAskAboutId || openedInitial.current === initialAskAboutId)
+      return
+    const item = data.items.find(
+      (item): item is DecisionNeed =>
+        item.id === initialAskAboutId && item.kind !== 'stalled',
+    )
+    if (item && chat?.openDecisionChat) {
+      openedInitial.current = initialAskAboutId
+      void openChat(item)
+    }
+  }, [initialAskAboutId, chat, data.items, openChat])
   const updateState = (
     id: string,
     event: Parameters<typeof answerTransition>[1],
@@ -376,19 +544,26 @@ export function NeedsYou({
       }}
       canSend={!!iii}
       askAbout={
-        selected.kind !== 'stalled' ? (
+        chatError ? (
+          <StatusPanel
+            variant="alert"
+            headline="Side chat could not be prepared"
+            detail={chatError}
+          />
+        ) : selected.kind !== 'stalled' ? (
           <AskAboutButton
             item={selected}
+            available={!!chat?.openDecisionChat}
             disabled={
               !iii ||
               !['idle', 'failed', 'not-delivered'].includes(state.status)
             }
-            active={chatItem?.id === selected.id}
-            onClick={() => setChatItem(selected)}
+            onClick={() => void openChat(selected)}
           />
         ) : null
       }
       filledFromChat={filledFromChat === selected.id}
+      heldProposal={heldProposals[selected.id]}
       onAnswer={(dismissed) =>
         selected.kind === 'question' && answer(selected, dismissed)
       }
@@ -415,42 +590,8 @@ export function NeedsYou({
       onBack={() => setFocused(null)}
     />
   ) : null
-  const chat =
-    chatItem && iii ? (
-      <DecisionSideChat
-        key={chatItem.id}
-        item={chatItem}
-        record={record}
-        iii={iii}
-        editable={state.status === 'idle' || state.status === 'failed'}
-        closed={['delivered', 'already', 'withdrawn', 'not-delivered'].includes(
-          state.status,
-        )}
-        onClose={() => setChatItem(null)}
-        onUseAnswer={(index, text) => {
-          if (chatItem.kind !== 'question') return
-          setDrafts((current) => {
-            const next = [
-              ...(current[chatItem.id] ??
-                chatItem.entry.questions.map(recommendedSelection)),
-            ]
-            next[index] = selectionFromSideChat(
-              chatItem.entry.questions[index],
-              text,
-            )
-            return { ...current, [chatItem.id]: next }
-          })
-          setFilledFromChat(chatItem.id)
-          if (phone) setChatItem(null)
-        }}
-      />
-    ) : null
   return (
-    <div
-      className="tower-inbox"
-      data-detail-open={!!selected || undefined}
-      data-side-chat-open={!!chatItem || undefined}
-    >
+    <div className="tower-inbox" data-detail-open={!!selected || undefined}>
       <PageSidebar
         label="Needs you releases"
         width={220}
@@ -596,18 +737,16 @@ export function NeedsYou({
           }}
         >
           <BottomSheetContent
-            className={`tower tower-decision-sheet${chatItem ? ' tower-side-chat-sheet' : ''}`}
+            className="tower tower-decision-sheet"
             heading={
               <span className="tower-meta">
-                {chatItem
-                  ? 'Side chat · pending decision'
-                  : selected
-                    ? `${selected.card?.key ?? 'Not on the board'} · ${needLabel(selected)} · ${formatRelative(selected.createdAt)}`
-                    : 'Needs you'}
+                {selected
+                  ? `${selected.card?.key ?? 'Not on the board'} · ${needLabel(selected)} · ${formatRelative(selected.createdAt)}`
+                  : 'Needs you'}
               </span>
             }
           >
-            {chat ?? detail}
+            {detail}
           </BottomSheetContent>
         </BottomSheet>
       ) : (
@@ -620,7 +759,6 @@ export function NeedsYou({
               />
             )}
           </div>
-          {chat}
         </div>
       )}
     </div>
@@ -644,6 +782,7 @@ export function NeedDetail({
   onBack,
   askAbout,
   filledFromChat,
+  heldProposal,
 }: {
   item: NeedsYouItem
   entry?: AskEntry
@@ -661,6 +800,7 @@ export function NeedDetail({
   onBack: () => void
   askAbout: ReactNode
   filledFromChat: boolean
+  heldProposal?: string
 }) {
   const inputId = useId()
   const editable = state.status === 'idle' || state.status === 'failed'
@@ -878,6 +1018,12 @@ export function NeedDetail({
                 item.namespace !== item.implicitNamespace
                   ? ` · implicit: ${item.implicitNamespace}`
                   : ''}
+              </p>
+            ) : null}
+            {filledFromChat && heldProposal ? (
+              <p className="tower-muted" role="status">
+                Filled from the side chat · {heldProposal}. Choose the matching
+                action to send it.
               </p>
             ) : null}
             <Eyebrow>Arguments · redacted</Eyebrow>

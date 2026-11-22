@@ -2,6 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { RadioTower } from 'lucide-react'
 import { useState } from 'react'
 import { ChatView } from '@/components/chat/ChatView'
+import { DecisionSideChatPanel } from '@/components/chat/decision/DecisionSideChat'
+import { decisionSeed } from '@/components/chat/decision/side-chat'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
 import { PageHeader, PageShell } from '@/components/ui/PageChrome'
@@ -10,16 +12,15 @@ import type { ChatBackend } from '@/lib/backend'
 import { sideChatQuote } from '@/lib/chat-aside'
 import type { Conversation } from '@/types/chat'
 import { recommendedSelection, selectedAnswers } from './answer-state'
-import { DecisionSideChatPanel } from './DecisionSideChat'
 import { towerFixture } from './fixtures'
 import type { QuestionNeed } from './model'
 import { NeedDetail } from './NeedsYou'
-import { decisionSeed, selectionFromSideChat } from './side-chat'
+import { decisionChatRequest, selectionFromSideChat } from './side-chat'
 import './tower.css'
 
 const question = towerFixture.items[0] as QuestionNeed
 const seed = decisionSeed(
-  question,
+  decisionChatRequest(question, undefined, () => {}),
   'R2 starts here. I need your decision on build isolation.',
 )
 const explanation =
@@ -90,13 +91,13 @@ function SideChatFixture({
       questions={question.entry.questions}
       onUseAnswer={
         !delivered
-          ? (index, text) => {
+          ? (index, proposal) => {
               setSelections((current) =>
                 current.map((value, i) =>
                   i === index
                     ? selectionFromSideChat(
                         question.entry.questions[index],
-                        text,
+                        proposal.option ?? proposal.text ?? '',
                       )
                     : value,
                 ),

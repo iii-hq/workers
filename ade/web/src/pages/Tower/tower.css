@@ -376,55 +376,6 @@
   min-width: 0;
   min-height: 0;
 }
-.tower-inbox[data-side-chat-open] > .tower-needs-rail,
-.tower-inbox[data-side-chat-open] > .tower-needs-list {
-  display: none;
-}
-.tower-side-chat {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 min(42%, 420px);
-  min-width: 0;
-  min-height: 0;
-  background: var(--color-sidebar);
-}
-.tower-side-chat-header {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  padding: 4px 12px;
-  background: var(--color-surface);
-}
-.tower-side-chat-header h2 {
-  font-size: 13px;
-  font-weight: 600;
-}
-.tower-side-chat-header > .tower-meta {
-  flex: 1;
-  min-width: 80px;
-}
-.tower-side-chat-note,
-.tower-use-answer {
-  flex-shrink: 0;
-  margin: 12px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-}
-.tower-use-answer {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.tower-side-chat > .conversation-surface {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
 .tower-decision {
   height: 100%;
   display: flex;
@@ -698,9 +649,6 @@
   .tower-inbox[data-detail-open] .tower-needs-list {
     display: block;
   }
-  .tower-inbox[data-side-chat-open] .tower-needs-list {
-    display: block;
-  }
   .tower-decision-sheet.tower-side-chat-sheet {
     inset: 0;
     width: 100%;
@@ -709,13 +657,6 @@
     border: 0;
     border-radius: 0;
     padding-bottom: env(safe-area-inset-bottom);
-  }
-  .tower-side-chat-sheet .tower-side-chat {
-    flex: 1;
-    height: 100%;
-  }
-  .tower-side-chat {
-    flex: 1;
   }
   .tower-needs-list {
     padding: 0 12px;

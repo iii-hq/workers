@@ -1,10 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as decisionHost from '@/components/chat/decision/host'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type {
   ConfigFormProps,
   ConsoleApi,
+  DecisionChatHandle,
   SetupFn,
   UiAssetsEvent,
 } from '../types/injectable-ui'
@@ -439,6 +441,93 @@ describe('host.panels.openScreen', () => {
 
     harness.stop()
     vi.unstubAllGlobals()
+  })
+})
+
+describe('host.chat decision chats', () => {
+  const request = {
+    key: 'source/question',
+    sessionId: 'source',
+    kind: 'question' as const,
+    title: 'Side chat · Source',
+    createdAt: '2026-11-22T12:00:00Z',
+    questionId: 'question',
+    questions: [
+      {
+        header: 'Scope',
+        question: 'Which scope?',
+        options: [{ label: 'Current release' }],
+      },
+    ],
+    onUseAnswer: vi.fn(),
+  }
+
+  async function loadHost() {
+    let captured: Parameters<SetupFn>[0] | undefined
+    const harness = createHarness({
+      importModule: vi.fn(async () => ({
+        default(host: Parameters<SetupFn>[0]) {
+          captured = host
+        },
+      })),
+    })
+    harness.emit({
+      op: 'sync',
+      assets: [{ path: 'tower/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(captured).toBeDefined())
+    return { host: captured as Parameters<SetupFn>[0], harness }
+  }
+
+  it('delegates open and rebind and detaches both handles on script unload', async () => {
+    const openedDetach = vi.fn()
+    const reboundDetach = vi.fn()
+    const opened = {
+      update: vi.fn(),
+      detach: openedDetach,
+      close: vi.fn(),
+    }
+    const rebound = {
+      update: vi.fn(),
+      detach: reboundDetach,
+      close: vi.fn(),
+    }
+    const openDecisionChat = vi.fn(async () => opened)
+    const rebindDecisionChat = vi.fn(async () => rebound)
+    vi.spyOn(decisionHost, 'decisionChatCapabilities').mockReturnValue({
+      openDecisionChat,
+      rebindDecisionChat,
+    })
+    const { host, harness } = await loadHost()
+
+    await expect(host.chat.openDecisionChat?.(request)).resolves.toBe(opened)
+    await expect(host.chat.rebindDecisionChat?.(request)).resolves.toBe(rebound)
+    expect(openDecisionChat).toHaveBeenCalledWith(request)
+    expect(rebindDecisionChat).toHaveBeenCalledWith(request)
+
+    harness.stop()
+    expect(openedDetach).toHaveBeenCalledOnce()
+    expect(reboundDetach).toHaveBeenCalledOnce()
+  })
+
+  it('detaches a pending rebind that resolves after its script was disposed', async () => {
+    const pending = deferred<DecisionChatHandle>()
+    vi.spyOn(decisionHost, 'decisionChatCapabilities').mockReturnValue({
+      openDecisionChat: vi.fn(),
+      rebindDecisionChat: vi.fn(() => pending.promise),
+    })
+    const { host, harness } = await loadHost()
+    const rebound = host.chat.rebindDecisionChat?.(request)
+    harness.stop()
+
+    const handle = {
+      update: vi.fn(),
+      detach: vi.fn(),
+      close: vi.fn(),
+    }
+    pending.resolve(handle)
+    await expect(rebound).resolves.toBe(handle)
+    expect(handle.detach).toHaveBeenCalledOnce()
   })
 })
 

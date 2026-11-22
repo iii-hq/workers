@@ -136,6 +136,44 @@ export interface ScreenOpenRequest {
   draft?: { title?: string; text: string }
 }
 
+export interface DecisionChatRequest {
+  key: string
+  sessionId: string
+  kind: 'question' | 'held'
+  title: string
+  agent?: string
+  card?: { key: string; title: string }
+  board?: { ticket: string; createdAt: string }
+  sourceTitle?: string
+  createdAt: string
+  why?: string
+  questionId?: string
+  questions?: {
+    header: string
+    question: string
+    options: {
+      label: string
+      description?: string
+      recommended?: boolean
+    }[]
+  }[]
+  held?: {
+    functionCallId: string
+    functionId: string
+    arguments: unknown
+  }
+  onUseAnswer(
+    questionIndex: number,
+    proposal: { option?: string; text?: string },
+  ): void
+}
+
+export interface DecisionChatHandle {
+  update(state: { editable: boolean; closed: boolean }): void
+  detach(): void
+  close(): void
+}
+
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
   panelSide: PanelSide
@@ -910,6 +948,12 @@ export interface Host {
      * session instead. Feature-detect on older consoles.
      */
     openConversation?(sessionId: string): void
+    /** Create or reuse a decision copy beside the calling page. */
+    openDecisionChat?(request: DecisionChatRequest): Promise<DecisionChatHandle>
+    /** Bind an existing copy; never creates a copy or opens a column. */
+    rebindDecisionChat?(
+      request: DecisionChatRequest,
+    ): Promise<DecisionChatHandle | null>
     /**
      * Ask the mounted conversation to adopt a validated working directory.
      * Call this only from an explicit user action, such as the user picking

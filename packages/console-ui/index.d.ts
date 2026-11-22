@@ -137,6 +137,41 @@ export interface ScreenOpenRequest {
     because that chat's composer is not mounted. */
 export type ComposeResult = 'composed' | 'ambiguous' | 'unavailable'
 
+export interface DecisionChatRequest {
+  key: string
+  sessionId: string
+  kind: 'question' | 'held'
+  title: string
+  agent?: string
+  card?: { key: string; title: string }
+  board?: { ticket: string; createdAt: string }
+  sourceTitle?: string
+  createdAt: string
+  why?: string
+  questionId?: string
+  questions?: {
+    header: string
+    question: string
+    options: {
+      label: string
+      description?: string
+      recommended?: boolean
+    }[]
+  }[]
+  held?: {
+    functionCallId: string
+    functionId: string
+    arguments: unknown
+  }
+  onUseAnswer(questionIndex: number, proposal: { option?: string; text?: string }): void
+}
+
+export interface DecisionChatHandle {
+  update(state: { editable: boolean; closed: boolean }): void
+  detach(): void
+  close(): void
+}
+
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
   panelSide: PanelSide
@@ -885,6 +920,16 @@ export interface Host {
      * session instead. Feature-detect on older consoles.
      */
     openConversation?(sessionId: string): void
+    /**
+     * Create or reuse the isolated side chat for a pending decision and open
+     * it beside the calling page. Absent on older consoles; feature-detect.
+     */
+    openDecisionChat?(request: DecisionChatRequest): Promise<DecisionChatHandle>
+    /**
+     * Bind a pending decision to an existing side chat without creating
+     * a copy or adding a workspace column. Returns `null` when no copy exists.
+     */
+    rebindDecisionChat?(request: DecisionChatRequest): Promise<DecisionChatHandle | null>
     /**
      * Ask the mounted conversation to adopt a validated working directory.
      * Call this only from an explicit user action, such as the user picking

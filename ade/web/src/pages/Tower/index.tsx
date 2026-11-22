@@ -1,7 +1,8 @@
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { usePaneState } from '@iii-dev/console-ui/hooks'
 import { RadioTower, RefreshCw } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { decisionChatCapabilities } from '@/components/chat/decision/host'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Eyebrow } from '@/components/ui/Eyebrow'
@@ -24,6 +25,7 @@ import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { requestPanelOpen, requestScreenOpen } from '@/lib/panel-context'
 import { formatTokenCount } from '@/lib/token-estimate'
 import { chatSessionScreen } from '@/lib/workspace-tabs'
+import type { Host } from '@/types/injectable-ui'
 import { type TowerData, useTowerData } from './data'
 import {
   ALL_PROJECTS,
@@ -127,11 +129,13 @@ function ConnectedTower({
   const [scope, setScope] = useState(ALL_PROJECTS)
   const data = useTowerData(iii, scope)
   const summary = useTowerSummary(iii, scope, data)
+  const chat = useMemo(() => decisionChatCapabilities(iii, 'tower'), [iii])
   return (
     <TowerScreen
       data={data}
       summary={summary}
       iii={iii}
+      chat={chat}
       scope={scope}
       onScopeChange={setScope}
       onRequestClose={onRequestClose}
@@ -148,6 +152,7 @@ export interface TowerScreenProps {
   summaryCheckedAt?: number
   summary?: ReturnType<typeof useTowerSummary>
   iii?: TowerActions
+  chat?: Pick<Host['chat'], 'openDecisionChat' | 'rebindDecisionChat'>
   user?: string
   initialSelectedId?: string
 }
@@ -161,6 +166,7 @@ export function TowerScreen({
   summaryCheckedAt: providedCheckedAt,
   summary,
   iii,
+  chat,
   user = 'user',
   initialSelectedId,
 }: TowerScreenProps) {
@@ -318,7 +324,7 @@ export function TowerScreen({
                 summaryLoading={summary?.loading}
                 summaryError={summary?.error}
                 refreshSummary={summary?.refresh ?? data.refresh}
-                canAsk={!!iii}
+                canAsk={!!chat?.openDecisionChat}
               />
             ) : view === 'runs' ? (
               <Runs
@@ -349,6 +355,7 @@ export function TowerScreen({
                     key={scope}
                     data={data}
                     iii={iii}
+                    chat={chat}
                     user={user}
                     initialSelectedId={selectedId}
                     initialAskAboutId={askAboutId}
@@ -833,7 +840,7 @@ function Overview({
                     </Button>
                     <AskAboutButton
                       item={item}
-                      disabled={!canAsk}
+                      available={canAsk}
                       onClick={() => openNeed(item, true)}
                     />
                   </div>
