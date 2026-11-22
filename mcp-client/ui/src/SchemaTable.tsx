@@ -25,25 +25,25 @@ import {
   TableViewport,
 } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { Check, Copy } from 'lucide-react'
+import { Check, Copy, X } from 'lucide-react'
 import type { CSSProperties } from 'react'
 
 const MAX_DEPTH = 3
 
 export function CopyIconButton({ value, label }: { value: string; label: string }) {
   const { state, copy } = useCopyFlash(value, 2000)
-  const copied = state === 'copied'
   return (
     <IconButton
       type="button"
-      label={copied ? 'Copied' : label}
+      label={state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : label}
       onClick={copy}
       className="mcp-ui-copy"
-      data-copied={copied}
+      data-state={state}
     >
       <span className="mcp-ui-swap" aria-hidden>
         <Copy className="from" />
         <Check className="to" />
+        <X className="fail" />
       </span>
     </IconButton>
   )

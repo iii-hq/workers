@@ -811,6 +811,8 @@ export function accessLists(
   block: number
   allowed: AccessItem[]
   ask: AccessItem[]
+  /** The destructive functions among `ask`. */
+  askDestructive: number
   toAdd: AccessItem[]
   toRemove: AccessItem[]
   overridden: AccessItem[]
@@ -824,10 +826,12 @@ export function accessLists(
     if (verdict === 'allow' || status.unsafe.includes(fn.functionId)) return true
     return fn.cls === 'read' && block.includes(fn.functionId) && verdict === undefined
   })
+  const ask = judged ? access.filter((fn) => !allowed.includes(fn)) : []
   return {
     block: block.length,
     allowed: judged ? allowed.map(itemOf) : block.sort(byName).map((id) => ({ id, source: '' })),
-    ask: judged ? access.filter((fn) => !allowed.includes(fn)).map(itemOf) : [],
+    ask: ask.map(itemOf),
+    askDestructive: ask.filter((fn) => fn.cls === 'destructive').length,
     toAdd: itemsOf(access, status.toAdd),
     toRemove: itemsOf(access, status.toRemove),
     overridden: status.overridden.map((o) => ({

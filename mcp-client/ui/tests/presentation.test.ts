@@ -969,6 +969,17 @@ describe('accessLists', () => {
     )
   })
 
+  it('counts only the destructive functions that still ask', () => {
+    const access = [fa('get_issue', 'read', 'server_read'), fa('delete_issue', 'destructive', 'server_write')]
+    const count = (rules: unknown[]) => {
+      const st = gateStatus({ gate: { installed: true, rules }, server: srv({}), access })
+      return [st.kind, accessLists(st, 'linear', rules, access).askDestructive]
+    }
+    expect(count([rule(L('get_issue'))])).toEqual(['present', 1])
+    // A destructive id left in the block runs without a person, so it is not among those that ask.
+    expect(count([rule(L('get_issue')), rule(L('delete_issue'))])).toEqual(['stale_unsafe', 0])
+  })
+
   it('splits what the counts cover, and lists a block it cannot judge as stored', () => {
     const access = [
       fa('get_issue', 'read', 'name'),
@@ -985,6 +996,7 @@ describe('accessLists', () => {
       block: 2,
       allowed: [item('save_issue', 'Marked as writing by the server')],
       ask: [item('get_issue', 'Guessed from the name'), item('list_issues', 'Marked read-only by the server')],
+      askDestructive: 0,
       toAdd: [item('list_issues', 'Marked read-only by the server')],
       toRemove: [item('gone', 'No longer listed by the server')],
       overridden: [
@@ -998,6 +1010,7 @@ describe('accessLists', () => {
       block: 2,
       allowed: [item('get_issue', ''), item('gone', '')],
       ask: [],
+      askDestructive: 0,
       toAdd: [],
       toRemove: [],
       overridden: [],

@@ -270,6 +270,10 @@
   min-height: 36px;
   padding: 6px 8px;
 }
+/* A touch target in the drill-in (spec: narrow rows are 44px). */
+[data-iii-ui="mcp-client"] .mcp-ui-root[data-narrow="true"] .mcp-ui-pin {
+  min-height: 44px;
+}
 /* The row's name, muted in a fixed cell and level with the value's first line. */
 [data-iii-ui="mcp-client"] .mcp-ui-pin .iii-ui-list-item__icon {
   align-self: flex-start;
@@ -278,6 +282,10 @@
   color: var(--color-ink-faint);
   font-size: 12px;
   line-height: 20px;
+}
+/* A one-line row centres its value, so its name centres with it. */
+[data-iii-ui="mcp-client"] .mcp-ui-pin:not(:has(.iii-ui-list-item__description)) .iii-ui-list-item__icon {
+  align-self: center;
 }
 [data-iii-ui="mcp-client"] .mcp-ui-pin .iii-ui-list-item__title {
   display: flex;
@@ -433,17 +441,22 @@
   width: 16px;
   height: 16px;
 }
-[data-iii-ui="mcp-client"] .mcp-ui-swap > .to,
-[data-iii-ui="mcp-client"] .mcp-ui-copy[data-copied="true"] .mcp-ui-swap > .from {
+[data-iii-ui="mcp-client"] .mcp-ui-swap > :not(.from),
+[data-iii-ui="mcp-client"] .mcp-ui-copy:not([data-state="idle"]) .mcp-ui-swap > .from {
   opacity: 0;
   scale: 0.25;
   filter: blur(4px);
 }
-[data-iii-ui="mcp-client"] .mcp-ui-copy[data-copied="true"] .mcp-ui-swap > .to {
+/* The flash: a check in the ok tone, or a cross in the warn tone when the clipboard refused. */
+[data-iii-ui="mcp-client"] .mcp-ui-copy[data-state="copied"] .mcp-ui-swap > .to,
+[data-iii-ui="mcp-client"] .mcp-ui-copy[data-state="failed"] .mcp-ui-swap > .fail {
   opacity: 1;
   scale: 1;
   filter: blur(0);
   color: var(--color-ok);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-copy[data-state="failed"] .mcp-ui-swap > .fail {
+  color: var(--color-warn);
 }
 @media (prefers-reduced-motion: no-preference) {
   [data-iii-ui="mcp-client"] .mcp-ui-swap > svg {
@@ -961,6 +974,11 @@
 [data-iii-ui="mcp-client"] .mcp-ui-settings .iii-ui-settings-row__inner {
   min-height: 0;
   padding: 0;
+}
+/* A half row is not its own size container, so console-ui's phone sizing (a 30rem container) follows the
+   view's width, not the half cell's. */
+[data-iii-ui="mcp-client"] .mcp-ui-settings > .mcp-ui-half {
+  container-type: normal;
 }
 /* Name and Transport side by side when there is room. */
 @container mcp-ui-detail (min-width: 560px) {

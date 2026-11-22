@@ -161,11 +161,11 @@ export function AgentAccessView({
       onChanged()
     }
   }
-  // Remove rules takes the danger tone: solid as the state's default button, outlined beside another one.
+  // Remove rules is never a default button (spec 6.5): an outline in the danger tone in every state.
   const writeButton = (what: Write, primary: boolean) => (
     <Button
-      variant={what === 'remove' ? (primary ? 'destructive' : 'secondary') : primary ? 'primary' : 'ghost'}
-      className={what === 'remove' && !primary ? 'mcp-ui-danger' : undefined}
+      variant={what === 'remove' ? 'secondary' : primary ? 'primary' : 'ghost'}
+      className={what === 'remove' ? 'mcp-ui-danger' : undefined}
       size="sm"
       disabled={writing !== null || busy}
       onClick={() => void write(what)}
@@ -201,10 +201,10 @@ export function AgentAccessView({
               <dd>{lists.ask.length}</dd>
             </div>
           ) : null}
-          {listed && status.destructive > 0 ? (
+          {listed && lists.askDestructive > 0 ? (
             <div data-tone="warn">
               <dt>Destructive, of those {lists.ask.length}</dt>
-              <dd>{status.destructive}</dd>
+              <dd>{lists.askDestructive}</dd>
             </div>
           ) : null}
         </dl>

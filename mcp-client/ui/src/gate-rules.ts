@@ -101,7 +101,6 @@ export interface GateStatus {
   overridden: { functionId: string; verdict: Verdict }[]
   allowed: number
   ask: number
-  destructive: number
   rowAction: boolean
 }
 
@@ -198,7 +197,6 @@ export function gateStatus(input: {
     overridden: overridden.map((fn) => ({ functionId: fn.functionId, verdict: verdicts[fn.functionId] })),
     allowed,
     ask: early === 'not_connected' ? 0 : access.length - allowed,
-    destructive: access.filter((fn) => fn.cls === 'destructive').length,
     rowAction: server.state === 'ready' && (kind === 'stale_unsafe' || kind === 'overridden_write'),
   }
 }

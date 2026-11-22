@@ -213,7 +213,6 @@ describe('gateStatus', () => {
       toAdd: [L('get_issue'), L('list_issues')],
       allowed: 0,
       ask: 4,
-      destructive: 1,
     })
   })
 
@@ -227,7 +226,6 @@ describe('gateStatus', () => {
       toRemove: [],
       allowed: 2,
       ask: 2,
-      destructive: 1,
       rowAction: false,
     })
   })
