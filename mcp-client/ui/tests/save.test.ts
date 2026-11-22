@@ -145,11 +145,17 @@ describe('needsConfirm', () => {
 
 describe('asksGate', () => {
   it('asks the approval gate for an add, or for a changed connection the fingerprint does not already cover', () => {
-    const before = { entry: { type: 'http', url: 'https://a.example.com/mcp' }, fingerprint: 'f1' }
+    const before = { entry: { type: 'http', url: 'https://a.example.com/mcp' }, fingerprint: 'f1', approved: true }
     expect(asksGate(null, 'f2', before.entry)).toBe(true)
     expect(asksGate(before, 'f2', { ...before.entry, url: 'https://b.example.com/mcp' })).toBe(true)
     expect(asksGate(before, 'f2', { ...before.entry, headers: { 'X-Workspace': 'acme' } })).toBe(false)
     expect(asksGate(before, 'f1', { ...before.entry, url: 'https://b.example.com/mcp' })).toBe(false)
+  })
+
+  it('asks for any change to an entry changed outside the page: its stored entry is not what was approved', () => {
+    const before = { entry: { type: 'http', url: 'https://a.example.com/mcp' }, fingerprint: 'f1', approved: false }
+    expect(asksGate(before, 'f2', { ...before.entry, headers: { 'X-Workspace': 'acme' } })).toBe(true)
+    expect(asksGate(before, 'f1', before.entry)).toBe(false)
   })
 })
 
@@ -171,7 +177,7 @@ describe('saveEntry', () => {
 
   it('removes the block when url, command or args changed', async () => {
     const f = fake({ blockCount: 41 })
-    const before = { entry: { ...SPEC.linear, url: 'https://old.example/mcp' }, fingerprint: 'fp0' }
+    const before = { entry: { ...SPEC.linear, url: 'https://old.example/mcp' }, fingerprint: 'fp0', approved: true }
     await saveEntry(f.deps, 'linear', SPEC.linear, before)
     expect(f.calls).toEqual(['validate', 'blockCount', 'confirm', 'removeBlock', 'approve:linear:fp1', 'write:linear'])
   })
@@ -192,8 +198,20 @@ describe('saveEntry', () => {
 
   it('leaves the block alone when only headers changed', async () => {
     const f = fake({ blockCount: 41 })
-    await saveEntry(f.deps, 'search', SPEC.search, { entry: { ...SPEC.search, headers: {} }, fingerprint: 'fp0' })
+    await saveEntry(f.deps, 'search', SPEC.search, {
+      entry: { ...SPEC.search, headers: {} },
+      fingerprint: 'fp0',
+      approved: true,
+    })
     expect(f.calls).toEqual(['validate', 'confirm', 'approve:search:fp1', 'write:search'])
+  })
+
+  it('removes the block when only headers changed on an entry changed outside the page', async () => {
+    const f = fake({ blockCount: 41 })
+    const before = { entry: { ...SPEC.search, headers: {} }, fingerprint: 'fp0', approved: false }
+    await saveEntry(f.deps, 'search', SPEC.search, before)
+    expect(f.calls).toEqual(['validate', 'blockCount', 'confirm', 'removeBlock', 'approve:search:fp1', 'write:search'])
+    expect(f.confirms[0].lines).toContain(BLOCK)
   })
 
   it('approves without a confirm when nothing runs and nothing is sent', async () => {
@@ -204,7 +222,12 @@ describe('saveEntry', () => {
 
   it('writes without approving when the fingerprint did not change', async () => {
     const f = fake()
-    await saveEntry(f.deps, 'linear', { ...SPEC.linear, timeout: 30 }, { entry: SPEC.linear, fingerprint: 'fp1' })
+    await saveEntry(
+      f.deps,
+      'linear',
+      { ...SPEC.linear, timeout: 30 },
+      { entry: SPEC.linear, fingerprint: 'fp1', approved: true },
+    )
     expect(f.calls).toEqual(['validate', 'write:linear'])
   })
 
@@ -338,11 +361,11 @@ describe('setDisabled', () => {
 describe('saveBefore', () => {
   const config = { a: { url: 'A' }, b: { url: 'B' } }
   const a = srv({ name: 'a', fingerprint: 'fa' })
-  const b = srv({ name: 'b', fingerprint: 'fb' })
+  const b = srv({ name: 'b', fingerprint: 'fb', approved: false })
 
-  it('takes the entry and the fingerprint of the server being saved, never of another one', () => {
-    expect(saveBefore(false, 'a', config, [b, a])).toEqual({ entry: { url: 'A' }, fingerprint: 'fa' })
-    expect(saveBefore(false, 'b', config, [b, a])).toEqual({ entry: { url: 'B' }, fingerprint: 'fb' })
+  it('takes the entry, fingerprint and approval of the server being saved, never of another one', () => {
+    expect(saveBefore(false, 'a', config, [b, a])).toEqual({ entry: { url: 'A' }, fingerprint: 'fa', approved: true })
+    expect(saveBefore(false, 'b', config, [b, a])).toEqual({ entry: { url: 'B' }, fingerprint: 'fb', approved: false })
   })
 
   it('has nothing before an add, a name the worker does not list, or one not in the config', () => {

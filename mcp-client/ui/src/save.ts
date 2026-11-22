@@ -50,28 +50,31 @@ export function needsConfirm(before: { fingerprint: string } | null, after: Serv
   return changed && (Boolean(after.effects.runs) || after.effects.sends.length > 0)
 }
 
-/** What a save compares against: the stored entry and the fingerprint of the server named `name`, never of the
- * one selected; nothing for an add, or for a name the config or the worker does not hold. */
+/** The stored entry a save compares against, with its fingerprint and whether that fingerprint is approved. */
+export type SaveBefore = { entry: unknown; fingerprint: string; approved: boolean }
+
+/** What a save compares against: the stored entry, fingerprint and approval of the server named `name`, never of
+ * the one selected; nothing for an add, or for a name the config or the worker does not hold. */
 export function saveBefore(
   adding: boolean,
   name: string,
   config: Record<string, unknown> | null,
   servers: Server[] | undefined,
-): { entry: unknown; fingerprint: string } | null {
+): SaveBefore | null {
   const server = servers?.find((s) => s.name === name)
   return adding || !server || !config || !(name in config)
     ? null
-    : { entry: config[name], fingerprint: server.fingerprint }
+    : { entry: config[name], fingerprint: server.fingerprint, approved: server.approved }
 }
 
-/** Whether a save reads the approval gate's block for its name: an add, or a connection (`url`, `command`,
- * `args`) that changed while the fingerprint did not stay the same. */
-export function asksGate(
-  before: { entry: unknown; fingerprint: string } | null,
-  fingerprint: string,
-  entry: unknown,
-): boolean {
-  return before === null || (before.fingerprint !== fingerprint && connectionChanged(before.entry, entry))
+/** Whether a save reads the approval gate's block for its name: an add; any change to an unapproved entry, whose
+ * stored value an outside write may have pointed anywhere; or a connection (`url`, `command`, `args`) that changed
+ * while the fingerprint did not stay the same. */
+export function asksGate(before: SaveBefore | null, fingerprint: string, entry: unknown): boolean {
+  return (
+    before === null ||
+    (before.fingerprint !== fingerprint && (!before.approved || connectionChanged(before.entry, entry)))
+  )
 }
 
 const validated = async (api: Api, name: string, entry: unknown) =>
@@ -82,7 +85,7 @@ export async function saveEntry(
   deps: SaveDeps,
   name: string,
   entry: Record<string, unknown>,
-  before: { entry: unknown; fingerprint: string } | null,
+  before: SaveBefore | null,
 ): Promise<{ saved: boolean; errors: Issue[]; message?: string }> {
   const v = await validated(deps.api, name, entry)
   if (!v?.ok) return { saved: false, errors: v?.errors ?? [] }
