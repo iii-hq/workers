@@ -48,6 +48,12 @@ import {
 const NO_EXT = new Map<string, string>()
 
 describe('parseWorkspaceTabs', () => {
+  it('preserves the built-in tower screen and its deep link', () => {
+    const tab = { id: 'tower', screens: ['tower'] }
+    expect(parseWorkspaceTabs({ tabs: [tab] })).toMatchObject([tab])
+    expect(deepLinkScreen('#/tower')).toBe('tower')
+    expect(screenLabel('tower', NO_EXT)).toBe('Control tower')
+  })
   it('returns [] for an empty / malformed document', () => {
     expect(parseWorkspaceTabs({})).toEqual([])
     expect(parseWorkspaceTabs({ tabs: 'nope' })).toEqual([])

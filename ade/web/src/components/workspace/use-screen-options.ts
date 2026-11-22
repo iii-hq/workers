@@ -19,6 +19,7 @@ import {
   Milestone,
   Monitor,
   Puzzle,
+  RadioTower,
   SquareCode,
   SquareFunction,
   SquareKanban,
@@ -169,6 +170,14 @@ export function useScreenOptions(): {
       keywords: ['assistant', 'agent'],
     },
     ...buildViewOptions().map((option): ScreenOption => {
+      if (option.value === 'tower') {
+        return {
+          ...option,
+          icon: RadioTower,
+          description: 'Project progress, runs, and what needs you.',
+          keywords: ['overview', 'runs', 'approvals'],
+        }
+      }
       if (option.value === 'traces') {
         return {
           ...option,

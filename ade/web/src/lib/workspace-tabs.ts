@@ -574,7 +574,7 @@ const RETIRED_SIDE_CHAT_SCREEN = 'side-chat'
     overlay page, never as a workspace-tab screen. Per-worker pages
     (worktrees, memory, browser, github) are injected UI — they attach as
     `ext:<page-id>` screens, not first-party routes. */
-const ROUTED_SCREENS: readonly View[] = ['traces', 'workers']
+const ROUTED_SCREENS: readonly View[] = ['traces', 'workers', 'tower']
 
 export function isRoutedScreen(screen: TabScreen): screen is View {
   return (ROUTED_SCREENS as readonly string[]).includes(screen)
@@ -971,6 +971,7 @@ export function screenLabel(
   extPageTitles: ReadonlyMap<string, string>,
 ): string {
   if (isChatScreen(screen)) return CHAT_SCREEN
+  if (screen === 'tower') return 'Control tower'
   const extId = extPageIdForScreen(screen)
   if (extId !== null) return extPageTitles.get(extId) ?? extId
   return screen

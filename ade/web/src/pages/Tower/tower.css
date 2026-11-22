@@ -1,0 +1,323 @@
+.tower {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.tower-content {
+  overflow: auto;
+  padding: 20px;
+  flex: 1;
+  min-height: 0;
+}
+.tower-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.tower-freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.tower-mobile-scope,
+.tower-mobile-nav,
+.tower-log-nav {
+  display: none;
+}
+.tower-tiles {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 0;
+}
+.tower-tile {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+  box-shadow: 0 0 0 1px var(--color-edge);
+}
+.tower-tile strong {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.tower-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 16px;
+  align-items: start;
+}
+.tower-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.tower-section-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.tower-section-title h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 600;
+  margin-right: auto;
+}
+.tower-muted {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+.tower-meta {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.tower-link {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.tower-link:hover {
+  color: var(--color-ink-faint);
+}
+.tower-row {
+  min-width: 0;
+  padding: 11px 12px;
+}
+.tower-row + .tower-row {
+  margin-top: 2px;
+}
+.tower-row:hover {
+  background: var(--color-surface-hover);
+}
+.tower-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tower-row-head > strong,
+.tower-row-head > .tower-subject {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-weight: 500;
+}
+.tower-row-head time {
+  margin-left: auto;
+}
+.tower-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: 2px 7px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tower-one-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tower-releases {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+.tower-release {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.tower-bar {
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+}
+.tower-bar-done,
+.tower-legend-done {
+  background: var(--color-ink-faint);
+}
+.tower-bar-progress,
+.tower-legend-progress {
+  background: var(--color-ink-ghost);
+}
+.tower-legend-rest {
+  background: var(--color-surface);
+}
+.tower-board-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+.tower-board-heading span:last-child {
+  margin-left: auto;
+}
+.tower-ticket {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  text-align: left;
+}
+.tower-ticket:hover {
+  background: var(--color-surface-hover);
+}
+.tower-board details > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--color-ink-faint);
+}
+.tower-run-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
+  gap: 24px;
+}
+.tower-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 12px;
+  align-content: start;
+}
+.tower-progress-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 48px;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0;
+}
+.tower-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 12px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+.tower-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tower-legend i {
+  width: 12px;
+  height: 6px;
+  border-radius: var(--radius-md);
+}
+.tower-attention {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-warn-muted);
+}
+.tower-attention > button {
+  margin-left: auto;
+}
+@container (max-width: 900px) {
+  .tower-columns,
+  .tower-run-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tower-run-grid {
+    gap: 16px;
+  }
+  .tower-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .tower-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .tower-header-description {
+    display: none;
+  }
+}
+@container (max-width: 640px) {
+  .tower-run .tower-section-title h2 {
+    flex: 1 1 100%;
+  }
+  .tower-desktop-scope {
+    display: none;
+  }
+  .tower-mobile-scope {
+    display: flex;
+    margin: 12px 16px;
+  }
+}
+/* viewport: the console's phone navigation and touch presentation. */
+@media (max-width: 639px) {
+  .tower-desktop-nav {
+    display: none;
+  }
+  .tower-mobile-nav {
+    display: block;
+    margin: 0 16px 8px;
+  }
+  .tower-mobile-nav > div {
+    width: 100%;
+  }
+  .tower-mobile-nav button {
+    flex: 1;
+    min-height: 44px;
+  }
+  .tower-log-nav {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .tower-content {
+    padding: 16px;
+  }
+  .tower-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .tower-ticket {
+    min-height: 48px;
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+  .tower-ticket > :last-child:not(:nth-child(2)) {
+    grid-column: 2;
+  }
+  .tower-progress-row {
+    grid-template-columns: 72px minmax(0, 1fr) 44px;
+  }
+  .tower-run .tower-section-title button {
+    min-height: 44px;
+  }
+}

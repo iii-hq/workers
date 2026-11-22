@@ -10,12 +10,12 @@ import type { JsonValue } from '@/types/injectable-ui'
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
-// first-party routed views are `traces`, `workers`, and `configuration`.
+// first-party routed views are `traces`, `workers`, `tower`, and `configuration`.
 // Worker pages have no workspace route: they open through `host.panels.open`
 // or `ade::workspace::open` and live in the tab store. `#/worker/<scope>`
 // and `#/traces` are standalone routes instead — Standalone.tsx renders that
 // one surface with no workspace at all.
-export type View = 'configuration' | 'traces' | 'workers'
+export type View = 'configuration' | 'traces' | 'workers' | 'tower'
 
 export interface WorkersConfigurationRoute {
   /**
@@ -142,6 +142,7 @@ export function routeFromHash(hash: string): View | null {
   if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
   }
+  if (hash === '#/tower') return 'tower'
   if (hash === '#/configuration' || hash.startsWith('#/configuration/')) {
     return 'configuration'
   }
@@ -160,6 +161,8 @@ export function hashForView(view: View): string {
       return '#/traces'
     case 'workers':
       return '#/workers'
+    case 'tower':
+      return '#/tower'
     case 'configuration':
       return '#/configuration'
   }
