@@ -142,20 +142,21 @@ fn validate_with_approval_gate(
         problems.push(format!("a batch takes 1..={HARD_MAX_CALLS} calls"));
     }
     for (i, call) in req.calls.iter().enumerate() {
-        if let Some(reason) = forbidden_call(&call.function, approval_gate_running) {
-            problems.push(format!("call {} ({}): {reason}", i + 1, call.function));
-        }
-        // The approver sees `fp::batch` in this worker's namespace only, so a
-        // call elsewhere would run unapproved there.
-        if approval_gate_running
-            && let Some(ns) = pipe::other_namespace(call.namespace.as_deref(), own_namespace)
+        let gated = if approval_gate_running {
+            pipe::gate_refusals(
+                &call.function,
+                call.namespace.as_deref(),
+                own_namespace,
+                BATCH_ID,
+            )
+        } else {
+            Vec::new()
+        };
+        for reason in forbidden_call(&call.function, false)
+            .into_iter()
+            .chain(gated)
         {
-            problems.push(format!(
-                "call {} ({f}): a call in namespace {ns} must be approved in that namespace — \
-                 call {f} directly with \"namespace\": \"{ns}\" instead of through fp::batch",
-                i + 1,
-                f = call.function
-            ));
+            problems.push(format!("call {} ({}): {reason}", i + 1, call.function));
         }
         if pipe::is_scoped_step(&call.function) && req.fs_scope.is_none() {
             problems.push(format!(
@@ -246,7 +247,15 @@ async fn one(
                     Some(namespace) => request.namespace(namespace),
                     None => request.into(),
                 };
-            iii.call(request).await.map_err(|e| error_parts(&e))
+            // As in `pipe::run`: the gate can register while earlier calls
+            // run, so a call its state decides reads it again.
+            let own = iii.namespace().unwrap_or_else(|| "default".into());
+            let gated = pipe::gate_refusals(&function, call.namespace.as_deref(), &own, BATCH_ID);
+            if !gated.is_empty() && pipe::approval_gate_running(&iii).await.unwrap_or(true) {
+                Err(("FORBIDDEN".to_string(), gated.join("; ")))
+            } else {
+                iii.call(request).await.map_err(|e| error_parts(&e))
+            }
         }
     };
     match outcome {
@@ -475,6 +484,32 @@ mod tests {
     #[test]
     fn without_a_gate_a_call_may_name_any_namespace() {
         assert!(validate_with_approval_gate(&call_in(Some("other")), false, "own").is_ok());
+    }
+
+    #[test]
+    fn a_call_the_gate_decides_is_refused_with_the_up_front_reason() {
+        for (function, namespace) in [
+            ("database::execute", None),
+            ("state::get", Some("other")),
+            ("database::execute", Some("other")),
+        ] {
+            let req = parse(json!({ "calls": [{ "function": function, "namespace": namespace }] }));
+            let up_front = validate_with_approval_gate(&req, true, "own").unwrap_err();
+            let reasons = pipe::gate_refusals(function, namespace, "own", BATCH_ID);
+            assert!(!reasons.is_empty(), "{function}");
+            for reason in reasons {
+                let problem = format!("call 1 ({function}): {reason}");
+                assert!(up_front.contains(&problem), "{up_front}");
+            }
+        }
+        for (function, namespace) in [
+            ("database::query", None),
+            ("state::get", Some("own")),
+            ("fp::pipe", None),
+        ] {
+            let reasons = pipe::gate_refusals(function, namespace, "own", BATCH_ID);
+            assert!(reasons.is_empty(), "{function}: {reasons:?}");
+        }
     }
 
     #[test]

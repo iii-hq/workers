@@ -311,6 +311,31 @@ fn forbidden_unprefixed_step(
     None
 }
 
+/// What a running gate refuses in a call that its absence admits: a database
+/// write, or a call in another namespace (the approver sees `via` in this
+/// worker's namespace only, so a call elsewhere would run unapproved there).
+/// Empty when the gate's state decides nothing about the call.
+pub(crate) fn gate_refusals(
+    function: &str,
+    namespace: Option<&str>,
+    own: &str,
+    via: &str,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if forbidden_step(function, false).is_none()
+        && let Some(reason) = forbidden_step(function, true)
+    {
+        reasons.push(reason.to_string());
+    }
+    if let Some(ns) = other_namespace(namespace, own) {
+        reasons.push(format!(
+            "a call in namespace {ns} must be approved in that namespace — call {function} \
+             directly with \"namespace\": \"{ns}\" instead of through {via}"
+        ));
+    }
+    reasons
+}
+
 /// Static validation, separated from execution for testability. Every
 /// problem in the request is collected before anything is refused, so one
 /// corrected resend is enough.
@@ -324,20 +349,22 @@ fn validate_with_approval_gate(
         problems.push(format!("a pipe takes 1..={MAX_STEPS} steps"));
     }
     for (i, step) in req.through.iter().enumerate() {
-        if let Some(reason) = forbidden_step(&step.function, approval_gate_running) {
-            problems.push(format!("step {} ({}): {reason}", i + 1, step.function));
-        }
-        // The approver sees `fp::pipe` in this worker's namespace only, so a
-        // step elsewhere would run unapproved there.
-        if approval_gate_running
-            && let Some(ns) = other_namespace(step.namespace.as_deref(), own_namespace)
+        let gated = if approval_gate_running {
+            gate_refusals(
+                &step.function,
+                step.namespace.as_deref(),
+                own_namespace,
+                PIPE_ID,
+            )
+        } else {
+            Vec::new()
+        };
+        for reason in forbidden_step(&step.function, false)
+            .map(str::to_string)
+            .into_iter()
+            .chain(gated)
         {
-            problems.push(format!(
-                "step {} ({f}): a call in namespace {ns} must be approved in that namespace — \
-                 call {f} directly with \"namespace\": \"{ns}\" instead of through fp::pipe",
-                i + 1,
-                f = step.function
-            ));
+            problems.push(format!("step {} ({}): {reason}", i + 1, step.function));
         }
         if is_scoped_step(&step.function) {
             if req.fs_scope.is_none() {
@@ -758,6 +785,18 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
         let value = match util::apply(&step.function, &args) {
             Some(result) => result.map_err(|msg| step_error(i, &step.function, &msg, &receipts))?,
             None => {
+                // The gate can register while an earlier step runs, so a step
+                // its state decides reads it again, mapped as at admission
+                // (`split_gate`); other steps skip the lookup.
+                // shortcut: the gate can still register between this read and
+                // the call; only the engine can close that, if it ever matters.
+                let gated = gate_refusals(&step.function, step.namespace.as_deref(), &own, PIPE_ID);
+                if !gated.is_empty()
+                    && split_gate(&req, &own, approval_gate_running(iii).await)
+                        .map_err(|e| step_error(i, &step.function, &e, &receipts))?
+                {
+                    return Err(step_error(i, &step.function, &gated.join("; "), &receipts));
+                }
                 // SECURITY: the stamp must be the LAST write to args before
                 // dispatch — after `into` threading above — or a threaded
                 // value at /fs_scope would reach the shell worker as trusted.
@@ -1037,6 +1076,37 @@ mod tests {
                 validate_with_approval_gate(&step_in(namespace), true, "own").is_ok(),
                 "{namespace:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_step_the_gate_decides_is_refused_with_the_up_front_reason() {
+        for (function, namespace) in [
+            ("database::execute", None),
+            ("state::get", Some("laptop")),
+            ("database::execute", Some("laptop")),
+        ] {
+            let req =
+                parse(json!({ "through": [{ "function": function, "namespace": namespace }] }))
+                    .unwrap();
+            let up_front = validate_with_approval_gate(&req, true, "own").unwrap_err();
+            let reasons = gate_refusals(function, namespace, "own", PIPE_ID);
+            assert!(!reasons.is_empty(), "{function}");
+            for reason in reasons {
+                let problem = format!("step 1 ({function}): {reason}");
+                assert!(up_front.contains(&problem), "{up_front}");
+            }
+        }
+        for (function, namespace) in [
+            ("database::query", None),
+            ("state::get", None),
+            ("state::get", Some("own")),
+            ("state::get", Some(" ")),
+            // Refused with or without the gate: its state decides nothing.
+            ("configuration::get", None),
+        ] {
+            let reasons = gate_refusals(function, namespace, "own", PIPE_ID);
+            assert!(reasons.is_empty(), "{function}: {reasons:?}");
         }
     }
 
