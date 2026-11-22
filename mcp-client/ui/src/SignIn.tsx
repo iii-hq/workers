@@ -101,7 +101,13 @@ export function SignIn({
   }
 
   const body = (
-    <section className="mcp-ui-signin" aria-label="Sign-in" data-phase={phase}>
+    <section
+      className="mcp-ui-signin"
+      aria-label="Sign-in"
+      data-phase={phase}
+      // Only Connect or Sign out: it sits beside the stage track; anything more takes the row under it.
+      data-inline={((phase === 'idle' || phase === 'starting') && !signOutError) || undefined}
+    >
       {phase === 'failed' ? (
         <StatusPanel
           variant="alert"

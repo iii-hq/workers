@@ -3,7 +3,6 @@ import {
   type ExtensionIii,
   type LiveAnnouncement,
   LiveRegion,
-  MetaRow,
   StatusDot,
   StatusPanel,
   useConfirm,
@@ -162,9 +161,11 @@ export function AgentAccessView({
       onChanged()
     }
   }
+  // Remove rules takes the danger tone: solid as the state's default button, outlined beside another one.
   const writeButton = (what: Write, primary: boolean) => (
     <Button
-      variant={primary ? 'primary' : 'ghost'}
+      variant={what === 'remove' ? (primary ? 'destructive' : 'secondary') : primary ? 'primary' : 'ghost'}
+      className={what === 'remove' && !primary ? 'mcp-ui-danger' : undefined}
       size="sm"
       disabled={writing !== null || busy}
       onClick={() => void write(what)}
@@ -189,21 +190,24 @@ export function AgentAccessView({
       {alert ? <StatusPanel variant="alert" headline={coded(alert)} /> : null}
       {status.kind === 'unreadable' ? <StatusPanel variant="alert" headline={gate.error ?? status.rowText} /> : null}
       {lists ? (
-        <MetaRow className="mcp-ui-facts">
-          <span>
-            <span>{lists.allowed.length}</span> allowed without asking
-          </span>
+        <dl className="mcp-ui-counts">
+          <div>
+            <dt>Allowed without asking</dt>
+            <dd>{lists.allowed.length}</dd>
+          </div>
           {listed ? (
-            <span>
-              <span>{lists.ask.length}</span> ask a person
-            </span>
+            <div>
+              <dt>Ask a person</dt>
+              <dd>{lists.ask.length}</dd>
+            </div>
           ) : null}
           {listed && status.destructive > 0 ? (
-            <span>
-              <span>{status.destructive}</span> destructive
-            </span>
+            <div data-tone="warn">
+              <dt>Destructive, of those {lists.ask.length}</dt>
+              <dd>{status.destructive}</dd>
+            </div>
           ) : null}
-        </MetaRow>
+        </dl>
       ) : null}
       {lists && lists.allowed.length > 0 ? (
         <details className="mcp-ui-optional" open={!listed || undefined}>

@@ -9,11 +9,13 @@ import {
   StatusDot,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { type ReactNode, useState } from 'react'
+import { ChevronRight } from 'lucide-react'
+import { useState } from 'react'
 import { coded } from './AgentAccessView'
 import { currentRow, onColumnKeys } from './columns'
 import {
   connectionRowText,
+  countLabel,
   type FunctionRow,
   filterRows,
   functionRows,
@@ -53,18 +55,27 @@ export function ServerContents({
   const skipped = skippedText(server)
   const { item } = selection
   const pick = (next: Item) => onSelect({ server: server.name, item: next })
+  // The name muted in a fixed cell, then the value with its dot (and a detail line under it), then a chevron.
   const pinned = (
     kind: 'connection' | 'process' | 'access',
     label: string,
-    description?: string,
-    trailing?: ReactNode,
+    tone: Tone,
+    value: string,
+    detail?: string,
+    pulse = false,
   ) => (
     <ListItem
       className="mcp-ui-pin"
       {...currentRow(item?.kind === kind)}
-      label={label}
-      description={description}
-      trailing={trailing}
+      leading={label}
+      label={
+        <>
+          <StatusDot tone={tone} pulse={pulse} />
+          <span>{value}</span>
+        </>
+      }
+      description={detail}
+      trailing={<ChevronRight size={16} aria-hidden />}
       onClick={() => pick({ kind })}
     />
   )
@@ -84,7 +95,13 @@ export function ServerContents({
   return (
     <>
       <div className="mcp-ui-search">
-        <SearchField className="mcp-ui-search-field" aria-label="Filter functions" value={query} onChange={setQuery} />
+        <SearchField
+          className="mcp-ui-search-field"
+          aria-label="Filter functions"
+          placeholder={`Filter ${countLabel(server)}`}
+          value={query}
+          onChange={setQuery}
+        />
         <span className="mcp-ui-count">{countText}</span>
       </div>
       <List
@@ -98,27 +115,18 @@ export function ServerContents({
           <StatusPanel className="mcp-ui-panel" variant={panel.variant} headline={coded(panel.headline)} detail={panel.next} />
         ) : null}
         {accessAlert ? <StatusPanel className="mcp-ui-panel" variant="alert" headline={coded(accessAlert)} /> : null}
-        {pinned(
-          'connection',
-          'Connection',
-          connectionRowText(server),
-          <>
-            <StatusDot tone={dot} pulse={pulse} />
-            {STATE_WORD[server.state]}
-          </>,
-        )}
-        {server.transport === 'stdio' ? pinned('process', 'Process', processRowText(server.process, now)) : null}
-        {accessRow
-          ? pinned(
-              'access',
-              'Agent access',
-              undefined,
-              <>
-                <StatusDot tone={accessRow.tone} />
-                {accessRow.text}
-              </>,
-            )
-          : null}
+        <div className="mcp-ui-pins">
+          {pinned('connection', 'Connection', dot, STATE_WORD[server.state], connectionRowText(server), pulse)}
+          {server.transport === 'stdio'
+            ? pinned(
+                'process',
+                'Process',
+                server.process?.pid == null ? 'ghost' : 'ok',
+                processRowText(server.process, now),
+              )
+            : null}
+          {accessRow ? pinned('access', 'Agent access', accessRow.tone, accessRow.text) : null}
+        </div>
         {rowGroups(server, rows, query).map((group) => (
           <ListGroup key={group.id} className="mcp-ui-group">
             <ListGroupLabel>

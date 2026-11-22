@@ -1,5 +1,6 @@
 import {
   Button,
+  Chip,
   type Host,
   type PageRenderProps,
   ShadcnTabsContent,
@@ -15,7 +16,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { serverAccess } from './access'
 import { coded } from './AgentAccessView'
 import type { Api } from './api'
-import { type FunctionRow, functionName, metaLine } from './presentation'
+import { type FunctionRow, functionName, inputsText } from './presentation'
 import { ResourcePicker } from './ResourcePicker'
 import { SchemaTable } from './SchemaTable'
 import { TestPanel } from './TestPanel'
@@ -102,13 +103,23 @@ export function FunctionDetail({
   const skeleton = SKELETON_LINES.map((n) => <Skeleton key={n} className="mcp-ui-skeleton-line" />)
   // `resources::read` and a prompt swap the Test words; the read also its Input half (the uri picker).
   const reads = access?.kind === 'resource' && access.name === 'resources::read'
+  const inputs = inputsText(schema, row.group)
 
   return (
     <div className="mcp-ui-detail">
       <div className="mcp-ui-detail-head">
         <h2 className="mcp-ui-detail-name">{functionName(server.name, functionId)}</h2>
         {row.description ? <Description key={functionId} text={row.description} /> : null}
-        <code className="mcp-ui-detail-meta">{metaLine(functionId, schema, row.group)}</code>
+        <div className="mcp-ui-chips">
+          <Chip className="mcp-ui-id-chip">
+            <code>{functionId}</code>
+          </Chip>
+          {/* A tool's class in column 2's words; a resource function or a prompt reads by definition. */}
+          {access?.kind === 'tool' ? (
+            <Chip tone={row.chip === 'Destructive' ? 'warning' : 'neutral'}>{row.chip ?? 'Read-only'}</Chip>
+          ) : null}
+          {inputs ? <Chip>{inputs}</Chip> : null}
+        </div>
       </div>
       {held?.error ? (
         <StatusPanel

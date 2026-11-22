@@ -13,8 +13,8 @@ import {
   StatusDot,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { Plus, X } from 'lucide-react'
-import { type ComponentType, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { CircleCheck, Plus, X } from 'lucide-react'
+import { type ComponentType, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { Api } from './api'
 import {
   type Draft,
@@ -29,7 +29,7 @@ import {
 import { effectLine } from './effect-line'
 import { KeyValueRows, SecretValue } from './KeyValueRows'
 import { advertisesText, stageTrack } from './presentation'
-import { effectSentences } from './save'
+import { effectSentences, removeLines } from './save'
 import type { Issue, Server } from './types'
 
 const MODES = [
@@ -130,8 +130,9 @@ export function ReviewPanel({
   )
 }
 
-/** Column 3 for Connection: how far the connection got, the entry's form (or its JSON), and what the server
- * negotiated. `children` sits between the stage track and the form. */
+/** Column 3 for Connection: how far the connection got with the view's action beside it, the Settings card (the
+ * entry's form or its JSON, what the server negotiated, the save bar), then Remove in a danger card. `children`
+ * sits between the stage track and the Settings card. */
 export function ConnectionView({
   host,
   server,
@@ -140,6 +141,7 @@ export function ConnectionView({
   errors,
   setDirty,
   stored,
+  action,
   children,
   onSave,
   onDiscard,
@@ -155,6 +157,8 @@ export function ConnectionView({
   errors: Issue[]
   setDirty: (dirty: boolean) => void
   stored: unknown
+  /** Connect, Sign in or Turn on: beside the stage track, where the connection stopped. */
+  action?: ReactNode
   children?: ReactNode
   onSave: () => void
   onDiscard: () => void
@@ -166,6 +170,7 @@ export function ConnectionView({
   const [json, setJson] = useState<{ text: string; error: string | null } | null>(null)
   // The draft the JSON text shows: any other draft reaching the open view is a reload, and rewrites the text.
   const shown = useRef(draft)
+  const removeId = useId()
   const SecretKeyField = host.components?.SecretKeyField as ComponentType<SecretKeyFieldProps> | undefined
   const fe = fieldErrors(errors, draft.name)
   const set = (change: Partial<Draft>) => onDraft({ ...draft, ...change })
@@ -186,8 +191,10 @@ export function ConnectionView({
     label: string,
     control: (props: SettingsFieldControlProps) => ReactNode,
     description?: string,
+    className?: string,
   ) => (
     <SettingsField
+      className={className}
       field={path}
       label={label}
       description={description}
@@ -215,7 +222,7 @@ export function ConnectionView({
     if (!SecretKeyField) return field(path, label, control)
     return (
       // biome-ignore lint/a11y/useSemanticElements: SettingsList is a div list, so its rows are div list items
-      <div role="listitem" className="mcp-ui-form-card" data-field={path}>
+      <div role="listitem" data-field={path}>
         {control()}
         {fe[path] ? <p className="mcp-ui-input-error">{fe[path]}</p> : null}
       </div>
@@ -273,19 +280,31 @@ export function ConnectionView({
   const { bearer, clientCredentials: cc, oauth } = draft
   const form = (
     <>
-      <SettingsList>
-        {field('name', 'Name', (props) => (
-          <Input {...props} value={draft.name} readOnly={server !== null} onChange={(name) => set({ name })} />
-        ))}
-        {field('type', 'Transport', () => (
-          <SegmentedControl
-            variant="radio"
-            aria-label="Transport"
-            value={draft.transport}
-            options={TRANSPORTS}
-            onChange={(transport) => set({ transport })}
-          />
-        ))}
+      <SettingsList className="mcp-ui-settings">
+        {field(
+          'name',
+          'Name',
+          (props) => (
+            <Input {...props} value={draft.name} readOnly={server !== null} onChange={(name) => set({ name })} />
+          ),
+          undefined,
+          'mcp-ui-half',
+        )}
+        {field(
+          'type',
+          'Transport',
+          () => (
+            <SegmentedControl
+              variant="radio"
+              aria-label="Transport"
+              value={draft.transport}
+              options={TRANSPORTS}
+              onChange={(transport) => set({ transport })}
+            />
+          ),
+          undefined,
+          'mcp-ui-half',
+        )}
         {draft.transport === 'http' ? (
           <>
             {text('url', 'URL', draft.url, (url) => set({ url }))}
@@ -301,7 +320,7 @@ export function ConnectionView({
         )}
       </SettingsList>
       {draft.transport === 'http' ? (
-        <SettingsList>
+        <SettingsList className="mcp-ui-settings">
           {field('auth', 'Authentication', () => (
             <SegmentedControl
               variant="radio"
@@ -359,7 +378,7 @@ export function ConnectionView({
           }
         >
           <summary>Pre-registered client</summary>
-          <SettingsList>
+          <SettingsList className="mcp-ui-settings">
             {text('auth/client_id', 'Client ID', oauth.client_id, (client_id) =>
               set({ oauth: { ...oauth, client_id } }),
             )}
@@ -406,79 +425,106 @@ export function ConnectionView({
       </ul>
     ) : null
 
+  const bar = dirty || saving
+  const facts = server?.protocol_version
+    ? [
+        { label: 'Protocol', value: server.protocol_version },
+        {
+          label: 'Server',
+          value:
+            server.server_info &&
+            `${server.server_info.title ?? server.server_info.name} ${server.server_info.version}`,
+        },
+        { label: 'Advertises', value: advertisesText(server) },
+      ].filter((item) => item.value)
+    : null
+  const [removeLine] = server ? removeLines(server, 0) : []
+
   return (
     <div className="mcp-ui-detail">
-      <ol className="mcp-ui-stages" aria-label="Connection stages">
-        {stageTrack(server).map((stage) => (
-          <li
-            key={stage.id}
-            className="mcp-ui-stage"
-            data-tone={stage.tone}
-            aria-current={stage.id === server?.stage ? 'step' : undefined}
-          >
-            <StatusDot tone={stage.tone} pulse={stage.pulse} />
-            {stage.label}
-          </li>
-        ))}
-      </ol>
+      <div className="mcp-ui-track">
+        <ol className="mcp-ui-stages" aria-label="Connection stages">
+          {stageTrack(server).map(({ id, tone, pulse, label }) => (
+            <li
+              key={id}
+              className="mcp-ui-stage"
+              data-tone={tone}
+              aria-current={id === server?.stage ? 'step' : undefined}
+            >
+              {/* A stage passed reads as done; the one it stopped at, and those ahead, keep their dot. */}
+              {tone === 'ok' ? (
+                <CircleCheck size={16} aria-hidden />
+              ) : (
+                <StatusDot className="mcp-ui-stage-dot" tone={tone} pulse={pulse} />
+              )}
+              {label}
+            </li>
+          ))}
+        </ol>
+        {action}
+      </div>
       {children}
-      <section className="mcp-ui-form" aria-label="Entry">
-        <SegmentedControl
-          variant="radio"
-          aria-label="Entry view"
-          value={json ? 'json' : 'form'}
-          options={MODES}
-          onChange={(mode) => {
-            if (!json?.error) setJson(mode === 'json' ? { text: jsonText(draft), error: null } : null)
-          }}
-        />
-        {fe[''] ? <StatusPanel variant="alert" headline={fe['']} /> : null}
-        {json ? (
-          <>
-            <CodeEditor
-              className="mcp-ui-payload-json"
-              language="json"
-              value={json.text}
-              onChange={editJson}
-              aria-label="Entry as JSON"
-            />
-            {json.error ? <p className="mcp-ui-input-error">{json.error}</p> : null}
-            {issues}
-          </>
-        ) : (
-          <>
-            {issues}
-            {form}
-          </>
-        )}
+      <section className="mcp-ui-card mcp-ui-form" aria-label="Entry">
+        <div className="mcp-ui-card-head">
+          <h3 className="mcp-ui-card-title">Settings</h3>
+          <SegmentedControl
+            variant="radio"
+            aria-label="Entry view"
+            value={json ? 'json' : 'form'}
+            options={MODES}
+            onChange={(mode) => {
+              if (!json?.error) setJson(mode === 'json' ? { text: jsonText(draft), error: null } : null)
+            }}
+          />
+        </div>
+        <div className="mcp-ui-card-body">
+          {fe[''] ? <StatusPanel variant="alert" headline={fe['']} /> : null}
+          {json ? (
+            <>
+              <CodeEditor
+                className="mcp-ui-payload-json"
+                language="json"
+                value={json.text}
+                onChange={editJson}
+                aria-label="Entry as JSON"
+              />
+              {json.error ? <p className="mcp-ui-input-error">{json.error}</p> : null}
+              {issues}
+            </>
+          ) : (
+            <>
+              {issues}
+              {form}
+            </>
+          )}
+        </div>
+        {facts || bar ? (
+          // Sticky while the save bar shows: Save stays in reach while a long form scrolls.
+          <div className="mcp-ui-card-foot" data-sticky={bar || undefined}>
+            {facts ? <MetaRow className="mcp-ui-facts" items={facts} /> : null}
+            {bar ? (
+              <SaveBar
+                onSave={onSave}
+                onDiscard={discard}
+                saving={saving}
+                blocked={json?.error ? 'Fix the JSON first' : blocked}
+              />
+            ) : null}
+          </div>
+        ) : null}
       </section>
-      {dirty || saving ? (
-        <SaveBar
-          onSave={onSave}
-          onDiscard={discard}
-          saving={saving}
-          blocked={json?.error ? 'Fix the JSON first' : blocked}
-        />
-      ) : null}
-      {server?.protocol_version ? (
-        <MetaRow
-          className="mcp-ui-facts"
-          items={[
-            { label: 'Protocol', value: server.protocol_version },
-            {
-              label: 'Server',
-              value:
-                server.server_info &&
-                `${server.server_info.title ?? server.server_info.name} ${server.server_info.version}`,
-            },
-            { label: 'Advertises', value: advertisesText(server) },
-          ].filter((item) => item.value)}
-        />
-      ) : null}
-      {onRemove ? (
-        <Button variant="ghost" size="sm" onClick={onRemove}>
-          Remove server
-        </Button>
+      {onRemove && server ? (
+        <section className="mcp-ui-card mcp-ui-danger-card" aria-labelledby={removeId}>
+          <div>
+            <h3 id={removeId} className="mcp-ui-card-title">
+              Remove server
+            </h3>
+            {removeLine ? <p className="mcp-ui-quiet-line">{removeLine}</p> : null}
+          </div>
+          <Button variant="secondary" size="sm" className="mcp-ui-danger" onClick={onRemove}>
+            Remove {server.name}
+          </Button>
+        </section>
       ) : null}
     </div>
   )

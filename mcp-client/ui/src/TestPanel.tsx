@@ -17,6 +17,7 @@ import type { Api } from './api'
 import { asCliCommand } from './cli'
 import { runConfirm } from './presentation'
 import { ResultView } from './ResultView'
+import { CopyIconButton } from './SchemaTable'
 import {
   type FormField,
   fieldsFromSchema,
@@ -148,7 +149,8 @@ function Field({
   )
 }
 
-/** The Test tab: the Input half (a form or the payload as JSON), Run, the Result half and the CLI line. */
+/** The Test tab: the Input card (a form or the payload as JSON, then Run), the Result card, and the CLI line under
+ * both. */
 export function TestPanel({
   api,
   server,
@@ -282,21 +284,26 @@ export function TestPanel({
     />
   )
 
+  const command = asCliCommand(functionId, payload)
+
   return (
     <div className="mcp-ui-test">
       <div className="mcp-ui-test-halves">
-        <section className="mcp-ui-test-input" aria-label="Input">
-          {input ? null : (
-            <SegmentedControl
-              variant="radio"
-              aria-label="Input mode"
-              value={json ? 'json' : 'form'}
-              options={MODES}
-              onChange={(mode) => {
-                if (!stuck) setJson(mode === 'json' ? { text: pretty(payload), error: null } : null)
-              }}
-            />
-          )}
+        <section className="mcp-ui-card" aria-label="Input">
+          <div className="mcp-ui-card-head">
+            <h3 className="mcp-ui-card-title">Input</h3>
+            {input ? null : (
+              <SegmentedControl
+                variant="radio"
+                aria-label="Input mode"
+                value={json ? 'json' : 'form'}
+                options={MODES}
+                onChange={(mode) => {
+                  if (!stuck) setJson(mode === 'json' ? { text: pretty(payload), error: null } : null)
+                }}
+              />
+            )}
+          </div>
           {bad.length > 0 ? (
             <p className="mcp-ui-input-error" role="alert">
               {invalidText(bad)}
@@ -349,7 +356,7 @@ export function TestPanel({
           ) : null}
           <p className="mcp-ui-quiet-line">{SOURCE_TEXT[access.source]}</p>
         </section>
-        <section aria-label="Result">
+        <section className="mcp-ui-card" aria-label="Result">
           <ResultView
             result={outcome?.result ?? null}
             error={outcome?.error ?? null}
@@ -358,7 +365,14 @@ export function TestPanel({
           />
         </section>
       </div>
-      <TerminalCommandLine className="mcp-ui-cli" command={asCliCommand(functionId, payload)} copy />
+      <div className="mcp-ui-terminal">
+        <h3 className="mcp-ui-card-title">From a terminal</h3>
+        <TerminalCommandLine
+          className="mcp-ui-cli"
+          command={command}
+          chips={<CopyIconButton value={command} label="Copy command" />}
+        />
+      </div>
       {dialog}
     </div>
   )

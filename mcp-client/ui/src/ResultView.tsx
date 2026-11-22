@@ -53,8 +53,8 @@ function useSeconds(running: boolean): number {
   return seconds
 }
 
-/** The Result half of the Test tab: a status line, each block (or a prompt's messages) drawn, the raw
- * result behind a disclosure.
+/** The Result card of the Test tab: its head with the status line, each block (or a prompt's messages) drawn,
+ * the raw result behind a disclosure.
  * Memoised: the panel re-renders on every keystroke and live read, and a long highlighted result
  * would redraw with each one. */
 export const ResultView = memo(function ResultView({
@@ -73,28 +73,31 @@ export const ResultView = memo(function ResultView({
   // A prompt's messages; a tool or resource result has none and no description.
   const prompt = messagesOf(result)
   return (
-    <div className="mcp-ui-result">
-      {/* The seconds stay out of the announcement: it says Running once, then the outcome. */}
-      <p className="mcp-ui-result-status" role="status">
-        {running ? (
-          <>
-            <StatusDot tone="accent" pulse />
-            Running<span aria-hidden="true"> · {seconds} s</span>
-          </>
-        ) : ms === null ? (
-          'Not run yet'
-        ) : error !== null ? (
-          <>
-            <StatusDot tone="alert" />
-            Error · {elapsedText(ms)}
-          </>
-        ) : (
-          <>
-            <StatusDot tone="ok" />
-            {resultSummary(result, ms)}
-          </>
-        )}
-      </p>
+    <>
+      <div className="mcp-ui-card-head">
+        <h3 className="mcp-ui-card-title">Result</h3>
+        {/* The seconds stay out of the announcement: it says Running once, then the outcome. */}
+        <p className="mcp-ui-result-status" role="status">
+          {running ? (
+            <>
+              <StatusDot tone="accent" pulse />
+              Running<span aria-hidden="true"> · {seconds} s</span>
+            </>
+          ) : ms === null ? (
+            'Not run yet'
+          ) : error !== null ? (
+            <>
+              <StatusDot tone="alert" />
+              Error · {elapsedText(ms)}
+            </>
+          ) : (
+            <>
+              <StatusDot tone="ok" />
+              {resultSummary(result, ms)}
+            </>
+          )}
+        </p>
+      </div>
       {!running && error !== null ? <StatusPanel variant="alert" headline="The call failed" detail={error} /> : null}
       {ok && drawsWhole(result) ? <Raw result={result} /> : null}
       {ok && !drawsWhole(result) ? (
@@ -102,7 +105,7 @@ export const ResultView = memo(function ResultView({
           {prompt.description ? <p className="mcp-ui-quiet-line">{prompt.description}</p> : null}
           {prompt.messages.map((message, i) => (
             <div key={i} className="mcp-ui-message">
-              <h3 className="mcp-ui-role">{message.role}</h3>
+              <h4 className="mcp-ui-role">{message.role}</h4>
               <Blocks blocks={message.blocks} />
             </div>
           ))}
@@ -113,6 +116,6 @@ export const ResultView = memo(function ResultView({
           </details>
         </>
       ) : null}
-    </div>
+    </>
   )
 })

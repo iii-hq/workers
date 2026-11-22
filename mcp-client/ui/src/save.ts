@@ -139,21 +139,28 @@ export async function approveEntry(deps: SaveDeps, server: Server): Promise<bool
   return true
 }
 
-/** Remove a server after a danger confirm: its gate block first, then the entry. */
-export async function removeEntry(deps: SaveDeps, server: Server): Promise<boolean> {
-  const count = await deps.blockCount(server.name).catch((err) => {
-    throw new Error(gateError('removed', 'checked', errorMessage(err)))
-  })
+/** What removing `server` takes with it, one sentence per line: its functions and sign-in, then the `rules`
+ * approval-gate rules held under its name. The remove confirm says them all; the Connection view's danger card,
+ * which holds no rule count, says the first. */
+export function removeLines(server: Server, rules: number): string[] {
   const fns = serverAccess(server).length
   // Only what this server has: a stdio or API-key server has no sign-in to clear.
   const parts = [
     fns > 0 ? `${plural(fns, 'function goes', 'functions go')} away` : null,
     server.auth === 'oauth' ? 'sign-in is cleared' : null,
   ].filter(Boolean)
-  const lines = [
+  return [
     ...(parts.length > 0 ? [`Its ${parts.join(' and its ')}.`] : []),
-    ...(count > 0 ? [`Its ${plural(count, 'approval-gate rule is', 'approval-gate rules are')} removed too.`] : []),
+    ...(rules > 0 ? [`Its ${plural(rules, 'approval-gate rule is', 'approval-gate rules are')} removed too.`] : []),
   ]
+}
+
+/** Remove a server after a danger confirm: its gate block first, then the entry. */
+export async function removeEntry(deps: SaveDeps, server: Server): Promise<boolean> {
+  const count = await deps.blockCount(server.name).catch((err) => {
+    throw new Error(gateError('removed', 'checked', errorMessage(err)))
+  })
+  const lines = removeLines(server, count)
   if (!(await deps.confirm({ title: `Remove ${server.name}?`, tone: 'danger', lines }))) return false
   if (count > 0) {
     const removed = await deps.removeBlock(server.name)

@@ -564,19 +564,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const COMBINED = ['oneOf', 'anyOf', 'allOf', '$ref']
 
-/** Column 3's mono line: the id, then the inputs (a prompt's arguments) and how many are required.
- * A schema still `undefined` is one not read yet; one combined from others (`oneOf`, `$ref`…) with no
- * top-level properties cannot be counted. */
-export function metaLine(functionId: string, schema: unknown, kind: FunctionRow['group']): string {
-  if (schema === undefined) return functionId
+/** Column 3's input chip: the inputs (a prompt's arguments) and how many are required. Null while the schema
+ * is still `undefined` (not read yet), and for one combined from others (`oneOf`, `$ref`…) with no top-level
+ * properties, which cannot be counted. */
+export function inputsText(schema: unknown, kind: FunctionRow['group']): string | null {
+  if (schema === undefined) return null
   const properties = isRecord(schema) ? schema.properties : undefined
-  if (isRecord(schema) && !isRecord(properties) && COMBINED.some((key) => key in schema)) return functionId
+  if (isRecord(schema) && !isRecord(properties) && COMBINED.some((key) => key in schema)) return null
   const names = isRecord(properties) ? Object.keys(properties) : []
   const [one, many] = kind === 'prompts' ? ['argument', 'arguments'] : ['input', 'inputs']
-  if (names.length === 0) return `${functionId} · no ${many}`
+  if (names.length === 0) return `no ${many}`
   const listed = isRecord(schema) && Array.isArray(schema.required) ? schema.required : []
   const required = names.filter((name) => listed.includes(name)).length
-  return `${functionId} · ${count(names.length, one, many)}, ${required || 'none'} required`
+  return `${count(names.length, one, many)}, ${required || 'none'} required`
 }
 
 /** A content block the Result half can draw: the worker turns MCP images into `mime` and `data`. */

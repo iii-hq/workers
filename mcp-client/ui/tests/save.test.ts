@@ -7,6 +7,7 @@ import {
   effectSentences,
   needsConfirm,
   removeEntry,
+  removeLines,
   type SaveDeps,
   saveBefore,
   saveEntry,
@@ -15,7 +16,7 @@ import {
   shareEntry,
 } from '../src/save'
 import type { Issue, ServerValidation } from '../src/types'
-import { server as srv } from './fixtures/servers'
+import { server as srv, stdio } from './fixtures/servers'
 import spec from './fixtures/spec-config.json'
 
 const SPEC = spec as Record<string, Record<string, unknown>>
@@ -344,6 +345,34 @@ describe('removeEntry', () => {
       'Nothing was removed. The approval-gate rules could not be removed: boom',
     )
     expect(f.calls).not.toContain('write:linear')
+  })
+})
+
+describe('removeLines', () => {
+  it('says a stdio server loses its functions, and no sign-in', () => {
+    expect(removeLines(stdio(), 0)).toEqual(['Its 2 functions go away.'])
+  })
+
+  it('says an API-key server loses its functions, and no sign-in', () => {
+    expect(removeLines(srv({ auth: 'bearer' }), 0)).toEqual(['Its 2 functions go away.'])
+    expect(removeLines(srv({ auth: 'bearer', tools: [srv().tools[0]] }), 0)).toEqual(['Its 1 function goes away.'])
+  })
+
+  it('says an oauth server also loses its sign-in, even with no functions listed', () => {
+    expect(removeLines(srv({ auth: 'oauth' }), 0)).toEqual(['Its 2 functions go away and its sign-in is cleared.'])
+    expect(removeLines(srv({ auth: 'oauth', tools: [] }), 0)).toEqual(['Its sign-in is cleared.'])
+  })
+
+  it('adds the gate rules held under its name on a line of their own', () => {
+    expect(removeLines(srv({ auth: 'oauth' }), 41)).toEqual([
+      'Its 2 functions go away and its sign-in is cleared.',
+      'Its 41 approval-gate rules are removed too.',
+    ])
+    expect(removeLines(srv({ auth: 'none', tools: [] }), 1)).toEqual(['Its 1 approval-gate rule is removed too.'])
+  })
+
+  it('says nothing for a server with no functions, no sign-in and no rules', () => {
+    expect(removeLines(stdio({ tools: [] }), 0)).toEqual([])
   })
 })
 

@@ -65,6 +65,14 @@
 
 /* ── column 1: servers ─────────────────────────────────────────────── */
 
+/* The sidebar's title row, left empty: the path row's `mcp::` head already names the column. */
+[data-iii-ui="mcp-client"] .mcp-ui-col1 > div > div:first-child:empty {
+  display: none;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-col1 .mcp-ui-list {
+  padding-top: 8px;
+}
+
 [data-iii-ui="mcp-client"] .mcp-ui-list {
   flex: 1;
   min-height: 0;
@@ -150,11 +158,14 @@
 }
 /* ── column 3, a function: name, description, meta line, then the tabs ── */
 
+/* Capped, so a wide screen does not stretch a view past reading width. */
 [data-iii-ui="mcp-client"] .mcp-ui-detail {
   display: flex;
   flex: none;
   flex-direction: column;
   gap: 16px;
+  width: 100%;
+  max-width: 960px;
   container: mcp-ui-detail / inline-size;
 }
 [data-iii-ui="mcp-client"] .mcp-ui-detail-head {
@@ -192,11 +203,16 @@
 [data-iii-ui="mcp-client"] .mcp-ui-more {
   margin-left: -13px;
 }
-[data-iii-ui="mcp-client"] .mcp-ui-detail-meta {
-  color: var(--color-ink-faint);
+/* The id, the tool's class and the input count, as chips. */
+[data-iii-ui="mcp-client"] .mcp-ui-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-id-chip code {
+  color: var(--color-ink);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 18px;
   overflow-wrap: anywhere;
 }
 [data-iii-ui="mcp-client"] .mcp-ui-tabs {
@@ -223,7 +239,6 @@
   white-space: nowrap;
 }
 /* Rows of 44px: a 20px name over an 18px description line. */
-[data-iii-ui="mcp-client"] .mcp-ui-pin,
 [data-iii-ui="mcp-client"] .mcp-ui-fn {
   flex: none;
   height: 44px;
@@ -232,11 +247,47 @@
 [data-iii-ui="mcp-client"] .mcp-ui-fn .iii-ui-list-item__title {
   font-family: var(--font-mono);
 }
-[data-iii-ui="mcp-client"] .mcp-ui-pin .iii-ui-list-item__meta {
+/* Compact, so a long name keeps its room. */
+[data-iii-ui="mcp-client"] .mcp-ui-fn .iii-ui-chip {
+  min-height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+}
+/* Connection, Process and Agent access: one bordered group above the functions. */
+[data-iii-ui="mcp-client"] .mcp-ui-pins {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+  padding: 4px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-pin {
+  flex: none;
+  min-height: 36px;
+  padding: 6px 8px;
+}
+/* The row's name, muted in a fixed cell and level with the value's first line. */
+[data-iii-ui="mcp-client"] .mcp-ui-pin .iii-ui-list-item__icon {
+  align-self: flex-start;
+  justify-content: flex-start;
+  width: 84px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 20px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-pin .iii-ui-list-item__title {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--color-ink);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-pin .iii-ui-list-item__title > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 [data-iii-ui="mcp-client"] .mcp-ui-group {
   gap: 0;
@@ -550,11 +601,37 @@
 }
 
 
+/* ── cards: the Test tab's Input and Result, Connection's Settings and Remove ── */
+
+[data-iii-ui="mcp-client"] .mcp-ui-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+/* A card's small heading, and the switch or status line at its far end. */
+[data-iii-ui="mcp-client"] .mcp-ui-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  min-height: 32px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-card-title {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
 /* ── column 3, the Test tab: Input and Result side by side from 640px, the CLI line under both ── */
 
 [data-iii-ui="mcp-client"] .mcp-ui-test,
-[data-iii-ui="mcp-client"] .mcp-ui-test-input,
-[data-iii-ui="mcp-client"] .mcp-ui-result,
 [data-iii-ui="mcp-client"] .mcp-ui-fields,
 [data-iii-ui="mcp-client"] .mcp-ui-field,
 [data-iii-ui="mcp-client"] .mcp-ui-message {
@@ -568,17 +645,13 @@
 [data-iii-ui="mcp-client"] .mcp-ui-test-halves {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 24px;
+  gap: 16px;
 }
 @container mcp-ui-detail (min-width: 640px) {
   [data-iii-ui="mcp-client"] .mcp-ui-test-halves {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: start;
   }
-}
-[data-iii-ui="mcp-client"] .mcp-ui-test-input,
-[data-iii-ui="mcp-client"] .mcp-ui-result {
-  gap: 12px;
 }
 /* The Form / JSON switch and a boolean's Unset / True / False keep their own width. */
 [data-iii-ui="mcp-client"] .mcp-ui-test [data-variant="radio"] {
@@ -658,7 +731,7 @@
 [data-iii-ui="mcp-client"] .mcp-ui-input-error {
   color: var(--color-alert-strong);
 }
-/* As tall as the Form / JSON switch beside it, so both halves start on one line. */
+/* As tall as the Form / JSON switch in the Input card's head, so both heads line up. */
 [data-iii-ui="mcp-client"] .mcp-ui-result-status {
   display: flex;
   align-items: center;
@@ -688,6 +761,15 @@
   border: 1px solid var(--color-edge);
   border-radius: var(--radius-lg);
   background: var(--color-panel);
+}
+/* "From a terminal": the command over the full width, its copy button at the end. */
+[data-iii-ui="mcp-client"] .mcp-ui-terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-terminal .mcp-ui-cli {
+  padding: 4px 4px 4px 12px;
 }
 /* The payload a write would send, in the confirm. */
 [data-iii-ui="mcp-client"] .mcp-ui-confirm-payload {
@@ -776,8 +858,24 @@
   line-height: 18px;
 }
 
-/* ── column 3, Connection: the stage track, the entry's form, the negotiated facts ── */
+/* ── column 3, Connection: the stage track and its action, the Settings card, the danger card ── */
 
+/* The stages, then the view's action (Connect, Sign out, Turn on) right after them. */
+[data-iii-ui="mcp-client"] .mcp-ui-track {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+}
+/* A sign-in under way, or one that failed, takes the row under the stages. */
+[data-iii-ui="mcp-client"] .mcp-ui-track > .mcp-ui-signin:not([data-inline]) {
+  flex-basis: 100%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-signin[data-inline] {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
 [data-iii-ui="mcp-client"] .mcp-ui-stages {
   display: flex;
   flex-wrap: wrap;
@@ -795,25 +893,137 @@
   font-size: 13px;
   line-height: 20px;
 }
-/* A hairline between two stages, so the six read as one path. */
+/* A done stage's check in the ok tone; a dot sits in the same 16px box. */
+[data-iii-ui="mcp-client"] .mcp-ui-stage > svg {
+  color: var(--color-ok);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stage-dot {
+  margin: 5px;
+}
+/* A hairline between two stages, so the six read as one path; the stretch already passed in the ok tone. */
 [data-iii-ui="mcp-client"] .mcp-ui-stage + .mcp-ui-stage::before {
   content: "";
-  width: 12px;
+  width: 16px;
   height: 1px;
-  margin-inline: 4px 6px;
+  margin-inline: 2px 4px;
   background: var(--color-edge);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stage[data-tone="ok"] + .mcp-ui-stage::before {
+  background: var(--color-ok);
 }
 [data-iii-ui="mcp-client"] .mcp-ui-stage[data-tone="ghost"] {
   color: var(--color-ink-faint);
 }
+/* Where the connection stopped: a larger dot and a bold label, in its tone when it is blocked. */
 [data-iii-ui="mcp-client"] .mcp-ui-stage[aria-current="step"] {
-  font-weight: 500;
+  font-weight: 600;
 }
+[data-iii-ui="mcp-client"] .mcp-ui-stage[aria-current="step"] .mcp-ui-stage-dot {
+  width: 10px;
+  height: 10px;
+  margin: 3px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stage[aria-current="step"][data-tone="warn"] {
+  color: var(--color-warn-strong);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-stage[aria-current="step"][data-tone="alert"] {
+  color: var(--color-alert-strong);
+}
+/* The Settings card: its head, body and foot each carry their own padding, divided by hairlines. */
 [data-iii-ui="mcp-client"] .mcp-ui-form {
+  gap: 0;
+  padding: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-form > .mcp-ui-card-head {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-card-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+  padding: 16px;
+}
+/* The settings lists lose their own card inside this one: fields spaced, no rules between them. */
+[data-iii-ui="mcp-client"] .mcp-ui-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-form .mcp-ui-settings > * {
+  border-top: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-settings .iii-ui-settings-row__inner {
+  min-height: 0;
+  padding: 0;
+}
+/* Name and Transport side by side when there is room. */
+@container mcp-ui-detail (min-width: 560px) {
+  [data-iii-ui="mcp-client"] .mcp-ui-settings {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  [data-iii-ui="mcp-client"] .mcp-ui-settings > :not(.mcp-ui-half) {
+    grid-column: 1 / -1;
+  }
+}
+/* What the server negotiated, and the save bar while there is an edit. */
+[data-iii-ui="mcp-client"] .mcp-ui-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-edge);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: var(--color-surface);
+}
+/* Stays in reach at the foot of column 3 while a long form scrolls. */
+[data-iii-ui="mcp-client"] .mcp-ui-card-foot[data-sticky] {
+  position: sticky;
+  bottom: 0;
+}
+/* The MetaRow's own strip look goes: the foot already is the strip. */
+[data-iii-ui="mcp-client"] .mcp-ui-card-foot > .mcp-ui-facts {
+  flex: 1 1 260px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-card-foot > .mcp-ui-save-bar {
+  position: static;
+  flex: 1 1 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+/* Remove, apart from the form: a heading, what goes with the server, the button. */
+[data-iii-ui="mcp-client"] .mcp-ui-danger-card {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  border-color: color-mix(in oklab, var(--color-alert) 35%, transparent);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-danger-card > div {
+  display: flex;
+  flex: 1 1 240px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* The danger tone on an outlined button: console-ui's own danger button is solid. */
+[data-iii-ui="mcp-client"] .mcp-ui-danger {
+  border-color: color-mix(in oklab, var(--color-alert) 40%, transparent);
+  color: var(--color-alert-strong);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-danger:hover {
+  background: var(--color-alert-muted);
 }
 /* The Form / JSON switch, Transport and Authentication keep their own width. */
 [data-iii-ui="mcp-client"] .mcp-ui-form [data-variant="radio"] {
@@ -823,14 +1033,6 @@
 /* Every value of an entry is a machine value. */
 [data-iii-ui="mcp-client"] .mcp-ui-form input {
   font-family: var(--font-mono);
-}
-/* The console's SecretKeyField card, as a row of the list. */
-[data-iii-ui="mcp-client"] .mcp-ui-form-card {
-  padding: 14px 16px;
-}
-[data-iii-ui="mcp-client"] .mcp-ui-form-card,
-[data-iii-ui="mcp-client"] .mcp-ui-form-card + * {
-  border-top: 1px solid var(--color-edge);
 }
 /* Name and value rows: the name, the value, the remove button; messages under the row. */
 [data-iii-ui="mcp-client"] .mcp-ui-kv {
@@ -870,9 +1072,9 @@
   padding-top: 4px;
 }
 
-/* ── saving: the save bar, Remove, Turn on, the review lines, Edit as JSON ── */
+/* ── saving: the save bar, Turn on, the review lines, Edit as JSON ── */
 
-/* Stays in reach at the foot of column 3 while a long form scrolls. */
+/* Stays in reach at the foot of Edit as JSON while a long text scrolls. */
 [data-iii-ui="mcp-client"] .mcp-ui-save-bar {
   position: sticky;
   bottom: 0;
@@ -1044,16 +1246,47 @@
   font-family: var(--font-sans);
   font-size: 13px;
 }
-/* The counts read number first, in the MetaRow's own look: the number in mono ink, its words faint. */
-[data-iii-ui="mcp-client"] .mcp-ui-access .mcp-ui-facts > span {
+/* The counts, one cell each: allowed without asking, ask a person, destructive of those. Stacked when narrow. */
+[data-iii-ui="mcp-client"] .mcp-ui-counts {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-counts > div {
+  padding: 12px 16px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-counts > div + div {
+  border-left: 1px solid var(--color-edge);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-counts dt {
   color: var(--color-ink-faint);
   font-size: 12px;
   line-height: 16px;
 }
-[data-iii-ui="mcp-client"] .mcp-ui-access .mcp-ui-facts > span > span {
+[data-iii-ui="mcp-client"] .mcp-ui-counts dd {
+  margin: 4px 0 0;
   color: var(--color-ink);
   font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
   font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-counts [data-tone="warn"] :is(dt, dd) {
+  color: var(--color-warn-strong);
+}
+@container mcp-ui-detail (max-width: 480px) {
+  [data-iii-ui="mcp-client"] .mcp-ui-counts {
+    grid-auto-flow: row;
+  }
+  [data-iii-ui="mcp-client"] .mcp-ui-counts > div + div {
+    border-top: 1px solid var(--color-edge);
+    border-left: 0;
+  }
 }
 /* Function ids, each with why it counts as what it is; also in the confirm's description, under a group name. */
 [data-iii-ui="mcp-client"] .mcp-ui-ids {

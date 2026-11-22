@@ -581,6 +581,8 @@ export function McpServersPage({
               <PageSidebar
                 className="mcp-ui-col1"
                 label="Servers"
+                // No visible title: the path row's `mcp::` head already names this column.
+                header={false}
                 side={panelSide}
                 resizable
                 minWidth={240}
@@ -707,6 +709,23 @@ export function McpServersPage({
                               onRemove={server && !adding ? () => void remove(server) : null}
                               saving={saving}
                               blocked={data.workerDown ? WORKER_DOWN : null}
+                              action={
+                                server && !adding ? (
+                                  <>
+                                    {server.state === 'disabled' ? (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        disabled={working}
+                                        onClick={() => void turnOn(server)}
+                                      >
+                                        Turn on
+                                      </Button>
+                                    ) : null}
+                                    <SignIn api={api} server={server} startSignal={startSignal} quiet={bar} />
+                                  </>
+                                ) : null
+                              }
                             >
                               {failure ? (
                                 <StatusPanel
@@ -742,19 +761,6 @@ export function McpServersPage({
                                   quiet={bar}
                                   onApprove={() => void approve(server)}
                                 />
-                              ) : null}
-                              {server && !adding && server.state === 'disabled' ? (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  disabled={working}
-                                  onClick={() => void turnOn(server)}
-                                >
-                                  Turn on
-                                </Button>
-                              ) : null}
-                              {server && !adding ? (
-                                <SignIn api={api} server={server} startSignal={startSignal} quiet={bar} />
                               ) : null}
                             </ConnectionView>
                           ) : null}
