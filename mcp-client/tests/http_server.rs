@@ -148,10 +148,14 @@ async fn disabled_and_invalid_entries_do_not_connect_and_do_not_stop_the_others(
     let mock = McpMock::start().await;
     mock.tools(tools()).await;
     let host = FakeHost::new();
+    let (pw, key) = ("pw-sentinel-7c1", "key-sentinel-9d2");
+    let userinfo = format!("u:{pw}");
     let config = cfg(json!({
         "off": {"url": idle.url(), "disabled": true},
         "bad": {"url": "ftp://example.com/mcp"},
         "dollar": {"url": "https://example.com/${TENANT}/mcp"},
+        "creds": {"url": format!("https://{userinfo}@host.example/mcp?api_key={key}#{key}")},
+        "junk": {"url": format!("https://{userinfo}@[::1")},
         "ok": {"url": mock.url()}
     }));
     let manager = connect(&host, config).await;
@@ -165,7 +169,7 @@ async fn disabled_and_invalid_entries_do_not_connect_and_do_not_stop_the_others(
     assert_eq!(off["state"], "disabled", "{off}");
     assert_eq!(off["stage"], Value::Null, "{off}");
     assert_eq!(off["error"], Value::Null, "{off}");
-    for name in ["bad", "dollar"] {
+    for name in ["bad", "dollar", "creds", "junk"] {
         let r = server(&manager, name).await;
         assert_eq!(r["state"], "config_error", "{r}");
         assert_eq!(r["stage"], "config", "{r}");
@@ -181,6 +185,11 @@ async fn disabled_and_invalid_entries_do_not_connect_and_do_not_stop_the_others(
         "{dollar}"
     );
     assert_eq!(dollar["target"], "https://example.com/${TENANT}/mcp");
+    let creds = server(&manager, "creds").await;
+    assert_eq!(creds["target"], "https://host.example/mcp", "{creds}");
+    assert_eq!(server(&manager, "junk").await["target"], "");
+    let list = serde_json::to_string(&manager.list().await).unwrap();
+    assert!(!list.contains(pw) && !list.contains(key), "{list}");
     assert_eq!(idle.request_count().await, 0);
     assert!(!host.registered_ids().is_empty());
     assert!(

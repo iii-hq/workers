@@ -2433,8 +2433,11 @@ impl Server {
             None => {
                 let command = spec.raw.get("command");
                 let transport = if command.is_some() { "stdio" } else { "http" };
-                let target = spec.raw.get("url").or(command).and_then(Value::as_str);
-                (transport, target.unwrap_or("").to_string(), "none")
+                let target = match spec.raw.get("url").and_then(Value::as_str) {
+                    Some(url) => refused_url_target(url),
+                    None => command.and_then(Value::as_str).unwrap_or("").to_string(),
+                };
+                (transport, target, "none")
             }
         };
         let tools = info
@@ -2920,6 +2923,24 @@ impl Manager {
         let mut servers = self.servers.lock().await;
         join_all(std::mem::take(&mut *servers).values().map(|s| s.stop())).await;
     }
+}
+
+/// A refused `url` as listed: rule 3 refuses a literal credential in it, so
+/// the user name, password, query and fragment never come back. A url with
+/// none of them is shown as written; an unparsable one as nothing.
+fn refused_url_target(url: &str) -> String {
+    let Ok(mut u) = url::Url::parse(url) else {
+        return String::new();
+    };
+    let bare = u.username().is_empty() && u.password().is_none();
+    if bare && u.query().is_none() && u.fragment().is_none() {
+        return url.into();
+    }
+    let _ = u.set_username("");
+    let _ = u.set_password(None);
+    u.set_query(None);
+    u.set_fragment(None);
+    u.into()
 }
 
 #[cfg(test)]
