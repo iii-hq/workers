@@ -1,14 +1,14 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: pasted configs spell references `${VAR}`
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { type ImportResult, type ImportRow, parseImport, slugName } from '../src/importer'
+import { finalEntry, type ImportResult, type ImportRow, maskSecret, parseImport, slugName } from '../src/importer'
 
 // Fixtures hold the marker `@@FAKE@@` where a pasted secret goes, so no file holds a credential shape.
 const FAKE = 'test-not-a-real-token'
 const MASK = '•••••••• · 21 characters'
 const COMMON = 'Claude Code, Cursor and similar'
-const load = (name: string) =>
-  readFileSync(new URL(`./fixtures/import/${name}`, import.meta.url), 'utf8').replaceAll('@@FAKE@@', FAKE)
+const FIXTURES = new URL('./fixtures/import/', import.meta.url)
+const load = (name: string) => readFileSync(new URL(name, FIXTURES), 'utf8').replaceAll('@@FAKE@@', FAKE)
 const parse = (name: string, existing: string[] = []) => parseImport(load(name), existing)
 function row(result: ImportResult, name: string): ImportRow {
   const found = result.rows.find((r) => r.name === name)
@@ -20,6 +20,8 @@ const skipped = (file: string, name: string) => {
   const r = row(parse(file), name)
   return [r.status, r.transport, r.skipReason]
 }
+// Every fixture file except codex.toml and native.json.
+const CLIENTS = readdirSync(FIXTURES).filter((file) => file !== 'codex.toml' && file !== 'native.json')
 
 describe('detection', () => {
   it.each<[string, string, string, string[]]>([
@@ -128,5 +130,283 @@ describe('detection', () => {
     expect(fields(row(parse('acp.json'), 'api-server'))).toEqual(['headers.Content-Type (set by mcp-client)'])
     expect(fields(row(parse('bare-map.json'), 'docs'))).toEqual(['enabled'])
     expect(fields(row(parse('bare-map.json'), 'tools'))).toEqual([])
+  })
+})
+
+describe('entries', () => {
+  it.each<[string, string, Record<string, unknown>]>([
+    ['claude-code.json', 'api-server', { type: 'http', url: '', auth: { type: 'bearer', token: 'env://API_KEY' } }],
+    [
+      'claude-code.json',
+      'weather',
+      {
+        type: 'stdio',
+        command: '/opt/weather/weather-cli',
+        args: ['--api-key', '', '--region', 'env://REGION'],
+        env: { CACHE_DIR: '/tmp/weather', LOG_LEVEL: 'env://LOG_LEVEL' },
+      },
+    ],
+    [
+      'claude-code.json',
+      'slack-team',
+      {
+        type: 'http',
+        url: 'https://mcp.slack.com/mcp',
+        auth: { type: 'oauth', client_id: 'slack-client', scopes: ['channels:read', 'chat:write'] },
+      },
+    ],
+    ['claude-code.json', 'linear-server', { type: 'http', url: 'https://mcp.linear.app/mcp' }],
+    [
+      'claude-desktop.json',
+      'github',
+      {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-github'],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' },
+      },
+    ],
+    [
+      'cursor.json',
+      'local-server',
+      { type: 'stdio', command: 'python', args: [''], env: { API_KEY: 'env://API_KEY' } },
+    ],
+    [
+      'cursor.json',
+      'remote-server',
+      { type: 'http', url: 'https://api.example.com/mcp', auth: { type: 'bearer', token: 'env://MY_SERVICE_TOKEN' } },
+    ],
+    [
+      'cursor.json',
+      'oauth-server',
+      {
+        type: 'http',
+        url: 'https://api.example.com/mcp',
+        auth: { type: 'oauth', client_id: 'cursor-client', client_secret: '', scopes: ['read', 'write'] },
+      },
+    ],
+    [
+      'cursor.json',
+      'keyed',
+      { type: 'http', url: 'https://api.example.com/mcp', headers: { API_KEY: '', 'X-Workspace': 'acme' } },
+    ],
+    [
+      'windsurf.json',
+      'remote-http-mcp',
+      { type: 'http', url: 'https://mcp.example.com/mcp', headers: { API_KEY: '' } },
+    ],
+    [
+      'gemini.json',
+      'local',
+      {
+        type: 'stdio',
+        command: 'path/to/server',
+        args: ['--arg1', 'value1'],
+        env: { API_KEY: 'env://MY_API_TOKEN', WIN_KEY: 'env://MY_WIN_TOKEN' },
+        cwd: '',
+      },
+    ],
+    [
+      'gemini.json',
+      'streaming',
+      {
+        type: 'http',
+        url: 'https://api.example.com/mcp',
+        headers: { 'X-Workspace': 'acme' },
+        auth: { type: 'oauth', client_id: 'gemini-client', client_secret: '', scopes: ['read'] },
+      },
+    ],
+    [
+      'vscode-editor.json',
+      'github',
+      { type: 'http', url: 'https://api.githubcopilot.com/mcp', auth: { type: 'bearer', token: '' } },
+    ],
+    [
+      'vscode-editor.json',
+      'perplexity',
+      {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'server-perplexity-ask'],
+        env: { PERPLEXITY_API_KEY: '', REGION: '', BUILD: '', RETRIES: '3' },
+        cwd: '',
+      },
+    ],
+    [
+      'vscode-portable.json',
+      'context7',
+      {
+        type: 'http',
+        url: 'https://mcp.context7.com/mcp',
+        headers: { 'X-Api-Version': 'env://API_VERSION' },
+        auth: { type: 'oauth', client_id: 'portable-client' },
+      },
+    ],
+    ['zed.json', 'local-mcp-server', { type: 'stdio', command: 'some-command', args: ['arg-1', 'arg-2'] }],
+    [
+      'zed.json',
+      'remote-mcp-server',
+      { type: 'http', url: 'https://example.com/mcp', auth: { type: 'bearer', token: '' } },
+    ],
+    [
+      'acp.json',
+      'filesystem',
+      { type: 'stdio', command: '/path/to/mcp-server', args: ['--stdio'], env: { API_KEY: '' } },
+    ],
+    [
+      'acp.json',
+      'api-server',
+      { type: 'http', url: 'https://api.example.com/mcp', auth: { type: 'bearer', token: '' } },
+    ],
+    [
+      'registry.json',
+      'weather',
+      {
+        type: 'http',
+        url: 'https://mcp.anonymous.modelcontextprotocol.io/http',
+        headers: { 'X-API-Key': '', 'X-Region': '' },
+      },
+    ],
+    ['single.json', '', { type: 'http', url: 'https://api.weather.com/mcp', auth: { type: 'bearer', token: '' } }],
+    [
+      'bare-map.json',
+      'docs',
+      {
+        type: 'http',
+        url: 'https://docs.example.com/mcp',
+        headers: { 'X-Workspace': 'acme', 'X-Tenant': 'env://TENANT_ID' },
+        auth: { type: 'bearer', token: 'env://DOCS_TOKEN' },
+      },
+    ],
+    [
+      'bare-map.json',
+      'tools',
+      { type: 'stdio', command: 'uvx', args: ['some-tools'], env: { LOCAL_TOKEN: 'env://LOCAL_TOKEN' } },
+    ],
+    ['headers-helper.json', 'internal-api', { type: 'http', url: 'https://mcp.example.org' }],
+  ])('%s › %s', (file, name, entry) => expect(row(parse(file), name).entry).toEqual(entry))
+  it.each<[string, string, [string, string][]]>([
+    ['claude-code.json', 'weather', [['/args/1', 'WEATHER_API_KEY']]],
+    ['claude-desktop.json', 'github', [['/env/GITHUB_PERSONAL_ACCESS_TOKEN', 'GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN']]],
+    ['cursor.json', 'oauth-server', [['/auth/client_secret', 'OAUTH_SERVER_CLIENT_SECRET']]],
+    ['cursor.json', 'keyed', [['/headers/API_KEY', 'KEYED_API_KEY']]],
+    ['gemini.json', 'streaming', [['/auth/client_secret', 'STREAMING_CLIENT_SECRET']]],
+    ['acp.json', 'filesystem', [['/env/API_KEY', 'FILESYSTEM_API_KEY']]],
+    ['acp.json', 'api-server', [['/auth/token', 'API_SERVER_TOKEN']]],
+    ['native.json', 'linear', [['/auth/token', 'LINEAR_TOKEN']]],
+    ['native.json', 'search', [['/headers/X-API-Key', 'SEARCH_X_API_KEY']]],
+  ])('%s › %s secrets', (file, name, found) => {
+    const secrets = row(parse(file), name).secrets
+    expect(secrets.map((s) => [s.path, s.vaultName])).toEqual(found)
+    for (const s of secrets) expect([s.value, s.masked]).toEqual([FAKE, MASK])
+  })
+  it.each<[string, string, [string, string, boolean, string][]]>([
+    ['claude-code.json', 'api-server', [['/url', 'URL', false, '${API_BASE_URL:-https://api.example.com}/mcp']]],
+    ['cursor.json', 'local-server', [['/args/0', 'Argument 1', false, '${workspaceFolder}/tools/mcp_server.py']]],
+    ['windsurf.json', 'github', [['/env/GITHUB_PERSONAL_ACCESS_TOKEN', 'GITHUB_PERSONAL_ACCESS_TOKEN', true, '']]],
+    ['windsurf.json', 'remote-http-mcp', [['/headers/API_KEY', 'API_KEY', true, '']]],
+    ['gemini.json', 'local', [['/cwd', 'Working directory (absolute path)', false, './server-directory']]],
+    ['vscode-editor.json', 'github', [['/auth/token', 'GitHub Personal Access Token', true, '']]],
+    [
+      'vscode-editor.json',
+      'perplexity',
+      [
+        ['/cwd', 'Working directory (absolute path)', false, '${workspaceFolder}'],
+        ['/env/BUILD', 'build-id', false, ''],
+        ['/env/PERPLEXITY_API_KEY', 'Perplexity API Key', true, ''],
+        ['/env/REGION', 'Service region', false, ''],
+      ],
+    ],
+    ['zed.json', 'remote-mcp-server', [['/auth/token', 'API key', true, '']]],
+    [
+      'registry.json',
+      'weather',
+      [
+        ['/headers/X-API-Key', 'API key for authentication', true, ''],
+        ['/headers/X-Region', 'Service region', false, 'us-east-1'],
+      ],
+    ],
+    ['single.json', '', [['/auth/token', 'API key', true, '']]],
+  ])('%s › %s needs', (file, name, needs) => {
+    const got = [...row(parse(file), name).needs].sort((a, b) => a.path.localeCompare(b.path))
+    expect(got.map((n) => [n.path, n.label, n.password, n.original])).toEqual(needs)
+  })
+  it('keeps mcp-client entries as written', () => {
+    const input = JSON.parse(load('native.json')).mcpServers
+    const result = parse('native.json')
+    expect(row(result, 'linear-app').entry).toEqual(input['linear-app'])
+    expect(row(result, 'linear-app').secrets).toEqual([])
+    expect(row(result, 'playwright').entry).toEqual(input.playwright)
+    expect(row(result, 'playwright').envRefs).toEqual(['HTTPS_PROXY'])
+  })
+  it('reports dropped defaults, env references and a target that shows no value', () => {
+    const weather = row(parse('claude-code.json'), 'weather')
+    expect(weather.notes).toEqual(['default for `REGION` dropped'])
+    expect(weather.envRefs).toEqual(['LOG_LEVEL', 'REGION'])
+    expect([weather.transport, weather.target]).toEqual([
+      'stdio',
+      '/opt/weather/weather-cli --api-key … --region env://REGION',
+    ])
+    expect(row(parse('claude-code.json'), 'api-server').target).toBe('…')
+    expect(row(parse('claude-code.json'), 'linear-server').target).toBe('https://mcp.linear.app/mcp')
+    expect(row(parse('vscode-portable.json'), 'context7').notes).toEqual(['default for `API_VERSION` dropped'])
+    expect(row(parse('bare-map.json'), 'docs').envRefs).toEqual(['DOCS_TOKEN', 'TENANT_ID'])
+    expect(row(parse('registry.json'), 'weather').notes).toEqual([
+      'packages are not imported: add a stdio server by hand',
+    ])
+  })
+  it('stores a URL that carries a credential whole, and refuses --flag=value', () => {
+    const withUser = 'https://' + 'user:' + FAKE + '@mcp.example.com/mcp'
+    const withQuery = `https://mcp.example.com/mcp?api_key=${FAKE}`
+    for (const url of [withUser, withQuery]) {
+      const r = parseImport(JSON.stringify({ x: { url } }), []).rows[0]
+      expect(r.secrets).toEqual([{ path: '/url', vaultName: 'X_URL', value: url, masked: maskSecret(url) }])
+      expect([r.entry.url, r.target]).toEqual(['', 'https://mcp.example.com (stored as a secret)'])
+    }
+    expect(
+      parseImport(JSON.stringify({ x: { url: 'https://mcp.example.com/mcp?page=2' } }), []).rows[0].secrets,
+    ).toEqual([])
+    const assigned = parseImport(JSON.stringify({ x: { command: 'srv', args: ['--api-key=' + FAKE] } }), []).rows[0]
+    expect([assigned.status, assigned.skipReason]).toEqual([
+      'skipped',
+      'Split `--api-key=…` into two arguments, then paste again',
+    ])
+    expect(JSON.stringify(assigned)).not.toContain(FAKE)
+  })
+  it.each(['<YOUR_API_KEY>', 'your-token', 'YOUR_KEY', 'xxx'])('%s is a missing value, not a secret', (value) => {
+    const r = parseImport(JSON.stringify({ x: { command: 'srv', env: { API_KEY: value } } }), []).rows[0]
+    expect([r.secrets, r.needs.map((n) => [n.path, n.password, n.original]), r.entry.env]).toEqual([
+      [],
+      [['/env/API_KEY', true, '']],
+      { API_KEY: '' },
+    ])
+  })
+  it('never yields client_credentials, a ${ in an entry, or a value outside secrets', () => {
+    for (const file of [...CLIENTS, 'native.json']) {
+      const result = parse(file)
+      expect(JSON.stringify(result.rows.map(({ secrets: _secrets, ...rest }) => rest)), file).not.toContain(FAKE)
+      expect(JSON.stringify(result.rows.map((r) => r.entry)), file).not.toContain('${')
+    }
+    for (const file of CLIENTS) {
+      for (const r of parse(file).rows)
+        expect((r.entry.auth as { type?: string } | undefined)?.type, file).not.toBe('client_credentials')
+    }
+  })
+  it('maskSecret shows no character of the value', () => {
+    expect([maskSecret(FAKE), maskSecret('x')]).toEqual([MASK, '•••••••• · 1 character'])
+  })
+  it('finalEntry writes references and lists what to store and share', () => {
+    const weather = row(parse('claude-code.json'), 'weather')
+    expect(finalEntry(weather, {})).toEqual({
+      entry: {
+        type: 'stdio',
+        command: '/opt/weather/weather-cli',
+        args: ['--api-key', 'secret://WEATHER_API_KEY', '--region', 'env://REGION'],
+        env: { CACHE_DIR: '/tmp/weather', LOG_LEVEL: 'env://LOG_LEVEL' },
+      },
+      toStore: [{ name: 'WEATHER_API_KEY', value: FAKE }],
+      toShare: ['LOG_LEVEL', 'REGION'],
+    })
+    expect(weather.entry.args).toEqual(['--api-key', '', '--region', 'env://REGION'])
   })
 })
