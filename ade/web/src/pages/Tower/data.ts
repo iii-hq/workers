@@ -10,10 +10,11 @@ import type {
 } from '@/lib/sessions/types'
 import {
   ALL_PROJECTS,
-  type AskClass,
+  type AskEntry,
   type HarnessStatus,
   isInScope,
   isStalled,
+  type KanbanQuestionView,
   linkedCard,
   type NeedsYouItem,
   prWaitReason,
@@ -22,24 +23,19 @@ import {
   type TowerProgress,
   type TowerProject,
   type TowerPullRequest,
+  type TowerQuestion,
   type TowerRelease,
   type TowerRun,
   type TowerTicket,
 } from './model'
 
-interface AskEntry {
-  session_id: string
-  question_id: string
-  questions: Array<{ header: string; question: string }>
-  about: { ticket?: string; blocks?: string[]; class?: AskClass; why?: string }
-  asked_at: number
-  state: 'open' | 'expired'
-}
-
 interface PendingApproval {
   session_id: string
+  turn_id: string
   function_call_id: string
   function_id: string
+  namespace?: string
+  implicit_namespace?: string
   arguments_excerpt: unknown
   pending_at: number
   session_title?: string
@@ -61,6 +57,7 @@ interface RunSnapshot {
   runningChildren: number
   childOpenAsks: number
   descendantSessionIds: string[]
+  descendants: Array<{ meta?: SessionMeta; status: HarnessStatus }>
   lastAssistant: string
   metrics?: TowerRun['metrics']
 }
@@ -77,20 +74,24 @@ export interface TowerData {
   board: TowerBoard | null
   tickets: TowerTicket[]
   releases: TowerRelease[]
+  releaseCatalog: TowerRelease[]
   runs: TowerRun[]
   items: NeedsYouItem[]
+  questions: TowerQuestion[]
   prs: TowerPullRequest[]
   repositories: string[]
   loading: {
     board: boolean
     sessions: boolean
     needsYou: boolean
+    questions: boolean
     prs: boolean
   }
   errors: {
     board: string | null
     sessions: string | null
     needsYou: string | null
+    questions: string | null
     prs: string | null
   }
   refresh: () => void
@@ -127,7 +128,10 @@ function useLiveSource<T>(
   fetch: () => Promise<T>,
   acceptEvent: (payload: unknown) => boolean = ACCEPT_ALL,
 ): LiveResult<T> {
-  const [data, setData] = useState<T | null>(null)
+  const [snapshot, setSnapshot] = useState<{
+    source: () => Promise<T>
+    data: T | null
+  }>({ source: fetch, data: null })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [token, setToken] = useState(0)
@@ -145,12 +149,15 @@ function useLiveSource<T>(
     void fetch().then(
       (next) => {
         if (mine !== seq.current) return
-        setData(next)
+        setSnapshot({ source: fetch, data: next })
         setError(null)
         setLoading(false)
       },
       (reason) => {
         if (mine !== seq.current) return
+        setSnapshot((previous) =>
+          previous.source === fetch ? previous : { source: fetch, data: null },
+        )
         setError(errorMessage(reason))
         setLoading(false)
       },
@@ -188,7 +195,13 @@ function useLiveSource<T>(
     }
   }, [acceptEvent, iii, refresh, registeredHandlerId, sourceKey])
 
-  return { data, loading, error, refresh }
+  const current = snapshot.source === fetch
+  return {
+    data: current ? snapshot.data : null,
+    loading: loading || !current,
+    error: current ? error : null,
+    refresh,
+  }
 }
 
 function fsRoot(session: SessionMeta): string | undefined {
@@ -264,7 +277,7 @@ export async function fetchTowerBoard(
   return {
     projects: projectsResult.projects ?? [],
     releases: [...released, ...active, ...planned],
-    releaseCatalog: catalog,
+    releaseCatalog: scopedReleases,
     tickets: columns.flatMap((column) => column.tickets),
     board: {
       columns,
@@ -380,6 +393,7 @@ async function sessionDetails(
       0,
     ),
     descendantSessionIds: children.map((child) => child.status.session_id),
+    descendants: children,
     lastAssistant: lastAssistant(tail.messages ?? []),
     metrics,
   }
@@ -408,22 +422,101 @@ export async function fetchTowerRuns(
   }
 }
 
-export async function fetchTowerAsks(iii: IiiClient): Promise<AskEntry[]> {
-  const read = async (state: AskEntry['state']) => {
-    const entries: AskEntry[] = []
-    let cursor: string | undefined
-    do {
-      const page = await iii.call<{ entries: AskEntry[]; cursor?: string }>(
-        'harness::ask::list',
-        { state, limit: 200, ...(cursor ? { cursor } : {}) },
-      )
-      entries.push(...(page.entries ?? []))
-      cursor = page.cursor
-    } while (cursor)
-    return entries
+export async function fetchTowerAsks(
+  iii: Pick<IiiClient, 'call'>,
+  sessionId?: string,
+): Promise<AskEntry[]> {
+  const entries: AskEntry[] = []
+  let cursor: string | undefined
+  do {
+    const page = await iii.call<{ entries: AskEntry[]; cursor?: string }>(
+      'harness::ask::list',
+      {
+        limit: 200,
+        ...(sessionId ? { session_id: sessionId } : {}),
+        ...(cursor ? { cursor } : {}),
+      },
+    )
+    entries.push(...(page.entries ?? []))
+    cursor = page.cursor
+  } while (cursor)
+  return entries
+}
+
+export async function fetchTowerQuestions(
+  iii: IiiClient,
+  scope: string,
+): Promise<KanbanQuestionView[]> {
+  const questions: KanbanQuestionView[] = []
+  let cursor: string | undefined
+  do {
+    const page = await iii.call<{
+      questions: KanbanQuestionView[]
+      cursor?: string
+    }>('kanban::question::list', {
+      limit: 500,
+      ...(scope === ALL_PROJECTS ? {} : { project: scope }),
+      ...(cursor ? { cursor } : {}),
+    })
+    questions.push(...(page.questions ?? []))
+    cursor = page.cursor
+  } while (cursor)
+  return questions
+}
+
+function questionKey(sessionId: string, questionId: string): string {
+  return `${sessionId}/${questionId}`
+}
+
+/** Merge the board decision log with the harness's authoritative lifecycle. */
+export function mergeTowerQuestions(
+  asks: readonly AskEntry[],
+  boardRows: readonly KanbanQuestionView[],
+): TowerQuestion[] {
+  const merged = new Map<string, TowerQuestion>()
+  for (const board of boardRows) {
+    const question = board.comment.question
+    if (!question) continue
+    const key = questionKey(question.session_id, question.question_id)
+    merged.set(key, {
+      key,
+      sessionId: question.session_id,
+      questionId: question.question_id,
+      ticketId: board.comment.ticket_id,
+      commentId: board.comment.id,
+      questions: question.questions,
+      about: question.about ?? {},
+      askedAt: question.asked_at,
+      state: board.state,
+      answerText: board.answer?.answer?.answer_text,
+      by: board.answer?.answer?.by,
+      outcome: board.answer?.answer?.outcome,
+      settledAt: board.answer ? Date.parse(board.answer.created_at) : undefined,
+      recordedBy: board.comment.recorded_by,
+      board,
+    })
   }
-  const [open, expired] = await Promise.all([read('open'), read('expired')])
-  return [...open, ...expired]
+  for (const harness of asks) {
+    const key = questionKey(harness.session_id, harness.question_id)
+    const board = merged.get(key)
+    merged.set(key, {
+      ...board,
+      key,
+      sessionId: harness.session_id,
+      questionId: harness.question_id,
+      ticketId: harness.about.ticket ?? board?.ticketId,
+      questions: harness.questions,
+      about: harness.about,
+      askedAt: harness.asked_at,
+      state: harness.state,
+      answerText: harness.answer_text,
+      by: harness.by,
+      outcome: harness.outcome,
+      settledAt: harness.settled_at,
+      harness,
+    })
+  }
+  return [...merged.values()].sort((a, b) => b.askedAt - a.askedAt)
 }
 
 export async function fetchTowerHolds(
@@ -628,6 +721,10 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
   const fetchRuns = useCallback(() => fetchTowerRuns(iii), [iii])
   const fetchAsks = useCallback(() => fetchTowerAsks(iii), [iii])
   const fetchHolds = useCallback(() => fetchTowerHolds(iii), [iii])
+  const fetchQuestions = useCallback(
+    () => fetchTowerQuestions(iii, scope),
+    [iii, scope],
+  )
   const boardLive = useLiveSource(
     iii,
     'iii::console::tower::board',
@@ -653,6 +750,12 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
     HOLD_EVENTS,
     fetchHolds,
   )
+  const questionsLive = useLiveSource(
+    iii,
+    'iii::console::tower::questions',
+    BOARD_EVENTS,
+    fetchQuestions,
+  )
   const cards = boardLive.data?.tickets ?? []
   const projects = boardLive.data?.projects ?? []
   const releases = boardLive.data?.releases ?? []
@@ -675,9 +778,25 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
   const sessionMap = useMemo(
     () =>
       new Map(
-        (sessionsLive.data?.rows ?? []).map((row) => [
-          row.session.session_id,
-          row.session,
+        (sessionsLive.data?.rows ?? []).flatMap((row) => [
+          [row.session.session_id, row.session] as const,
+          ...row.descendants.flatMap((child) =>
+            child.meta
+              ? ([[child.status.session_id, child.meta]] as const)
+              : [],
+          ),
+        ]),
+      ),
+    [sessionsLive.data],
+  )
+  const statusMap = useMemo(
+    () =>
+      new Map(
+        (sessionsLive.data?.rows ?? []).flatMap((row) => [
+          [row.status.session_id, row.status] as const,
+          ...row.descendants.map(
+            (child) => [child.status.session_id, child.status] as const,
+          ),
         ]),
       ),
     [sessionsLive.data],
@@ -691,15 +810,55 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
     return roots
   }, [sessionsLive.data])
 
+  const questions = useMemo(
+    () =>
+      mergeTowerQuestions(asksLive.data ?? [], questionsLive.data ?? []).filter(
+        (question) => {
+          if (scope === ALL_PROJECTS || question.board) return true
+          const session =
+            sessionMap.get(question.sessionId) ??
+            rootForSession.get(question.sessionId)?.session
+          const card = cardMap.get(
+            (question.ticketId ?? linkedTicket(session) ?? '')
+              .trim()
+              .toLowerCase(),
+          )
+          return card?.project_id === scope
+        },
+      ),
+    [
+      asksLive.data,
+      cardMap,
+      questionsLive.data,
+      rootForSession,
+      scope,
+      sessionMap,
+    ],
+  )
+
   const basicItems = useMemo<NeedsYouItem[]>(() => {
-    const questions: NeedsYouItem[] = (asksLive.data ?? []).flatMap((ask) => {
+    const openQuestions: NeedsYouItem[] = questions.flatMap((record) => {
+      if (!['open', 'answering', 'expired'].includes(record.state)) return []
+      const ask: AskEntry = record.harness ?? {
+        session_id: record.sessionId,
+        question_id: record.questionId,
+        turn_id: '',
+        asked_by: record.board?.comment.author,
+        questions: record.questions,
+        about: record.about,
+        asked_at: record.askedAt,
+        on_expiry: 'block',
+        state: record.state as 'open' | 'answering' | 'expired',
+      }
       const session =
         sessionMap.get(ask.session_id) ??
         rootForSession.get(ask.session_id)?.session
       const card = cardMap.get(
-        (ask.about.ticket ?? linkedTicket(session) ?? '').trim().toLowerCase(),
+        (ask.about.ticket ?? record.ticketId ?? linkedTicket(session) ?? '')
+          .trim()
+          .toLowerCase(),
       )
-      if (!isInScope(scope, card?.project_id)) return []
+      if (!record.board && !isInScope(scope, card?.project_id)) return []
       const blocks = ask.about.blocks ?? []
       return [
         {
@@ -714,7 +873,10 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
           blocks,
           blockedCards: blocks.length,
           createdAt: ask.asked_at,
-          state: ask.state,
+          state: ask.state as 'open' | 'answering' | 'expired',
+          entry: ask,
+          sessionTitle: session?.title,
+          currentTurnId: statusMap.get(ask.session_id)?.turn_id ?? null,
           card,
         },
       ]
@@ -739,20 +901,24 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
           functionId: pending.function_id,
           arguments: pending.arguments_excerpt,
           title: pending.function_id,
+          sessionTitle: pending.session_title ?? session?.title,
+          namespace: pending.namespace,
+          implicitNamespace: pending.implicit_namespace,
           blockedCards: card ? 1 : 0,
           createdAt: pending.pending_at,
           card,
         },
       ]
     })
-    return [...questions, ...held]
+    return [...openQuestions, ...held]
   }, [
-    asksLive.data,
     cardMap,
     holdsLive.data,
+    questions,
     rootForSession,
     scope,
     sessionMap,
+    statusMap,
   ])
 
   const runsBeforeNeeds = useMemo<TowerRun[]>(() => {
@@ -949,12 +1115,14 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
     sessionsLive.refresh()
     asksLive.refresh()
     holdsLive.refresh()
+    questionsLive.refresh()
     setRepositoryToken((token) => token + 1)
     prLive.refresh()
   }, [
     asksLive.refresh,
     boardLive.refresh,
     holdsLive.refresh,
+    questionsLive.refresh,
     prLive.refresh,
     sessionsLive.refresh,
   ])
@@ -972,20 +1140,29 @@ export function useTowerData(iii: IiiClient, scope: string): TowerData {
     board: boardLive.data?.board ?? null,
     tickets: cards,
     releases,
+    releaseCatalog,
     runs,
     items,
+    questions,
     prs,
     repositories,
     loading: {
       board: boardLive.loading,
       sessions: sessionsLive.loading,
-      needsYou: asksLive.loading || holdsLive.loading,
+      needsYou:
+        asksLive.loading ||
+        holdsLive.loading ||
+        questionsLive.loading ||
+        boardLive.loading ||
+        sessionsLive.loading,
+      questions: asksLive.loading || questionsLive.loading,
       prs: repositoriesLoading || prLive.loading,
     },
     errors: {
       board: boardLive.error,
       sessions: sessionsLive.error,
-      needsYou: asksLive.error ?? holdsLive.error,
+      needsYou: asksLive.error ?? holdsLive.error ?? questionsLive.error,
+      questions: asksLive.error ?? questionsLive.error,
       prs: repositoryError ?? prLive.error,
     },
     refresh,

@@ -70,6 +70,120 @@ export interface HarnessStatus {
   armed_wakes?: Array<{ created_at: number; expires_at?: number | null }>
 }
 
+export interface AskOption {
+  label: string
+  description?: string
+  recommended?: boolean
+}
+
+export interface AskQuestion {
+  header: string
+  question: string
+  multi_select?: boolean
+  options: AskOption[]
+}
+
+export interface AskAbout {
+  ticket?: string
+  blocks?: string[]
+  class?: AskClass
+  why?: string
+}
+
+export interface StructuredAnswer {
+  header: string
+  choice?: string
+  choices?: string[]
+  other?: string
+  skipped?: boolean
+}
+
+export interface AskBy {
+  channel: string
+  user?: string
+}
+
+export type AskOutcome =
+  | 'answered'
+  | 'dismissed'
+  | 'withdrawn'
+  | 'expired_default'
+  | 'not_delivered'
+
+export type AskState =
+  | 'open'
+  | 'answering'
+  | 'answered'
+  | 'dismissed'
+  | 'withdrawn'
+  | 'expired'
+
+export interface AskEntry {
+  session_id: string
+  question_id: string
+  turn_id: string
+  asked_by?: string
+  questions: AskQuestion[]
+  about: AskAbout
+  asked_at: number
+  expires_in_min?: number
+  expires_at?: number
+  on_expiry: 'block' | { answer: string }
+  state: AskState
+  answers?: StructuredAnswer[]
+  answer_text?: string
+  by?: AskBy
+  outcome?: AskOutcome
+  settled_at?: number
+}
+
+export interface KanbanQuestionComment {
+  id: string
+  ticket_id: string
+  parent_id?: string | null
+  body: string
+  author: string
+  created_at: string
+  question?: {
+    session_id: string
+    question_id: string
+    questions: AskQuestion[]
+    about?: AskAbout | null
+    asked_at: number
+  }
+  answer?: {
+    answer_text: string
+    by?: AskBy | null
+    outcome: AskOutcome
+  }
+  recorded_by?: string
+}
+
+export interface KanbanQuestionView {
+  comment: KanbanQuestionComment
+  state: AskOutcome | 'open' | 'recorded'
+  answer?: KanbanQuestionComment | null
+}
+
+export interface TowerQuestion {
+  key: string
+  sessionId: string
+  questionId: string
+  ticketId?: string
+  commentId?: string
+  questions: AskQuestion[]
+  about: AskAbout
+  askedAt: number
+  state: AskState | AskOutcome | 'recorded'
+  answerText?: string
+  by?: AskBy | null
+  outcome?: AskOutcome
+  settledAt?: number
+  recordedBy?: string
+  harness?: AskEntry
+  board?: KanbanQuestionView
+}
+
 export interface TowerProgress {
   releaseId: string | null
   releaseName: string
@@ -92,7 +206,10 @@ export interface QuestionNeed extends NeedBase {
   question: string
   why?: string
   blocks: string[]
-  state: 'open' | 'expired'
+  state: 'open' | 'answering' | 'expired'
+  entry: AskEntry
+  sessionTitle?: string
+  currentTurnId?: string | null
 }
 
 export interface HeldNeed extends NeedBase {
@@ -100,6 +217,9 @@ export interface HeldNeed extends NeedBase {
   functionCallId: string
   functionId: string
   arguments: unknown
+  sessionTitle?: string
+  namespace?: string
+  implicitNamespace?: string
 }
 
 export interface StalledNeed extends NeedBase {

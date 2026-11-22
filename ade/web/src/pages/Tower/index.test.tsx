@@ -93,9 +93,7 @@ describe('Control tower views', () => {
     ).toHaveLength(3)
     expect(container.querySelector('button[data-variant="default"]')).toBeNull()
     await click('Open')
-    expect(container.textContent).toContain(
-      'the item detail will be available here',
-    )
+    expect(container.textContent).toContain('Or answer in your own words')
     expect(container.textContent).toContain(towerFixture.items[0].title)
   })
 

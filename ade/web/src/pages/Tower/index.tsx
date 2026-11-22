@@ -1,4 +1,5 @@
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { usePaneState } from '@iii-dev/console-ui/hooks'
 import { RadioTower, RefreshCw } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
@@ -32,6 +33,13 @@ import {
   type TowerRun,
   type TowerTicket,
 } from './model'
+import {
+  AskAboutButton,
+  NeedsYou,
+  needLabel,
+  QuestionLog,
+  type TowerActions,
+} from './NeedsYou'
 import './tower.css'
 
 type TowerView = 'overview' | 'needs-you' | 'assumptions' | 'decided' | 'runs'
@@ -119,6 +127,7 @@ function ConnectedTower({
   return (
     <TowerScreen
       data={data}
+      iii={iii}
       scope={scope}
       onScopeChange={setScope}
       onRequestClose={onRequestClose}
@@ -133,19 +142,55 @@ export interface TowerScreenProps {
   onRequestClose?: () => void
   initialView?: TowerView
   summaryCheckedAt?: number
+  iii?: TowerActions
+  user?: string
+  initialSelectedId?: string
 }
 
 export function TowerScreen({
-  data,
+  data: sourceData,
   scope,
   onScopeChange,
   onRequestClose,
   initialView = 'overview',
   summaryCheckedAt,
+  iii,
+  user = 'user',
+  initialSelectedId,
 }: TowerScreenProps) {
   const [view, setView] = useState<TowerView>(initialView)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const selected = data.items.find((item) => item.id === selectedId)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialSelectedId ?? null,
+  )
+  const [leftRuns, setLeftRuns] = usePaneState<Record<string, string>>(
+    `tower:left-runs:${user}`,
+    {},
+  )
+  const stallVersion = (item: NeedsYouItem) => {
+    const run = sourceData.runs.find(
+      (row) => row.session.session_id === item.sessionId,
+    )
+    return JSON.stringify([
+      item.createdAt,
+      run?.session.updated_at,
+      run?.status.turn_id,
+      item.kind === 'stalled' ? item.armedWakes : null,
+    ])
+  }
+  const items = sourceData.items.filter(
+    (item) =>
+      item.kind !== 'stalled' || leftRuns[item.id] !== stallVersion(item),
+  )
+  const data = {
+    ...sourceData,
+    items,
+    runs: sourceData.runs.map((run) => ({
+      ...run,
+      needsYou: run.needsYou.filter((item) =>
+        items.some((visible) => visible.id === item.id),
+      ),
+    })),
+  }
   const nowItems = data.items.filter((item) => needUrgency(item) === 'now')
   const openNeed = (item?: NeedsYouItem) => {
     setSelectedId(item?.id ?? null)
@@ -236,7 +281,9 @@ export function TowerScreen({
       </div>
       <PageBody>
         <PageMain>
-          <div className="tower-content">
+          <div
+            className={`tower-content${view === 'needs-you' ? ' tower-inbox-content' : ''}`}
+          >
             {view === 'overview' ? (
               <Overview
                 data={data}
@@ -266,17 +313,30 @@ export function TowerScreen({
                     </Button>
                   ))}
                 </div>
-                <EmptyState
-                  title={
-                    VIEWS.find((tab) => tab.value === view)?.label ??
-                    'Needs you'
-                  }
-                  description={
-                    view === 'needs-you' && selected
-                      ? `${selected.title} — the item detail will be available here.`
-                      : 'This view will be available in the next Control tower update.'
-                  }
-                />
+                {view === 'needs-you' ? (
+                  <NeedsYou
+                    key={scope}
+                    data={data}
+                    iii={iii}
+                    user={user}
+                    initialSelectedId={selectedId}
+                    onLeave={(item) =>
+                      setLeftRuns((current) => ({
+                        ...current,
+                        [item.id]: stallVersion(item),
+                      }))
+                    }
+                    openRuns={() => setView('runs')}
+                  />
+                ) : (
+                  <QuestionLog
+                    key={`${scope}:${view}`}
+                    data={data}
+                    view={view}
+                    iii={iii}
+                    user={user}
+                  />
+                )}
               </>
             )}
           </div>
@@ -391,15 +451,7 @@ function SummarySlot({
   )
 }
 function NeedLabel({ item }: { item: NeedsYouItem }) {
-  return (
-    <span className="tower-status">
-      {item.kind === 'question'
-        ? `Question · ${item.questionClass.replaceAll('_', ' ')}`
-        : item.kind === 'held'
-          ? 'Held call'
-          : 'Stalled run'}
-    </span>
-  )
+  return <span className="tower-status">{needLabel(item)}</span>
 }
 const RUN_LABEL = {
   working: 'Working',
@@ -646,13 +698,7 @@ function Overview({
                     >
                       Open
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => openNeed(item)}
-                    >
-                      Ask about this
-                    </Button>
+                    <AskAboutButton />
                   </div>
                 </div>
               ))

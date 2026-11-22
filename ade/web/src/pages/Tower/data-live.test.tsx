@@ -23,87 +23,261 @@ async function settle(): Promise<void> {
 }
 
 describe('useTowerData live lifecycle', () => {
-  it('does not manufacture a stall when the card subtask source is unavailable', async () => {
-    vi.useFakeTimers()
-    const old = Date.now() - 2 * 60 * 60_000
-    const card = {
-      ...towerFixture.tickets[0],
-      updated_at: new Date(old).toISOString(),
-    }
-    const session = {
-      ...towerFixture.runs[0].session,
-      status: 'done',
-      updated_at: old,
-      metadata: { kanban_ticket: card.key },
-    }
-    const call = vi.fn(async (id: string) => {
-      if (id === 'session::list') return { sessions: [session] }
-      if (id === 'session::get') return { meta: session }
-      if (id === 'harness::status')
-        return {
-          session_id: session.session_id,
-          status: 'completed',
-          children: [],
-          open_asks: 0,
-          expects_wake: true,
-        }
-      if (id === 'session::messages-tail') return { messages: [] }
-      if (id === 'kanban::board::get')
-        return {
-          columns: [
+  it.each([false, true])(
+    'keeps scoped card questions and avoids a false stall (harness mirror: %s)',
+    async (mirrored) => {
+      vi.useFakeTimers()
+      const old = Date.now() - 2 * 60 * 60_000
+      const card = {
+        ...towerFixture.tickets[0],
+        project_id: 'p1',
+        updated_at: new Date(old).toISOString(),
+      }
+      const session = {
+        ...towerFixture.runs[0].session,
+        status: 'done',
+        updated_at: old,
+        metadata: { kanban_ticket: card.key },
+      }
+      const call = vi.fn(async (id: string) => {
+        if (id === 'session::list') return { sessions: [session] }
+        if (id === 'session::get') return { meta: session }
+        if (id === 'harness::status')
+          return {
+            session_id: session.session_id,
+            status: 'completed',
+            children: [],
+            open_asks: 0,
+            expects_wake: true,
+          }
+        if (id === 'session::messages-tail') return { messages: [] }
+        if (id === 'kanban::board::get')
+          return {
+            columns: [
+              {
+                id: 'in_progress',
+                label: 'In progress',
+                tickets: [card],
+                total: 1,
+              },
+            ],
+            done_status: 'done',
+            id_prefix: 'KAN',
+          }
+        if (id === 'kanban::project::list') return { projects: [] }
+        if (id === 'kanban::release::list') return { releases: [] }
+        if (id === 'harness::ask::list')
+          return {
+            entries: [
+              {
+                session_id: session.session_id,
+                question_id: 'question-1',
+                turn_id: 'turn-1',
+                questions: [
+                  {
+                    header: 'Scope',
+                    question: 'Keep the current scope?',
+                    options: [],
+                  },
+                ],
+                about: { class: 'scope' },
+                asked_at: old,
+                on_expiry: 'block',
+                state: 'open',
+              },
+              ...(mirrored
+                ? [
+                    {
+                      session_id: 'deleted-session',
+                      question_id: 'board-deleted',
+                      turn_id: 'turn-deleted',
+                      questions: [],
+                      about: { ticket: 'KAN-DELETED' },
+                      asked_at: old + 2,
+                      on_expiry: 'block',
+                      state: 'open',
+                    },
+                  ]
+                : []),
+            ],
+          }
+        if (id === 'approval::list-pending') return { pending: [] }
+        if (id === 'kanban::question::list')
+          return {
+            questions: [
+              {
+                comment: {
+                  id: 'comment-live',
+                  ticket_id: card.key,
+                  body: 'Live card question',
+                  author: 'backend-engineer',
+                  created_at: new Date(old + 1).toISOString(),
+                  question: {
+                    session_id: 'board-session',
+                    question_id: 'board-live',
+                    questions: [
+                      {
+                        header: 'Scope',
+                        question: 'Use the linked card?',
+                        options: [],
+                      },
+                    ],
+                    asked_at: old + 1,
+                  },
+                },
+                state: 'open',
+              },
+              {
+                comment: {
+                  id: 'comment-deleted',
+                  ticket_id: 'KAN-DELETED',
+                  body: 'Deleted card question',
+                  author: 'backend-engineer',
+                  created_at: new Date(old + 2).toISOString(),
+                  question: {
+                    session_id: 'deleted-session',
+                    question_id: 'board-deleted',
+                    questions: [
+                      {
+                        header: 'Scope',
+                        question: 'Keep the deleted card decision?',
+                        options: [],
+                      },
+                    ],
+                    asked_at: old + 2,
+                  },
+                },
+                state: 'open',
+              },
+            ],
+          }
+        if (id === 'ade::configuration-id') return { id: 'ade' }
+        if (id === 'configuration::get') return { value: {} }
+        throw new Error('Progress source unavailable')
+      })
+      const iii = {
+        browserId: 'progress-test',
+        call: call as IiiClient['call'],
+        on: () => () => {},
+        observe: () => () => {},
+      } as unknown as IiiClient
+      const container = document.createElement('div')
+      const root = createRoot(container)
+      function Probe() {
+        const data = useTowerData(iii, 'p1')
+        return (
+          <div>
+            {JSON.stringify({
+              runs: data.runs.map((run) => ({
+                state: run.state,
+                subtasks: run.subtasks,
+              })),
+              items: data.items.map((item) => ({
+                id: item.id,
+                card: item.card?.key,
+              })),
+            })}
+          </div>
+        )
+      }
+      try {
+        await act(async () => root.render(<Probe />))
+        await settle()
+        await settle()
+        expect(JSON.parse(container.textContent ?? '{}')).toEqual({
+          runs: [{ state: 'waiting', subtasks: null }],
+          items: [
             {
-              id: 'in_progress',
-              label: 'In progress',
-              tickets: [card],
-              total: 1,
+              id: `question:${session.session_id}:question-1`,
+              card: card.key,
+            },
+            {
+              id: 'question:board-session:board-live',
+              card: card.key,
+            },
+            {
+              id: 'question:deleted-session:board-deleted',
             },
           ],
-          done_status: 'done',
-          id_prefix: 'KAN',
-        }
-      if (id === 'kanban::project::list') return { projects: [] }
-      if (id === 'kanban::release::list') return { releases: [] }
-      if (id === 'harness::ask::list') return { entries: [] }
-      if (id === 'approval::list-pending') return { pending: [] }
-      if (id === 'ade::configuration-id') return { id: 'ade' }
-      if (id === 'configuration::get') return { value: {} }
-      throw new Error('Progress source unavailable')
-    })
+        })
+        expect(call).toHaveBeenCalledWith('kanban::ticket::list', {
+          parent_id: card.key,
+        })
+      } finally {
+        act(() => root.unmount())
+      }
+    },
+  )
+
+  it('does not carry scoped decision records into a newly selected project', async () => {
+    const row = {
+      comment: {
+        id: 'q',
+        ticket_id: 'deleted-card',
+        body: 'Question',
+        author: 'agent',
+        created_at: '2026-11-21T00:00:00Z',
+        question: {
+          session_id: 's',
+          question_id: 'q',
+          questions: [],
+          asked_at: 1,
+        },
+      },
+      state: 'withdrawn',
+    }
+    const call = vi.fn(
+      async (id: string, payload?: Record<string, unknown>) => {
+        if (id === 'kanban::question::list')
+          return payload?.project === 'p1'
+            ? { questions: [row] }
+            : new Promise(() => {})
+        if (id === 'kanban::project::list') return { projects: [] }
+        if (id === 'kanban::release::list') return { releases: [] }
+        if (id === 'kanban::board::get')
+          return { columns: [], done_status: 'done', id_prefix: 'KAN' }
+        if (id === 'session::list') return { sessions: [] }
+        if (id === 'harness::ask::list') return { entries: [] }
+        if (id === 'approval::list-pending') return { pending: [] }
+        if (id === 'ade::configuration-id') return { id: 'ade' }
+        if (id === 'configuration::get') return { value: {} }
+        throw new Error(id)
+      },
+    )
     const iii = {
-      browserId: 'progress-test',
+      browserId: 'scope-switch',
       call: call as IiiClient['call'],
       on: () => () => {},
       observe: () => () => {},
     } as unknown as IiiClient
     const container = document.createElement('div')
     const root = createRoot(container)
-    function Probe() {
-      const data = useTowerData(iii, 'all')
+    function Probe({ scope }: { scope: string }) {
+      const data = useTowerData(iii, scope)
       return (
         <div>
           {JSON.stringify({
-            runs: data.runs.map((run) => ({
-              state: run.state,
-              subtasks: run.subtasks,
-            })),
-            items: data.items,
+            questions: data.questions.map((question) => question.key),
+            loading: data.loading.questions,
           })}
         </div>
       )
     }
     try {
-      await act(async () => root.render(<Probe />))
-      await settle()
+      await act(() => root.render(<Probe scope="p1" />))
       await settle()
       expect(JSON.parse(container.textContent ?? '{}')).toEqual({
-        runs: [{ state: 'waiting', subtasks: null }],
-        items: [],
+        questions: ['s/q'],
+        loading: false,
       })
-      expect(call).toHaveBeenCalledWith('kanban::ticket::list', {
-        parent_id: card.key,
+      await act(() => root.render(<Probe scope="p2" />))
+      await settle()
+      expect(JSON.parse(container.textContent ?? '{}')).toEqual({
+        questions: [],
+        loading: true,
       })
     } finally {
-      act(() => root.unmount())
+      await act(() => root.unmount())
     }
   })
 
@@ -191,6 +365,7 @@ describe('useTowerData live lifecycle', () => {
       if (functionId === 'configuration::get') return { value: {} }
       if (functionId === 'harness::ask::list') return { entries: [] }
       if (functionId === 'approval::list-pending') return { pending: [] }
+      if (functionId === 'kanban::question::list') return { questions: [] }
       if (functionId === 'github::pr::list') return { value: [] }
       throw new Error(`unexpected ${functionId}`)
     })
@@ -310,6 +485,7 @@ describe('useTowerData live lifecycle', () => {
       if (functionId === 'configuration::get') return { value: {} }
       if (functionId === 'harness::ask::list') return { entries: [] }
       if (functionId === 'approval::list-pending') return { pending: [] }
+      if (functionId === 'kanban::question::list') return { questions: [] }
       throw new Error(functionId)
     })
     const iii = {

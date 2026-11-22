@@ -1,7 +1,9 @@
-import type { TowerData } from './data'
+import { mergeTowerQuestions, type TowerData } from './data'
 import {
+  type AskEntry,
   type NeedsYouItem,
   sortNeeds,
+  type TowerRelease,
   type TowerRun,
   type TowerTicket,
 } from './model'
@@ -48,12 +50,101 @@ const tasks = [
 ]
 r1.pills = [{ icon: 'check', text: 'validating · round 23/30' }]
 r1.open_questions = 2
+const asks: AskEntry[] = [
+  {
+    session_id: 'dispatch-r1',
+    question_id: 'security',
+    turn_id: 'turn-22',
+    asked_by: 'deepwork',
+    questions: [
+      {
+        header: 'Builds',
+        question: 'What may the assistant’s build machine run and keep?',
+        options: [
+          {
+            label: 'Isolate builds, keep the keys off that machine',
+            description:
+              'Builds run in a sandbox and the machine holds no AI key. About 40 s more per build.',
+            recommended: true,
+          },
+          {
+            label: 'Keep the keys, allow-list the network',
+            description: 'Builds still reach the key, but only listed hosts.',
+          },
+          {
+            label: 'Same machine, as today',
+            description: 'No change; R2 accepts the risk.',
+          },
+        ],
+      },
+    ],
+    about: {
+      class: 'security',
+      ticket: security.key,
+      why: 'R2 starts here. Today the build runs third-party code on the machine that holds the team’s AI key and GitHub access.',
+      blocks: ['KAN-598', 'KAN-632', 'KAN-635'],
+    },
+    asked_at: ago(120),
+    state: 'open',
+    on_expiry: 'block',
+  },
+  {
+    session_id: 'dispatch-r1',
+    question_id: 'verify',
+    turn_id: 'turn-23',
+    asked_by: 'deepwork',
+    questions: [
+      {
+        header: 'Verify',
+        question: 'Verify timed out twice in round 23',
+        options: [
+          { label: 'Retry only the unfinished checks', recommended: true },
+          { label: 'Run all checks again' },
+        ],
+      },
+    ],
+    about: {
+      class: 'run_health',
+      ticket: r1.key,
+      why: 'Retry only the checks that did not finish.',
+      blocks: ['KAN-618'],
+    },
+    asked_at: ago(18),
+    state: 'expired',
+    on_expiry: 'block',
+    expires_in_min: 15,
+    expires_at: ago(3),
+  },
+  {
+    session_id: 'import-tool',
+    question_id: 'csv',
+    turn_id: 'turn-1',
+    asked_by: 'default',
+    questions: [
+      {
+        header: 'CSV',
+        question:
+          'Should the import tool also accept semicolon-separated files?',
+        options: [
+          { label: 'Keep commas only' },
+          { label: 'Accept semicolons too' },
+        ],
+      },
+    ],
+    about: { class: 'scope', blocks: [] },
+    asked_at: ago(9),
+    state: 'open',
+    on_expiry: 'block',
+  },
+]
 const items: NeedsYouItem[] = sortNeeds([
   {
     kind: 'question',
     id: 'security',
     sessionId: 'dispatch-r1',
     questionId: 'security',
+    entry: asks[0],
+    currentTurnId: 'turn-23',
     questionClass: 'security',
     title: 'What may the assistant’s build machine run and keep?',
     question: 'What may the assistant’s build machine run and keep?',
@@ -69,6 +160,7 @@ const items: NeedsYouItem[] = sortNeeds([
     id: 'verify',
     sessionId: 'dispatch-r1',
     questionId: 'verify',
+    entry: asks[1],
     questionClass: 'run_health',
     title: 'Verify timed out twice in round 23',
     question: 'Verify timed out twice in round 23',
@@ -107,6 +199,7 @@ const items: NeedsYouItem[] = sortNeeds([
     id: 'csv',
     sessionId: 'import-tool',
     questionId: 'csv',
+    entry: asks[2],
     questionClass: 'scope',
     title: 'Should the import tool also accept semicolon-separated files?',
     question: 'Should the import tool also accept semicolon-separated files?',
@@ -201,6 +294,59 @@ const run = (
   profile: linked ? 'deepwork' : 'default',
   startedBy: linked ? 'board dispatch' : 'chat',
 })
+const releases: TowerRelease[] = [
+  {
+    id: 'nov',
+    name: 'Workers · Nov wave',
+    status: 'released',
+    total: 9,
+    done: 9,
+    open_questions: 0,
+    counts: {},
+    projects: [],
+  },
+  {
+    id: 'r1',
+    name: 'Assistente · R1',
+    status: 'active',
+    total: 14,
+    done: 11,
+    open_questions: 2,
+    counts: {},
+    projects: [],
+  },
+  {
+    id: 'r11',
+    name: 'Assistente · R1.1',
+    status: 'active',
+    total: 16,
+    done: 15,
+    open_questions: 1,
+    counts: {},
+    projects: [],
+  },
+  {
+    id: 'r12',
+    name: 'Assistente · R1.2',
+    status: 'active',
+    total: 10,
+    done: 7,
+    open_questions: 0,
+    counts: {},
+    projects: [],
+  },
+  {
+    id: 'r2',
+    name: 'Assistente · R2',
+    status: 'planned',
+    target_at: iso(-1440),
+    total: 6,
+    done: 0,
+    open_questions: 1,
+    counts: {},
+    projects: [],
+  },
+]
 export const towerFixture: TowerData = {
   projects: [
     {
@@ -248,59 +394,8 @@ export const towerFixture: TowerData = {
     idPrefix: 'KAN',
   },
   tickets: [r1, flaky, search, security, ...tasks],
-  releases: [
-    {
-      id: 'nov',
-      name: 'Workers · Nov wave',
-      status: 'released',
-      total: 9,
-      done: 9,
-      open_questions: 0,
-      counts: {},
-      projects: [],
-    },
-    {
-      id: 'r1',
-      name: 'Assistente · R1',
-      status: 'active',
-      total: 14,
-      done: 11,
-      open_questions: 2,
-      counts: {},
-      projects: [],
-    },
-    {
-      id: 'r11',
-      name: 'Assistente · R1.1',
-      status: 'active',
-      total: 16,
-      done: 15,
-      open_questions: 1,
-      counts: {},
-      projects: [],
-    },
-    {
-      id: 'r12',
-      name: 'Assistente · R1.2',
-      status: 'active',
-      total: 10,
-      done: 7,
-      open_questions: 0,
-      counts: {},
-      projects: [],
-    },
-    {
-      id: 'r2',
-      name: 'Assistente · R2',
-      status: 'planned',
-      target_at: iso(-1440),
-      total: 6,
-      done: 0,
-      open_questions: 1,
-      counts: {},
-      projects: [],
-    },
-  ],
+  releases,
+  releaseCatalog: releases,
   runs: [
     run('dispatch-r1', 'deepwork: Assistente · R1', 'working', r1),
     run('dispatch-flaky', 'deepwork: flaky tests', 'stalled', flaky),
@@ -308,6 +403,71 @@ export const towerFixture: TowerData = {
     run('dispatch-search', search.title, 'done', search),
   ],
   items,
+  questions: [
+    ...mergeTowerQuestions(asks, []),
+    {
+      key: 'recorded-1',
+      sessionId: 'dispatch-r1',
+      questionId: 'recorded-1',
+      ticketId: security.id,
+      commentId: 'assumption-comment',
+      questions: [
+        {
+          header: 'Cache',
+          question: 'Cache artifacts between builds?',
+          options: [],
+        },
+      ],
+      about: {},
+      askedAt: ago(60),
+      state: 'recorded',
+      answerText: 'Keep the cache isolated per project.',
+      by: { channel: 'agent', user: 'deepwork' },
+      recordedBy: 'deepwork',
+      outcome: 'answered',
+      settledAt: ago(60),
+    },
+    {
+      key: 'decided-1',
+      sessionId: 'dispatch-r1',
+      questionId: 'decided-1',
+      ticketId: security.id,
+      questions: [
+        {
+          header: 'Network',
+          question: 'May builds reach the public network?',
+          options: [],
+        },
+      ],
+      about: {},
+      askedAt: ago(180),
+      state: 'answered',
+      answerText: 'Allow only the package mirrors.',
+      by: { channel: 'kanban', user: 'user' },
+      outcome: 'answered',
+      settledAt: ago(90),
+    },
+    {
+      key: 'gone-1',
+      sessionId: 'deleted',
+      questionId: 'gone-1',
+      ticketId: security.id,
+      questions: [
+        {
+          header: 'Archive',
+          question: 'Keep the previous artifact?',
+          options: [],
+        },
+      ],
+      about: {},
+      askedAt: ago(180),
+      state: 'answered',
+      answerText: 'Keep it.',
+      by: { channel: 'tower', user: 'user' },
+      outcome: 'not_delivered',
+      settledAt: ago(85),
+    },
+  ],
   prs: [
     {
       repo: 'iii-hq/iii-cloud',
@@ -352,7 +512,19 @@ export const towerFixture: TowerData = {
     },
   ],
   repositories: ['iii-hq/workers', 'iii-hq/iii-cloud'],
-  loading: { board: false, sessions: false, needsYou: false, prs: false },
-  errors: { board: null, sessions: null, needsYou: null, prs: null },
+  loading: {
+    board: false,
+    sessions: false,
+    needsYou: false,
+    questions: false,
+    prs: false,
+  },
+  errors: {
+    board: null,
+    sessions: null,
+    needsYou: null,
+    questions: null,
+    prs: null,
+  },
   refresh: () => {},
 }

@@ -8,8 +8,10 @@ import {
   fetchTowerAsks,
   fetchTowerBoard,
   fetchTowerHolds,
+  fetchTowerQuestions,
   fetchTowerRuns,
   isRootTurnEvent,
+  mergeTowerQuestions,
   progressFor,
 } from './data'
 import { towerFixture } from './fixtures'
@@ -172,45 +174,122 @@ describe('board projections', () => {
 })
 
 describe('needs-you catch-up', () => {
-  it('walks ask and approval cursors independently', async () => {
+  it('walks ask, approval and question cursors independently', async () => {
     const call = vi.fn(
       async (functionId: string, payload?: Record<string, unknown>) => {
         if (functionId === 'harness::ask::list') {
-          const state = payload?.state as string
           if (!payload?.cursor) {
             return {
-              entries: [{ session_id: state, question_id: `${state}-1` }],
-              cursor: `${state}-next`,
+              entries: [{ session_id: 's', question_id: 'ask-1' }],
+              cursor: 'ask-next',
             }
           }
-          return { entries: [{ session_id: state, question_id: `${state}-2` }] }
+          return { entries: [{ session_id: 's', question_id: 'ask-2' }] }
         }
         if (functionId === 'approval::list-pending') {
           return payload?.cursor
             ? { pending: [{ function_call_id: 'hold-2' }] }
             : { pending: [{ function_call_id: 'hold-1' }], next_cursor: 'next' }
         }
+        if (functionId === 'kanban::question::list') {
+          return payload?.cursor
+            ? { questions: [{ state: 'answered' }] }
+            : { questions: [{ state: 'recorded' }], cursor: 'question-next' }
+        }
         throw new Error(functionId)
       },
     ) as IiiClient['call']
 
-    const [asks, holds] = await Promise.all([
+    const [asks, holds, questions] = await Promise.all([
       fetchTowerAsks(client(call)),
       fetchTowerHolds(client(call)),
+      fetchTowerQuestions(client(call), 'project-1'),
     ])
-    expect(asks.map((entry) => entry.question_id)).toEqual([
-      'open-1',
-      'open-2',
-      'expired-1',
-      'expired-2',
-    ])
+    expect(asks.map((entry) => entry.question_id)).toEqual(['ask-1', 'ask-2'])
     expect(holds.map((entry) => entry.function_call_id)).toEqual([
       'hold-1',
       'hold-2',
     ])
+    expect(questions.map((entry) => entry.state)).toEqual([
+      'recorded',
+      'answered',
+    ])
     expect(call).toHaveBeenCalledWith('approval::list-pending', {
       limit: 200,
       cursor: 'next',
+    })
+    expect(call).toHaveBeenCalledWith('kanban::question::list', {
+      limit: 500,
+      project: 'project-1',
+      cursor: 'question-next',
+    })
+  })
+
+  it('merges by session and question with the harness lifecycle authoritative', () => {
+    const board = {
+      comment: {
+        id: 'comment-1',
+        ticket_id: 'KAN-1',
+        body: 'Question',
+        author: 'backend-engineer',
+        created_at: '2026-11-22T10:00:00Z',
+        question: {
+          session_id: 'session-1',
+          question_id: 'question-1',
+          questions: [
+            { header: 'Scope', question: 'Board copy?', options: [] },
+          ],
+          asked_at: 10,
+        },
+      },
+      state: 'answered' as const,
+      answer: {
+        id: 'answer-1',
+        ticket_id: 'KAN-1',
+        body: 'Keep it',
+        author: 'Ada',
+        created_at: '2026-11-22T11:00:00Z',
+        answer: {
+          answer_text: 'Keep it',
+          outcome: 'answered' as const,
+        },
+      },
+    }
+    const harness = {
+      session_id: 'session-1',
+      question_id: 'question-1',
+      turn_id: 'turn-1',
+      questions: [{ header: 'Scope', question: 'Harness copy?', options: [] }],
+      about: { ticket: 'KAN-2', class: 'scope' as const },
+      asked_at: 20,
+      on_expiry: 'block' as const,
+      state: 'answering' as const,
+    }
+
+    expect(mergeTowerQuestions([harness], [board])).toEqual([
+      expect.objectContaining({
+        key: 'session-1/question-1',
+        ticketId: 'KAN-2',
+        commentId: 'comment-1',
+        state: 'answering',
+        askedAt: 20,
+        harness,
+        board,
+      }),
+    ])
+    expect(mergeTowerQuestions([], [board])[0].settledAt).toBe(
+      Date.parse('2026-11-22T11:00:00Z'),
+    )
+  })
+
+  it('can reconcile one session through the shared ask fetcher', async () => {
+    const call = vi.fn(async () => ({ entries: [] })) as IiiClient['call']
+
+    await fetchTowerAsks(client(call), 'session-1')
+
+    expect(call).toHaveBeenCalledWith('harness::ask::list', {
+      session_id: 'session-1',
+      limit: 200,
     })
   })
 
