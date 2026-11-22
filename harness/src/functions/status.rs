@@ -51,6 +51,13 @@ pub struct StatusReport {
     /// still running.
     #[serde(default)]
     pub expects_wake: bool,
+    /// The session's latest turn carries a stop: cancelled, or flagged by
+    /// `harness::stop` while parked (`quiet_deadlines`). `expects_wake` stays
+    /// true then, because a delivery can still wake the session; this is the
+    /// extra fact. A client deciding whether a parked session is still live
+    /// must treat `completed && expects_wake && stopped` as stopped.
+    #[serde(default)]
+    pub stopped: bool,
     /// WHAT the session is parked on, when `expects_wake`: each armed wake's
     /// watch and deadline, so "parked 12m on state operation_meta/status —
     /// never written" is readable from the outside instead of the session
@@ -132,6 +139,7 @@ impl Serialize for StatusReport {
 
         report.serialize_entry("children", &self.children)?;
         report.serialize_entry("expects_wake", &self.expects_wake)?;
+        report.serialize_entry("stopped", &self.stopped)?;
 
         if verbose {
             serialize_non_empty(&mut report, "armed_wakes", &self.armed_wakes)?;
@@ -281,6 +289,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         stop_reason: record.stop_reason.clone(),
         failure: record.failure.clone(),
         expects_wake,
+        stopped: record.is_stopped(),
         armed_wakes,
         context,
     }))
@@ -304,6 +313,7 @@ mod tests {
             "step": 4,
             "turn_count": 3,
             "expects_wake": false,
+            "stopped": false,
             "result_error": null,
             "children": [{
                 "function_call_id": "call_child",
@@ -349,6 +359,7 @@ mod tests {
                 "session_id",
                 "status",
                 "step",
+                "stopped",
                 "turn_count",
                 "turn_id",
             ])
@@ -447,6 +458,7 @@ mod tests {
                 "turn_id": "t_child"
             }],
             "expects_wake": true,
+            "stopped": false,
             "armed_wakes": [{
                 "observer_id": "sub_1",
                 "function_id": "state::on-changed",
@@ -493,6 +505,7 @@ mod tests {
             "pending_function_calls": [],
             "children": [],
             "expects_wake": false,
+            "stopped": false,
             "armed_wakes": [],
             "queued": []
         });

@@ -2038,6 +2038,64 @@ async fn status_expects_a_wake_on_a_finished_turn_that_continues() {
     assert_eq!(expects, [true, false], "no binding is stored");
 }
 
+/// A quiet stop on a parked session shows in `harness::status`, while
+/// `expects_wake` stays up: a delivery can still wake it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_reports_a_quietly_stopped_parked_session() {
+    let (reports, _, _) =
+        run_on_fake_engine(json!({}), json!([]), None, json!({}), |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = TurnStatus::Completed;
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let wake: crate::bindings::Binding = serde_json::from_value(json!({
+                "id": "sub_1",
+                "source": {"function_id": "state::on-changed"},
+                "owner": {"session_id": "s"},
+                "target": {"function_id": crate::functions::SEND_ID},
+                "lifecycle": {"once": true},
+                "created_at": 0
+            }))
+            .unwrap();
+            crate::state::state_set(
+                &deps.iii,
+                crate::state::BINDING_SCOPE,
+                &wake.id,
+                serde_json::to_value(&wake).unwrap(),
+                cfg.session_timeout_ms,
+            )
+            .await
+            .unwrap();
+            let mut reports = Vec::new();
+            for stop in [false, true] {
+                if stop {
+                    let req = crate::functions::stop::StopRequest {
+                        session_id: "s".into(),
+                        turn_id: None,
+                        quiet_deadlines: true,
+                    };
+                    crate::functions::stop::stop_one(&deps, req).await.unwrap();
+                }
+                let req = crate::functions::status::StatusRequest {
+                    session_id: "s".into(),
+                    verbose: false,
+                };
+                let report = crate::functions::status::handle(&deps, req).await;
+                let report = report.unwrap().unwrap();
+                reports.push((report.expects_wake, report.stopped));
+            }
+            reports
+        })
+        .await;
+    assert_eq!(reports, [(true, false), (true, true)]);
+}
+
 /// The ide's post_call answer after a `git worktree add`: move the session to
 /// `root`.
 fn moves_to(root: &str) -> Value {

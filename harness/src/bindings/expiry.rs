@@ -39,7 +39,6 @@ use crate::deps::Deps;
 use crate::subscriptions::fired;
 use crate::timer::OneShots;
 use crate::types::message::AgentMessage;
-use crate::types::turn::TurnStatus;
 
 /// Store reads at a deadline that fail, and spent records left to an
 /// in-flight delivery, are rechecked this many times, on a doubling backoff
@@ -393,7 +392,7 @@ async fn stopped_turn(deps: &Deps, session_id: &str) -> Option<String> {
     record
         .ok()
         .flatten()
-        .filter(|record| record.status == TurnStatus::Cancelled || record.abort)
+        .filter(|record| record.is_stopped())
         .map(|record| record.turn_id)
 }
 
