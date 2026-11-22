@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { requestPanelOpen, requestScreenOpen } from '@/lib/panel-context'
 import { TowerScreen } from '.'
-import { towerFixture } from './fixtures'
+import { towerFixture, towerSummaryFixture } from './fixtures'
+import type { TowerSummary } from './summary'
 
 vi.mock('@/lib/panel-context', () => ({
   requestPanelOpen: vi.fn(),
@@ -44,8 +45,138 @@ async function click(label: string) {
   expect(button, label).toBeDefined()
   await act(() => button?.click())
 }
+function writer(result: TowerSummary = towerSummaryFixture) {
+  return {
+    result,
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+    now: Date.now(),
+  }
+}
 
 describe('Control tower views', () => {
+  it('renders fresh Summary, today’s Diary and live notes as plain text with resolved links and agent attribution', async () => {
+    const text = '<img src=x onerror=alert(1)> **Literal prose**'
+    const summary = writer({
+      ...towerSummaryFixture,
+      brief: {
+        ...towerSummaryFixture.brief,
+        text,
+        refs: [
+          'KAN-616',
+          'session:dispatch-r1',
+          'iii-hq/iii-cloud#451',
+          'KAN-99999',
+        ],
+      },
+      diary: [
+        ...towerSummaryFixture.diary,
+        {
+          at: new Date(Date.now() - 48 * 60 * 60_000).toISOString(),
+          text: 'Yesterday’s milestone',
+          refs: ['KAN-616'],
+        },
+      ],
+    })
+    await render({ summary })
+    expect(container.textContent).toContain(text)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).toContain(towerSummaryFixture.diary[0].text)
+    expect(container.textContent).not.toContain('Yesterday’s milestone')
+    expect(container.textContent).toContain(
+      'KAN-616 is running the verification checks.',
+    )
+    expect(container.textContent).toContain(
+      'Draft until KAN-616 finishes verification.',
+    )
+    expect(container.textContent).toContain('agent ·')
+    expect(container.textContent).not.toContain('KAN-99999')
+    const session = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        '.tower-summary-refs button',
+      ),
+    ].find((node) => node.textContent === 'session:dispatch-r1')
+    await act(() => session?.click())
+    expect(requestScreenOpen).toHaveBeenCalledWith({
+      screen: 'chat:dispatch-r1',
+      relativeTo: 'tower',
+    })
+    expect(
+      container.querySelector('.tower-summary-refs a')?.getAttribute('href'),
+    ).toBe(towerFixture.prs[0].url)
+  })
+
+  it('uses writer notes in Runs and falls back when they become stale or their live subject is removed', async () => {
+    const summary = writer()
+    await render({ summary, initialView: 'runs' })
+    expect(container.textContent).toContain(
+      'KAN-616 is running the verification checks.',
+    )
+    await render({
+      summary: writer({
+        ...towerSummaryFixture,
+        checked_at: new Date(Date.now() - 31 * 60_000).toISOString(),
+      }),
+      initialView: 'runs',
+    })
+    expect(container.textContent).not.toContain(
+      'KAN-616 is running the verification checks.',
+    )
+    expect(container.textContent).toContain('from the transcript')
+    expect(container.querySelector('.tower-freshness .bg-warn')).not.toBeNull()
+  })
+
+  it('replaces stale Overview prose with one-line Refresh states and live fallbacks', async () => {
+    const summary = writer({
+      ...towerSummaryFixture,
+      checked_at: new Date(Date.now() - 42 * 60_000).toISOString(),
+    })
+    await render({ summary })
+    expect(container.textContent).toContain('Summary 42 min ago')
+    expect(container.textContent).toContain('The summary is out of date')
+    expect(container.textContent).not.toContain(
+      towerSummaryFixture.brief.headline,
+    )
+    expect(container.textContent).not.toContain(
+      towerSummaryFixture.diary[0].text,
+    )
+    expect(container.textContent).toContain('from the transcript')
+    expect(container.textContent).toContain('from GitHub')
+    await click('Refresh')
+    expect(summary.refresh).toHaveBeenCalledOnce()
+  })
+
+  it('keeps an empty fresh Diary as a one-line state and refreshes facts and writer from the header', async () => {
+    const summary = writer({ ...towerSummaryFixture, diary: [] })
+    const refresh = vi.fn()
+    await render({ summary, data: { ...towerFixture, refresh } })
+    expect(container.textContent).toContain('No diary for this project yet')
+    await act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Refresh Control tower"]',
+        )
+        ?.click(),
+    )
+    expect(summary.refresh).toHaveBeenCalledOnce()
+    expect(refresh).toHaveBeenCalledOnce()
+  })
+
+  it('shows loading and unavailable one-line states while facts remain visible', async () => {
+    await render({ summary: { ...writer(), result: null, loading: true } })
+    expect(container.textContent).toContain('Writing the summary')
+    await render({
+      summary: {
+        ...writer(),
+        result: null,
+        error: 'tower-writer is not installed',
+      },
+    })
+    expect(container.textContent).toContain('The summary is unavailable')
+    expect(container.textContent).toContain('from the transcript')
+  })
+
   it('warns about summary freshness only after thirty minutes', async () => {
     await render({ summaryCheckedAt: Date.now() - 4 * 60_000 })
     expect(container.querySelector('.tower-freshness .bg-ok')).not.toBeNull()

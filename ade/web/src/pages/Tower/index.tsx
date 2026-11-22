@@ -40,6 +40,8 @@ import {
   QuestionLog,
   type TowerActions,
 } from './NeedsYou'
+import { resolveSummary, summaryIsFresh, type TowerSummary } from './summary'
+import { useTowerSummary } from './use-summary'
 import './tower.css'
 
 type TowerView = 'overview' | 'needs-you' | 'assumptions' | 'decided' | 'runs'
@@ -124,9 +126,11 @@ function ConnectedTower({
 }) {
   const [scope, setScope] = useState(ALL_PROJECTS)
   const data = useTowerData(iii, scope)
+  const summary = useTowerSummary(iii, scope, data)
   return (
     <TowerScreen
       data={data}
+      summary={summary}
       iii={iii}
       scope={scope}
       onScopeChange={setScope}
@@ -142,6 +146,7 @@ export interface TowerScreenProps {
   onRequestClose?: () => void
   initialView?: TowerView
   summaryCheckedAt?: number
+  summary?: ReturnType<typeof useTowerSummary>
   iii?: TowerActions
   user?: string
   initialSelectedId?: string
@@ -153,7 +158,8 @@ export function TowerScreen({
   onScopeChange,
   onRequestClose,
   initialView = 'overview',
-  summaryCheckedAt,
+  summaryCheckedAt: providedCheckedAt,
+  summary,
   iii,
   user = 'user',
   initialSelectedId,
@@ -193,6 +199,19 @@ export function TowerScreen({
     })),
   }
   const nowItems = data.items.filter((item) => needUrgency(item) === 'now')
+  const now = summary?.now ?? Date.now()
+  const summaryCheckedAt = summary?.result
+    ? Date.parse(summary.result.checked_at)
+    : providedCheckedAt
+  const freshSummary =
+    summary?.result &&
+    summaryIsFresh(Date.parse(summary.result.checked_at), now)
+      ? resolveSummary(summary.result, data)
+      : null
+  const refresh = () => {
+    data.refresh()
+    summary?.refresh()
+  }
   const openNeed = (item?: NeedsYouItem, askAbout = false) => {
     setSelectedId(item?.id ?? null)
     setAskAboutId(askAbout ? (item?.id ?? null) : null)
@@ -218,15 +237,15 @@ export function TowerScreen({
       <span className="tower-freshness">
         <StatusDot
           tone={
-            summaryCheckedAt
-              ? Date.now() - summaryCheckedAt > 30 * 60_000
+            summaryCheckedAt !== undefined
+              ? !summaryIsFresh(summaryCheckedAt, now)
                 ? 'warn'
                 : 'ok'
               : 'ghost'
           }
         />
-        {summaryCheckedAt
-          ? `Summary ${Math.floor((Date.now() - summaryCheckedAt) / 60_000)} min ago`
+        {summaryCheckedAt !== undefined
+          ? `Summary ${Math.max(0, Math.floor((now - summaryCheckedAt) / 60_000))} min ago`
           : 'Summary absent'}
       </span>
     </>
@@ -238,7 +257,7 @@ export function TowerScreen({
         title="Control tower"
         onClose={onRequestClose}
         actions={
-          <IconButton label="Refresh Control tower" onClick={data.refresh}>
+          <IconButton label="Refresh Control tower" onClick={refresh}>
             <RefreshCw className="size-4" />
           </IconButton>
         }
@@ -295,10 +314,19 @@ export function TowerScreen({
                 openNeed={openNeed}
                 openRuns={() => setView('runs')}
                 summaryCheckedAt={summaryCheckedAt}
+                summary={freshSummary}
+                summaryLoading={summary?.loading}
+                summaryError={summary?.error}
+                refreshSummary={summary?.refresh ?? data.refresh}
                 canAsk={!!iii}
               />
             ) : view === 'runs' ? (
-              <Runs data={data} scope={scope} openNeed={openNeed} />
+              <Runs
+                data={data}
+                scope={scope}
+                openNeed={openNeed}
+                summary={freshSummary}
+              />
             ) : (
               <>
                 <div className="tower-log-nav">
@@ -434,24 +462,92 @@ function SummarySlot({
   checkedAt,
   refresh,
   diary = false,
+  loading,
+  error,
 }: {
   checkedAt?: number
   refresh: () => void
   diary?: boolean
+  loading?: boolean
+  error?: string | null
 }) {
   return (
     <div className="flex items-center gap-3 flex-wrap">
-      <span className="tower-muted">
-        {checkedAt && Date.now() - checkedAt > 30 * 60_000
+      <span className="tower-muted" role="status" title={error ?? undefined}>
+        {checkedAt !== undefined && !summaryIsFresh(checkedAt)
           ? 'The summary is out of date. Counts and states below stay live.'
-          : diary
-            ? 'No diary for this project yet.'
-            : 'No summary for this project. Live facts are shown below.'}
+          : loading
+            ? 'Writing the summary. Live facts are shown below.'
+            : error
+              ? 'The summary is unavailable. Live facts are shown below.'
+              : diary
+                ? 'No diary for this project yet.'
+                : 'No summary for this project. Live facts are shown below.'}
       </span>
       <Button variant="ghost" size="sm" onClick={refresh}>
         Refresh
       </Button>
     </div>
+  )
+}
+
+function AgentSource({ checkedAt }: { checkedAt: string }) {
+  return <span className="tower-meta">agent · {formatRelative(checkedAt)}</span>
+}
+
+function SummaryRefs({ refs, data }: { refs: string[]; data: TowerData }) {
+  return (
+    <span className="tower-summary-refs">
+      {refs.map((ref) => {
+        const card = data.tickets.find((ticket) => ticket.key === ref)
+        if (card) return <CardLink key={ref} card={card} />
+        if (ref.startsWith('session:'))
+          return (
+            <button
+              key={ref}
+              type="button"
+              className="tower-link tower-meta"
+              onClick={() => openSession(ref.slice(8))}
+            >
+              {ref}
+            </button>
+          )
+        const pr = data.prs.find((pr) => `${pr.repo}#${pr.number}` === ref)
+        return pr ? (
+          <a
+            key={ref}
+            href={pr.url}
+            target="_blank"
+            rel="noreferrer"
+            className="tower-link tower-meta"
+          >
+            {ref}
+          </a>
+        ) : null
+      })}
+    </span>
+  )
+}
+
+function Doing({
+  run,
+  summary,
+}: {
+  run: TowerRun
+  summary: TowerSummary | null
+}) {
+  const note = summary?.now[`session:${run.session.session_id}`]
+  return (
+    <span className="tower-prose-line">
+      <span className="tower-one-line min-w-0">
+        {note?.text || run.lastAssistant || 'No assistant message yet.'}
+      </span>
+      {note && summary ? (
+        <AgentSource checkedAt={summary.checked_at} />
+      ) : (
+        <span className="tower-meta">from the transcript</span>
+      )}
+    </span>
   )
 }
 function NeedLabel({ item }: { item: NeedsYouItem }) {
@@ -559,6 +655,10 @@ function Overview({
   openNeed,
   openRuns,
   summaryCheckedAt,
+  summary,
+  summaryLoading,
+  summaryError,
+  refreshSummary,
   canAsk,
 }: {
   data: TowerData
@@ -568,6 +668,10 @@ function Overview({
   openNeed: (item?: NeedsYouItem, askAbout?: boolean) => void
   openRuns: () => void
   summaryCheckedAt?: number
+  summary: TowerSummary | null
+  summaryLoading?: boolean
+  summaryError?: string | null
+  refreshSummary: () => void
   canAsk: boolean
 }) {
   const waiting = data.runs.filter(
@@ -576,6 +680,13 @@ function Overview({
       (run.state === 'waiting' && runLabel(run) !== 'Waiting for wake'),
   ).length
   const active = data.releases.filter((release) => release.status === 'active')
+  const diary =
+    summary?.diary
+      .filter(
+        (entry) =>
+          new Date(entry.at).toDateString() === new Date().toDateString(),
+      )
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at)) ?? []
   const tiles = [
     {
       label: 'Needs you',
@@ -623,7 +734,23 @@ function Overview({
   return (
     <>
       <Eyebrow as="h2">Summary</Eyebrow>
-      <SummarySlot checkedAt={summaryCheckedAt} refresh={data.refresh} />
+      {summary?.brief.headline ? (
+        <div className="tower-summary">
+          <h3>{summary.brief.headline}</h3>
+          <p className="tower-muted">{summary.brief.text}</p>
+          <div className="tower-row-head">
+            <SummaryRefs refs={summary.brief.refs} data={data} />
+            <AgentSource checkedAt={summary.checked_at} />
+          </div>
+        </div>
+      ) : (
+        <SummarySlot
+          checkedAt={summaryCheckedAt}
+          refresh={refreshSummary}
+          loading={summaryLoading}
+          error={summaryError}
+        />
+      )}
       <div className="tower-tiles">
         {tiles.map((tile) => (
           <div key={tile.label} className="tower-tile">
@@ -736,11 +863,32 @@ function Overview({
           </Section>
           <Section title="Diary">
             <CardBody>
-              <SummarySlot
-                checkedAt={summaryCheckedAt}
-                refresh={data.refresh}
-                diary
-              />
+              {summary && diary.length ? (
+                diary.map((entry) => (
+                  <div
+                    key={`${entry.at}:${entry.text}`}
+                    className="tower-diary-line"
+                  >
+                    <time className="tower-meta" dateTime={entry.at}>
+                      {new Date(entry.at).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </time>
+                    <p>{entry.text}</p>
+                    <SummaryRefs refs={entry.refs} data={data} />
+                    <AgentSource checkedAt={summary.checked_at} />
+                  </div>
+                ))
+              ) : (
+                <SummarySlot
+                  checkedAt={summaryCheckedAt}
+                  refresh={refreshSummary}
+                  diary
+                  loading={summaryLoading}
+                  error={summaryError}
+                />
+              )}
             </CardBody>
           </Section>
         </div>
@@ -875,11 +1023,8 @@ function Overview({
                       {formatRelative(run.session.updated_at)}
                     </time>
                   </div>
-                  <p className="flex min-w-0 items-baseline gap-2 tower-muted mt-1">
-                    <span className="tower-one-line min-w-0">
-                      {run.lastAssistant || 'No assistant message yet.'}
-                    </span>
-                    <span className="tower-meta">from the transcript</span>
+                  <p className="tower-muted mt-1">
+                    <Doing run={run} summary={summary} />
                   </p>
                   {run.needsYou.length ? (
                     <button
@@ -906,7 +1051,7 @@ function Overview({
               </CardBody>
             )}
           </Section>
-          <PullRequests data={data} scope={scope} />
+          <PullRequests data={data} scope={scope} summary={summary} />
           <Board data={data} scope={scope} scopeLabel={scopeLabel} />
         </div>
       </div>
@@ -914,7 +1059,15 @@ function Overview({
   )
 }
 
-function PullRequests({ data, scope }: { data: TowerData; scope: string }) {
+function PullRequests({
+  data,
+  scope,
+  summary,
+}: {
+  data: TowerData
+  scope: string
+  summary: TowerSummary | null
+}) {
   return (
     <Section
       title="Pull requests"
@@ -983,11 +1136,16 @@ function PullRequests({ data, scope }: { data: TowerData; scope: string }) {
               <time className="tower-meta">{formatRelative(pr.createdAt)}</time>
             </div>
             <p className="tower-muted">
-              {pr.waitReason ??
+              {summary?.pr_waits[`${pr.repo}#${pr.number}`]?.text ??
+                pr.waitReason ??
                 (pr.checks === 'running'
                   ? 'Checks are still running'
                   : 'No pending wait reported')}{' '}
-              <span className="tower-meta">from GitHub</span>
+              {summary?.pr_waits[`${pr.repo}#${pr.number}`] ? (
+                <AgentSource checkedAt={summary.checked_at} />
+              ) : (
+                <span className="tower-meta">from GitHub</span>
+              )}
             </p>
           </div>
         ))
@@ -1105,10 +1263,12 @@ function Runs({
   data,
   scope,
   openNeed,
+  summary,
 }: {
   data: TowerData
   scope: string
   openNeed: (item?: NeedsYouItem) => void
+  summary: TowerSummary | null
 }) {
   if (data.loading.sessions || (scope !== ALL_PROJECTS && data.loading.board))
     return <TowerLoading runs />
@@ -1252,7 +1412,15 @@ function Runs({
                         >
                           {pr.repo}#{pr.number}
                         </a>
-                        <span className="tower-muted">{pr.waitReason}</span>
+                        <span className="tower-muted">
+                          {summary?.pr_waits[`${pr.repo}#${pr.number}`]?.text ??
+                            pr.waitReason}
+                        </span>
+                        {summary?.pr_waits[`${pr.repo}#${pr.number}`] ? (
+                          <AgentSource checkedAt={summary.checked_at} />
+                        ) : (
+                          <span className="tower-meta">from GitHub</span>
+                        )}
                         <PrState pr={pr} />
                       </div>
                     ))}
@@ -1287,10 +1455,7 @@ function Runs({
                   <div>
                     <Eyebrow as="dt">Doing</Eyebrow>
                     <dd>
-                      <span className="tower-one-line">
-                        {run.lastAssistant || 'No assistant message yet.'}
-                      </span>
-                      <span className="tower-meta">from the transcript</span>
+                      <Doing run={run} summary={summary} />
                     </dd>
                   </div>
                   <div>

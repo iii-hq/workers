@@ -7,10 +7,36 @@ import {
   type TowerRun,
   type TowerTicket,
 } from './model'
+import type { TowerSummary } from './summary'
 
 const now = Date.now()
 const ago = (minutes: number) => now - minutes * 60_000
 const iso = (minutes: number) => new Date(ago(minutes)).toISOString()
+
+export const towerSummaryFixture: TowerSummary = {
+  checked_at: iso(4),
+  unchanged: false,
+  brief: {
+    headline: 'Assistente R1 is verifying its last cards.',
+    text: 'KAN-616 is verifying its last cards; KAN-597 holds R2 on build isolation.',
+    refs: ['KAN-616', 'KAN-597', 'iii-hq/workers#1834'],
+  },
+  diary: [
+    { at: iso(18), text: 'KAN-635 verification passed.', refs: ['KAN-635'] },
+  ],
+  now: {
+    'session:dispatch-r1': {
+      text: 'KAN-616 is running the verification checks.',
+      refs: ['session:dispatch-r1', 'KAN-616'],
+    },
+  },
+  pr_waits: {
+    'iii-hq/iii-cloud#451': {
+      text: 'Draft until KAN-616 finishes verification.',
+      refs: ['iii-hq/iii-cloud#451', 'KAN-616'],
+    },
+  },
+}
 
 const card = (
   key: string,

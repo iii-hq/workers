@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { TowerScreen, type TowerScreenProps } from '.'
-import { towerFixture } from './fixtures'
+import { towerFixture, towerSummaryFixture } from './fixtures'
 import type { TowerActions } from './NeedsYou'
 
 const fixtureActions: TowerActions = {
@@ -50,6 +50,20 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 export const Overview: Story = {}
+export const FreshSummary: Story = {
+  args: {
+    summary: {
+      result: towerSummaryFixture,
+      loading: false,
+      error: null,
+      refresh: () => {},
+      now: Date.now(),
+    },
+  },
+}
+export const RunsWithSummary: Story = {
+  args: { ...FreshSummary.args, initialView: 'runs' },
+}
 export const Runs: Story = { args: { initialView: 'runs' } }
 export const NeedsYou: Story = { args: { initialView: 'needs-you' } }
 export const Loading: Story = {

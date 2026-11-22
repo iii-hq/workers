@@ -80,6 +80,35 @@
   color: var(--color-ink-faint);
   font-size: 12px;
 }
+.tower-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.tower-summary h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.tower-summary-refs,
+.tower-prose-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.tower-diary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+.tower-diary-line p {
+  flex: 1 1 160px;
+}
 .tower-meta {
   color: var(--color-ink-faint);
   font-family: var(--font-mono);
@@ -360,6 +389,7 @@
   background: var(--color-sidebar);
 }
 .tower-side-chat-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -377,6 +407,7 @@
 }
 .tower-side-chat-note,
 .tower-use-answer {
+  flex-shrink: 0;
   margin: 12px;
   padding: 10px 12px;
   border-radius: var(--radius-md);
@@ -389,9 +420,10 @@
   gap: 8px;
   flex-shrink: 0;
 }
-.tower-side-chat > .chat-shell {
+.tower-side-chat > .conversation-surface {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 .tower-decision {
   height: 100%;
