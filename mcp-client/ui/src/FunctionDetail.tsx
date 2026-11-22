@@ -13,6 +13,7 @@ import {
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { serverAccess } from './access'
+import { coded } from './AgentAccessView'
 import type { Api } from './api'
 import { type FunctionRow, functionName, metaLine } from './presentation'
 import { ResourcePicker } from './ResourcePicker'
@@ -47,7 +48,7 @@ function Description({ text }: { text: string }) {
   return (
     <>
       <p ref={ref} className="mcp-ui-detail-desc" data-open={open}>
-        {text}
+        {coded(text)}
       </p>
       {overflows ? (
         <Button variant="ghost" size="sm" className="mcp-ui-more" aria-expanded={open} onClick={() => setOpen(!open)}>

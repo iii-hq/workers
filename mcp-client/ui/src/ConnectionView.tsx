@@ -15,6 +15,7 @@ import {
 } from '@iii-dev/console-ui'
 import { Plus, X } from 'lucide-react'
 import { type ComponentType, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { coded } from './AgentAccessView'
 import type { Api } from './api'
 import {
   type Draft,
@@ -52,7 +53,7 @@ const jsonText = (draft: Draft) => JSON.stringify(hideLiterals(entryFromDraft(dr
 export const Lines = ({ lines }: { lines: string[] }) =>
   lines.map((line) => (
     <span key={line} className="mcp-ui-line">
-      {line}
+      {coded(line)}
     </span>
   ))
 

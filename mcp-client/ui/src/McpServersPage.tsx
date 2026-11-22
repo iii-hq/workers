@@ -22,7 +22,7 @@ import { copyText, errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, useCopyFlash, usePaneState, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { ChevronLeft, Copy, Download, FileJson, Plug, Plus, RefreshCw, X } from 'lucide-react'
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AgentAccessView } from './AgentAccessView'
+import { AgentAccessView, coded } from './AgentAccessView'
 import { serverAccess } from './access'
 import { createApi } from './api'
 import { ConnectionView, Lines, ReviewPanel } from './ConnectionView'
@@ -708,7 +708,7 @@ export function McpServersPage({
                               {server && !adding && server.error?.code === 'secret_not_shared' && panel ? (
                                 <StatusPanel
                                   variant="alert"
-                                  headline={panel.headline}
+                                  headline={coded(panel.headline)}
                                   detail={panel.next}
                                   action={
                                     <Button

@@ -75,7 +75,7 @@ export function ServerContents({
       {...currentRow(item?.kind === 'function' && item.functionId === row.functionId)}
       title={row.name}
       label={middleTruncate(row.name, row.chip ? 28 : 36)}
-      description={row.description || undefined}
+      description={row.description ? coded(row.description) : undefined}
       trailing={row.chip ? <Chip tone={row.chip === 'Writes' ? 'neutral' : 'warning'}>{row.chip}</Chip> : null}
       onClick={() => pick({ kind: 'function', functionId: row.functionId })}
     />
@@ -95,7 +95,7 @@ export function ServerContents({
         onKeyDown={onColumnKeys}
       >
         {panel ? (
-          <StatusPanel className="mcp-ui-panel" variant={panel.variant} headline={panel.headline} detail={panel.next} />
+          <StatusPanel className="mcp-ui-panel" variant={panel.variant} headline={coded(panel.headline)} detail={panel.next} />
         ) : null}
         {accessAlert ? <StatusPanel className="mcp-ui-panel" variant="alert" headline={coded(accessAlert)} /> : null}
         {pinned(

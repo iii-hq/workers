@@ -73,7 +73,7 @@ export function ServerList({
           </span>
           <span className={uiClasses.listItemContent}>
             <span className={uiClasses.listItemTitle}>{name}</span>
-            {description ? <span className={uiClasses.listItemDescription}>{description}</span> : null}
+            {description ? <span className={uiClasses.listItemDescription}>{coded(description)}</span> : null}
           </span>
           {count ? <span className={uiClasses.listItemMeta}>{count}</span> : null}
         </button>
