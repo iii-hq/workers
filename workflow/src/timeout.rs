@@ -5,6 +5,7 @@ pub enum TimeoutAction {
     StillWaiting,
     Refire { attempt: u32 },
     FailOut,
+    Settle,
 }
 
 /// A node's `(timeout_ms, retries)`: its own values, else the worker defaults.
@@ -40,6 +41,10 @@ pub fn timeout_action(
     let expired = now.saturating_sub(pending_at).max(0) as u64 >= timeout_ms;
     if !expired {
         return TimeoutAction::StillWaiting;
+    }
+    // An accepted result is the node's result: never refire or fail the node over it.
+    if cp.submitted {
+        return TimeoutAction::Settle;
     }
     if cp.retries < max_retries {
         TimeoutAction::Refire {
@@ -123,6 +128,22 @@ mod tests {
             timeout_action(&cp, 1_000, 1, 5_000),
             TimeoutAction::FailOut
         ));
+    }
+    #[test]
+    fn expired_submitted_node_settles() {
+        // Under the retry budget (a refire today) and at it (a fail-out today).
+        for retries in [0, 1] {
+            let mut cp = running_at(0, retries);
+            cp.submitted = true;
+            assert_eq!(timeout_action(&cp, 1_000, 1, 5_000), TimeoutAction::Settle);
+        }
+        // Before the deadline a submitted node still waits for its turn to end.
+        let mut cp = running_at(1_000, 0);
+        cp.submitted = true;
+        assert_eq!(
+            timeout_action(&cp, 10_000, 1, 5_000),
+            TimeoutAction::StillWaiting
+        );
     }
     #[test]
     fn only_running_nodes_are_considered() {
