@@ -126,8 +126,8 @@ pub fn description_field_text(language: Option<&ResponseLanguage>) -> String {
 }
 
 /// `text` without what is not the user's own prose: fenced code blocks,
-/// blockquotes, inline code, mentions, quotes, URLs and path- or
-/// identifier-like tokens.
+/// attached skill bodies, blockquotes, inline code, mentions, quotes, URLs
+/// and path- or identifier-like tokens.
 fn prose(text: &str) -> String {
     let mut kept = Vec::new();
     let mut fence: Option<&str> = None;
@@ -141,6 +141,13 @@ fn prose(text: &str) -> String {
         }
         if let Some(open) = ["```", "~~~"].into_iter().find(|f| trimmed.starts_with(f)) {
             fence = Some(open);
+            continue;
+        }
+        // A skill body the client attached is not the user's prose: skip it
+        // like a fence that closes on `</skill>`.
+        // shortcut: only the `<skill id="…">` envelope; add `<attached-file …>` here if an attachment ever pins the wrong language.
+        if trimmed.starts_with("<skill id=\"") {
+            fence = Some("</skill>");
             continue;
         }
         if !trimmed.starts_with('>') {
@@ -279,6 +286,38 @@ mod tests {
             None
         );
         assert_eq!(name("/home/sergio/Documents/workspaces/iii"), None);
+    }
+
+    #[test]
+    fn an_attached_skill_body_is_not_the_users_prose() {
+        // The console sends the prompt and each `/skill:<id>` body as separate
+        // text blocks of one user message.
+        let prompt =
+            "Crie um aplicativo para controlar minhas tarefas diárias, com um campo de notas.";
+        let body = "This skill is already loaded. Follow it directly; do not search for or \
+                    reload it.\n\nDesign every screen with a clear point of view and finish the \
+                    job without shortcuts.";
+        let skill = format!("<skill id=\"impeccable\">\n{body}\n</skill>");
+        // The body alone would pin English: only the envelope excludes it.
+        assert_eq!(name(body), Some("English".into()));
+        let message: AgentMessage = serde_json::from_value(json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": format!("{prompt} Usar /skill:impeccable") },
+                { "type": "text", "text": skill }
+            ],
+            "timestamp": 1
+        }))
+        .unwrap();
+        assert_eq!(detect(&message).map(|l| l.name), Some("Portuguese".into()));
+        // Prose after `</skill>` counts again.
+        assert_eq!(
+            name(&format!("{skill}\n{prompt}")),
+            Some("Portuguese".into())
+        );
+        // Only a skill invocation: nothing of the user's to detect.
+        assert_eq!(name(&format!("/skill:impeccable\n{skill}")), None);
+        assert_eq!(name(&skill), None);
     }
 
     #[test]
