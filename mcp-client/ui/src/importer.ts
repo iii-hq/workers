@@ -186,12 +186,13 @@ const labelOf = (path: string) => {
   return LABEL.get(path) ?? (top === 'args' ? `Argument ${Number(key) + 1}` : key)
 }
 /** The field a vault name is made of: the header or variable name, the flag before an argument, else the
- * last key (`TOKEN`, `CLIENT_SECRET`, `URL`). */
+ * last key (`TOKEN`, `CLIENT_SECRET`, `URL`). An argument after a secret flag is that flag's value, never a
+ * flag, even when it is shaped like one. */
 function fieldOf(path: string, args: unknown): string {
   const keys = keysOf(path)
   const last = keys[keys.length - 1]
   if (keys[0] !== 'args') return last
-  const flag = Array.isArray(args) ? str(args[Number(last) - 1]) : ''
+  const flag = Array.isArray(args) && !isSecretFlag(args[Number(last) - 2]) ? str(args[Number(last) - 1]) : ''
   return FLAG.test(flag) ? flag.replace(/^-+/, '') : `ARG_${Number(last) + 1}`
 }
 /** Whether a string carries a URL credential: userinfo, or a query parameter whose name looks like one.

@@ -462,6 +462,18 @@ describe('credentials in any field', () => {
     expect(fields(r)).toEqual(['auth.refresh_token'])
     expect(JSON.stringify(r)).not.toContain(other)
   })
+  it('never names a vault name after a secret that follows a secret flag', () => {
+    const token = '-tokenSentinel42'
+    const args = ['--api-key', token, 'postgres://' + 'u:' + FAKE + '@h/db']
+    const r = parseImport(JSON.stringify({ x: { command: 'srv', args } }), []).rows[0]
+    expect(r.secrets.map((s) => [s.path, s.vaultName])).toEqual([
+      ['/args/1', 'X_API_KEY'],
+      ['/args/2', 'X_ARG_3'],
+    ])
+    const { entry, toStore } = finalEntry(r, {})
+    const names = [...r.secrets.map((s) => s.vaultName), ...toStore.map((s) => s.name)]
+    for (const text of [...names, JSON.stringify(entry)]) expect(text.toLowerCase()).not.toContain('tokensentinel42')
+  })
   it('flags a --token=<value> argument to split, holding only the flag', () => {
     const r = parseImport(JSON.stringify({ x: { command: 'srv', args: [`--token=${FAKE}`] } }), []).rows[0]
     expect([r.status, r.skipReason, r.entry, r.target, r.notes, r.ignored, r.secrets, r.needs]).toEqual([
