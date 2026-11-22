@@ -10,6 +10,7 @@ import {
   StatusPanel,
 } from '@iii-dev/console-ui'
 import { type ReactNode, useState } from 'react'
+import { coded } from './AgentAccessView'
 import { currentRow, onColumnKeys } from './columns'
 import {
   connectionRowText,
@@ -96,7 +97,7 @@ export function ServerContents({
         {panel ? (
           <StatusPanel className="mcp-ui-panel" variant={panel.variant} headline={panel.headline} detail={panel.next} />
         ) : null}
-        {accessAlert ? <StatusPanel className="mcp-ui-panel" variant="alert" headline={accessAlert} /> : null}
+        {accessAlert ? <StatusPanel className="mcp-ui-panel" variant="alert" headline={coded(accessAlert)} /> : null}
         {pinned(
           'connection',
           'Connection',

@@ -24,6 +24,18 @@ import {
 } from './presentation'
 import type { Server } from './types'
 
+/** The spec's copy marks ids with backticks: they render as code, never as literal backticks. */
+export const coded = (text: string) =>
+  text.split('`').map((part, i) =>
+    i % 2 ? (
+      <code key={i} className="mcp-ui-inline-code">
+        {part}
+      </code>
+    ) : (
+      part
+    ),
+  )
+
 type Write = 'allow' | 'update' | 'remove'
 const LABEL: Record<Write, string> = { allow: 'Allow reads', update: 'Update rules', remove: 'Remove rules' }
 
@@ -78,7 +90,9 @@ export function AgentAccessView({
         <StatusPanel
           variant="warn"
           headline="No approval gate on this stack."
-          detail="Agents can call every function of this server, writes included, under the harness default allow `*`."
+          detail={coded(
+            'Agents can call every function of this server, writes included, under the harness default allow `*`.',
+          )}
         />
         <p className="mcp-ui-quiet-line">Install the approval-gate worker to hold writes for a person.</p>
         {readOnlyEndpoint(server.target) ? (
@@ -160,7 +174,7 @@ export function AgentAccessView({
         <StatusDot tone={status.tone} />
         {status.rowText}
       </p>
-      {alert ? <StatusPanel variant="alert" headline={alert} /> : null}
+      {alert ? <StatusPanel variant="alert" headline={coded(alert)} /> : null}
       {status.kind === 'unreadable' ? <StatusPanel variant="alert" headline={gate.error ?? status.rowText} /> : null}
       {lists ? (
         <MetaRow className="mcp-ui-facts">

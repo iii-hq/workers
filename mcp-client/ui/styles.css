@@ -1063,6 +1063,15 @@
   font-size: 12px;
   line-height: 18px;
 }
+[data-iii-ui="mcp-client"] .mcp-ui-inline-code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+/* Column 1 is too narrow for the orphan's sentence beside its button: the button goes below. */
+[data-iii-ui="mcp-client"] .mcp-ui-orphan {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
 [data-iii-ui="mcp-client"] .mcp-ui-ids code {
   color: var(--color-ink);
   font-family: var(--font-mono);

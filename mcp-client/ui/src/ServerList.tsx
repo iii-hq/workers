@@ -2,6 +2,7 @@ import { Button, List, ListItem, Skeleton, StatusDot, StatusPanel } from '@iii-d
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { Download, Plus } from 'lucide-react'
 import { Fragment, type ReactNode } from 'react'
+import { coded } from './AgentAccessView'
 import { currentRow, onColumnKeys } from './columns'
 import { byName, pageState, presentServer, type RowActionId, type Tone } from './presentation'
 import type { Selection } from './types'
@@ -87,9 +88,11 @@ export function ServerList({
         {orphans.map((orphan) => (
           <Fragment key={`:orphan:${orphan.server}`}>
             <StatusPanel
-              className="mcp-ui-panel"
+              className="mcp-ui-panel mcp-ui-orphan"
               variant="warn"
-              headline={`The approval gate still allows ${orphan.count} ${orphan.count === 1 ? 'function' : 'functions'} of \`${orphan.server}\`, which is not configured.`}
+              headline={coded(
+                `The approval gate still allows ${orphan.count} ${orphan.count === 1 ? 'function' : 'functions'} of \`${orphan.server}\`, which is not configured.`,
+              )}
               action={
                 <Button variant="secondary" size="sm" onClick={() => onRemoveOrphan(orphan.server)}>
                   Remove rules
