@@ -675,6 +675,7 @@ async fn a_send_into_a_failed_session_continues_it_with_the_same_identity() {
         name: None,
         icon: None,
         color: None,
+        follow_worktrees: None,
     });
     failed.options.functions = Some(FunctionPolicy {
         allow: vec!["shell::exec".into(), "workflow-result::submit".into()],

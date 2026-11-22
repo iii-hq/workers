@@ -3449,6 +3449,7 @@ mod tests {
                 name: Some("Tech Leader".into()),
                 icon: None,
                 color: None,
+                follow_worktrees: None,
             },
             prompt: "You are Tech Leader.\n\nDelegate everything.".into(),
             skills: vec!["review".into()],

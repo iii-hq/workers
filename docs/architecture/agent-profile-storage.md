@@ -54,7 +54,7 @@ system prompt — may be empty. Unknown frontmatter keys remain harmless, so fie
 consume do not prevent a profile from loading. The keys iii consumes are
 `name`, `description`, `logo`, `skills`, `functions`, `model`,
 `reasoning_effort`, `icon`, `color`, `extends`, `hidden`,
-`composer_placeholder` and `skills_index`.
+`composer_placeholder`, `skills_index` and `follow_worktrees`.
 
 ## Origins and kits
 

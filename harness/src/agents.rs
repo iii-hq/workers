@@ -70,6 +70,10 @@ struct AgentGetWire {
     /// directories omit the field (index on).
     #[serde(default)]
     skills_index: Option<bool>,
+    /// `false`: a worktree the session creates never moves it. Resolved
+    /// through `extends` by the directory; older directories omit it (follow).
+    #[serde(default)]
+    follow_worktrees: Option<bool>,
     /// Set by the directory when the profile's `extends` chain does not
     /// resolve; the served prompt is then the file's own body only.
     #[serde(default)]
@@ -709,6 +713,7 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
                     .as_str()
                     .map(str::to_string)
             }),
+            follow_worktrees: wire.follow_worktrees,
         },
         prompt: wire.system_prompt,
         skills: wire

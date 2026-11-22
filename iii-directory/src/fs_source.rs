@@ -456,6 +456,11 @@ pub struct FsAgent {
     /// `directory::skills::index` function). Inherits nearest-wins through
     /// `extends`; preloaded `skills` still render. `None` = the default (on).
     pub skills_index: Option<bool>,
+    /// `follow_worktrees: false`: a git worktree a session running as this
+    /// profile creates never moves its working directory (the harness skips
+    /// the move), for an orchestrator that adds worktrees for its sub-agents.
+    /// Inherits nearest-wins through `extends`. `None` = the default (follow).
+    pub follow_worktrees: Option<bool>,
     /// Preloaded function ids: engine functions whose contracts the harness pre-loads into the
     /// system prompt of every session running as this profile — verbatim
     /// engine function ids such as `coder::tree`. Empty = none.
@@ -531,6 +536,10 @@ pub struct AgentFrontmatter {
     /// [`FsAgent::skills_index`]).
     #[serde(default)]
     pub skills_index: Option<bool>,
+    /// `false` keeps sessions out of the worktrees they create (see
+    /// [`FsAgent::follow_worktrees`]).
+    #[serde(default)]
+    pub follow_worktrees: Option<bool>,
     /// Optional example request for the chat's empty composer (see
     /// [`FsAgent::composer_placeholder`]).
     #[serde(default)]
@@ -784,6 +793,7 @@ pub(crate) fn agent_from_frontmatter(
         logo: fm.logo.map(|l| l.trim().to_string()),
         skills: fm.skills,
         skills_index: fm.skills_index,
+        follow_worktrees: fm.follow_worktrees,
         functions: normalize_function_ids(fm.functions),
         model: trimmed(fm.model),
         reasoning_effort: trimmed(fm.reasoning_effort),

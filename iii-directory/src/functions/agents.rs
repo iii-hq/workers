@@ -201,6 +201,11 @@ pub struct AgentGetOutput {
     /// `extends`; omitted when no profile in the chain sets it (on).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skills_index: Option<bool>,
+    /// `false` = a worktree a session running as this profile creates never
+    /// moves it, resolved through `extends`; omitted when no profile in the
+    /// chain sets it (follow).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_worktrees: Option<bool>,
     /// Harness subagent icon token (closed set, validated at write
     /// time); `null` = caller picks.
     pub icon: Option<String>,
@@ -366,7 +371,8 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
              the harness pre-loads into the session prompt) plus `unknown_skills`, preloaded `functions` (engine \
              function ids the harness pre-loads into the session prompt) plus \
              `unknown_functions`, model, reasoning_effort, `skills_index` (false = sessions \
-             start without the skills index), and `inheritance_error` when \
+             start without the skills index), `follow_worktrees` (false = a worktree the \
+             session creates never moves it), and `inheritance_error` when \
              the chain does not resolve. Pass raw: true for the exact on-disk file to \
              edit with directory::agents::update.",
         ),
@@ -630,7 +636,7 @@ fn resolve_chain<'a>(
 }
 
 /// What a profile inherits through its `extends` chain. `model`,
-/// `reasoning_effort` and `skills_index` are single values: the nearest chain
+/// `reasoning_effort`, `skills_index` and `follow_worktrees` are single values: the nearest chain
 /// member that sets one wins. `skills` and `functions` are lists and inherit ADDITIVELY: the
 /// resolved list is the union of every list along the chain, root first and
 /// first occurrence kept, so a child extends what its parents allow / preload
@@ -643,6 +649,7 @@ struct Inherited {
     model: Option<String>,
     reasoning_effort: Option<String>,
     skills_index: Option<bool>,
+    follow_worktrees: Option<bool>,
 }
 
 fn inherit(chain: &[&FsAgent]) -> Inherited {
@@ -652,6 +659,7 @@ fn inherit(chain: &[&FsAgent]) -> Inherited {
         model: chain.iter().find_map(|a| a.model.clone()),
         reasoning_effort: chain.iter().find_map(|a| a.reasoning_effort.clone()),
         skills_index: chain.iter().find_map(|a| a.skills_index),
+        follow_worktrees: chain.iter().find_map(|a| a.follow_worktrees),
     }
 }
 
@@ -815,6 +823,7 @@ pub fn get_agent(
         model: inherited.model,
         reasoning_effort: inherited.reasoning_effort,
         skills_index: inherited.skills_index,
+        follow_worktrees: inherited.follow_worktrees,
         icon: agent.icon.clone(),
         color: agent.color.clone(),
         extends: agent.extends.clone(),
@@ -1373,6 +1382,49 @@ mod tests {
             !serde_json::to_string(&plain)
                 .unwrap()
                 .contains("skills_index")
+        );
+    }
+
+    /// `follow_worktrees` inherits like `skills_index`: nearest wins, and
+    /// `get` omits it when no profile in the chain sets it.
+    #[test]
+    fn follow_worktrees_inherits_nearest_and_is_omitted_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(
+            tmp.path(),
+            "agents/lead.md",
+            "---\nname: Lead\nfollow_worktrees: false\n---\nLead.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/sub.md",
+            "---\nname: Sub\nextends: lead\n---\nSub.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/plain.md",
+            "---\nname: Plain\n---\nPlain.\n",
+        );
+        let get = |id: &str| {
+            get_agent(
+                &cfg,
+                AgentGetInput {
+                    id: id.into(),
+                    raw: None,
+                },
+                &[],
+            )
+            .unwrap()
+        };
+        assert_eq!(get("lead").follow_worktrees, Some(false));
+        assert_eq!(get("sub").follow_worktrees, Some(false));
+        let plain = get("plain");
+        assert_eq!(plain.follow_worktrees, None);
+        assert!(
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("follow_worktrees")
         );
     }
 
