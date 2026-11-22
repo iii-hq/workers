@@ -124,7 +124,7 @@ Watch the run on the board, or open the run ticket's waves with `workflow::statu
 ## Limits
 
 - One `workflow` worker per namespace.
-- A node runs as its own session: a session's hard cost cap and its own `options.functions` don't reach the nodes. Every node gets `*` minus the kit's deny list (no board writes, no state writes, no sub-agents, no `workflow::*`), and no node deploys or points a command at production or real user data unless its card asks for it. Use `budget_usd` to bound a run.
+- A node runs as its own session: a session's hard cost cap and its own `options.functions` don't reach the nodes. Every node gets `*` minus the kit's deny list (no board writes, no state writes, no sub-agents, no `workflow::*`), and every node's profile forbids deploying or pointing a command at production or real user data unless its card asks for it. Use `budget_usd` to bound a run.
 - A node timeout kills that node only; the run reads it as a failed attempt.
 - A page check uses one tab of the browser worker at a time per node, and the worker keeps few tabs open (`max_sessions`, 4 by default): with more page checks than that running at once, a check may lose its tab and start over once. The card names the server's port, so two runs that check the same project at the same time collide; the second check answers `unsure`.
 - A run's end reaches the Workflow agent as a `workflow::on-run-completed` notification: a policy that narrows that session's `options.functions` must allow `harness::observe` and `workflow::on-run-completed`.
