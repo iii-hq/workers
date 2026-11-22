@@ -24,6 +24,7 @@ import {
   hideLiterals,
   readEntryEdit,
   secretVaultName,
+  unplacedErrors,
 } from './config-model'
 import { effectLine } from './effect-line'
 import { KeyValueRows, SecretValue } from './KeyValueRows'
@@ -351,7 +352,12 @@ export function ConnectionView({
         </SettingsList>
       ) : null}
       {draft.transport === 'http' && draft.authMode === 'oauth' ? (
-        <details className="mcp-ui-optional">
+        <details
+          className="mcp-ui-optional"
+          open={
+            Boolean(fe['auth/client_id'] || fe['auth/client_secret'] || fe['auth/client_metadata_url']) || undefined
+          }
+        >
           <summary>Pre-registered client</summary>
           <SettingsList>
             {text('auth/client_id', 'Client ID', oauth.client_id, (client_id) =>
@@ -386,6 +392,19 @@ export function ConnectionView({
     setJson((open) => (open ? { ...open, error: null } : open))
     onDiscard()
   }
+  // The errors no field shows, with their paths: a refused save is never silent.
+  const unplaced = unplacedErrors(fe, json ? 'json' : 'form')
+  const issues =
+    unplaced.length > 0 ? (
+      <ul className="mcp-ui-issues" role="alert">
+        {unplaced.map((issue) => (
+          <li key={issue.path}>
+            <code>{issue.path}</code>
+            <span>{issue.message}</span>
+          </li>
+        ))}
+      </ul>
+    ) : null
 
   return (
     <div className="mcp-ui-detail">
@@ -424,12 +443,23 @@ export function ConnectionView({
               aria-label="Entry as JSON"
             />
             {json.error ? <p className="mcp-ui-input-error">{json.error}</p> : null}
+            {issues}
           </>
         ) : (
-          form
+          <>
+            {issues}
+            {form}
+          </>
         )}
       </section>
-      {dirty || saving ? <SaveBar onSave={onSave} onDiscard={discard} saving={saving} blocked={blocked} /> : null}
+      {dirty || saving ? (
+        <SaveBar
+          onSave={onSave}
+          onDiscard={discard}
+          saving={saving}
+          blocked={json?.error ? 'Fix the JSON first' : blocked}
+        />
+      ) : null}
       {server?.protocol_version ? (
         <MetaRow
           className="mcp-ui-facts"

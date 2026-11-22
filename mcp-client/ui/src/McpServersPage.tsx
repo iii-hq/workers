@@ -278,6 +278,9 @@ export function McpServersPage({
         data.refresh()
         announce(`${name} saved`)
       }
+      const n = result.errors.length
+      if (!result.saved && n > 0)
+        announce(`${name} was not saved: ${n} ${n === 1 ? 'field needs' : 'fields need'} attention`)
       if (!stillHere()) return
       setErrors(result.errors)
       if (!result.saved) return

@@ -22,6 +22,7 @@ import {
   renameRow,
   sameJson,
   secretVaultName,
+  unplacedErrors,
 } from '../src/config-model'
 import spec from './fixtures/spec-config.json'
 
@@ -366,6 +367,20 @@ describe('helpers', () => {
         'search',
       ),
     ).toEqual({ 'headers/X-API-Key': 'm1', 'auth/token': 'm2', '': 'm3' })
+  })
+
+  it('unplacedErrors lists what no field shows: all but the entry itself in JSON, the fieldless paths in the form', () => {
+    const fe = { '': 'entry', url: 'must be https', 'auth/token': 'a reference', disabled: 'a boolean', 'env/A': 'x' }
+    expect(unplacedErrors(fe, 'json')).toEqual([
+      { path: 'url', message: 'must be https' },
+      { path: 'auth/token', message: 'a reference' },
+      { path: 'disabled', message: 'a boolean' },
+      { path: 'env/A', message: 'x' },
+    ])
+    expect(unplacedErrors(fe, 'form')).toEqual([{ path: 'disabled', message: 'a boolean' }])
+    expect(unplacedErrors({ 'auth/type': 'unknown', 'headers/X-Key': 'y', args: 'z' }, 'form')).toEqual([
+      { path: 'auth/type', message: 'unknown' },
+    ])
   })
 
   it('draftDirty compares with the stored entry, or with an empty draft while adding', () => {

@@ -358,3 +358,32 @@ export function fieldErrors(errors: Issue[], server: string): Record<string, str
   }
   return out
 }
+
+/** The paths the Connection form shows an error at: each field it renders, and each header, env or argument row. */
+const FORM_FIELDS = new Set([
+  'name',
+  'type',
+  'url',
+  'headers',
+  'command',
+  'args',
+  'env',
+  'cwd',
+  'auth',
+  'auth/token',
+  'auth/token_url',
+  'auth/client_id',
+  'auth/client_secret',
+  'auth/scope',
+  'auth/scopes',
+  'auth/client_metadata_url',
+])
+const FORM_ROWS = /^(headers|env|args)\//
+
+/** The errors of `fieldErrors` no field shows, to list with their paths: in JSON mode every one but the entry's
+ * own (`''`), in form mode those whose path has no field there. */
+export function unplacedErrors(fe: Record<string, string>, mode: 'form' | 'json'): { path: string; message: string }[] {
+  return Object.entries(fe)
+    .filter(([path]) => path !== '' && (mode === 'json' || !(FORM_FIELDS.has(path) || FORM_ROWS.test(path))))
+    .map(([path, message]) => ({ path, message }))
+}
