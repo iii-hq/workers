@@ -563,3 +563,53 @@ describe('credentials in any field', () => {
     }
   })
 })
+
+describe('the literal never leaves secrets', () => {
+  // Every leak shape probed in review, in each position a string is read from; `FAKE` is the sentinel.
+  const pg = (host: string) => 'postgres://' + 'u:' + FAKE + '@' + host
+  const positions: Record<string, (value: string) => Record<string, unknown>> = {
+    env: (value) => ({ command: 'srv', env: { DATABASE_URL: value } }),
+    header: (value) => ({ url: 'https://h.example.com/mcp', headers: { 'X-Upstream': value } }),
+    url: (value) => ({ url: value }),
+    arg: (value) => ({ command: 'srv', args: ['run', value] }),
+  }
+  const anywhere = [
+    pg('localhost/db'),
+    `https://h.example.com/mcp?api_key=${FAKE}`,
+    pg('${DB_HOST}/x'),
+    '${BASE}/mcp?api_key=' + FAKE,
+    '${DB_URL:-' + pg('localhost/db') + '}',
+    '${X:-' + pg('h') + '}/path',
+    '${A}${B:-' + pg('h') + '}',
+    '${' + pg('h'),
+    '${A:-${B}}' + pg('h'),
+    '${A:-' + pg('${H}') + '}',
+    '${A:-postgres://' + 'u:' + FAKE + '${P}@h}',
+    '${A:-postgres://' + 'u:' + FAKE + '${P}@h}/x',
+    '${X-' + pg('h/db') + '}',
+    '${X:=' + pg('h/db') + '}',
+    '${A}${X-https://h.example.com/mcp?token=' + FAKE + '}',
+    '${SCHEME}://' + 'u:' + FAKE + '@h/db',
+  ]
+  const argsOnly = [
+    `Authorization: Bearer ${FAKE}`,
+    `X-API-Key:${FAKE}`,
+    `--token=${FAKE}`,
+    '--token=' + FAKE + '${X}',
+    '--token=${X:-' + FAKE + '}',
+    '--api-key=${K:-' + FAKE + '}',
+    'Authorization: Bearer ${T:-' + FAKE + '}',
+    'Authorization:${H:-Bearer ' + FAKE + '}',
+  ]
+  const table: [string, string, Record<string, unknown>][] = [
+    ...anywhere.flatMap((value) =>
+      Object.entries(positions).map(([at, put]): [string, string, Record<string, unknown>] => [at, value, put(value)]),
+    ),
+    ...argsOnly.map((value): [string, string, Record<string, unknown>] => ['arg', value, positions.arg(value)]),
+  ]
+  it.each(table)('%s %s', (_at, _value, server) => {
+    const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
+    expect(JSON.stringify({ ...r, secrets: r.secrets.map((s) => ({ ...s, value: '' })) })).not.toContain(FAKE)
+    expect(JSON.stringify(finalEntry(r, {}).entry)).not.toContain(FAKE)
+  })
+})

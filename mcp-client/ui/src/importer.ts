@@ -120,11 +120,12 @@ const FLAG = /^--?[A-Za-z][\w-]*$/
 const ASSIGNED = /^(--?[A-Za-z][\w-]*)=(.+)$/
 /** An argument shaped as a header line: `Authorization: Bearer x`. */
 const HEADER_ARG = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):\s*(.+)$/
-/** Userinfo with a character other than `:`: `postgres://:@db` holds no credential. */
-const USERINFO = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#@\s]*[^/?#@\s:][^/?#@\s]*@/
+/** Userinfo with a character other than `:`, after any scheme or none (`${SCHEME}://` leaves `://`):
+ * `postgres://:@db` holds no credential. */
+const USERINFO = /:\/\/[^/?#@\s]*[^/?#@\s:][^/?#@\s]*@/
 const QUERY_NAME = /[?&]([^=&#\s]+)=/g
-const SEGMENT = /\$\{[^}]*\}/g
-const DEFAULT = /\$\{[^}]*?:-([^}]*)\}/g
+/** A plain reference, no operator and nothing nested: the only text a template may drop before it is read. */
+const PLAIN_REF = new RegExp(`\\$\\{(?:env:)?${VAR}\\}`, 'g')
 const BEARER = /^Bearer\s+(.+)$/i
 const ABSOLUTE = /^([A-Za-z]:[\\/]|\/)/
 const PACKAGES_NOTE = 'packages are not imported: add a stdio server by hand'
@@ -194,13 +195,12 @@ function secretArgValue(arg: string): string | undefined {
   const m = ASSIGNED.exec(arg) ?? HEADER_ARG.exec(arg)
   return m && looksSecretName(m[1].replace(/^-+/, '')) ? m[2].replace(/^Bearer\s+/i, '') : undefined
 }
-/** Whether a template keeps a literal credential: in the text outside every `${…}`, or in a `:-default` that
- * stays in the text (a whole `${VAR:-…}` drops its default instead). An argument also counts as one when
- * `--flag=` or `Name:` keeps a literal value outside the references. */
+/** Whether a template may hold a literal credential: everything left once its plain references are removed,
+ * defaults and operators read verbatim, carries one; or, for an argument, a secret-looking `--flag=` or
+ * `Name:` keeps a value. In doubt it says yes: a template masked for nothing costs less than a literal shown. */
 function literalCredential(value: string, arg: boolean): boolean {
-  const outside = value.replace(SEGMENT, '')
-  const defaults = [...value.matchAll(DEFAULT)].map((m) => m[1])
-  return [outside, ...defaults].some(holdsCredential) || (arg && (secretArgValue(outside) ?? '').trim() !== '')
+  const left = value.replace(PLAIN_REF, '')
+  return holdsCredential(left) || (arg && (secretArgValue(left) ?? '').trim() !== '')
 }
 /** `base`, or `base<sep>2`, `base<sep>3`… cut to `max`, while `taken` refuses the name. */
 function free(base: string, sep: string, max: number, taken: (name: string) => boolean): string {
@@ -326,8 +326,8 @@ function build(e: Json, server: string, inputs: Map<string, Json>, registry: boo
     if (REFERENCE.test(value)) return value
     const arg = path.startsWith('/args/')
     const template = value.includes('${')
-    // In a template only a literal left outside the references counts: a whole `${DB_URL:-<credential URL>}`
-    // is a reference (rule 4), and userinfo made only of references a need that shows its template (rule 5).
+    // In a template only the text left after its plain references counts: a whole `${DB_URL:-<credential URL>}`
+    // is a reference (rule 4), and userinfo made only of plain references a need that shows its template (rule 5).
     const credential = template ? literalCredential(value, arg) : holdsCredential(value)
     if (credential && template && !ENV_REF.test(value)) {
       // Asked for again whole: the credential around the reference is never shown.
