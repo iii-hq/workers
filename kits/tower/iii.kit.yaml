@@ -1,0 +1,14 @@
+iii: v1
+name: iii/tower
+version: 0.1.0
+iii_engine_version: ">=0.26.0"
+description: "Read-only prose for the ADE control tower: an incremental summary, milestone diary, session notes and PR wait reasons, each with references."
+license: Apache-2.0
+repo: https://github.com/iii-hq/workers/tree/main/kits/tower
+tags: [control-tower, summaries, kanban, github]
+workers:
+  harness: ">=1.10.0"
+  iii-directory: ">=1.3.9"
+  kanban: ">=0.2.6"
+  session-manager: ">=1.2.0"
+  github: ">=0.5.6"

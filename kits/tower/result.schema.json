@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tower writer result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checked_at", "unchanged", "brief", "diary", "now", "pr_waits"],
+  "properties": {
+    "checked_at": {"$ref": "#/definitions/timestamp"},
+    "unchanged": {"type": "boolean"},
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headline", "text", "refs"],
+      "properties": {
+        "headline": {"type": "string"},
+        "text": {"type": "string"},
+        "refs": {"$ref": "#/definitions/refs"}
+      },
+      "anyOf": [
+        {"properties": {"headline": {"minLength": 1}, "text": {"minLength": 1}, "refs": {"minItems": 1}}},
+        {"properties": {"headline": {"const": ""}, "text": {"const": ""}, "refs": {"maxItems": 0}}}
+      ]
+    },
+    "diary": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "text", "refs"],
+        "properties": {
+          "at": {"$ref": "#/definitions/timestamp"},
+          "text": {"type": "string", "minLength": 1},
+          "refs": {"allOf": [{"$ref": "#/definitions/refs"}], "minItems": 1}
+        }
+      }
+    },
+    "now": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {"^session:[^\\s]+$": {"$ref": "#/definitions/line"}}
+    },
+    "pr_waits": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$": {"$ref": "#/definitions/line"}}
+    }
+  },
+  "definitions": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^([A-Z][A-Z0-9]*-[0-9]+|session:[^\\s]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)$"
+      }
+    },
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "refs"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "refs": {"allOf": [{"$ref": "#/definitions/refs"}], "minItems": 1}
+      }
+    }
+  }
+}
