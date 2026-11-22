@@ -13,6 +13,7 @@ import {
   countLabel,
   drawsWhole,
   elapsedText,
+  entryError,
   filterRows,
   firstVariable,
   functionRows,
@@ -105,6 +106,13 @@ describe('presentServer', () => {
       'alert',
       false,
       'Config error · url is not a valid URL',
+      { id: 'fix', label: 'Fix' },
+    ],
+    [
+      server({ state: 'config_error', error: err('invalid_config', '/mcpServers/linear: set `url` or `command`, not both') }),
+      'alert',
+      false,
+      'Config error · set `url` or `command`, not both',
       { id: 'fix', label: 'Fix' },
     ],
     [
@@ -947,5 +955,22 @@ describe('accessLists', () => {
       toRemove: [],
       overridden: [],
     })
+  })
+})
+
+describe('entryError', () => {
+  it.each([
+    ['/mcpServers/linear: set `url` or `command`, not both', 'set `url` or `command`, not both'],
+    ['/mcpServers/linear/url: use `env://VAR` instead of `${VAR}`', 'url: use `env://VAR` instead of `${VAR}`'],
+    // another entry's pointer, or a name that only starts the same, is kept as written
+    ['/mcpServers/linear-app/url: bad', '/mcpServers/linear-app/url: bad'],
+    ['url is not a valid URL', 'url is not a valid URL'],
+  ])('%s', (message, shown) => {
+    expect(entryError('linear', message)).toBe(shown)
+  })
+
+  it('heads the panel without the pointer too', () => {
+    const s = server({ state: 'config_error', error: err('invalid_config', '/mcpServers/linear/url: bad') })
+    expect(presentServer(s, 0).panel?.headline).toBe('url: bad')
   })
 })

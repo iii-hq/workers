@@ -93,15 +93,30 @@ function exitText(server: Server, now: number): string {
   return `${text} · restarting in ${Math.max(0, Math.ceil((proc.next_restart_at - now) / 1000))} s`
 }
 
+/** A config error without the entry's own JSON pointer, which the worker puts first: the row and the
+ * view already name the server, so `/mcpServers/x/url: …` reads `url: …` and `/mcpServers/x: …` reads `…`. */
+export function entryError(name: string, message: string): string {
+  const own = `/mcpServers/${name}`
+  if (!message.startsWith(own)) return message
+  const rest = message.slice(own.length)
+  return rest.startsWith(': ') ? rest.slice(2) : rest.startsWith('/') ? rest.slice(1) : message
+}
+
 export function presentServer(server: Server, now: number): RowPresentation {
   const quiet = { pulse: false, action: null, panel: null }
   // The worker's own text heads the panel; `next` says what happens or what to do.
-  const alert = (description: string, id: RowActionId, label: string, next: string): RowPresentation => ({
+  const alert = (
+    description: string,
+    id: RowActionId,
+    label: string,
+    next: string,
+    headline = server.error?.message || description,
+  ): RowPresentation => ({
     dot: 'alert',
     pulse: false,
     description,
     action: { id, label },
-    panel: { variant: 'alert', headline: server.error?.message || description, next },
+    panel: { variant: 'alert', headline, next },
   })
   switch (server.state) {
     case 'ready':
@@ -144,12 +159,16 @@ export function presentServer(server: Server, now: number): RowPresentation {
           'Share that secret with mcp-client. The worker connects again by itself.',
         )
       }
-      return alert(
-        server.error?.message ? `Config error · ${server.error.message}` : 'Config error',
-        'fix',
-        'Fix',
-        'Fix the entry, then save it.',
-      )
+      {
+        const message = server.error?.message ? entryError(server.name, server.error.message) : ''
+        return alert(
+          message ? `Config error · ${message}` : 'Config error',
+          'fix',
+          'Fix',
+          'Fix the entry, then save it.',
+          message || 'Config error',
+        )
+      }
     case 'unavailable':
       // `servers::list` carries a next-retry time only for a stdio process.
       return server.transport === 'stdio'
