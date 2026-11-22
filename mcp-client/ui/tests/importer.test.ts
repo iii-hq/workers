@@ -355,7 +355,7 @@ describe('entries', () => {
       'packages are not imported: add a stdio server by hand',
     ])
   })
-  it('stores a URL that carries a credential whole', () => {
+  it('stores a URL that carries a credential whole, and refuses --flag=value', () => {
     const withUser = 'https://' + 'user:' + FAKE + '@mcp.example.com/mcp'
     const withQuery = `https://mcp.example.com/mcp?api_key=${FAKE}`
     for (const url of [withUser, withQuery]) {
@@ -366,6 +366,12 @@ describe('entries', () => {
     expect(
       parseImport(JSON.stringify({ x: { url: 'https://mcp.example.com/mcp?page=2' } }), []).rows[0].secrets,
     ).toEqual([])
+    const assigned = parseImport(JSON.stringify({ x: { command: 'srv', args: ['--api-key=' + FAKE] } }), []).rows[0]
+    expect([assigned.status, assigned.skipReason]).toEqual([
+      'skipped',
+      'Split `--api-key=…` into two arguments, then paste again',
+    ])
+    expect(JSON.stringify(assigned)).not.toContain(FAKE)
   })
   it.each(['<YOUR_API_KEY>', 'your-token', 'YOUR_KEY', 'xxx'])('%s is a missing value, not a secret', (value) => {
     const r = parseImport(JSON.stringify({ x: { command: 'srv', env: { API_KEY: value } } }), []).rows[0]
@@ -431,8 +437,19 @@ describe('credentials in any field', () => {
     const args = ['mcp-remote', 'https://h.example.com/mcp', '--header', header]
     storedWhole({ command: 'npx', args }, '/args/3', header)
   })
-  it('stores a --token=<value> argument whole', () => {
-    storedWhole({ command: 'srv', args: [`--token=${FAKE}`] }, '/args/0', `--token=${FAKE}`)
+  it('flags a --token=<value> argument to split, holding only the flag', () => {
+    const r = parseImport(JSON.stringify({ x: { command: 'srv', args: [`--token=${FAKE}`] } }), []).rows[0]
+    expect([r.status, r.skipReason, r.entry, r.target, r.notes, r.ignored, r.secrets, r.needs]).toEqual([
+      'skipped',
+      'Split `--token=…` into two arguments, then paste again',
+      {},
+      '',
+      [],
+      [],
+      [],
+      [],
+    ])
+    expect(JSON.stringify(r)).not.toContain(FAKE)
   })
   it('asks again for a credential URL around a ${…}, never showing its value', () => {
     const cases: [Record<string, unknown>, string][] = [

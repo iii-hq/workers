@@ -293,9 +293,16 @@ function ignoredOf(e: Json, inputs: Map<string, Json>, bearer: boolean): Ignored
 
 type Built = Pick<ImportRow, 'entry' | 'secrets' | 'needs' | 'ignored' | 'notes'>
 
-/** One entry rewritten for mcp-client (5.2) with its secrets and needs found (6.7). */
-function build(e: Json, server: string, inputs: Map<string, Json>, registry: boolean): Built {
+/** One entry rewritten for mcp-client (5.2) with its secrets and needs found (6.7), or why it is skipped. */
+function build(e: Json, server: string, inputs: Map<string, Json>, registry: boolean): Built | string {
   const args = Array.isArray(e.args) ? e.args.filter((arg): arg is string => typeof arg === 'string') : []
+  for (const arg of args) {
+    const m = ASSIGNED.exec(arg)
+    // A literal value: rules 1 to 6 of the table all read a reference, a `${`, or a placeholder.
+    if (m && isSecretFlag(m[1]) && !REFERENCE.test(m[2]) && !m[2].includes('${') && !PLACEHOLDER.test(m[2])) {
+      return `Split \`${m[1]}=…\` into two arguments, then paste again`
+    }
+  }
   const secrets: ImportSecret[] = []
   const needs: ImportNeed[] = []
   const notes: string[] = []
