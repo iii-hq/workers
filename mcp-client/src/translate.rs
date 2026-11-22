@@ -469,7 +469,7 @@ pub fn failure_text(server: &str, failure: &CallFailure) -> String {
         }
         CallFailure::NoSignIn => format!("{server} answered 401 and offers no sign-in"),
         CallFailure::LoginRequired => {
-            "sign-in required, an operator must sign in on the MCP servers page".to_string()
+            "sign-in required, an operator must sign in on the MCP client page".to_string()
         }
         CallFailure::Unavailable { state, for_secs } => {
             format!("`{server}` MCP unavailable (`{state}`), for {for_secs} s")
@@ -749,7 +749,7 @@ mod tests {
         );
         assert_eq!(
             t(LoginRequired),
-            "sign-in required, an operator must sign in on the MCP servers page"
+            "sign-in required, an operator must sign in on the MCP client page"
         );
         assert_eq!(
             t(Unavailable {

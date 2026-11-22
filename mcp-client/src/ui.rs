@@ -2,7 +2,7 @@
 //! workers/docs/sops/injectable-console-ui.md).
 //!
 //! Ships two assets into any running console: `mcp-client/page.js` (the
-//! MCP servers page) and `mcp-client/styles.css` (its stylesheet, every rule
+//! MCP client page) and `mcp-client/styles.css` (its stylesheet, every rule
 //! scoped under `[data-iii-ui="mcp-client"]`). The registration machinery
 //! lives in the shared `iii-console-ui` crate; this module only names the
 //! assets and embeds their bytes, built from `ui/` by `build.rs`.

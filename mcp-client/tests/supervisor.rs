@@ -260,7 +260,7 @@ async fn a_challenged_401_on_a_call_without_a_credential_needs_login() {
         .await;
     assert_eq!(
         host.call(ECHO, json!({})).await.unwrap_err(),
-        "sign-in required, an operator must sign in on the MCP servers page"
+        "sign-in required, an operator must sign in on the MCP client page"
     );
     let row = settle(&manager, State::NeedsLogin).await;
     assert_eq!(row["error"]["code"], "login_required", "{row}");

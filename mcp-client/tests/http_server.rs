@@ -416,7 +416,7 @@ async fn a_401_is_needs_login_without_auth_and_auth_failed_with_a_credential() {
     assert_eq!(auto["auth"], "oauth", "{auto}");
     assert_eq!(
         auto["error"],
-        json!({"code": "login_required", "message": "sign-in required, an operator must sign in on the MCP servers page"})
+        json!({"code": "login_required", "message": "sign-in required, an operator must sign in on the MCP client page"})
     );
     let rejected = json!({"code": "credential_rejected", "message": "credential rejected, an operator must fix `secret://MOCK_KEY`"});
     let keyed = settle(&manager, "keyed", State::AuthFailed).await;

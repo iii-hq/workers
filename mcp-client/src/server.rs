@@ -787,7 +787,7 @@ struct Info {
     list_errors: ListErrors,
 }
 
-const UNAPPROVED: &str = "this entry is not the one an operator approved: review it on the MCP servers page, or call mcp-client::servers::approve";
+const UNAPPROVED: &str = "this entry is not the one an operator approved: review it on the MCP client page, or call mcp-client::servers::approve";
 
 /// An entry as configured and as checked.
 struct Spec {

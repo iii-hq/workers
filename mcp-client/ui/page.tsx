@@ -11,7 +11,7 @@ import { McpServersPage } from './src/McpServersPage'
 export default function setup(host: Host) {
   host.pages.register({
     id: 'mcp-client-servers',
-    title: 'MCP servers',
+    title: 'MCP client',
     render: (props) => <McpServersPage host={host} {...props} />,
   })
 }

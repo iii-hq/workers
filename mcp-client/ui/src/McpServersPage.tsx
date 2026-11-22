@@ -71,7 +71,7 @@ const CONFIG_DOWN = 'The configuration worker cannot be reached'
 /** Per-tab handler id of the approval-gate re-read. */
 const GATE_FN = 'iii::mcp-client-ui::gate'
 
-/** The MCP servers page: the path row over servers, their contents and one thing in depth. */
+/** The MCP client page: the path row over servers, their contents and one thing in depth. */
 export function McpServersPage({
   host,
   panelSide,
@@ -520,7 +520,7 @@ export function McpServersPage({
       <PageShell>
         <PageHeader
           icon={<Plug size={16} />}
-          title="MCP servers"
+          title="MCP client"
           description="Tools from MCP servers, registered as iii functions"
           actions={
             <>
@@ -653,7 +653,7 @@ export function McpServersPage({
                         </>
                       ) : (
                         <>
-                          {back('servers', 'MCP servers')}
+                          {back('servers', 'MCP client')}
                           {adding ? (
                             <List
                               role="group"

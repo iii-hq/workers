@@ -165,7 +165,7 @@ describe('createApi', () => {
       ['secrets::get', { name: 'A' }],
       [
         'secrets::set',
-        { name: 'A', value: 'v', consumers: ['mcp-client'], description: 'Stored by the MCP servers page' },
+        { name: 'A', value: 'v', consumers: ['mcp-client'], description: 'Stored by the MCP client page' },
       ],
     ])
   })

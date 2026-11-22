@@ -191,7 +191,7 @@ pub fn callback_page() -> HttpReply {
             ("cache-control".into(), "no-store".into()),
             ("content-type".into(), "text/html; charset=utf-8".into()),
         ]),
-        body: "<!doctype html><meta charset=\"utf-8\"><title>MCP sign-in</title><p>You can close this tab and return to the MCP servers page.</p>".into(),
+        body: "<!doctype html><meta charset=\"utf-8\"><title>MCP sign-in</title><p>You can close this tab and return to the MCP client page.</p>".into(),
     }
 }
 
@@ -221,7 +221,7 @@ pub fn observe_callback_route(iii: &Arc<IIIClient>) -> ObserverHandle {
         let ready = tokio::time::timeout(Duration::from_secs(30), watch.ready()).await;
         if !matches!(ready, Ok(Ok(()))) {
             tracing::warn!(
-                "the http worker did not take the sign-in callback route; finish sign-in by pasting the address on the MCP servers page"
+                "the http worker did not take the sign-in callback route; finish sign-in by pasting the address on the MCP client page"
             );
         }
     });
@@ -483,7 +483,7 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
     register(
         iii,
         ON_SERVERS_CHANGED,
-        "Private: called by this worker when a server's state, tools, process, sign-in or stderr changes. Observe it to follow the MCP servers page.",
+        "Private: called by this worker when a server's state, tools, process, sign-in or stderr changes. Observe it to follow the MCP client page.",
         RegisterFunction::new_async(
             |event: ServerEvent| async move { Ok::<ServerEvent, Error>(event) },
         ),
@@ -688,7 +688,7 @@ mod tests {
         );
         assert_eq!(
             page.body,
-            "<!doctype html><meta charset=\"utf-8\"><title>MCP sign-in</title><p>You can close this tab and return to the MCP servers page.</p>"
+            "<!doctype html><meta charset=\"utf-8\"><title>MCP sign-in</title><p>You can close this tab and return to the MCP client page.</p>"
         );
     }
 

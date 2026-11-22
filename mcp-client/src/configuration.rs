@@ -49,7 +49,7 @@ fn spec() -> config_client::EntrySpec {
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "mcp-client",
-        description: "MCP servers this worker connects to. Edit them on the MCP servers page.",
+        description: "MCP servers this worker connects to. Edit them on the MCP client page.",
         schema: entry_schema(),
         default_value: default_value(),
     }

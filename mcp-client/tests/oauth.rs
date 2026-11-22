@@ -19,7 +19,7 @@ use support::{
 };
 
 const NONE_WAITING: &str = "no sign-in is waiting for this address; start again";
-const SIGN_IN: &str = "sign-in required, an operator must sign in on the MCP servers page";
+const SIGN_IN: &str = "sign-in required, an operator must sign in on the MCP client page";
 const ISS_REFUSED: &str =
     "sign-in refused: the answer did not come from the expected authorization server";
 /// How long the mock holds back a refresh answer in the race tests.

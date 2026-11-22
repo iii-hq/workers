@@ -140,7 +140,7 @@ export function createApi(iii: ExtensionIii) {
     storeSecret: async (name: string, value: string): Promise<void> => {
       const readers = await secretReaders(name)
       if (readers?.some((r) => r !== WORKER)) throw new Error(`${heldSecret(name, readers)} Nothing was stored.`)
-      const described = readers === null ? { description: 'Stored by the MCP servers page' } : {}
+      const described = readers === null ? { description: 'Stored by the MCP client page' } : {}
       await iii.call(
         'secrets::set',
         { name, value, consumers: mergeConsumers(readers ?? [], [WORKER]), ...described },
