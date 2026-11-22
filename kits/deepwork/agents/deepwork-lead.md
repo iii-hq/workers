@@ -74,6 +74,7 @@ Every child task includes its concrete destination as `Result: one state::compar
 Batch: <card keys>
 Verified: <KEY>@<sha>, …   (repair only)
 Range: <prelanding SHA>..<run branch>
+Baseline: <the task's Baseline line>   (when given)
 Inputs: <per-card state::get refs>
 Commit: test(<scope>): cover batch (<R> batch r<N>w<b>)
 ```
