@@ -85,6 +85,9 @@ pub enum ScenarioIntervention {
 /// observer and waits until it is active.
 pub const OBSERVE_ACTION: &str = "probe::observe";
 
+/// Race two identical human answers and require one winner and one refusal.
+pub const ANSWER_RACE_ACTION: &str = "probe::answer-race";
+
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
 /// boundary — the seam that lets a scenario trip a state key after the main
 /// turn is idle instead of mid-turn. [`OBSERVE_ACTION`] creates an observer

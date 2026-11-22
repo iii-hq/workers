@@ -7,7 +7,7 @@ use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use crate::fixtures::ScenarioFixture;
+use crate::fixtures::{ANSWER_RACE_ACTION, ScenarioFixture};
 
 const ASK: &str = "harness::ask";
 const ANSWER: &str = "harness::ask::answer";
@@ -20,6 +20,7 @@ const INITIAL: &str = "Try the unsafe expiry default, then get ready for the rea
 const ASK_NOW: &str = "Ask which approach to use, then keep working if I steer you.";
 const STEER: &str = "Keep going on the independent checks while the question stays open.";
 const ANSWER_TEXT: &str = "Approach: Continue";
+const EXPIRY_REFUSAL: &str = "on_expiry.answer is only allowed for run_health or routine questions";
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-047";
@@ -54,6 +55,30 @@ pub(super) fn scenario() -> ScenarioFixture {
         "expires_in_min": 1,
         "on_expiry": { "answer": "Publish" }
     });
+    let called = |id: &str, function: &str| {
+        json!({
+            "role": "assistant",
+            "content": [{ "type": "function_call", "id": id, "function_id": function }]
+        })
+    };
+    // Subset arrays are positional prefixes of the full conversation.
+    let history = [
+        Message::user(INITIAL),
+        called("call-invalid-expiry", ASK),
+        json!({ "role": "function_result", "function_call_id": "call-invalid-expiry",
+                "is_error": true, "content": [{ "type": "text", "text": EXPIRY_REFUSAL }] }),
+        Message::assistant_text("ready", &model, 10, 1),
+        Message::user(ASK_NOW),
+        called(QUESTION_ID, ASK),
+        json!({ "role": "function_result", "function_call_id": QUESTION_ID,
+                "is_error": false, "details": { "question_id": QUESTION_ID } }),
+        Message::user(STEER),
+        Message::assistant_text("independent checks complete", &model, 20, 3),
+        Message::user(ANSWER_TEXT),
+        called("call-agent-answer", ANSWER),
+        json!({ "role": "function_result", "function_call_id": "call-agent-answer",
+                "is_error": true, "details": { "error": "policy_denied" } }),
+    ];
 
     Scenario::new(
         ID,
@@ -73,6 +98,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .function(record.clone())
     .terminal_turns(3)
+    .expect_traces(3)
     // on-ask, open turn-completed, on-ask-settled, closed turn-completed.
     .await_target_calls(4)
     // Install all event observers before the turn that asks, then start it.
@@ -98,13 +124,25 @@ pub(super) fn scenario() -> ScenarioFixture {
             }]
         }),
     )
-    .probe_after(
+    .probe_after_matching(
         2,
-        ANSWER,
+        "harness::status",
+        json!({ "session_id": "{{session_id}}" }),
+        json!({ "status": "completed", "open_asks": 1 }),
+    )
+    .probe_after_matching(
+        2,
+        ANSWER_RACE_ACTION,
         json!({
             "session_id": "{{session_id}}",
             "question_id": QUESTION_ID,
             "answers": [{ "header": "Approach", "choice": "Continue" }],
+            "by": { "channel": "tower", "user": "integration" }
+        }),
+        json!({
+            "question_id": QUESTION_ID,
+            "state": "answered",
+            "answer_text": ANSWER_TEXT,
             "by": { "channel": "tower", "user": "integration" }
         }),
     )
@@ -131,11 +169,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(1)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_subset([
-                        Message::user(INITIAL),
-                        json!({ "role": "function_result",
-                                "function_call_id": "call-invalid-expiry", "is_error": true }),
-                    ])
+                    .messages_subset(history[..3].iter().cloned())
                     .tools_subset([]),
             )
             .respond(Response::text("ready", 10, 1)),
@@ -146,7 +180,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_subset([Message::user(ASK_NOW)])
+                    .messages_subset(history[..5].iter().cloned())
                     .tools_subset([]),
             )
             // The steering message lands before the ask result settles. The
@@ -160,12 +194,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(1)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_subset([
-                        Message::user(ASK_NOW),
-                        json!({ "role": "function_result", "function_call_id": QUESTION_ID,
-                                "is_error": false }),
-                        Message::user(STEER),
-                    ])
+                    .messages_subset(history[..8].iter().cloned())
                     .tools_subset([]),
             )
             .respond(Response::text("independent checks complete", 20, 3)),
@@ -176,7 +205,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_subset([Message::user(ANSWER_TEXT)])
+                    .messages_subset(history[..10].iter().cloned())
                     .tools_subset([]),
             )
             .respond(Response::function_call_raw(
@@ -198,17 +227,14 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(1)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_subset([
-                        Message::user(ANSWER_TEXT),
-                        json!({ "role": "function_result",
-                                "function_call_id": "call-agent-answer", "is_error": true }),
-                    ])
+                    .messages_subset(history.iter().cloned())
                     .tools_subset([]),
             )
             .respond(Response::text("answer received", 36, 2)),
     )
     .verify(|run| {
         run.expect_assistant_texts(["ready", "independent checks complete", "answer received"])?;
+        run.expect_target_calls(4)?;
         let ask_results = run.function_results(ASK);
         let accepted = ask_results
             .iter()
@@ -228,7 +254,9 @@ pub(super) fn scenario() -> ScenarioFixture {
         );
         let denied = run.function_results(ANSWER);
         anyhow::ensure!(
-            denied.len() == 1 && denied[0]["is_error"] == true,
+            denied.len() == 1
+                && denied[0]["is_error"] == true
+                && denied[0]["details"]["error"] == "policy_denied",
             "agent answer must be denied under an explicit allow policy: {denied:?}"
         );
         anyhow::ensure!(
@@ -240,26 +268,41 @@ pub(super) fn scenario() -> ScenarioFixture {
         let recorded = run
             .target_calls
             .iter()
-            .map(|call| serde_json::to_string(call).unwrap_or_default())
+            .map(|call| &call["input"])
             .collect::<Vec<_>>();
         anyhow::ensure!(
             recorded.iter().any(|call| {
-                call.contains(r#""question_id":"call-ask""#) && call.contains(r#""state":"open""#)
+                call["session_id"] == run.session_id
+                    && call["question_id"] == QUESTION_ID
+                    && call["state"] == "open"
             }),
             "harness::on-ask did not carry the open entry: {recorded:?}"
         );
         anyhow::ensure!(
             recorded.iter().any(|call| {
-                call.contains(r#""question_id":"call-ask""#)
-                    && call.contains(r#""state":"answered""#)
+                call["session_id"] == run.session_id
+                    && call["question_id"] == QUESTION_ID
+                    && call["state"] == "answered"
+                    && call["answer_text"] == ANSWER_TEXT
+                    && call["by"]["channel"] == "tower"
             }),
             "harness::on-ask-settled did not carry the answered entry: {recorded:?}"
         );
         anyhow::ensure!(
             recorded
                 .iter()
-                .any(|call| call.contains(r#""open_asks":1"#)),
+                .any(|call| call["session_id"] == run.session_id
+                    && call["status"] == "completed"
+                    && call["open_asks"] == 1),
             "the open turn-completed event did not report open_asks=1: {recorded:?}"
+        );
+        anyhow::ensure!(
+            recorded
+                .iter()
+                .any(|call| call["session_id"] == run.session_id
+                    && call["status"] == "completed"
+                    && call["open_asks"] == 0),
+            "the answered turn-completed event did not report open_asks=0: {recorded:?}"
         );
 
         let answer_messages = run
@@ -292,7 +335,11 @@ mod tests {
         assert_eq!(fixture.expected_terminal_turns, 3);
         assert_eq!(fixture.await_target_calls, Some(4));
         assert_eq!(fixture.script.generations.len(), 6);
-        assert_eq!(fixture.probe_actions.len(), 6);
+        assert_eq!(fixture.expected_traces(), 3);
+        assert_eq!(fixture.probe_actions.len(), 7);
         assert!(fixture.probe_actions[4].expected_output.is_some());
+        assert_eq!(fixture.probe_actions[5].function_id, "harness::status");
+        assert_eq!(fixture.probe_actions[6].function_id, ANSWER_RACE_ACTION);
+        assert_eq!(fixture.probe_actions[6].after_turns, 2);
     }
 }
