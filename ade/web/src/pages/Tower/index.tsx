@@ -162,6 +162,7 @@ export function TowerScreen({
   const [selectedId, setSelectedId] = useState<string | null>(
     initialSelectedId ?? null,
   )
+  const [askAboutId, setAskAboutId] = useState<string | null>(null)
   const [leftRuns, setLeftRuns] = usePaneState<Record<string, string>>(
     `tower:left-runs:${user}`,
     {},
@@ -192,8 +193,9 @@ export function TowerScreen({
     })),
   }
   const nowItems = data.items.filter((item) => needUrgency(item) === 'now')
-  const openNeed = (item?: NeedsYouItem) => {
+  const openNeed = (item?: NeedsYouItem, askAbout = false) => {
     setSelectedId(item?.id ?? null)
+    setAskAboutId(askAbout ? (item?.id ?? null) : null)
     setView('needs-you')
   }
   const scopeLabel =
@@ -293,6 +295,7 @@ export function TowerScreen({
                 openNeed={openNeed}
                 openRuns={() => setView('runs')}
                 summaryCheckedAt={summaryCheckedAt}
+                canAsk={!!iii}
               />
             ) : view === 'runs' ? (
               <Runs data={data} scope={scope} openNeed={openNeed} />
@@ -320,6 +323,7 @@ export function TowerScreen({
                     iii={iii}
                     user={user}
                     initialSelectedId={selectedId}
+                    initialAskAboutId={askAboutId}
                     onLeave={(item) =>
                       setLeftRuns((current) => ({
                         ...current,
@@ -555,14 +559,16 @@ function Overview({
   openNeed,
   openRuns,
   summaryCheckedAt,
+  canAsk,
 }: {
   data: TowerData
   scope: string
   scopeLabel: string
   nowItems: NeedsYouItem[]
-  openNeed: (item?: NeedsYouItem) => void
+  openNeed: (item?: NeedsYouItem, askAbout?: boolean) => void
   openRuns: () => void
   summaryCheckedAt?: number
+  canAsk: boolean
 }) {
   const waiting = data.runs.filter(
     (run) =>
@@ -698,7 +704,11 @@ function Overview({
                     >
                       Open
                     </Button>
-                    <AskAboutButton />
+                    <AskAboutButton
+                      item={item}
+                      disabled={!canAsk}
+                      onClick={() => openNeed(item, true)}
+                    />
                   </div>
                 </div>
               ))

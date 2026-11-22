@@ -7,7 +7,7 @@ import {
   Info,
   MessageSquare,
 } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -19,10 +19,14 @@ import { SearchField } from '@/components/ui/SearchField'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
-import { Tooltip } from '@/components/ui/Tooltip'
 import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import type { IiiClient } from '@/lib/iii-client'
 import { requestPanelOpen, requestScreenOpen } from '@/lib/panel-context'
+import {
+  estimateConversationTokens,
+  formatTokenCount,
+} from '@/lib/token-estimate'
 import { chatSessionScreen } from '@/lib/workspace-tabs'
 import {
   type AnswerState,
@@ -33,6 +37,7 @@ import {
   selectOption,
   typeAnswer,
 } from './answer-state'
+import { DecisionSideChat } from './DecisionSideChat'
 import { fetchTowerAsks, type TowerData } from './data'
 import {
   type AskEntry,
@@ -42,6 +47,7 @@ import {
   sortNeeds,
   type TowerQuestion,
 } from './model'
+import { type DecisionNeed, selectionFromSideChat } from './side-chat'
 
 export type TowerActions = Pick<IiiClient, 'call'>
 const IDLE: AnswerState = { status: 'idle' }
@@ -59,17 +65,71 @@ function openSession(id: string) {
   requestScreenOpen({ screen: chatSessionScreen(id), relativeTo: 'tower' })
 }
 
-export function AskAboutButton() {
+export function AskAboutButton({
+  item,
+  onClick,
+  disabled,
+  active,
+}: {
+  item: NeedsYouItem
+  onClick: () => void
+  disabled?: boolean
+  active?: boolean
+}) {
+  const ctx = useConversationsCtxOptional()
+  const contextUsage = ctx?.backend.contextUsage
+  const [reported, setReported] = useState<{
+    id: string
+    tokens: number
+  } | null>(null)
+  const conversation = ctx?.conversations.find(
+    (row) => row.id === item.sessionId,
+  )
+  useEffect(() => {
+    let alive = true
+    void contextUsage?.(item.sessionId)
+      .then((report) => {
+        if (alive && report)
+          setReported({ id: item.sessionId, tokens: report.total })
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [contextUsage, item.sessionId])
+  const tokens =
+    reported?.id === item.sessionId
+      ? reported.tokens
+      : conversation?.hydrated !== false && conversation?.messages.length
+        ? estimateConversationTokens(conversation.messages)
+        : null
   return (
-    <Tooltip label="Side chat will be available in a later update.">
-      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard users need the disabled action tooltip */}
-      <span tabIndex={0} className="tower-disabled-action">
-        <Button variant="ghost" size="sm" disabled>
-          <MessageSquare className="size-4" />
-          Ask about this
-        </Button>
-      </span>
-    </Tooltip>
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={disabled || item.kind === 'stalled'}
+      onClick={onClick}
+      aria-pressed={active}
+      title={
+        tokens === null
+          ? 'Context size unavailable'
+          : `${reported?.id === item.sessionId ? '' : 'Approximately '}${tokens.toLocaleString()} context tokens; the copy rereads this context.`
+      }
+    >
+      <MessageSquare className="size-4" />
+      Ask about this
+      {tokens !== null ? (
+        <span className="tower-meta">
+          {reported?.id === item.sessionId ? '' : '≈'}
+          {formatTokenCount(tokens)}
+        </span>
+      ) : (
+        <span className="tower-meta">
+          <span aria-hidden>—</span>
+          <span className="sr-only">Context size unavailable</span>
+        </span>
+      )}
+    </Button>
   )
 }
 
@@ -78,6 +138,7 @@ export function NeedsYou({
   iii,
   user,
   initialSelectedId,
+  initialAskAboutId,
   onLeave,
   openRuns,
 }: {
@@ -85,6 +146,7 @@ export function NeedsYou({
   iii?: TowerActions
   user: string
   initialSelectedId?: string | null
+  initialAskAboutId?: string | null
   onLeave: (item: NeedsYouItem) => void
   openRuns: () => void
 }) {
@@ -98,6 +160,14 @@ export function NeedsYou({
   const [release, setRelease] = useState('all')
   const [query, setQuery] = useState('')
   const [drafts, setDrafts] = useState<Record<string, Selection[]>>({})
+  const [chatItem, setChatItem] = useState<DecisionNeed | null>(
+    () =>
+      data.items.find(
+        (item): item is DecisionNeed =>
+          item.id === initialAskAboutId && item.kind !== 'stalled',
+      ) ?? null,
+  )
+  const [filledFromChat, setFilledFromChat] = useState<string | null>(null)
   const [states, setStates] = useState<Record<string, AnswerState>>({})
   const inFlight = useRef(new Set<string>())
   const retries = useRef(new Map<string, () => Promise<void>>())
@@ -114,6 +184,9 @@ export function NeedsYou({
     record?.harness ??
     (selected?.kind === 'question' ? selected.entry : undefined)
   const selectedKey = selected?.id
+  useEffect(() => {
+    if (chatItem && chatItem.id !== selectedKey) setChatItem(null)
+  }, [chatItem, selectedKey])
   useEffect(() => {
     if (focused?.kind !== 'held' || data.loading.needsYou) return
     if (data.items.some((item) => item.id === focused.id)) return
@@ -268,7 +341,8 @@ export function NeedsYou({
         drafts[selected.id] ??
         (entry?.questions ?? []).map(recommendedSelection)
       }
-      onSelection={(index, selection) =>
+      onSelection={(index, selection) => {
+        setFilledFromChat(null)
         setDrafts((current) => {
           const next = [
             ...(current[selected.id] ??
@@ -277,8 +351,22 @@ export function NeedsYou({
           next[index] = selection
           return { ...current, [selected.id]: next }
         })
-      }
+      }}
       canSend={!!iii}
+      askAbout={
+        selected.kind !== 'stalled' ? (
+          <AskAboutButton
+            item={selected}
+            disabled={
+              !iii ||
+              !['idle', 'failed', 'not-delivered'].includes(state.status)
+            }
+            active={chatItem?.id === selected.id}
+            onClick={() => setChatItem(selected)}
+          />
+        ) : null
+      }
+      filledFromChat={filledFromChat === selected.id}
       onAnswer={(dismissed) =>
         selected.kind === 'question' && answer(selected, dismissed)
       }
@@ -305,8 +393,42 @@ export function NeedsYou({
       onBack={() => setFocused(null)}
     />
   ) : null
+  const chat =
+    chatItem && iii ? (
+      <DecisionSideChat
+        key={chatItem.id}
+        item={chatItem}
+        record={record}
+        iii={iii}
+        editable={state.status === 'idle' || state.status === 'failed'}
+        closed={['delivered', 'already', 'withdrawn', 'not-delivered'].includes(
+          state.status,
+        )}
+        onClose={() => setChatItem(null)}
+        onUseAnswer={(index, text) => {
+          if (chatItem.kind !== 'question') return
+          setDrafts((current) => {
+            const next = [
+              ...(current[chatItem.id] ??
+                chatItem.entry.questions.map(recommendedSelection)),
+            ]
+            next[index] = selectionFromSideChat(
+              chatItem.entry.questions[index],
+              text,
+            )
+            return { ...current, [chatItem.id]: next }
+          })
+          setFilledFromChat(chatItem.id)
+          if (phone) setChatItem(null)
+        }}
+      />
+    ) : null
   return (
-    <div className="tower-inbox" data-detail-open={!!selected || undefined}>
+    <div
+      className="tower-inbox"
+      data-detail-open={!!selected || undefined}
+      data-side-chat-open={!!chatItem || undefined}
+    >
       <PageSidebar
         label="Needs you releases"
         width={220}
@@ -452,33 +574,38 @@ export function NeedsYou({
           }}
         >
           <BottomSheetContent
-            className="tower tower-decision-sheet"
+            className={`tower tower-decision-sheet${chatItem ? ' tower-side-chat-sheet' : ''}`}
             heading={
               <span className="tower-meta">
-                {selected
-                  ? `${selected.card?.key ?? 'Not on the board'} · ${needLabel(selected)} · ${formatRelative(selected.createdAt)}`
-                  : 'Needs you'}
+                {chatItem
+                  ? 'Side chat · pending decision'
+                  : selected
+                    ? `${selected.card?.key ?? 'Not on the board'} · ${needLabel(selected)} · ${formatRelative(selected.createdAt)}`
+                    : 'Needs you'}
               </span>
             }
           >
-            {detail}
+            {chat ?? detail}
           </BottomSheetContent>
         </BottomSheet>
       ) : (
-        <div className="tower-needs-detail">
-          {detail ?? (
-            <EmptyState
-              title="Choose an item"
-              description="Open a question, a held call or a stalled run from the list."
-            />
-          )}
+        <div className="tower-decision-layout">
+          <div className="tower-needs-detail">
+            {detail ?? (
+              <EmptyState
+                title="Choose an item"
+                description="Open a question, a held call or a stalled run from the list."
+              />
+            )}
+          </div>
+          {chat}
         </div>
       )}
     </div>
   )
 }
 
-function NeedDetail({
+export function NeedDetail({
   item,
   entry,
   record,
@@ -493,6 +620,8 @@ function NeedDetail({
   onLeave,
   retry,
   onBack,
+  askAbout,
+  filledFromChat,
 }: {
   item: NeedsYouItem
   entry?: AskEntry
@@ -508,6 +637,8 @@ function NeedDetail({
   onLeave: () => void
   retry: () => void
   onBack: () => void
+  askAbout: ReactNode
+  filledFromChat: boolean
 }) {
   const inputId = useId()
   const editable = state.status === 'idle' || state.status === 'failed'
@@ -555,7 +686,7 @@ function NeedDetail({
           <span className="tower-meta">Not on the board</span>
         )}
         <div className="tower-decision-links">
-          {item.kind === 'question' ? <AskAboutButton /> : null}
+          {askAbout}
           {item.card ? (
             <Button
               variant="ghost"
@@ -592,6 +723,11 @@ function NeedDetail({
         </p>
         {item.kind === 'question' ? (
           <>
+            {filledFromChat ? (
+              <p className="tower-muted" role="status">
+                Filled from the side chat · send it with Answer.
+              </p>
+            ) : null}
             {entry?.about.why ? <p>{entry.about.why}</p> : null}
             {item.blocks.length ? (
               <div className="tower-waiting">
@@ -831,9 +967,9 @@ function NeedDetail({
             </ol>
           </div>
         ) : null}
-        {item.kind === 'question' ? (
+        {item.kind !== 'stalled' ? (
           <div className="tower-phone-ask">
-            <AskAboutButton />
+            {askAbout}
             {item.card ? (
               <Button
                 variant="ghost"

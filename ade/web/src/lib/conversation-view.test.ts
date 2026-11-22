@@ -109,6 +109,15 @@ describe('defaults and toggling', () => {
 })
 
 describe('effectiveConversationKind', () => {
+  it('lists a kept decision copy as a user conversation without changing its stored kind', () => {
+    const kept = conv('kept', {
+      kind: 'automation',
+      sessionMetadata: { side_chat_question: 'run/q', side_chat_keep: true },
+    })
+    expect(effectiveConversationKind(kept, new Map())).toBe('user')
+    expect(filterConversationsByKind([kept], ['user'])).toEqual([kept])
+    expect(kept.kind).toBe('automation')
+  })
   it('lists a sub-agent under its root, however deep', () => {
     const root = conv('root', { kind: 'e2e' })
     const child = conv('child', { parentId: 'root' })

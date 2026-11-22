@@ -340,6 +340,59 @@
   min-width: 0;
   background: var(--color-panel);
 }
+.tower-decision-layout {
+  display: flex;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+  min-height: 0;
+}
+.tower-inbox[data-side-chat-open] > .tower-needs-rail,
+.tower-inbox[data-side-chat-open] > .tower-needs-list {
+  display: none;
+}
+.tower-side-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 min(42%, 420px);
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-sidebar);
+}
+.tower-side-chat-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 4px 12px;
+  background: var(--color-surface);
+}
+.tower-side-chat-header h2 {
+  font-size: 13px;
+  font-weight: 600;
+}
+.tower-side-chat-header > .tower-meta {
+  flex: 1;
+  min-width: 80px;
+}
+.tower-side-chat-note,
+.tower-use-answer {
+  margin: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.tower-use-answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.tower-side-chat > .chat-shell {
+  flex: 1;
+  min-height: 0;
+}
 .tower-decision {
   height: 100%;
   display: flex;
@@ -502,13 +555,6 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.tower-disabled-action {
-  display: inline-flex;
-  border-radius: var(--radius-md);
-}
-.tower-disabled-action:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-}
 .tower-phone-chevron,
 .tower-phone-ask,
 .tower-detail-back {
@@ -565,6 +611,9 @@
   .tower-inbox:not([data-detail-open]) .tower-needs-detail {
     display: none;
   }
+  .tower-inbox[data-side-chat-open] .tower-needs-detail {
+    flex: 1 1 50%;
+  }
   .tower-detail-back {
     display: inline-flex;
   }
@@ -616,6 +665,25 @@
   }
   .tower-inbox[data-detail-open] .tower-needs-list {
     display: block;
+  }
+  .tower-inbox[data-side-chat-open] .tower-needs-list {
+    display: block;
+  }
+  .tower-decision-sheet.tower-side-chat-sheet {
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tower-side-chat-sheet .tower-side-chat {
+    flex: 1;
+    height: 100%;
+  }
+  .tower-side-chat {
+    flex: 1;
   }
   .tower-needs-list {
     padding: 0 12px;

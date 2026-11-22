@@ -17,6 +17,7 @@ import {
   endSideChat,
   isSideChat,
   markDisplayed,
+  SIDE_CHAT_QUESTION_KEY,
   shownInAnyTab,
   sideChatOf,
   sideChatsLeftByClosedTabs,
@@ -267,6 +268,7 @@ export function ChatPanel({
       const idle = conversationsRef.current.filter(
         (conversation) =>
           sideChatOf(conversation) !== null &&
+          !(SIDE_CHAT_QUESTION_KEY in (conversation.sessionMetadata ?? {})) &&
           conversation.updatedAt < cutoff &&
           conversation.status !== 'working',
       )
@@ -296,7 +298,11 @@ export function ChatPanel({
     for (const id of leftByClosedTabs) {
       const conversation = conversations.find((c) => c.id === id)
       if (!conversation) continue
-      if (isSideChat(conversation)) endSideChat(id, remove)
+      if (
+        isSideChat(conversation) &&
+        !(SIDE_CHAT_QUESTION_KEY in (conversation.sessionMetadata ?? {}))
+      )
+        endSideChat(id, remove)
       // Kept in another browser: not a side chat any more.
       else sideChatsMadeHere.delete(id)
     }
@@ -305,7 +311,11 @@ export function ChatPanel({
     if (!missingConversationIds?.size) return
     for (const conversation of conversations) {
       const main = sideChatOf(conversation)
-      if (main !== null && missingConversationIds.has(main)) {
+      if (
+        main !== null &&
+        missingConversationIds.has(main) &&
+        !(SIDE_CHAT_QUESTION_KEY in (conversation.sessionMetadata ?? {}))
+      ) {
         endSideChat(conversation.id, remove)
       }
     }

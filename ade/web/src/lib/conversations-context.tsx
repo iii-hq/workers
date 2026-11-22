@@ -43,10 +43,12 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
 import { hasWorkingConversation } from '@/lib/chat-activity'
+import { SIDE_CHAT_KEEP_KEY, SIDE_CHAT_QUESTION_KEY } from '@/lib/chat-aside'
 import { requestChatShown } from '@/lib/chat-requests'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { composerModelFor } from '@/lib/composer-model'
-import type { IiiClient } from '@/lib/iii-client'
+import { startDecisionSideChatLifetime } from '@/lib/decision-side-chat-lifetime'
+import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { setMentionSessionOpener } from '@/lib/mentions/open-session'
 import {
   type ProviderListEntry,
@@ -249,6 +251,48 @@ export function ConversationsProvider({
   createNewRef.current = api.createNew
   const conversationsRef = useRef(api.conversations)
   conversationsRef.current = api.conversations
+  const decisionCopies = api.conversations
+    .filter(
+      (conversation) =>
+        typeof conversation.sessionMetadata?.[SIDE_CHAT_QUESTION_KEY] ===
+        'string',
+    )
+    .map(
+      (conversation) =>
+        `${conversation.id}:${conversation.sessionMetadata?.[SIDE_CHAT_KEEP_KEY] === true}`,
+    )
+    .sort()
+    .join(',')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changed copy ids restart reconciliation after the directory refreshes.
+  useEffect(() => {
+    if (
+      backend.id !== 'real' ||
+      !sessionManagerAvailable ||
+      api.conversationsLoading
+    )
+      return
+    let active = true
+    let stop: (() => void) | undefined
+    void getIiiClient()
+      .then((client) => {
+        if (active)
+          stop = startDecisionSideChatLifetime(
+            client,
+            () => conversationsRef.current,
+            api.remove,
+          )
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [
+    decisionCopies,
+    sessionManagerAvailable,
+    api.conversationsLoading,
+    api.remove,
+  ])
   const activeIdRef = useRef(api.activeId)
   activeIdRef.current = api.activeId
   /** The model a new chat starts on right now, read at call time. */
