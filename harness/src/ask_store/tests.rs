@@ -509,3 +509,16 @@ fn answer_request_tolerates_the_engine_caller_stamp() {
     .unwrap();
     assert!(request.dismissed);
 }
+
+#[tokio::test]
+async fn an_answer_being_delivered_still_counts_as_open() {
+    // Board dispatch reads open_asks when a turn ends; a reservation not yet
+    // delivered must keep the card in progress.
+    let (deps, db, server) = fixture().await;
+    accept(&deps, "s", "t", "q", &request(json!({})))
+        .await
+        .unwrap();
+    db.lock().unwrap().rows.get_mut("s/q").unwrap()["state"] = json!("answering");
+    assert_eq!(open_count(&deps, "s").await.unwrap(), 1);
+    server.abort();
+}

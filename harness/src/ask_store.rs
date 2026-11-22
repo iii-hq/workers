@@ -494,7 +494,12 @@ pub async fn open_count(deps: &Deps, session_id: &str) -> Result<usize, HarnessE
     Ok(all(deps)
         .await?
         .iter()
-        .filter(|entry| entry.session_id == session_id && entry.is_open())
+        // An answer being delivered still holds the session: board dispatch
+        // must not park a card between the reservation and the delivery.
+        .filter(|entry| {
+            entry.session_id == session_id
+                && (entry.is_open() || entry.state == AskState::Answering)
+        })
         .count())
 }
 
