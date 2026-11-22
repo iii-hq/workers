@@ -2,7 +2,7 @@ import { Button, Input, StatusDot, StatusPanel, useConfirm } from '@iii-dev/cons
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Copy, ExternalLink } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { Api } from './api'
 import { countdown, signInControls } from './presentation'
 import { CopyIconButton } from './SchemaTable'
@@ -33,17 +33,26 @@ export function SignIn({
   const seen = useRef(0)
   const pasteId = useId()
 
+  // A sign-in that starts puts an old sign-out failure behind it.
+  const begin = useCallback(() => {
+    setSignOutError(null)
+    start()
+  }, [start])
   useEffect(() => {
-    if (startSignal > 0 && startSignal !== seen.current) start()
+    if (startSignal > 0 && startSignal !== seen.current) begin()
     seen.current = startSignal
-  }, [startSignal, start])
+  }, [startSignal, begin])
   useEffect(() => {
     if (!login.paste) setPasted('')
   }, [login.paste])
-  // As the hook's own error: a server that moved on leaves no old failure behind.
+  // A failed sign-out still leaves the server at needs_login, maybe with its session in the vault: the alert
+  // stays until a sign-in starts, another server shows, or this one is ready again.
+  useEffect(() => {
+    if (server.state === 'ready') setSignOutError(null)
+  }, [server.state])
   useEffect(() => {
     setSignOutError(null)
-  }, [server.state])
+  }, [server.name])
 
   const busy = phase === 'starting' || phase === 'finishing'
   const { show, connect, signOut } = signInControls(server, phase)
@@ -78,7 +87,7 @@ export function SignIn({
           role="alert"
           headline={login.error ?? 'The sign-in attempt expired.'}
           action={
-            <Button size="sm" variant={primary} onClick={start}>
+            <Button size="sm" variant={primary} onClick={begin}>
               Try again
             </Button>
           }
@@ -86,7 +95,7 @@ export function SignIn({
       ) : null}
       {connect ? (
         <div className="mcp-ui-run">
-          <Button size="sm" variant={primary} disabled={busy} onClick={start}>
+          <Button size="sm" variant={primary} disabled={busy} onClick={begin}>
             Connect
           </Button>
         </div>
@@ -124,7 +133,7 @@ export function SignIn({
               </span>
             ) : null}
             {login.startAgain ? (
-              <Button size="sm" variant={primary} onClick={start}>
+              <Button size="sm" variant={primary} onClick={begin}>
                 Start again
               </Button>
             ) : null}
