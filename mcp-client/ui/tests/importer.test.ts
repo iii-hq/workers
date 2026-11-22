@@ -536,6 +536,29 @@ describe('credentials in any field', () => {
       expect(JSON.stringify(r)).not.toContain(FAKE)
     }
   })
+  it('stores a literal URL whose password holds a / whole', () => {
+    const dsn = 'postgres://' + 'u:' + FAKE + '/x@h/db'
+    storedWhole({ command: 'srv', env: { DATABASE_URL: dsn } }, '/env/DATABASE_URL', dsn)
+    storedWhole({ command: 'srv', args: ['run', dsn] }, '/args/1', dsn)
+  })
+  // A need that shows its template: no credential in it, read as written, with its defaults, or as `x`.
+  const shown = (server: Record<string, unknown>, path: string, template: string) => {
+    const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
+    expect([r.status, r.secrets, r.needs.map((n) => [n.path, n.password, n.original])]).toEqual([
+      'new',
+      [],
+      [[path, false, template]],
+    ])
+  }
+  it('reads ${input:…} as a plain reference, showing the template', () => {
+    const dsn = 'postgres://' + '${input:user}:${input:pass}' + '@db/x'
+    shown({ command: 'srv', env: { DATABASE_URL: dsn } }, '/env/DATABASE_URL', dsn)
+  })
+  it('shows a template whose defaults hold no credential', () => {
+    shown({ url: '${BASE:-https://h.example.com}/mcp' }, '/url', '${BASE:-https://h.example.com}/mcp')
+    const dsn = 'postgres://${DB_USER}:${DB_PASS}@${DB_HOST:-localhost}:5432/db'
+    shown({ command: 'srv', env: { DATABASE_URL: dsn } }, '/env/DATABASE_URL', dsn)
+  })
   it('asks for a template with no literal credential left, showing the template', () => {
     const cases: [Record<string, unknown>, string, string][] = [
       [
@@ -552,15 +575,11 @@ describe('credentials in any field', () => {
         'Authorization:${AUTH_HEADER}',
       ],
       [{ command: 'srv', args: ['--token=${X}'] }, '/args/0', '--token=${X}'],
+      [{ command: 'srv', args: ['--token=${env:X}'] }, '/args/0', '--token=${env:X}'],
+      [{ command: 'srv', args: ['Authorization: Bearer ${T}'] }, '/args/0', 'Authorization: Bearer ${T}'],
+      [{ command: 'srv', args: ['X-API-Key: ${K}'] }, '/args/0', 'X-API-Key: ${K}'],
     ]
-    for (const [server, path, template] of cases) {
-      const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
-      expect([r.status, r.secrets, r.needs.map((n) => [n.path, n.password, n.original])]).toEqual([
-        'new',
-        [],
-        [[path, false, template]],
-      ])
-    }
+    for (const [server, path, template] of cases) shown(server, path, template)
   })
 })
 
@@ -590,7 +609,17 @@ describe('the literal never leaves secrets', () => {
     '${X:=' + pg('h/db') + '}',
     '${A}${X-https://h.example.com/mcp?token=' + FAKE + '}',
     '${SCHEME}://' + 'u:' + FAKE + '@h/db',
+    // round 4: a `/`, `?` or `#` in or beside a default, between `://` and `@`
+    'postgres://' + 'app:${DB_PASS:-Xk9/' + FAKE + '+}@db/app',
+    'postgres://' + 'u:' + FAKE + '${X:-/}@h',
+    'postgres://' + 'u:${P:-' + FAKE + '#x}@h',
+    'postgres://' + 'u:${P:-' + FAKE + '?x}@h',
+    'postgres://' + '${U:-a/b}:' + FAKE + '@h',
+    'https://' + '${A:-u}:' + FAKE + '${B:-/}@h/mcp',
+    'postgres://' + '${DB_USER}:${DB_PASS:-' + FAKE + '/x}@db/app',
   ]
+  // A literal password holding a `/`, in env and arg.
+  const slashed = 'postgres://' + 'u:' + FAKE + '/x@h/db'
   const argsOnly = [
     `Authorization: Bearer ${FAKE}`,
     `X-API-Key:${FAKE}`,
@@ -606,6 +635,7 @@ describe('the literal never leaves secrets', () => {
       Object.entries(positions).map(([at, put]): [string, string, Record<string, unknown>] => [at, value, put(value)]),
     ),
     ...argsOnly.map((value): [string, string, Record<string, unknown>] => ['arg', value, positions.arg(value)]),
+    ...['env', 'arg'].map((at): [string, string, Record<string, unknown>] => [at, slashed, positions[at](slashed)]),
   ]
   it.each(table)('%s %s', (_at, _value, server) => {
     const r = parseImport(JSON.stringify({ x: server }), []).rows[0]

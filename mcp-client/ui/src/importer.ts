@@ -120,12 +120,15 @@ const FLAG = /^--?[A-Za-z][\w-]*$/
 const ASSIGNED = /^(--?[A-Za-z][\w-]*)=(.+)$/
 /** An argument shaped as a header line: `Authorization: Bearer x`. */
 const HEADER_ARG = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):\s*(.+)$/
-/** Userinfo with a character other than `:`, after any scheme or none (`${SCHEME}://` leaves `://`):
- * `postgres://:@db` holds no credential. */
-const USERINFO = /:\/\/[^/?#@\s]*[^/?#@\s:][^/?#@\s]*@/
+/** Userinfo after any scheme or none (`${SCHEME}://` leaves `://`): a user with a character other than `:`,
+ * or a non-empty password, which may hold `/`, `?` or `#`. `postgres://:@db` holds none. */
+const USERINFO = /:\/\/(?:[^/?#@\s]*[^/?#@\s:][^/?#@\s]*@|(?:(?!:\/\/)\S)*:\S+@)/
 const QUERY_NAME = /[?&]([^=&#\s]+)=/g
-/** A plain reference, no operator and nothing nested: the only text a template may drop before it is read. */
-const PLAIN_REF = new RegExp(`\\$\\{(?:env:)?${VAR}\\}`, 'g')
+/** The inside of a plain reference, dropped before a template is read: `NAME`, `env:NAME`, `input:ID`, or
+ * VS Code's `/` (its other builtins are names). */
+const PLAIN = new RegExp(`^(?:(?:env:)?${VAR}|input:[\\w.-]+|/)$`)
+/** The name and operator a reference with a word starts with: `:-`, `-`, `:=`, `=`, `:?`, `?`, `:+`, `+`. */
+const OPERATOR = new RegExp(`^(?:env:)?${VAR}:?[-=?+]`)
 const BEARER = /^Bearer\s+(.+)$/i
 const ABSOLUTE = /^([A-Za-z]:[\\/]|\/)/
 const PACKAGES_NOTE = 'packages are not imported: add a stdio server by hand'
@@ -195,12 +198,43 @@ function secretArgValue(arg: string): string | undefined {
   const m = ASSIGNED.exec(arg) ?? HEADER_ARG.exec(arg)
   return m && looksSecretName(m[1].replace(/^-+/, '')) ? m[2].replace(/^Bearer\s+/i, '') : undefined
 }
-/** Whether a template may hold a literal credential: everything left once its plain references are removed,
- * defaults and operators read verbatim, carries one; or, for an argument, a secret-looking `--flag=` or
- * `Name:` keeps a value. In doubt it says yes: a template masked for nothing costs less than a literal shown. */
+/** `text` with every plain reference removed and each other one kept as written (`raw`), replaced by its word
+ * read the same way (`word`), or replaced by `x`; null when a `${` does not close or parse. Braces are
+ * matched by counting, so a default may hold `}` of a nested reference. */
+function expand(text: string, world: 'raw' | 'word' | 'x'): string | null {
+  let out = ''
+  let at = 0
+  for (let open = text.indexOf('${'); open >= 0; open = text.indexOf('${', at)) {
+    let depth = 1
+    let end = open + 2
+    for (; depth > 0 && end < text.length; end++) {
+      if (text.startsWith('${', end)) {
+        depth++
+        end++
+      } else if (text[end] === '}') depth--
+    }
+    if (depth > 0) return null
+    const body = text.slice(open + 2, end - 1)
+    out += text.slice(at, open)
+    at = end
+    if (PLAIN.test(body)) continue
+    const head = OPERATOR.exec(body)?.[0]
+    if (head === undefined) return null
+    const word = world === 'x' ? 'x' : expand(body.slice(head.length), world)
+    if (word === null) return null
+    out += world === 'raw' ? `\${${head}${word}}` : word
+  }
+  return out + text.slice(at)
+}
+/** Whether a template may hold a literal credential, once its plain references are removed: read with its
+ * other references as written, as their words and as `x`, any one carries a credential (for an argument, a
+ * secret-looking `--flag=` or `Name:` that keeps a value), or a `${` does not close or parse. In doubt it
+ * says yes: a template masked for nothing costs less than a literal shown. */
 function literalCredential(value: string, arg: boolean): boolean {
-  const left = value.replace(PLAIN_REF, '')
-  return holdsCredential(left) || (arg && (secretArgValue(left) ?? '').trim() !== '')
+  return (['raw', 'word', 'x'] as const).some((world) => {
+    const text = expand(value, world)
+    return text === null || holdsCredential(text) || (arg && (secretArgValue(text) ?? '').trim() !== '')
+  })
 }
 /** `base`, or `base<sep>2`, `base<sep>3`… cut to `max`, while `taken` refuses the name. */
 function free(base: string, sep: string, max: number, taken: (name: string) => boolean): string {
@@ -326,8 +360,8 @@ function build(e: Json, server: string, inputs: Map<string, Json>, registry: boo
     if (REFERENCE.test(value)) return value
     const arg = path.startsWith('/args/')
     const template = value.includes('${')
-    // In a template only the text left after its plain references counts: a whole `${DB_URL:-<credential URL>}`
-    // is a reference (rule 4), and userinfo made only of plain references a need that shows its template (rule 5).
+    // A template is read three ways, its plain references removed: a whole `${DB_URL:-<credential URL>}` is
+    // still a reference (rule 4), and userinfo made only of references a need that shows its template (rule 5).
     const credential = template ? literalCredential(value, arg) : holdsCredential(value)
     if (credential && template && !ENV_REF.test(value)) {
       // Asked for again whole: the credential around the reference is never shown.
