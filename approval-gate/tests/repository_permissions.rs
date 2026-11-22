@@ -383,7 +383,7 @@ fn gantry_registration_hooks_are_denied() {
     }
 }
 
-/// The MCP servers page writes one allow rule per read function: the exact
+/// The MCP client page writes one allow rule per read function: the exact
 /// function id, no modes, and a rule id that starts with `mcp-client:`. A
 /// function with no rule is held. This pins the syntax the page depends on.
 #[test]
