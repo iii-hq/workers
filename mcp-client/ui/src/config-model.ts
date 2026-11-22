@@ -35,6 +35,8 @@ export const REFERENCE = /^(secret|env):\/\/[A-Za-z_][A-Za-z0-9_.-]{0,127}$/i
 const KNOWN = new Set(['type', 'url', 'headers', 'command', 'args', 'env', 'cwd', 'disabled'])
 const AUTH_MODES = new Set(['bearer', 'client_credentials', 'oauth'])
 const AUTH_SECRETS = new Set(['token', 'client_secret'])
+/** Plain `auth` keys: `token_url` looks like a secret name but is not one. */
+const AUTH_PLAIN = new Set(['type', 'client_id', 'token_url', 'scope', 'scopes', 'client_metadata_url'])
 /** What the JSON view shows in place of a value in a secret position; itself a value, so an edit that
  * keeps it is refused. */
 const HIDDEN = '<hidden: store it as a secret>'
@@ -145,7 +147,8 @@ export const renameRow = (row: KV, name: string): KV => ({
 })
 
 /** `entry` with `swap` applied to every string in a secret position: a secret-named header or env value,
- * `auth.token`, `auth.client_secret`, and a secret-named field the form does not show. */
+ * `auth.token`, `auth.client_secret`, any other secret-named key of an `auth` of a known type, and a
+ * secret-named field the form does not show. */
 function mapSecrets(entry: Json, swap: (value: string, path: string) => string): Json {
   const within = (prefix: string, value: Json, secret: (name: string) => boolean) =>
     Object.fromEntries(
@@ -160,7 +163,13 @@ function mapSecrets(entry: Json, swap: (value: string, path: string) => string):
       (key === 'headers' || key === 'env') && isObject(value)
         ? within(key, value, looksSecretName)
         : key === 'auth' && isObject(value)
-          ? within(key, value, (name) => AUTH_SECRETS.has(name))
+          ? within(
+              key,
+              value,
+              (name) =>
+                AUTH_SECRETS.has(name) ||
+                (AUTH_MODES.has(str(value.type)) && !AUTH_PLAIN.has(name) && looksSecretName(name)),
+            )
           : typeof value === 'string' && !KNOWN.has(key) && looksSecretName(key)
             ? swap(value, key)
             : value,

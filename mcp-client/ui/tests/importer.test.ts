@@ -454,6 +454,14 @@ describe('credentials in any field', () => {
     const args = ['mcp-remote', 'https://h.example.com/mcp', '--header', header]
     storedWhole({ command: 'npx', args }, '/args/3', header)
   })
+  it('keeps only the known keys of a page-format auth and lists the others by name', () => {
+    const other = 'refresh-not-a-real-value'
+    const auth = { type: 'bearer', token: FAKE, refresh_token: other }
+    const r = parseImport(JSON.stringify({ x: { url: 'https://h.example.com/mcp', auth } }), []).rows[0]
+    expect(r.entry.auth).toEqual({ type: 'bearer', token: '' })
+    expect(fields(r)).toEqual(['auth.refresh_token'])
+    expect(JSON.stringify(r)).not.toContain(other)
+  })
   it('flags a --token=<value> argument to split, holding only the flag', () => {
     const r = parseImport(JSON.stringify({ x: { command: 'srv', args: [`--token=${FAKE}`] } }), []).rows[0]
     expect([r.status, r.skipReason, r.entry, r.target, r.notes, r.ignored, r.secrets, r.needs]).toEqual([

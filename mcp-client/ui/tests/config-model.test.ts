@@ -289,6 +289,28 @@ describe('secret positions', () => {
     expect(literalSecrets(shown)).toEqual(['apiKey'])
     expect(hideLiterals(SPEC.linear)).toEqual(SPEC.linear)
   })
+
+  it('a secret-named key inside an auth of a known type is a secret position, token_url is not', () => {
+    const auth = {
+      type: 'client_credentials',
+      token_url: 'https://x/oauth/token',
+      client_id: 'id',
+      client_secret: 'secret://S',
+      scope: 'read',
+    }
+    const stored = { s: { type: 'http', url: 'https://x/mcp', auth } }
+    const entry = { ...stored.s, auth: { ...auth, refresh_token: LITERAL } }
+    expect(hideLiterals(entry)).toEqual({ ...entry, auth: { ...auth, refresh_token: HIDDEN } })
+    expect(literalSecretsError(entry)).toEqual('auth/refresh_token holds a value. Use secret://NAME or env://NAME.')
+    expect(literalSecretsError(stored.s)).toBeNull()
+    expect(readMapEdit(stored, JSON.stringify({ mcpServers: { s: entry } }))).toEqual({
+      issues: [
+        { path: '/mcpServers/s', message: 'auth/refresh_token holds a value. Use secret://NAME or env://NAME.' },
+      ],
+    })
+    // An auth of unknown type is not a secret position past `token` and `client_secret`.
+    expect(literalSecrets({ auth: { type: 'custom', refresh_token: LITERAL } })).toEqual([])
+  })
 })
 
 describe('helpers', () => {

@@ -100,6 +100,17 @@ const CONSUMED = new Set([
 const OAUTH_KEYS = new Set(['enabled', 'clientId', 'client_id', 'clientSecret', 'client_secret', 'scopes'])
 const CURSOR_AUTH_KEYS = new Set(['CLIENT_ID', 'CLIENT_SECRET', 'scopes'])
 const AUTH_MODES = new Set(['bearer', 'client_credentials', 'oauth'])
+/** The keys a page-format `auth` keeps; any other is listed as ignored, by name only. */
+const PAGE_AUTH_KEYS = new Set([
+  'type',
+  'token',
+  'client_id',
+  'client_secret',
+  'token_url',
+  'scope',
+  'scopes',
+  'client_metadata_url',
+])
 const CALLBACK = new Set(['callbackPort', 'callback_port', 'redirectUri', 'callback_url'])
 const NOTES = new Map([
   ['headersHelper', 'not run'],
@@ -325,6 +336,7 @@ function ignoredOf(e: Json, inputs: Map<string, Json>, bearer: boolean): Ignored
       out.push(ig(key, 'an Authorization header is set'))
     else if (key === 'oauth' && isObject(value)) sub(key, value, OAUTH_KEYS)
     else if (cursorAuth) sub(key, value, CURSOR_AUTH_KEYS)
+    else if (pageAuth) sub(key, value, PAGE_AUTH_KEYS)
     else if (!CONSUMED.has(key) && !pageAuth) out.push(ig(key, NOTES.get(key)))
   }
   for (const [name] of [...pairs(e.headers), ...pairs(e.http_headers), ...pairs(e.env_http_headers)]) {
@@ -457,8 +469,8 @@ function build(e: Json, server: string, inputs: Map<string, Json>, registry: boo
   const page = isObject(e.auth) && !('CLIENT_ID' in e.auth) && AUTH_MODES.has(str(e.auth.type)) ? e.auth : null
   let auth: Json | undefined
   if (page) {
-    // The page's own format, kept as written: its secrets still go to the vault.
-    auth = { ...page }
+    // The page's own format, its known keys kept as written: its secrets still go to the vault.
+    auth = Object.fromEntries(Object.entries(page).filter(([key]) => PAGE_AUTH_KEYS.has(key)))
     for (const key of ['token', 'client_secret']) {
       const value = asText(page[key])
       if (value === null) delete auth[key]
