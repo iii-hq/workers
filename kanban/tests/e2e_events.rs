@@ -751,3 +751,100 @@ async fn question_observers_and_boot_reconciliation_use_the_harness_contract() {
     harness.shutdown_async().await;
     owner.shutdown_async().await;
 }
+
+#[tokio::test]
+async fn dispatch_keeps_questions_in_progress_and_parks_stops_on_events_and_at_boot() {
+    use iii_kanban::dispatch;
+    let _slot = ENGINE_SLOT.lock().await;
+    let Some(owner) = connect("kanban-e2e-dispatch").await else {
+        return;
+    };
+    let folder = tempfile::tempdir().unwrap();
+    let ctx = boot_owner(&owner, folder.path());
+    let statuses = Arc::new(Mutex::new(serde_json::Map::new()));
+    let replies = statuses.clone();
+    owner.register_function(
+        "harness::status",
+        RegisterFunction::new(move |request: Value| {
+            Ok::<_, Error>(replies.lock().unwrap()[request["session_id"].as_str().unwrap()].clone())
+        }),
+    );
+    let mut claims = Vec::new();
+    for title in ["event question", "boot question", "boot stop"] {
+        let key = create_ticket(&owner, title).await;
+        call(
+            &owner,
+            "kanban::ticket::update",
+            json!({"id":key,"status":"in_progress","actor":dispatch::ACTOR,
+                "pills":[{"icon":"loader","text":"starting"}]}),
+        )
+        .await;
+        let board = ctx.store.read().await.unwrap();
+        let seq =
+            dispatch::claim_seq(iii_kanban::board::find_ticket(&board, &key).unwrap()).unwrap();
+        let session = dispatch::session_id(&key, seq);
+        statuses.lock().unwrap().insert(
+            session.clone(),
+            json!({"status":"completed","expects_wake":false,
+                "open_asks":if title == "boot stop" { 0 } else { 1 }}),
+        );
+        claims.push((key, session));
+    }
+    dispatch::register(&ctx);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (event_key, event_session) = &claims[0];
+    call(
+        &owner,
+        dispatch::ON_TURN_COMPLETED_FN,
+        json!({"input":{"session_id":event_session,"terminal":true,
+            "status":"completed","open_asks":1}}),
+    )
+    .await;
+    assert_eq!(
+        call(&owner, "kanban::ticket::get", json!({"id":event_key})).await["status"],
+        "in_progress"
+    );
+
+    ctx.config.write().unwrap().dispatch = dispatch::normalize(Some(&json!([
+        {"assignee":"deepwork","model":"test/model",
+            "projects":[{"project":"Tests","root":"/repo"}]}
+    ])));
+    dispatch::spawn_sweep(ctx.clone());
+    let (boot_key, _) = &claims[1];
+    let (stopped_key, _) = &claims[2];
+    let mut swept = false;
+    for _ in 0..100 {
+        let board = ctx.store.read().await.unwrap();
+        let waiting = iii_kanban::board::find_ticket(&board, boot_key).unwrap();
+        let stopped = iii_kanban::board::find_ticket(&board, stopped_key).unwrap();
+        if waiting.pills.is_empty() && stopped.status == "backlog" {
+            assert_eq!(waiting.status, "in_progress");
+            assert_eq!(stopped.pills, vec![dispatch::unfinished_pill()]);
+            assert!(stopped.labels.iter().any(|label| label == "unfinished"));
+            swept = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        swept,
+        "boot sweep did not preserve the question and park the stop"
+    );
+    call(
+        &owner,
+        dispatch::ON_TURN_COMPLETED_FN,
+        json!({"input":{"session_id":event_session,"terminal":true,
+            "status":"failed","open_asks":0}}),
+    )
+    .await;
+    let stopped = call(&owner, "kanban::ticket::get", json!({"id":event_key})).await;
+    assert_eq!(stopped["status"], "backlog");
+    assert_eq!(stopped["pills"], json!([dispatch::unfinished_pill()]));
+    assert!(
+        stopped["comments"][0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("Unfinished")
+    );
+    owner.shutdown_async().await;
+}
