@@ -83,6 +83,37 @@ fn text_str(t: &Text) -> String {
     }
 }
 
+/// One word as a POSIX shell reads it back: plain words as is, a word with a
+/// control or bidi character as `$'…'`, any other in single quotes.
+fn shell_word(s: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "@%+=:,./_-".contains(c);
+    let hidden = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    };
+    if !s.is_empty() && s.chars().all(plain) {
+        return s.into();
+    }
+    if !s.chars().any(hidden) {
+        return format!("'{}'", s.replace('\'', r"'\''"));
+    }
+    let mut out = String::from("$'");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\\"),
+            '\'' => out.push_str(r"\'"),
+            '\n' => out.push_str(r"\n"),
+            '\r' => out.push_str(r"\r"),
+            '\t' => out.push_str(r"\t"),
+            c if hidden(c) => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
 impl Entry {
     /// Every reference once: http gives the URL, the header values, then the
     /// auth reference; stdio gives the args, then the env values.
@@ -122,12 +153,13 @@ impl Entry {
         out
     }
 
-    /// The URL or the command line, references as written.
+    /// The URL, or the command line quoted as a shell would need it,
+    /// references as written.
     pub fn target(&self) -> String {
         match &self.transport {
             Transport::Http(h) => text_str(&h.url),
-            Transport::Stdio(s) => std::iter::once(s.command.clone())
-                .chain(s.args.iter().map(text_str))
+            Transport::Stdio(s) => std::iter::once(shell_word(&s.command))
+                .chain(s.args.iter().map(|a| shell_word(&text_str(a))))
                 .collect::<Vec<_>>()
                 .join(" "),
         }
@@ -561,7 +593,15 @@ fn effects(e: &Entry) -> Effects {
                     add(r, "process");
                 }
             }
-            Some(e.target())
+            let cd = s.cwd.as_ref().map(|d| {
+                let dir = d.to_string_lossy();
+                format!("cd {} && ", shell_word(&dir))
+            });
+            let env = s
+                .env
+                .iter()
+                .map(|(k, v)| format!("{}={} ", shell_word(k), shell_word(&text_str(v))));
+            Some(cd.into_iter().chain(env).collect::<String>() + &e.target())
         }
         Transport::Http(h) => {
             let url_host = match &h.url {
@@ -1330,7 +1370,10 @@ mod tests {
         let stdio = json!({"command": "npx", "args": ["-y", "@playwright/mcp@0.0.41"],
             "env": {"GITHUB_TOKEN": "secret://T"}});
         let e = check("s", stdio).effects;
-        assert_eq!(e.runs.as_deref(), Some("npx -y @playwright/mcp@0.0.41"));
+        assert_eq!(
+            e.runs.as_deref(),
+            Some("GITHUB_TOKEN=secret://T npx -y @playwright/mcp@0.0.41")
+        );
         assert_eq!(e.sends, vec![send("secret://T", "process")]);
         assert_eq!(
             check("s", json!({"url": "ftp://x"})).effects,
@@ -1340,6 +1383,52 @@ mod tests {
             serde_json::to_value(send("secret://T", "process")).unwrap(),
             json!({"ref": "secret://T", "host": "process"})
         );
+    }
+
+    #[test]
+    fn the_run_line_shows_env_and_cwd_and_quotes_every_word() {
+        let runs = |raw: Value| check("s", raw).effects.runs.unwrap();
+        let path = json!({"command": "node", "args": ["server.js"],
+            "env": {"PATH": "/tmp/x:/usr/bin"}});
+        let other_path = json!({"command": "node", "args": ["server.js"],
+            "env": {"PATH": "/usr/bin"}});
+        assert_eq!(runs(path.clone()), "PATH=/tmp/x:/usr/bin node server.js");
+        assert_ne!(runs(path), runs(other_path));
+        let node_options = json!({"command": "node", "args": ["server.js"],
+            "env": {"NODE_OPTIONS": "--require /tmp/x.js", "TOKEN": "secret://T"}});
+        assert_eq!(
+            runs(node_options),
+            "NODE_OPTIONS='--require /tmp/x.js' TOKEN=secret://T node server.js"
+        );
+        let cwd = json!({"command": "node", "args": ["server.js"], "cwd": "/srv/a b"});
+        let other_cwd = json!({"command": "node", "args": ["server.js"], "cwd": "/srv/c"});
+        assert_eq!(runs(cwd.clone()), "cd '/srv/a b' && node server.js");
+        assert_ne!(runs(cwd), runs(other_cwd));
+        assert_eq!(
+            runs(json!({"command": "node", "args": ["server.js"]})),
+            "node server.js"
+        );
+
+        let target = |args: &[&str]| {
+            check("s", json!({"command": "sh", "args": args}))
+                .entry
+                .unwrap()
+                .target()
+        };
+        assert_ne!(
+            target(&["-c", "echo `id`"]),
+            target(&["-c", "echo", "`id`"])
+        );
+        assert_eq!(target(&["-c", "echo `id`"]), "sh -c 'echo `id`'");
+        assert_eq!(
+            target(&["a b", "it's", "a\nb", "x\u{202e}y", ""]),
+            r"sh 'a b' 'it'\''s' $'a\nb' $'x\u202ey' ''"
+        );
+        assert_eq!(
+            target(&["tab\there", "back\\slash'"]),
+            r"sh $'tab\there' 'back\slash'\'''"
+        );
+        assert_eq!(target(&["bell\u{7}'\\"]), r"sh $'bell\u0007\'\\'");
     }
 
     #[test]
