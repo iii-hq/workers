@@ -8,8 +8,9 @@
  * the pure edits (pin, unpin, move, effort), and the hook the menu reads it
  * through. Nothing here touches the catalog itself.
  *
- * The first slot is the default: a new chat starts on it (see `loadLastModel`
- * in `lib/storage`), which is why the dialog badges it.
+ * The first slot is the default: a new chat starts on it until the person
+ * has started one, after which new chats follow their last chat's model (see
+ * `loadLastModel` in `lib/storage`).
  */
 
 import { useSyncExternalStore } from 'react'
