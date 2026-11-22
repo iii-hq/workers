@@ -135,6 +135,47 @@ describe('createApi', () => {
     expect(calls.map((c) => c.fn)).toEqual(['secrets::get'])
   })
 
+  it('storeSecret keeps existing consumers', async () => {
+    const { iii, calls } = fakeIii({
+      'secrets::get': () => ({ consumers: ['llm-router'] }),
+      'secrets::set': () => ({}),
+    })
+    await createApi(iii).storeSecret('A', 'v')
+    const sent = calls.map((c) => [c.fn, c.payload])
+    expect(sent).toEqual([
+      ['secrets::get', { name: 'A' }],
+      [
+        'secrets::set',
+        {
+          name: 'A',
+          value: 'v',
+          consumers: ['llm-router', 'mcp-client'],
+          description: 'Stored by the MCP servers page',
+        },
+      ],
+    ])
+  })
+
+  it('storeSecret says the secrets worker is not running', async () => {
+    const { iii, calls } = fakeIii({})
+    await expect(createApi(iii).storeSecret('A', 'v')).rejects.toThrow(
+      'The secrets worker is not running. Start it, then import again.',
+    )
+    expect(calls.map((c) => c.fn)).toEqual(['secrets::get'])
+  })
+
+  it('shareEnv shares the env variable through the env store', async () => {
+    const { iii, calls } = fakeIii({
+      'secrets::get': () => ({ consumers: ['database'] }),
+      'secrets::access': () => ({}),
+    })
+    await createApi(iii).shareEnv('GH_TOKEN')
+    expect(calls.map((c) => [c.fn, c.payload])).toEqual([
+      ['secrets::get', { name: 'GH_TOKEN', store: 'env' }],
+      ['secrets::access', { name: 'GH_TOKEN', consumers: ['database', 'mcp-client'], store: 'env' }],
+    ])
+  })
+
   it('call uses the real function id and a 130 s timeout', async () => {
     const { iii, calls } = fakeIii({ 'mcp::linear::whoami': () => ({ content: [] }) })
     await createApi(iii).call('mcp::linear::whoami', {})

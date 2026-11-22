@@ -3,6 +3,7 @@ import type { Api } from '../src/api'
 import { mapAsJson, readMapEdit } from '../src/config-model'
 import {
   approveEntry,
+  asksGate,
   effectSentences,
   needsConfirm,
   removeEntry,
@@ -10,7 +11,6 @@ import {
   saveBefore,
   saveEntry,
   saveMap,
-  secretIssues,
   setDisabled,
   shareEntry,
 } from '../src/save'
@@ -140,6 +140,16 @@ describe('needsConfirm', () => {
     expect(needsConfirm({ fingerprint: 'fp1' }, VALID)).toEqual(false)
     expect(needsConfirm(null, QUIET)).toEqual(false)
     expect(needsConfirm(null, { ...QUIET, effects: { runs: 'npx x', sends: [] } })).toEqual(true)
+  })
+})
+
+describe('asksGate', () => {
+  it('asks the approval gate for an add, or for a changed connection the fingerprint does not already cover', () => {
+    const before = { entry: { type: 'http', url: 'https://a.example.com/mcp' }, fingerprint: 'f1' }
+    expect(asksGate(null, 'f2', before.entry)).toBe(true)
+    expect(asksGate(before, 'f2', { ...before.entry, url: 'https://b.example.com/mcp' })).toBe(true)
+    expect(asksGate(before, 'f2', { ...before.entry, headers: { 'X-Workspace': 'acme' } })).toBe(false)
+    expect(asksGate(before, 'f1', { ...before.entry, url: 'https://b.example.com/mcp' })).toBe(false)
   })
 })
 
@@ -315,21 +325,6 @@ describe('setDisabled', () => {
     expect(f.written.playwright).toEqual({ ...SPEC.playwright, disabled: true })
     await setDisabled(f.deps.api, 'playwright', false)
     expect(f.written.playwright).not.toHaveProperty('disabled')
-  })
-})
-
-describe('secretIssues', () => {
-  it('keeps the errors that sit at a secret position', () => {
-    const tails = [
-      'auth/token',
-      'auth/client_secret',
-      'headers/X-API-Key',
-      'env/GITHUB_TOKEN',
-      'headers/X-Workspace',
-      'url',
-    ]
-    const errors = tails.map((tail) => ({ path: `/mcpServers/a/${tail}`, message: 'm' }))
-    expect(secretIssues(errors)).toEqual(errors.slice(0, 4))
   })
 })
 

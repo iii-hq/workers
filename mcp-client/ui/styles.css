@@ -1085,3 +1085,259 @@
 [data-iii-ui="mcp-client"] b.mcp-ui-line + .mcp-ui-ids {
   margin-top: 4px;
 }
+
+/* ── the Import dialog: paste or file, the preview table, the effects ── */
+
+/* Wide for the preview table. The body scrolls; the actions keep their own band. */
+[data-iii-ui="mcp-client"] .mcp-ui-import {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 92vw;
+  max-width: 960px;
+  max-height: 85vh;
+  padding: 0;
+  overflow: hidden;
+  container-type: inline-size;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 24px 24px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Clear of the corner close control. */
+[data-iii-ui="mcp-client"] .mcp-ui-import-title {
+  padding-right: 32px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-title + p {
+  margin-top: -8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-editor {
+  flex: none;
+  height: clamp(160px, 30vh, 240px);
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+/* A chosen file is never shown: its name and what it holds. */
+[data-iii-ui="mcp-client"] .mcp-ui-import-file {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-file code,
+[data-iii-ui="mcp-client"] .mcp-ui-import-quiet code,
+[data-iii-ui="mcp-client"] .mcp-ui-import-outcome code {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-source {
+  margin-left: auto;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+/* The preview: one row per server, its values and what stops it on a row under it. */
+[data-iii-ui="mcp-client"] .mcp-ui-import-table {
+  flex: none;
+}
+/* Fixed columns, so a long target or ignored list never pushes Secrets out of view; narrower than 720px it scrolls. */
+[data-iii-ui="mcp-client"] .mcp-ui-import-table [data-slot="table"] {
+  min-width: 720px;
+  table-layout: fixed;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-table [data-slot="table-head"] {
+  white-space: nowrap;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-table [data-slot="table-head"]:nth-child(1) {
+  width: 19%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-table [data-slot="table-head"]:nth-child(2) {
+  width: 23%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-table [data-slot="table-head"]:nth-child(3) {
+  width: 22%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-table [data-slot="table-head"]:nth-child(4) {
+  width: 20%;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-table [data-slot="table-cell"] {
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-row input {
+  width: 100%;
+  min-width: 0;
+}
+/* A row and its values read as one: no rule between them. */
+[data-iii-ui="mcp-client"] .mcp-ui-import-row[data-more="true"] {
+  border-bottom-color: transparent;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-more > [data-slot="table-cell"] {
+  padding-top: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-mono {
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-target {
+  display: block;
+  overflow: hidden;
+  padding-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-quiet,
+[data-iii-ui="mcp-client"] .mcp-ui-import-ignored {
+  margin: 4px 0 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] span.mcp-ui-import-quiet {
+  display: block;
+  padding-top: 6px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-ignored:first-child {
+  margin-top: 0;
+  padding-top: 6px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-ignored code {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-secret {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-secret + .mcp-ui-import-secret {
+  margin-top: 10px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-secret > span {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-needs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px 16px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-need {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-need > label {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-block {
+  margin: 6px 0 0;
+  color: var(--color-warn-strong);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-more .mcp-ui-issues {
+  margin-top: 6px;
+}
+
+/* What the one default button will do, read before it is pressed. */
+[data-iii-ui="mcp-client"] .mcp-ui-import-effects {
+  padding: 12px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-effects > p {
+  margin: 0 0 6px;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-effects ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-effects li {
+  display: flex;
+  gap: 12px;
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-effects code {
+  flex: none;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-import-outcome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+/* The actions on their own band, one surface step down, as the console's confirm has them. */
+[data-iii-ui="mcp-client"] .mcp-ui-import-foot {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-surface);
+}
+@container (max-width: 720px) {
+  [data-iii-ui="mcp-client"] .mcp-ui-import-foot {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+}

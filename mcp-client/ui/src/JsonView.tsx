@@ -1,9 +1,10 @@
 import { Button, CodeEditor, StatusPanel } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { SaveBar } from './ConnectionView'
 import { mapAsJson, readMapEdit } from './config-model'
-import { type SaveDeps, saveMap, secretIssues } from './save'
+import { parseImport } from './importer'
+import { type SaveDeps, saveMap } from './save'
 import type { Issue } from './types'
 
 /** Edit as JSON: every entry in one editor, saved entry by entry through the same sequence as the form. A
@@ -32,6 +33,12 @@ export function JsonView({
   const [failure, setFailure] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const dirty = text !== first
+  const stopped = issues.length > 0
+  // A Save that stopped, on a text the importer finds a literal secret in: validation does not name each one.
+  const literal = useMemo(
+    () => stopped && parseImport(text, []).rows.some((r) => r.secrets.length > 0),
+    [stopped, text],
+  )
 
   useEffect(() => setDirty(dirty), [dirty, setDirty])
   useEffect(() => () => setDirty(false), [setDirty])
@@ -72,7 +79,7 @@ export function JsonView({
         aria-label="MCP servers as JSON"
       />
       {failure ? <StatusPanel variant="alert" role="alert" headline="Could not save" detail={failure} /> : null}
-      {onMoveSecrets && secretIssues(issues).length > 0 ? (
+      {onMoveSecrets && literal ? (
         <Button variant="secondary" size="sm" onClick={() => onMoveSecrets(text)}>
           Move secrets to the vault
         </Button>

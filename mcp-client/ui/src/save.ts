@@ -2,7 +2,6 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { serverAccess } from './access'
 import type { Api } from './api'
 import { connectionChanged, REFERENCE } from './config-model'
-import { looksSecretName } from './secret-names'
 import type { Effects, Issue, Server, ServerValidation } from './types'
 
 /** Save, approve, remove and turn on: the order of the calls is the security decision. The page never
@@ -17,7 +16,8 @@ export interface SaveDeps {
 
 const nameOf = (ref: string) => ref.slice(ref.indexOf('://') + 3)
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
-const blockSentence = (n: number) =>
+/** The sentence a save adds when the approval gate holds a block for the name it writes. */
+export const blockSentence = (n: number) =>
   `The approval gate allows ${plural(n, 'function', 'functions')} under this name. Those rules will be removed; allow reads again once the server is connected.`
 const gateError = (what: 'saved' | 'approved' | 'removed', verb: 'checked' | 'removed', reason: string) =>
   `Nothing was ${what}. The approval-gate rules could not be ${verb}: ${reason}`
@@ -54,6 +54,16 @@ export function saveBefore(
     : { entry: config[name], fingerprint: server.fingerprint }
 }
 
+/** Whether a save reads the approval gate's block for its name: an add, or a connection (`url`, `command`,
+ * `args`) that changed while the fingerprint did not stay the same. */
+export function asksGate(
+  before: { entry: unknown; fingerprint: string } | null,
+  fingerprint: string,
+  entry: unknown,
+): boolean {
+  return before === null || (before.fingerprint !== fingerprint && connectionChanged(before.entry, entry))
+}
+
 const validated = async (api: Api, name: string, entry: unknown) =>
   (await api.validate({ [name]: entry })).servers[name] as ServerValidation | undefined
 
@@ -72,7 +82,7 @@ export async function saveEntry(
     return { saved: true, errors: [] }
   }
   let count = 0
-  if (before === null || connectionChanged(before.entry, entry)) {
+  if (asksGate(before, v.fingerprint, entry)) {
     try {
       count = await deps.blockCount(name)
     } catch (err) {
@@ -178,15 +188,4 @@ export async function setDisabled(api: Api, name: string, disabled: boolean): Pr
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) throw new Error(`${name} is not configured`)
   const { disabled: _, ...rest } = entry as Record<string, unknown>
   await api.writeEntry(name, disabled ? { ...rest, disabled: true } : rest)
-}
-
-const decode = (segment: string) => segment.replace(/~1/g, '/').replace(/~0/g, '~')
-
-/** The errors at a secret position: `auth.token`, `auth.client_secret`, or a secret-named header or variable. */
-export function secretIssues(errors: Issue[]): Issue[] {
-  return errors.filter(({ path }) => {
-    const [field, name] = path.split('/').slice(-2).map(decode)
-    if (field === 'auth') return name === 'token' || name === 'client_secret'
-    return (field === 'headers' || field === 'env') && looksSecretName(name)
-  })
 }

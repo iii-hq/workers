@@ -1,7 +1,24 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: pasted configs spell references `${VAR}`
 import { readdirSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { finalEntry, type ImportResult, type ImportRow, maskSecret, parseImport, slugName } from '../src/importer'
+import {
+  crossRowBlockers,
+  finalEntry,
+  type ImportDeps,
+  importEffects,
+  type ImportResult,
+  type ImportRow,
+  importRow,
+  importSummary,
+  maskSecret,
+  mergeConsumers,
+  parseImport,
+  renameRow,
+  rowBlockers,
+  scrub,
+  slugName,
+  startValues,
+} from '../src/importer'
 
 // Fixtures hold the marker `@@FAKE@@` where a pasted secret goes, so no file holds a credential shape.
 const FAKE = 'test-not-a-real-token'
@@ -641,5 +658,200 @@ describe('the literal never leaves secrets', () => {
     const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
     expect(JSON.stringify({ ...r, secrets: r.secrets.map((s) => ({ ...s, value: '' })) })).not.toContain(FAKE)
     expect(JSON.stringify(finalEntry(r, {}).entry)).not.toContain(FAKE)
+  })
+})
+
+describe('dialog rules', () => {
+  it('finalEntry fills needs: a password goes to the vault, a typed reference is kept', () => {
+    expect(finalEntry(row(parse('vscode-editor.json'), 'github'), { '/auth/token': FAKE })).toEqual({
+      entry: {
+        type: 'http',
+        url: 'https://api.githubcopilot.com/mcp',
+        auth: { type: 'bearer', token: 'secret://GITHUB_TOKEN' },
+      },
+      toStore: [{ name: 'GITHUB_TOKEN', value: FAKE }],
+      toShare: [],
+    })
+    expect(finalEntry(row(parse('claude-code.json'), 'api-server'), { '/url': 'https://api.example.com/mcp' })).toEqual(
+      {
+        entry: { type: 'http', url: 'https://api.example.com/mcp', auth: { type: 'bearer', token: 'env://API_KEY' } },
+        toStore: [],
+        toShare: ['API_KEY'],
+      },
+    )
+    const windsurf = row(parse('windsurf.json'), 'github')
+    expect(finalEntry(windsurf, { '/env/GITHUB_PERSONAL_ACCESS_TOKEN': 'env://GH_PAT' })).toMatchObject({
+      toStore: [],
+      toShare: ['GH_PAT'],
+    })
+    expect(finalEntry(windsurf, { '/env/GITHUB_PERSONAL_ACCESS_TOKEN': FAKE }).toStore).toEqual([
+      { name: 'GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN', value: FAKE },
+    ])
+  })
+  it('renameRow re-derives the status and the vault names nobody edited', () => {
+    const single = parse('single.json').rows[0]
+    expect(renameRow(single, ' weather ', ['weather'])).toMatchObject({ name: 'weather', status: 'replaces' })
+    const keyed = row(parse('cursor.json'), 'keyed')
+    expect(renameRow(keyed, 'search', []).secrets.map((s) => s.vaultName)).toEqual(['SEARCH_API_KEY'])
+    const edited = { ...keyed, secrets: [{ ...keyed.secrets[0], vaultName: 'MY_KEY' }] }
+    expect(renameRow(edited, 'search', []).secrets[0].vaultName).toBe('MY_KEY')
+    expect(renameRow(row(parse('claude-code.json'), 'asana'), 'other', []).status).toBe('skipped')
+  })
+  it('rowBlockers says what stops a row', () => {
+    const single = parse('single.json').rows[0]
+    expect(rowBlockers(single, {})).toEqual(['Give this server a name', 'Fill in API key'])
+    expect(rowBlockers(renameRow(single, 'Bad Name', []), { '/auth/token': FAKE })).toEqual([
+      'Name: 1 to 24 characters, a-z, 0-9 and -, starting with a letter or a digit',
+    ])
+    expect(rowBlockers(renameRow(single, 'weather', []), { '/auth/token': FAKE })).toEqual([])
+    const keyed = row(parse('cursor.json'), 'keyed')
+    expect(rowBlockers({ ...keyed, secrets: [{ ...keyed.secrets[0], vaultName: '9 bad' }] }, {})).toEqual([
+      'Vault name `9 bad` is not valid',
+    ])
+    const clash = {
+      ...keyed,
+      secrets: [keyed.secrets[0], { ...keyed.secrets[0], path: '/headers/Other', value: 'another-fake' }],
+    }
+    expect(rowBlockers(clash, {})).toEqual(['Two secrets share the vault name `KEYED_API_KEY`'])
+    expect(rowBlockers(row(parse('claude-code.json'), 'asana'), {})).toEqual([])
+  })
+  it('crossRowBlockers finds a name or a vault name another row of the import holds', () => {
+    const keyed = row(parse('cursor.json'), 'keyed')
+    const other = renameRow(keyed, 'other', [])
+    expect(crossRowBlockers([keyed, renameRow(other, ' keyed ', [])])).toEqual([
+      [],
+      ['Another server in this import is named `keyed`'],
+    ])
+    const vault = (value: string) => ({
+      ...other,
+      secrets: [{ ...other.secrets[0], vaultName: 'KEYED_API_KEY', value }],
+    })
+    expect(crossRowBlockers([keyed, vault('another-fake')])).toEqual([
+      [],
+      ['Vault name `KEYED_API_KEY` is used by another server in this import'],
+    ])
+    // One value under one vault name is one secret: no blocker.
+    expect(crossRowBlockers([keyed, vault(FAKE)])).toEqual([[], []])
+    // A skipped row takes no part.
+    const asana = row(parse('claude-code.json'), 'asana')
+    expect(crossRowBlockers([{ ...asana, name: 'keyed' }, keyed])).toEqual([[], []])
+  })
+  it('startValues starts a password need empty, never from its masked original', () => {
+    const masked = parseImport(JSON.stringify({ x: { url: '${BASE}/mcp?api_key=' + FAKE } }), []).rows[0]
+    expect(masked.needs.map((n) => [n.password, n.original])).toEqual([
+      [true, maskSecret('${BASE}/mcp?api_key=' + FAKE)],
+    ])
+    expect(startValues(masked)).toEqual({ '/url': '' })
+    expect(startValues(row(parse('claude-code.json'), 'api-server'))).toEqual({
+      '/url': '${API_BASE_URL:-https://api.example.com}/mcp',
+    })
+  })
+  it('scrub removes pasted values from any message', () => {
+    expect(scrub(`rejected value ${FAKE} for LINEAR_TOKEN`, [FAKE, ''])).toBe(
+      'rejected value [redacted] for LINEAR_TOKEN',
+    )
+  })
+  it('mergeConsumers keeps who could already read the secret', () => {
+    expect(mergeConsumers(['llm-router'], ['mcp-client'])).toEqual(['llm-router', 'mcp-client'])
+    expect(mergeConsumers(undefined, ['mcp-client'])).toEqual(['mcp-client'])
+    expect(mergeConsumers(['mcp-client'], ['mcp-client'])).toEqual(['mcp-client'])
+  })
+  it('importRow stores, shares, then saves, and a failed store imports nothing', async () => {
+    const weather = row(parse('claude-code.json'), 'weather')
+    const calls: string[] = []
+    const ok: ImportDeps = {
+      storeSecret: async (name) => {
+        calls.push(`store ${name}`)
+      },
+      shareEnv: async (name) => {
+        calls.push(`share ${name}`)
+      },
+      save: async (name, entry) => {
+        calls.push(`save ${name} ${JSON.stringify(entry)}`)
+        return { saved: true, errors: [] }
+      },
+    }
+    expect(await importRow(ok, weather, {})).toEqual({ name: 'weather', imported: true, message: 'Imported' })
+    expect(calls.map((c) => c.split(' ').slice(0, 2).join(' '))).toEqual([
+      'store WEATHER_API_KEY',
+      'share LOG_LEVEL',
+      'share REGION',
+      'save weather',
+    ])
+    expect(calls.join('\n')).not.toContain(FAKE)
+    const saved: string[] = []
+    const failing: ImportDeps = {
+      ...ok,
+      storeSecret: async () => {
+        throw new Error(`vault refused ${FAKE}`)
+      },
+      save: async (name) => {
+        saved.push(name)
+        return { saved: true, errors: [] }
+      },
+    }
+    expect(await importRow(failing, weather, {})).toEqual({
+      name: 'weather',
+      imported: false,
+      message: 'Not imported: could not store WEATHER_API_KEY: vault refused [redacted]',
+    })
+    expect(saved).toEqual([])
+    const refused: ImportDeps = {
+      ...ok,
+      save: async () => ({
+        saved: false,
+        errors: [{ path: '/mcpServers/weather/command', message: 'command is empty' }],
+      }),
+    }
+    expect((await importRow(refused, weather, {})).message).toBe(
+      'Not imported: /mcpServers/weather/command: command is empty',
+    )
+    const stopped: ImportDeps = {
+      ...ok,
+      save: async () => ({ saved: false, errors: [], message: 'could not remove the approval-gate rules' }),
+    }
+    expect((await importRow(stopped, weather, {})).message).toBe(
+      'Not imported: could not remove the approval-gate rules',
+    )
+    const unshared: ImportDeps = {
+      ...ok,
+      shareEnv: async () => {
+        throw new Error('secrets worker is down')
+      },
+    }
+    expect((await importRow(unshared, weather, {})).message).toBe(
+      'Not imported: could not share LOG_LEVEL with mcp-client: secrets worker is down',
+    )
+  })
+})
+
+describe('dialog copy', () => {
+  it("importEffects lists the secrets stored, the variables shared, then each server's effects", () => {
+    expect(
+      importEffects([
+        {
+          name: 'weather',
+          store: ['WEATHER_API_KEY'],
+          share: ['LOG_LEVEL', 'REGION'],
+          lines: ['mcp-client will run `w`'],
+        },
+        { name: 'keyed', store: ['KEYED_API_KEY'], share: ['REGION'], lines: [] },
+      ]),
+    ).toEqual([
+      { text: 'store 2 secrets in the vault: `WEATHER_API_KEY`, `KEYED_API_KEY`' },
+      { text: 'share `LOG_LEVEL` with mcp-client' },
+      { text: 'share `REGION` with mcp-client' },
+      { server: 'weather', text: 'mcp-client will run `w`' },
+    ])
+    expect(importEffects([{ name: 'a', store: ['A'], share: [], lines: [] }])).toEqual([
+      { text: 'store 1 secret in the vault: `A`' },
+    ])
+  })
+  it('importSummary counts what was imported and what was not', () => {
+    const out = (imported: boolean) => ({ name: 'x', imported, message: '' })
+    expect(importSummary([out(true), out(true), out(true)])).toBe('3 servers imported')
+    expect(importSummary([out(true), out(true), out(false)])).toBe('2 servers imported, 1 not imported')
+    expect(importSummary([out(false)])).toBe('0 servers imported, 1 not imported')
+    expect(importSummary([out(true)])).toBe('1 server imported')
   })
 })

@@ -1,5 +1,7 @@
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { entryRefs, REFERENCE, secretVaultName } from './config-model'
 import { looksSecretName } from './secret-names'
+import type { Issue } from './types'
 
 /** Reads an MCP config pasted from another client into rows the page can add. Pure: it runs nothing,
  * reads no file or helper a paste names, and never puts a pasted value into a message: a pasted value
@@ -616,4 +618,149 @@ export function finalEntry(
     toStore: [...toStore].map(([name, value]) => ({ name, value })),
     toShare: envRefsOf(entry),
   }
+}
+
+const NAME = /^[a-z0-9][a-z0-9-]{0,23}$/
+const VAULT_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/
+
+/** The row under a new name, stored trimmed as typed: the status follows `existing` (a skip stays a skip), and
+ * a vault name still at its default for the old name follows the new one. */
+export function renameRow(row: ImportRow, name: string, existing: string[]): ImportRow {
+  const next = name.trim()
+  const secrets = row.secrets.map((s) => {
+    const field = fieldOf(s.path, row.entry.args)
+    return s.vaultName === secretVaultName(row.name, field) ? { ...s, vaultName: secretVaultName(next, field) } : s
+  })
+  const status = row.status === 'skipped' ? 'skipped' : existing.includes(next) ? 'replaces' : 'new'
+  return { ...row, name: next, status, secrets }
+}
+
+/** The text each need's input starts with: a password need starts empty, since its `original` is at most a
+ * mask, and a mask stored in the vault would replace the secret; any other need starts from its `original`. */
+export function startValues(row: ImportRow): Record<string, string> {
+  return Object.fromEntries(row.needs.map((n) => [n.path, n.password ? '' : n.original]))
+}
+
+/** What stops one row from being imported, in the order the person fixes it; empty when nothing does. */
+export function rowBlockers(row: ImportRow, values: Record<string, string>): string[] {
+  if (row.status === 'skipped') return []
+  const out: string[] = []
+  if (row.name === '') out.push('Give this server a name')
+  else if (!NAME.test(row.name)) out.push('Name: 1 to 24 characters, a-z, 0-9 and -, starting with a letter or a digit')
+  for (const n of row.needs) if ((values[n.path] ?? '').trim() === '') out.push(`Fill in ${n.label}`)
+  for (const s of row.secrets) if (!VAULT_NAME.test(s.vaultName)) out.push(`Vault name \`${s.vaultName}\` is not valid`)
+  const clashes = row.secrets.filter((s, i) =>
+    row.secrets.some((t, j) => j < i && t.vaultName === s.vaultName && t.value !== s.value),
+  )
+  for (const name of new Set(clashes.map((s) => s.vaultName))) out.push(`Two secrets share the vault name \`${name}\``)
+  return out
+}
+
+/** What stops each row because of an earlier one in the same import: a name, or a vault name held with another
+ * value. One list per row, by index; a skipped row takes no part. */
+export function crossRowBlockers(rows: ImportRow[]): string[][] {
+  const names = new Set<string>()
+  const vault = new Map<string, string>()
+  return rows.map((row) => {
+    if (row.status === 'skipped') return []
+    const out: string[] = []
+    const name = row.name.trim()
+    if (name !== '' && names.has(name)) out.push(`Another server in this import is named \`${name}\``)
+    names.add(name)
+    const mine = new Map(row.secrets.map((s) => [s.vaultName, s.value]))
+    for (const [n, value] of mine) {
+      if (vault.has(n) && vault.get(n) !== value)
+        out.push(`Vault name \`${n}\` is used by another server in this import`)
+    }
+    for (const [n, value] of mine) if (!vault.has(n)) vault.set(n, value)
+    return out
+  })
+}
+
+/** `message` with every value of 4 characters or more, as written or JSON-escaped, replaced by `[redacted]`. */
+export function scrub(message: string, values: string[]): string {
+  const hidden = values.flatMap((v) => [v, JSON.stringify(v).slice(1, -1)]).filter((v) => v.length >= 4)
+  // Longest first, so a value that holds another is never left half shown.
+  return hidden.sort((a, b) => b.length - a.length).reduce((text, v) => text.split(v).join('[redacted]'), message)
+}
+
+/** Consumers a store call should leave in place: the existing ones, then the required ones, once each. */
+export function mergeConsumers(existing: readonly string[] | undefined, required: readonly string[]): string[] {
+  return [...new Set([...(existing ?? []), ...required])]
+}
+
+export interface ImportDeps {
+  storeSecret(name: string, value: string): Promise<void>
+  shareEnv(name: string): Promise<void>
+  save(name: string, entry: Record<string, unknown>): Promise<{ saved: boolean; errors: Issue[]; message?: string }>
+}
+
+export interface RowOutcome {
+  name: string
+  imported: boolean
+  message: string
+}
+
+/** One row: its secrets stored, its env references shared, then the entry saved. The first failure ends the row
+ * with nothing more written, and no message holds a pasted or typed value. */
+export async function importRow(deps: ImportDeps, row: ImportRow, values: Record<string, string>): Promise<RowOutcome> {
+  const hidden = [...row.secrets.map((s) => s.value), ...row.needs.map((n) => values[n.path] ?? '')]
+  const no = (what: string, text: string): RowOutcome => ({
+    name: row.name,
+    imported: false,
+    message: `Not imported: ${what}${scrub(text, hidden)}`,
+  })
+  const { entry, toStore, toShare } = finalEntry(row, values)
+  for (const { name, value } of toStore) {
+    try {
+      await deps.storeSecret(name, value)
+    } catch (err) {
+      return no(`could not store ${name}: `, errorMessage(err))
+    }
+  }
+  for (const name of toShare) {
+    try {
+      await deps.shareEnv(name)
+    } catch (err) {
+      return no(`could not share ${name} with mcp-client: `, errorMessage(err))
+    }
+  }
+  try {
+    const out = await deps.save(row.name, entry)
+    if (out.saved) return { name: row.name, imported: true, message: 'Imported' }
+    const first = out.errors[0]
+    if (first) return no('', first.path ? `${first.path}: ${first.message}` : first.message)
+    return no('', out.message ?? 'the worker did not validate it')
+  } catch (err) {
+    return no('', errorMessage(err))
+  }
+}
+
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+/** What "Import n servers" will do, one line each: the secrets stored and the env variables shared over the whole
+ * import, then each server's own lines (what validation says it will run or send). */
+export function importEffects(
+  plans: { name: string; store: string[]; share: string[]; lines: string[] }[],
+): { server?: string; text: string }[] {
+  const store = [...new Set(plans.flatMap((p) => p.store))]
+  const share = [...new Set(plans.flatMap((p) => p.share))]
+  return [
+    ...(store.length > 0
+      ? [
+          {
+            text: `store ${count(store.length, 'secret', 'secrets')} in the vault: ${store.map((n) => `\`${n}\``).join(', ')}`,
+          },
+        ]
+      : []),
+    ...share.map((n) => ({ text: `share \`${n}\` with mcp-client` })),
+    ...plans.flatMap((p) => p.lines.map((text) => ({ server: p.name, text }))),
+  ]
+}
+
+/** The announcement once an import ran: `3 servers imported`, or `2 servers imported, 1 not imported`. */
+export function importSummary(outcomes: RowOutcome[]): string {
+  const done = outcomes.filter((o) => o.imported).length
+  const failed = outcomes.length - done
+  return `${count(done, 'server', 'servers')} imported${failed > 0 ? `, ${failed} not imported` : ''}`
 }

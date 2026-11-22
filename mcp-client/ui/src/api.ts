@@ -1,6 +1,7 @@
 import type { ExtensionIii } from '@iii-dev/console-ui'
 import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorCode } from '@iii-dev/console-ui/format'
+import { mergeConsumers } from './importer'
 import type {
   EngineFunction,
   FunctionInfo,
@@ -75,10 +76,14 @@ export function createApi(iii: ExtensionIii) {
   const grantSecret = async (reference: string, consumers: string[]): Promise<void> => {
     await iii.call(
       'secrets::access',
-      { ...secretArgs(reference), consumers: [...new Set([...consumers, WORKER])] },
+      { ...secretArgs(reference), consumers: mergeConsumers(consumers, [WORKER]) },
       SECRETS,
     )
   }
+
+  /** Let mcp-client read the secret behind `reference`: read, then grant. A failed read writes nothing. */
+  const shareSecret = async (reference: string): Promise<void> =>
+    grantSecret(reference, await secretConsumers(reference))
 
   return {
     /** The client itself, for a view that observes a source of its own. */
@@ -119,8 +124,30 @@ export function createApi(iii: ExtensionIii) {
     writeConfig: (mcpServers: Json) => writeServers(() => mcpServers),
     secretConsumers,
     grantSecret,
-    /** Let mcp-client read the secret behind `reference`: read, then grant. A failed read writes nothing. */
-    shareSecret: async (reference: string): Promise<void> => grantSecret(reference, await secretConsumers(reference)),
+    shareSecret,
+    /** Store `value` under `name` in the vault, readable by mcp-client and by whoever could read it before
+     * (`secrets::set` replaces the list). The value is sent once and never read back. */
+    storeSecret: async (name: string, value: string): Promise<void> => {
+      let meta: { consumers?: unknown } | null
+      try {
+        meta = await iii.call<{ consumers?: unknown } | null>('secrets::get', { name }, SECRETS)
+      } catch (err) {
+        if (errorCode(err)?.toLowerCase() === 'function_not_found')
+          throw new Error('The secrets worker is not running. Start it, then import again.')
+        throw err
+      }
+      // Sending a list without the ones already there would revoke them.
+      if (meta != null && meta.consumers != null && !Array.isArray(meta.consumers))
+        throw new Error(`secrets::get returned no consumer list for ${name}`)
+      const existing = Array.isArray(meta?.consumers) ? meta.consumers.map(String) : undefined
+      await iii.call(
+        'secrets::set',
+        { name, value, consumers: mergeConsumers(existing, [WORKER]), description: 'Stored by the MCP servers page' },
+        { timeoutMs: 20000 },
+      )
+    },
+    /** Let mcp-client read the env variable `name`. */
+    shareEnv: (name: string): Promise<void> => shareSecret(`env://${name}`),
     call: (functionId: string, payload: Json) => iii.call(functionId, payload, { timeoutMs: CALL_TIMEOUT_MS }),
   }
 }

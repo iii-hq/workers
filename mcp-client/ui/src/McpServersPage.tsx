@@ -20,7 +20,7 @@ import {
 } from '@iii-dev/console-ui'
 import { copyText, errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, useCopyFlash, usePaneState, useWorkerLive } from '@iii-dev/console-ui/hooks'
-import { ChevronLeft, Copy, FileJson, Plug, Plus, RefreshCw, X } from 'lucide-react'
+import { ChevronLeft, Copy, Download, FileJson, Plug, Plus, RefreshCw, X } from 'lucide-react'
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AgentAccessView } from './AgentAccessView'
 import { serverAccess } from './access'
@@ -38,6 +38,7 @@ import {
   sameJson,
 } from './config-model'
 import { FunctionDetail } from './FunctionDetail'
+import { ImportDialog } from './ImportDialog'
 import { type GateRead, gateDeps, probeVerdicts, readGate, writeBlock } from './gate-io'
 import { gateStatus, orphanBlocks, type Verdict } from './gate-rules'
 import { JsonView } from './JsonView'
@@ -124,8 +125,11 @@ export function McpServersPage({
   const copyFlash = useCopyFlash(item?.kind === 'function' ? item.functionId : '')
   // A missing entry reads as `null`: `undefined` is the unsaved draft of Add server.
   const stored = adding || selection.server === null ? undefined : (data.config?.[selection.server] ?? null)
-  // No import flow yet: its buttons and command stay hidden.
-  const onImport = undefined as (() => void) | undefined
+  // The Import dialog, with the text it opens on: none from Import, the JSON view's from "Move secrets to the vault".
+  const [importing, setImporting] = useState<{ text?: string } | null>(null)
+  const [importDirty, setImportDirty] = useState(false)
+  const openImport = useCallback((text?: string) => setImporting({ text }), [])
+  const onImport = useCallback(() => openImport(), [openImport])
   // The approval gate's entry, re-read when that entry changes. The first read finds its id; until then (and on a
   // stack with no gate) nothing is observed and a return to the tab re-reads it.
   const [gateId, setGateId] = useState<string | null>(null)
@@ -185,7 +189,7 @@ export function McpServersPage({
   const [loaded, setLoaded] = useState<[string, unknown] | null>(null)
   const base = !adding && loaded && loaded[0] === selection.server ? loaded[1] : stored
   const formDirty = draft !== null && (adding || selection.server !== null) && draftDirty(draft, base)
-  const dirty = viewDirty || formDirty
+  const dirty = viewDirty || formDirty || importDirty
   // One save, approve, share, turn on or remove at a time, so two confirms never run at once.
   const working = busy || saving
   // Where the person is now: a save that resolves after they moved on leaves the form alone.
@@ -516,10 +520,16 @@ export function McpServersPage({
           title="MCP servers"
           description="Tools from MCP servers, registered as iii functions"
           actions={
-            <Button variant="secondary" size="sm" onClick={onAdd}>
-              <Plus size={16} aria-hidden />
-              Add server
-            </Button>
+            <>
+              <Button variant="secondary" size="sm" onClick={onImport}>
+                <Download size={16} aria-hidden />
+                Import
+              </Button>
+              <Button variant="secondary" size="sm" onClick={onAdd}>
+                <Plus size={16} aria-hidden />
+                Add server
+              </Button>
+            </>
           }
           menu={menu}
           onClose={onRequestClose}
@@ -589,6 +599,7 @@ export function McpServersPage({
                     onClose={closeJson}
                     setDirty={onDirty}
                     blocked={data.workerDown ? WORKER_DOWN : data.configDown ? CONFIG_DOWN : null}
+                    onMoveSecrets={openImport}
                   />
                 ) : state === 'worker_down' && !adding ? (
                   <div className="mcp-ui-whole">
@@ -606,6 +617,7 @@ export function McpServersPage({
                       title="No MCP servers yet"
                       description="Add a server to register its tools as iii functions."
                       action={{ label: 'Add server', onClick: onAdd }}
+                      actions={[{ label: 'Import', onClick: onImport }]}
                     />
                   </div>
                 ) : (
@@ -773,6 +785,22 @@ export function McpServersPage({
         ) : null}
       </PageShell>
       <LiveRegion announcement={announcement} />
+      <ImportDialog
+        api={api}
+        deps={deps}
+        existing={Object.keys(data.config ?? {})}
+        initialText={importing?.text}
+        open={importing !== null}
+        setDirty={setImportDirty}
+        onClose={(finished) => {
+          const fromJson = importing?.text !== undefined
+          setImporting(null)
+          if (!finished) return
+          // What the JSON view held is imported: its text is stale now.
+          if (fromJson && jsonOpen) closeJson()
+          else data.refresh()
+        }}
+      />
       {dialog}
     </div>
   )
