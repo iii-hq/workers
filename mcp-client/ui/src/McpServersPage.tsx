@@ -560,6 +560,14 @@ export function McpServersPage({
             ) : null}
           </div>
         </div>
+        {data.stale ? (
+          <StatusPanel
+            className="mcp-ui-stale"
+            variant="warn"
+            headline="Could not refresh. Showing the last read."
+            action={retry}
+          />
+        ) : null}
         <PageBody side={panelSide}>
           {state === 'config_down' && !jsonOpen ? (
             <PageMain className="mcp-ui-whole">

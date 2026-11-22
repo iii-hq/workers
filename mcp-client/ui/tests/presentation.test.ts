@@ -18,6 +18,7 @@ import {
   firstVariable,
   functionRows,
   highlightable,
+  holdSnapshot,
   jsonText,
   matchesQuery,
   messagesOf,
@@ -47,7 +48,7 @@ import {
   uniqueBy,
 } from '../src/presentation'
 import type { EngineFunction, Item, LoginStart, Server, Skipped } from '../src/types'
-import type { ServersData } from '../src/use-servers'
+import type { ServersData, Snapshot } from '../src/use-servers'
 import { fa, L, rule } from './fixtures/gate'
 import { docs, list, NOW, server, server as srv, stdio } from './fixtures/servers'
 
@@ -260,6 +261,7 @@ describe('pageState', () => {
     workerDown: false,
     configDown: false,
     configError: null,
+    stale: false,
     loading: false,
     error: null,
     refresh: () => {},
@@ -275,6 +277,49 @@ describe('pageState', () => {
     expect(pageState(data({ workerDown: true, list: null }))).toBe('worker_down')
     expect(pageState(data({ list: list([]), config: {} }))).toBe('first_run')
     expect(pageState(data({}))).toBe('ready')
+  })
+})
+
+describe('holdSnapshot', () => {
+  const fn = { function_id: 'mcp::linear::whoami' } as EngineFunction
+  const good: Snapshot = {
+    list: list([server()]),
+    config: { linear: {} },
+    functions: { linear: [fn] },
+    workerDown: false,
+    configDown: false,
+    functionsDown: false,
+    configError: null,
+    stale: false,
+  }
+  const failed: Snapshot = {
+    list: null,
+    config: null,
+    functions: {},
+    workerDown: true,
+    configDown: true,
+    functionsDown: true,
+    configError: 'timeout',
+    stale: false,
+  }
+  const rest = { loading: false, error: null, refresh: () => {} }
+
+  it('keeps the last good read of each part that failed, and says it is stale', () => {
+    const held = holdSnapshot(good, failed)
+    expect(held).toMatchObject({ list: good.list, config: good.config, functions: good.functions, stale: true })
+    expect([held.workerDown, held.configDown, held.functionsDown]).toEqual([false, false, false])
+    expect(pageState({ ...held, ...rest })).toBe('ready')
+    // A second failure keeps holding the same read.
+    expect(holdSnapshot(held, failed)).toEqual(held)
+  })
+
+  it('passes a failure through when nothing is held, and a good read as it is', () => {
+    const first = holdSnapshot(null, failed)
+    expect(first).toEqual(failed)
+    expect(pageState({ ...first, ...rest })).toBe('config_down')
+    const good2 = { ...good, config: { linear: {}, docs: {} } }
+    expect(holdSnapshot(good, good2)).toEqual(good2)
+    expect(holdSnapshot(holdSnapshot(good, failed), good2).stale).toBe(false)
   })
 })
 

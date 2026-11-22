@@ -57,6 +57,12 @@
   margin-left: auto;
 }
 
+/* A refresh failed: the columns keep the last read under this line. */
+[data-iii-ui="mcp-client"] .mcp-ui-stale {
+  flex: none;
+  margin: 8px 20px 0;
+}
+
 /* ── column 1: servers ─────────────────────────────────────────────── */
 
 [data-iii-ui="mcp-client"] .mcp-ui-list {

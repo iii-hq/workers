@@ -13,7 +13,7 @@ import type {
   ServersList,
   Stage,
 } from './types'
-import type { ServersData } from './use-servers'
+import type { ServersData, Snapshot } from './use-servers'
 
 /** Server state to the words and tones of the page: the spec's "States and
  * ranges" table. Every string is authored copy; nothing is case-transformed. */
@@ -280,6 +280,24 @@ export function pageState(data: ServersData): PageState {
   if (data.workerDown) return 'worker_down'
   if (data.list?.servers.length === 0) return 'first_run'
   return 'ready'
+}
+
+/** A live re-read with each failed part taken from `prev` when it holds one, so one failed refresh never tears
+ * down the columns. A part is down only when nothing is held for it; `stale` says something was carried over. */
+export function holdSnapshot(prev: Snapshot | null, next: Snapshot): Snapshot {
+  const list = next.workerDown && prev?.list ? prev.list : next.list
+  const config = next.configDown && prev?.config ? prev.config : next.config
+  const fnsHeld = next.functionsDown && prev !== null && !prev.functionsDown
+  return {
+    ...next,
+    list,
+    config,
+    functions: fnsHeld ? prev.functions : next.functions,
+    workerDown: next.workerDown && list === null,
+    configDown: next.configDown && config === null,
+    functionsDown: next.functionsDown && !fnsHeld,
+    stale: list !== next.list || config !== next.config || fnsHeld,
+  }
 }
 
 /** Names in code-unit order, the same in every locale: rows never reorder on a state change. */
