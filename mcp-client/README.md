@@ -1,6 +1,6 @@
 # mcp-client
 
-Connects to the MCP servers you configure, over Streamable HTTP or as local stdio processes, and registers each server's tools, resources and prompts as iii functions named `mcp::<server>::<tool>`. A server signs in with an API key, client credentials or an interactive sign-in in the browser. The MCP client page in the console adds, imports, tests and fixes servers, and decides what agents may call without asking. A credential is never written into the configuration: it is always a `secret://` or `env://` reference, read through the secrets worker.
+Connects to the MCP servers you configure, over Streamable HTTP or as local stdio processes, and registers each server's tools, resources and prompts as iii functions named `mcp::<server>::<tool>`. The worker signs in to a server with an API key, client credentials or a browser sign-in. The MCP client page in the console adds, imports, tests and fixes servers, and decides what agents may call without asking. A credential is never written into the configuration: it is always a `secret://` or `env://` reference, read through the secrets worker.
 
 ## Install
 
@@ -154,10 +154,10 @@ iii call mcp-client::login::complete --json '{"callback_url": "<the address the 
 
 The same path works when the http worker is not installed. The worker then logs one warning 30 s after it starts, and the route comes up if the http worker starts later.
 
-**Client-credentials warnings.**
+**Client credentials warnings.**
 
 - Keep the `scope` string identical everywhere.
-- Never use one Linear OAuth application for both `client_credentials` and interactive sign-in: a client-credentials request replaces that application's authorization-code installation.
+- Never use one Linear OAuth application for both `client_credentials` and browser sign-in: a client credentials request replaces that application's authorization-code installation.
 
 **What is stored, and where.**
 
@@ -192,7 +192,7 @@ An entry with `command`, and optionally `args`, `env` and `cwd`, starts a local 
 - A failed prompt or template listing keeps the functions of that kind as they were, shows the error under `list_errors` and leaves the server `ready`.
 - Resource bodies and prompt messages are untrusted text from the server, like tool results.
 
-## The MCP client page
+## The page
 
 The worker adds an MCP client page to the console (served through the [ade worker](https://github.com/iii-hq/workers/blob/main/ade/README.md)). It edits the same configuration entry as the CLI and saves through the same validate, confirm and approve steps.
 
@@ -206,7 +206,7 @@ The page has three columns, and their heads spell the function id: `mcp::` over 
 
 **Test** calls the real `mcp::*` function. Run tool sends the form's payload; a tool that writes asks first, with the payload shown, and the note under the button says whether the server marked the tool or its name was guessed. The result shows its time, size and blocks, with the raw reply behind a disclosure. Under it, a CLI line with the same payload (`iii call mcp::linear::list_issues limit=5`) copies to the clipboard. `resources::read` replaces the form with a uri field and a picker over `resources::list`; a template puts its text into the field with the first `{variable}` selected for you to fill in. A prompt shows its arguments as a form, and Get prompt shows the messages with their roles. Mod+Enter runs all three.
 
-**When a server is broken**, its row in column 1 carries the one next step: Sign in, Update key, Share, Fix, Retry, Restart, Review or Turn on. Pressing it selects the server and its Connection view in column 3, where the stage track (Config, Approval, Secret, Connect, Authorize, Tools) shows how far the connection got. Column 2 says what is wrong in a panel above Connection, with the worker's own error text. A stdio server's Process view shows the command line, the restarts against the budget, the last exit and the redacted stderr tail.
+**When a server is broken**, its row in column 1 carries the one next step: Sign in, Update key, Share, Fix, Retry, Restart, Review or Turn on. Pressing it selects the server and its Connection view in column 3, where the stage track (Config, Approval, Secret, Connect, Authorize, Tools) shows how far the connection got. Column 2 says what is wrong in a panel above Connection, with the worker's own error text. A ready server whose approval-gate rules let an agent run one of its writes without asking carries Review access instead, which opens its Agent access view. A stdio server's Process view shows the command line, the restarts against the budget, the last exit and the redacted stderr tail.
 
 ## Import
 
@@ -232,9 +232,9 @@ References are rewritten into the two forms this worker reads, because the confi
 | `Authorization: Bearer ${VAR}` (any reference form) | `auth: {type: bearer, token: env://VAR}`; the header is removed |
 | `Authorization: Bearer <literal>` | the literal goes to the vault; `auth: {type: bearer, token: secret://<SERVER>_TOKEN}` |
 | Any other literal that looks like a secret | the literal goes to the vault; the field holds `secret://<SERVER>_<FIELD>` |
-| A reference inside a longer string (`https://x/${TENANT}/mcp`, `--dir=${HOME}/data`) | the row is marked "needs a value" and the preview shows an input for the final text |
+| A reference inside a longer string (`https://x/${TENANT}/mcp`, `--dir=${HOME}/data`) | an input labelled with the field, holding the pasted text to edit into the final value; while it is empty the row shows "Fill in <field>" |
 | `${input:id}` (VS Code) | an input in the preview, labelled from `inputs[]`; masked and stored in the vault when `password: true` |
-| `${workspaceFolder}`, `${userHome}`, `${CLAUDE_PROJECT_DIR}` and similar | "needs a value", an input for the path |
+| `${workspaceFolder}`, `${userHome}`, `${CLAUDE_PROJECT_DIR}` and similar | an input labelled with the field, for the path; while it is empty the row shows "Fill in <field>" |
 
 - A literal secret goes to the vault under `<SERVER>_<FIELD>` (upper-cased, `-` as `_`, editable in the preview), shared with `mcp-client`, and the entry holds its `secret://` reference. A name that already holds a secret another worker reads stops that row; one that only mcp-client reads is replaced, and the preview says so. It is never saved as text: if storing it fails, that server is not imported. The preview shows it only masked, as `•••••••• · 21 characters`. Secrets are found by field name and by shape. A credential in a shape the importer does not know, such as `--header=Authorization: Bearer …` or `-e NAME=value`, stays as pasted: read the preview before importing.
 - `headersHelper`, `http_headers_helper`, command-type VS Code inputs and `envFile` are listed as ignored, and never run or read.
@@ -246,7 +246,7 @@ References are rewritten into the two forms this worker reads, because the confi
 
 - An entry runs only after an operator approved exactly that entry. A changed entry is `unapproved` until `mcp-client::servers::approve`: nothing connects and no secret is read. Turning `disabled` on or off needs no new approval. Approvals live in the vault secret `MCP_CLIENT_APPROVALS`.
 - Agents cannot call `mcp-client::*`: the harness, `fp::pipe`, `fp::batch` and `code-runner` refuse the prefix, so an agent cannot approve an entry. This is the protection. An external MCP client reaches these functions only as far as `mcp-server`'s access policy allows: keep `mcp-client::*` out of it.
-- The hole: nothing refuses an agent's `secrets::set` or `configuration::set` outright. Where the approval gate runs, those calls wait for a person in `manual` and `auto` mode, and run unasked in a `full`-mode session or after someone answered "always" for them. Where no gate runs, the harness default allow `*` lets them through. Such an agent can write the approvals secret and an entry, and the approval gate's own rules. It can also give itself any secret this worker reads, a stored sign-in session among them, and change a value an approved entry points at: a `secret://` url decides where that entry's credentials go, and an args or env reference what runs. That takes effect at once, with no new approval and no warning.
+- The hole: nothing refuses an agent's `secrets::set` or `configuration::set` outright. Where the approval gate runs, those calls wait for a person in `manual` and `auto` mode, and run unasked in a `full`-mode session or after someone answered "always" for them. Where no gate runs, the harness default allow `*` lets them through. Such an agent can write the approvals secret and an entry, and the approval gate's own rules. It can also give itself any secret this worker reads, a stored sign-in session among them. It can change the value behind a reference in an approved entry: a `url` reference decides where the entry's credentials go, and an `args` or `env` reference decides what runs. Such a change takes effect at once, with no new approval and no warning.
 - A change to `MCP_CLIENT_APPROVALS` that the worker did not make puts every server back to `unapproved` and logs a warning. This lasts until the worker restarts: at start it trusts what is stored.
 - Inside `fp::pipe`, `fp::batch` and code-runner guest code, the approval gate sees only the outer call. Approving it, or answering "always" for it, approves every MCP write in it.
 - `fp::pipe` and `fp::batch` check every `::` suffix of a step id, so an MCP tool is refused as a step when `<server>::<tool>` is itself an id `fp` refuses (the list is `forbidden_unprefixed_step` in [`fp/src/pipe.rs`](https://github.com/iii-hq/workers/blob/main/fp/src/pipe.rs)). Every tool of a server named `harness`, `configuration`, `oauth`, `router`, `provider`, `run`, `approval`, `stream`, `iii`, `hook-fanout`, `mesh-node` or `mcp-client` is refused, and every tool of `session` other than its reads. Single ids are refused too, among them `workflow::start`, `workflow-result::submit`, `state::claim-namespace`, `database` tools other than `query` while the approval gate runs, and any tool named `on-config-change`. Such a server works everywhere else: pick another name to use its tools as steps.
@@ -266,7 +266,7 @@ While the approval gate is restarting, the page reads it as absent, so a save ma
 
 A child agent that should only read takes allow `mcp::linear::*` with deny globs for the writes, such as `mcp::linear::save_*`. A child narrows its parent's allow list only to an exact id or a `<prefix>::*` glob, so a verb glob such as `mcp::linear::list_*` does not carry over to it, while a deny glob does ([harness](https://github.com/iii-hq/workers/blob/main/harness/README.md)).
 
-By default an agent reaches every function through the harness's one `agent_call` tool, so a server's functions cost no tool tokens however many there are: Linear's 69 included. Do not combine `expose: native` with allow `*`: every allowed function, each MCP tool of each server among them, then goes to the model as a tool with its schema.
+By default an agent reaches every function through the harness's one `agent_call` tool, so a server's functions cost no tool tokens however many there are: every Linear tool included. Do not combine `expose: native` with allow `*`: every allowed function, each MCP tool of each server among them, then goes to the model as a tool with its schema.
 
 ## Live tests
 
@@ -276,11 +276,11 @@ By default an agent reaches every function through the harness's one `agent_call
 |---|---|---|
 | `LINEAR_API_KEY` | A personal API key of a member of the test team | Every API-key test |
 | `LINEAR_TEST_TEAM` | The key of a Linear team used for nothing else | Every test that writes |
-| `LINEAR_TEST_CLIENT_ID` | The client id of a Linear OAuth application with client credentials turned on | The client-credentials tests |
-| `LINEAR_TEST_CLIENT_SECRET` | That application's client secret | The client-credentials tests |
+| `LINEAR_TEST_CLIENT_ID` | The client id of a Linear OAuth application with client credentials turned on | The client credentials tests |
+| `LINEAR_TEST_CLIENT_SECRET` | That application's client secret | The client credentials tests |
 
 ```bash
 cd mcp-client && cargo test --all-features -- --ignored live_
 ```
 
-A test whose variable is missing fails at once and names it, so a run that checked nothing never looks green. Every write lands in the test team: a guard resolves the team before the first write, and each test deletes what it created. `LINEAR_TEST_CLIENT_ID` belongs to an application used for nothing else, never the one used for sign-in: a client-credentials request replaces that application's authorization-code installation.
+A test whose variable is missing fails at once and names it, so a run that checked nothing never looks green. Every write lands in the test team: a guard resolves the team before the first write, and each test deletes what it created. `LINEAR_TEST_CLIENT_ID` belongs to an application used for nothing else, never the one used for sign-in: a client credentials request replaces that application's authorization-code installation.

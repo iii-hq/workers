@@ -7,7 +7,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: mcp-client
 tags: [mcp, tools, linear, oauth, integration]
-description: MCP client. Connects to Streamable HTTP and stdio MCP servers and registers their tools, resources and prompts as iii functions (mcp::<server>::<tool>). Signs in with an API key, client credentials or a browser sign-in, reads credentials from the secrets worker, and adds an MCP client page to the console.
+description: MCP client. Connects to Streamable HTTP and stdio MCP servers and registers their tools, resources and prompts as iii functions (mcp::<server>::<tool>). Authenticates with an API key, client credentials or a browser sign-in, reads credentials from the secrets worker, and adds an MCP client page to the console.
 dependencies:
   configuration: "latest"
   # Credentials are secret://NAME and env://NAME references.

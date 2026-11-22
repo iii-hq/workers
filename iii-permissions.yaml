@@ -66,7 +66,7 @@ rules:
   - '!secrets::access'
   - '!secrets::import'
   - '!secrets::on-config-change'
-  # mcp-client. Documentation only: no code reads this file. The MCP client
+  # mcp-client. The approval gate never reads these lines at runtime. The MCP client
   # page writes its own allow rules, one per read function by exact id, into
   # the approval gate's entry (mcp-client/README.md, Agent access). These lines
   # show the intended split for a server named `linear`. `mcp-client::*` is
