@@ -15,7 +15,6 @@ import {
 } from '@iii-dev/console-ui'
 import { Plus, X } from 'lucide-react'
 import { type ComponentType, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import { coded } from './AgentAccessView'
 import type { Api } from './api'
 import {
   type Draft,
@@ -26,6 +25,7 @@ import {
   readEntryEdit,
   secretVaultName,
 } from './config-model'
+import { effectLine } from './effect-line'
 import { KeyValueRows, SecretValue } from './KeyValueRows'
 import { advertisesText, stageTrack } from './presentation'
 import { effectSentences } from './save'
@@ -53,7 +53,7 @@ const jsonText = (draft: Draft) => JSON.stringify(hideLiterals(entryFromDraft(dr
 export const Lines = ({ lines }: { lines: string[] }) =>
   lines.map((line) => (
     <span key={line} className="mcp-ui-line">
-      {coded(line)}
+      {effectLine(line)}
     </span>
   ))
 

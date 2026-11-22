@@ -22,6 +22,8 @@ export const blockSentence = (n: number) =>
 const gateError = (what: 'saved' | 'approved' | 'removed', verb: 'checked' | 'removed', reason: string) =>
   `Nothing was ${what}. The approval-gate rules could not be ${verb}: ${reason}`
 
+const RUNS = 'mcp-client will run '
+
 /** What approving an entry lets mcp-client do, one plain sentence per effect. */
 export function effectSentences(effects: Effects): string[] {
   const sends = effects.sends.map(({ ref, host }) => {
@@ -31,7 +33,15 @@ export function effectSentences(effects: Effects): string[] {
     const to = REFERENCE.test(host) ? `the address stored in ${nameOf(host)}` : host
     return `mcp-client will send ${name} to ${to}`
   })
-  return effects.runs ? [`mcp-client will run \`${effects.runs}\``, ...sends] : sends
+  return effects.runs ? [`${RUNS}\`${effects.runs}\``, ...sends] : sends
+}
+
+/** The run sentence's command, every character of it: an argument may hold a backtick, so the sentence's own
+ * quotes are its first and last. Null for any other sentence. */
+export function runCommand(line: string): string | null {
+  return line.startsWith(`${RUNS}\``) && line.endsWith('`') && line.length > RUNS.length + 2
+    ? line.slice(RUNS.length + 1, -1)
+    : null
 }
 
 /** Whether a save asks first: the fingerprint is new or changed, and the entry runs or sends something. */

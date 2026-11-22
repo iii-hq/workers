@@ -26,6 +26,7 @@ import { FileUp } from 'lucide-react'
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { coded } from './AgentAccessView'
 import type { Api } from './api'
+import { effectLine } from './effect-line'
 import {
   crossRowBlockers,
   finalEntry,
@@ -521,7 +522,7 @@ export function ImportDialog({
                     {effects.map(({ server, text: line }, i) => (
                       <li key={i}>
                         {server ? <code>{server}</code> : null}
-                        <span>{say(line)}</span>
+                        <span>{effectLine(say(line), coded)}</span>
                       </li>
                     ))}
                   </ul>
