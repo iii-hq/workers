@@ -2322,6 +2322,34 @@ workers:
         outputs:
         - dist
     publish: true
+  tower:
+    source:
+      path: tower
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: tower
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 11.13.1
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - dist/bundle/result.schema.json
+      - dist/SKILL.md
+      - iii.worker.yaml
+    publish: true
   voice:
     source:
       path: voice

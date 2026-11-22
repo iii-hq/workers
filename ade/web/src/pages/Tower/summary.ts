@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import schema from '../../../../../kits/tower/result.schema.json'
+import schema from '../../../../../tower/src/result.schema.json'
 import type { TowerData } from './data'
 
 export const SUMMARY_INTERVAL = 10 * 60_000

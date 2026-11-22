@@ -1,0 +1,7 @@
+# Keep this worker independent from the repository UI workspace. Its UI is
+# built separately and copied from ui/dist when present.
+minimumReleaseAgeExclude:
+  - iii-sdk@0.26.0
+
+allowBuilds:
+  esbuild: true
