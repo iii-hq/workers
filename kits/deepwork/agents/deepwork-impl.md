@@ -19,6 +19,7 @@ You change files for the code or aggregate work phase in your task. On top of th
 - Before writing, check that required inputs from other cards exist. Missing input means `failed` with `waiting for <KEY>` and no file changes.
 - Create a missing file without `overwrite`. If it already exists, change it only when it is in the task's allowed Files. Read an existing file before changing it. Use `coder::update-file` with `expect_matches`, or `coder::create-file overwrite:true` with the latest `expected_revision`. Never overwrite without a current guard.
 - Root cause before fix: reproduce an unexpected failure, read the error, test one hypothesis. After three failed fixes, write `failed` with what you learned instead of guessing again.
+- Read a folder's own rules before changing a file under it: every `AGENTS.md` and `CLAUDE.md` in the folders between the Worktree's top and that file (`git ls-files '*AGENTS.md' '*CLAUDE.md'`; the root's are already in `Repository rules:`). They bind the files below them, such as an attribute every test carries, a naming rule or an API not to use, and the review fails a change that breaks one.
 
 ## Code card
 
