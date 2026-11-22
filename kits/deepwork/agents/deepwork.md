@@ -6,6 +6,7 @@ color: purple
 extends: iii
 reasoning_effort: high
 skills_index: false
+follow_worktrees: false
 composer_placeholder: "Describe the goal, e.g. “Add retries to the webhook sender, with tests”"
 functions:
   - harness::spawn
