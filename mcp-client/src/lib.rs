@@ -21,8 +21,16 @@ pub fn stdio_allowed(value: Option<&str>) -> bool {
 }
 
 /// Log targets whose level is pinned at INFO whatever `RUST_LOG` says: at
-/// DEBUG and below they print authorization codes and token responses.
-pub const CAPPED_LOG_TARGETS: [&str; 4] = ["rmcp", "reqwest", "hyper", "h2"];
+/// DEBUG and below they print authorization codes and token responses, and
+/// every engine frame.
+pub const CAPPED_LOG_TARGETS: [&str; 6] = [
+    "rmcp",
+    "reqwest",
+    "hyper",
+    "h2",
+    "tungstenite",
+    "tokio_tungstenite",
+];
 
 /// Builds the `EnvFilter` directive string from `RUST_LOG`. A more specific
 /// directive beats a capped one, and a span or field filter enables every
@@ -70,7 +78,8 @@ mod tests {
     use super::*;
     use tracing_subscriber::EnvFilter;
 
-    const CAPS: &str = "rmcp=info,reqwest=info,hyper=info,h2=info";
+    const CAPS: &str =
+        "rmcp=info,reqwest=info,hyper=info,h2=info,tungstenite=info,tokio_tungstenite=info";
 
     #[test]
     fn log_directives_cap_the_noisy_crates() {
@@ -98,6 +107,13 @@ mod tests {
         assert_eq!(
             log_directives(Some("debug,reqwest:=trace,hyper::proto:=trace")),
             format!("debug,{CAPS}")
+        );
+        // The engine websocket logs every frame at TRACE.
+        assert_eq!(
+            log_directives(Some(
+                "trace,tungstenite=trace,tungstenite::protocol=trace,tokio_tungstenite=trace"
+            )),
+            format!("trace,{CAPS}")
         );
         // Span and field filters go.
         assert_eq!(
