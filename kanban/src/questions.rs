@@ -689,7 +689,7 @@ pub fn register(ctx: &Arc<Ctx>) {
                 let ctx = handler_ctx.clone();
                 async move {
                     mirror_entry(&ctx, delivery.input).await?;
-                    Ok::<_, Error>(json!({"ok":true}))
+                    Ok::<_, Error>(crate::dispatch::Ack { ok: true })
                 }
             })
             .description("Internal: mirror a harness question or settlement onto its card.")
@@ -715,13 +715,31 @@ pub fn spawn_reconcile(ctx: Arc<Ctx>) {
     });
 }
 
-pub async fn answer(ctx: Arc<Ctx>, input: AnswerInput) -> Result<Value, Error> {
+/// What `kanban::question::answer` returns: the harness's closed ask entry, or
+/// `{outcome}` when the ask was gone and the answer was kept on the board.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AnswerResult {
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, Value>,
+}
+
+impl From<Value> for AnswerResult {
+    fn from(value: Value) -> Self {
+        let fields = match value {
+            Value::Object(map) => map,
+            other => serde_json::Map::from_iter([("value".to_string(), other)]),
+        };
+        Self { fields }
+    }
+}
+
+pub async fn answer(ctx: Arc<Ctx>, input: AnswerInput) -> Result<AnswerResult, Error> {
     let board = ctx.store.read().await.map_err(Error::Handler)?;
     let request = answer_request(&board, &input).map_err(Error::Handler)?;
     drop(board);
     // The harness reserves and closes the ask. Its event normally writes the reply.
     match call(&ctx, "harness::ask::answer", request).await {
-        Ok(answer) => Ok(answer),
+        Ok(answer) => Ok(answer.into()),
         Err(error) if matches!(&error, Error::Remote { message, .. } if message.contains("harness/invalid_request: ask entry not found")) =>
         {
             let answer_text = input.answers.as_ref().map_or_else(
@@ -795,7 +813,7 @@ pub async fn answer(ctx: Arc<Ctx>, input: AnswerInput) -> Result<Value, Error> {
                 .and_then(|comment| comment.answer.as_ref())
                 .map(|answer| answer.outcome)
                 .ok_or_else(|| Error::Handler("question answer reply was not persisted".into()))?;
-            Ok(json!({"outcome":outcome}))
+            Ok(json!({"outcome":outcome}).into())
         }
         Err(error) => Err(error),
     }

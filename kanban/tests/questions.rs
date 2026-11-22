@@ -636,3 +636,20 @@ fn state_pagination_continues_if_the_previous_page_question_is_answered() {
         "call-1"
     );
 }
+
+#[test]
+fn question_answer_and_mirror_sinks_publish_typed_response_schemas() {
+    // CI's interface smoke rejects AnyValue/empty schemas: every function must
+    // carry a schema-defining keyword on its request and response.
+    for schema in [
+        serde_json::to_value(schemars::schema_for!(iii_kanban::questions::AnswerResult)).unwrap(),
+        serde_json::to_value(schemars::schema_for!(iii_kanban::dispatch::Ack)).unwrap(),
+    ] {
+        assert!(
+            ["type", "properties", "$ref", "allOf", "anyOf", "oneOf"]
+                .iter()
+                .any(|key| schema.get(*key).is_some()),
+            "untyped schema: {schema}"
+        );
+    }
+}
