@@ -799,7 +799,7 @@ describe('processFacts', () => {
 })
 
 describe('signInControls', () => {
-  it('shows sign-in only for a server that signs in, with Connect or Sign out when idle', () => {
+  it('shows sign-in only for a server that signs in, with Sign in or Sign out when idle', () => {
     expect(signInControls(srv({ state: 'ready', auth: 'bearer' }), 'failed')).toEqual({
       show: false,
       connect: false,

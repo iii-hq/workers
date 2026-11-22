@@ -157,7 +157,7 @@ export function ConnectionView({
   errors: Issue[]
   setDirty: (dirty: boolean) => void
   stored: unknown
-  /** Connect, Sign in or Turn on: beside the stage track, where the connection stopped. */
+  /** Sign in, Sign out or Turn on: beside the stage track, where the connection stopped. */
   action?: ReactNode
   children?: ReactNode
   onSave: () => void

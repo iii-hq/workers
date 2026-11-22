@@ -17,7 +17,7 @@ import { CopyIconButton } from './SchemaTable'
 import type { Server } from './types'
 import { useLogin } from './use-login'
 
-/** Interactive sign-in for the Connection view: Connect, the waiting view with its paste fallback, a failed
+/** Interactive sign-in for the Connection view: Sign in, the waiting view with its paste fallback, a failed
  * attempt, and Sign out. A raise of `startSignal` (the row's Sign in) starts an attempt. `quiet` while the save
  * bar shows: Save is then the view's default button. */
 export function SignIn({
@@ -105,7 +105,7 @@ export function SignIn({
       className="mcp-ui-signin"
       aria-label="Sign-in"
       data-phase={phase}
-      // Only Connect or Sign out: it sits beside the stage track; anything more takes the row under it.
+      // Only Sign in or Sign out: it sits beside the stage track; anything more takes the row under it.
       data-inline={((phase === 'idle' || phase === 'starting') && !signOutError) || undefined}
     >
       {phase === 'failed' ? (
@@ -123,7 +123,7 @@ export function SignIn({
       {connect ? (
         <div className="mcp-ui-run">
           <Button size="sm" variant={primary} disabled={busy} onClick={begin}>
-            Connect
+            Sign in
           </Button>
         </div>
       ) : null}

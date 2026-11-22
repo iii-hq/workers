@@ -415,7 +415,7 @@ export function signInView(input: {
   return { phase, link, canCopyLink: link !== null, timer: open, paste: open, startAgain: phase === 'resumed' }
 }
 
-/** Whether the Connection view shows sign-in at all, and its idle button: Connect while the server needs a
+/** Whether the Connection view shows sign-in at all, and its idle button: Sign in while the server needs a
  * sign-in (still shown, disabled, while starting), Sign out for a signed-in oauth server. */
 export function signInControls(
   server: Pick<Server, 'state' | 'auth' | 'login'>,

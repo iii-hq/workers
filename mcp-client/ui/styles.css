@@ -873,7 +873,7 @@
 
 /* ── column 3, Connection: the stage track and its action, the Settings card, the danger card ── */
 
-/* The stages, then the view's action (Connect, Sign out, Turn on) right after them. */
+/* The stages, then the view's action (Sign in, Sign out, Turn on) right after them. */
 [data-iii-ui="mcp-client"] .mcp-ui-track {
   display: flex;
   flex-wrap: wrap;
