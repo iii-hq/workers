@@ -120,8 +120,11 @@ const FLAG = /^--?[A-Za-z][\w-]*$/
 const ASSIGNED = /^(--?[A-Za-z][\w-]*)=(.+)$/
 /** An argument shaped as a header line: `Authorization: Bearer x`. */
 const HEADER_ARG = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):\s*(.+)$/
-const USERINFO = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#@\s]+@/
+/** Userinfo with a character other than `:`: `postgres://:@db` holds no credential. */
+const USERINFO = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#@\s]*[^/?#@\s:][^/?#@\s]*@/
 const QUERY_NAME = /[?&]([^=&#\s]+)=/g
+const SEGMENT = /\$\{[^}]*\}/g
+const DEFAULT = /\$\{[^}]*?:-([^}]*)\}/g
 const BEARER = /^Bearer\s+(.+)$/i
 const ABSOLUTE = /^([A-Za-z]:[\\/]|\/)/
 const PACKAGES_NOTE = 'packages are not imported: add a stdio server by hand'
@@ -190,6 +193,14 @@ function holdsCredential(value: string): boolean {
 function secretArgValue(arg: string): string | undefined {
   const m = ASSIGNED.exec(arg) ?? HEADER_ARG.exec(arg)
   return m && looksSecretName(m[1].replace(/^-+/, '')) ? m[2].replace(/^Bearer\s+/i, '') : undefined
+}
+/** Whether a template keeps a literal credential: in the text outside every `${…}`, or in a `:-default` that
+ * stays in the text (a whole `${VAR:-…}` drops its default instead). An argument also counts as one when
+ * `--flag=` or `Name:` keeps a literal value outside the references. */
+function literalCredential(value: string, arg: boolean): boolean {
+  const outside = value.replace(SEGMENT, '')
+  const defaults = [...value.matchAll(DEFAULT)].map((m) => m[1])
+  return [outside, ...defaults].some(holdsCredential) || (arg && (secretArgValue(outside) ?? '').trim() !== '')
 }
 /** `base`, or `base<sep>2`, `base<sep>3`… cut to `max`, while `taken` refuses the name. */
 function free(base: string, sep: string, max: number, taken: (name: string) => boolean): string {
@@ -313,13 +324,17 @@ function build(e: Json, server: string, inputs: Map<string, Json>, registry: boo
   /** One pasted string through the rewrite table, first match wins: what the entry holds at `path`. */
   const put = (path: string, value: string, secretName: boolean, envBlock = false): string => {
     if (REFERENCE.test(value)) return value
-    const credential = holdsCredential(value)
-    if (credential && value.includes('${')) {
+    const arg = path.startsWith('/args/')
+    const template = value.includes('${')
+    // In a template only a literal left outside the references counts: a whole `${DB_URL:-<credential URL>}`
+    // is a reference (rule 4), and userinfo made only of references a need that shows its template (rule 5).
+    const credential = template ? literalCredential(value, arg) : holdsCredential(value)
+    if (credential && template && !ENV_REF.test(value)) {
       // Asked for again whole: the credential around the reference is never shown.
       needs.push({ path, label: labelOf(path), password: true, original: maskSecret(value) })
       return ''
     }
-    const argValue = path.startsWith('/args/') ? secretArgValue(value) : undefined
+    const argValue = arg && !template ? secretArgValue(value) : undefined
     // Any string that carries a credential is a secret position, whatever field it sits in.
     const secret = secretName || credential || argValue !== undefined
     if (BUILTIN.test(value)) return need(path, secret, value)

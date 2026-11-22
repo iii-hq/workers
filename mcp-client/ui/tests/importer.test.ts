@@ -452,13 +452,18 @@ describe('credentials in any field', () => {
     expect(JSON.stringify(r)).not.toContain(FAKE)
   })
   it('asks again for a credential URL around a ${…}, never showing its value', () => {
-    const cases: [Record<string, unknown>, string][] = [
-      [{ command: 'srv', env: { DATABASE_URL: 'postgres://' + 'u:' + FAKE + '@${DB_HOST}/x' } }, '/env/DATABASE_URL'],
-      [{ url: '${BASE}/mcp?api_key=' + FAKE }, '/url'],
+    const dsn = 'postgres://' + 'u:' + FAKE + '@${DB_HOST}/x'
+    const url = '${BASE}/mcp?api_key=' + FAKE
+    const cases: [Record<string, unknown>, string, string][] = [
+      [{ command: 'srv', env: { DATABASE_URL: dsn } }, '/env/DATABASE_URL', dsn],
+      [{ url }, '/url', url],
     ]
-    for (const [server, path] of cases) {
+    for (const [server, path, value] of cases) {
       const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
-      expect([r.secrets, r.needs.map((n) => [n.path, n.password])]).toEqual([[], [[path, true]]])
+      expect([r.secrets, r.needs.map((n) => [n.path, n.password, n.original])]).toEqual([
+        [],
+        [[path, true, maskSecret(value)]],
+      ])
       expect(JSON.stringify(r)).not.toContain(FAKE)
     }
   })
@@ -510,5 +515,51 @@ describe('credentials in any field', () => {
       [],
       ['GH_TOKEN'],
     ])
+  })
+  it('keeps a whole ${VAR:-…} a reference, its credential default dropped and never shown', () => {
+    const cases: [Record<string, unknown>, (e: Record<string, unknown>) => unknown, string][] = [
+      [
+        { command: 'srv', env: { DATABASE_URL: '${DB_URL:-postgres://' + 'u:' + FAKE + '@localhost/db}' } },
+        (e) => (e.env as Record<string, string>).DATABASE_URL,
+        'DB_URL',
+      ],
+      [{ url: '${MCP_URL:-https://h.example.com/mcp?token=' + FAKE + '}' }, (e) => e.url, 'MCP_URL'],
+    ]
+    for (const [server, at, name] of cases) {
+      const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
+      expect([at(r.entry), r.notes, r.secrets, r.needs]).toEqual([
+        `env://${name}`,
+        [`default for \`${name}\` dropped`],
+        [],
+        [],
+      ])
+      expect(JSON.stringify(r)).not.toContain(FAKE)
+    }
+  })
+  it('asks for a template with no literal credential left, showing the template', () => {
+    const cases: [Record<string, unknown>, string, string][] = [
+      [
+        { command: 'srv', env: { DATABASE_URL: 'postgres://${DB_USER}:${DB_PASS}@db/x' } },
+        '/env/DATABASE_URL',
+        'postgres://${DB_USER}:${DB_PASS}@db/x',
+      ],
+      [
+        {
+          command: 'npx',
+          args: ['mcp-remote', 'https://h.example.com/mcp', '--header', 'Authorization:${AUTH_HEADER}'],
+        },
+        '/args/3',
+        'Authorization:${AUTH_HEADER}',
+      ],
+      [{ command: 'srv', args: ['--token=${X}'] }, '/args/0', '--token=${X}'],
+    ]
+    for (const [server, path, template] of cases) {
+      const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
+      expect([r.status, r.secrets, r.needs.map((n) => [n.path, n.password, n.original])]).toEqual([
+        'new',
+        [],
+        [[path, false, template]],
+      ])
+    }
   })
 })
