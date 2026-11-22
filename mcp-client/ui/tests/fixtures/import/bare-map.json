@@ -1,0 +1,2 @@
+{ "docs": { "url": "https://docs.example.com/mcp", "bearer_token_env_var": "DOCS_TOKEN", "http_headers": { "X-Workspace": "acme" }, "env_http_headers": { "X-Tenant": "TENANT_ID" }, "enabled": true },
+"tools": { "command": "uvx", "args": ["some-tools"], "env_vars": ["LOCAL_TOKEN"] } }

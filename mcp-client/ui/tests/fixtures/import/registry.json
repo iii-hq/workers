@@ -1,0 +1,6 @@
+{ "name": "io.modelcontextprotocol.anonymous/weather", "description": "Weather", "version": "2.0.0",
+"packages": [{ "registryType": "npm", "identifier": "weather-mcp", "transport": { "type": "stdio" } }],
+"remotes": [ { "type": "streamable-http", "url": "https://mcp.anonymous.modelcontextprotocol.io/http", "headers": [
+{ "name": "X-API-Key", "description": "API key for authentication", "isRequired": true, "isSecret": true },
+{ "name": "X-Region", "description": "Service region", "default": "us-east-1", "choices": ["us-east-1", "eu-west-1"] } ] },
+{ "type": "sse", "url": "https://mcp.anonymous.modelcontextprotocol.io/sse" } ] }

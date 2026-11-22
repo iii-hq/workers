@@ -1,0 +1,2 @@
+{ "mcpServers": { "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_PERSONAL_ACCESS_TOKEN>" } },
+"remote-http-mcp": { "serverUrl": "https://mcp.example.com/mcp", "headers": { "API_KEY": "Bearer ${env:AUTH_TOKEN}" } } } }
