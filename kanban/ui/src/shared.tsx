@@ -1,10 +1,11 @@
-import { type ExtensionIii, ShadcnBadge } from '@iii-dev/console-ui'
+import { type ExtensionIii, ShadcnBadge, StatusDot } from '@iii-dev/console-ui'
 import * as lucide from 'lucide-react'
 import { type LucideIcon, Tag } from 'lucide-react'
 import { useSyncExternalStore } from 'react'
 import { type StatusStep, statusStep } from './board-state'
 import { ColumnStatusIcon, PriorityIcon, priorityRank } from './ui/glyphs'
 import { PriorityMenu, StatusMenu } from './ui/properties'
+import type { Question, QuestionAnswer, QuestionAnswerResult, StructuredAnswer } from './question-rules'
 
 export type Column = { id: string; label: string }
 
@@ -25,6 +26,7 @@ export type TicketSummary = {
   updated_at: string
   deleted_at: string | null
   comment_count: number
+  open_questions: number
   parent_id: string | null
   project_id: string | null
   release_id: string | null
@@ -58,6 +60,7 @@ export type Project = {
   description: string
   lead: string | null
   color: GlyphTone | null
+  repos?: string[]
   source_label: string | null
   created_at: string
   updated_at: string
@@ -120,6 +123,9 @@ export type Comment = {
   body: string
   author: string
   created_at: string
+  question?: Question
+  answer?: QuestionAnswer
+  recorded_by?: string
 }
 
 export type Activity = {
@@ -149,6 +155,7 @@ export type Ticket = {
   deleted_at: string | null
   created_by: string
   comments: Comment[]
+  open_questions: number
   activity: Activity[]
   parent_id: string | null
   project_id: string | null
@@ -240,6 +247,11 @@ export const api = {
     iii.call<Ticket>('kanban::ticket::restore', payload),
   comment: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.call<{ comment: Comment; ticket: Ticket }>('kanban::comment::create', payload),
+  answerQuestion: (
+    iii: ExtensionIii,
+    payload: { ticket_id: string; comment_id: string; user: string } &
+      ({ answers: StructuredAnswer[] } | { dismissed: true }),
+  ) => iii.call<QuestionAnswerResult>('kanban::question::answer', payload),
   links: (iii: ExtensionIii, id: string) => iii.call<TicketLinks>('kanban::ticket::links', { id }),
   projects: (iii: ExtensionIii, includeArchived = true) =>
     iii.call<{ projects: ProjectView[] }>('kanban::project::list', { include_archived: includeArchived }),
@@ -348,6 +360,7 @@ export function summarizeTicket(ticket: Ticket): TicketSummary {
     updated_at: ticket.updated_at,
     deleted_at: ticket.deleted_at,
     comment_count: ticket.comments?.length ?? 0,
+    open_questions: ticket.open_questions,
     parent_id: ticket.parent_id ?? null,
     project_id: ticket.project_id ?? null,
     release_id: ticket.release_id ?? null,
@@ -478,4 +491,13 @@ export function Pills({ pills }: { pills: Pill[] | undefined }) {
       })}
     </span>
   )
+}
+
+export function NeedsYouMark({ count }: { count: number }) {
+  return count > 0 ? (
+    <span className="kb-needs-you" title={`${count} open ${count === 1 ? 'question' : 'questions'}`}>
+      <StatusDot tone="warn" />
+      needs you
+    </span>
+  ) : null
 }
