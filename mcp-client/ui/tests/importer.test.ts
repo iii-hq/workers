@@ -474,6 +474,12 @@ describe('credentials in any field', () => {
     const names = [...r.secrets.map((s) => s.vaultName), ...toStore.map((s) => s.name)]
     for (const text of [...names, JSON.stringify(entry)]) expect(text.toLowerCase()).not.toContain('tokensentinel42')
   })
+  it('reads a template nested 10,000 deep without throwing, and masks it', () => {
+    const deep = '${A:-'.repeat(10_000) + '}'.repeat(10_000)
+    const r = parseImport(JSON.stringify({ x: { command: 'srv', env: { DATABASE_URL: deep } } }), []).rows[0]
+    expect(r.needs.map((n) => [n.path, n.password])).toEqual([['/env/DATABASE_URL', true]])
+    expect(r.needs[0].original).not.toContain('${')
+  })
   it('flags a --token=<value> argument to split, holding only the flag', () => {
     const r = parseImport(JSON.stringify({ x: { command: 'srv', args: [`--token=${FAKE}`] } }), []).rows[0]
     expect([r.status, r.skipReason, r.entry, r.target, r.notes, r.ignored, r.secrets, r.needs]).toEqual([

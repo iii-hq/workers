@@ -213,9 +213,10 @@ function secretArgValue(arg: string): string | undefined {
   return m && looksSecretName(m[1].replace(/^-+/, '')) ? m[2].replace(/^Bearer\s+/i, '') : undefined
 }
 /** `text` with every plain reference removed and each other one kept as written (`raw`), replaced by its word
- * read the same way (`word`), or replaced by `x`; null when a `${` does not close or parse. Braces are
- * matched by counting, so a default may hold `}` of a nested reference. */
-function expand(text: string, world: 'raw' | 'word' | 'x'): string | null {
+ * read the same way (`word`), or replaced by `x`; null when a `${` does not close or parse, or nests more than
+ * 32 deep. Braces are matched by counting, so a default may hold `}` of a nested reference. */
+function expand(text: string, world: 'raw' | 'word' | 'x', level = 0): string | null {
+  if (level > 32) return null
   let out = ''
   let at = 0
   for (let open = text.indexOf('${'); open >= 0; open = text.indexOf('${', at)) {
@@ -234,7 +235,7 @@ function expand(text: string, world: 'raw' | 'word' | 'x'): string | null {
     if (PLAIN.test(body)) continue
     const head = OPERATOR.exec(body)?.[0]
     if (head === undefined) return null
-    const word = world === 'x' ? 'x' : expand(body.slice(head.length), world)
+    const word = world === 'x' ? 'x' : expand(body.slice(head.length), world, level + 1)
     if (word === null) return null
     out += world === 'raw' ? `\${${head}${word}}` : word
   }
