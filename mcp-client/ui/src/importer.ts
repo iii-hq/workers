@@ -118,6 +118,10 @@ const ENV_BARE = new RegExp(`^(?:\\$(${VAR})|%(${VAR})%)$`)
 const PLACEHOLDER = /^(<.+>|your[-_ ].+|x{3,}|\*{3,}|\.{3}|changeme|replace[-_ ]?me)$/i
 const FLAG = /^--?[A-Za-z][\w-]*$/
 const ASSIGNED = /^(--?[A-Za-z][\w-]*)=(.+)$/
+/** An argument shaped as a header line: `Authorization: Bearer x`. */
+const HEADER_ARG = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):\s*(.+)$/
+const USERINFO = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#@\s]+@/
+const QUERY_NAME = /[?&]([^=&#\s]+)=/g
 const BEARER = /^Bearer\s+(.+)$/i
 const ABSOLUTE = /^([A-Za-z]:[\\/]|\/)/
 const PACKAGES_NOTE = 'packages are not imported: add a stdio server by hand'
@@ -170,14 +174,28 @@ function fieldOf(path: string, args: unknown): string {
   const flag = Array.isArray(args) ? str(args[Number(last) - 1]) : ''
   return FLAG.test(flag) ? flag.replace(/^-+/, '') : `ARG_${Number(last) + 1}`
 }
-/** Whether a URL carries a credential: userinfo, or a query parameter whose name looks like one. */
-function urlHoldsSecret(value: string): boolean {
+/** Whether a string carries a URL credential: userinfo, or a query parameter whose name looks like one.
+ * Read as text and parsed, so a URL inside a longer string or around a `${…}` counts too. */
+function holdsCredential(value: string): boolean {
+  if (USERINFO.test(value) || [...value.matchAll(QUERY_NAME)].some((m) => looksSecretName(m[1]))) return true
   try {
     const url = new URL(value)
     return url.username !== '' || url.password !== '' || [...url.searchParams.keys()].some(looksSecretName)
   } catch {
     return false
   }
+}
+/** The value of an argument that names its credential itself, `--token=<value>` or `Authorization: <value>`,
+ * without a `Bearer` prefix; undefined for any other argument. */
+function secretArgValue(arg: string): string | undefined {
+  const m = ASSIGNED.exec(arg) ?? HEADER_ARG.exec(arg)
+  return m && looksSecretName(m[1].replace(/^-+/, '')) ? m[2].replace(/^Bearer\s+/i, '') : undefined
+}
+/** `base`, or `base<sep>2`, `base<sep>3`… cut to `max`, while `taken` refuses the name. */
+function free(base: string, sep: string, max: number, taken: (name: string) => boolean): string {
+  let name = base
+  for (let n = 2; taken(name); n++) name = `${base.slice(0, max - `${sep}${n}`.length)}${sep}${n}`
+  return name
 }
 const envRefsOf = (entry: Json) =>
   [
@@ -275,16 +293,9 @@ function ignoredOf(e: Json, inputs: Map<string, Json>, bearer: boolean): Ignored
 
 type Built = Pick<ImportRow, 'entry' | 'secrets' | 'needs' | 'ignored' | 'notes'>
 
-/** One entry rewritten for mcp-client (5.2) with its secrets and needs found (6.7), or why it is skipped. */
-function build(e: Json, server: string, inputs: Map<string, Json>, registry: boolean): Built | string {
+/** One entry rewritten for mcp-client (5.2) with its secrets and needs found (6.7). */
+function build(e: Json, server: string, inputs: Map<string, Json>, registry: boolean): Built {
   const args = Array.isArray(e.args) ? e.args.filter((arg): arg is string => typeof arg === 'string') : []
-  for (const arg of args) {
-    const m = ASSIGNED.exec(arg)
-    // A literal value: rules 1 to 6 of the table all read a reference, a `${`, or a placeholder.
-    if (m && isSecretFlag(m[1]) && !REFERENCE.test(m[2]) && !m[2].includes('${') && !PLACEHOLDER.test(m[2])) {
-      return `Split \`${m[1]}=…\` into two arguments, then paste again`
-    }
-  }
   const secrets: ImportSecret[] = []
   const needs: ImportNeed[] = []
   const notes: string[] = []
@@ -293,8 +304,17 @@ function build(e: Json, server: string, inputs: Map<string, Json>, registry: boo
     return ''
   }
   /** One pasted string through the rewrite table, first match wins: what the entry holds at `path`. */
-  const put = (path: string, value: string, secret: boolean, envBlock = false): string => {
+  const put = (path: string, value: string, secretName: boolean, envBlock = false): string => {
     if (REFERENCE.test(value)) return value
+    const credential = holdsCredential(value)
+    if (credential && value.includes('${')) {
+      // Asked for again whole: the credential around the reference is never shown.
+      needs.push({ path, label: labelOf(path), password: true, original: maskSecret(value) })
+      return ''
+    }
+    const argValue = path.startsWith('/args/') ? secretArgValue(value) : undefined
+    // Any string that carries a credential is a secret position, whatever field it sits in.
+    const secret = secretName || credential || argValue !== undefined
     if (BUILTIN.test(value)) return need(path, secret, value)
     const input = INPUT.exec(value)
     if (input) {
@@ -309,16 +329,26 @@ function build(e: Json, server: string, inputs: Map<string, Json>, registry: boo
     const bare = envBlock ? ENV_BARE.exec(value) : null
     if (bare) return `env://${bare[1] ?? bare[2]}`
     if (value.includes('${')) return need(path, secret, value)
-    if (PLACEHOLDER.test(value)) return need(path, secret, '')
+    // A `--token=…` or header argument whose value is a reference or a placeholder cannot keep it inside.
+    if (
+      PLACEHOLDER.test(value) ||
+      (argValue !== undefined && (REFERENCE.test(argValue) || PLACEHOLDER.test(argValue)))
+    ) {
+      return need(path, secret, '')
+    }
     if (!secret) return value
     // An empty value in a secret position is missing, not a secret to store.
     if (value === '') return need(path, true, '')
-    secrets.push({ path, vaultName: secretVaultName(server, fieldOf(path, args)), value, masked: maskSecret(value) })
+    // A vault name another value holds already gets `_2`, `_3`…: no pasted secret is lost.
+    const vaultName = free(secretVaultName(server, fieldOf(path, args)), '_', 128, (name) =>
+      secrets.some((s) => s.vaultName === name && s.value !== value),
+    )
+    secrets.push({ path, vaultName, value, masked: maskSecret(value) })
     return ''
   }
 
   const rawUrl = [e.httpUrl, e.serverUrl, e.url].find((url): url is string => typeof url === 'string')
-  const url = rawUrl === undefined ? undefined : put('/url', rawUrl, urlHoldsSecret(rawUrl))
+  const url = rawUrl === undefined ? undefined : put('/url', rawUrl, false)
 
   const headers: [string, string][] = []
   let bearer: string | undefined = given(e.bearer_token_env_var) ? `env://${e.bearer_token_env_var}` : undefined
@@ -372,8 +402,9 @@ function build(e: Json, server: string, inputs: Map<string, Json>, registry: boo
     // The page's own format, kept as written: its secrets still go to the vault.
     auth = { ...page }
     for (const key of ['token', 'client_secret']) {
-      const value = page[key]
-      if (typeof value === 'string') auth[key] = put(pointer('auth', key), value, true)
+      const value = asText(page[key])
+      if (value === null) delete auth[key]
+      else auth[key] = put(pointer('auth', key), value, true)
     }
   } else if (bearer !== undefined) {
     auth = { type: 'bearer', token: put('/auth/token', bearer, true) }
@@ -421,8 +452,13 @@ function targetOf(entry: Json, secrets: ImportSecret[]): string {
   }
   const hidden = secrets.find((s) => s.path === '/url')
   if (!hidden) return str(entry.url) || '…'
-  const url = new URL(hidden.value)
-  return `${url.protocol}//${url.host} (stored as a secret)`
+  try {
+    const url = new URL(hidden.value)
+    return `${url.protocol}//${url.host} (stored as a secret)`
+  } catch {
+    // Found as text only: no host to show.
+    return '… (stored as a secret)'
+  }
 }
 
 /** A server name as validation takes it: `^[a-z0-9][a-z0-9-]{0,23}$`. */
@@ -435,14 +471,6 @@ export function slugName(name: string): string {
     .slice(0, 24)
     .replace(/-$/, '')
   return slug || 'server'
-}
-
-/** `base`, or `base-2`, `base-3`… cut to stay within 24 when an earlier row of the paste holds it. */
-function unique(base: string, used: Set<string>): string {
-  let name = base
-  for (let n = 2; base !== '' && used.has(name); n++) name = `${base.slice(0, 24 - `-${n}`.length)}-${n}`
-  used.add(name)
-  return name
 }
 
 export function parseImport(text: string, existing: string[]): ImportResult {
@@ -458,7 +486,9 @@ export function parseImport(text: string, existing: string[]): ImportResult {
   if ('rows' in found) return found
   const used = new Set<string>()
   const rows = found.servers.map(([originalName, value]): ImportRow => {
-    const name = unique(originalName === '' ? '' : slugName(originalName), used)
+    // An earlier row of the paste holding the slug gives `-2`, `-3`…
+    const name = originalName === '' ? '' : free(slugName(originalName), '-', 24, (n) => used.has(n))
+    used.add(name)
     const built = isObject(value)
       ? (skipReason(value, found.gemini === true) ??
         build(value, name, found.inputs ?? new Map(), found.source === 'registry'))
@@ -514,8 +544,9 @@ export function finalEntry(
     for (const key of keys) at = at[key] as Json
     at[last] = value
   }
-  const store = (name: string, value: string) => {
-    if (!toStore.has(name)) toStore.set(name, value)
+  const store = (base: string, value: string) => {
+    const name = free(base, '_', 128, (n) => toStore.has(n) && toStore.get(n) !== value)
+    toStore.set(name, value)
     return `secret://${name}`
   }
   for (const s of row.secrets) set(s.path, store(s.vaultName, s.value))

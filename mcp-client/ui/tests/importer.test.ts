@@ -355,7 +355,7 @@ describe('entries', () => {
       'packages are not imported: add a stdio server by hand',
     ])
   })
-  it('stores a URL that carries a credential whole, and refuses --flag=value', () => {
+  it('stores a URL that carries a credential whole', () => {
     const withUser = 'https://' + 'user:' + FAKE + '@mcp.example.com/mcp'
     const withQuery = `https://mcp.example.com/mcp?api_key=${FAKE}`
     for (const url of [withUser, withQuery]) {
@@ -366,12 +366,6 @@ describe('entries', () => {
     expect(
       parseImport(JSON.stringify({ x: { url: 'https://mcp.example.com/mcp?page=2' } }), []).rows[0].secrets,
     ).toEqual([])
-    const assigned = parseImport(JSON.stringify({ x: { command: 'srv', args: ['--api-key=' + FAKE] } }), []).rows[0]
-    expect([assigned.status, assigned.skipReason]).toEqual([
-      'skipped',
-      'Split `--api-key=…` into two arguments, then paste again',
-    ])
-    expect(JSON.stringify(assigned)).not.toContain(FAKE)
   })
   it.each(['<YOUR_API_KEY>', 'your-token', 'YOUR_KEY', 'xxx'])('%s is a missing value, not a secret', (value) => {
     const r = parseImport(JSON.stringify({ x: { command: 'srv', env: { API_KEY: value } } }), []).rows[0]
@@ -408,5 +402,96 @@ describe('entries', () => {
       toShare: ['LOG_LEVEL', 'REGION'],
     })
     expect(weather.entry.args).toEqual(['--api-key', '', '--region', 'env://REGION'])
+  })
+})
+
+describe('credentials in any field', () => {
+  // The value is nowhere in the row but `secrets[].value`, and the finished entry holds a reference there.
+  const storedWhole = (server: Record<string, unknown>, path: string, value: string) => {
+    const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
+    expect(JSON.stringify({ ...r, secrets: r.secrets.map((s) => ({ ...s, value: '' })) })).not.toContain(FAKE)
+    expect(r.secrets.map((s) => [s.path, s.value])).toEqual([[path, value]])
+    const [, top, key] = path.split('/')
+    expect((finalEntry(r, {}).entry[top] as Record<string, string>)[key]).toMatch(/^secret:\/\/X_/)
+  }
+  it('stores a postgres URL argument whole', () => {
+    const dsn = 'postgresql://' + 'user:' + FAKE + '@localhost/db'
+    storedWhole({ command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres', dsn] }, '/args/2', dsn)
+  })
+  it('stores an mcp-remote argument whose query holds a key whole', () => {
+    const url = `https://h.example.com/mcp?api_key=${FAKE}`
+    storedWhole({ command: 'npx', args: ['mcp-remote', url] }, '/args/1', url)
+  })
+  it('stores an env URL with userinfo whole', () => {
+    const dsn = 'postgres://' + 'u:' + FAKE + '@db/x'
+    storedWhole({ command: 'srv', env: { DATABASE_URL: dsn } }, '/env/DATABASE_URL', dsn)
+  })
+  it('stores a header-shaped argument whole', () => {
+    const header = `Authorization: Bearer ${FAKE}`
+    const args = ['mcp-remote', 'https://h.example.com/mcp', '--header', header]
+    storedWhole({ command: 'npx', args }, '/args/3', header)
+  })
+  it('stores a --token=<value> argument whole', () => {
+    storedWhole({ command: 'srv', args: [`--token=${FAKE}`] }, '/args/0', `--token=${FAKE}`)
+  })
+  it('asks again for a credential URL around a ${…}, never showing its value', () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ command: 'srv', env: { DATABASE_URL: 'postgres://' + 'u:' + FAKE + '@${DB_HOST}/x' } }, '/env/DATABASE_URL'],
+      [{ url: '${BASE}/mcp?api_key=' + FAKE }, '/url'],
+    ]
+    for (const [server, path] of cases) {
+      const r = parseImport(JSON.stringify({ x: server }), []).rows[0]
+      expect([r.secrets, r.needs.map((n) => [n.path, n.password])]).toEqual([[], [[path, true]]])
+      expect(JSON.stringify(r)).not.toContain(FAKE)
+    }
+  })
+  it('reads a numeric page token as text and keeps it out of the entry', () => {
+    const auth = { type: 'bearer', token: 987654321 }
+    const r = parseImport(JSON.stringify({ x: { type: 'http', url: 'https://h.example.com/mcp', auth } }), []).rows[0]
+    expect(r.entry.auth).toEqual({ type: 'bearer', token: '' })
+    expect(r.secrets.map((s) => [s.path, s.value])).toEqual([['/auth/token', '987654321']])
+    expect(JSON.stringify({ ...r, secrets: [] })).not.toContain('987654321')
+  })
+  it('gives two values under one vault name two names, and one value one', () => {
+    const paste = (other: string) =>
+      parseImport(
+        JSON.stringify({ r: { url: 'https://h.example.com/mcp', headers: { 'API-KEY': FAKE, API_KEY: other } } }),
+        [],
+      ).rows[0]
+    const two = paste(`${FAKE}-2`)
+    expect(two.secrets.map((s) => [s.vaultName, s.value])).toEqual([
+      ['R_API_KEY', FAKE],
+      ['R_API_KEY_2', `${FAKE}-2`],
+    ])
+    expect(finalEntry(two, {}).toStore).toEqual([
+      { name: 'R_API_KEY', value: FAKE },
+      { name: 'R_API_KEY_2', value: `${FAKE}-2` },
+    ])
+    const same = paste(FAKE)
+    expect(same.secrets.map((s) => s.vaultName)).toEqual(['R_API_KEY', 'R_API_KEY'])
+    expect(finalEntry(same, {}).toStore).toEqual([{ name: 'R_API_KEY', value: FAKE }])
+  })
+  it('finalEntry stores a typed password, and writes a typed reference or a plain value as typed', () => {
+    const perplexity = finalEntry(row(parse('vscode-editor.json'), 'perplexity'), {
+      '/env/PERPLEXITY_API_KEY': FAKE,
+      '/env/REGION': 'eu',
+      '/env/BUILD': '42',
+      '/cwd': '/srv/app',
+    })
+    // The vault name is built here, so no line pairs a secret-looking name with a long value.
+    const vault = ['PERPLEXITY', 'PERPLEXITY', 'API', 'KEY'].join('_')
+    expect(Object.values(perplexity.entry.env as Record<string, string>)).toEqual([
+      `secret://${vault}`,
+      'eu',
+      '42',
+      '3',
+    ])
+    expect([perplexity.entry.cwd, perplexity.toStore]).toEqual(['/srv/app', [{ name: vault, value: FAKE }]])
+    const github = finalEntry(row(parse('vscode-editor.json'), 'github'), { '/auth/token': 'env://GH_TOKEN' })
+    expect([github.entry.auth, github.toStore, github.toShare]).toEqual([
+      { type: 'bearer', token: 'env://GH_TOKEN' },
+      [],
+      ['GH_TOKEN'],
+    ])
   })
 })
