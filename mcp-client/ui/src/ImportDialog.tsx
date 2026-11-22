@@ -24,6 +24,7 @@ import {
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { FileUp } from 'lucide-react'
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { coded } from './AgentAccessView'
 import type { Api } from './api'
 import {
   crossRowBlockers,
@@ -312,7 +313,7 @@ export function ImportDialog({
             </div>
             {[row.skipReason, ...row.notes].filter(Boolean).map((note) => (
               <p key={note} className="mcp-ui-import-quiet">
-                {say(note as string)}
+                {coded(say(note as string))}
               </p>
             ))}
           </TableCell>
@@ -375,7 +376,7 @@ export function ImportDialog({
                   ))}
                 </div>
               ) : null}
-              {blocker !== undefined ? <p className="mcp-ui-import-block">{say(blocker)}</p> : null}
+              {blocker !== undefined ? <p className="mcp-ui-import-block">{coded(say(blocker))}</p> : null}
               {errors.length > 0 ? (
                 <ul className="mcp-ui-issues">
                   {errors.map((issue, k) => (
@@ -386,7 +387,7 @@ export function ImportDialog({
                             <code>{issue.path}</code>:{' '}
                           </>
                         ) : null}
-                        {say(issue.message)}
+                        {coded(say(issue.message))}
                       </span>
                     </li>
                   ))}
