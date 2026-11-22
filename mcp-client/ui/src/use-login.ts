@@ -14,7 +14,7 @@ export function useLogin(api: Api, server: Server) {
   const [now, setNow] = useState(Date.now)
   // Bumped by every action and by a change of server: a reply that returns after either is dropped.
   const revision = useRef(0)
-  const { name, login } = server
+  const { name, login, state } = server
   const pending = login?.pending === true
 
   useEffect(() => {
@@ -23,6 +23,12 @@ export function useLogin(api: Api, server: Server) {
     setBusy(null)
     setError(null)
   }, [name])
+  // A server that moved on (signed in from another tab, switched to another auth, turned off) leaves no old
+  // failure behind. A failed start or finish leaves the state as it was, so a real failure stays.
+  useEffect(() => {
+    setHeld(null)
+    setError(null)
+  }, [state])
   // The worker ended the attempt (signed in, cancelled elsewhere, or taken by a finish): its link is spent.
   useEffect(() => {
     if (login === null) setHeld(null)

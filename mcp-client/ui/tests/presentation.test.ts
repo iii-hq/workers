@@ -32,6 +32,7 @@ import {
   STATE_WORD,
   safeAuthorizeLink,
   searchNote,
+  signInControls,
   signInView,
   skippedText,
   stageTrack,
@@ -732,5 +733,31 @@ describe('processFacts', () => {
         now,
       )[0],
     ).toEqual({ label: 'State', value: 'stopped' })
+  })
+})
+
+describe('signInControls', () => {
+  it('shows sign-in only for a server that signs in, with Connect or Sign out when idle', () => {
+    expect(signInControls(srv({ state: 'ready', auth: 'bearer' }), 'failed')).toEqual({
+      show: false,
+      connect: false,
+      signOut: false,
+    })
+    expect(signInControls(srv({ state: 'needs_login', auth: 'oauth' }), 'idle')).toEqual({
+      show: true,
+      connect: true,
+      signOut: false,
+    })
+    expect(signInControls(srv({ state: 'ready', auth: 'oauth' }), 'idle')).toEqual({
+      show: true,
+      connect: false,
+      signOut: true,
+    })
+    expect(
+      signInControls(
+        srv({ state: 'needs_login', auth: 'oauth', login: { pending: true, expires_at: NOW + 582_000 } }),
+        'resumed',
+      ),
+    ).toEqual({ show: true, connect: false, signOut: false })
   })
 })

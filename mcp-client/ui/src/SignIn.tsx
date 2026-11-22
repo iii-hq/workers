@@ -4,7 +4,7 @@ import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Copy, ExternalLink } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import type { Api } from './api'
-import { countdown } from './presentation'
+import { countdown, signInControls } from './presentation'
 import { CopyIconButton } from './SchemaTable'
 import type { Server } from './types'
 import { useLogin } from './use-login'
@@ -40,11 +40,14 @@ export function SignIn({
   useEffect(() => {
     if (!login.paste) setPasted('')
   }, [login.paste])
+  // As the hook's own error: a server that moved on leaves no old failure behind.
+  useEffect(() => {
+    setSignOutError(null)
+  }, [server.state])
 
   const busy = phase === 'starting' || phase === 'finishing'
-  const connect = server.state === 'needs_login' && (phase === 'idle' || phase === 'starting')
-  const signOut = server.state === 'ready' && server.auth === 'oauth' && phase === 'idle'
-  if (!connect && !signOut && !login.timer && phase !== 'failed') return dialog
+  const { show, connect, signOut } = signInControls(server, phase)
+  if (!show) return dialog
 
   const primary = quiet ? 'secondary' : 'primary'
   const finish = () => {
