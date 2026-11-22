@@ -1,5 +1,6 @@
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
-import { type AccessClass, serverAccess } from './access'
+import { type AccessClass, type FunctionAccess, SOURCE_TEXT, serverAccess } from './access'
+import { blockOf, type GateKind, type GateStatus } from './gate-rules'
 import type {
   AuthKind,
   EngineFunction,
@@ -667,5 +668,114 @@ export function runConfirm(
   return {
     title: `Run \`${name}\` on ${server}? This tool ${effect}.`,
     tone: cls === 'destructive' ? 'danger' : 'default',
+  }
+}
+
+/** One function in an Agent access list: its id and why it counts as what it is. */
+export interface AccessItem {
+  id: string
+  source: string
+}
+
+const GONE = 'No longer listed by the server'
+const itemOf = (fn: FunctionAccess): AccessItem => ({ id: fn.functionId, source: SOURCE_TEXT[fn.source] })
+const itemsOf = (access: FunctionAccess[], ids: string[]): AccessItem[] =>
+  ids.map((id) => {
+    const fn = access.find((a) => a.functionId === id)
+    return fn ? itemOf(fn) : { id, source: GONE }
+  })
+// A tool classified from its name is the one worth a second look.
+const guessedFirst = (a: FunctionAccess, b: FunctionAccess) =>
+  Number(b.source === 'name') - Number(a.source === 'name') || byName(a.functionId, b.functionId)
+
+/** The question Allow reads and Update rules ask: every id the gate will allow, or for an update what changes. */
+export function accessConfirm(
+  server: string,
+  status: GateStatus,
+  access: FunctionAccess[],
+): { title: string; body: string; groups: { label: string; items: AccessItem[] }[] } {
+  const reads = access.filter((fn) => fn.cls === 'read')
+  const of = (kinds: FunctionAccess['kind'][]) => reads.filter((fn) => kinds.includes(fn.kind)).sort(guessedFirst)
+  const groups = status.all.includes('no_rules')
+    ? [
+        { label: 'Tools', items: of(['tool', 'instructions']).map(itemOf) },
+        { label: 'Resources', items: of(['resource']).map(itemOf) },
+        { label: 'Prompts', items: of(['prompt']).map(itemOf) },
+      ]
+    : [
+        { label: 'Added', items: itemsOf(access, status.toAdd) },
+        { label: 'Removed', items: itemsOf(access, status.toRemove) },
+      ]
+  return {
+    title: `Let agents read ${server} without asking?`,
+    body: `The approval gate will allow these ${count(reads.length, 'function', 'functions')}. Every other function of this server still waits for a person.`,
+    groups: groups.filter((group) => group.items.length > 0),
+  }
+}
+
+/** The alert over Connection when an agent can write without a person; `null` otherwise. An id outside this
+ * server's exact ids keeps its whole name. */
+export function reviewAccessPanel(status: GateStatus, server: string): string | null {
+  if (status.kind !== 'stale_unsafe' && status.kind !== 'overridden_write') return null
+  const prefix = `mcp::${server}::`
+  const names = [
+    ...status.unsafe,
+    ...status.overridden.filter((o) => o.verdict.verdict === 'allow').map((o) => o.functionId),
+  ].map((id) => (id.startsWith(prefix) && !id.includes('*') ? id.slice(prefix.length) : id))
+  const more = names.length > 1 ? ` and ${names.length - 1} more` : ''
+  return `Agents can run \`${names[0]}\`${more} without approval.`
+}
+
+const ACCESS_ACTION: Record<GateKind, 'allow' | 'update' | 'remove' | 'settings' | 'retry' | null> = {
+  no_gate: null,
+  not_connected: 'remove',
+  no_rules: 'allow',
+  present: 'remove',
+  missing: 'update',
+  stale_harmless: 'update',
+  stale_unsafe: 'update',
+  overridden_read: 'settings',
+  overridden_write: 'settings',
+  unreadable: 'retry',
+}
+
+/** The one default button of each Agent access state. */
+export const accessAction = (kind: GateKind) => ACCESS_ACTION[kind]
+
+const LINEAR_MCP = 'https://mcp.linear.app/mcp'
+
+/** Linear's read-only endpoint for its MCP URL as Linear documents it; `null` for any other target. */
+export const readOnlyEndpoint = (target: string): string | null =>
+  target === LINEAR_MCP ? `${LINEAR_MCP}/readonly` : null
+
+/** What the Agent access view lists: the reads the block allows, every other function (which asks a person),
+ * the ids an update adds and removes, and what the gate decides otherwise. Before the server is listed, the
+ * stored block as it is, unjudged. */
+export function accessLists(
+  status: GateStatus,
+  server: string,
+  rules: unknown[],
+  access: FunctionAccess[],
+): {
+  block: number
+  allowed: AccessItem[]
+  ask: AccessItem[]
+  toAdd: AccessItem[]
+  toRemove: AccessItem[]
+  overridden: AccessItem[]
+} {
+  const block = [...new Set(blockOf(rules, server).ids)]
+  const judged = status.kind !== 'not_connected'
+  const allowed = access.filter((fn) => fn.cls === 'read' && block.includes(fn.functionId))
+  return {
+    block: block.length,
+    allowed: judged ? allowed.map(itemOf) : block.sort(byName).map((id) => ({ id, source: '' })),
+    ask: judged ? access.filter((fn) => !allowed.includes(fn)).map(itemOf) : [],
+    toAdd: itemsOf(access, status.toAdd),
+    toRemove: itemsOf(access, status.toRemove),
+    overridden: status.overridden.map((o) => ({
+      id: o.functionId,
+      source: o.verdict.reason ?? 'Allowed by the approval gate without asking',
+    })),
   }
 }

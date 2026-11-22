@@ -1,7 +1,7 @@
-import { Button, List, ListItem, Skeleton, StatusDot } from '@iii-dev/console-ui'
+import { Button, List, ListItem, Skeleton, StatusDot, StatusPanel } from '@iii-dev/console-ui'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { Download, Plus } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { currentRow, onColumnKeys } from './columns'
 import { byName, pageState, presentServer, type RowActionId, type Tone } from './presentation'
 import type { Selection } from './types'
@@ -18,6 +18,9 @@ export function ServerList({
   onAdd,
   onImport,
   draft,
+  reviewAccess,
+  orphans,
+  onRemoveOrphan,
 }: {
   data: ServersData
   selection: Selection
@@ -27,6 +30,11 @@ export function ServerList({
   onImport?: () => void
   /** The unsaved row of Add server, listed last and selected. */
   draft: { name: string } | null
+  /** Ready servers whose approval-gate rules let an agent write without a person. */
+  reviewAccess: ReadonlySet<string>
+  /** Approval-gate blocks of names the config no longer holds, with why the last removal failed. */
+  orphans: { server: string; count: number; error?: string }[]
+  onRemoveOrphan: (server: string) => void
 }) {
   const state = pageState(data)
   const now = Date.now()
@@ -40,6 +48,7 @@ export function ServerList({
     count?: string,
     action?: ReactNode,
     unsaved = false,
+    dot: Tone = tone,
   ) => {
     const selected = unsaved || name === selection.server
     return (
@@ -59,7 +68,7 @@ export function ServerList({
           onClick={() => onSelect({ server: unsaved ? null : name, item: { kind: 'connection' } })}
         >
           <span className={uiClasses.listItemIcon}>
-            <StatusDot tone={tone} pulse={pulse} />
+            <StatusDot tone={dot} pulse={pulse} />
           </span>
           <span className={uiClasses.listItemContent}>
             <span className={uiClasses.listItemTitle}>{name}</span>
@@ -75,6 +84,29 @@ export function ServerList({
   return (
     <>
       <List role="group" aria-label="MCP servers" className="mcp-ui-list" data-column="1" onKeyDown={onColumnKeys}>
+        {orphans.map((orphan) => (
+          <Fragment key={`:orphan:${orphan.server}`}>
+            <StatusPanel
+              className="mcp-ui-panel"
+              variant="warn"
+              headline={`The approval gate still allows ${orphan.count} ${orphan.count === 1 ? 'function' : 'functions'} of \`${orphan.server}\`, which is not configured.`}
+              action={
+                <Button variant="secondary" size="sm" onClick={() => onRemoveOrphan(orphan.server)}>
+                  Remove rules
+                </Button>
+              }
+            />
+            {orphan.error !== undefined ? (
+              <StatusPanel
+                className="mcp-ui-panel"
+                variant="alert"
+                role="alert"
+                headline="Could not remove the rules"
+                detail={orphan.error}
+              />
+            ) : null}
+          </Fragment>
+        ))}
         {state === 'loading'
           ? SKELETON_ROWS.map((n) => (
               <ListItem
@@ -94,7 +126,12 @@ export function ServerList({
             : [...(data.list?.servers ?? [])]
                 .sort((a, b) => byName(a.name, b.name))
                 .map((server) => {
-                  const { dot, pulse, description, action } = presentServer(server, now)
+                  const { dot, pulse, description, action: fix } = presentServer(server, now)
+                  // An agent can write without a person: the dot says so, the host and auth stay as they are.
+                  const review = !fix && reviewAccess.has(server.name)
+                  const action: { id: RowActionId; label: string } | null = review
+                    ? { id: 'review_access', label: 'Review access' }
+                    : fix
                   // One trailing thing: the fix, else the tool count once the tools are listed.
                   const count = !action && server.tools_listed ? String(server.tools.length) : undefined
                   return row(
@@ -113,6 +150,8 @@ export function ServerList({
                         {action.label}
                       </Button>
                     ) : null,
+                    false,
+                    review ? 'alert' : dot,
                   )
                 })}
         {draft ? row(draft.name || 'New server', 'ghost', false, 'Not saved', undefined, null, true) : null}

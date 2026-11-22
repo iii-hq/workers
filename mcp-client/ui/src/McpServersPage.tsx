@@ -19,9 +19,11 @@ import {
   useConfirm,
 } from '@iii-dev/console-ui'
 import { copyText, errorMessage } from '@iii-dev/console-ui/format'
-import { useContainerNarrow, useCopyFlash, usePaneState } from '@iii-dev/console-ui/hooks'
+import { useContainerNarrow, useCopyFlash, usePaneState, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { ChevronLeft, Copy, FileJson, Plug, Plus, RefreshCw, X } from 'lucide-react'
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AgentAccessView } from './AgentAccessView'
+import { serverAccess } from './access'
 import { createApi } from './api'
 import { ConnectionView, Lines, ReviewPanel } from './ConnectionView'
 import { currentRow, focusColumn, onColumnKeys } from './columns'
@@ -36,6 +38,8 @@ import {
   sameJson,
 } from './config-model'
 import { FunctionDetail } from './FunctionDetail'
+import { type GateRead, gateDeps, probeVerdicts, readGate, writeBlock } from './gate-io'
+import { gateStatus, orphanBlocks, type Verdict } from './gate-rules'
 import { JsonView } from './JsonView'
 import { ProcessView } from './ProcessView'
 import {
@@ -47,8 +51,9 @@ import {
   pathHeads,
   presentServer,
   type RowActionId,
+  readOnlyEndpoint,
+  reviewAccessPanel,
   statusBarText,
-  type Tone,
 } from './presentation'
 import { ServerContents } from './ServerContents'
 import { ServerList } from './ServerList'
@@ -62,6 +67,8 @@ const COLUMN_OF: Record<Level, number> = { servers: 1, contents: 2, detail: 3 }
 const NO_ISSUES: Issue[] = []
 const WORKER_DOWN = 'The mcp-client worker is not running'
 const CONFIG_DOWN = 'The configuration worker cannot be reached'
+/** Per-tab handler id of the approval-gate re-read. */
+const GATE_FN = 'iii::mcp-client-ui::gate'
 
 /** The MCP servers page: the path row over servers, their contents and one thing in depth. */
 export function McpServersPage({
@@ -117,9 +124,62 @@ export function McpServersPage({
   const copyFlash = useCopyFlash(item?.kind === 'function' ? item.functionId : '')
   // A missing entry reads as `null`: `undefined` is the unsaved draft of Add server.
   const stored = adding || selection.server === null ? undefined : (data.config?.[selection.server] ?? null)
-  // No import flow and no agent-access status yet: their buttons, commands and row stay hidden.
+  // No import flow yet: its buttons and command stay hidden.
   const onImport = undefined as (() => void) | undefined
-  const accessRow = null as { tone: Tone; text: string } | null
+  // The approval gate's entry, re-read when that entry changes. The first read finds its id; until then (and on a
+  // stack with no gate) nothing is observed and a return to the tab re-reads it.
+  const [gateId, setGateId] = useState<string | null>(null)
+  const { data: gate, refresh: refreshGate } = useWorkerLive<GateRead>({
+    iii: host.iii,
+    handlerId: GATE_FN,
+    fetch: () => readGate(host.iii),
+    // Filtered to the gate's own entry: another worker's save, this page's included, is no reason to re-read it.
+    sources: gateId ? [{ function_id: 'configuration::on-updated', filters: { 'input.id': { $eq: gateId } } }] : [],
+  })
+  useEffect(() => setGateId(gate?.id ?? null), [gate?.id])
+  // The gate's own verdicts, per server name, asked while that server's Agent access view is open.
+  const [verdicts, setVerdicts] = useState<Record<string, Record<string, Verdict>>>({})
+  const probeSeq = useRef(0)
+  const probed = item?.kind === 'access' && server !== null && gate?.rules ? server.name : null
+  // Values, never identities: every gate read is a new object, and up to 110 functions are probed per change.
+  const gateKey = JSON.stringify(gate?.value ?? null)
+  const probeIds =
+    probed && server
+      ? serverAccess(server)
+          .map((fn) => fn.functionId)
+          .join(',')
+      : ''
+  // gateKey re-probes on a changed entry (rules or default mode), not on every read.
+  useEffect(() => {
+    if (probed === null || probeIds === '') return
+    const mine = ++probeSeq.current
+    void probeVerdicts(host.iii, probeIds.split(',')).then((out) => {
+      if (mine === probeSeq.current) setVerdicts((all) => ({ ...all, [probed]: out }))
+    })
+  }, [host, probed, probeIds, gateKey])
+  const statuses = useMemo(
+    () =>
+      new Map(
+        gate
+          ? (data.list?.servers ?? []).map((s) => [
+              s.name,
+              gateStatus({ gate, server: s, access: serverAccess(s), verdicts: verdicts[s.name] }),
+            ])
+          : [],
+      ),
+    [gate, data.list, verdicts],
+  )
+  const status = server ? statuses.get(server.name) : undefined
+  const accessRow = status ? { tone: status.tone, text: status.rowText } : null
+  const reviewAccess = useMemo(
+    () => new Set([...statuses].filter(([, st]) => st.rowAction).map(([name]) => name)),
+    [statuses],
+  )
+  const [orphanError, setOrphanError] = useState<{ server: string; reason: string } | null>(null)
+  const orphans = (gate?.rules && data.config ? orphanBlocks(gate.rules, Object.keys(data.config)) : []).map((o) => ({
+    ...o,
+    error: orphanError?.server === o.server ? orphanError.reason : undefined,
+  }))
   // The entry the draft was loaded from or last saved as: an edit is measured against it, so a change made
   // outside the page is no edit, and dirty matches the draft the page holds whichever view is open.
   const [loaded, setLoaded] = useState<[string, unknown] | null>(null)
@@ -143,11 +203,9 @@ export function McpServersPage({
           confirmLabel: title.slice(0, title.indexOf(' ')),
           description: lines.length > 0 ? <Lines lines={lines} /> : undefined,
         }),
-      // stub: the Agent access view replaces these
-      removeBlock: async () => ({ ok: true, count: 0 }),
-      blockCount: async () => 0,
+      ...gateDeps(host.iii),
     }),
-    [api, confirm],
+    [api, confirm, host],
   )
   const announce = (text: string) => setAnnouncement((last) => ({ seq: (last?.seq ?? 0) + 1, text, urgency: 'polite' }))
   const confirmLeave = async () =>
@@ -307,13 +365,40 @@ export function McpServersPage({
     setLevel('detail')
   }
   const onAction = async (name: string, action: RowActionId) => {
-    if (!(await pickServer({ server: name, item: { kind: 'connection' } }))) return
+    if (!(await pickServer({ server: name, item: { kind: action === 'review_access' ? 'access' : 'connection' } })))
+      return
     const s = data.list?.servers.find((row) => row.name === name)
     if (action === 'retry' || action === 'restart') reconnect(name)
     else if (s && action === 'review') void approve(s)
     else if (s && action === 'turn_on') void turnOn(s)
     else if (s && action === 'share') void share(s)
     else if (action === 'sign_in') setStartSignal((n) => n + 1)
+  }
+  // Rules left for a name the config no longer holds: removed after a danger confirm, one write at a time.
+  const removeOrphan = async (name: string) => {
+    if (working) return
+    if (!(await confirm({ title: `Remove the rules for ${name}?`, tone: 'danger', confirmLabel: 'Remove rules' })))
+      return
+    setBusy(true)
+    setOrphanError(null)
+    try {
+      const out = await writeBlock(host.iii, name, [])
+      if (out.ok) announce(`Rules for ${name} removed from the approval gate`)
+      else setOrphanError({ server: name, reason: out.reason ?? '' })
+    } catch (err) {
+      setOrphanError({ server: name, reason: errorMessage(err) })
+    } finally {
+      setBusy(false)
+      refreshGate()
+    }
+  }
+  // The read-only endpoint goes into the form as an unsaved edit: the save bar shows, nothing is written.
+  const toReadOnly = (s: Server) => {
+    const url = readOnlyEndpoint(s.target)
+    if (url === null) return
+    setDraft((d) => ({ ...(d ?? draftFromEntry(s.name, data.config?.[s.name] ?? null)), url }))
+    setSelection({ server: s.name, item: { kind: 'connection' } })
+    setLevel('detail')
   }
   // A raise is delivered once: a SignIn mounted later never reads it as a new one.
   useEffect(() => {
@@ -356,6 +441,7 @@ export function McpServersPage({
     if (narrow) focusColumn(root.current, COLUMN_OF[shown])
   }, [shown, narrow])
 
+  const canReview = accessRow !== null
   useEffect(
     () =>
       commands?.register([
@@ -383,14 +469,14 @@ export function McpServersPage({
         {
           id: 'review-access',
           title: 'Review agent access',
-          enabled: () => accessRow !== null,
+          enabled: () => canReview,
           run: () => {
             setSelection({ server: selection.server, item: { kind: 'access' } })
             setLevel('detail')
           },
         },
       ]),
-    [commands, selection, reconnect, copyFlash.copy, onAdd, onImport, accessRow],
+    [commands, selection, reconnect, copyFlash.copy, onAdd, onImport, canReview],
   )
   const retry = (
     <Button variant="secondary" size="sm" onClick={data.refresh}>
@@ -490,6 +576,9 @@ export function McpServersPage({
                   onAdd={onAdd}
                   onImport={onImport}
                   draft={adding && draft ? draft : null}
+                  reviewAccess={reviewAccess}
+                  orphans={orphans}
+                  onRemoveOrphan={(name) => void removeOrphan(name)}
                 />
               </PageSidebar>
               <PageMain className="mcp-ui-main">
@@ -565,6 +654,7 @@ export function McpServersPage({
                               selection={selection}
                               onSelect={pickItem}
                               accessRow={accessRow}
+                              accessAlert={status ? reviewAccessPanel(status, server.name) : null}
                               onRetryLists={() => reconnect(server.name)}
                             />
                           ) : null}
@@ -647,6 +737,18 @@ export function McpServersPage({
                           ) : null}
                           {server && item?.kind === 'process' ? (
                             <ProcessView key={server.name} api={api} server={server} cwd={cwdOf(server.name)} />
+                          ) : null}
+                          {server && item?.kind === 'access' && gate ? (
+                            <AgentAccessView
+                              key={server.name}
+                              iii={host.iii}
+                              server={server}
+                              gate={gate}
+                              verdicts={verdicts[server.name]}
+                              busy={working}
+                              onChanged={refreshGate}
+                              onUseReadOnly={() => toReadOnly(server)}
+                            />
                           ) : null}
                           {server && fnRow ? (
                             <FunctionDetail api={api} server={server} row={fnRow} host={host} commands={commands} />

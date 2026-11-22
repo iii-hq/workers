@@ -1029,3 +1029,50 @@
   padding-block: 10px 4px;
   background: var(--color-panel);
 }
+
+/* ── column 3, Agent access ────────────────────────────────────────── */
+
+/* The status line is a sentence: sans and ink, the dot carrying the tone. */
+[data-iii-ui="mcp-client"] .mcp-ui-access .mcp-ui-result-status {
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+/* The counts read number first, in the MetaRow's own look: the number in mono ink, its words faint. */
+[data-iii-ui="mcp-client"] .mcp-ui-access .mcp-ui-facts > span {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 16px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-access .mcp-ui-facts > span > span {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+/* Function ids, each with why it counts as what it is; also in the confirm's description, under a group name. */
+[data-iii-ui="mcp-client"] .mcp-ui-ids {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-ids > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-ids code {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="mcp-client"] .mcp-ui-line + b.mcp-ui-line {
+  margin-top: 16px;
+  color: var(--color-ink);
+  font-weight: 500;
+}
+[data-iii-ui="mcp-client"] b.mcp-ui-line + .mcp-ui-ids {
+  margin-top: 4px;
+}

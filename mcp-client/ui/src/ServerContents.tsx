@@ -33,6 +33,7 @@ export function ServerContents({
   selection,
   onSelect,
   accessRow,
+  accessAlert,
   onRetryLists,
 }: {
   server: Server
@@ -40,6 +41,8 @@ export function ServerContents({
   selection: Selection
   onSelect: (s: Selection) => void
   accessRow: { tone: Tone; text: string } | null
+  /** An agent can write without a person: said above Connection. */
+  accessAlert: string | null
   onRetryLists: () => void
 }) {
   const [query, setQuery] = useState('')
@@ -93,6 +96,7 @@ export function ServerContents({
         {panel ? (
           <StatusPanel className="mcp-ui-panel" variant={panel.variant} headline={panel.headline} detail={panel.next} />
         ) : null}
+        {accessAlert ? <StatusPanel className="mcp-ui-panel" variant="alert" headline={accessAlert} /> : null}
         {pinned(
           'connection',
           'Connection',

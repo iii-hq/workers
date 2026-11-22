@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { gateStatus, type Verdict } from '../src/gate-rules'
 import {
+  accessAction,
+  accessConfirm,
+  accessLists,
   advertisesText,
   announcements,
   blocksOf,
@@ -24,8 +28,10 @@ import {
   presentServer,
   processFacts,
   processRowText,
+  readOnlyEndpoint,
   resourceMeta,
   resultSummary,
+  reviewAccessPanel,
   rowGroups,
   runConfirm,
   STAGES,
@@ -41,6 +47,7 @@ import {
 } from '../src/presentation'
 import type { EngineFunction, Item, LoginStart, Server, Skipped } from '../src/types'
 import type { ServersData } from '../src/use-servers'
+import { fa, L, rule } from './fixtures/gate'
 import { docs, list, NOW, server, server as srv, stdio } from './fixtures/servers'
 
 const err = (code: string, message: string) => ({ code, message }) as never
@@ -759,5 +766,157 @@ describe('signInControls', () => {
         'resumed',
       ),
     ).toEqual({ show: true, connect: false, signOut: false })
+  })
+})
+
+const item = (name: string, source: string) => ({ id: L(name), source })
+
+describe('accessConfirm', () => {
+  const access = [
+    fa('list_issues', 'read', 'server_read', 'tool'),
+    fa('get_issue', 'read', 'name', 'tool'),
+    fa('instructions', 'read', 'definition', 'instructions'),
+    fa('resources::read', 'read', 'definition', 'resource'),
+    fa('prompts::code_review', 'read', 'definition', 'prompt'),
+    fa('save_issue', 'write', 'server_write', 'tool'),
+  ]
+  const status = (rules: unknown[]) => gateStatus({ gate: { installed: true, rules }, server: srv({}), access })
+
+  it('lists what will be allowed, name-guessed tools first', () => {
+    expect(accessConfirm('linear', status([]), access)).toEqual({
+      title: 'Let agents read linear without asking?',
+      body: 'The approval gate will allow these 5 functions. Every other function of this server still waits for a person.',
+      groups: [
+        {
+          label: 'Tools',
+          items: [
+            item('get_issue', 'Guessed from the name'),
+            item('instructions', 'Reads by definition'),
+            item('list_issues', 'Marked read-only by the server'),
+          ],
+        },
+        { label: 'Resources', items: [item('resources::read', 'Reads by definition')] },
+        { label: 'Prompts', items: [item('prompts::code_review', 'Reads by definition')] },
+      ],
+    })
+  })
+
+  it('lists Added and Removed for an update', () => {
+    const update = status([rule(L('get_issue')), rule(L('save_issue')), rule(L('gone'))])
+    expect(accessConfirm('linear', update, access).groups).toEqual([
+      {
+        label: 'Added',
+        items: [
+          item('instructions', 'Reads by definition'),
+          item('list_issues', 'Marked read-only by the server'),
+          item('prompts::code_review', 'Reads by definition'),
+          item('resources::read', 'Reads by definition'),
+        ],
+      },
+      {
+        label: 'Removed',
+        items: [item('gone', 'No longer listed by the server'), item('save_issue', 'Marked as writing by the server')],
+      },
+    ])
+  })
+})
+
+describe('reviewAccessPanel', () => {
+  const access = [
+    fa('get_issue', 'read', 'name', 'tool'),
+    fa('save_issue', 'write', 'server_write', 'tool'),
+    fa('delete_issue', 'destructive', 'server_write', 'tool'),
+  ]
+  const status = (rules: unknown[], verdicts?: Record<string, Verdict>) =>
+    gateStatus({ gate: { installed: true, rules }, server: srv({}), access, verdicts })
+
+  it('names the function an agent can run without a person', () => {
+    const rules = [rule(L('get_issue')), rule(L('save_issue'))]
+    expect(reviewAccessPanel(status(rules), 'linear')).toBe('Agents can run `save_issue` without approval.')
+    expect(reviewAccessPanel(status(rules, { [L('delete_issue')]: { verdict: 'allow' } }), 'linear')).toBe(
+      'Agents can run `save_issue` and 1 more without approval.',
+    )
+    expect(reviewAccessPanel(status([rule(L('get_issue'))]), 'linear')).toBeNull()
+  })
+
+  it('names an id outside this server in full', () => {
+    const foreign = { function: 'mcp::other::save', action: 'allow', rule_id: 'mcp-client:mcp::linear::save' }
+    const glob = { function: 'mcp::linear::*', action: 'allow', rule_id: 'mcp-client:mcp::linear::all' }
+    expect(reviewAccessPanel(status([foreign]), 'linear')).toBe('Agents can run `mcp::other::save` without approval.')
+    expect(reviewAccessPanel(status([glob]), 'linear')).toBe('Agents can run `mcp::linear::*` without approval.')
+  })
+})
+
+describe('accessAction and readOnlyEndpoint', () => {
+  it('gives each state its one default button', () => {
+    expect(
+      (
+        [
+          'no_gate',
+          'not_connected',
+          'no_rules',
+          'present',
+          'missing',
+          'stale_harmless',
+          'stale_unsafe',
+          'overridden_read',
+          'overridden_write',
+          'unreadable',
+        ] as const
+      ).map(accessAction),
+    ).toEqual([null, 'remove', 'allow', 'remove', 'update', 'update', 'update', 'settings', 'settings', 'retry'])
+  })
+
+  it('offers the read-only endpoint for Linear only', () => {
+    expect(readOnlyEndpoint('https://mcp.linear.app/mcp')).toBe('https://mcp.linear.app/mcp/readonly')
+    for (const target of [
+      'https://mcp.linear.app/mcp/readonly',
+      'https://mcp.linear.app/mcp/',
+      'https://mcp.example.com/mcp',
+      'secret://LINEAR_URL',
+      'npx x',
+    ]) {
+      expect(readOnlyEndpoint(target)).toBeNull()
+    }
+  })
+})
+
+describe('accessLists', () => {
+  it('splits what the counts cover, and lists a block it cannot judge as stored', () => {
+    const access = [
+      fa('get_issue', 'read', 'name'),
+      fa('list_issues', 'read', 'server_read'),
+      fa('save_issue', 'write', 'server_write'),
+    ]
+    const rules = [rule(L('get_issue')), rule(L('gone')), rule(L('get_issue'))]
+    const verdicts: Record<string, Verdict> = {
+      [L('get_issue')]: { verdict: 'deny', reason: 'denied by permission rule no-get' },
+      [L('save_issue')]: { verdict: 'allow' },
+    }
+    const st = gateStatus({ gate: { installed: true, rules }, server: srv({}), access, verdicts })
+    expect(accessLists(st, 'linear', rules, access)).toEqual({
+      block: 2,
+      allowed: [item('get_issue', 'Guessed from the name')],
+      ask: [
+        item('list_issues', 'Marked read-only by the server'),
+        item('save_issue', 'Marked as writing by the server'),
+      ],
+      toAdd: [item('list_issues', 'Marked read-only by the server')],
+      toRemove: [item('gone', 'No longer listed by the server')],
+      overridden: [
+        item('get_issue', 'denied by permission rule no-get'),
+        item('save_issue', 'Allowed by the approval gate without asking'),
+      ],
+    })
+    const off = srv({ tools_listed: false, tools: [] })
+    const unlisted = gateStatus({ gate: { installed: true, rules }, server: off, access: [] })
+    expect(accessLists(unlisted, 'linear', rules, [])).toEqual({
+      block: 2,
+      allowed: [item('get_issue', ''), item('gone', '')],
+      ask: [],
+      toAdd: [],
+      toRemove: [],
+      overridden: [],
+    })
   })
 })
