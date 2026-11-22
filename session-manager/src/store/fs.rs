@@ -28,7 +28,10 @@
 //! `attachments/` on first use and kept by every put and delete.
 //!
 //! A lazy per-session cache makes reads cheap: the file is replayed on
-//! first access and kept write-through afterwards. Appends are serialized
+//! first access and kept write-through afterwards, for at most
+//! [`MAX_LOADED_SESSIONS`] sessions (least recently used goes first).
+//! `session::list` never loads a transcript: it reads each file's last
+//! metadata line, kept while the file's length and mtime stay the same. Appends are serialized
 //! here because several bridged services can share this worker as their
 //! storage authority. A truncated trailing line (crash
 //! mid-append) is tolerated with a warning; malformed lines are
@@ -65,6 +68,73 @@ enum Record {
     Commit {
         entry_id: String,
     },
+}
+
+/// Most sessions the cache keeps fully loaded. Every session ever read used
+/// to stay loaded until a restart, and `session::list` read them all: a dev
+/// stack held 1.1 GB for 1,498 sessions after 29 hours.
+// ponytail: a count, not bytes; size-weighted eviction if one huge transcript matters.
+const MAX_LOADED_SESSIONS: usize = 64;
+
+/// The cache behind the store lock.
+#[derive(Default)]
+struct Cache {
+    sessions: HashMap<String, Cached>,
+    /// Bumped on every eviction. A replay that started before one and finds
+    /// its session absent cannot tell whether a newer state (an append, a
+    /// delete) was cached and evicted meanwhile, so it reads the file again
+    /// instead of publishing what it read.
+    epoch: u64,
+    /// Use counter for least-recently-used eviction.
+    tick: u64,
+}
+
+struct Cached {
+    state: LoadedSession,
+    used: u64,
+}
+
+impl Cache {
+    fn get(&mut self, session_id: &str) -> Option<&mut LoadedSession> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.sessions.get_mut(session_id).map(|cached| {
+            cached.used = tick;
+            &mut cached.state
+        })
+    }
+
+    /// Insert an absent session, evicting the least recently used ones to
+    /// stay under `max`.
+    fn insert(&mut self, session_id: &str, state: LoadedSession, max: usize) {
+        while self.sessions.len() >= max.max(1) {
+            let Some(victim) = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, cached)| cached.used)
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            self.sessions.remove(&victim);
+            self.epoch += 1;
+        }
+        self.tick += 1;
+        self.sessions.insert(
+            session_id.to_string(),
+            Cached {
+                state,
+                used: self.tick,
+            },
+        );
+    }
+}
+
+/// A session's metadata as `session::list` last read it from its file, with
+/// the file's `(length, mtime)` at that read.
+struct FileMeta {
+    stamp: (u64, Option<std::time::SystemTime>),
+    meta: Option<SessionMeta>,
 }
 
 /// Materialized state of one session file.
@@ -227,7 +297,10 @@ type ReplayHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
 pub struct FsStore {
     dir: PathBuf,
-    cache: Mutex<HashMap<String, LoadedSession>>,
+    cache: Mutex<Cache>,
+    max_loaded: usize,
+    /// `session::list` metadata of the sessions on disk, see [`FileMeta`].
+    file_metas: Mutex<HashMap<String, FileMeta>>,
     /// attachment id -> the sessions holding it (a fork copies attachments
     /// under the same id), sorted. `None` until the first lookup walks the
     /// attachment folders; afterwards put/delete keep it current.
@@ -250,7 +323,9 @@ impl FsStore {
             .map_err(|e| StoreError(format!("create data_dir {}: {e}", dir.display())))?;
         Ok(Self {
             dir,
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(Cache::default()),
+            max_loaded: MAX_LOADED_SESSIONS,
+            file_metas: Mutex::new(HashMap::new()),
             attachment_index: Mutex::new(None),
             #[cfg(test)]
             after_replay: None,
@@ -272,8 +347,81 @@ impl FsStore {
             .join(format!("{}.jsonl", encode_session_id(session_id)))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, LoadedSession>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
         self.cache
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Lock the cache with `session_id` loaded in it. The session can be
+    /// evicted between its load and this lock, so load it again until not.
+    async fn lock_loaded(
+        &self,
+        session_id: &str,
+    ) -> Result<std::sync::MutexGuard<'_, Cache>, StoreError> {
+        loop {
+            self.with_loaded(session_id, |_| ()).await?;
+            let cache = self.lock();
+            if cache.sessions.contains_key(session_id) {
+                return Ok(cache);
+            }
+        }
+    }
+
+    /// The metadata of the last `meta` or `append` line of a session file,
+    /// which is what a full replay ends with. Missing file -> `None`.
+    fn last_meta(path: &Path) -> Result<Option<SessionMeta>, StoreError> {
+        let contents = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(StoreError(format!("read {}: {e}", path.display()))),
+        };
+        for line in contents.lines().rev() {
+            match serde_json::from_str::<Record>(line) {
+                Ok(Record::Meta { meta } | Record::Append { meta, .. }) => return Ok(Some(meta)),
+                _ => continue,
+            }
+        }
+        Ok(None)
+    }
+
+    /// A session's metadata for `session::list` without loading its
+    /// transcript: the cached state's when the session is loaded, else its
+    /// file's last metadata line, read again only after the file changed.
+    async fn meta_of(&self, session_id: &str) -> Result<Option<SessionMeta>, StoreError> {
+        if let Some(cached) = self.lock().sessions.get(session_id) {
+            return Ok(cached.state.meta.clone());
+        }
+        let path = self.file_path(session_id);
+        let stamp = match std::fs::metadata(&path) {
+            Ok(m) => (m.len(), m.modified().ok()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(StoreError(format!("stat {}: {e}", path.display()))),
+        };
+        if let Some(hit) = self
+            .file_metas()
+            .get(session_id)
+            .filter(|hit| hit.stamp == stamp)
+        {
+            return Ok(hit.meta.clone());
+        }
+        // The stamp is taken before the read, so a write in between only
+        // makes the next list read the file again.
+        let meta = tokio::task::spawn_blocking(move || Self::last_meta(&path))
+            .await
+            .map_err(|e| StoreError(format!("read meta of {session_id}: {e}")))??;
+        self.file_metas().insert(
+            session_id.to_string(),
+            FileMeta {
+                stamp,
+                meta: meta.clone(),
+            },
+        );
+        Ok(meta)
+    }
+
+    fn file_metas(&self) -> std::sync::MutexGuard<'_, HashMap<String, FileMeta>> {
+        self.file_metas
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
@@ -317,26 +465,31 @@ impl FsStore {
     ///
     /// Because the replay is off the lock, a caller's replay can overlap
     /// another caller's mutation of the same session. Two rules keep that
-    /// safe. Insert is `entry().or_insert`: whoever publishes first wins,
-    /// and a replay that read the file earlier is dropped rather than
-    /// overwriting state appended since. And cache entries are never
-    /// evicted: a deleted session keeps an empty entry until restart, so a
-    /// replay that read the file before the delete finds the entry taken
-    /// and cannot resurrect the deleted state (a per-session generation
-    /// check is the upgrade if the empty entries ever matter).
+    /// safe. A session already cached when the replay ends wins: whoever
+    /// publishes first wins, and a replay that read the file earlier is
+    /// dropped rather than overwriting state appended since. And a replay
+    /// that finds its session absent after an eviction ([`Cache::epoch`])
+    /// reads the file again: a newer state (an append, or a delete's empty
+    /// entry) may have been cached and evicted while it ran, and publishing
+    /// what it read would lose the append or resurrect the deleted session.
     async fn with_loaded<T>(
         &self,
         session_id: &str,
         f: impl FnOnce(&mut LoadedSession) -> T,
     ) -> Result<T, StoreError> {
-        let replayed = if self.lock().contains_key(session_id) {
-            None
-        } else {
+        loop {
+            let epoch = {
+                let mut cache = self.lock();
+                if let Some(loaded) = cache.get(session_id) {
+                    return Ok(f(loaded));
+                }
+                cache.epoch
+            };
             let path = self.file_path(session_id);
             let id = session_id.to_string();
             #[cfg(test)]
             let after_replay = self.after_replay.clone();
-            let loaded = tokio::task::spawn_blocking(move || {
+            let replayed = tokio::task::spawn_blocking(move || {
                 let loaded = Self::replay_file(&path, &id);
                 #[cfg(test)]
                 if let Some(hook) = &after_replay {
@@ -346,16 +499,16 @@ impl FsStore {
             })
             .await
             .map_err(|e| StoreError(format!("replay {session_id}: {e}")))??;
-            Some(loaded)
-        };
-        let mut cache = self.lock();
-        let loaded = match replayed {
-            Some(replayed) => cache.entry(session_id.to_string()).or_insert(replayed),
-            None => cache
-                .get_mut(session_id)
-                .expect("cache entries are never evicted"),
-        };
-        Ok(f(loaded))
+            let mut cache = self.lock();
+            if !cache.sessions.contains_key(session_id) {
+                if cache.epoch != epoch {
+                    continue;
+                }
+                cache.insert(session_id, replayed, self.max_loaded);
+            }
+            let loaded = cache.get(session_id).expect("present or inserted above");
+            return Ok(f(loaded));
+        }
     }
 
     /// Append one record to the session's file. A failed prior write may have
@@ -426,16 +579,15 @@ impl FsStore {
     }
 
     async fn append_and_apply(&self, session_id: &str, record: Record) -> Result<(), StoreError> {
-        self.with_loaded(session_id, |_| ()).await?;
-        let mut cache = self.lock();
+        let mut cache = self.lock_loaded(session_id).await?;
         self.append_record(session_id, &record)?;
         #[cfg(test)]
         if let Some(hook) = &self.after_mutation_write {
             hook(session_id);
         }
         cache
-            .get_mut(session_id)
-            .expect("cache entries are never evicted")
+            .get(session_id)
+            .expect("lock_loaded holds the session")
             .apply(record);
         Ok(())
     }
@@ -445,11 +597,10 @@ impl FsStore {
         session_id: &str,
         mutate: impl FnOnce(&mut LoadedSession),
     ) -> Result<(), StoreError> {
-        self.with_loaded(session_id, |_| ()).await?;
-        let mut cache = self.lock();
+        let mut cache = self.lock_loaded(session_id).await?;
         let current = cache
-            .get_mut(session_id)
-            .expect("cache entries are never evicted");
+            .get(session_id)
+            .expect("lock_loaded holds the session");
         let mut next = current.clone();
         mutate(&mut next);
         self.persist_snapshot(session_id, &next)?;
@@ -620,12 +771,15 @@ impl SessionStore for FsStore {
     }
 
     async fn list_metas(&self) -> Result<Vec<SessionMeta>, StoreError> {
+        let on_disk = self.session_ids_on_disk()?;
         let mut metas = Vec::new();
-        for session_id in self.session_ids_on_disk()? {
-            if let Some(meta) = self.with_loaded(&session_id, |s| s.meta.clone()).await? {
+        for session_id in &on_disk {
+            if let Some(meta) = self.meta_of(session_id).await? {
                 metas.push(meta);
             }
         }
+        let on_disk: BTreeSet<&String> = on_disk.iter().collect();
+        self.file_metas().retain(|id, _| on_disk.contains(id));
         Ok(metas)
     }
 
@@ -651,19 +805,22 @@ impl SessionStore for FsStore {
         entry: &SessionEntry,
         parent_explicit: bool,
     ) -> Result<CommitAppendResult, StoreError> {
-        self.with_loaded(session_id, |_| ()).await?;
-        #[cfg(test)]
-        if let Some(hook) = &self.before_commit {
-            hook(session_id);
-        }
-
         // The fs instance is the storage owner for every bridge. Keep the
         // decision, durable write and cache update under its lock so separate
         // bridge services cannot commit from the same stale leaf or metadata.
-        let mut cache = self.lock();
-        let session = cache
-            .get_mut(session_id)
-            .expect("cache entries are never evicted");
+        // The session can be evicted between its load and the lock: load again.
+        let mut cache = loop {
+            self.with_loaded(session_id, |_| ()).await?;
+            #[cfg(test)]
+            if let Some(hook) = &self.before_commit {
+                hook(session_id);
+            }
+            let cache = self.lock();
+            if cache.sessions.contains_key(session_id) {
+                break cache;
+            }
+        };
+        let session = cache.get(session_id).expect("held since the loop");
         let meta = session
             .meta
             .clone()
@@ -1601,9 +1758,10 @@ mod tests {
     }
 
     /// A cold replay that read the file BEFORE a delete must not publish
-    /// that state afterwards. The delete leaves an empty cache entry behind
-    /// (entries are never evicted), so the late replay finds the slot taken
-    /// and its stale state is dropped; its callback runs on the emptied
+    /// that state afterwards. The delete leaves an empty cache entry behind,
+    /// so the late replay finds the slot taken and its stale state is
+    /// dropped (when that entry was evicted meanwhile, the replay reads the
+    /// file again: see the eviction test below); its callback runs on the emptied
     /// session, exactly as if it had arrived after the delete.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_delete_that_overlaps_a_cold_replay_is_not_undone() {
@@ -1668,6 +1826,131 @@ mod tests {
         assert!(path.exists());
     }
 
+    /// The same overlap, with the deleted session's empty entry evicted
+    /// before the late replay publishes: the eviction bumps the epoch, so the
+    /// replay reads the (now missing) file again instead of resurrecting the
+    /// state it read before the delete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_late_replay_after_an_eviction_does_not_resurrect_a_deleted_session() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, mpsc};
+
+        let dir = tempfile::tempdir().unwrap();
+        seed_session_file(dir.path(), "s_1", "doomed", 3);
+        seed_session_file(dir.path(), "s_2", "other", 1);
+
+        let (parked_tx, parked_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(Some(release_rx));
+        let first = AtomicBool::new(true);
+        let mut store = FsStore::new(dir.path()).unwrap();
+        store.max_loaded = 1;
+        store.after_replay = Some(Arc::new(move |_id: &str| {
+            if first.swap(false, Ordering::SeqCst) {
+                parked_tx.send(()).unwrap();
+                if let Some(rx) = release_rx.lock().unwrap().take() {
+                    rx.recv().unwrap();
+                }
+            }
+        }));
+        let store = Arc::new(store);
+
+        let reader = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.get_meta("s_1").await.unwrap() }
+        });
+        tokio::task::spawn_blocking(move || parked_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("the first replay reached the seam");
+
+        store.delete_entries("s_1").await.unwrap();
+        store.delete_active_leaf("s_1").await.unwrap();
+        store.delete_meta("s_1").await.unwrap();
+        // Loading another session evicts s_1's empty entry (max_loaded = 1).
+        assert_eq!(store.get_meta("s_2").await.unwrap().unwrap().title, "other");
+        assert!(!store.lock().sessions.contains_key("s_1"));
+
+        release_tx.send(()).unwrap();
+        assert!(
+            reader.await.unwrap().is_none(),
+            "the replay read the file again"
+        );
+        assert!(
+            store.get_meta("s_1").await.unwrap().is_none(),
+            "a late replay resurrected a deleted session"
+        );
+    }
+
+    /// The cache keeps at most `max_loaded` sessions, least recently used
+    /// out first, and an evicted session reads back from its file.
+    #[tokio::test]
+    async fn the_cache_keeps_at_most_max_loaded_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FsStore::new(dir.path()).unwrap();
+        store.max_loaded = 2;
+        for id in ["s_1", "s_2", "s_3"] {
+            store.put_meta(&meta(id, id)).await.unwrap();
+            store
+                .commit_append(id, &entry(&format!("e_{id}"), None, id, 0), false)
+                .await
+                .unwrap();
+        }
+        let cached: BTreeSet<String> = store.lock().sessions.keys().cloned().collect();
+        assert_eq!(
+            cached,
+            BTreeSet::from(["s_2".to_string(), "s_3".to_string()])
+        );
+
+        // s_1 reads back intact, and s_2 (least recently used) leaves.
+        assert_eq!(store.list_entries("s_1").await.unwrap().len(), 1);
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().message_count,
+            1
+        );
+        assert!(!store.lock().sessions.contains_key("s_2"));
+        assert_eq!(store.lock().sessions.len(), 2);
+    }
+
+    /// `session::list` loads no transcript: it reads each file's last
+    /// metadata line, and reads it again only once the file changed.
+    #[tokio::test]
+    async fn list_metas_reads_files_without_loading_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_session_file(dir.path(), "s_1", "first", 20);
+        seed_session_file(dir.path(), "s_2", "second", 20);
+        let store = FsStore::new(dir.path()).unwrap();
+
+        let titles =
+            |metas: Vec<SessionMeta>| metas.into_iter().map(|m| m.title).collect::<BTreeSet<_>>();
+        let listed = titles(store.list_metas().await.unwrap());
+        assert_eq!(listed, BTreeSet::from(["first".into(), "second".into()]));
+        assert!(store.lock().sessions.is_empty(), "list loaded a transcript");
+
+        // A write through another writer changes the file: the next list sees it.
+        let path = dir
+            .path()
+            .join(format!("{}.jsonl", encode_session_id("s_1")));
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(
+            &serde_json::to_string(&Record::Meta {
+                meta: meta("s_1", "renamed"),
+            })
+            .unwrap(),
+        );
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+        let listed = titles(store.list_metas().await.unwrap());
+        assert_eq!(listed, BTreeSet::from(["renamed".into(), "second".into()]));
+
+        // A loaded session lists from the cache, and a deleted one drops out.
+        store.put_meta(&meta("s_2", "loaded")).await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let listed = titles(store.list_metas().await.unwrap());
+        assert_eq!(listed, BTreeSet::from(["loaded".into()]));
+        assert!(!store.file_metas().contains_key("s_1"));
+    }
+
     /// Committed ids belong to the entries: deleting the entries forgets them, so they are not
     /// kept in the cache or written back as `Commit` records for a session that may be reused.
     #[tokio::test]
@@ -1682,7 +1965,7 @@ mod tests {
         assert!(first.committed);
 
         store.delete_entries("s_1").await.unwrap();
-        assert!(store.lock()["s_1"].committed.is_empty());
+        assert!(store.lock().get("s_1").unwrap().committed.is_empty());
         let path = dir
             .path()
             .join(format!("{}.jsonl", encode_session_id("s_1")));
@@ -1725,7 +2008,7 @@ mod tests {
             assert_eq!(title, format!("title {i}"));
             assert_eq!(entries, 50);
         }
-        assert_eq!(store.lock().len(), SESSIONS);
+        assert_eq!(store.lock().sessions.len(), SESSIONS);
     }
 
     /// A replay that fails (here: the session path is a directory, so the
@@ -1745,7 +2028,7 @@ mod tests {
         assert!(err.to_string().contains("s_1"), "{err}");
         assert!(store.list_entries("s_1").await.is_err());
         assert!(
-            store.lock().is_empty(),
+            store.lock().sessions.is_empty(),
             "a failed replay must not be cached"
         );
 
