@@ -35,6 +35,17 @@ pub async fn handle(deps: &Deps, req: LinkCardRequest) -> Result<LinkCardRespons
         .metadata_of(&root)
         .await?
         .ok_or_else(|| HarnessError::InvalidRequest(format!("session `{root}` does not exist")))?;
+    if let Some(existing) = metadata.get("kanban_ticket").and_then(Value::as_str) {
+        if existing != req.ticket {
+            return Err(HarnessError::InvalidRequest(format!(
+                "session `{root}` already links ticket `{existing}`"
+            )));
+        }
+        return Ok(LinkCardResponse {
+            session_id: root,
+            ticket: req.ticket,
+        });
+    }
     metadata.insert("kanban_ticket".into(), Value::String(req.ticket.clone()));
     // ponytail: session::set-meta replaces the whole object, so this read-modify-write can
     // lose a concurrent metadata update; make session-manager expose an atomic merge if needed.
@@ -59,6 +70,7 @@ mod tests {
         sessions: BTreeMap<String, Map<String, Value>>,
         state: BTreeMap<(String, String), Value>,
         dispatched_link: Option<Value>,
+        metadata_writes: usize,
     }
 
     struct Fixture {
@@ -105,6 +117,7 @@ mod tests {
                             })
                             .unwrap_or(Value::Null),
                         "session::set-meta" => {
+                            store.metadata_writes += 1;
                             store.sessions.insert(
                                 data["session_id"].as_str().unwrap().into(),
                                 data["metadata"].as_object().unwrap().clone(),
@@ -217,6 +230,40 @@ mod tests {
         assert_eq!(store.sessions["child"]["child_only"], true);
         assert!(store.sessions["child"].get("kanban_ticket").is_none());
         assert_eq!(store.sessions["other"]["kanban_ticket"], "KAN-OLD");
+    }
+
+    #[tokio::test]
+    async fn refuses_relinking_a_root_but_accepts_the_same_ticket() {
+        let fixture = fixture().await;
+        fixture.store.lock().unwrap().sessions.insert(
+            "root".into(),
+            Map::from_iter([("kanban_ticket".into(), json!("KAN-597"))]),
+        );
+        let error = handle(
+            &fixture.deps,
+            LinkCardRequest {
+                session_id: "root".into(),
+                ticket: "KAN-598".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("already links ticket `KAN-597`"));
+        assert_eq!(
+            fixture.store.lock().unwrap().sessions["root"]["kanban_ticket"],
+            "KAN-597"
+        );
+        let linked = handle(
+            &fixture.deps,
+            LinkCardRequest {
+                session_id: "root".into(),
+                ticket: "KAN-597".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(linked.ticket, "KAN-597");
+        assert_eq!(fixture.store.lock().unwrap().metadata_writes, 0);
     }
 
     #[tokio::test]

@@ -563,13 +563,15 @@ fn answering_reservation_and_block_expiry_remain_open_until_delivery_is_confirme
 }
 
 #[test]
-fn withdrawal_without_an_answer_preserves_unknown_attribution() {
+fn withdrawn_purge_settlement_closes_an_open_question_without_attribution() {
     let mut board = board();
+    questions::mirror(&mut board, &entry(Some("KAN-1"), None), None, AT).unwrap();
+    assert_eq!(questions::open_questions(get(&board, "KAN-1")), 1);
     let mut withdrawn = entry(Some("KAN-1"), Some("withdrawn"));
     withdrawn.state = questions::AskState::Withdrawn;
     withdrawn.answer_text = None;
     withdrawn.by = None;
-    questions::mirror(&mut board, &withdrawn, None, AT).unwrap();
+    questions::mirror(&mut board, &withdrawn, None, LATER).unwrap();
     let answer = get(&board, "KAN-1").comments[1].answer.as_ref().unwrap();
     assert_eq!(answer.outcome, questions::AnswerOutcome::Withdrawn);
     assert!(answer.by.is_none());

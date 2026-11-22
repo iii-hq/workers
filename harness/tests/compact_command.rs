@@ -318,6 +318,27 @@ impl Stack {
                 }
             }),
         );
+        let w = world.clone();
+        stubs.register_function(
+            "harness::state::compare-and-set",
+            RegisterFunction::new_async(move |payload: Value| {
+                let w = w.clone();
+                async move {
+                    let key = format!(
+                        "{}/{}",
+                        payload["scope"].as_str().unwrap(),
+                        payload["key"].as_str().unwrap()
+                    );
+                    let mut world = w.lock().unwrap();
+                    let current = world.state.get(&key).cloned().unwrap_or(Value::Null);
+                    let swapped = current == payload["expected"];
+                    if swapped {
+                        world.state.insert(key, payload["value"].clone());
+                    }
+                    Ok::<_, iii_sdk::Error>(json!({"swapped":swapped, "current":current}))
+                }
+            }),
+        );
         for function_id in ["state::list", "harness::state::list"] {
             stubs.register_function(
                 function_id,
@@ -586,6 +607,18 @@ async fn a_repeated_compact_send_is_deduplicated() {
     let again = stack.send("/compact", "msg-dup").await;
     assert_eq!(again.deduplicated, Some(true));
     assert!(again.compaction.is_none());
+    for (session, key, expected) in [
+        ("different-session", "msg-dup", "another session"),
+        (SESSION, "ask:s/q", "reserved"),
+        (SESSION, "ask-expiry:s/q", "reserved"),
+    ] {
+        let req = serde_json::from_value(
+            json!({"session_id":session, "message":"/compact", "idempotency_key":key}),
+        )
+        .unwrap();
+        let error = send::handle(&stack.deps, req).await.unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(stack.world().compact_requests.len(), 1);
 }

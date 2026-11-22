@@ -105,6 +105,9 @@ impl Entry {
     }
 
     fn already_answered(&self) -> HarnessError {
+        if self.state == AskState::Answering && self.outcome.is_none() {
+            return invalid("ask_busy: expiry notice in delivery, retry");
+        }
         let channel = self.by.as_ref().map(|by| match by.channel {
             Channel::Chat => "chat",
             Channel::Tower => "tower",
@@ -174,14 +177,19 @@ async fn get(deps: &Deps, session: &str, question: &str) -> Result<Entry, Harnes
 async fn all(deps: &Deps) -> Result<Vec<Entry>, HarnessError> {
     let timeout = deps.cfg().await.session_timeout_ms;
     let rows: Vec<Value> = crate::state::list_values(&deps.iii, SCOPE, timeout).await?;
-    rows.into_iter()
+    Ok(rows
+        .into_iter()
         // Before durable asks, this scope held arrays of the last 32 chat
         // settlements, keyed by session. Those rows still serve old cards.
         .filter(|row| !row.is_array())
-        .map(|row| {
-            serde_json::from_value(row).map_err(|e| HarnessError::State(format!("ask entry: {e}")))
+        .filter_map(|row| match serde_json::from_value(row) {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                tracing::warn!(%error, "skipping unreadable ask entry");
+                None
+            }
         })
-        .collect()
+        .collect())
 }
 
 async fn cas(deps: &Deps, before: Option<&Entry>, after: &Entry) -> Result<bool, HarnessError> {
@@ -369,16 +377,15 @@ fn reserve(entry: &Entry, req: AnswerRequest) -> Result<Entry, HarnessError> {
 }
 
 pub async fn answer(deps: &Deps, req: AnswerRequest) -> Result<Entry, HarnessError> {
-    let before = get(deps, &req.session_id, &req.question_id).await?;
-    let next = reserve(&before, req)?;
-    if !cas(deps, Some(&before), &next).await? {
-        return Err(get(deps, &before.session_id, &before.question_id)
-            .await?
-            .already_answered());
+    loop {
+        let before = get(deps, &req.session_id, &req.question_id).await?;
+        let next = reserve(&before, req.clone())?;
+        if cas(deps, Some(&before), &next).await? {
+            deps.ask_timers
+                .cancel(&format!("ask-expiry:{}", next.key()));
+            return deliver(deps, next).await;
+        }
     }
-    deps.ask_timers
-        .cancel(&format!("ask-expiry:{}", next.key()));
-    deliver(deps, next).await
 }
 
 /// An `answering` entry has everything needed for crash replay. A missing
@@ -386,7 +393,7 @@ pub async fn answer(deps: &Deps, req: AnswerRequest) -> Result<Entry, HarnessErr
 async fn deliver(deps: &Deps, entry: Entry) -> Result<Entry, HarnessError> {
     let result = deliver_once(deps, entry.clone()).await;
     if result.is_err() {
-        retry(deps, &entry);
+        retry(deps, &entry, 1);
     }
     result
 }
@@ -395,13 +402,11 @@ async fn deliver_once(deps: &Deps, entry: Entry) -> Result<Entry, HarnessError> 
     let block = entry.outcome.is_none();
     let mut exists = deps.session().await.exists(&entry.session_id).await?;
     if exists {
-        let sent = deps.iii.call(iii_sdk::CallRequest {
-            function_id: crate::functions::SEND_ID.into(),
-            payload: json!({ "session_id": entry.session_id, "message": entry.answer_text,
+        let request = serde_json::from_value(json!({ "session_id": entry.session_id, "message": entry.answer_text,
                 "idempotency_key": format!("{}:{}", if block { "ask-expiry" } else { "ask" }, entry.key()),
-                "options": { "require_existing_session": true } }),
-            action: None, timeout_ms: Some(deps.cfg().await.session_timeout_ms),
-        }).await;
+                "options": { "require_existing_session": true } }))
+            .map_err(|error| HarnessError::State(format!("ask delivery request: {error}")))?;
+        let sent = crate::functions::send::handle_ask(deps, request).await;
         if let Err(error) = sent {
             exists = deps.session().await.exists(&entry.session_id).await?;
             if exists {
@@ -522,17 +527,48 @@ pub async fn purge(deps: &Deps, session_id: &str) -> Result<(), HarnessError> {
                 deps.cfg().await.session_timeout_ms,
             )
             .await?;
-            if value.is_null()
-                || crate::state::cas_value(
-                    &deps.iii,
-                    SCOPE,
-                    &entry.key(),
-                    Some(value),
-                    Value::Null,
-                    deps.cfg().await.session_timeout_ms,
-                )
-                .await?
-                .is_none()
+            if value.is_null() {
+                break;
+            }
+            let current: Entry = serde_json::from_value(value.clone())
+                .map_err(|error| HarnessError::State(format!("ask entry: {error}")))?;
+            if current.is_open() || current.state == AskState::Answering {
+                let mut settled = Entry {
+                    state: match current.outcome {
+                        Some(Outcome::Dismissed) => AskState::Dismissed,
+                        Some(_) => AskState::Answered,
+                        None => AskState::Withdrawn,
+                    },
+                    outcome: Some(if current.outcome.is_some() {
+                        Outcome::NotDelivered
+                    } else {
+                        Outcome::Withdrawn
+                    }),
+                    settled_at: Some(AgentMessage::now_ms()),
+                    ..current.clone()
+                };
+                if current.outcome.is_none() {
+                    settled.answers = None;
+                    settled.answer_text = None;
+                    settled.by = None;
+                }
+                if cas(deps, Some(&current), &settled).await? {
+                    deps.events
+                        .emit_ask(crate::events::ON_ASK_SETTLED_FN, &settled)
+                        .await;
+                }
+                continue;
+            }
+            if crate::state::cas_value(
+                &deps.iii,
+                SCOPE,
+                &entry.key(),
+                Some(value),
+                Value::Null,
+                deps.cfg().await.session_timeout_ms,
+            )
+            .await?
+            .is_none()
             {
                 break;
             }
@@ -605,45 +641,44 @@ async fn expire(deps: &Deps, session: &str, question: &str, due: i64) -> Result<
     Ok(())
 }
 
-fn retry(deps: &Deps, entry: &Entry) {
+fn retry(deps: &Deps, entry: &Entry, delay_secs: u64) {
     let key = format!("ask-retry:{}", entry.key());
     if deps.ask_timers.is_armed(&key) {
         return;
     }
     let worker = deps.clone();
     let entry = entry.clone();
-    deps.ask_timers
-        .arm(key, AgentMessage::now_ms() + 1_000, async move {
-            for attempt in 0..5 {
-                let current = match get(&worker, &entry.session_id, &entry.question_id).await {
-                    Ok(current) => current,
-                    Err(HarnessError::InvalidRequest(_)) => return, // purged
-                    Err(error) => {
-                        tracing::warn!(%error, "ask retry read failed");
-                        if attempt < 4 {
-                            tokio::time::sleep(std::time::Duration::from_secs(2 << attempt)).await;
-                        }
-                        continue;
-                    }
-                };
-                let result = if current.state == AskState::Answering {
-                    deliver_once(&worker, current).await.map(|_| ())
-                } else if current.state == AskState::Open
-                    && let Some(due) = current.expires_at
-                {
-                    expire(&worker, &current.session_id, &current.question_id, due).await
-                } else {
+    deps.ask_timers.arm(
+        key,
+        AgentMessage::now_ms() + (delay_secs * 1_000) as i64,
+        async move {
+            let current = match get(&worker, &entry.session_id, &entry.question_id).await {
+                Ok(current) => current,
+                Err(HarnessError::InvalidRequest(_)) => return, // purged
+                Err(error) => {
+                    tracing::warn!(%error, "ask retry read failed");
+                    retry(&worker, &entry, (delay_secs * 2).min(60));
                     return;
-                };
-                match result {
-                    Ok(()) => return,
-                    Err(error) => tracing::warn!(%error, "ask delivery retry failed"),
                 }
-                if attempt < 4 {
-                    tokio::time::sleep(std::time::Duration::from_secs(2 << attempt)).await;
-                }
+            };
+            let result = if current.state == AskState::Answering {
+                deliver_once(&worker, current).await.map(|_| ())
+            } else if current.state == AskState::Open
+                && let Some(due) = current.expires_at
+            {
+                expire(&worker, &current.session_id, &current.question_id, due).await
+            } else {
+                return;
+            };
+            match result {
+                Ok(()) => return,
+                Err(error) => tracing::warn!(%error, "ask delivery retry failed"),
             }
-        });
+            // ponytail: retries live in-process, capped at 60s with no attempt limit;
+            // boot recovery re-arms them; use a durable scheduler for worker downtime.
+            retry(&worker, &entry, (delay_secs * 2).min(60));
+        },
+    );
 }
 
 fn arm(deps: &Deps, entry: &Entry) {
@@ -667,7 +702,7 @@ fn arm(deps: &Deps, entry: &Entry) {
         .arm(format!("ask-expiry:{}", entry.key()), due, async move {
             if let Err(error) = expire(&worker, &entry.session_id, &entry.question_id, due).await {
                 tracing::warn!(%error, "ask expiry failed; retrying");
-                retry(&worker, &entry);
+                retry(&worker, &entry, 1);
             }
         });
 }
@@ -677,7 +712,9 @@ pub async fn recover(deps: &Deps) -> Result<(), HarnessError> {
         if !deps.session().await.exists(&entry.session_id).await? {
             purge(deps, &entry.session_id).await?;
         } else if entry.state == AskState::Answering {
-            deliver(deps, entry).await?;
+            if let Err(error) = deliver(deps, entry).await {
+                tracing::warn!(%error, "ask recovery delivery failed; retry armed");
+            }
         } else {
             arm(deps, &entry);
         }

@@ -447,8 +447,13 @@ pub fn send_request(
 /// What a final turn of a dispatched session means for its card: a reason
 /// when the card is still In progress under that same claim.
 pub fn stopped_reason(board: &Board, event: &Value) -> Option<(String, String)> {
+    let status = event
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("ended");
     if event.get("terminal").and_then(Value::as_bool) != Some(true)
-        || event.get("open_asks").and_then(Value::as_u64).unwrap_or(0) > 0
+        || (status != "cancelled"
+            && event.get("open_asks").and_then(Value::as_u64).unwrap_or(0) > 0)
     {
         return None;
     }
@@ -458,10 +463,6 @@ pub fn stopped_reason(board: &Board, event: &Value) -> Option<(String, String)> 
     if !runs_card(ticket, session, seq) {
         return None;
     }
-    let status = event
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("ended");
     let detail = ["result_error", "reason"]
         .iter()
         .find_map(|field| event.get(*field).filter(|v| !v.is_null()))
@@ -654,6 +655,9 @@ async fn harness_status(ctx: &Ctx, session: &str) -> Result<Value, Error> {
 
 /// Whether a `harness::status` answer is a session still working or waiting.
 fn session_alive(status: &Value) -> bool {
+    if status.get("status").and_then(Value::as_str) == Some("cancelled") {
+        return false;
+    }
     matches!(
         status.get("status").and_then(Value::as_str),
         Some("running" | "awaiting_functions")
@@ -1234,9 +1238,10 @@ mod tests {
         ));
         assert!(!session_alive(&json!({ "status": "failed" })));
         for status in ["completed", "failed", "cancelled"] {
-            assert!(session_alive(
-                &json!({ "status": status, "expects_wake": false, "open_asks": 1 })
-            ));
+            assert_eq!(
+                session_alive(&json!({ "status": status, "expects_wake": false, "open_asks": 1 })),
+                status != "cancelled"
+            );
             assert!(!session_alive(
                 &json!({ "status": status, "expects_wake": false, "open_asks": 0 })
             ));
@@ -1317,7 +1322,11 @@ mod tests {
             }))
             .unwrap();
             let event = serde_json::to_value(delivery.input.unwrap()).unwrap();
-            assert_eq!(stopped_reason(&b, &event), None, "{event}");
+            assert_eq!(
+                stopped_reason(&b, &event).is_some(),
+                status == "cancelled",
+                "{event}"
+            );
         }
     }
 

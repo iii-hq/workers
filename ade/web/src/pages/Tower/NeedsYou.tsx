@@ -31,6 +31,7 @@ import { chatSessionScreen } from '@/lib/workspace-tabs'
 import {
   type AnswerState,
   answerTransition,
+  isRetryableAnswerError,
   recommendedSelection,
   type Selection,
   selectedAnswers,
@@ -171,6 +172,9 @@ export function NeedsYou({
   const [states, setStates] = useState<Record<string, AnswerState>>({})
   const inFlight = useRef(new Set<string>())
   const retries = useRef(new Map<string, () => Promise<void>>())
+  const active = useRef(true)
+  const currentItems = useRef(new Set(data.items.map((item) => item.id)))
+  currentItems.current = new Set(data.items.map((item) => item.id))
   const selected = data.items.find((item) => item.id === focused?.id) ?? focused
   const record =
     selected?.kind === 'question'
@@ -184,6 +188,12 @@ export function NeedsYou({
     record?.harness ??
     (selected?.kind === 'question' ? selected.entry : undefined)
   const selectedKey = selected?.id
+  useEffect(() => {
+    active.current = true
+    return () => {
+      active.current = false
+    }
+  }, [])
   useEffect(() => {
     if (chatItem && chatItem.id !== selectedKey) setChatItem(null)
   }, [chatItem, selectedKey])
@@ -263,7 +273,19 @@ export function NeedsYou({
       await send(item, summary, action)
     })
     try {
-      const result = await action()
+      let result: AskEntry | { resolved: boolean } | undefined
+      for (;;) {
+        try {
+          result = await action()
+          break
+        } catch (error) {
+          const message = errorMessage(error)
+          if (!isRetryableAnswerError(message)) throw error
+          updateState(item.id, { type: 'failed', error: message })
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          if (!active.current || !currentItems.current.has(item.id)) return
+        }
+      }
       if (item.kind === 'question' && result && 'question_id' in result) {
         updateState(item.id, { type: 'settled', entry: result, own: true })
       } else if (result && 'resolved' in result && !result.resolved) {

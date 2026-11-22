@@ -1609,7 +1609,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::question::answer",
-        "Answer or dismiss a harness question from its ticket; forwards to the harness with by.channel kanban. People only; the harness delivers and emits the authoritative settlement.",
+        "Answer or dismiss a harness question from its ticket; forwards to the harness with by.channel kanban, or records not_delivered when the harness entry is gone. People only.",
         crate::questions::answer,
     );
     register(

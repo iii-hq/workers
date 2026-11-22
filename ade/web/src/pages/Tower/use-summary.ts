@@ -27,7 +27,7 @@ export function useTowerSummary(
   input.current = data
   const controller = useRef<{
     scope: string
-    run: (force: boolean) => Promise<void>
+    run: (force: boolean, manual?: boolean) => Promise<void>
   } | null>(null)
   const instance = useId().replace(/[^a-z0-9]/gi, '')
   const ready =
@@ -40,7 +40,8 @@ export function useTowerSummary(
     let busy = false
     let result: TowerSummary | null = null
     let opened = false
-    let refreshRequested = false
+    let pendingRefresh: string | false | null = null
+    let queuedRefresh = false
     let observerError: string | null = null
     let debounce: ReturnType<typeof setTimeout> | undefined
     const publish = (loading: boolean, error: string | null = null) => {
@@ -55,10 +56,18 @@ export function useTowerSummary(
       result = next
       return rejected ? 'The tower writer returned an invalid summary.' : null
     }
-    const run = async (force: boolean) => {
-      if (force) refreshRequested = true
-      if (!active || busy || (opened && !refreshRequested)) return
+    const run = async (force: boolean, manual = false) => {
+      if (manual) pendingRefresh = `refresh:${crypto.randomUUID()}`
+      else if (force && pendingRefresh === null) pendingRefresh = false
+      if (!active) return
+      if (busy) {
+        if (pendingRefresh !== null) queuedRefresh = true
+        return
+      }
+      if (opened && pendingRefresh === null) return
       busy = true
+      const refreshRequest = pendingRefresh
+      pendingRefresh = null
       const work = async () => {
         try {
           if (!active) return
@@ -86,11 +95,13 @@ export function useTowerSummary(
             current.loading.board ||
             current.loading.sessions ||
             current.loading.prs
-          )
+          ) {
+            if (pendingRefresh === null) pendingRefresh = refreshRequest
             return
+          }
           opened = true
           if (
-            !refreshRequested &&
+            refreshRequest === null &&
             result &&
             Date.now() - Date.parse(result.checked_at) <= SUMMARY_INTERVAL
           )
@@ -131,11 +142,13 @@ export function useTowerSummary(
           if (!active) return
           const refreshAt = new Date().toISOString()
           const slot = Math.floor(Date.now() / SUMMARY_INTERVAL)
+          const refreshSuffix =
+            typeof refreshRequest === 'string' ? refreshRequest : null
           const sent = await iii.call<{ deduplicated?: boolean }>(
             'harness::send',
             {
               session_id: sessionId,
-              idempotency_key: `tower:${scope}:${slot}`,
+              idempotency_key: `tower:${scope}:${slot}${refreshSuffix ? `:${refreshSuffix}` : ''}`,
               message: JSON.stringify({
                 checked_at: result?.checked_at ?? null,
                 refresh_at: refreshAt,
@@ -150,7 +163,6 @@ export function useTowerSummary(
               },
             },
           )
-          refreshRequested = false
           if (
             sent.deduplicated &&
             status?.status &&
@@ -161,6 +173,10 @@ export function useTowerSummary(
           publish(false, errorMessage(error))
         } finally {
           busy = false
+          if (active && queuedRefresh) {
+            queuedRefresh = false
+            void run(false)
+          }
         }
       }
       // Serialize first use across tabs before the harness freezes the profile.
@@ -221,7 +237,7 @@ export function useTowerSummary(
       void controller.current.run(false)
   }, [ready, scope])
   const refresh = useCallback(() => {
-    void controller.current?.run(true)
+    void controller.current?.run(true, true)
   }, [])
   return {
     result: snapshot.scope === scope ? snapshot.result : null,

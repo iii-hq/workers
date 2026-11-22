@@ -753,6 +753,92 @@ async fn question_observers_and_boot_reconciliation_use_the_harness_contract() {
 }
 
 #[tokio::test]
+async fn a_missing_harness_ask_keeps_the_answer_on_the_card_as_not_delivered() {
+    use iii_kanban::questions::{self, AskEntry};
+    let _slot = ENGINE_SLOT.lock().await;
+    let Some(owner) = connect("kanban-e2e-missing-ask").await else {
+        return;
+    };
+    let folder = tempfile::tempdir().unwrap();
+    let ctx = boot_owner(&owner, folder.path());
+    let Some(harness) = connect("kanban-e2e-missing-ask-harness").await else {
+        owner.shutdown_async().await;
+        return;
+    };
+    harness.register_function(
+        "harness::ask::answer",
+        RegisterFunction::new(|_: Value| {
+            Err::<Value, _>(Error::Handler(
+                "harness/invalid_request: ask entry not found".into(),
+            ))
+        }),
+    );
+    let key = create_ticket(&owner, "session was deleted").await;
+    let entry: AskEntry = serde_json::from_value(json!({
+        "session_id":"deleted-session","question_id":"call-1",
+        "asked_at":1795262400000_i64,"state":"open",
+        "about":{"ticket":key},
+        "questions":[{"header":"Builds","question":"Isolate?","multi_select":false,
+            "options":[{"label":"Yes"},{"label":"No"}]}]
+    }))
+    .unwrap();
+    ctx.store
+        .update(|board, _| questions::mirror(board, &entry, None, "2026-11-21T12:00:00Z"))
+        .await
+        .unwrap();
+    let ticket = call(&owner, "kanban::ticket::get", json!({"id":key})).await;
+    let result = call(
+        &owner,
+        "kanban::question::answer",
+        json!({"ticket_id":key,"comment_id":ticket["comments"][0]["id"],
+            "answers":[{"header":"Builds","choice":"Yes"}],"user":"Pat"}),
+    )
+    .await;
+    assert_eq!(result, json!({"outcome":"not_delivered"}));
+    let ticket = call(&owner, "kanban::ticket::get", json!({"id":key})).await;
+    assert_eq!(ticket["open_questions"], 0);
+    assert_eq!(ticket["comments"][1]["answer"]["outcome"], "not_delivered");
+    assert_eq!(
+        ticket["comments"][1]["answer"]["answer_text"],
+        "Builds: Yes"
+    );
+    assert_eq!(
+        ticket["comments"][1]["answer"]["by"],
+        json!({
+            "channel":"kanban","user":"Pat"
+        })
+    );
+
+    let race_key = create_ticket(&owner, "withdrawal won the race").await;
+    let mut race = entry.clone();
+    race.question.question_id = "call-2".into();
+    race.question.about.as_mut().unwrap().ticket = Some(race_key.clone());
+    ctx.store
+        .update(|board, _| {
+            questions::mirror(board, &race, None, "2026-11-21T12:01:00Z")?;
+            race.state = questions::AskState::Withdrawn;
+            race.outcome = Some(questions::AnswerOutcome::Withdrawn);
+            race.settled_at = Some(1795262460000_i64);
+            questions::mirror(board, &race, None, "2026-11-21T12:02:00Z")
+        })
+        .await
+        .unwrap();
+    let before = call(&owner, "kanban::ticket::get", json!({"id":race_key})).await;
+    let result = call(
+        &owner,
+        "kanban::question::answer",
+        json!({"ticket_id":race_key,"comment_id":before["comments"][0]["id"],
+            "answers":[{"header":"Builds","choice":"No"}],"user":"Pat"}),
+    )
+    .await;
+    assert_eq!(result, json!({"outcome":"withdrawn"}));
+    let after = call(&owner, "kanban::ticket::get", json!({"id":race_key})).await;
+    assert_eq!(after["comments"], before["comments"]);
+    harness.shutdown_async().await;
+    owner.shutdown_async().await;
+}
+
+#[tokio::test]
 async fn dispatch_keeps_questions_in_progress_and_parks_stops_on_events_and_at_boot() {
     use iii_kanban::dispatch;
     let _slot = ENGINE_SLOT.lock().await;

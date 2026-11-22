@@ -117,6 +117,45 @@ describe('Tower Needs you interactions', () => {
     expect(call.mock.calls[2]).toEqual(call.mock.calls[0])
     expect(container.textContent).toContain('Delivered')
   })
+  it('keeps an expiry delivery race open and retries the answer shortly', async () => {
+    vi.useFakeTimers()
+    const call = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error('ask_busy: expiry notice in delivery, retry'),
+      )
+      .mockResolvedValueOnce({ ...question.entry, state: 'answered' })
+    await render({ iii: client(call) })
+    await click('Answer')
+    expect(container.textContent).toContain('Sending your answer')
+    expect(container.textContent).not.toContain('Already answered')
+    expect(call).toHaveBeenCalledTimes(1)
+    await act(async () => vi.advanceTimersByTimeAsync(500))
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(call.mock.calls[1]).toEqual(call.mock.calls[0])
+    expect(container.textContent).toContain('Delivered')
+    vi.useRealTimers()
+  })
+  it('stops retrying an expiry delivery race after the question closes', async () => {
+    vi.useFakeTimers()
+    const call = vi
+      .fn()
+      .mockRejectedValue(
+        new Error('ask_busy: expiry notice in delivery, retry'),
+      )
+    await render({ iii: client(call) })
+    await click('Answer')
+    await render({
+      iii: client(call),
+      data: {
+        ...towerFixture,
+        items: towerFixture.items.filter((item) => item.id !== question.id),
+      },
+    })
+    await act(async () => vi.advanceTimersByTimeAsync(500))
+    expect(call).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
   it('reconciles a reserved answer on Retry without sending a second answer', async () => {
     const call = vi
       .fn()

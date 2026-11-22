@@ -718,8 +718,87 @@ pub fn spawn_reconcile(ctx: Arc<Ctx>) {
 pub async fn answer(ctx: Arc<Ctx>, input: AnswerInput) -> Result<Value, Error> {
     let board = ctx.store.read().await.map_err(Error::Handler)?;
     let request = answer_request(&board, &input).map_err(Error::Handler)?;
-    // The harness reserves and closes the ask. Only its event writes the reply.
-    call(&ctx, "harness::ask::answer", request).await
+    drop(board);
+    // The harness reserves and closes the ask. Its event normally writes the reply.
+    match call(&ctx, "harness::ask::answer", request).await {
+        Ok(answer) => Ok(answer),
+        Err(error) if matches!(&error, Error::Remote { message, .. } if message.contains("harness/invalid_request: ask entry not found")) =>
+        {
+            let answer_text = input.answers.as_ref().map_or_else(
+                || "Let the agent decide.".into(),
+                |answers| {
+                    answers
+                        .iter()
+                        .map(|answer| {
+                            let mut values = answer.choice.iter().cloned().collect::<Vec<_>>();
+                            values.extend(answer.choices.iter().flatten().cloned());
+                            values.extend(
+                                answer
+                                    .other
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .map(String::from),
+                            );
+                            format!(
+                                "{}: {}",
+                                answer.header,
+                                if answer.skipped == Some(true) {
+                                    "(skipped)".into()
+                                } else {
+                                    values.join(", ")
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+            );
+            let user = input.user;
+            let comment_id = input.comment_id;
+            let ticket_id = input.ticket_id;
+            persist(&ctx, |board, at| {
+                let ticket = board::find_ticket_mut(board, &ticket_id)
+                    .ok_or_else(|| format!("ticket not found: {ticket_id}"))?;
+                if ticket.comments.iter().any(|comment| {
+                    comment.parent_id.as_deref() == Some(&comment_id) && comment.answer.is_some()
+                }) {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![append(
+                    ticket,
+                    None,
+                    Some(Answer {
+                        answer_text,
+                        by: Some(AnswerBy {
+                            channel: "kanban".into(),
+                            user: Some(user),
+                        }),
+                        outcome: AnswerOutcome::NotDelivered,
+                    }),
+                    Some(comment_id.clone()),
+                    None,
+                    None,
+                    (at, at),
+                )])
+            })
+            .await?;
+            let board = ctx.store.read().await.map_err(Error::Handler)?;
+            let outcome = board::find_ticket(&board, &ticket_id)
+                .and_then(|ticket| {
+                    let comment = ticket
+                        .comments
+                        .iter()
+                        .find(|comment| comment.id == comment_id)?;
+                    reply(ticket, comment)
+                })
+                .and_then(|comment| comment.answer.as_ref())
+                .map(|answer| answer.outcome)
+                .ok_or_else(|| Error::Handler("question answer reply was not persisted".into()))?;
+            Ok(json!({"outcome":outcome}))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub async fn record_question(ctx: Arc<Ctx>, input: RecordInput) -> Result<QuestionView, Error> {

@@ -272,7 +272,7 @@ describe('tower writer lifecycle', () => {
     expect(sends()[0][1].session_id).toBe('tower-assistente')
   })
 
-  it('sends on open past ten minutes and at ten-minute intervals; repeats in a slot share a key', async () => {
+  it('gives manual Refresh a unique key while automatic sends keep the slot key', async () => {
     status = {
       status: 'completed',
       turn_id: 'existing',
@@ -286,7 +286,9 @@ describe('tower writer lifecycle', () => {
     await act(() => state.refresh())
     await settle()
     expect(sends()).toHaveLength(2)
-    expect(sends()[1][1].idempotency_key).toBe(sends()[0][1].idempotency_key)
+    expect(sends()[1][1].idempotency_key).toMatch(
+      new RegExp(`^${sends()[0][1].idempotency_key}:refresh:`),
+    )
     await act(async () => vi.advanceTimersByTimeAsync(SUMMARY_INTERVAL))
     await settle()
     expect(sends()).toHaveLength(3)
@@ -313,6 +315,34 @@ describe('tower writer lifecycle', () => {
     expect(sends()).toHaveLength(0)
     await render()
     expect(sends()).toHaveLength(1)
+  })
+
+  it('queues a manual Refresh while an automatic send is busy', async () => {
+    status = {
+      status: 'completed',
+      turn_id: 'existing',
+      result: towerSummaryFixture,
+    }
+    await render()
+    let resumeStatus = (_value: typeof status) => {}
+    let delayStatus = true
+    call.mockImplementation((id: string) => {
+      if (id === 'harness::status' && delayStatus) {
+        delayStatus = false
+        return new Promise((resolve) => {
+          resumeStatus = resolve
+        })
+      }
+      return respond(id)
+    })
+    await act(async () => vi.advanceTimersByTimeAsync(SUMMARY_INTERVAL))
+    await settle()
+    await act(() => state.refresh())
+    await act(() => resumeStatus(status))
+    await settle()
+    expect(sends()).toHaveLength(2)
+    expect(sends()[0][1].idempotency_key).not.toContain(':refresh:')
+    expect(sends()[1][1].idempotency_key).toMatch(/:refresh:[0-9a-f-]+$/)
   })
 
   it('does not leave a deduplicated Refresh waiting for a completion event that already fired', async () => {

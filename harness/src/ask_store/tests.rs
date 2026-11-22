@@ -8,7 +8,11 @@ use tokio_tungstenite::tungstenite::Message;
 struct Store {
     rows: BTreeMap<String, Value>,
     sends: BTreeMap<String, String>,
-    attempts: Vec<String>,
+    state: BTreeMap<(String, String), Value>,
+    events: Vec<Value>,
+    fail_sends: usize,
+    expire_on_reserve: bool,
+    idem_reads: Vec<String>,
     fail_close: bool,
     fail_send: bool,
     gone: bool,
@@ -25,11 +29,21 @@ async fn fixture() -> (Deps, Arc<Mutex<Store>>, tokio::task::JoinHandle<()>) {
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        socket.send(Message::Text(json!({"type":"workerregistered", "worker_id":"ask-test", "features":["observe.v2"]}).to_string().into())).await.unwrap();
         while let Some(Ok(frame)) = socket.next().await {
             let Ok(msg) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
                 continue;
             };
-            if msg["type"] != "invokefunction" || msg["invocation_id"].is_null() {
+            if msg["type"] == "registerfunction" && msg["id"] == crate::events::ON_ASK_SETTLED_FN {
+                let registered = json!({"type":"functionregistered", "id":msg["id"],
+                    "revision":1, "observers":[{"id":"settled", "target":"test::settled"}]});
+                socket
+                    .send(Message::Text(registered.to_string().into()))
+                    .await
+                    .unwrap();
+                continue;
+            }
+            if msg["type"] != "invokefunction" {
                 continue;
             }
             let function = msg["function_id"].as_str().unwrap();
@@ -39,22 +53,64 @@ async fn fixture() -> (Deps, Arc<Mutex<Store>>, tokio::task::JoinHandle<()>) {
                 let mut db = db.lock().unwrap();
                 db.calls.push(function.into());
                 let key = data["key"].as_str().unwrap_or_default().to_owned();
+                let scope = data["scope"].as_str().unwrap_or_default().to_owned();
+                if scope == crate::state::IDEM_SCOPE && function.ends_with("::get") {
+                    db.idem_reads.push(key.clone());
+                    if db.fail_send || db.fail_sends > 0 {
+                        db.fail_send = false;
+                        db.fail_sends = db.fail_sends.saturating_sub(1);
+                        rejected = true;
+                    }
+                }
                 match function {
-                    "harness::state::get" => db.rows.get(&key).cloned().unwrap_or(Value::Null),
-                    "harness::state::list" => {
+                    "state::get" | "harness::state::get" if scope == SCOPE => {
+                        db.rows.get(&key).cloned().unwrap_or(Value::Null)
+                    }
+                    "state::get" | "harness::state::get" => {
+                        db.state.get(&(scope, key)).cloned().unwrap_or(Value::Null)
+                    }
+                    "harness::state::list" if scope == SCOPE => {
                         json!({"values": db.rows.values().collect::<Vec<_>>()})
                     }
+                    "state::list" | "harness::state::list" => json!([]),
+                    "state::set" => {
+                        record_message(&mut db, data);
+                        db.state.insert((scope, key), data["value"].clone());
+                        json!({})
+                    }
                     "harness::state::compare-and-set" => {
-                        let current = db.rows.get(&key).cloned().unwrap_or(Value::Null);
-                        if db.fail_close && data["value"]["state"] == "answered" {
+                        let current = if scope == SCOPE {
+                            db.rows.get(&key).cloned()
+                        } else {
+                            db.state.get(&(scope.clone(), key.clone())).cloned()
+                        }
+                        .unwrap_or(Value::Null);
+                        if scope == SCOPE
+                            && db.expire_on_reserve
+                            && data["value"]["state"] == "answering"
+                        {
+                            db.expire_on_reserve = false;
+                            let mut expired = current;
+                            expired["state"] = json!("expired");
+                            expired["by"] = json!({"channel":"expiry"});
+                            db.rows.insert(key, expired.clone());
+                            json!({"swapped":false, "current":expired})
+                        } else if scope == SCOPE
+                            && db.fail_close
+                            && data["value"]["state"] == "answered"
+                        {
                             db.fail_close = false;
                             rejected = true;
                             Value::Null
                         } else if data.get("expected").unwrap_or(&Value::Null) == &current {
-                            if data["value"].is_null() {
-                                db.rows.remove(&key);
+                            if scope == SCOPE {
+                                if data["value"].is_null() {
+                                    db.rows.remove(&key);
+                                } else {
+                                    db.rows.insert(key, data["value"].clone());
+                                }
                             } else {
-                                db.rows.insert(key, data["value"].clone());
+                                db.state.insert((scope, key), data["value"].clone());
                             }
                             json!({"swapped": true})
                         } else {
@@ -70,26 +126,29 @@ async fn fixture() -> (Deps, Arc<Mutex<Store>>, tokio::task::JoinHandle<()>) {
                         json!({"meta":{"session_id":data["session_id"],"metadata":metadata}})
                     }
                     "engine::workers::list" => json!({"workers":[]}),
+                    "engine::workers::register" => json!({"success":true}),
+                    "engine::functions::list" => json!({"functions":[]}),
                     "harness::ask::withdraw" => {
                         db.withdrawn = Some(data.clone());
                         data.clone()
                     }
-                    "harness::send" => {
-                        assert_eq!(data["options"]["require_existing_session"], true);
-                        let key = data["idempotency_key"].as_str().unwrap().to_owned();
-                        db.attempts.push(key.clone());
-                        if db.fail_send {
-                            db.fail_send = false;
-                            rejected = true;
-                        }
-                        db.sends
-                            .entry(key)
-                            .or_insert_with(|| data["message"].as_str().unwrap().into());
-                        json!({"session_id":data["session_id"],"turn_id":"t-next"})
+                    "session::append" => {
+                        record_message(&mut db, data);
+                        json!({"entry_id":data["entry_id"]})
+                    }
+                    "session::messages" => json!({"messages":[]}),
+                    "session::set-status" | "session::set-meta" => json!({}),
+                    "harness::turn" => json!({}),
+                    crate::events::ON_ASK_SETTLED_FN => {
+                        db.events.push(data.clone());
+                        data.clone()
                     }
                     other => panic!("unexpected function {other}"),
                 }
             };
+            if msg["invocation_id"].is_null() {
+                continue;
+            }
             let mut reply = json!({"type":"invocationresult", "function_id":function, "invocation_id":msg["invocation_id"]});
             if rejected {
                 reply["error"] = json!({"code":"rejected", "message":"injected close failure"});
@@ -119,7 +178,44 @@ async fn fixture() -> (Deps, Arc<Mutex<Store>>, tokio::task::JoinHandle<()>) {
         crate::events::TurnEvents::register(&iii),
         crate::hooks::HookRegistry::register(&iii),
     );
+    for session in ["s", "other"] {
+        let mut record = crate::types::turn::tests::record();
+        record.session_id = session.into();
+        record.status = crate::types::turn::TurnStatus::Completed;
+        record.options.system_prompt =
+            Some(format!("Frozen ask test prompt {}", uuid::Uuid::new_v4()));
+        crate::state::put_turn(&deps.iii, &record, 1000)
+            .await
+            .unwrap();
+    }
     (deps, store, server)
+}
+
+fn record_message(db: &mut Store, data: &Value) {
+    let row = data.get("value").unwrap_or(data);
+    let Some(id) = row["entry_id"].as_str() else {
+        return;
+    };
+    let keys = db
+        .rows
+        .values()
+        .filter_map(|value| serde_json::from_value::<Entry>(value.clone()).ok())
+        .flat_map(|entry| {
+            [
+                format!("ask:{}", entry.key()),
+                format!("ask-expiry:{}", entry.key()),
+            ]
+        });
+    if let Some(key) = keys
+        .into_iter()
+        .find(|key| crate::ids::idem_user_entry_id(key) == id)
+    {
+        let text = row["message"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        db.sends.entry(key).or_insert(text);
+    }
 }
 
 fn request(extra: Value) -> AskRequest {
@@ -225,7 +321,8 @@ async fn accepts_lists_counts_and_preserves_closed_entries_until_purge() {
             .unwrap()
             .calls
             .iter()
-            .filter(|id| id.contains("state::"))
+            .filter(|id| id.contains("state::")
+                && !matches!(id.as_str(), "state::set" | "state::get" | "state::list"))
             .all(|id| id.starts_with("harness::state::"))
     );
     server.abort();
@@ -245,7 +342,7 @@ async fn concurrent_answers_reserve_once_and_report_the_winning_channel() {
     let err = a.err().or(b.err()).unwrap().to_string();
     assert!(err.contains("already answered by tower"), "{err}");
     let store = db.lock().unwrap();
-    assert_eq!(store.attempts, ["ask:s/q"]);
+    assert_eq!(store.idem_reads, ["ask:s/q", "ask:s/q"]);
     assert_eq!(store.sends["ask:s/q"], "Builds: Isolate");
     server.abort();
 }
@@ -268,7 +365,7 @@ async fn recovery_replays_a_sent_reservation_with_the_same_key() {
         AskState::Answered
     );
     let store = db.lock().unwrap();
-    assert_eq!(store.attempts, ["ask:s/q", "ask:s/q"]);
+    assert_eq!(store.idem_reads, ["ask:s/q", "ask:s/q", "ask:s/q"]);
     assert_eq!(store.sends.len(), 1);
     server.abort();
 }
@@ -290,7 +387,10 @@ async fn expiry_block_is_claimed_once_and_still_accepts_a_late_answer() {
         "No answer within 1 min to: Builds. Do not decide it yourself. If you cannot go on without it, finish blocked; the answer will arrive as a message."
     );
     answer(&deps, response("s", "q")).await.unwrap();
-    assert_eq!(db.lock().unwrap().attempts, ["ask-expiry:s/q", "ask:s/q"]);
+    assert_eq!(
+        db.lock().unwrap().idem_reads,
+        ["ask-expiry:s/q", "ask-expiry:s/q", "ask:s/q", "ask:s/q"]
+    );
     server.abort();
 }
 
@@ -490,8 +590,195 @@ async fn a_transient_delivery_error_retries_without_a_reboot_or_worker_event() {
     })
     .await
     .unwrap();
-    assert_eq!(db.lock().unwrap().attempts, ["ask:s/q", "ask:s/q"]);
+    assert_eq!(
+        db.lock().unwrap().idem_reads,
+        ["ask:s/q", "ask:s/q", "ask:s/q"]
+    );
     assert_eq!(db.lock().unwrap().sends.len(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn delivery_keeps_rearming_after_more_than_five_failures() {
+    let (deps, db, server) = fixture().await;
+    accept(&deps, "s", "t", "q", &request(json!({})))
+        .await
+        .unwrap();
+    let before = get(&deps, "s", "q").await.unwrap();
+    let reserved = reserve(&before, response("s", "q")).unwrap();
+    assert!(cas(&deps, Some(&before), &reserved).await.unwrap());
+    db.lock().unwrap().fail_sends = 7;
+    // Zero delay exercises successive re-armings without waiting out the backoff.
+    retry(&deps, &reserved, 0);
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            if get(&deps, "s", "q").await.unwrap().state == AskState::Answered {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Seven failed lookups, then delivery lookup and the private ledger write read.
+    assert_eq!(db.lock().unwrap().idem_reads.len(), 9);
+    assert_eq!(db.lock().unwrap().sends.len(), 1);
+    assert!(!deps.ask_timers.is_armed("ask-retry:s/q"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn failed_recovery_delivery_keeps_booting_and_retries() {
+    let (deps, db, server) = fixture().await;
+    accept(&deps, "s", "t", "q", &request(json!({})))
+        .await
+        .unwrap();
+    let before = get(&deps, "s", "q").await.unwrap();
+    let reserved = reserve(&before, response("s", "q")).unwrap();
+    assert!(cas(&deps, Some(&before), &reserved).await.unwrap());
+    db.lock().unwrap().fail_send = true;
+    recover(&deps).await.unwrap();
+    assert!(deps.ask_timers.is_armed("ask-retry:s/q"));
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            if get(&deps, "s", "q").await.unwrap().state == AskState::Answered {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(db.lock().unwrap().idem_reads.len(), 3);
+    assert_eq!(db.lock().unwrap().sends.len(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn purge_withdraws_open_expired_and_reserved_questions_before_removing_them() {
+    let (deps, db, server) = fixture().await;
+    for (id, state) in [
+        ("open", AskState::Open),
+        ("expired", AskState::Expired),
+        ("reserved", AskState::Answering),
+    ] {
+        accept(&deps, "s", "t", id, &request(json!({"expires_in_min":1})))
+            .await
+            .unwrap();
+        db.lock().unwrap().rows.get_mut(&format!("s/{id}")).unwrap()["state"] = json!(state);
+    }
+    purge(&deps, "s").await.unwrap();
+    assert_eq!(open_count(&deps, "s").await.unwrap(), 0);
+    let store = db.lock().unwrap();
+    assert!(store.rows.is_empty());
+    assert_eq!(store.events.len(), 3);
+    for payload in &store.events {
+        assert_eq!(payload["state"], "withdrawn");
+        assert_eq!(payload["outcome"], "withdrawn");
+        assert_eq!(payload["about"]["ticket"], "KAN-597");
+        assert!(payload["settled_at"].is_i64());
+    }
+    assert!(deps.ask_timers.is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn malformed_rows_do_not_break_listing_counts_recovery_or_deletion() {
+    let (deps, db, server) = fixture().await;
+    accept(&deps, "s", "t", "q", &request(json!({})))
+        .await
+        .unwrap();
+    db.lock()
+        .unwrap()
+        .rows
+        .insert("broken".into(), json!({"state":"unknown"}));
+    assert_eq!(
+        list(&deps, ListRequest::default())
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    assert_eq!(open_count(&deps, "s").await.unwrap(), 1);
+    recover(&deps).await.unwrap();
+    purge(&deps, "s").await.unwrap();
+    assert!(all(&deps).await.unwrap().is_empty());
+    assert!(db.lock().unwrap().rows.contains_key("broken"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn purge_preserves_reserved_answers_and_dismissals_as_not_delivered() {
+    let (deps, db, server) = fixture().await;
+    for dismissed in [false, true] {
+        let id = if dismissed { "dismissed" } else { "answered" };
+        accept(&deps, "s", "t", id, &request(json!({})))
+            .await
+            .unwrap();
+        let before = get(&deps, "s", id).await.unwrap();
+        let mut req = response("s", id);
+        if dismissed {
+            req.answers = None;
+            req.dismissed = true;
+        }
+        let reserved = reserve(&before, req).unwrap();
+        assert!(cas(&deps, Some(&before), &reserved).await.unwrap());
+    }
+    purge(&deps, "s").await.unwrap();
+    assert!(all(&deps).await.unwrap().is_empty());
+    let store = db.lock().unwrap();
+    assert_eq!(store.events.len(), 2);
+    for event in &store.events {
+        assert_eq!(event["outcome"], "not_delivered");
+        assert_eq!(event["by"], json!({"channel":"tower", "user":"person"}));
+        if event["question_id"] == "dismissed" {
+            assert_eq!(event["state"], "dismissed");
+            assert_eq!(event["answer_text"], DISMISS_TEXT);
+        } else {
+            assert_eq!(event["state"], "answered");
+            assert_eq!(event["answer_text"], "Builds: Isolate");
+        }
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn answer_during_block_expiry_delivery_is_busy_then_accepts_retry() {
+    let (deps, db, server) = fixture().await;
+    accept(&deps, "s", "t", "q", &request(json!({"expires_in_min":1})))
+        .await
+        .unwrap();
+    let before = get(&deps, "s", "q").await.unwrap();
+    let reserved = expiry_reservation(&before).unwrap();
+    assert!(cas(&deps, Some(&before), &reserved).await.unwrap());
+    let error = answer(&deps, response("s", "q")).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("ask_busy: expiry notice in delivery, retry")
+    );
+    assert_eq!(open_count(&deps, "s").await.unwrap(), 1);
+    deliver_once(&deps, reserved).await.unwrap();
+    let answered = answer(&deps, response("s", "q")).await.unwrap();
+    assert_eq!(answered.outcome, Some(Outcome::Answered));
+    assert_eq!(
+        db.lock().unwrap().idem_reads,
+        ["ask-expiry:s/q", "ask-expiry:s/q", "ask:s/q", "ask:s/q"]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn answer_retries_reservation_when_expiry_completed_after_its_read() {
+    let (deps, db, server) = fixture().await;
+    accept(&deps, "s", "t", "q", &request(json!({"expires_in_min":1})))
+        .await
+        .unwrap();
+    db.lock().unwrap().expire_on_reserve = true;
+    let entry = answer(&deps, response("s", "q")).await.unwrap();
+    assert_eq!(entry.outcome, Some(Outcome::Answered));
+    assert_eq!(db.lock().unwrap().idem_reads, ["ask:s/q", "ask:s/q"]);
     server.abort();
 }
 

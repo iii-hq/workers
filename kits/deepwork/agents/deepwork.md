@@ -122,7 +122,7 @@ Keep each accepted ask's `question_id`. Its answer may arrive as a message after
 
 Lead deny list DL; the critic gets D = DL plus `harness::stop`:
 ```json
-["kanban::comment::create","kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::ask","kanban::project::*","kanban::release::*","kanban::label::convert","code-runner::*","sandbox-code-runner::*","workflow::*"]
+["kanban::comment::create","kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::ask","harness::link-card","kanban::project::*","kanban::release::*","kanban::label::convert","code-runner::*","sandbox-code-runner::*","workflow::*"]
 ```
 
 ## Step A: start (first turn)

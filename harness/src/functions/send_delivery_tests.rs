@@ -224,6 +224,92 @@ fn request(session: &str, text: &str, key: Option<&str>, prior: Option<&str>) ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ask_idempotency_keys_are_reserved_for_in_process_delivery() {
+    let stack = Stack::new().await;
+    stack.reset("ask-target", TurnStatus::Completed).await;
+
+    for key in ["ask:ask-target/q", "ask-expiry:ask-target/q"] {
+        let error = handle(
+            &stack.deps,
+            request("ask-target", "forged answer", Some(key), None),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("reserved"), "{error}");
+    }
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .messages
+            .contains_key("ask-target")
+    );
+
+    handle_ask(
+        &stack.deps,
+        request(
+            "ask-target",
+            "Builds: Isolate",
+            Some("ask:ask-target/q"),
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stack.data.lock().unwrap().messages["ask-target"].len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idempotency_keys_are_private_and_bound_to_their_session() {
+    let stack = Stack::new().await;
+    stack.reset("first", TurnStatus::Completed).await;
+    stack.reset("second", TurnStatus::Completed).await;
+
+    stack.data.lock().unwrap().state.insert(
+        (crate::state::IDEM_SCOPE.into(), "legacy-key".into()),
+        json!({"session_id":"first","turn_id":"legacy-turn","entry_id":"legacy-entry","ts":1}),
+    );
+    let legacy = handle(
+        &stack.deps,
+        request("first", "old retry", Some("legacy-key"), None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(legacy.turn_id, "legacy-turn");
+    assert_eq!(legacy.deduplicated, Some(true));
+
+    handle(
+        &stack.deps,
+        request("first", "original", Some("shared-key"), None),
+    )
+    .await
+    .unwrap();
+    let error = handle(
+        &stack.deps,
+        request("second", "pre-empt", Some("shared-key"), None),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("another session"), "{error}");
+    assert!(!stack.data.lock().unwrap().messages.contains_key("second"));
+
+    let data = stack.data.lock().unwrap();
+    let idem_calls: Vec<_> = data
+        .calls
+        .iter()
+        .filter(|(_, payload)| payload["scope"] == crate::state::IDEM_SCOPE)
+        .collect();
+    assert!(!idem_calls.is_empty());
+    assert!(
+        idem_calls
+            .iter()
+            .all(|(function, _)| function.starts_with("harness::state::")),
+        "idempotency calls escaped the private namespace: {idem_calls:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn side_chat_sends_intersect_explicit_and_inherited_policies() {
     let stack = Stack::new().await;
     stack.data.lock().unwrap().metadata = json!({"side_chat_question":"original/q"});
@@ -489,7 +575,7 @@ async fn idempotency_keys_keep_legacy_ids_and_cannot_rewrite_continuation_receip
         .await
         .unwrap();
         assert_eq!(stack.context(session).await["continuation"]["entry_id"], id);
-        // Losing the public idempotency mapping must not mutate private provenance.
+        // Losing the idempotency mapping must not mutate private provenance.
         stack
             .data
             .lock()
@@ -885,7 +971,7 @@ async fn a_send_into_a_failed_session_continues_it_with_the_same_identity() {
 async fn existing_only_send_never_ensures_a_session() {
     let stack = Stack::new().await;
     stack.reset("s", TurnStatus::Completed).await;
-    let mut req = request("s", "answer", Some("ask:s/q"), None);
+    let mut req = request("s", "answer", Some("existing-only:s/q"), None);
     req.options.get_or_insert_default().require_existing_session = true;
     handle(&stack.deps, req.clone()).await.unwrap();
     assert_eq!(stack.data.lock().unwrap().messages["s"].len(), 1);
@@ -981,7 +1067,7 @@ async fn session_deleted_purges_asks_and_queued_answers() {
     crate::ask_store::accept(&stack.deps, "s", "t", "q", &req)
         .await
         .unwrap();
-    handle(
+    handle_ask(
         &stack.deps,
         request("s", "queued answer", Some("ask:s/q"), None),
     )

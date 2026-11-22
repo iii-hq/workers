@@ -274,7 +274,25 @@ pub struct StartOutcome {
 }
 
 pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, HarnessError> {
-    handle_with_delivery_lock(deps, req, false, DeliveryChannel::Direct).await
+    handle_with_delivery_lock(deps, req, false, DeliveryChannel::Direct, false).await
+}
+
+/// Trusted in-process ask delivery. Reserved keys never cross the public
+/// `harness::send` boundary, so an agent cannot pre-empt a person's answer.
+pub(crate) async fn handle_ask(
+    deps: &Deps,
+    req: SendRequest,
+) -> Result<SendResponse, HarnessError> {
+    if !req
+        .idempotency_key
+        .as_deref()
+        .is_some_and(is_ask_idempotency_key)
+    {
+        return Err(HarnessError::InvalidRequest(
+            "internal ask delivery requires an ask: or ask-expiry: idempotency key".into(),
+        ));
+    }
+    handle_with_delivery_lock(deps, req, false, DeliveryChannel::Direct, true).await
 }
 
 /// Trusted in-process entry from the invocation chokepoint. Lock ownership is
@@ -295,6 +313,7 @@ pub(crate) async fn handle_from_invoke(
         req,
         caller_holds_target_session_lock,
         DeliveryChannel::InvokedAgent,
+        false,
     )
     .await
 }
@@ -304,7 +323,18 @@ async fn handle_with_delivery_lock(
     req: SendRequest,
     caller_holds_target_session_lock: bool,
     channel: DeliveryChannel,
+    allow_reserved_idempotency_key: bool,
 ) -> Result<SendResponse, HarnessError> {
+    if !allow_reserved_idempotency_key
+        && req
+            .idempotency_key
+            .as_deref()
+            .is_some_and(is_ask_idempotency_key)
+    {
+        return Err(HarnessError::InvalidRequest(
+            "ask: and ask-expiry: idempotency keys are reserved for harness ask delivery".into(),
+        ));
+    }
     if let Some(command) = compact_command(&req.message) {
         return start_compaction(deps, req, command).await;
     }
@@ -320,6 +350,10 @@ async fn handle_with_delivery_lock(
         reasoning: out.reasoning,
         compaction: None,
     })
+}
+
+fn is_ask_idempotency_key(key: &str) -> bool {
+    key.starts_with("ask:") || key.starts_with("ask-expiry:")
 }
 
 /// The `/compact` command, whatever client typed it.
@@ -349,6 +383,7 @@ async fn start_compaction(
         && let Some(existing) =
             crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?
     {
+        validate_idempotency_session(&existing, req.session_id.as_deref())?;
         return Ok(SendResponse {
             session_id: existing.session_id,
             turn_id: existing.turn_id,
@@ -468,6 +503,7 @@ async fn start_with_delivery_lock(
     };
     if let Some(outcome) = resolve_send_gate(
         idempotent,
+        req.session_id.as_deref(),
         prev.as_ref()
             .is_some_and(|record| !record.status.is_terminal()),
         req.options
@@ -1626,10 +1662,12 @@ pub(crate) fn validate_active_skill_request(
 
 fn resolve_send_gate(
     idempotent: Option<IdemRecord>,
+    requested_session_id: Option<&str>,
     active: bool,
     skills_explicit: bool,
 ) -> Result<Option<StartOutcome>, HarnessError> {
     if let Some(existing) = idempotent {
+        validate_idempotency_session(&existing, requested_session_id)?;
         return Ok(Some(StartOutcome {
             session_id: existing.session_id,
             turn_id: existing.turn_id,
@@ -1641,6 +1679,18 @@ fn resolve_send_gate(
     }
     validate_active_skill_request(active, skills_explicit)?;
     Ok(None)
+}
+
+fn validate_idempotency_session(
+    existing: &IdemRecord,
+    requested_session_id: Option<&str>,
+) -> Result<(), HarnessError> {
+    if requested_session_id.is_some_and(|requested| requested != existing.session_id) {
+        return Err(HarnessError::InvalidRequest(
+            "idempotency key belongs to another session".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn merge_explicit_skill_filter(
@@ -3332,7 +3382,7 @@ mod tests {
             ts: 1,
         };
 
-        let outcome = resolve_send_gate(Some(existing), true, true)
+        let outcome = resolve_send_gate(Some(existing), Some("s_original"), true, true)
             .unwrap()
             .expect("idempotency mapping resolves before active validation");
 

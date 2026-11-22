@@ -78,6 +78,10 @@ type AnswerEvent =
   | { type: 'settled'; entry: AskEntry; own?: boolean }
   | { type: 'delivered' }
 
+export function isRetryableAnswerError(error: string) {
+  return /ask_busy:\s*expiry notice in delivery,\s*retry/i.test(error)
+}
+
 export function answerTransition(
   state: AnswerState,
   event: AnswerEvent,
@@ -101,6 +105,12 @@ export function answerTransition(
         channel: entry.by?.channel,
       }
     }
+    if (
+      entry.state === 'answering' &&
+      entry.by?.channel === 'expiry' &&
+      !entry.outcome
+    )
+      return state.status === 'sending' ? state : { status: 'idle' }
     if (entry.state === 'answering') return { status: 'sending', summary }
     return state
   }
@@ -111,6 +121,7 @@ export function answerTransition(
       : state
   }
   if (state.status !== 'sending') return state
+  if (isRetryableAnswerError(event.error)) return state
   if (/withdrawn/i.test(event.error)) return { ...state, status: 'withdrawn' }
   const answered = /already answered(?: by (\w+))?/i.exec(event.error)
   return answered

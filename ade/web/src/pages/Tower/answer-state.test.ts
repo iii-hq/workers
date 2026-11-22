@@ -135,6 +135,27 @@ describe('Tower answer state machine', () => {
         },
       ),
     ).toEqual({ status: 'sending', summary: 'reserved' })
+    const expiryReservation = entry('answering', {
+      by: { channel: 'expiry' },
+    })
+    expect(
+      answerTransition(
+        { status: 'idle' },
+        { type: 'settled', entry: expiryReservation },
+      ),
+    ).toEqual({ status: 'idle' })
+    expect(
+      answerTransition(
+        { status: 'sending', summary: 'Builds: Sandbox' },
+        { type: 'settled', entry: expiryReservation },
+      ),
+    ).toEqual({ status: 'sending', summary: 'Builds: Sandbox' })
+    expect(
+      answerTransition(
+        { status: 'sending', summary: 'Builds: Sandbox' },
+        { type: 'settled', entry: entry('expired') },
+      ),
+    ).toEqual({ status: 'sending', summary: 'Builds: Sandbox' })
     expect(
       answerTransition(
         { status: 'idle' },
@@ -163,6 +184,15 @@ describe('Tower answer state machine', () => {
         { type: 'failed', error: 'invalid request: already answered by chat' },
       ),
     ).toMatchObject({ status: 'already', channel: 'chat' })
+    expect(
+      answerTransition(
+        { status: 'sending' },
+        {
+          type: 'failed',
+          error: 'ask_busy: expiry notice in delivery, retry',
+        },
+      ),
+    ).toEqual({ status: 'sending' })
     expect(
       answerTransition(
         { status: 'sending' },

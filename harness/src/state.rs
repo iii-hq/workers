@@ -4,7 +4,7 @@
 //! progress, per-send options, per-call checkpoints),
 //! `harness_prompt/<sha256:hex>` holds each frozen prompt body the records
 //! reference ([`PROMPT_SCOPE`]),
-//! `harness_idem/<idempotency_key>` holds the webhook-dedupe row,
+//! private `harness_idem/<idempotency_key>` holds the webhook-dedupe row,
 //! `harness_queue/<session_id>:<id>` holds one [`QueuedMessage`] per message
 //! that arrived while a step was streaming (drained by the loop), and
 //! `harness_binding/<binding_id>` holds one [`crate::bindings::Binding`].
@@ -122,7 +122,7 @@ pub(crate) async fn state_set(
     value: Value,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    if is_deletion_scope(scope) || scope == crate::ask_store::SCOPE {
+    if is_deletion_scope(scope) || matches!(scope, crate::ask_store::SCOPE | IDEM_SCOPE) {
         for _ in 0..8 {
             let current = state_get(iii, scope, key, timeout_ms).await?;
             if cas_value(
@@ -163,7 +163,7 @@ pub(crate) async fn state_delete(
     key: &str,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    if is_deletion_scope(scope) || scope == crate::ask_store::SCOPE {
+    if is_deletion_scope(scope) || matches!(scope, crate::ask_store::SCOPE | IDEM_SCOPE) {
         return state_set(iii, scope, key, Value::Null, timeout_ms).await;
     }
     run_hidden(
@@ -799,7 +799,7 @@ async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(),
             function_id: CLAIM_NAMESPACE_ID.into(),
             payload: json!({
                 "functions_prefix": NAMESPACE_PREFIX,
-                "scopes": [crate::ask_store::SCOPE, BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::hooks::recall::SCOPE, crate::functions::delete_session_tree::OPERATIONS,
+                "scopes": [crate::ask_store::SCOPE, IDEM_SCOPE, BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::hooks::recall::SCOPE, crate::functions::delete_session_tree::OPERATIONS,
                     crate::functions::delete_session_tree::GUARDS, crate::functions::delete_session_tree::DISPATCHES],
             }),
             action: None,
@@ -861,7 +861,11 @@ fn is_unregistered_accessor(error: &HarnessError) -> bool {
 fn is_binding_scope(scope: &str) -> bool {
     matches!(
         scope,
-        BINDING_SCOPE | BINDING_OWNER_SCOPE | crate::hooks::recall::SCOPE | crate::ask_store::SCOPE
+        BINDING_SCOPE
+            | BINDING_OWNER_SCOPE
+            | IDEM_SCOPE
+            | crate::hooks::recall::SCOPE
+            | crate::ask_store::SCOPE
     ) || is_deletion_scope(scope)
 }
 
@@ -1350,7 +1354,12 @@ mod tests {
     /// the state worker hard-scopes them, so a drift here would break reads.
     #[test]
     fn the_claim_covers_every_private_scope() {
-        for scope in [BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::ask_store::SCOPE] {
+        for scope in [
+            BINDING_SCOPE,
+            BINDING_OWNER_SCOPE,
+            IDEM_SCOPE,
+            crate::ask_store::SCOPE,
+        ] {
             assert!(
                 is_binding_scope(scope),
                 "{scope} must route to the accessors"
@@ -1358,7 +1367,6 @@ mod tests {
         }
         assert!(!is_binding_scope(TURN_SCOPE));
         assert!(!is_binding_scope(QUEUE_SCOPE));
-        assert!(!is_binding_scope(IDEM_SCOPE));
     }
 
     type Store = std::sync::Arc<std::sync::Mutex<BTreeMap<(String, String), Value>>>;
