@@ -30,6 +30,7 @@ import { effectLine } from './effect-line'
 import {
   crossRowBlockers,
   finalEntry,
+  heldSecret,
   type ImportResult,
   type ImportRow,
   importEffects,
@@ -41,6 +42,7 @@ import {
   rowBlockers,
   scrub,
   startValues,
+  vaultPlan,
 } from './importer'
 import { middleTruncate } from './presentation'
 import { asksGate, blockSentence, effectSentences, type SaveDeps, saveBefore, saveEntry } from './save'
@@ -57,11 +59,13 @@ const BADGE = {
 
 type Values = Record<string, string>
 type Stored = [Record<string, unknown>, Server[]]
-/** The last check of the current inputs: validation, and the approval-gate count of each name a save would ask. */
+/** The last check of the current inputs: validation, the approval-gate count of each name a save would ask, and
+ * who reads each vault name the import would store (`null`: no secret there). */
 interface Check {
   key: string
   reply?: ValidateResponse
   blocks?: Record<string, number>
+  readers?: Map<string, string[] | null>
   error?: string
 }
 
@@ -108,6 +112,7 @@ export function ImportDialog({
   // Read once per opening for the effects list; Import reads both again for each row's save.
   const stored = useRef<Promise<Stored> | null>(null)
   const counts = useRef(new Map<string, Promise<number>>())
+  const readersOf = useRef(new Map<string, Promise<string[] | null>>())
   const id = useId()
 
   const load = (next: string, file: string | null = null) => {
@@ -129,6 +134,7 @@ export function ImportDialog({
     setAnnouncement(null)
     stored.current = null
     counts.current.clear()
+    readersOf.current.clear()
   }
   useEffect(() => {
     if (!open) return
@@ -159,19 +165,41 @@ export function ImportDialog({
   const targets = effective.flatMap((r, i) => (r.status === 'skipped' ? [] : [i]))
   const ready = targets.length > 0 && targets.every((i) => blockers[i].length === 0)
   const finals = ready ? targets.map((i) => finalEntry(effective[i], values[i] ?? {})) : []
-  // The candidate map, references only: a secret's position holds `secret://NAME`.
+  const storing = [...new Set(finals.flatMap((f) => f.toStore.map((s) => s.name)))].sort()
+  // The candidate map, references only: a secret's position holds `secret://NAME`; and the vault names it stores.
   const key = ready
-    ? JSON.stringify(Object.fromEntries(targets.map((i, n) => [effective[i].name, finals[n].entry])))
+    ? JSON.stringify({
+        candidate: Object.fromEntries(targets.map((i, n) => [effective[i].name, finals[n].entry])),
+        storing,
+      })
     : ''
   const current = check !== null && check.key === key ? check : null
   const reply = current?.reply
-  const clean = ready && reply !== undefined && targets.every((i) => reply.servers[effective[i].name]?.ok === true)
+  const vault = current?.readers ? vaultPlan(storing, current.readers) : null
+  const clean =
+    ready &&
+    reply !== undefined &&
+    vault?.blocked.length === 0 &&
+    targets.every((i) => reply.servers[effective[i].name]?.ok === true)
+  /** A vault name a row would store over another worker's secret, as that row's issue. */
+  const heldIssues = (i: number): string[] => {
+    const mine = finals[targets.indexOf(i)]?.toStore.map((s) => s.name) ?? []
+    return (vault?.blocked ?? [])
+      .filter((b) => mine.includes(b.name))
+      .map(
+        (b) =>
+          `${heldSecret(b.name, b.readers)} Give it another vault name, or enter \`secret://${b.name}\` to use the stored value.`,
+      )
+  }
 
   // `retries` is a dependency only so Retry runs a failed check again.
   useEffect(() => {
     if (!open || phase !== 'edit' || key === '') return
     const mine = ++seq.current
-    const candidate = JSON.parse(key) as Record<string, Record<string, unknown>>
+    const { candidate, storing: names } = JSON.parse(key) as {
+      candidate: Record<string, Record<string, unknown>>
+      storing: string[]
+    }
     void (async () => {
       try {
         const answer = await api.validate(candidate)
@@ -187,10 +215,17 @@ export function ImportDialog({
           if (!counts.current.has(name)) counts.current.set(name, deps.blockCount(name))
           blocks[name] = await (counts.current.get(name) as Promise<number>)
         }
-        if (mine === seq.current) setCheck({ key, reply: answer, blocks })
+        // Names only: who reads each vault name the import would store. Import checks again as it stores.
+        const readers = new Map<string, string[] | null>()
+        for (const name of names) {
+          if (!readersOf.current.has(name)) readersOf.current.set(name, api.secretReaders(name))
+          readers.set(name, await (readersOf.current.get(name) as Promise<string[] | null>))
+        }
+        if (mine === seq.current) setCheck({ key, reply: answer, blocks, readers })
       } catch (err) {
         stored.current = null
         counts.current.clear()
+        readersOf.current.clear()
         if (mine === seq.current) setCheck({ key, error: errorMessage(err) })
       }
     })()
@@ -202,9 +237,11 @@ export function ImportDialog({
           targets.map((i, n) => {
             const name = effective[i].name
             const blocks = current.blocks?.[name] ?? 0
+            const names = finals[n].toStore.map((s) => s.name)
             return {
               name,
-              store: finals[n].toStore.map((s) => s.name),
+              store: names.filter((v) => vault?.store.includes(v)),
+              replace: names.filter((v) => vault?.replace.includes(v)),
               share: finals[n].toShare,
               lines: [...effectSentences(reply.servers[name].effects), ...(blocks > 0 ? [blockSentence(blocks)] : [])],
             }
@@ -273,7 +310,10 @@ export function ImportDialog({
     const [badge, tone] = BADGE[shown.status]
     const blocker = blockers[i][0]
     const errors = current?.reply?.servers[row.name]?.errors ?? []
-    const more = shown.status !== 'skipped' && (row.needs.length > 0 || blocker !== undefined || errors.length > 0)
+    const held = shown.status === 'skipped' ? [] : heldIssues(i)
+    const more =
+      shown.status !== 'skipped' &&
+      (row.needs.length > 0 || blocker !== undefined || errors.length > 0 || held.length > 0)
     return (
       <Fragment key={i}>
         <TableRow className="mcp-ui-import-row" data-more={more}>
@@ -378,8 +418,13 @@ export function ImportDialog({
                 </div>
               ) : null}
               {blocker !== undefined ? <p className="mcp-ui-import-block">{coded(say(blocker))}</p> : null}
-              {errors.length > 0 ? (
+              {errors.length > 0 || held.length > 0 ? (
                 <ul className="mcp-ui-issues">
+                  {held.map((text) => (
+                    <li key={text}>
+                      <span>{coded(say(text))}</span>
+                    </li>
+                  ))}
                   {errors.map((issue, k) => (
                     <li key={k}>
                       <span>

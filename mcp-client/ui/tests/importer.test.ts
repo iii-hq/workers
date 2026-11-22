@@ -4,10 +4,11 @@ import { describe, expect, it } from 'vitest'
 import {
   crossRowBlockers,
   finalEntry,
+  heldSecret,
   type ImportDeps,
-  importEffects,
   type ImportResult,
   type ImportRow,
+  importEffects,
   importRow,
   importSummary,
   maskSecret,
@@ -18,6 +19,7 @@ import {
   scrub,
   slugName,
   startValues,
+  vaultPlan,
 } from '../src/importer'
 
 // Fixtures hold the marker `@@FAKE@@` where a pasted secret goes, so no file holds a credential shape.
@@ -912,20 +914,41 @@ describe('dialog copy', () => {
         {
           name: 'weather',
           store: ['WEATHER_API_KEY'],
+          replace: ['WEATHER_URL'],
           share: ['LOG_LEVEL', 'REGION'],
           lines: ['mcp-client will run `w`'],
         },
-        { name: 'keyed', store: ['KEYED_API_KEY'], share: ['REGION'], lines: [] },
+        { name: 'keyed', store: ['KEYED_API_KEY'], replace: [], share: ['REGION'], lines: [] },
       ]),
     ).toEqual([
       { text: 'store 2 secrets in the vault: `WEATHER_API_KEY`, `KEYED_API_KEY`' },
+      { text: 'replace 1 secret in the vault: `WEATHER_URL`' },
       { text: 'share `LOG_LEVEL` with mcp-client' },
       { text: 'share `REGION` with mcp-client' },
       { server: 'weather', text: 'mcp-client will run `w`' },
     ])
-    expect(importEffects([{ name: 'a', store: ['A'], share: [], lines: [] }])).toEqual([
+    expect(importEffects([{ name: 'a', store: ['A'], replace: [], share: [], lines: [] }])).toEqual([
       { text: 'store 1 secret in the vault: `A`' },
     ])
+    expect(importEffects([{ name: 'a', store: [], replace: ['A', 'B'], share: [], lines: [] }])).toEqual([
+      { text: 'replace 2 secrets in the vault: `A`, `B`' },
+    ])
+  })
+  it('vaultPlan stores a new name, replaces one only mcp-client reads, and blocks one another worker reads', () => {
+    const readers = new Map<string, string[] | null>([
+      ['NEW', null],
+      ['MINE', ['mcp-client']],
+      ['NOBODY', []],
+      ['SHARED', ['llm-router', 'mcp-client', 'database']],
+    ])
+    expect(vaultPlan(['NEW', 'MINE', 'NOBODY', 'SHARED'], readers)).toEqual({
+      store: ['NEW'],
+      replace: ['MINE', 'NOBODY'],
+      blocked: [{ name: 'SHARED', readers: ['llm-router', 'database'] }],
+    })
+    expect(heldSecret('SHARED', ['llm-router', 'database'])).toBe(
+      'Vault name `SHARED` already holds a secret that llm-router and database read.',
+    )
   })
   it('importSummary counts what was imported and what was not', () => {
     const out = (imported: boolean) => ({ name: 'x', imported, message: '' })

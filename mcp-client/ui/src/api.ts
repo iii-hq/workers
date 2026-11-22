@@ -1,7 +1,7 @@
 import type { ExtensionIii } from '@iii-dev/console-ui'
 import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorCode } from '@iii-dev/console-ui/format'
-import { mergeConsumers } from './importer'
+import { heldSecret, mergeConsumers } from './importer'
 import type {
   EngineFunction,
   FunctionInfo,
@@ -73,6 +73,23 @@ export function createApi(iii: ExtensionIii) {
     )
   }
 
+  /** Who reads the vault secret `name`, or null when there is none. No value is read. */
+  const secretReaders = async (name: string): Promise<string[] | null> => {
+    let meta: { consumers?: unknown } | null
+    try {
+      meta = await iii.call<{ consumers?: unknown } | null>('secrets::get', { name }, SECRETS)
+    } catch (err) {
+      if (errorCode(err)?.toLowerCase() === 'function_not_found')
+        throw new Error('The secrets worker is not running. Start it, then import again.')
+      throw err
+    }
+    if (meta == null) return null
+    // Sending a list without the ones already there would revoke them.
+    if (meta.consumers != null && !Array.isArray(meta.consumers))
+      throw new Error(`secrets::get returned no consumer list for ${name}`)
+    return Array.isArray(meta.consumers) ? meta.consumers.map(String) : []
+  }
+
   /** Let mcp-client read the secret behind `reference`: read, then grant. A failed read writes nothing. */
   const shareSecret = async (reference: string): Promise<void> =>
     grantSecret(reference, await secretConsumers(reference))
@@ -116,24 +133,17 @@ export function createApi(iii: ExtensionIii) {
     secretConsumers,
     grantSecret,
     shareSecret,
-    /** Store `value` under `name` in the vault, readable by mcp-client and by whoever could read it before
-     * (`secrets::set` replaces the list). The value is sent once and never read back. */
+    secretReaders,
+    /** Store `value` under `name` in the vault for mcp-client. A name another worker reads is refused, since the
+     * vault keeps no history; one only mcp-client reads is replaced, keeping its description. The value is sent
+     * once and never read back. */
     storeSecret: async (name: string, value: string): Promise<void> => {
-      let meta: { consumers?: unknown } | null
-      try {
-        meta = await iii.call<{ consumers?: unknown } | null>('secrets::get', { name }, SECRETS)
-      } catch (err) {
-        if (errorCode(err)?.toLowerCase() === 'function_not_found')
-          throw new Error('The secrets worker is not running. Start it, then import again.')
-        throw err
-      }
-      // Sending a list without the ones already there would revoke them.
-      if (meta != null && meta.consumers != null && !Array.isArray(meta.consumers))
-        throw new Error(`secrets::get returned no consumer list for ${name}`)
-      const existing = Array.isArray(meta?.consumers) ? meta.consumers.map(String) : undefined
+      const readers = await secretReaders(name)
+      if (readers?.some((r) => r !== WORKER)) throw new Error(`${heldSecret(name, readers)} Nothing was stored.`)
+      const described = readers === null ? { description: 'Stored by the MCP servers page' } : {}
       await iii.call(
         'secrets::set',
-        { name, value, consumers: mergeConsumers(existing, [WORKER]), description: 'Stored by the MCP servers page' },
+        { name, value, consumers: mergeConsumers(readers ?? [], [WORKER]), ...described },
         { timeoutMs: 20000 },
       )
     },

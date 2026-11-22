@@ -135,25 +135,48 @@ describe('createApi', () => {
     expect(calls.map((c) => c.fn)).toEqual(['secrets::get'])
   })
 
-  it('storeSecret keeps existing consumers', async () => {
+  it('storeSecret never replaces a secret another worker reads, and stores nothing', async () => {
     const { iii, calls } = fakeIii({
-      'secrets::get': () => ({ consumers: ['llm-router'] }),
+      'secrets::get': () => ({ consumers: ['llm-router', 'mcp-client'] }),
+      'secrets::set': () => ({}),
+    })
+    await expect(createApi(iii).storeSecret('A', 'v')).rejects.toThrow(
+      'Vault name `A` already holds a secret that llm-router reads. Nothing was stored.',
+    )
+    expect(calls.map((c) => c.fn)).toEqual(['secrets::get'])
+  })
+
+  it('storeSecret replaces a secret only mcp-client reads, keeping its description', async () => {
+    const { iii, calls } = fakeIii({
+      'secrets::get': () => ({ consumers: ['mcp-client'] }),
       'secrets::set': () => ({}),
     })
     await createApi(iii).storeSecret('A', 'v')
-    const sent = calls.map((c) => [c.fn, c.payload])
-    expect(sent).toEqual([
+    expect(calls.map((c) => [c.fn, c.payload])).toEqual([
+      ['secrets::get', { name: 'A' }],
+      ['secrets::set', { name: 'A', value: 'v', consumers: ['mcp-client'] }],
+    ])
+  })
+
+  it('storeSecret stores a new name with its description', async () => {
+    const { iii, calls } = fakeIii({ 'secrets::get': () => null, 'secrets::set': () => ({}) })
+    await createApi(iii).storeSecret('A', 'v')
+    expect(calls.map((c) => [c.fn, c.payload])).toEqual([
       ['secrets::get', { name: 'A' }],
       [
         'secrets::set',
-        {
-          name: 'A',
-          value: 'v',
-          consumers: ['llm-router', 'mcp-client'],
-          description: 'Stored by the MCP servers page',
-        },
+        { name: 'A', value: 'v', consumers: ['mcp-client'], description: 'Stored by the MCP servers page' },
       ],
     ])
+  })
+
+  it('secretReaders reads who reads a vault name: null when it holds nothing', async () => {
+    const api = (answer: unknown) => createApi(fakeIii({ 'secrets::get': () => answer }).iii)
+    expect(await api(null).secretReaders('A')).toBeNull()
+    expect(await api({ consumers: ['llm-router'] }).secretReaders('A')).toEqual(['llm-router'])
+    expect(await api({}).secretReaders('A')).toEqual([])
+    await expect(api({ consumers: 'x' }).secretReaders('A')).rejects.toThrow('returned no consumer list for A')
+    await expect(createApi(fakeIii({}).iii).secretReaders('A')).rejects.toThrow('The secrets worker is not running')
   })
 
   it('storeSecret says the secrets worker is not running', async () => {

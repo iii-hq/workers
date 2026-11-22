@@ -754,21 +754,50 @@ export async function importRow(deps: ImportDeps, row: ImportRow, values: Record
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
-/** What "Import n servers" will do, one line each: the secrets stored and the env variables shared over the whole
- * import, then each server's own lines (what validation says it will run or send). */
+/** The sentence for a vault name that holds a secret `readers` (other workers) read. */
+export function heldSecret(name: string, readers: string[]): string {
+  const others = readers.filter((r) => r !== 'mcp-client')
+  const who = others.length === 1 ? `${others[0]} reads` : `${others.slice(0, -1).join(', ')} and ${others.at(-1)} read`
+  return `Vault name \`${name}\` already holds a secret that ${who}.`
+}
+
+/** What storing each vault name does, from who reads it now (`null`: no secret there): a new name is stored, one
+ * that only mcp-client or nobody reads is replaced, and one another worker reads is blocked. */
+export function vaultPlan(
+  names: string[],
+  readers: ReadonlyMap<string, string[] | null>,
+): { store: string[]; replace: string[]; blocked: { name: string; readers: string[] }[] } {
+  const plan = { store: [] as string[], replace: [] as string[], blocked: [] as { name: string; readers: string[] }[] }
+  for (const name of names) {
+    const now = readers.get(name) ?? null
+    const others = now?.filter((r) => r !== 'mcp-client') ?? []
+    if (now === null) plan.store.push(name)
+    else if (others.length === 0) plan.replace.push(name)
+    else plan.blocked.push({ name, readers: others })
+  }
+  return plan
+}
+
+const vaultLine = (verb: string, names: string[]) =>
+  names.length > 0
+    ? [
+        {
+          text: `${verb} ${count(names.length, 'secret', 'secrets')} in the vault: ${names.map((n) => `\`${n}\``).join(', ')}`,
+        },
+      ]
+    : []
+
+/** What "Import n servers" will do, one line each: the secrets stored or replaced and the env variables shared
+ * over the whole import, then each server's own lines (what validation says it will run or send). */
 export function importEffects(
-  plans: { name: string; store: string[]; share: string[]; lines: string[] }[],
+  plans: { name: string; store: string[]; replace: string[]; share: string[]; lines: string[] }[],
 ): { server?: string; text: string }[] {
   const store = [...new Set(plans.flatMap((p) => p.store))]
+  const replace = [...new Set(plans.flatMap((p) => p.replace))]
   const share = [...new Set(plans.flatMap((p) => p.share))]
   return [
-    ...(store.length > 0
-      ? [
-          {
-            text: `store ${count(store.length, 'secret', 'secrets')} in the vault: ${store.map((n) => `\`${n}\``).join(', ')}`,
-          },
-        ]
-      : []),
+    ...vaultLine('store', store),
+    ...vaultLine('replace', replace),
     ...share.map((n) => ({ text: `share \`${n}\` with mcp-client` })),
     ...plans.flatMap((p) => p.lines.map((text) => ({ server: p.name, text }))),
   ]
