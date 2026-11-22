@@ -331,4 +331,21 @@ describe('gateStatus', () => {
     // save_issue is already in unsafe.
     expect(s.overridden.map((o) => o.functionId)).toEqual([L('delete_issue')])
   })
+
+  it('a foreign or namespaced id edited into the block is unsafe', () => {
+    expect(
+      st([
+        ...present,
+        { function: 'shell::exec', action: 'allow', rule_id: 'mcp-client:mcp::linear::x' },
+        { function: 'laptop/mcp::linear::save_issue', action: 'allow', rule_id: 'mcp-client:mcp::linear::y' },
+      ]),
+    ).toMatchObject({ kind: 'stale_unsafe', unsafe: ['laptop/mcp::linear::save_issue', 'shell::exec'] })
+  })
+
+  it('a rule copied twice counts once', () => {
+    expect(st([...present, rule(L('save_issue')), rule(L('save_issue'))])).toMatchObject({
+      unsafe: [L('save_issue')],
+      rowText: '1 write allowed without asking',
+    })
+  })
 })

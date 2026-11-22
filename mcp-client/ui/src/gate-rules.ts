@@ -136,7 +136,8 @@ export function gateStatus(input: {
   verdicts?: Record<string, Verdict>
 }): GateStatus {
   const { gate, server, access, verdicts = {} } = input
-  const block = blockOf(gate.rules ?? [], server.name).ids
+  // A rule copied by hand counts once.
+  const block = [...new Set(blockOf(gate.rules ?? [], server.name).ids)]
   const reads = access.filter((fn) => fn.cls === 'read').map((fn) => fn.functionId)
   const early: GateKind | null = !gate.installed
     ? 'no_gate'
@@ -149,7 +150,8 @@ export function gateStatus(input: {
   const toAdd = early ? [] : reads.filter((id) => !block.includes(id)).sort()
   const toRemove = early ? [] : block.filter((id) => !reads.includes(id)).sort()
   const isWrite = (id: string) => access.some((fn) => fn.functionId === id && fn.cls !== 'read')
-  const unsafe = toRemove.filter((id) => isWrite(id) || id.includes('*'))
+  // Not an exact id of this server (a glob, a foreign or a namespaced id): the page never meant to allow it.
+  const unsafe = toRemove.filter((id) => isWrite(id) || id.includes('*') || !id.startsWith(`mcp::${server.name}::`))
   const harmless = toRemove.filter((id) => !unsafe.includes(id))
   // A function with no verdict (no probe yet, or a failed one) is never overridden.
   const overridden = early
