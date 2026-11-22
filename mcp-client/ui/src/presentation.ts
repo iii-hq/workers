@@ -428,6 +428,14 @@ export function signInControls(
   return { show: signsIn && (connect || signOut || phase !== 'idle'), connect, signOut }
 }
 
+/** What a screen reader hears as a sign-in moves on: one sentence per step, nothing otherwise. */
+export function signInStatus(phase: LoginPhase): string {
+  if (phase === 'starting') return 'Starting sign-in'
+  if (phase === 'waiting') return 'Waiting for sign-in. Open the sign-in page.'
+  if (phase === 'finishing') return 'Finishing sign-in'
+  return ''
+}
+
 export interface FunctionRow {
   functionId: string
   group: 'tools' | 'resources' | 'prompts'

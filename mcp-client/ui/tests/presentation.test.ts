@@ -41,6 +41,7 @@ import {
   safeAuthorizeLink,
   searchNote,
   signInControls,
+  signInStatus,
   signInView,
   skippedText,
   stageTrack,
@@ -699,6 +700,15 @@ describe('countdown', () => {
     expect(countdown(now + 600_000, now)).toEqual('10:00')
     expect(countdown(now + 4_100, now)).toEqual('0:05')
     expect(countdown(now - 1, now)).toEqual('0:00')
+  })
+})
+
+describe('signInStatus', () => {
+  it('says each step of a sign-in once, and nothing otherwise', () => {
+    expect(signInStatus('starting')).toBe('Starting sign-in')
+    expect(signInStatus('waiting')).toBe('Waiting for sign-in. Open the sign-in page.')
+    expect(signInStatus('finishing')).toBe('Finishing sign-in')
+    for (const phase of ['idle', 'resumed', 'failed'] as const) expect(signInStatus(phase)).toBe('')
   })
 })
 

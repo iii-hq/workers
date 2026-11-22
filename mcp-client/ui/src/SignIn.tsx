@@ -1,10 +1,18 @@
-import { Button, Input, StatusDot, StatusPanel, useConfirm } from '@iii-dev/console-ui'
+import {
+  Button,
+  Input,
+  type LiveAnnouncement,
+  LiveRegion,
+  StatusDot,
+  StatusPanel,
+  useConfirm,
+} from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Copy, ExternalLink } from 'lucide-react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { Api } from './api'
-import { countdown, signInControls } from './presentation'
+import { countdown, signInControls, signInStatus } from './presentation'
 import { CopyIconButton } from './SchemaTable'
 import type { Server } from './types'
 import { useLogin } from './use-login'
@@ -32,6 +40,13 @@ export function SignIn({
   const copyLink = useCopyFlash(link ?? '')
   const seen = useRef(0)
   const pasteId = useId()
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
+  // The region stays mounted whatever shows, so it exists before its text changes.
+  useEffect(() => {
+    const text = signInStatus(phase)
+    if (text) setAnnouncement((last) => ({ seq: (last?.seq ?? 0) + 1, text, urgency: 'polite' }))
+  }, [phase])
+  const region = <LiveRegion announcement={announcement} />
 
   // A sign-in that starts puts an old sign-out failure behind it.
   const begin = useCallback(() => {
@@ -56,7 +71,13 @@ export function SignIn({
 
   const busy = phase === 'starting' || phase === 'finishing'
   const { show, connect, signOut } = signInControls(server, phase)
-  if (!show) return dialog
+  if (!show)
+    return (
+      <>
+        {dialog}
+        {region}
+      </>
+    )
 
   const primary = quiet ? 'secondary' : 'primary'
   const finish = () => {
@@ -79,7 +100,7 @@ export function SignIn({
     }
   }
 
-  return (
+  const body = (
     <section className="mcp-ui-signin" aria-label="Sign-in" data-phase={phase}>
       {phase === 'failed' ? (
         <StatusPanel
@@ -183,14 +204,18 @@ export function SignIn({
         </>
       ) : null}
       {busy ? (
-        <p className="mcp-ui-quiet-line" role="status">
-          {phase === 'starting' ? 'Starting sign-in…' : 'Finishing sign-in…'}
-        </p>
+        <p className="mcp-ui-quiet-line">{phase === 'starting' ? 'Starting sign-in…' : 'Finishing sign-in…'}</p>
       ) : null}
       {signOutError ? (
         <StatusPanel variant="alert" role="alert" headline="Could not sign out" detail={signOutError} />
       ) : null}
       {dialog}
     </section>
+  )
+  return (
+    <>
+      {body}
+      {region}
+    </>
   )
 }

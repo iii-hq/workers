@@ -94,7 +94,12 @@ export function ServerList({
                 `The approval gate still allows ${orphan.count} ${orphan.count === 1 ? 'function' : 'functions'} of \`${orphan.server}\`, which is not configured.`,
               )}
               action={
-                <Button variant="secondary" size="sm" onClick={() => onRemoveOrphan(orphan.server)}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  aria-label={`Remove rules for ${orphan.server}`}
+                  onClick={() => onRemoveOrphan(orphan.server)}
+                >
                   Remove rules
                 </Button>
               }
@@ -148,6 +153,7 @@ export function ServerList({
                         variant="secondary"
                         size="sm"
                         className="mcp-ui-fix"
+                        aria-label={`${action.label} ${server.name}`}
                         onClick={() => onAction(server.name, action.id)}
                       >
                         {action.label}
