@@ -215,8 +215,11 @@ async fn an_expired_token_is_refreshed_once_for_two_concurrent_calls() {
 
 #[tokio::test]
 async fn a_token_the_server_rejects_is_refreshed_and_the_call_retried() {
-    let (_mock, as_mock, host, m) = challenged().await;
+    let (mock, as_mock, host, m) = challenged().await;
     sign_in(&m, &as_mock).await;
+    // rmcp refreshes once per request the server refuses, so the GET stream
+    // must have gone out before the token is refused.
+    mock.wait_for_get_stream().await;
     as_mock.expire_access_token().await;
     assert_eq!(host.call(ECHO, json!({})).await, Ok(hi()));
     assert_eq!(refreshes(&as_mock.token_requests().await), 1);

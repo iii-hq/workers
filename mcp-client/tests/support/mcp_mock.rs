@@ -242,6 +242,23 @@ impl McpMock {
             .collect()
     }
 
+    /// Waits until the session's GET stream was asked for (and refused with
+    /// 405), so a later change to what the server takes cannot catch it.
+    pub async fn wait_for_get_stream(&self) {
+        let deadline = tokio::time::Instant::now() + super::WAIT;
+        loop {
+            let requests = self.server.received_requests().await.unwrap_or_default();
+            if requests
+                .iter()
+                .any(|r| r.method.as_str() == "GET" && r.url.path() == "/mcp")
+            {
+                return;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "no GET stream");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// Mounts `POST /oauth/token`, answering a client-credentials token
     /// request with `token`; its URL. A second call replaces the token.
     pub async fn token_endpoint(&self, token: &str) -> String {
