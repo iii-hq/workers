@@ -684,6 +684,126 @@ func TestCatalogSkipsAnotherClientsMirrors(t *testing.T) {
 	}
 }
 
+// The hub sends no catalog while its revision stands, so the Sync that a local
+// function change runs is what mirrors again an owner the engine rejected.
+func TestSyncMirrorsARejectedOwnerAgain(t *testing.T) {
+	rows := []map[string]any{}
+	local := engine(&rows)
+	b := newBridge(t, local)
+	conns := mirrorsOf(b)
+	if err := b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "desk"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// A healthy mirror reads nothing more.
+	lists := len(local.called("engine::functions::list"))
+	if err := b.Sync(context.Background(), nil); err != nil || len(local.called("engine::functions::list")) != lists {
+		t.Fatalf("a healthy mirror read the listing again: %v", err)
+	}
+	// Another client on this engine won the name after the catalog was applied: its rows hold the namespace.
+	lost := conns["desk"]
+	lost.rejected = errors.New("WORKER_NAMESPACE_CONFLICT")
+	rows = append(rows, row("shell::exec", "desk", "mesh-mirror"))
+	if err := b.Sync(context.Background(), nil); err != nil || !lost.closed || conns["desk"] != lost {
+		t.Fatalf("a rejected mirror under a held name: %v, closed %v, redialed %v", err, lost.closed, conns["desk"] != lost)
+	}
+	if got := b.Remote(); len(got) != 1 || got[0].Skipped != "namespace desk is already in use on this engine" {
+		t.Fatalf("remote %+v", got)
+	}
+	// A listing that fails keeps the owner out and fails the Sync, which the client retries.
+	rows = rows[:0]
+	list := local.fn
+	local.fn = func(iii.CallRequest) (json.RawMessage, error) { return nil, errors.New("engine away") }
+	if err := b.Sync(context.Background(), nil); err == nil || conns["desk"] != lost {
+		t.Fatalf("mirrored without knowing the namespaces in use: %v", err)
+	}
+	local.fn = list
+	// The holder released the name: the next Sync dials the owner again, on the catalog it holds.
+	if err := b.Sync(context.Background(), nil); err != nil || conns["desk"] == lost || conns["desk"].closed || conns["desk"].fns["shell::exec"] == nil {
+		t.Fatalf("a free namespace is not mirrored again: %v", err)
+	}
+	// A rejection whose holder is gone before the Sync is dialed again at once.
+	lost = conns["desk"]
+	lost.rejected = errors.New("WORKER_NAMESPACE_CONFLICT")
+	if err := b.Sync(context.Background(), nil); err != nil || !lost.closed || conns["desk"] == lost || conns["desk"].fns["shell::exec"] == nil {
+		t.Fatalf("a rejected mirror in a free namespace stays down: %v", err)
+	}
+	if got := b.Remote(); b.CatalogRev() != "r1" || len(got) != 1 || got[0].Skipped != "" {
+		t.Fatalf("remote %+v rev %q", got, b.CatalogRev())
+	}
+}
+
+// A catalog whose namespaces were still being read when the runtime changed,
+// the bridge closed or the catalog was cleared is not installed: the hub sends it again.
+func TestCatalogReadAcrossAChangeIsNotInstalled(t *testing.T) {
+	for name, change := range map[string]func(*Bridge){
+		"stop": func(b *Bridge) { _ = b.SetRuntime(context.Background(), node.Runtime{}) },
+		"rename": func(b *Bridge) {
+			_ = b.SetRuntime(context.Background(), node.Runtime{Node: "work", Namespace: "hub", URL: "ws://127.0.0.1:1"})
+		},
+		"close": (*Bridge).Close,
+		"clear": func(b *Bridge) { _ = b.SetCatalog(node.Catalog{}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			reading, resume := make(chan struct{}), make(chan struct{})
+			b := newBridge(t, &fakeLocal{fn: func(iii.CallRequest) (json.RawMessage, error) {
+				close(reading)
+				<-resume
+				return json.RawMessage(`{"functions":[]}`), nil
+			}})
+			conns := mirrorsOf(b)
+			done := make(chan error, 1)
+			go func() {
+				done <- b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "desk"}}})
+			}()
+			<-reading
+			change(b)
+			close(resume)
+			if err := <-done; err == nil || b.CatalogRev() != "" || len(conns) != 0 {
+				t.Fatalf("installed a catalog read before the change: %v, rev %q, %d connections", err, b.CatalogRev(), len(conns))
+			}
+		})
+	}
+}
+
+// A Sync whose read of the namespaces in use predates a newer catalog does not
+// install over it: that catalog mirrored an owner the older read still saw held.
+func TestSyncReadAcrossACatalogIsNotInstalled(t *testing.T) {
+	held := []map[string]any{row("shell::exec", "desk", "mesh-mirror")} // another client's mirror holds desk
+	reading, resume := make(chan struct{}), make(chan struct{})
+	var lists atomic.Int32
+	b := newBridge(t, &fakeLocal{fn: func(iii.CallRequest) (json.RawMessage, error) {
+		switch lists.Add(1) {
+		case 1: // the first catalog
+		case 2: // the Sync's read
+			close(reading)
+			<-resume
+		default: // the holder left
+			return json.RawMessage(`{"functions":[]}`), nil
+		}
+		return json.Marshal(map[string]any{"functions": held})
+	}})
+	conns := mirrorsOf(b)
+	catalog := node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "desk"}}}
+	if err := b.SetCatalog(catalog); err != nil || len(conns) != 0 {
+		t.Fatalf("mirrored a held namespace: %v, %d connections", err, len(conns))
+	}
+	done := make(chan error, 1)
+	go func() { done <- b.Sync(context.Background(), nil) }()
+	select {
+	case <-reading:
+	case err := <-done:
+		t.Fatalf("the Sync read no namespaces for a skipped owner: %v", err)
+	}
+	catalog.Rev = "r2"
+	if err := b.SetCatalog(catalog); err != nil || conns["desk"] == nil {
+		t.Fatalf("a free namespace is not mirrored: %v", err)
+	}
+	close(resume)
+	if err := <-done; err == nil || conns["desk"].closed || b.Remote()[0].Skipped != "" {
+		t.Fatalf("installed a read older than the catalog: %v, closed %v, remote %+v", err, conns["desk"].closed, b.Remote())
+	}
+}
+
 // A mirror is never published back: it lives in its owner's namespace, never in the project's.
 func TestSyncNeverPublishesAMirror(t *testing.T) {
 	rows := []map[string]any{row("shell::exec", "hub", "mesh-mirror"), row("probe::echo", "local", "probe")}

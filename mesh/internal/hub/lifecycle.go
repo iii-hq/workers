@@ -83,6 +83,7 @@ type Hub struct {
 	tunnelDue       *time.Timer // guarded by tunnelMu: when the held lease is due
 	refreshing      atomic.Bool // a re-read of the online nodes is scheduled
 	passMu          sync.Mutex  // one catalog read and node re-read at a time
+	namesMu         sync.Mutex  // one refreshNames at a time; taken before mu, never under it
 	passBackoff     time.Duration
 	passRetry       *time.Timer     // guarded by passMu: the retry of a failed catalog read
 	shared          shared          // guarded by mu: the last catalog read

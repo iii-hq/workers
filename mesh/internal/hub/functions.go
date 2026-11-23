@@ -269,6 +269,9 @@ func (h *Hub) engineRPC() rpc {
 	return nil
 }
 func (h *Hub) refreshNames(ctx context.Context) error {
+	// From the read to the last close: a listing read earlier must not replace a later one.
+	h.namesMu.Lock()
+	defer h.namesMu.Unlock()
 	engine := h.engineRPC()
 	if engine == nil || h.Coordinator == nil {
 		return errors.New("hub engine is not connected")

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"github.com/iii-hq/workers/mesh/internal/coordinator"
 	"github.com/iii-hq/workers/mesh/internal/gateway"
 )
@@ -80,6 +82,50 @@ func TestANamespaceTakenUnderAConnectedMachineClosesIt(t *testing.T) {
 	}
 	if _, err := auth(); err == nil || !strings.Contains(err.Error(), "client.name") {
 		t.Fatalf("the machine was admitted again: %v", err)
+	}
+}
+
+// heldEngine answers the first workers listing with no worker, and only once released; later listings show a worker in x.
+type heldEngine struct {
+	calls            atomic.Int32
+	entered, release chan struct{}
+}
+
+func (e *heldEngine) Call(context.Context, iii.CallRequest) (json.RawMessage, error) {
+	if e.calls.Add(1) == 1 {
+		close(e.entered)
+		<-e.release
+		return json.RawMessage(`{"workers":[]}`), nil
+	}
+	return json.RawMessage(`{"workers":[{"id":"1","name":"state","namespace":"x"}]}`), nil
+}
+
+// A rename and a pass refresh at once: a listing read before a worker connected must not publish after the one that saw it.
+func TestRefreshNamesReadsAndPublishesOneListingAtATime(t *testing.T) {
+	c, err := coordinator.New(t.TempDir(), func(string, string) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	e := &heldEngine{entered: make(chan struct{}), release: make(chan struct{})}
+	h := &Hub{Coordinator: c, Namespace: "project", Sessions: &Sessions{}, engine: e}
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() { first <- h.refreshNames(t.Context()) }()
+	<-e.entered
+	// A goroutine blocked on a mutex cannot be observed otherwise: the probe keeps the test free of timers.
+	if h.namesMu.TryLock() {
+		t.Fatal("a second refresh can read and publish while the first still holds its listing")
+	}
+	go func() { second <- h.refreshNames(t.Context()) }() // waits for the first, then reads the worker in x
+	close(e.release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if !h.nameReserved("x") {
+		t.Fatal("the older listing published last: x is free again")
 	}
 }
 

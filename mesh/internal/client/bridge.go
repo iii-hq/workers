@@ -78,6 +78,7 @@ type Bridge struct {
 	retry     *time.Timer   // reconnects a connection the hub rejected
 	backoff   time.Duration // wait before that reconnect
 	catalog   node.Catalog
+	sets      uint64                              // setCatalog runs so far: a catalog read unlocked must not install over a later one
 	dial      func(namespace string) mirrorEngine // opens a local connection; nil when the local engine has no address
 	mirrors   map[string]*mirrorSet               // by owner
 	skipped   map[string]string                   // owners of the catalog not mirrored, with the reason
@@ -103,7 +104,7 @@ func NewBridge(local localEngine, namespace string) *Bridge {
 	if a, ok := local.(interface{ Address() string }); ok {
 		address := a.Address()
 		// One worker name serves every owner: the engine's name lease is per namespace. III_TOKEN from the environment is right for the local engine.
-		// shortcut: a mirror connection the engine rejects (another mesh client on this engine, or a twin of this worker, holds the name in that namespace) is dialed again only on the next catalog the hub sends. Give it the hub connection's retry when a local rejection is seen in practice.
+		// A mirror connection the engine rejects (another mesh client on this engine, or a twin of this worker, holds the name in that namespace) is dialed again by remirror once the name is free.
 		b.dial = func(namespace string) mirrorEngine {
 			c := iii.New(address, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-mirror"), iii.WithNamespace(namespace))
 			// As connect starts the hub connection: nothing of this client outlives Close.
@@ -245,35 +246,83 @@ func (b *Bridge) CatalogRev() string {
 // hub sends it again.
 func (b *Bridge) SetCatalog(c node.Catalog) error {
 	var used map[string]bool
+	var sets uint64
 	if len(c.Functions) > 0 {
-		b.mu.Lock()
-		ours := map[string]bool{}
-		for owner, m := range b.mirrors {
-			ours[owner] = m.conn.FatalError() == nil // a rejected connection holds nothing: the rows there are another worker's
-		}
-		b.mu.Unlock()
-		var list struct {
-			Functions []Row `json:"functions"`
-		}
-		if err := call(context.Background(), b.local, "engine::functions::list", map[string]any{"include_internal": true}, &list); err != nil {
-			return fmt.Errorf("read the namespaces in use: %w", err)
-		}
-		used = map[string]bool{}
-		for _, r := range list.Functions {
-			// Another mesh client on this engine mirrors under the same worker name, and the engine leases that name per namespace.
-			if r.WorkerName != "mesh-mirror" || !ours[r.Namespace] {
-				used[r.Namespace] = true
-			}
+		var err error
+		if used, sets, err = b.inUse(); err != nil {
+			return err
 		}
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if used != nil && sets != b.sets {
+		return errReplaced
+	}
 	b.setCatalog(c, used)
+	return nil
+}
+
+// A runtime change, a Close or another catalog came in during the unlocked read: installing over it would undo it.
+var errReplaced = fmt.Errorf("the catalog was replaced while reading the namespaces in use")
+
+// inUse lists the namespaces other workers hold on this engine, with the setCatalog runs counted before the read.
+func (b *Bridge) inUse() (map[string]bool, uint64, error) {
+	b.mu.Lock()
+	sets := b.sets
+	ours := map[string]bool{}
+	for owner, m := range b.mirrors {
+		ours[owner] = m.conn.FatalError() == nil // a rejected connection holds nothing: the rows there are another worker's
+	}
+	b.mu.Unlock()
+	var list struct {
+		Functions []Row `json:"functions"`
+	}
+	if err := call(context.Background(), b.local, "engine::functions::list", map[string]any{"include_internal": true}, &list); err != nil {
+		return nil, 0, fmt.Errorf("read the namespaces in use: %w", err)
+	}
+	used := map[string]bool{}
+	for _, r := range list.Functions {
+		// Another mesh client on this engine mirrors under the same worker name, and the engine leases that name per namespace.
+		if r.WorkerName != "mesh-mirror" || !ours[r.Namespace] {
+			used[r.Namespace] = true
+		}
+	}
+	return used, sets, nil
+}
+
+// remirror reads the namespaces in use again while an owner is not mirrored
+// because the engine rejected its connection or its namespace was in use. The
+// hub sends no catalog while its revision stands, and a local function change,
+// which runs Sync, is how such a namespace comes free.
+func (b *Bridge) remirror() error {
+	b.mu.Lock()
+	stale := false
+	for owner := range b.skipped {
+		stale = stale || b.dial != nil && owner != b.namespace
+	}
+	for _, m := range b.mirrors {
+		stale = stale || m.conn.FatalError() != nil
+	}
+	b.mu.Unlock()
+	if !stale {
+		return nil
+	}
+	used, sets, err := b.inUse()
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if sets != b.sets {
+		return errReplaced
+	}
+	b.setCatalog(b.catalog, used) // the catalog of the read: no setCatalog ran since
 	return nil
 }
 
 // setCatalog does not re-register a mirror whose schemas or internal flag changed. Callers hold b.mu.
 func (b *Bridge) setCatalog(c node.Catalog, used map[string]bool) {
+	b.sets++
 	b.catalog = c
 	byOwner := map[string]map[string]node.CatalogEntry{}
 	for _, e := range c.Functions {
@@ -293,7 +342,7 @@ func (b *Bridge) setCatalog(c node.Catalog, used map[string]bool) {
 	b.skipped = map[string]string{}
 	for owner, want := range byOwner {
 		m := b.mirrors[owner]
-		// shortcut: checked on every catalog the hub sends, so a project that starts under a mirrored machine's name collides until the next catalog, and a namespace with no function yet is not seen. Read the listing again on engine::on-functions-changed when that happens in practice.
+		// shortcut: checked on every catalog the hub sends, and by remirror only while an owner is out, so a project that starts under a healthy mirror's name collides until the next catalog, and a namespace with no function yet is not seen. Read the listing on every engine::on-functions-changed when that happens in practice.
 		if owner == b.namespace || used[owner] {
 			if m != nil {
 				_ = m.conn.Close()
@@ -416,6 +465,7 @@ func (b *Bridge) mirror(e node.CatalogEntry) iii.Handler {
 
 // Sync re-lists the shared functions and updates the hub registrations.
 func (b *Bridge) Sync(ctx context.Context, share []string) error {
+	mirrorErr := b.remirror() // a failure makes the client run Sync again
 	found := map[string]Function{}
 	var err error
 	if len(share) > 0 { // an empty workers filter means "no filter" to the engine
@@ -449,7 +499,7 @@ func (b *Bridge) Sync(ctx context.Context, share []string) error {
 	}
 	b.register()
 	b.changed()
-	return err
+	return cmp.Or(err, mirrorErr)
 }
 
 // Row is one engine::functions::list entry.
