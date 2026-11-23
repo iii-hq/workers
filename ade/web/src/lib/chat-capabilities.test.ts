@@ -1,13 +1,63 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CAPABILITY_FUNCTIONS,
   capabilitiesFromCatalog,
   getChatCapabilities,
+  refreshChatCapabilities,
   setChatCapabilitiesForTests,
 } from './chat-capabilities'
 
+const mocks = vi.hoisted(() => ({ call: vi.fn() }))
+vi.mock('@/lib/iii-client', () => ({
+  getIiiClient: () => Promise.resolve({ call: mocks.call }),
+}))
+
+/** The engine of chat-projects D37: the control plane is internal. */
+const DEFAULT_LIST = [
+  'harness::projects::list',
+  'harness::set-description',
+  'harness::projects::on-changed',
+  'harness::chat-settings::on-changed',
+]
+const INTERNAL = [
+  'harness::folders::list',
+  'harness::folders::upsert',
+  'harness::projects::create',
+  'harness::projects::assign',
+  'harness::context-items',
+  'harness::chat-settings::get',
+  'harness::chat-settings::set',
+  'session::patch-meta',
+]
+function engineList(payload: { include_internal?: boolean } = {}) {
+  const ids = payload.include_internal
+    ? [...DEFAULT_LIST, ...INTERNAL]
+    : DEFAULT_LIST
+  return { functions: ids.map((function_id) => ({ function_id })) }
+}
+
 describe('chat capabilities (spec §0.2)', () => {
   afterEach(() => setChatCapabilitiesForTests(null))
+
+  it('reads the catalogue with internal functions, where the control plane is (D37)', async () => {
+    mocks.call.mockReset()
+    mocks.call.mockImplementation((_id: string, payload: object) =>
+      Promise.resolve(engineList(payload)),
+    )
+    const caps = await refreshChatCapabilities()
+    expect(mocks.call).toHaveBeenCalledWith('engine::functions::list', {
+      include_internal: true,
+    })
+    expect(caps).toEqual({
+      loaded: true,
+      patchMeta: true,
+      folders: true,
+      projects: true,
+      setDescription: true,
+      contextItems: true,
+      chatSettings: true,
+    })
+  })
 
   it('turns each feature on only when its function is in the catalogue', () => {
     const caps = capabilitiesFromCatalog({

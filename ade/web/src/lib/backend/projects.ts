@@ -242,13 +242,17 @@ export async function assignProject(
 
 /* ── errors ── */
 
+/** The harness's project error codes (spec §1.2.2, D33). */
 export type ProjectErrorCode =
   | 'name_taken'
+  | 'bad_name'
   | 'folder_taken'
-  | 'bad_color'
+  | 'no_folders'
   | 'too_many_folders'
   | 'folder_not_absolute'
+  | 'bad_color'
   | 'not_found'
+  | 'bad_request'
 
 export interface ProjectError {
   code: string
@@ -337,39 +341,61 @@ export function describeProjectError(
   context: { name: string; folders: readonly string[] },
 ): ProjectErrorDisplay {
   const parsed = parseProjectError(err)
+  // The engine's `message` is copy ready for the screen (D33); the fallbacks
+  // cover an engine that sent only the code.
+  const said = parsed?.message
   switch (parsed?.code) {
     case 'name_taken':
       return {
         field: 'name',
         message: `A project named “${context.name.trim()}” already exists`,
       }
+    case 'bad_name':
+      return {
+        field: 'name',
+        message:
+          said ??
+          (context.name.trim()
+            ? `A name has up to ${PROJECT_NAME_MAX} characters`
+            : 'Name is required'),
+      }
     case 'folder_taken': {
-      const folder = parsed.folder ?? context.folders[0] ?? ''
+      // The spec's copy, with ~ for the home folder (the engine's message
+      // names the full path).
+      const folder = parsed.folder ?? context.folders[0]
       return {
         field: 'folders',
-        message: parsed.project_name
-          ? `${tildePath(folder)} is already in “${parsed.project_name}”`
-          : (parsed.message ?? errText(err)),
+        message:
+          folder && parsed.project_name
+            ? `${tildePath(folder)} is already in “${parsed.project_name}”`
+            : (said ?? errText(err)),
       }
     }
+    case 'no_folders':
+      return { field: 'folders', message: 'Add at least one folder' }
     case 'too_many_folders':
       return {
         field: 'folders',
-        message: `A project holds up to ${PROJECT_FOLDERS_MAX} folders`,
+        message: said ?? `A project holds up to ${PROJECT_FOLDERS_MAX} folders`,
       }
     case 'folder_not_absolute':
       return {
         field: 'folders',
-        message: parsed.folder
-          ? `${parsed.folder} is not an absolute path`
-          : 'Folders need an absolute path',
+        message:
+          said ??
+          (parsed.folder
+            ? `${parsed.folder} is not an absolute path`
+            : 'Folders need an absolute path'),
       }
     case 'bad_color':
-      return { field: 'form', message: 'Pick one of the six colours' }
+      return { field: 'form', message: said ?? 'Pick one of the six colours' }
     case 'not_found':
-      return { field: 'form', message: 'This project no longer exists' }
+      return {
+        field: 'form',
+        message: said ?? 'This project no longer exists',
+      }
     default:
-      return { field: 'form', message: parsed?.message ?? errText(err) }
+      return { field: 'form', message: said ?? errText(err) }
   }
 }
 

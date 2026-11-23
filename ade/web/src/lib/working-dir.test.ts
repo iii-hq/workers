@@ -23,6 +23,12 @@ vi.mock('@/lib/iii-client', () => ({
 vi.mock('@/lib/function-presence', () => ({
   functionRegistered: async () => true,
 }))
+// The folder catalogue is `harness::folders` on this engine (read with
+// internal functions, D37).
+vi.mock('@/lib/chat-capabilities', () => ({
+  getChatCapabilities: () => ({ loaded: true, folders: true }),
+  refreshChatCapabilities: async () => ({ loaded: true, folders: true }),
+}))
 
 beforeEach(() => {
   callMock.mockReset()

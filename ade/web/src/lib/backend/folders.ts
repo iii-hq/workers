@@ -8,9 +8,11 @@
  * predates the move still answers the old ids, so every call here uses
  * `harness::folders::*` when the engine has it and the old ids otherwise.
  */
-import { getChatCapabilities } from '@/lib/chat-capabilities'
+import {
+  getChatCapabilities,
+  refreshChatCapabilities,
+} from '@/lib/chat-capabilities'
 import { isFunctionNotFound } from '@/lib/errors'
-import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 
 export const HARNESS_FOLDERS_LIST_FUNCTION_ID = 'harness::folders::list'
@@ -58,7 +60,11 @@ export function recentFolderPaths(): string[] {
 async function shouldUseFolderIds(): Promise<boolean> {
   const caps = getChatCapabilities()
   if (caps.loaded) return caps.folders
-  return functionRegistered(HARNESS_FOLDERS_LIST_FUNCTION_ID)
+  // `harness::folders::*` is internal (D37): the console's capability read
+  // (with internal functions) decides, not the default catalogue. Unread,
+  // the new id is tried and a missing one falls back below.
+  const read = await refreshChatCapabilities()
+  return read.loaded ? read.folders : true
 }
 
 /**

@@ -187,6 +187,29 @@ describe('project errors', () => {
     })
   })
 
+  it.each([
+    ['bad_name', 'name', 'Names have 1 to 40 characters'],
+    ['no_folders', 'folders', 'Add at least one folder'],
+    ['too_many_folders', 'folders', 'At most 20 folders'],
+    ['folder_not_absolute', 'folders', 'x is not an absolute path'],
+    ['bad_color', 'form', 'Pick one of blue, purple'],
+    ['not_found', 'form', 'No such project'],
+    ['bad_request', 'form', 'Bad request'],
+  ])(
+    'puts the engine code %s under %s with its message (D33)',
+    (code, field, message) => {
+      expect(
+        describeProjectError(wire({ code, message }), {
+          name: 'n',
+          folders: [],
+        }),
+      ).toEqual({
+        field,
+        message: code === 'no_folders' ? 'Add at least one folder' : message,
+      })
+    },
+  )
+
   it('maps codes to the dialog copy', () => {
     const context = { name: ' acme-web ', folders: ['/home/u/work/acme/api'] }
     expect(

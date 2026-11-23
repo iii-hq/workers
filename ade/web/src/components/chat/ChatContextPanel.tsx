@@ -116,6 +116,7 @@ import {
 import { openChatFile } from '@/lib/file-navigation'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
+import { entryIdOfMessage } from '@/lib/sessions/entry-mapper'
 import {
   type RegisteredContextSection,
   useExtContextSections,
@@ -479,17 +480,19 @@ export function ChatContextPanel({
     () => new Set(dismissedPullRequests({ sessionMetadata })),
     [sessionMetadata],
   )
-  // Without gh to read them, the engine's own reading of each PR (its
-  // state and checks come from the github worker, cached 120 s).
+  // The engine's own reading of each PR (its state and checks come from the
+  // github worker, cached 120 s): listed where this tab's gh read has no row
+  // for it (no gh, or gh in the folder failed or is signed out).
   const engineRows = useMemo<PullRequestRow[]>(
     () =>
-      ghVia || !items
+      !items
         ? []
         : items.pull_requests.map((pr) => ({
             repo: pr.repo,
             number: pr.number,
             url: pr.url,
-            title: pr.title ?? `${pr.repo}#${pr.number}`,
+            // No title read (no github worker): the repo, after the "#482".
+            title: pr.title ?? pr.repo,
             state: pr.state ?? 'open',
             checks:
               pr.checks === 'passing'
@@ -506,11 +509,19 @@ export function ChatContextPanel({
             headRefName: null,
             mentioned: pr.source === 'mentioned',
           })),
-    [ghVia, items],
+    [items],
   )
-  const listedPrs = (
-    pullRequests.length > 0 ? pullRequests : engineRows
-  ).filter((pr) => !dismissed.has(pullRequestKey(pr)))
+  const readKeys = new Set(pullRequests.map(pullRequestKey))
+  const listedPrs = [
+    ...pullRequests,
+    ...engineRows.filter((pr) => !readKeys.has(pullRequestKey(pr))),
+  ].filter((pr) => !dismissed.has(pullRequestKey(pr)))
+  /** Engine rows whose state nobody read (no github worker): no chip, no tint. */
+  const unknownState = new Set(
+    (items?.pull_requests ?? [])
+      .filter((pr) => !pr.state && !readKeys.has(`${pr.repo}#${pr.number}`))
+      .map((pr) => `${pr.repo}#${pr.number}`),
+  )
   const [prBusy, setPrBusy] = useState<Record<string, boolean>>({})
   const busy = (pr: PullRequestRow, on: boolean) =>
     setPrBusy((current) => ({ ...current, [pullRequestKey(pr)]: on }))
@@ -578,7 +589,25 @@ export function ChatContextPanel({
           ]
         : []
     if (items) {
+      // An inline picture (no stored attachment) draws from the loaded
+      // transcript when its entry is in the window; otherwise its tile
+      // stays a placeholder that "Show in conversation" still reaches.
+      const loaded = new Map<string, Attachment[]>()
+      for (const source of collectChatImageSources(conversation.messages)) {
+        const entry = entryIdOfMessage(source.messageId)
+        loaded.set(entry, [...(loaded.get(entry) ?? []), source.image])
+      }
+      const used = new Map<string, number>()
       return items.images.map((image, index) => {
+        let inline: Attachment | undefined
+        if (!image.attachment_id) {
+          const seen = used.get(image.entry_id) ?? 0
+          inline = loaded
+            .get(image.entry_id)
+            ?.filter((a) => !a.attachmentId)
+            ?.at(seen)
+          used.set(image.entry_id, seen + 1)
+        }
         const share = shareEntry(
           conversation.id,
           image.attachment_id,
@@ -587,6 +616,7 @@ export function ChatContextPanel({
         return {
           key: `${image.entry_id}:${image.block_index}:${index}`,
           direction: image.direction,
+          image: inline,
           attachmentId: image.attachment_id,
           mime: image.mime,
           name: `Image ${index + 1}`,
@@ -1042,64 +1072,85 @@ export function ChatContextPanel({
             ) : null
           }
         >
-          {prRows.shown.map((pr) => (
-            <Row
-              key={`${pr.repo}#${pr.number}`}
-              icon={<GitPullRequest aria-hidden />}
-              color={PR_STATE_COLOR[pr.state]}
-              label={
-                <>
-                  <span className="mr-1.5 font-mono text-xs text-ink-faint">
-                    #{pr.number}
-                  </span>
-                  {pr.title}
-                </>
-              }
-              title={pr.url}
-              ariaLabel={`#${pr.number} ${pr.title}, ${PR_STATE_LABEL[pr.state]}`}
-              onActivate={() => openExternal(pr.url)}
-              description={<PullRequestFacts pr={pr} />}
-              meta={
-                <span
-                  data-pr-state={pr.state}
-                  className="rounded-sm bg-surface px-1.5 text-meta leading-4 text-ink-faint"
-                >
-                  {PR_STATE_LABEL[pr.state]}
-                </span>
-              }
-              actions={
-                <PullRequestMenu
-                  pr={pr}
-                  onShow={
-                    show && prOrigin(pr)
-                      ? () => {
-                          const origin = prOrigin(pr)
-                          if (origin) show(origin)
-                        }
-                      : undefined
-                  }
-                  busy={!!prBusy[pullRequestKey(pr)]}
-                  canWrite={ghVia !== null}
-                  autoFix={pullRequestKey(pr) in autoFixing}
-                  autoFixAvailable={
-                    ghVia !== null && Boolean(onAutoFixChange && onAskAgent)
-                  }
-                  onViewChanges={() =>
-                    workingDir && pr.headRefName === branch
-                      ? openSourceControl(workingDir)
-                      : openExternal(`${pr.url}/files`)
-                  }
-                  onAction={(action) => void actOnPr(pr, action)}
-                  onAutoFix={(on) => void setAutoFix(pr, on)}
-                  onDismiss={
-                    onDismissPullRequest
-                      ? () => onDismissPullRequest(pullRequestKey(pr))
-                      : undefined
-                  }
-                />
-              }
-            />
-          ))}
+          {prRows.shown.map((pr) => {
+            const stateRead = !unknownState.has(pullRequestKey(pr))
+            return (
+              <Row
+                key={`${pr.repo}#${pr.number}`}
+                icon={<GitPullRequest aria-hidden />}
+                color={stateRead ? PR_STATE_COLOR[pr.state] : undefined}
+                label={
+                  <>
+                    <span className="mr-1.5 font-mono text-xs text-ink-faint">
+                      #{pr.number}
+                    </span>
+                    {pr.title}
+                  </>
+                }
+                title={pr.url}
+                ariaLabel={
+                  stateRead
+                    ? `#${pr.number} ${pr.title}, ${PR_STATE_LABEL[pr.state]}`
+                    : `#${pr.number} ${pr.title}`
+                }
+                onActivate={() => openExternal(pr.url)}
+                description={
+                  stateRead ? (
+                    <PullRequestFacts pr={pr} />
+                  ) : (
+                    // Without the github worker the engine reads no state
+                    // or title (spec §1.2.4): where the PR came from.
+                    <span className="truncate">
+                      {pr.mentioned
+                        ? 'Mentioned in the conversation'
+                        : 'Created here'}
+                    </span>
+                  )
+                }
+                meta={
+                  stateRead ? (
+                    <span
+                      data-pr-state={pr.state}
+                      className="rounded-sm bg-surface px-1.5 text-meta leading-4 text-ink-faint"
+                    >
+                      {PR_STATE_LABEL[pr.state]}
+                    </span>
+                  ) : null
+                }
+                actions={
+                  <PullRequestMenu
+                    pr={pr}
+                    onShow={
+                      show && prOrigin(pr)
+                        ? () => {
+                            const origin = prOrigin(pr)
+                            if (origin) show(origin)
+                          }
+                        : undefined
+                    }
+                    busy={!!prBusy[pullRequestKey(pr)]}
+                    canWrite={ghVia !== null}
+                    autoFix={pullRequestKey(pr) in autoFixing}
+                    autoFixAvailable={
+                      ghVia !== null && Boolean(onAutoFixChange && onAskAgent)
+                    }
+                    onViewChanges={() =>
+                      workingDir && pr.headRefName === branch
+                        ? openSourceControl(workingDir)
+                        : openExternal(`${pr.url}/files`)
+                    }
+                    onAction={(action) => void actOnPr(pr, action)}
+                    onAutoFix={(on) => void setAutoFix(pr, on)}
+                    onDismiss={
+                      onDismissPullRequest
+                        ? () => onDismissPullRequest(pullRequestKey(pr))
+                        : undefined
+                    }
+                  />
+                }
+              />
+            )
+          })}
           <ShowMore
             hidden={prRows.hidden}
             expanded={!!expanded.prs}

@@ -182,6 +182,42 @@ describe('the context pane reading harness::context-items (D10, D11)', () => {
     expect(sectionLabels(view)).toContain('Links')
   })
 
+  it('draws a pull request the engine could not read (no github worker) without a state', async () => {
+    const view = await render(chat(), {
+      items: parseContextItems({
+        session_id: 'main',
+        pull_requests: [
+          {
+            repo: 'acme/web',
+            number: 483,
+            url: 'https://github.com/acme/web/pull/483',
+            entry_id: 'e-1',
+            source: 'created',
+          },
+        ],
+      }),
+    })
+    const text = view.textContent ?? ''
+    expect(text).toContain('#483')
+    expect(text).toContain('Created here')
+    expect(view.querySelector('[data-pr-state]')).toBeNull()
+    expect(text).not.toContain('Open')
+  })
+
+  it("keeps the engine's pull requests when gh in the folder reads none", async () => {
+    // gh runs (the shell worker is there) but never answers for these PRs:
+    // the engine's rows still list them.
+    const view = await render(chat({ workingDir: '/work/acme' }), {
+      items,
+      shellAvailable: true,
+      githubAvailable: true,
+    })
+    expect(view.textContent).toContain('#482')
+    expect(
+      view.querySelector('section[aria-label="Pull requests"]'),
+    ).not.toBeNull()
+  })
+
   it('says when nothing was gathered yet', async () => {
     const view = await render(chat(), {
       items: parseContextItems({ session_id: 'main' }),

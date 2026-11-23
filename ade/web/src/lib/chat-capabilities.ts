@@ -13,6 +13,11 @@
  * | `contextItems`   | `harness::context-items`    | the pane parses the loaded transcript         |
  * | `chatSettings`   | `harness::chat-settings::get` | no Session descriptions setting             |
  *
+ * The control-plane functions are internal (chat-projects D37): only
+ * `harness::projects::list`, `harness::set-description` and the two
+ * `on-changed` events are in the default list, so the catalogue is read with
+ * `include_internal: true`, as the apps' AgentCaps and the mention runtime do.
+ *
  * One store for the whole tab: the catalogue is read once, then again (after a
  * short settle) on every `engine::on-functions-changed` and
  * `engine::on-workers-changed`, the console's presence watch. A failed read
@@ -53,6 +58,8 @@ export const NO_CHAT_CAPABILITIES: ChatCapabilities = {
 }
 
 const WATCH_FN = 'ade::chat-capabilities-watch'
+/** Internal functions included: the control plane is internal (D37). */
+export const CATALOG_REQUEST = { include_internal: true } as const
 const SETTLE_MS = 300
 
 let current: ChatCapabilities = NO_CHAT_CAPABILITIES
@@ -105,7 +112,10 @@ export async function refreshChatCapabilities(): Promise<ChatCapabilities> {
   const seq = ++readSeq
   try {
     const client = await getIiiClient()
-    const response = await client.call('engine::functions::list', {})
+    const response = await client.call(
+      'engine::functions::list',
+      CATALOG_REQUEST,
+    )
     if (seq === readSeq && !frozen) set(capabilitiesFromCatalog(response))
   } catch {
     // keep the last known answer
