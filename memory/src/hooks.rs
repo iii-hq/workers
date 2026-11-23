@@ -703,9 +703,9 @@ pub(crate) async fn injection(
                 cfg.decay_half_life_days,
                 false,
                 bm25_max,
+                keep,
             )
             .await;
-        let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
         for (m, s) in &found {
             // A tie keeps the earlier source, as `merge_ranked` keeps the first copy.
             let at = best.entry(m.id.clone()).or_insert((i, *s));
@@ -3595,6 +3595,96 @@ Formal."
     }
 
     const PAGE: &str = "Who should I page for a payments-api incident right now?";
+
+    #[tokio::test]
+    async fn a_question_matching_only_a_retired_line_is_told_its_successor_once() {
+        // The linked update consolidation leaves: the departure retired the
+        // on-call line, and only the on-call line shares words with the question.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(6);
+        let deps = offline_deps(dir.path(), cfg.clone());
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        for m in [
+            on_dana("fp-hired", "dana-7f3a joined our company in 2023.", 1),
+            on_call(2),
+            tagged(
+                "fp-backup",
+                "Unanswered payments-api pages escalate to marco-1c2d after 15 minutes.",
+                3,
+                &["marco", "payments-api"],
+            ),
+            on_dana(
+                "fp-left",
+                "dana-7f3a left our company last week and her accounts were deactivated.",
+                4,
+            ),
+        ] {
+            repo.commit(m).await.unwrap();
+        }
+        repo.supersede("fp-oncall", "fp-left", false, (None, None))
+            .await
+            .unwrap();
+        let out = injection(
+            &deps,
+            &cfg,
+            "w-abc123",
+            &[],
+            true,
+            Capture::Extracted,
+            Some(PAGE),
+            &HashSet::new(),
+        )
+        .await;
+        let mut ids: Vec<&str> = out.memories.iter().map(|(m, _, _)| m.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["fp-backup", "fp-left"]);
+        let message = out.message.expect("the memory lines");
+        assert_eq!(message.matches("left our company").count(), 1, "{message}");
+        assert!(
+            !message.contains("primary on-call engineer for payments-api"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_layer_successor_is_told_only_when_the_turn_reads_both_lines() {
+        let (user, none) = (&["user"][..], &[][..]);
+        for (old_entities, entities, told_to) in [
+            (user, none, vec![]),
+            (none, user, vec![]),
+            (user, user, vec!["main"]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let deps = offline_deps(dir.path(), offline_cfg(6));
+            let store = deps.store().await;
+            store.ensure_bank("w-abc123", None).await.unwrap();
+            let (main, _) = store.ensure_bank("main", None).await.unwrap();
+            let old = tagged(
+                "fp-old",
+                "The user orders oat milk lattes.",
+                1,
+                old_entities,
+            );
+            let new = tagged("fp-new", "Switched to black coffee.", 2, entities);
+            for m in [old, new] {
+                main.commit(m).await.unwrap();
+            }
+            main.supersede("fp-old", "fp-new", false, (None, None))
+                .await
+                .unwrap();
+            let told = told(&deps, &["main"], "oat milk lattes").await;
+            let expected: Vec<(String, String)> = told_to
+                .into_iter()
+                .map(|bank| ("fp-new".to_string(), bank.to_string()))
+                .collect();
+            assert_eq!(told, expected, "{old_entities:?} -> {entities:?}");
+        }
+    }
 
     /// dana on call for payments-api, said at `at`.
     fn on_call(at: u64) -> Memory {

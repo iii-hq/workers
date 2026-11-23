@@ -62,20 +62,6 @@ fn a_turns_note(memory: &Memory) -> bool {
 /// Starts the error of a write on a retired record.
 const MEMORY_RETIRED: &str = "memory_retired";
 
-/// The live record at the end of `memory`'s `superseded_by` chain, if any.
-async fn live_successor(bank: &crate::store::Bank, memory: &Memory) -> Option<Memory> {
-    let mut next = memory.superseded_by.clone();
-    // One hop per correction; the bound only stops a cycle.
-    for _ in 0..8 {
-        let m = bank.get(&next?).await?;
-        if m.is_live() {
-            return Some(m);
-        }
-        next = m.superseded_by;
-    }
-    None
-}
-
 /// What a caller refused on a retired record does with the live one instead.
 fn act_on_live(in_turn: bool) -> &'static str {
     if in_turn {
@@ -330,7 +316,7 @@ pub(crate) async fn save_in(
         let existing = bank.get(&input.id).await;
         // A text a newer memory replaced stays retired: never both lines live.
         if let Some(old) = existing.as_ref().filter(|m| !m.is_live())
-            && let Some(live) = live_successor(&bank, old).await
+            && let Some(live) = bank.live_successor(&old.id).await
         {
             return Err(MemoryError::InvalidInput(format!(
                 "{MEMORY_RETIRED}: this text was superseded by memory `{}`; {}",
@@ -520,11 +506,12 @@ async fn update_once(
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
-    // An edit of a retired record would never reach recall; a record retired
-    // after this read fails the commit, and the retry lands here.
+    // An edit of a retired record is never shown (its words only route recall
+    // to the live memory); a record retired after this read fails the commit,
+    // and the retry lands here.
     if !memory.is_live() {
         return Err(MemoryError::InvalidInput(
-            match live_successor(&bank, &memory).await {
+            match bank.live_successor(&memory.id).await {
                 Some(live) => format!(
                     "{MEMORY_RETIRED}: memory `{}` was superseded by `{}`; {}",
                     memory.id,
