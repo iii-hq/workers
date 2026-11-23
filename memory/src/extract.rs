@@ -1878,7 +1878,9 @@ async fn execute_run(
         return Ok(false);
     }
     // Fail-soft semantic signal; lexical-only when it misses.
-    let query_vec = crate::embed_client::query_vector(deps, &crate::store::cap_query(&query)).await;
+    let query_vec = crate::embed_client::query_vector(deps, &crate::store::cap_query(&query))
+        .await
+        .ok();
     let (mut known, mut layered) = known_memories(
         &*deps.store().await,
         bank_name,

@@ -713,7 +713,7 @@ pub(crate) async fn injection(
         return out;
     };
     // Fail-soft semantic signal; lexical-only when it misses.
-    let query_vec = crate::embed_client::query_vector(deps, &query).await;
+    let query_vec = crate::embed_client::query_vector(deps, &query).await.ok();
     out.retrieval = if query_vec.is_some() {
         "bm25-entity-semantic"
     } else {
