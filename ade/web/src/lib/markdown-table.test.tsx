@@ -29,6 +29,10 @@ describe('Markdown tables', () => {
 | shell::exec | Run a command in the foreground and return its full output |`}</Markdown>,
     )
 
+    // The viewport is a keyboard stop, so the overflow scrolls without a mouse.
+    expect(html).toMatch(
+      /<div [^>]*data-slot="table-container"[^>]*tabindex="0"/,
+    )
     // The frame grows with the table, so the viewport has something to scroll.
     expect(html).toMatch(
       /<div [^>]*data-slot="table-frame"[^>]*class="[^"]*\binline-block\b[^"]*\bmin-w-full\b/,

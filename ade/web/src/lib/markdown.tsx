@@ -718,7 +718,11 @@ const components: Components = {
      viewport rather than losing its last columns; cells wrap their text
      with a floor width, so one long column cannot crowd out the others. */
   table: ({ className, ...rest }) => (
-    <TableViewport className="my-4">
+    <TableViewport
+      className="my-4 rounded-lg focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+      // A keyboard stop: Safari focuses no scroll container on its own.
+      tabIndex={0}
+    >
       <TableFrame className="inline-block min-w-full align-top">
         <Table density="compact" inset className={className} {...rest} />
       </TableFrame>
