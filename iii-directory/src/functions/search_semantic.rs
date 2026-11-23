@@ -151,6 +151,9 @@ pub struct SemanticSearch {
 #[derive(Default)]
 struct Inner {
     disabled: AtomicBool,
+    /// [`download_until_ready`] has not succeeded yet: a missing bundle is
+    /// still coming, not unprovisioned.
+    downloading: AtomicBool,
     model_dir: Option<PathBuf>,
     model: RwLock<Option<Arc<LoadedModel>>>,
     #[cfg(minilm)]
@@ -346,6 +349,14 @@ impl SemanticSearch {
         };
         let loaded = self.inner.model.read().expect("semantic model").is_some();
         if !loaded && !minilm_artifact_contract_matches(dir) {
+            // Transient, so the router returns it instead of moving callers
+            // to another embedder's vector space.
+            if self.inner.downloading.load(Ordering::Acquire) {
+                return Err(EmbedError::Failed(format!(
+                    "the MiniLM bundle at {} is still downloading",
+                    dir.display()
+                )));
+            }
             return Err(EmbedError::Unconfigured(format!(
                 "the MiniLM bundle at {} is not provisioned",
                 dir.display()
@@ -916,6 +927,40 @@ pub async fn download_bundle(root: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// The pause after the first failed download; it doubles per failure up to
+/// [`DOWNLOAD_RETRY_MAX`].
+const DOWNLOAD_RETRY_FIRST: Duration = Duration::from_secs(30);
+const DOWNLOAD_RETRY_MAX: Duration = Duration::from_secs(600);
+
+/// Run `attempt` (a [`download_bundle`] into `root`) until it succeeds,
+/// pausing [`DOWNLOAD_RETRY_FIRST`] after the first failure and doubling up
+/// to [`DOWNLOAD_RETRY_MAX`]. Each retry resumes: files that verify are
+/// kept. Until then `semantic` answers embeds with "still downloading".
+pub async fn download_until_ready<F, Fut>(semantic: &SemanticSearch, root: &Path, mut attempt: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    semantic.inner.downloading.store(true, Ordering::Release);
+    let mut delay = DOWNLOAD_RETRY_FIRST;
+    let mut attempts = 1u32;
+    while let Err(error) = attempt().await {
+        tracing::warn!(
+            %error,
+            attempt = attempts,
+            retry_in_secs = delay.as_secs(),
+            path = %root.display(),
+            "MiniLM search bundle download failed; BM25 serves and provider::minilm::embed \
+             answers \"still downloading\" until a retry succeeds"
+        );
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(DOWNLOAD_RETRY_MAX);
+        attempts += 1;
+    }
+    semantic.inner.downloading.store(false, Ordering::Release);
+    tracing::info!(path = %root.display(), attempts, "MiniLM search bundle ready");
+}
+
 async fn download_bundle_inner(root: &Path) -> Result<(), SemanticUnavailable> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("iii-directory/", env!("CARGO_PKG_VERSION")))
@@ -1176,6 +1221,28 @@ mod tests {
         assert!(is_desired(&semantic.inner, &fingerprint));
         semantic.set_enabled(false);
         assert!(!is_desired(&semantic.inner, &fingerprint));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_download_retries_with_a_capped_backoff_until_it_succeeds() {
+        let semantic = SemanticSearch::default();
+        let mut calls = Vec::new();
+        download_until_ready(&semantic, Path::new("bundle"), || {
+            calls.push(tokio::time::Instant::now());
+            assert!(semantic.inner.downloading.load(Ordering::Acquire));
+            let succeed = calls.len() == 8;
+            async move {
+                if succeed {
+                    Ok(())
+                } else {
+                    Err("offline".into())
+                }
+            }
+        })
+        .await;
+        let pauses: Vec<u64> = calls.windows(2).map(|w| (w[1] - w[0]).as_secs()).collect();
+        assert_eq!(pauses, [30, 60, 120, 240, 480, 600, 600]);
+        assert!(!semantic.inner.downloading.load(Ordering::Acquire));
     }
 
     #[test]
