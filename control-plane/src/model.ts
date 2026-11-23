@@ -192,11 +192,21 @@ export interface ControlPlaneProgress {
   total: number
 }
 
+/** The summary writer's check of an item: is the person really needed, for what, and what it recommends. */
+export interface AgentCheck {
+  waiting: boolean
+  text: string
+  recommendation: string
+  checked_at: string
+}
+
 interface NeedBase extends NeedSortValue {
   id: string
+  /** The session behind the item; empty for a card no session works on. */
   sessionId: string
   title: string
   card?: ControlPlaneTicket
+  agent?: AgentCheck
 }
 
 export interface QuestionNeed extends NeedBase {
@@ -218,7 +228,24 @@ export interface StalledNeed extends NeedBase {
   armedWakes: HarnessStatus['armed_wakes']
 }
 
-export type NeedsYouItem = QuestionNeed | StalledNeed
+/** A board card marked as waiting on a person: the "needs you" pill or a configured label. */
+export interface CardNeed extends NeedBase {
+  kind: 'card'
+  marks: string[]
+}
+
+/** A chat whose agent ended its turn with a question and got no reply. */
+export interface ReplyNeed extends NeedBase {
+  kind: 'reply'
+  lastMessage: string
+}
+
+/** A pending decision the summary writer found that no rule covers. */
+export interface FoundNeed extends NeedBase {
+  kind: 'found'
+}
+
+export type NeedsYouItem = QuestionNeed | StalledNeed | CardNeed | ReplyNeed | FoundNeed
 
 export interface ControlPlaneRun {
   session: Pick<SessionMeta, 'session_id' | 'title' | 'created_at' | 'updated_at'>
@@ -271,7 +298,7 @@ export type AskClass =
   | 'routine'
 
 export interface NeedSortValue {
-  kind: 'question' | 'stalled'
+  kind: 'question' | 'stalled' | 'card' | 'reply' | 'found'
   createdAt: number
   blockedCards: number
   questionClass?: AskClass
@@ -286,7 +313,8 @@ const URGENT_ASK_CLASSES = new Set<AskClass>([
 ])
 
 export function needUrgency(item: NeedSortValue): NeedUrgency {
-  if (item.kind !== 'question') return 'now'
+  if (item.kind === 'stalled') return 'now'
+  if (item.kind !== 'question') return item.blockedCards > 0 ? 'now' : 'no-rush'
   return item.blockedCards > 0 ||
     URGENT_ASK_CLASSES.has(item.questionClass ?? 'scope')
     ? 'now'

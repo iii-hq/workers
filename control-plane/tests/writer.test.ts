@@ -25,6 +25,7 @@ function result(checkedAt = new Date().toISOString()): ControlPlaneSummary {
     diary: [],
     now: {},
     pr_waits: {},
+    needs_you: [],
   }
 }
 
@@ -46,6 +47,7 @@ function config(model: string | undefined = 'openai::gpt-5'): ControlPlaneConfig
     summary: { model, interval_min: 10, language: 'English' },
     prs: { watched_interval_min: 5, idle_interval_min: 30 },
     escalate: {},
+    needs_you: { card_labels: ['human-only', 'só humano', 'decisão'] },
   }
 }
 

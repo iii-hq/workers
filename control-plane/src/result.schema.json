@@ -3,7 +3,7 @@
   "title": "Control plane writer result",
   "type": "object",
   "additionalProperties": false,
-  "required": ["checked_at", "unchanged", "brief", "diary", "now", "pr_waits"],
+  "required": ["checked_at", "unchanged", "brief", "diary", "now", "pr_waits", "needs_you"],
   "properties": {
     "checked_at": {
       "$ref": "#/definitions/timestamp"
@@ -108,6 +108,39 @@
       "patternProperties": {
         "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$": {
           "$ref": "#/definitions/line"
+        }
+      }
+    },
+    "needs_you": {
+      "type": "array",
+      "maxItems": 40,
+      "description": "Your check of each digest needs_you candidate, by its id, plus found:<subject> entries for decisions waiting on the person that no candidate covers.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "waiting", "text", "recommendation", "refs"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(question|stalled|card|reply):.+$|^found:([A-Z][A-Z0-9]*-[0-9]+|session:[^\\s]+)$"
+          },
+          "waiting": {
+            "type": "boolean",
+            "description": "Whether the person is really needed for this now."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "In plain language, what the person must decide or do."
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "What you recommend and why, from the evidence; empty when the evidence does not support one."
+          },
+          "refs": {
+            "allOf": [{ "$ref": "#/definitions/refs" }],
+            "minItems": 1
+          }
         }
       }
     }

@@ -32,6 +32,16 @@ const result = {
       refs: ['iii-hq/workers#1834'],
     },
   },
+  needs_you: [
+    {
+      id: 'card:KAN-635',
+      waiting: true,
+      text: 'Choose the price table for Scale before billing goes live.',
+      recommendation:
+        'Take the usage table already reviewed on the card; it matches the plan limits.',
+      refs: ['KAN-635'],
+    },
+  ],
 }
 
 describe('Control plane writer contract', () => {
@@ -71,6 +81,22 @@ describe('Control plane writer contract', () => {
       ),
     ).not.toBeNull()
     expect(SUMMARY_SCHEMA.required).not.toContain('direction')
+  })
+
+  it('accepts checks only for candidate ids and found cards or sessions', () => {
+    const now = Date.parse(result.checked_at)
+    const check = result.needs_you[0]
+    for (const id of [
+      'question:s1:q1',
+      'stalled:s1',
+      'card:KAN-1',
+      'reply:s1',
+      'found:KAN-1',
+      'found:session:s1',
+    ])
+      expect(acceptSummary({ ...result, needs_you: [{ ...check, id }] }, null, now)).not.toBeNull()
+    for (const id of ['found:https://example.com', 'note:KAN-1', 'found:release:r1'])
+      expect(acceptSummary({ ...result, needs_you: [{ ...check, id }] }, null, now)).toBeNull()
   })
 
   it('rejects missing references, invalid subjects and extra fields', () => {

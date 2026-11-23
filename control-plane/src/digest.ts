@@ -12,7 +12,7 @@ export interface ActivityRow {
 const CARDS = 40
 const ACTIVITY = 60
 const RUNS = 20
-const NEEDS = 20
+const NEEDS = 30
 const PRS = 30
 
 const clip = (text: string, max: number) => {
@@ -109,12 +109,18 @@ export function writerDigest(
         : null,
       last_message: clip(run.lastAssistant ?? '', 300),
     })),
+    // Every candidate the rules found; the writer checks each one by its id.
     needs_you: (data.items ?? []).slice(0, NEEDS).map((item) => ({
+      id: item.id,
       kind: item.kind,
       urgency: item.urgency,
       class: item.kind === 'question' ? item.questionClass : undefined,
+      question: item.kind === 'question' ? clip(item.question ?? '', 300) : undefined,
+      marks: item.kind === 'card' ? item.marks : undefined,
+      // The end of the message, where the question is.
+      last_message: item.kind === 'reply' ? item.lastMessage.slice(-400) : undefined,
       card: item.card?.key ?? null,
-      session: `session:${item.sessionId}`,
+      session: item.sessionId ? `session:${item.sessionId}` : null,
       title: clip(item.title ?? '', 200),
     })),
     // null: pull requests were not read this time (no repositories, GitHub unavailable, or not read yet).

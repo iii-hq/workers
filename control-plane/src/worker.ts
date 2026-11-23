@@ -5,7 +5,7 @@ import type { IIIClient } from 'iii-sdk'
 import { z } from 'zod'
 import { configSchema, defaultConfig } from './config.js'
 import { sourceHash, ControlPlaneReadModel } from './read-model.js'
-import { resolveSummary, SUMMARY_MAX_AGE, summaryIsFresh } from './summary.js'
+import { resolveSummary, SUMMARY_MAX_AGE, summaryIsFresh, withAgentChecks } from './summary.js'
 import type { ControlPlaneClient } from './types.js'
 import { ControlPlaneWriter } from './writer.js'
 
@@ -186,17 +186,16 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     'control-plane::overview',
     async (input: unknown) => {
       const { scope } = await scoped(scopeInput, input)
-      const data = await read.read(scope)
+      const read_ = await read.read(scope)
       await writer.load(scope)
       armSummaryDeadline(scope)
       const current = summary(scope)
+      const result = current.result ? resolveSummary(current.result, read_) : null
+      const data = { ...read_, items: withAgentChecks(read_.items, result, read_) }
       const now = data.items.filter((item) => item.urgency === 'now')
       return {
         ...data,
-        summary: {
-          ...current,
-          result: current.result ? resolveSummary(current.result, data) : null,
-        },
+        summary: { ...current, result },
         availability,
         prs_interval_min: config.prs.watched_interval_min,
         tiles: {
@@ -236,7 +235,14 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
   iii.registerFunction(
     'control-plane::needs-you::list',
     async (input: unknown) => {
-      const data = await read.read((await scoped(scopeInput, input)).scope)
+      const { scope } = await scoped(scopeInput, input)
+      const read_ = await read.read(scope)
+      await writer.load(scope)
+      const result = summary(scope).result
+      const data = {
+        ...read_,
+        items: withAgentChecks(read_.items, result ? resolveSummary(result, read_) : null, read_),
+      }
       return {
         items: data.items,
         now: data.items.filter((item) => item.urgency === 'now'),
@@ -246,7 +252,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     },
     {
       description:
-        'Read questions and stalled runs, ordered by project escalation, cards blocked and age.',
+        'Read what waits on the person: questions, stalled runs, cards marked for a person, chats ending on a question, and decisions the summary agent found; each with the agent check and recommendation when the writer has one. Ordered by urgency, cards blocked and age.',
       request_format: request(scopeInput),
       response_format: object({
         items: array,

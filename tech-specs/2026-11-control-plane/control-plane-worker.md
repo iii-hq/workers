@@ -187,6 +187,22 @@ own sessions (§4).
 - When `context` is absent, the status is null or it has no `turn_id`, the
   worker falls back to an estimate from `session::messages-tail`.
 
+**Needs you.** Rules find the candidates; the summary writer checks them.
+- Formal questions (`harness::ask::list` merged with the board's question
+  log) and stalled runs, as before.
+- Open cards with the "needs you" pill or a label in
+  `needs_you.card_labels` (`card:<key>`); the pill or a `blocked` label makes
+  one urgent.
+- Chats (not automation) idle for less than seven days whose transcript ends
+  on an assistant message ending in a question (`reply:<session>`).
+- Each candidate goes to the writer in the digest. Its result's `needs_you`
+  entries give, per id, whether the person is really needed, what they must
+  decide, and a recommendation from the evidence; `found:<card or session>`
+  entries add decisions no rule covers. `overview` and `needs-you::list`
+  apply them: notes on every item, a chat that only looked like a question
+  dropped, found decisions added once and never urgent. Questions, stalled
+  runs and marked cards are never removed by the writer.
+
 **PRs.**
 - They come only from `Project.repos`; a project without repos shows the
   existing "add repositories" state.

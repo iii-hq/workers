@@ -52,6 +52,7 @@ export interface ControlPlaneConfig {
   }
   prs: { watched_interval_min: number; idle_interval_min: number }
   escalate: Record<string, AskClass[]>
+  needs_you: { card_labels: string[] }
 }
 
 export interface ControlPlaneData {

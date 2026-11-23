@@ -5,6 +5,7 @@ import {
   resolveSummary,
   SUMMARY_MAX_AGE,
   summaryIsFresh,
+  withAgentChecks,
 } from './summary.js'
 
 const result = controlPlaneSummaryFixture
@@ -176,5 +177,40 @@ describe('live references and freshness', () => {
     expect(summaryIsFresh(checked, checked + SUMMARY_MAX_AGE + 1)).toBe(false)
     expect(summaryIsFresh(checked, checked - 1)).toBe(false)
     expect(summaryIsFresh(Number.NaN, checked)).toBe(false)
+  })
+})
+
+describe('agent checks on Needs you', () => {
+  const data = controlPlaneFixture
+  const card = data.tickets.filter((ticket) => ticket.status !== data.board?.doneStatus)[0]
+  const base = { blockedCards: 0, createdAt: checked, urgency: 'no-rush' as const }
+  const items = [
+    { ...base, id: `card:${card.key}`, kind: 'card' as const, sessionId: '', title: card.title, marks: ['decisão'], card },
+    { ...base, id: 'reply:chat-1', kind: 'reply' as const, sessionId: 'chat-1', title: 'Chat', lastMessage: 'Done?' },
+  ]
+  const check = (id: string, waiting: boolean, text: string) => ({
+    id,
+    waiting,
+    text,
+    recommendation: waiting ? 'Take the reviewed table.' : '',
+    refs: [card.key],
+  })
+  it('adds notes, drops a chat that only looked like a question, and adds found decisions once', () => {
+    const run = data.runs[0]
+    const summary = {
+      ...result,
+      needs_you: [
+        check(`card:${card.key}`, true, 'Choose the price table.'),
+        check('reply:chat-1', false, 'The agent answered itself.'),
+        check(`found:session:${run.session.session_id}`, true, 'Pick the retry policy.'),
+        check(`found:${card.key}`, true, 'Already covered by the card item.'),
+        check('found:KAN-99999', true, 'Not on the board.'),
+      ],
+    }
+    const merged = withAgentChecks(items, summary, data)
+    expect(merged.map((item) => item.id)).toEqual([`card:${card.key}`, `found:session:${run.session.session_id}`])
+    expect(merged[0].agent).toMatchObject({ text: 'Choose the price table.', recommendation: 'Take the reviewed table.' })
+    expect(merged[1]).toMatchObject({ kind: 'found', sessionId: run.session.session_id, urgency: 'no-rush' })
+    expect(withAgentChecks(items, null, data)).toBe(items)
   })
 })

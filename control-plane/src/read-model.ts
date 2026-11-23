@@ -40,6 +40,8 @@ interface RunSnapshot {
   childOpenAsks: number
   descendantSessionIds: string[]
   lastAssistant: string
+  /** The transcript ends on an assistant message that asks something. */
+  endsWithQuestion: boolean
   context_size: number
   completedTurnId?: string
 }
@@ -69,6 +71,14 @@ function lastAssistant(items: TranscriptItem[]): string {
     if (text) return text
   }
   return ''
+}
+
+/** The last message is the agent's and ends with a question: it may be waiting on a reply. */
+function endsWithQuestion(items: TranscriptItem[]): boolean {
+  const last = [...items].reverse().find((item) => item.message)
+  if (last?.message?.role !== 'assistant') return false
+  const text = lastAssistant([last])
+  return /\?[\s*_`'")\]]*$/.test(text)
 }
 
 export async function fetchControlPlaneBoard(
@@ -446,6 +456,7 @@ export async function fetchControlPlaneRuns(
         childOpenAsks: descendants.reduce((sum, child) => sum + (child.open_asks ?? 0), 0),
         descendantSessionIds: descendants.map((child) => child.session_id),
         lastAssistant: lastAssistant(tail.messages ?? []),
+        endsWithQuestion: endsWithQuestion(tail.messages ?? []),
         context_size: context?.total ?? 0,
       }
     }),
@@ -664,8 +675,69 @@ export function projectSnapshot(
       },
     ]
   })
+  const covered = new Set(basic.flatMap((item) => (item.card ? [item.card.id] : [])))
+  const closed = new Set([board.board.doneStatus, board.board.canceledStatus].filter(Boolean))
+  const cardLabels = new Set(config.needs_you.card_labels.map((label) => label.toLowerCase()))
+  const marked = cards.flatMap((card) => {
+    if (closed.has(card.status) || covered.has(card.id) || !isInScope(scope, card.project_id))
+      return []
+    const pill = card.pills?.some((entry) => entry.text.toLowerCase() === 'needs you')
+    const marks = [
+      ...(pill ? ['needs you'] : []),
+      ...card.labels.filter((label) => cardLabels.has(label.toLowerCase())),
+    ]
+    if (!marks.length) return []
+    const run = runs.find((row) => row.card?.id === card.id)
+    return [
+      {
+        id: `card:${card.key}`,
+        kind: 'card' as const,
+        sessionId: run?.session.session_id ?? '',
+        title: card.title,
+        marks,
+        // The pill or a blocked label says the card itself stops on the person.
+        blockedCards: pill || card.labels.includes('blocked') ? 1 : 0,
+        createdAt: Date.parse(card.updated_at) || now,
+        card,
+        urgency: pill || card.labels.includes('blocked') ? ('now' as const) : ('no-rush' as const),
+      },
+    ]
+  })
+  const replies = rows.flatMap((row) => {
+    const card = cardForSession(row.session, cards)
+    const idle =
+      row.session.status !== 'working' &&
+      !['running', 'awaiting_functions'].includes(row.status.status) &&
+      row.runningChildren === 0 &&
+      !(row.status.open_asks ?? 0) &&
+      !row.childOpenAsks
+    if (
+      !row.endsWithQuestion ||
+      !idle ||
+      row.session.kind === 'automation' ||
+      now - row.session.updated_at > 7 * 86_400_000 ||
+      (card && covered.has(card.id)) ||
+      (scope !== ALL_PROJECTS && !isInScope(scope, card?.project_id))
+    )
+      return []
+    return [
+      {
+        id: `reply:${row.session.session_id}`,
+        kind: 'reply' as const,
+        sessionId: row.session.session_id,
+        title: row.session.title || 'Chat',
+        lastMessage: row.lastAssistant.slice(-600),
+        blockedCards: 0,
+        createdAt: row.session.updated_at,
+        card,
+        urgency: 'no-rush' as const,
+      },
+    ]
+  })
   const items: ControlPlaneData['items'] = [
     ...basic,
+    ...marked,
+    ...replies,
     ...runs
       .filter((run) => run.state === 'stalled')
       .map((run) => ({

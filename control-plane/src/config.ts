@@ -33,6 +33,12 @@ export const configSchema = z.strictObject({
     })
     .prefault({}),
   escalate: z.record(z.string(), z.array(classes)).default({}),
+  needs_you: z
+    .strictObject({
+      /** Open cards with one of these labels wait on a person; the "needs you" pill always counts. */
+      card_labels: z.array(z.string().min(1)).default(['human-only', 'só humano', 'decisão']),
+    })
+    .prefault({}),
   /** Retired 2026-11-23 with the at-risk rule; still accepted so a saved value keeps validating. Ignored. */
   at_risk_days: z.number().optional(),
 })

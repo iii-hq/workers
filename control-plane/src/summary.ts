@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import schema from './result.schema.json' with { type: 'json' }
-import type { ControlPlaneData } from './types.js'
+import type { ControlPlaneData, NeedsYouItem } from './types.js'
 
 export const SUMMARY_INTERVAL = 10 * 60_000
 export const SUMMARY_MAX_AGE = 30 * 60_000
@@ -53,6 +53,17 @@ const resultContract = z.strictObject({
       ),
     line,
   ),
+  needs_you: z
+    .array(
+      z.strictObject({
+        id: z.string().regex(new RegExp(schema.properties.needs_you.items.properties.id.pattern)),
+        waiting: z.boolean(),
+        text: z.string().min(1),
+        recommendation: z.string(),
+        refs: refs.min(1),
+      }),
+    )
+    .max(schema.properties.needs_you.maxItems),
 })
 
 export type ControlPlaneSummary = z.infer<typeof resultContract>
@@ -122,5 +133,64 @@ export function resolveSummary(
         .filter(([subject]) => prs.has(subject))
         .map(([subject, note]) => [subject, resolved(note)]),
     ),
+    needs_you: summary.needs_you.map(resolved),
   }
+}
+
+type Item = ControlPlaneData['items'][number]
+
+/**
+ * Apply the writer's checks to the rule-based items: each gets the agent's note
+ * and recommendation, a chat that only looked like a question is dropped, and
+ * decisions the writer found that no rule covers are added (no rush, never
+ * counted twice). Formal questions, stalled runs and marked cards always stay.
+ */
+export function withAgentChecks(
+  items: ControlPlaneData['items'],
+  summary: ControlPlaneSummary | null,
+  data: Pick<ControlPlaneData, 'tickets' | 'runs' | 'board'>,
+): ControlPlaneData['items'] {
+  if (!summary) return items
+  const checks = new Map(summary.needs_you.map((check) => [check.id, check]))
+  const agent = (check: ControlPlaneSummary['needs_you'][number]) => ({
+    waiting: check.waiting,
+    text: check.text,
+    recommendation: check.recommendation,
+    checked_at: summary.checked_at,
+  })
+  const kept: Item[] = items.flatMap((item) => {
+    const check = checks.get(item.id)
+    if (!check) return [item]
+    if (item.kind === 'reply' && !check.waiting) return []
+    return [{ ...item, agent: agent(check) } as Item]
+  })
+  const covered = new Set(
+    kept.flatMap((item) => [
+      ...(item.card ? [item.card.key] : []),
+      ...(item.sessionId ? [`session:${item.sessionId}`] : []),
+    ]),
+  )
+  const closed = new Set([data.board?.doneStatus, data.board?.canceledStatus].filter(Boolean))
+  const found: Item[] = summary.needs_you.flatMap((check) => {
+    if (!check.id.startsWith('found:') || !check.waiting) return []
+    const subject = check.id.slice('found:'.length)
+    if (covered.has(subject)) return []
+    const run = data.runs.find((row) => `session:${row.session.session_id}` === subject)
+    const card = data.tickets.find((ticket) => ticket.key === subject && !closed.has(ticket.status)) ?? run?.card
+    if (!run && !card) return []
+    covered.add(subject)
+    const need: NeedsYouItem & { urgency: 'no-rush' } = {
+      id: check.id,
+      kind: 'found',
+      sessionId: run?.session.session_id ?? '',
+      title: check.text,
+      card,
+      blockedCards: 0,
+      createdAt: Date.parse(summary.checked_at),
+      agent: agent(check),
+      urgency: 'no-rush',
+    }
+    return [need]
+  })
+  return [...kept, ...found]
 }

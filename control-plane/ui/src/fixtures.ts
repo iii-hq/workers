@@ -29,6 +29,7 @@ export const controlPlaneSummaryFixture: ControlPlaneSummary = {
       refs: ['iii-hq/iii-cloud#451', 'KAN-616'],
     },
   },
+  needs_you: [],
 }
 
 const card = (key: string, title: string, status = 'in_progress'): ControlPlaneTicket => ({

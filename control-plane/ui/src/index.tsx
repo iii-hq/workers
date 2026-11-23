@@ -532,13 +532,13 @@ function Doing({ run, summary }: { run: ControlPlaneRun; summary: ControlPlaneSu
   )
 }
 function Recommended({ item }: { item: NeedsYouItem }) {
-  if (item.kind !== 'question') return null
-  const option = item.entry.questions[0]?.options.find((candidate) => candidate.recommended)
-  const text = option?.label ?? item.why
+  const option = item.kind === 'question' ? item.entry.questions[0]?.options.find((candidate) => candidate.recommended) : undefined
+  // A question's own recommended option first, then the summary agent's recommendation.
+  const text = option?.label || item.agent?.recommendation || (item.kind === 'question' ? item.why : undefined)
   if (!text) return null
   return (
     <p className="control-plane-muted">
-      {option ? <span className="control-plane-text-ink">Recommended:</span> : null} {text}
+      {option || item.agent?.recommendation ? <span className="control-plane-text-ink">Recommended:</span> : null} {text}
     </p>
   )
 }
@@ -830,7 +830,7 @@ function Overview({
                     <AskAboutButton
                       item={item}
                       compact
-                      available={canAsk && item.kind !== 'stalled'}
+                      available={canAsk && item.kind === 'question'}
                       onClick={() => openNeed(item, true)}
                     />
                   </div>

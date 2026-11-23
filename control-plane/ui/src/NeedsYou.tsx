@@ -45,7 +45,43 @@ const IDLE: AnswerState = { status: 'idle' }
 export const needLabel = (item: NeedsYouItem) =>
   item.kind === 'question'
     ? `Question · ${item.questionClass.replaceAll('_', ' ')}`
-    : 'Stalled run'
+    : item.kind === 'stalled'
+      ? 'Stalled run'
+      : item.kind === 'card'
+        ? `Card · ${item.marks.join(', ')}`
+        : item.kind === 'reply'
+          ? 'Reply in chat'
+          : 'Found by the agent'
+
+const SOURCES = [
+  ['question', 'Questions'],
+  ['stalled', 'Stalled runs'],
+  ['card', 'Marked cards'],
+  ['reply', 'Chats waiting on a reply'],
+  ['found', 'Found by the agent'],
+] as const
+
+/** The summary writer's check: what the person must decide, and what it recommends. */
+export function AgentCheckNote({ item }: { item: NeedsYouItem }) {
+  if (!item.agent) return null
+  return (
+    <div className="control-plane-agent-check">
+      <div className="control-plane-row-head">
+        <Eyebrow>Agent check</Eyebrow>
+        <span className="control-plane-meta">agent · {formatRelative(item.agent.checked_at)}</span>
+      </div>
+      <p>{item.agent.text}</p>
+      {item.agent.recommendation ? (
+        <p>
+          <span className="control-plane-text-ink">Recommendation:</span> {item.agent.recommendation}
+        </p>
+      ) : null}
+      {!item.agent.waiting ? (
+        <p className="control-plane-muted">The agent thinks this may no longer need you.</p>
+      ) : null}
+    </div>
+  )
+}
 
 export function stallVersion(item: NeedsYouItem, runs: ControlPlaneData['runs']): string {
   const run = runs.find((row) => row.session.session_id === item.sessionId)
@@ -450,7 +486,7 @@ export function NeedsYou({
       askAbout={
         chatError ? (
           <StatusPanel variant="alert" headline="Side chat could not be prepared" detail={chatError} />
-        ) : selected.kind !== 'stalled' ? (
+        ) : selected.kind === 'question' ? (
           <AskAboutButton
             item={selected}
             tokens={data.runs.find((run) => run.session.session_id === selected.sessionId)?.context_size ?? null}
@@ -517,9 +553,9 @@ export function NeedsYou({
         </List>
         <div className="control-plane-sources">
           <Eyebrow>From</Eyebrow>
-          {(['question', 'stalled'] as const).map((kind) => (
+          {SOURCES.map(([kind, label]) => (
             <p key={kind}>
-              <span>{kind === 'question' ? 'Questions' : 'Stalled runs'}</span>
+              <span>{label}</span>
               <span className="control-plane-meta">{data.items.filter((item) => item.kind === kind).length}</span>
             </p>
           ))}
@@ -558,7 +594,7 @@ export function NeedsYou({
                 ? 'No items from the available sources'
                 : 'Nothing needs you'
             }
-            description="A question or a stalled run from any session shows up here."
+            description="Questions, stalled runs, cards marked for you and chats waiting on your reply show up here."
             action={{ label: 'Open Runs', onClick: openRuns }}
           />
         ) : !items.length ? (
@@ -639,7 +675,7 @@ export function NeedsYou({
             {detail ?? (
               <EmptyState
                 title="Choose an item"
-                description="Open a question or a stalled run from the list."
+                description="Open an item from the list."
               />
             )}
           </div>
@@ -738,13 +774,15 @@ export function NeedDetail({
               Open card
             </button>
           ) : null}
-          <button
-            type="button"
-            className="control-plane-link control-plane-header-link"
-            onClick={() => host.chat?.openConversation?.(item.sessionId)}
-          >
-            Open session
-          </button>
+          {item.sessionId ? (
+            <button
+              type="button"
+              className="control-plane-link control-plane-header-link"
+              onClick={() => host.chat?.openConversation?.(item.sessionId)}
+            >
+              Open session
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="control-plane-decision-scroll">
@@ -754,9 +792,10 @@ export function NeedDetail({
           {item.kind === 'question' ? `asked by ${entry?.asked_by ?? run?.profile ?? 'unknown profile'} · ` : ''}
           {item.kind === 'question'
             ? (item.sessionTitle ?? run?.session.title ?? item.sessionId)
-            : item.sessionId}{' '}
+            : (run?.session.title ?? (item.sessionId || 'No session works on it'))}{' '}
           · {formatAge(item.createdAt)}
         </p>
+        <AgentCheckNote item={item} />
         {item.kind === 'question' ? (
           <>
             {filledFromChat ? (
@@ -846,6 +885,24 @@ export function NeedDetail({
                   : 'If nobody answers, the run waits.'}
             </p>
           </>
+        ) : item.kind === 'card' ? (
+          <div className="control-plane-waiting">
+            <Eyebrow>Marked on the card</Eyebrow>
+            <div className="control-plane-blocks">
+              {item.marks.map((mark) => (
+                <span key={mark} className="control-plane-status">
+                  {mark}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : item.kind === 'reply' ? (
+          <div className="control-plane-waiting">
+            <Eyebrow>The agent's last message</Eyebrow>
+            <blockquote className="control-plane-last-message">{item.lastMessage}</blockquote>
+          </div>
+        ) : item.kind === 'found' ? (
+          <p className="control-plane-muted">No rule marked this; the summary agent found it on the board or in a chat.</p>
         ) : (
           <dl className="control-plane-stall-facts">
             <div>
@@ -949,6 +1006,21 @@ export function NeedDetail({
               {['scope', 'routine', 'run_health'].includes(item.questionClass) ? (
                 <Button variant="ghost" disabled={!canSend} onClick={() => onAnswer(true)}>
                   Let the agent decide
+                </Button>
+              ) : null}
+            </>
+          ) : item.kind !== 'stalled' ? (
+            <>
+              {item.kind === 'reply' || (item.kind === 'found' && !item.card) ? (
+                <Button variant="primary" onClick={() => host.chat?.openConversation?.(item.sessionId)}>
+                  Reply in chat
+                </Button>
+              ) : item.card ? (
+                <Button
+                  variant="primary"
+                  onClick={() => host.panels?.open({ pageId: 'kanban-ticket', context: { id: item.card?.key ?? '' } })}
+                >
+                  Open card
                 </Button>
               ) : null}
             </>

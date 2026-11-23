@@ -191,6 +191,64 @@ describe('Control plane Needs you interactions', () => {
     expect(container.textContent).toContain('Sending your answer')
     expect(container.querySelector('.control-plane-options')).toBeNull()
   })
+  it('shows marked cards and chats waiting on a reply with the agent check and their open action', async () => {
+    const card = controlPlaneFixture.tickets[0]
+    const agent = {
+      waiting: true,
+      text: 'Choose the price table for Scale before billing goes live.',
+      recommendation: 'Take the usage table already reviewed on the card.',
+      checked_at: new Date().toISOString(),
+    }
+    const items = [
+      {
+        id: `card:${card.key}`,
+        kind: 'card' as const,
+        sessionId: '',
+        title: card.title,
+        marks: ['decisão'],
+        card,
+        blockedCards: 0,
+        createdAt: Date.now(),
+        urgency: 'no-rush' as const,
+        agent,
+      },
+      {
+        id: 'reply:chat-1',
+        kind: 'reply' as const,
+        sessionId: 'chat-1',
+        title: 'Fix the import error',
+        lastMessage: 'The fix is ready. Should I merge it now?',
+        blockedCards: 0,
+        createdAt: Date.now(),
+        urgency: 'no-rush' as const,
+      },
+    ]
+    vi.mocked(host.panels!.open).mockClear()
+    vi.mocked(host.chat!.openConversation!).mockClear()
+    await render({ data: { ...controlPlaneFixture, items } })
+    expect(container.querySelector('.control-plane-sources')?.textContent).toContain('Marked cards1')
+    const rows = [...container.querySelectorAll<HTMLButtonElement>('.control-plane-need-row')]
+    await act(() => rows[0].click())
+    const detail = container.querySelector('.control-plane-decision')!
+    expect(detail.textContent).toContain('Card · decisão')
+    expect(detail.querySelector('.control-plane-agent-check')?.textContent).toContain(
+      'Recommendation: Take the usage table already reviewed on the card.',
+    )
+    expect(detail.textContent).not.toContain('Open session')
+    const openCard = [...detail.querySelectorAll('.control-plane-decision-actions button')].find(
+      (node) => node.textContent === 'Open card',
+    )
+    await act(() => (openCard as HTMLButtonElement).click())
+    expect(host.panels!.open).toHaveBeenCalledWith({ pageId: 'kanban-ticket', context: { id: card.key } })
+
+    await act(() => rows[1].click())
+    expect(container.querySelector('.control-plane-last-message')?.textContent).toBe(
+      'The fix is ready. Should I merge it now?',
+    )
+    await click('Reply in chat')
+    expect(host.chat!.openConversation).toHaveBeenCalledWith('chat-1')
+  })
+
   it('lists releases beyond the Overview selection and filters their open items', async () => {
     const release = {
       ...controlPlaneFixture.releases[0],

@@ -27,6 +27,7 @@ summary model and stall timeout.
 | `prs.watched_interval_min` | `5` |
 | `prs.idle_interval_min` | `30` |
 | `escalate` | `{}` |
+| `needs_you.card_labels` | `human-only`, `só humano`, `decisão` (open cards with one of these labels, or the "needs you" pill, show up in Needs you) |
 
 An unset project escalation list means `security`, `publish`, `external_cost`
 and `data`. To enable the summary, apply the `control-plane` kit so iii-directory

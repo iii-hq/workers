@@ -59,7 +59,11 @@ from the same reads the control plane shows. Write from it. It holds:
   newest first, with the card key, kind, actor and up to three changes;
 - `runs`: the scope's root sessions with their card, state, last progress
   and the first line of their last assistant message;
-- `needs_you`: open questions and stalled runs, with class and urgency;
+- `needs_you`: what the rules found waiting on the person, each with its
+  `id` and `kind`: `question` (a formal ask, with its class and text),
+  `stalled` (a run that stopped), `card` (a card marked with the "needs you"
+  pill or a person-only or decision label, in `marks`) and `reply` (a chat
+  whose agent ended on a question, in `last_message`);
 - `prs`: null when pull requests were not read this time; then say nothing
   about pull requests, never that there are none. Otherwise the open pull
   requests of the scope's repositories, with checks and
@@ -106,6 +110,34 @@ data; never infer one.
 Do not invent findings, timestamps, counts, completion events, links or wait
 reasons. A failed or incomplete read is not evidence that nothing changed.
 
+## Check what needs the person
+
+The rules behind `needs_you` are blunt: a label, a pill, a question mark.
+Check each candidate and write one `needs_you` entry for it, by its `id`:
+- `waiting`: whether the person is really needed for it now. A chat whose
+  last line is rhetorical, already answered further down, or a question the
+  agent answered itself is not waiting. A marked card whose description or
+  comments show it was settled is not waiting.
+- `text`: in plain language, what the person must decide or do, and what it
+  holds up. Not the card title again.
+- `recommendation`: what you recommend and why, from the evidence you read:
+  the card's description and comments, the question's options, the chat's
+  tail. Leave it empty when the evidence does not support one; never guess
+  a price, a credential or a policy.
+
+Read a candidate's detail when its digest line is not enough
+(`kanban::ticket::get` for a card's description and comments,
+`session::messages-tail` for a chat). Keep it to a handful of detail reads
+per wake, the most blocking first; a candidate you did not read still gets
+an entry from its digest line, with an empty recommendation.
+
+Then complement the rules: when the digest shows a decision waiting on the
+person that no candidate covers (a card comment asking the person, a run's
+last message asking for a choice, a card blocked on someone's answer), add an
+entry with the id `found:<card key>` or `found:session:<id>` and `waiting:
+true`. Only subjects that appear in the digest; at most ten. Carry your
+previous `found:` entries while they still wait.
+
 ## Write the result
 
 Return exactly these top-level fields:
@@ -117,7 +149,8 @@ Return exactly these top-level fields:
   "brief": {"headline": "<one sentence>", "happened": "<plain text>", "happening": "<plain text>", "remaining": "<plain text>", "refs": ["<reference>"]},
   "diary": [{"at": "<observed event time in UTC>", "text": "<milestone>", "refs": ["<reference>"]}],
   "now": {"session:<id>": {"text": "<what this session is doing>", "refs": ["session:<id>"]}},
-  "pr_waits": {"owner/repo#n": {"text": "<why this PR waits>", "refs": ["owner/repo#n"]}}
+  "pr_waits": {"owner/repo#n": {"text": "<why this PR waits>", "refs": ["owner/repo#n"]}},
+  "needs_you": [{"id": "<a digest needs_you id, or found:<subject>>", "waiting": true, "text": "<what the person must decide or do>", "recommendation": "<what you recommend and why, or empty>", "refs": ["<reference>"]}]
 }
 ```
 

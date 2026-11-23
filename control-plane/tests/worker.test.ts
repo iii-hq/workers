@@ -345,6 +345,7 @@ describe('worker functions without an engine', () => {
       diary: [],
       now: {},
       pr_waits: {},
+      needs_you: [],
     }
     f.runtime.config.summary.model = 'openai::writer-model'
     f.runtime.state.set('summary:all', {
@@ -412,6 +413,7 @@ describe('worker functions without an engine', () => {
         diary: [],
         now: {},
         pr_waits: {},
+        needs_you: [],
       },
     })
     controlPlanes.push(await registerControlPlane(f.iii))

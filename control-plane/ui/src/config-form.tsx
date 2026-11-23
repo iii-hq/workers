@@ -75,6 +75,10 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
   const config = asObject(value)
   const summary = asObject(config.summary)
   const catalog = useModelCatalog(host)
+  const savedLabels = asObject(config.needs_you).card_labels
+  const [labelsText, setLabelsText] = useState(() =>
+    Array.isArray(savedLabels) ? savedLabels.join(', ') : '',
+  )
   const setModel = (model: string | null) => {
     const next = { ...summary }
     if (model) next.model = model
@@ -142,6 +146,28 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
             placeholder="English"
             value={typeof summary.language === 'string' ? summary.language : ''}
             onChange={(language) => setSummaryText('language', language)}
+          />
+        )}
+      />
+      <SettingsField
+        label="Card labels that need you"
+        field="needs_you.card_labels"
+        description="Open cards with one of these labels show up in Needs you, comma separated. The “needs you” pill always counts."
+        error={errors?.get('/needs_you/card_labels')}
+        renderControl={(props) => (
+          <Input
+            {...props}
+            placeholder="human-only, só humano, decisão"
+            value={labelsText}
+            onChange={(text) => {
+              // Keep what is typed (a trailing comma included); save the parsed labels.
+              setLabelsText(text)
+              const labels = text.split(',').map((label) => label.trim()).filter(Boolean)
+              const next = { ...config }
+              if (labels.length) next.needs_you = { ...asObject(config.needs_you), card_labels: labels }
+              else delete next.needs_you
+              onChange(next)
+            }}
           />
         )}
       />

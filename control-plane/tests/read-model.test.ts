@@ -67,6 +67,8 @@ function fake(
     releases?: ControlPlaneRelease[]
     working?: boolean
     repos?: string[]
+    cards?: ControlPlaneTicket[]
+    tail?: string
   } = {},
 ) {
   const call = vi.fn(async (id: string, input?: Record<string, unknown>): Promise<unknown> => {
@@ -75,7 +77,14 @@ function fake(
     if (id === 'kanban::release::list') return { releases: options.releases ?? [release] }
     if (id === 'kanban::board::get')
       return {
-        columns: [{ id: 'in_progress', label: 'In progress', tickets: [card], total: 1 }],
+        columns: [
+          {
+            id: 'in_progress',
+            label: 'In progress',
+            tickets: options.cards ?? [card],
+            total: (options.cards ?? [card]).length,
+          },
+        ],
         done_status: 'done',
         id_prefix: 'KAN',
       }
@@ -97,7 +106,10 @@ function fake(
         messages: [
           {
             entry_id: 'm',
-            message: { role: 'assistant', content: [{ type: 'text', text: 'Building' }] },
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: options.tail ?? 'Building' }],
+            },
           },
         ],
       }
@@ -185,6 +197,53 @@ describe('server read model', () => {
     expect(call.mock.calls.filter(([id]) => id === 'github::pr::checks')).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(60000)
     expect(call.mock.calls.filter(([id]) => id === 'github::pr::checks')).toHaveLength(3)
+  })
+
+  it('lists cards marked for a person and chats that ended on a question', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(at)
+    const decision = {
+      ...card,
+      id: 'd',
+      key: 'KAN-2',
+      title: 'Pick the price table',
+      labels: ['Decisão'],
+    }
+    const pinged = {
+      ...card,
+      id: 'n',
+      key: 'KAN-3',
+      title: 'Create the alert templates',
+      labels: [],
+      pills: [{ icon: 'hand', text: 'needs you' }],
+    }
+    const settled = { ...card, id: 'x', key: 'KAN-4', status: 'done', labels: ['human-only'] }
+    const chat: SessionMeta = { ...session, session_id: 'chat', kind: 'user', metadata: {} }
+    const { iii } = fake({
+      cards: [card, decision, pinged, settled],
+      sessions: [chat],
+      tail: 'The fix is ready. Should I merge it now?**',
+    })
+    const data = await model(iii).read.read('all')
+    const byId = Object.fromEntries(data.items.map((item) => [item.id, item]))
+    expect(byId['card:KAN-3']).toMatchObject({ kind: 'card', marks: ['needs you'], urgency: 'now' })
+    expect(byId['card:KAN-2']).toMatchObject({
+      kind: 'card',
+      marks: ['Decisão'],
+      urgency: 'no-rush',
+    })
+    expect(byId['reply:chat']).toMatchObject({
+      kind: 'reply',
+      sessionId: 'chat',
+      urgency: 'no-rush',
+    })
+    expect(byId['card:KAN-4']).toBeUndefined()
+    expect(byId['card:KAN-1']).toBeUndefined()
+
+    const quiet = fake({ sessions: [chat], tail: 'Merged. The fix is live.' })
+    expect(
+      (await model(quiet.iii).read.read('all')).items.some((item) => item.kind === 'reply'),
+    ).toBe(false)
   })
 
   it('reads no GitHub with no watcher/live run and never calls an action function', async () => {
