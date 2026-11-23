@@ -74,7 +74,6 @@ import { functionCallGroups } from './function-call-groups'
 import { imageZoomTarget } from './image-zoom-target'
 import { Message, type SpawnTaskContext } from './Message'
 import { ModelWaitingIndicator } from './ModelWaitingIndicator'
-import { THOUGHT_SETTLE_DURATION_MS } from './ThoughtMessage'
 import {
   nextTailScrollTop,
   type PrependScrollMetrics,
@@ -249,95 +248,6 @@ export function unloadedEntryIds(
     if (row.resultEntryId) ids.add(row.resultEntryId)
   }
   return [...ids]
-}
-
-interface ThoughtPresenceState {
-  signature: string
-  streamingIds: ReadonlySet<string>
-  settlingIds: ReadonlySet<string>
-}
-
-/** Preserve only thoughts this mounted list observed finishing. */
-function useSettlingThoughtIds(
-  messages: readonly MessageType[],
-  reducedMotion: boolean,
-): ReadonlySet<string> {
-  const thoughts = messages.filter((message) => message.role === 'thought')
-  const signature = `${reducedMotion ? 'reduced' : 'motion'}\u0000${thoughts
-    .map((message) => `${message.id}:${message.streaming ? 'live' : 'done'}`)
-    .join('\u0000')}`
-  const currentStreamingIds = new Set(
-    thoughts
-      .filter((message) => message.streaming)
-      .map((message) => message.id),
-  )
-  const currentThoughtIds = new Set(thoughts.map((message) => message.id))
-  const [presenceState, setPresenceState] = useState<ThoughtPresenceState>(
-    () => ({
-      signature,
-      streamingIds: currentStreamingIds,
-      settlingIds: new Set(),
-    }),
-  )
-  const timersRef = useRef(new Map<string, number>())
-  let renderedPresenceState = presenceState
-
-  if (presenceState.signature !== signature) {
-    const settlingIds = reducedMotion
-      ? new Set<string>()
-      : new Set(
-          [...presenceState.settlingIds].filter(
-            (id) => currentThoughtIds.has(id) && !currentStreamingIds.has(id),
-          ),
-        )
-    if (!reducedMotion) {
-      for (const id of presenceState.streamingIds) {
-        if (currentThoughtIds.has(id) && !currentStreamingIds.has(id)) {
-          settlingIds.add(id)
-        }
-      }
-    }
-    renderedPresenceState = {
-      signature,
-      streamingIds: currentStreamingIds,
-      settlingIds,
-    }
-    // State, unlike a render-mutated ref, rolls back with an abandoned
-    // concurrent render. React restarts this component before committing.
-    setPresenceState(renderedPresenceState)
-  }
-
-  useEffect(() => {
-    if (reducedMotion) {
-      for (const timer of timersRef.current.values()) window.clearTimeout(timer)
-      timersRef.current.clear()
-      return
-    }
-
-    for (const id of renderedPresenceState.settlingIds) {
-      if (timersRef.current.has(id)) continue
-      const timer = window.setTimeout(() => {
-        timersRef.current.delete(id)
-        setPresenceState((current) => {
-          if (!current.settlingIds.has(id)) return current
-          const next = new Set(current.settlingIds)
-          next.delete(id)
-          return { ...current, settlingIds: next }
-        })
-      }, THOUGHT_SETTLE_DURATION_MS)
-      timersRef.current.set(id, timer)
-    }
-  }, [reducedMotion, renderedPresenceState.settlingIds])
-
-  useEffect(
-    () => () => {
-      for (const timer of timersRef.current.values()) window.clearTimeout(timer)
-      timersRef.current.clear()
-    },
-    [],
-  )
-
-  return renderedPresenceState.settlingIds
 }
 
 /**
@@ -644,8 +554,6 @@ export function MessageList({
   const reducedMotionRef = useRef(reducedMotion)
   reducedMotionRef.current = reducedMotion
 
-  const settlingThoughtIds = useSettlingThoughtIds(messages, reducedMotion)
-
   const fcallsByAssistant = useMemo(
     () => functionCallsByAssistant(messages),
     [messages],
@@ -658,9 +566,9 @@ export function MessageList({
   const rows = useMemo(
     () =>
       groupTimelineActivities(
-        observerActivityRows(functionCallGroups(messages, settlingThoughtIds)),
+        observerActivityRows(functionCallGroups(messages)),
       ),
-    [messages, settlingThoughtIds],
+    [messages],
   )
   const presentationKeys = rows.flatMap((row) => {
     if (row.kind === 'activity-group') {
@@ -668,13 +576,6 @@ export function MessageList({
         ...row.items.map(timelineActivityPresentationKey),
         ...(row.summary ? [row.summary.id] : []),
       ]
-    }
-    if (
-      row.message.role === 'thought' &&
-      !row.message.streaming &&
-      !settlingThoughtIds.has(row.message.id)
-    ) {
-      return []
     }
     return [row.message.id]
   })
@@ -728,9 +629,8 @@ export function MessageList({
   const windowed = typeof ResizeObserver !== 'undefined'
   const knownRowKeysRef = useRef<ReadonlySet<string>>(new Set())
   const flatRows = useMemo(
-    () =>
-      flattenTimelineRows(rows, settlingThoughtIds, knownRowKeysRef.current),
-    [rows, settlingThoughtIds],
+    () => flattenTimelineRows(rows, knownRowKeysRef.current),
+    [rows],
   )
   useLayoutEffect(() => {
     knownRowKeysRef.current = new Set(flatRows.map((flat) => flat.key))
@@ -1596,10 +1496,7 @@ export function MessageList({
           !(m.role === 'assistant' && m.streaming)
         }
         staggerIndex={flat.staggerIndex}
-        className={cn(
-          m.role === 'thought' && 'chat-thought-row',
-          m.role === 'thought' && !m.streaming && 'chat-thought-row-settling',
-        )}
+        className={cn(m.role === 'thought' && 'chat-thought-row')}
       >
         <Message
           message={m}

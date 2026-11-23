@@ -48,7 +48,6 @@ export type FlatTimelineRow =
  */
 export function flattenTimelineRows(
   rows: readonly TimelineMessageListRow[],
-  settlingThoughtIds: ReadonlySet<string>,
   knownKeys: ReadonlySet<string> = new Set(),
 ): FlatTimelineRow[] {
   const flat: FlatTimelineRow[] = []
@@ -77,13 +76,6 @@ export function flattenTimelineRows(
       return
     }
     const message = row.message
-    if (
-      message.role === 'thought' &&
-      !message.streaming &&
-      !settlingThoughtIds.has(message.id)
-    ) {
-      return
-    }
     flat.push({
       kind: 'message',
       key: message.id,

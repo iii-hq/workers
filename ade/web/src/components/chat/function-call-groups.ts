@@ -49,7 +49,7 @@ function isProgressUpdate(
 
   for (let i = index + 1; i < messages.length; i++) {
     const next = messages[i]
-    if (next.role === 'thought' && !next.streaming) continue
+    if (next.role === 'thought') continue
     return next.role === 'function-call'
   }
   return false
@@ -58,16 +58,15 @@ function isProgressUpdate(
 /**
  * Collapse transcript-level function calls into phase-sized runs.
  *
- * Thoughts are presentation interstitials rather than structural boundaries:
- * calls on either side remain in the same stable group. A visible thought stays
- * on the side of that group where it first appeared, preserving its sibling key
- * and screen position as streaming hands off to the next call. An intermediate
+ * Thoughts are rows of their own rather than structural boundaries: calls on
+ * either side remain in the same stable group, and a thought stays on the
+ * side of that group where it first appeared, preserving its sibling key and
+ * screen position as streaming hands off to the next call. An intermediate
  * assistant message closes the preceding run and becomes its user-visible
  * summary. Terminal assistant prose is never consumed.
  */
 export function functionCallGroups(
   messages: readonly Message[],
-  visibleCompletedThoughtIds: ReadonlySet<string> = new Set(),
 ): MessageListRow[] {
   const rows: MessageListRow[] = []
   let calls: FunctionCallMessage[] = []
@@ -104,14 +103,12 @@ export function functionCallGroups(
       continue
     }
 
-    // Keep the thought as a sibling on the side where it was first observed
-    // while streaming or exiting. Calls can join one stable group without
-    // reparenting worker renderers, and the thought instance can animate out.
+    // Keep the thought as a sibling on the side where it was first observed.
+    // Calls can join one stable group without reparenting worker renderers,
+    // and a finished thought keeps its place in the transcript.
     if (message.role === 'thought') {
-      if (message.streaming || visibleCompletedThoughtIds.has(message.id)) {
-        const thoughts = calls.length === 0 ? leadingThoughts : trailingThoughts
-        thoughts.push(message)
-      }
+      const thoughts = calls.length === 0 ? leadingThoughts : trailingThoughts
+      thoughts.push(message)
       continue
     }
 
