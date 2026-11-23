@@ -211,6 +211,44 @@ describe('session metadata writes', () => {
   })
 })
 
+describe('the time of a conversation is its session updated_at (D50)', () => {
+  const time = () => api.conversations.find((c) => c.id === id)?.updatedAt
+  const projectEvent = (projectId: string, timestamp: number) =>
+    handlers.onMetaUpdated?.({
+      session_id: id,
+      title: meta.title,
+      description: '',
+      metadata: { ...meta.metadata, project_id: projectId },
+      timestamp,
+    })
+
+  const reads = () =>
+    vi.mocked(getSession).mock.calls.filter(([s]) => s === id).length
+
+  it('keeps the age and the place when a move keeps updated_at', async () => {
+    expect(time()).toBe(2)
+    const before = reads()
+    // Move to project, then No project: patch-meta touch:false, the event
+    // arrives now, the session's updated_at stays 2.
+    await act(async () => projectEvent('prj_acme', 1_795_463_536_081))
+    await act(async () => projectEvent('none', 1_795_463_536_090))
+    expect(api.conversations.find((c) => c.id === id)?.projectId).toBe('none')
+    expect(time()).toBe(2)
+    // One read for the burst.
+    await vi.waitFor(() => expect(reads()).toBe(before + 1))
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(reads()).toBe(before + 1)
+    expect(time()).toBe(2)
+  })
+
+  it('takes a newer updated_at from the read, not from the event', async () => {
+    vi.mocked(getSession).mockResolvedValue({ ...meta, updated_at: 40 })
+    await act(async () => projectEvent('prj_acme', 99))
+    expect(time()).toBe(2)
+    await vi.waitFor(() => expect(time()).toBe(40))
+  })
+})
+
 describe('working directory moved by the harness', () => {
   const workingDir = () =>
     api.conversations.find((c) => c.id === id)?.workingDir

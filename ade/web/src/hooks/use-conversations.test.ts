@@ -47,6 +47,7 @@ import {
   shouldReplayQueuedCompletion,
   startingModel,
   unsentDraft,
+  withServerUpdatedAt,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -560,7 +561,28 @@ describe('unordered directory events', () => {
 
     expect(completed.status).toBe('done')
     expect(completed.subagentAppearance?.name).toBe('Reviewer')
-    expect(completed.updatedAt).toBe(5_000)
+    // The status change touched updated_at; the metadata event says nothing
+    // about it (touch: false keeps it).
+    expect(completed.updatedAt).toBe(4_000)
+  })
+
+  it("keeps the conversation's time on a metadata event (D50)", () => {
+    const before = conversation({ serverMetadataUpdatedAt: 2_000 })
+    const moved = applyConversationMetadataEvent(
+      before,
+      metadataEvent(9_000, 'Explorer'),
+    )
+    expect(moved.subagentAppearance?.name).toBe('Explorer')
+    expect(moved.updatedAt).toBe(before.updatedAt)
+  })
+
+  it("moves the time only forward, to the session's updated_at", () => {
+    const before = conversation({ updatedAt: 3_000 })
+    expect(withServerUpdatedAt(before, { updated_at: 3_000 })).toBe(before)
+    expect(withServerUpdatedAt(before, { updated_at: 2_000 })).toBe(before)
+    expect(withServerUpdatedAt(before, { updated_at: 7_000 }).updatedAt).toBe(
+      7_000,
+    )
   })
 
   it('keeps pending skill edits while applying newer sub-agent metadata', () => {

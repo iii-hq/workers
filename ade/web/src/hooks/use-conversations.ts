@@ -201,6 +201,9 @@ export function shouldReplayQueuedCompletion(
 /** Composer-draft save cadence (`session::set-draft` is event-silent, so the
  *  only costs are the RPC and one JSONL append per flush). */
 const DRAFT_SAVE_DEBOUNCE_MS = 500
+/** How long after a metadata event its session's updated_at is read back;
+ * a burst on one session (a move, then its echo) is read once. */
+const UPDATED_AT_READ_DELAY_MS = 300
 
 /** One queued `session::set-draft` write. `attachmentIds` is the parked list
  *  when the chips changed; absent on a text-only save, which leaves the
@@ -986,7 +989,10 @@ export function applyConversationMetadataEvent(
         : conversation.parentFunctionCallId,
     depth: typeof md.depth === 'number' ? md.depth : conversation.depth,
     spawnedBy: spawnedByOf(md.spawned_by) ?? conversation.spawnedBy,
-    updatedAt: Math.max(conversation.updatedAt, event.timestamp),
+    // `updatedAt` stays: the event's timestamp is when the metadata changed,
+    // not the session's updated_at, which patch-meta with touch: false keeps
+    // (bringing, moving and releasing conversations, chat-projects D50). The
+    // hook reads updated_at back after the event (withServerUpdatedAt).
   }
   const reconciled = reconcileLegacySkillMigration(conversation, next)
   if (
@@ -1015,6 +1021,18 @@ export function applyConversationMetadataEvent(
     },
     reconciled.updatedAt,
   )
+}
+
+/** The session's own updated_at, read back after a metadata event: it only
+ * ever moves a conversation's time forward, and a write that kept it
+ * (touch: false) leaves the row's age and place alone. */
+export function withServerUpdatedAt(
+  conversation: Conversation,
+  meta: Pick<SessionMeta, 'updated_at'>,
+): Conversation {
+  return meta.updated_at > conversation.updatedAt
+    ? { ...conversation, updatedAt: meta.updated_at }
+    : conversation
 }
 
 /** Apply one partial lifecycle event without letting an older delivery turn a
@@ -1902,6 +1920,44 @@ export function useConversations(
     [],
   )
 
+  // A metadata event does not say whether the session's updated_at moved
+  // (touch: false keeps it), so the time is read back, once per burst:
+  // bring_existing writes one event per conversation.
+  const updatedAtReadTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  )
+  const readUpdatedAt = useCallback(
+    (sessionId: string) => {
+      const timers = updatedAtReadTimersRef.current
+      const pending = timers.get(sessionId)
+      if (pending) clearTimeout(pending)
+      timers.set(
+        sessionId,
+        setTimeout(() => {
+          timers.delete(sessionId)
+          void getSession(sessionId).then(
+            (meta) => {
+              if (meta)
+                patchConversation(sessionId, (conversation) =>
+                  withServerUpdatedAt(conversation, meta),
+                )
+            },
+            // The next list read or event brings the time; nothing to show.
+            () => undefined,
+          )
+        }, UPDATED_AT_READ_DELAY_MS),
+      )
+    },
+    [patchConversation],
+  )
+  useEffect(() => {
+    const timers = updatedAtReadTimersRef.current
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
+    }
+  }, [])
+
   const markConversationMissing = useCallback((id: string) => {
     setMissingSessionIds((current) =>
       current.includes(id) ? current : [...current, id],
@@ -2323,6 +2379,8 @@ export function useConversations(
             void releaseConsoleClaimIfAny(event.session_id, {
               keepPath: movedTo,
             })
+          // The row's time is the session's updated_at, never this event's.
+          if (known) readUpdatedAt(event.session_id)
           if (!known) {
             const requireWatched =
               (watchCountsRef.current.get(event.session_id) ?? 0) > 0
@@ -2410,6 +2468,7 @@ export function useConversations(
     patchConversation,
     invalidateSessionMetaLookup,
     lookupSessionMeta,
+    readUpdatedAt,
   ])
 
   /* ── Visible-session transcripts: live reconcile + hydration ──────────── */
