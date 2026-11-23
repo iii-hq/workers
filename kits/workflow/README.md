@@ -12,7 +12,7 @@ The workflow kit uses the ticket strategy of [`deepwork`](../deepwork/) (run tic
 
 A goal that changes code in a git repository runs the **dev flow**. A ticket that runs alone is one run in the run worktree: an implementer node writes the code and its tests, and the check (verify and review together) loops it back on a fail. A wave of several tickets gives each its own git worktree, integrates them on the run branch, and one run writes the wave's tests and checks them. A full run first runs the baseline checks once, in the run worktree; a focused run runs none, and a failing command whose file and imports the change did not touch is reported, not charged to the ticket. A card gets tests only when a regression test can observe its change: a change of looks, wording or a configuration value is proved by its Verify calls. That check also holds the change to the code rules the repository writes down (a markdown file in its top folder or in `docs/`: `CONTRIBUTING.md`, `AGENTS.md`, a UI, style or conventions file). Cards become Done only after that check passes. When a run lets a defect through, write the rule in one of those files: the next run's implementer follows it and its check enforces it. A critic node reviews the whole branch when two or more tickets were verified, a ticket was marked hard or the goal asks for a review (`critic=on`: always), and the branch is kept by default; when the repository has a remote, the run ends by asking whether to push the branch and open a pull request. Other goals (research, reading, analysis) run the **plain flow**: each ticket is worked and checked in the same run, every claim in a result cites where it comes from or is marked `(unsourced)`, and one last ticket can merge the results into one report (`synthesize=off` turns it off).
 
-The kit needs the `workflow`, `harness`, `state`, `kanban`, `ide` and `fp` workers. The `workflow` worker must take the flat `workflow::start` request (`nodes` at the top level, each node with its `task`): an older one refuses every run the kit starts. The `browser` worker is optional: with it, a card that changes a web page is checked in a real tab (see [Pages](#pages)).
+The kit needs the `workflow`, `harness`, `state`, `kanban`, `ide` and `fp` workers. The `workflow` worker must take the flat `workflow::start` request (`nodes` at the top level, each node with its `task`): an older one refuses every run the kit starts. The `browser` worker is optional: with it, a card that changes a web page is checked in a real tab (see [Pages](#pages)). The `judge` worker is optional too: with it, a run on the board is filed under the project its goal fits (see [Projects](#projects)).
 
 ## Paths
 
@@ -70,6 +70,20 @@ A ticket the plan marks hard runs on the plan model. The planner writes a `Hard`
 
 When the `browser` worker is installed and finds a Chromium, a card that changes what a person sees on a web page gets a page check: the check starts the project's server in the worktree, opens the page in a private tab, types and clicks as the card says, and reads the visible text and the page's console. An uncaught exception on the page fails the card. Research tickets read a page that renders with JavaScript through `browser::dynamic-fetch`. Install it with `iii call compose::add worker=browser`. Without it, or without a Chromium, the run goes on: page criteria are marked `(not checked in a browser)` and the run ticket's Notes say why. A run never downloads a browser.
 
+## Projects
+
+A run on the board is filed under a project that stands for a product or a theme, not for the run, so the project list no longer grows by one per run.
+
+- With the `judge` worker and a provider that answers, the agent asks it one question: which active project fits the goal, or none. A confident answer files the run under that project, or under a new one named after the theme. An unsure answer is one more question on a full run's interview card.
+- Without the judge, when its call fails, when a focused run gets an unsure answer or when nobody answers the card, the run goes under the repository's project. It is named after the repository's folder (the main checkout, not a worktree) and created once.
+- `project=` wins over all of it. A goal that is a ticket with a project keeps that project, and a resumed run keeps the run ticket's.
+- A name that belongs to an archived project is not reused: the run goes without a project and the run ticket's Notes say so. Restore the project on the Projects page, or pass `project=`.
+- Projects that older versions named `workflow: …` are never picked. Archive them on the Projects page.
+
+The run ticket's title is the goal, with no `workflow:` prefix; its `wf:run` label marks it as a run, and its `Project` bullet says how the project was chosen.
+
+Creating a project waits for a person unless the session's approval mode or rules allow `kanban::project::create`; when it is refused, the run goes on without a project. A hosted judge provider (`judge-typesafe`, `judge-openai`) receives the first 200 characters of the goal, the repository's name and the names and descriptions of the active projects. To keep them on the machine, pick a local judge in the composer or pass `project=`.
+
 ## Install
 
 ```
@@ -107,7 +121,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `budget_usd` | none | stop dispatching once the run's cost reaches it |
 | `max_items` | 2 × concurrency, at least 4 | tickets the run may create in all, new items included; the rest go to a Follow-ups ticket |
 | `min_free_gb` | 5 | free disk the dev flow needs before it starts or tests |
-| `project` | a new one | kanban project to file the run under |
+| `project` | picked by the run | kanban project (id or name) to file the run under; see [Projects](#projects) |
 | `resume` | none | an earlier run ticket to adopt |
 
 Every run's nodes carry a phase, in the order the run goes: `baseline`, `explore`, `design`, `refute`, `plan`, `implement` (plain flow: `work`), `verify`, `review`. The ADE's Workflow section lists them per run.

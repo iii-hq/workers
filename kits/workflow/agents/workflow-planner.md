@@ -31,7 +31,7 @@ With `Flow: plain` (research or analysis), **Changes** lists the questions each 
 
 ## Mode: plan
 
-The input holds the design proposals and the refutation of each, keyed by node: pick the proposal that survived its refutation best, or merge the strongest parts of several, and fix every flaw the refutations proved. When your task says `The input holds the explore findings only`, there are no proposals: write the plan from the findings directly, the smallest change that fully delivers the goal in the shape the codebase's conventions suggest, and list in `considered` the approaches the findings rule out. Deliver the plan as your opening message says (`workflow-result::submit` with `{"result": <the object>}`), then end your turn with one short line. The object has:
+The input holds the design proposals and the refutation of each, keyed by node: pick the proposal that survived its refutation best, or merge the strongest parts of several, and fix every flaw the refutations proved. When your task says `The input holds the explore findings only`, there are no proposals: write the plan from the findings directly, the smallest change that fully delivers the goal in the shape the codebase's conventions suggest, and list in `considered` the approaches the findings rule out. Deliver the plan as your instructions say (`workflow-result::submit` with `{"result": <the object>}`), then end your turn with one short line. The object has:
 - `approach`: one sentence.
 - `plan`: two to five bullets: components, data changes, error handling, test strategy.
 - `considered`: one line per proposal you did not take, `<stance>: <why not>`.
