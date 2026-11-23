@@ -1064,11 +1064,21 @@ pub struct PassTally {
     /// absent when none did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Items in the replies' arrays before any check: memories, rules and
+    /// malformed ones.
+    pub returned: u64,
+    /// Of `returned`, the rule items: they become learned rule lines, never
+    /// memories, so `created` and `dropped` never count them.
+    pub rules: u64,
+    /// Replies with no JSON array (prose, one word, no text), read as
+    /// nothing to keep; a `[]` reply is not one.
+    pub no_array: u64,
     pub created: u64,
     pub reinforced: u64,
     pub superseded: u64,
-    /// Memories the model returned that were not written, by reason.
-    /// Rule items are not tallied.
+    /// Memories the model returned that were not written, by reason, and
+    /// items that did not parse, as `malformed`. A rule item that parsed is
+    /// counted in `rules` only.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dropped: BTreeMap<&'static str, u64>,
 }
@@ -1098,6 +1108,9 @@ impl PassTally {
         if let Some(cost) = other.cost_usd {
             *self.cost_usd.get_or_insert(0.0) += cost;
         }
+        self.returned += other.returned;
+        self.rules += other.rules;
+        self.no_array += other.no_array;
         self.created += other.created;
         self.reinforced += other.reinforced;
         self.superseded += other.superseded;
@@ -3636,7 +3649,7 @@ async fn extract_items(
         .map_err(|e| format!("router::complete: {e}"))?;
     // Before parsing: a reply that fails to parse still spent its tokens.
     tally.add_usage(&reply);
-    reply_items(&reply, session_id)
+    reply_items(&reply, session_id, tally)
 }
 
 /// The extraction system prompt: [`EXTRACT_SYSTEM`], then the clauses the
@@ -3667,7 +3680,11 @@ fn system_prompt(
 /// read as "nothing to save", it would advance the cursor past the turn, so
 /// it is an error and the queue retries. So is a reply cut before any whole
 /// item (reasoning spent the budget, a prose preamble ran long).
-fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, String> {
+fn reply_items(
+    reply: &Value,
+    session_id: &str,
+    tally: &mut PassTally,
+) -> Result<Vec<ExtractedItem>, String> {
     crate::extraction_proof::value_bytes(reply, crate::extraction_proof::SOURCE_BYTES)?;
     let message = &reply["message"];
     if message["stop_reason"] == "error" {
@@ -3682,7 +3699,7 @@ fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, St
     {
         return Err("extraction reply text byte bound".into());
     }
-    let items = parse_items(&checked_content_text(message.get("content"))?)?;
+    let items = parse_items(&checked_content_text(message.get("content"))?, tally)?;
     if message["stop_reason"] == "length" {
         if items.is_empty() {
             return Err("router::complete: reply hit max_output_tokens before any item".into());
@@ -3699,13 +3716,15 @@ fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, St
 /// the reply. The array is the first `[` that opens an object list or `[]`,
 /// so prose quoting a known memory's number (`[2]`) is not mistaken for it,
 /// and anything after the array is ignored. An array cut short (the reply
-/// hit max_output_tokens) keeps the items that closed.
-fn parse_items(raw: &str) -> Result<Vec<ExtractedItem>, String> {
+/// hit max_output_tokens) keeps the items that closed. `tally` counts what
+/// the reply held: a reply with no array reads as no items, like `[]`.
+fn parse_items(raw: &str, tally: &mut PassTally) -> Result<Vec<ExtractedItem>, String> {
     let start = raw
         .match_indices('[')
         .map(|(i, _)| i)
         .find(|&i| matches!(raw[i + 1..].trim_start().chars().next(), Some('{' | ']')));
     let Some(start) = start else {
+        tally.no_array += 1;
         return Ok(Vec::new());
     };
     let array = &raw[start..];
@@ -3717,16 +3736,20 @@ fn parse_items(raw: &str) -> Result<Vec<ExtractedItem>, String> {
             .ok_or_else(|| format!("truncated extraction reply: {e}"))?,
         Err(e) => return Err(format!("unparseable extraction reply: {e}")),
     };
-    Ok(values
+    tally.returned += values.len() as u64;
+    let items: Vec<ExtractedItem> = values
         .into_iter()
         .filter_map(|v| match serde_json::from_value::<ExtractedItem>(v) {
             Ok(item) => Some(item),
             Err(_) => {
                 tracing::warn!("skipping a malformed extracted item");
+                tally.drop_items("malformed", 1);
                 None
             }
         })
-        .collect())
+        .collect();
+    tally.rules += items.iter().filter(|i| i.is_rule()).count() as u64;
+    Ok(items)
 }
 
 #[cfg(test)]
@@ -3774,15 +3797,33 @@ mod tests {
     #[test]
     fn parse_tolerates_fences_and_prose() {
         let raw = "Here you go:\n```json\n[{\"text\": \"user prefers formal writing\", \"entities\": [\"mike\"]}]\n```";
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "user prefers formal writing");
     }
 
     #[test]
-    fn parse_empty_and_no_array_are_empty() {
-        assert!(parse_items("[]").unwrap().is_empty());
-        assert!(parse_items("nothing worth keeping").unwrap().is_empty());
+    fn the_tally_tells_an_empty_array_from_a_reply_with_none() {
+        let malformed = r#"[{"text": "x y z", "tags": null}, {"text": "a b c"}]"#;
+        let rule = r#"[{"text": "Never use em-dashes.", "kind": "rule"}]"#;
+        // (reply, items, returned, rules, no_array, malformed)
+        for (raw, items, returned, rules, no_array, bad) in [
+            ("[]", 0, 0, 0, 0, None),
+            ("Nothing here is worth keeping.", 0, 0, 0, 1, None),
+            ("noted", 0, 0, 0, 1, None),
+            ("", 0, 0, 0, 1, None),
+            (malformed, 1, 2, 0, 0, Some(&1)),
+            (rule, 1, 1, 1, 0, None),
+        ] {
+            let mut tally = PassTally::default();
+            assert_eq!(parse_items(raw, &mut tally).unwrap().len(), items, "{raw}");
+            assert_eq!(
+                (tally.returned, tally.rules, tally.no_array),
+                (returned, rules, no_array),
+                "{raw}"
+            );
+            assert_eq!(tally.dropped.get("malformed"), bad, "{raw}");
+        }
     }
 
     #[test]
@@ -3798,14 +3839,19 @@ mod tests {
     #[test]
     fn parse_unknown_kind_is_a_memory_not_a_rule() {
         let raw = r#"[{"text": "x y z", "kind": "directive"}]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(items.len(), 1);
         assert!(!items[0].is_rule());
     }
 
     #[test]
     fn parse_rejects_non_array_json_objects() {
-        assert!(parse_items(r#"{"text": "not a list"}"#).unwrap().is_empty());
+        assert!(parse(r#"{"text": "not a list"}"#).unwrap().is_empty());
+    }
+
+    /// The items alone, for a test that reads no tally.
+    fn parse(raw: &str) -> Result<Vec<ExtractedItem>, String> {
+        parse_items(raw, &mut PassTally::default())
     }
 
     fn texts(items: &[ExtractedItem]) -> Vec<&str> {
@@ -3814,17 +3860,10 @@ mod tests {
 
     #[test]
     fn parse_skips_references_to_known_memories() {
-        assert!(
-            parse_items("Nothing new; [2] covers it.")
-                .unwrap()
-                .is_empty()
-        );
+        assert!(parse("Nothing new; [2] covers it.").unwrap().is_empty());
         let raw =
             "[2] is close, but this is new: [{\"text\": \"The user lives in Porto.\"}] (see [1])";
-        assert_eq!(
-            texts(&parse_items(raw).unwrap()),
-            ["The user lives in Porto."]
-        );
+        assert_eq!(texts(&parse(raw).unwrap()), ["The user lives in Porto."]);
     }
 
     #[test]
@@ -3836,7 +3875,7 @@ mod tests {
             "not an item",
             {"text": "ledger-sync uses pnpm.", "replaces": 1}
         ]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(
             texts(&items),
             ["The user lives in Porto.", "ledger-sync uses pnpm."]
@@ -3847,13 +3886,13 @@ mod tests {
     #[test]
     fn parse_keeps_the_whole_items_of_a_truncated_array() {
         let raw = r#"[{"text": "Uses {braces}.", "tags": ["x"]}, {"text": "Cut } sho"#;
-        assert_eq!(texts(&parse_items(raw).unwrap()), ["Uses {braces}."]);
+        assert_eq!(texts(&parse(raw).unwrap()), ["Uses {braces}."]);
         assert!(
-            parse_items(r#"[{"text": "Cut sho"#).is_err(),
+            parse(r#"[{"text": "Cut sho"#).is_err(),
             "nothing whole arrived: retry"
         );
         assert!(
-            parse_items(r#"[{"text": "a"} {"text": "b"}]"#).is_err(),
+            parse(r#"[{"text": "a"} {"text": "b"}]"#).is_err(),
             "broken, not cut: retry"
         );
     }
@@ -3868,24 +3907,25 @@ mod tests {
                 "content": [{ "type": "text", "text": text }],
             }})
         };
-        let err = reply_items(&reply("error", "429 Too Many Requests"), "s").unwrap_err();
+        let read = |reply: &Value| reply_items(reply, "s", &mut PassTally::default());
+        let err = read(&reply("error", "429 Too Many Requests")).unwrap_err();
         assert!(err.contains("rate_limited"), "{err}");
         assert!(
-            reply_items(&reply("error", r#"[{"text": "x y z"}]"#), "s").is_err(),
+            read(&reply("error", r#"[{"text": "x y z"}]"#)).is_err(),
             "error text is never read as items"
         );
         let cut = r#"[{"text": "The user lives in Porto."}, {"text": "The us"#;
         assert_eq!(
-            texts(&reply_items(&reply("length", cut), "s").unwrap()),
+            texts(&read(&reply("length", cut)).unwrap()),
             ["The user lives in Porto."]
         );
         for cut in ["", "Looking at the excerpt, the user"] {
             assert!(
-                reply_items(&reply("length", cut), "s").is_err(),
+                read(&reply("length", cut)).is_err(),
                 "cut before any item: retry, never advance past the turn"
             );
         }
-        assert!(reply_items(&reply("end", "[]"), "s").unwrap().is_empty());
+        assert!(read(&reply("end", "[]")).unwrap().is_empty());
     }
 
     /// Lines to merge that correct none.
@@ -3910,7 +3950,7 @@ mod tests {
             {"text": "user publishes on tuesdays", "kind": "memory"},
             {"text": "user lives in pune"}
         ]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(items.len(), 3);
         assert!(items[0].is_rule());
         assert!(!items[1].is_rule());
@@ -4892,9 +4932,9 @@ mod tests {
 
     #[test]
     fn parse_reads_replaces() {
-        let items = parse_items(r#"[{"text":"The user lives in Porto.","replaces":2}]"#).unwrap();
+        let items = parse(r#"[{"text":"The user lives in Porto.","replaces":2}]"#).unwrap();
         assert_eq!(items[0].replaces, Some(2));
-        let items = parse_items(r#"[{"text":"The user lives in Porto."}]"#).unwrap();
+        let items = parse(r#"[{"text":"The user lives in Porto."}]"#).unwrap();
         assert_eq!(items[0].replaces, None);
     }
 
@@ -4908,7 +4948,7 @@ mod tests {
             {"text": "e", "scope": "User"},
             {"text": "f", "scope": 1}
         ]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(
             texts(&items),
             ["a", "b", "c", "d", "e"],
@@ -5822,9 +5862,11 @@ mod tests {
         };
         tally.calls = 3;
         tally.superseded = 1;
+        (tally.returned, tally.rules, tally.no_array) = (3, 1, 1);
         total.add(&tally);
         total.add(&tally);
         assert_eq!(total.calls, 7);
+        assert_eq!((total.returned, total.rules, total.no_array), (6, 2, 2));
         assert_eq!((total.input_tokens, total.output_tokens), (302, 44));
         assert_eq!(total.cost_usd, Some(0.004));
         assert_eq!((total.created, total.superseded), (2, 2));

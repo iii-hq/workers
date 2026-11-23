@@ -1571,6 +1571,7 @@ mod productive {
                     calls: 4,
                     input_tokens: 480,
                     output_tokens: 40,
+                    returned: 4,
                     created: 4,
                     ..PassTally::default()
                 }
@@ -1638,6 +1639,7 @@ mod productive {
         let retry = PassTally {
             input_tokens: 120,
             output_tokens: 10,
+            returned: 1,
             created: 1,
             ..PassTally::default()
         };
@@ -1684,6 +1686,7 @@ mod productive {
             calls: 1,
             input_tokens: 120,
             output_tokens: 10,
+            returned: 2,
             ..PassTally::default()
         };
         let counted = |tally| {
@@ -1750,6 +1753,7 @@ mod productive {
             calls: 1,
             input_tokens: 120,
             output_tokens: 10,
+            returned: 2,
             created: 1,
             ..PassTally::default()
         };
@@ -1776,6 +1780,105 @@ mod productive {
         );
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
         assert_eq!(stack.commits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_reply_with_no_array_is_counted_and_still_moves_the_cursor() {
+        // `json!("noted")` reaches the parser as the text `"noted"`.
+        for (reply, no_array) in [(json!("noted"), 1), (json!([]), 0)] {
+            let stack = Boundary::new(Script {
+                model_items: VecDeque::from([reply]),
+                ..one_line_span(None)
+            })
+            .await;
+            let (result, tallied) = stack.run_tallied(&job("end")).await;
+            result.unwrap();
+            let tally = tallied.expect("the model was asked").tally;
+            assert_eq!(
+                (tally.calls, tally.returned, tally.no_array, tally.created),
+                (1, 0, no_array, 0)
+            );
+            assert_eq!(stack.script.lock().unwrap().cursor.as_deref(), Some("end"));
+            assert_eq!(stack.commits(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_do_not_keep_rule_reaches_each_turns_call_and_each_call_reads_one_turn() {
+        let rule = "Never remember anything about my health.";
+        let release = "For later: this project cuts a stable release with the command \
+                       release-ctrl --channel stable. Reply to this message with exactly one \
+                       word: noted";
+        let health = "I was diagnosed with asthma last week. Reply to this message with \
+                      exactly one word: noted";
+        let kept = "This project cuts a stable release with release-ctrl --channel stable.";
+        let noted = |id: &str, turn: &str| {
+            let mut item = stamped(id, turn, "private", true);
+            item["message"]["content"][0]["text"] = json!("noted");
+            item
+        };
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("release", release),
+                noted("t0-end", "t0"),
+                message("health", health),
+                noted("end", "t1"),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([fact(kept), json!([])]),
+            ..Script::default()
+        })
+        .await;
+        let (bank, _) = stack
+            .deps
+            .store()
+            .await
+            .ensure_bank("private", None)
+            .await
+            .unwrap();
+        bank.set_rule("privacy", rule).unwrap();
+        // (until, turn, returned, created): the second reply is a real `[]`.
+        for (until, turn, returned, created) in [("t0-end", "t0", 1, 1), ("end", "t1", 0, 0)] {
+            let mut turn_job = job(until);
+            turn_job.turn_id = Some(turn.into());
+            let (result, tallied) = stack.run_tallied(&turn_job).await;
+            result.unwrap();
+            let tally = tallied.expect("the model was asked").tally;
+            assert_eq!(
+                (tally.calls, tally.returned, tally.no_array, tally.created),
+                (1, returned, 0, created),
+                "{turn}"
+            );
+        }
+        let s = stack.script.lock().unwrap();
+        let inputs = s.inputs();
+        assert_eq!(inputs.len(), 2, "one call per turn");
+        let block = format!("The user's instructions for this bank:\n## privacy\n{rule}\n\n");
+        for input in &inputs {
+            assert!(input.starts_with(&block), "{input}");
+        }
+        let excerpts: Vec<&str> = inputs
+            .iter()
+            .map(|i| i.split_once("Conversation excerpt:\n").unwrap().1)
+            .collect();
+        let (first, second) = (excerpts[0], excerpts[1]);
+        assert!(
+            first.contains("release-ctrl") && !first.contains("diagnosed"),
+            "{first}"
+        );
+        assert!(
+            second.contains("diagnosed") && !second.contains("release-"),
+            "{second}"
+        );
+        assert_eq!(s.cursor.as_deref(), Some("end"));
+        drop(s);
+        let texts: Vec<String> = stack
+            .log_records("private")
+            .into_iter()
+            .map(|m| m.text)
+            .collect();
+        assert_eq!(texts, [kept]);
     }
 
     #[tokio::test]

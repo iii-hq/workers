@@ -108,11 +108,17 @@
               "minimum": 0.0,
               "type": "integer"
             },
-            "description": "Memories the model returned that were not written, by reason. Rule items are not tallied.",
+            "description": "Memories the model returned that were not written, by reason, and items that did not parse, as `malformed`. A rule item that parsed is counted in `rules` only.",
             "type": "object"
           },
           "input_tokens": {
             "description": "Prompt tokens the router reported, cached ones included.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "no_array": {
+            "description": "Replies with no JSON array (prose, one word, no text), read as nothing to keep; a `[]` reply is not one.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
@@ -127,6 +133,18 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "returned": {
+            "description": "Items in the replies' arrays before any check: memories, rules and malformed ones.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "rules": {
+            "description": "Of `returned`, the rule items: they become learned rule lines, never memories, so `created` and `dropped` never count them.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "superseded": {
             "format": "uint64",
             "minimum": 0.0,
@@ -137,8 +155,11 @@
           "calls",
           "created",
           "input_tokens",
+          "no_array",
           "output_tokens",
           "reinforced",
+          "returned",
+          "rules",
           "superseded"
         ],
         "type": "object"
