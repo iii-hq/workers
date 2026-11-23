@@ -62,7 +62,9 @@ pub const ASK_DESC: &str = "Ask the user for a decision between discrete options
      as a clickable card in the chat and stay open while you do other work. The answer arrives as a \
      user message (one `Header: answer` line per question; a skipped question reads `(skipped)`, and \
      a dismissed card sends a notice instead of answers), so do not repeat the questions in \
-     text. Not available to sub-agents or structured-output turns.";
+     text. Set `about.class` to `security` for credentials or permissions, `publish` for a release \
+     or deployment, `external_cost` for paid spend, or `data` for data access, migration, or deletion. \
+     It defaults to `scope` for other questions. Not available to sub-agents or structured-output turns.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
@@ -553,7 +555,20 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 
 #[cfg(test)]
 mod tests {
-    use super::SPAWN_DESC;
+    use super::{ASK_DESC, SPAWN_DESC};
+
+    #[test]
+    fn ask_tool_description_tells_the_model_to_classify_escalated_questions() {
+        for guidance in [
+            "`security` for credentials or permissions",
+            "`publish` for a release or deployment",
+            "`external_cost` for paid spend",
+            "`data` for data access, migration, or deletion",
+            "defaults to `scope`",
+        ] {
+            assert!(ASK_DESC.contains(guidance), "missing {guidance}");
+        }
+    }
 
     #[test]
     fn spawn_tool_description_includes_a_one_shot_child_health_cue() {

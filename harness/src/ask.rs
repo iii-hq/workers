@@ -54,7 +54,10 @@ pub struct AskAbout {
     /// Cards whose work waits on this answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<String>,
-    /// The decision class used to derive urgency.
+    /// Classify the decision as `security` for credentials or permissions,
+    /// `publish` for a release or deployment, `external_cost` for paid spend,
+    /// or `data` for data access, migration, or deletion. Defaults to `scope`
+    /// for other questions.
     #[serde(default)]
     pub class: AskClass,
     /// One paragraph explaining why the answer is needed.
@@ -449,6 +452,7 @@ mod tests {
         assert_eq!(req.questions[0].options[0].description, None);
         assert!(!req.questions[0].options[0].recommended);
         assert_eq!(req.about, AskAbout::default());
+        assert_eq!(req.about.class, AskClass::Scope);
         assert_eq!(req.expires_in_min, None);
         assert_eq!(req.on_expiry, AskExpiry::default());
         let wire = serde_json::to_value(&req).unwrap();
@@ -462,6 +466,24 @@ mod tests {
             assert!(!wire.as_object().unwrap().contains_key(absent), "{wire}");
         }
         assert_eq!(validate(&req), Ok(()));
+    }
+
+    #[test]
+    fn class_schema_tells_the_model_to_classify_escalated_questions() {
+        let schema = serde_json::to_value(schemars::schema_for!(AskRequest)).unwrap();
+        let description = schema["definitions"]["AskAbout"]["properties"]["class"]["description"]
+            .as_str()
+            .unwrap();
+
+        for guidance in [
+            "`security` for credentials or permissions",
+            "`publish` for a release or deployment",
+            "`external_cost` for paid spend",
+            "`data` for data access, migration, or deletion",
+            "Defaults to `scope`",
+        ] {
+            assert!(description.contains(guidance), "missing {guidance}");
+        }
     }
 
     #[test]

@@ -126,7 +126,7 @@
               }
             ],
             "default": "scope",
-            "description": "The decision class used to derive urgency."
+            "description": "Classify the decision as `security` for credentials or permissions, `publish` for a release or deployment, `external_cost` for paid spend, or `data` for data access, migration, or deletion. Defaults to `scope` for other questions."
           },
           "ticket": {
             "description": "The card this question concerns.",
