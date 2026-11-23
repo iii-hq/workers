@@ -41,5 +41,7 @@ Once the page is registered, give the user its URL:
 `<url>/#/worker/<scope>/<page-id>`, with `url` from `ade::status`
 (`http://127.0.0.1:3113` by default; read it, never assume the port) and
 `<scope>` and `<page-id>` as the `ade/injectable-ui` skill describes them. For
-example: `http://127.0.0.1:3113/#/worker/mywork/mywork-manager`. Check that
-`ade::ui-manifest` lists the page before you report it.
+example: `http://127.0.0.1:3113/#/worker/mywork/mywork-manager`. Before you
+report it, check that `ade::ui-manifest` lists the page's script asset (for
+example `mywork/page.js`; the manifest lists assets, not pages), then open the
+URL and check that the page renders.

@@ -368,6 +368,21 @@ mod tests {
         }
         // `harness::on-timer` is the harness's; an MCP agent does not have it.
         assert!(!body.contains("harness::on-timer"));
+        let flat = body.replace('\n', " ");
+        // iii_observations_sse creates its own observer; it does not stream
+        // an existing iii_observe observer's observations.
+        assert!(
+            !flat.contains("or stream them with"),
+            "SSE described as a reader"
+        );
+        assert!(
+            flat.contains("`iii_observations_sse` instead of `iii_observe`"),
+            "{flat}"
+        );
+        // Session observers end with the MCP session; a lasting schedule
+        // belongs to a worker.
+        assert!(flat.contains("removed when the MCP session ends"), "{flat}");
+        assert!(flat.contains("a worker you control"), "{flat}");
     }
 
     /// Agents without the iii Claude plugin read the preloaded skills
@@ -380,15 +395,29 @@ mod tests {
             "no read-preloaded-skills sentence"
         );
         assert!(b.contains("iii_call directory::skills::get { id }"));
+        // A missing skill does not prove its worker is absent: an installed
+        // worker at a version without that skill answers D110 with close ids.
+        assert!(!b.contains("a missing one means its worker is not installed"));
+        assert!(
+            b.contains("engine::workers::list"),
+            "no worker-presence check"
+        );
+        assert!(
+            b.contains("already connected"),
+            "no rule for an installed worker"
+        );
     }
 
     /// A skill or function the task needs whose worker is not installed is
     /// not a dead end: the agent installs that worker with compose::add.
     #[test]
     fn default_mcp_installs_a_missing_worker() {
-        let b = body("default-mcp");
+        let b = body("default-mcp").replace('\n', " ");
         assert!(b.contains("compose::add"), "no install rule");
-        assert!(b.contains("not installed"), "no install rule");
+        assert!(
+            b.contains("If that worker is not there, install it"),
+            "no install rule"
+        );
     }
 
     /// Everything that is not about the harness stays `default`'s, byte for

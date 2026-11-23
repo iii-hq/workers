@@ -29,11 +29,18 @@ not reach a running project until the whole project restarts.
 ## Observe, do not poll
 
 Do not wait for a change with sleep or retry loops, or with `setInterval`.
-Observe the function that carries the change with `iii_observe`. Read
-observations with `iii_observations_poll`, or stream them with
-`iii_observations_sse`, or hand each one to a function with
-`target_function_id`. For a schedule, observe `cron::on-tick` with args
-`{ expression }`. Remove each observer with `iii_unobserve` when you are done.
+Observe the function that carries the change with `iii_observe`, and read
+its observations with `iii_observations_poll`, or hand each one to a function
+with `target_function_id`. To stream observations instead, create the observer
+with `iii_observations_sse` instead of `iii_observe`: it is a separate observer,
+not a stream of an existing one. To wait for a time, observe `cron::on-tick` with
+args `{ expression }`. Remove each observer with `iii_unobserve` when you are
+done.
+
+Every observer these tools create is removed when the MCP session ends, even one
+with `target_function_id`. A schedule or reaction that must keep running after
+the session belongs in a worker you control, which registers it with the
+iii-sdk.
 
 Why: the engine pushes each event the moment it happens. A loop misses events
 between checks, wastes calls, and keeps running after you stop.

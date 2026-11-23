@@ -113,14 +113,16 @@ Everything else — what a worker can do, how to react to events, how to delegat
 discovered the same way: list, info, call.
 
 Before the first task, read each skill your profile preloads (the `skills` list in
-`iii_get_agent`'s answer) with `iii_call directory::skills::get { id }`; a missing one means
-its worker is not installed.
+`iii_get_agent`'s answer) with `iii_call directory::skills::get { id }`.
 
-When a skill or function the task needs comes from a worker that is not installed (a
-skill that is missing, or `function_not_found` after discovery), install that worker with
-`compose::add`, following the install steps `directory::search_functions` returns with an
-installable worker, then continue. This includes the skills your profile preloads: a skill
-id's first segment names its worker (`ade/for-mcp-agents` comes from the `ade` worker).
+When a skill or function the task needs is missing (a skill `directory::skills::get` does
+not find, or `function_not_found` after discovery), check `engine::workers::list` for the
+worker that ships it; a skill id's first segment names its worker (`ade/for-mcp-agents`
+comes from the `ade` worker), the skills your profile preloads included. If that worker is
+not there, install it with `compose::add`, following the install steps
+`directory::search_functions` returns with an installable worker, then continue. If it is
+already connected, its installed version lacks that skill or function: tell the user
+instead of installing it again.
 
 When you mention a function in text for the user, write its bare id in backticks, for
 example `engine::functions::info`.
