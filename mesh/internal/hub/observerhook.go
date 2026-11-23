@@ -7,20 +7,19 @@ import (
 	"strings"
 )
 
-// Resolved identities are supplied by the proxy from its registration table,
-// rather than inferred from a bare ID that may collide with a hub function.
+// rbac-proxy lets a session observe or target a function in its own namespace
+// only when that connection registered it: the session holds no grant there.
+// The namespace is the proof of ownership.
 type ObserverHookRequest struct {
-	ObserverID               string          `json:"observer_id"`
-	FunctionID               string          `json:"function_id"`
-	ResolvedFunctionID       string          `json:"resolved_function_id"`
-	Namespace                string          `json:"namespace"`
-	TargetFunctionID         string          `json:"target_function_id"`
-	ResolvedTargetFunctionID string          `json:"resolved_target_function_id"`
-	TargetNamespace          string          `json:"target_namespace"`
-	Args                     json.RawMessage `json:"args"`
-	Filters                  json.RawMessage `json:"filters"`
-	Metadata                 json.RawMessage `json:"metadata,omitempty"`
-	Context                  SessionContext  `json:"context"`
+	ObserverID       string          `json:"observer_id"`
+	FunctionID       string          `json:"function_id"`
+	Namespace        string          `json:"namespace"`
+	TargetFunctionID string          `json:"target_function_id"`
+	TargetNamespace  string          `json:"target_namespace"`
+	Args             json.RawMessage `json:"args"`
+	Filters          json.RawMessage `json:"filters"`
+	Metadata         json.RawMessage `json:"metadata,omitempty"`
+	Context          SessionContext  `json:"context"`
 }
 type ObserverHookMapping struct {
 	FunctionID       string          `json:"function_id"`
@@ -34,11 +33,10 @@ func (h *Hub) ObserverHook(_ context.Context, req ObserverHookRequest) (Observer
 	if err != nil {
 		return ObserverHookMapping{}, err
 	}
-	own := func(id string) bool { return strings.HasPrefix(id, node+"::") && len(id) > len(node)+2 }
 	deny := func() (ObserverHookMapping, error) {
 		return ObserverHookMapping{}, errors.New("observer is outside node scope")
 	}
-	if req.TargetNamespace != h.Namespace || !own(req.ResolvedTargetFunctionID) {
+	if req.TargetNamespace != node {
 		return deny()
 	}
 	var args map[string]json.RawMessage
@@ -49,7 +47,7 @@ func (h *Hub) ObserverHook(_ context.Context, req ObserverHookRequest) (Observer
 	if len(args) != 0 {
 		return deny()
 	}
-	if req.FunctionID == "configuration::on-updated" && req.ResolvedFunctionID == req.FunctionID {
+	if req.FunctionID == "configuration::on-updated" {
 		if req.Namespace != "default" {
 			return deny()
 		}
@@ -86,7 +84,7 @@ func (h *Hub) ObserverHook(_ context.Context, req ObserverHookRequest) (Observer
 				}
 			}
 		}
-	} else if req.Namespace != h.Namespace || !own(req.ResolvedFunctionID) || forbiddenSource(req.FunctionID) || forbiddenSource(strings.TrimPrefix(req.ResolvedFunctionID, node+"::")) {
+	} else if req.Namespace != node || forbiddenSource(req.FunctionID) {
 		return deny()
 	}
 	argsOut := req.Args

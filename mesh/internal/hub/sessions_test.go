@@ -17,7 +17,7 @@ func TestAuthConnectionLifetime(t *testing.T) {
 	h := authHub()
 	keys := make(chan string, 8)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		result, err := h.Auth(r.Context(), AuthRequest{Headers: map[string]string{gateway.TicketHeader: r.Header.Get(gateway.TicketHeader)}})
+		result, err := h.Auth(r.Context(), AuthRequest{RegistrationNamespace: true, Headers: map[string]string{gateway.TicketHeader: r.Header.Get(gateway.TicketHeader)}})
 		if err != nil {
 			http.Error(w, err.Error(), 403)
 			return

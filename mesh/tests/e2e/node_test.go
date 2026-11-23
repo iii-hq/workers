@@ -39,7 +39,7 @@ type noWorkers struct{}
 
 func (noWorkers) SetRuntime(context.Context, node.Runtime) error { return nil }
 func (noWorkers) Status() []node.WorkerStatus                    { return nil }
-func (noWorkers) SetCatalog(node.Catalog)                        {}
+func (noWorkers) SetCatalog(node.Catalog) error                  { return nil }
 func (noWorkers) CatalogRev() string                             { return "" }
 
 func (f *fixture) startNode(n *testNode, workers node.WorkerController) {
@@ -53,7 +53,7 @@ func (f *fixture) startNode(n *testNode, workers node.WorkerController) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = control.Register(connect(t, f.ctx, n.url, "mesh-node", "default")); err != nil {
+	if err = control.Register(connect(t, f.ctx, n.url, "mesh-node", n.name)); err != nil {
 		t.Fatal(err)
 	}
 }

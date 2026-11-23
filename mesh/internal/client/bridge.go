@@ -22,10 +22,21 @@ type caller interface {
 	Call(context.Context, iii.CallRequest) (json.RawMessage, error)
 }
 
-// localEngine is the local project's connection, which also serves the mirrors.
+// localEngine is the local project's connection.
 type localEngine interface {
 	caller
+}
+
+// mirrorEngine is a local connection that serves one owner's mirrors in the namespace named after it.
+type mirrorEngine interface {
 	RegisterFunction(string, iii.Handler, ...iii.RegisterFunctionOptions) (*iii.FunctionRef, error)
+	FatalError() error // the engine rejected the connection: another worker holds its name in that namespace
+	Close() error
+}
+
+type mirrorSet struct {
+	conn mirrorEngine
+	refs map[string]*iii.FunctionRef // by function id
 }
 
 // Function is a listed function with the options a copy of it registers with.
@@ -34,11 +45,12 @@ type Function struct {
 	Opts   iii.RegisterFunctionOptions
 }
 
-// RemoteStatus lists what one owner shares with this machine, by local mirror id.
+// RemoteStatus lists what one owner shares with this machine, by function id in the namespace named after the owner.
 type RemoteStatus struct {
 	Machine   string   `json:"machine"`
 	Functions []string `json:"functions"`
-	Path      string   `json:"path,omitempty"` // how a machine's calls travel: hub, or peer to peer as direct, relay or idle
+	Path      string   `json:"path,omitempty"`    // how a machine's calls travel: hub, or peer to peer as direct, relay or idle
+	Skipped   string   `json:"skipped,omitempty"` // why the owner is not mirrored here
 }
 
 // SharedStatus is one share entry in the local mesh::status.
@@ -51,7 +63,8 @@ type SharedStatus struct {
 // Bridge is the client node's WorkerController: its workers are the shared
 // local workers, whose functions it registers on one hub connection and
 // forwards to the local engine. It also mirrors the mesh's catalog as local
-// functions that call through the hub.
+// functions that call through the hub or peer to peer, each owner's on a local
+// connection in a namespace named after the owner.
 type Bridge struct {
 	local     localEngine
 	namespace string // local project namespace
@@ -65,8 +78,11 @@ type Bridge struct {
 	retry     *time.Timer   // reconnects a connection the hub rejected
 	backoff   time.Duration // wait before that reconnect
 	catalog   node.Catalog
-	mirrors   map[string]*iii.FunctionRef // local registrations, by mirror id
-	online    context.Context             // cancelled when the hub connection leaves StateConnected
+	sets      uint64                              // setCatalog runs so far: a catalog read unlocked must not install over a later one
+	dial      func(namespace string) mirrorEngine // opens a local connection; nil when the local engine has no address
+	mirrors   map[string]*mirrorSet               // by owner
+	skipped   map[string]string                   // owners of the catalog not mirrored, with the reason
+	online    context.Context                     // cancelled when the hub connection leaves StateConnected
 	offline   context.CancelFunc
 	direct    *direct // the peer to peer path; nil while it is off
 
@@ -84,7 +100,21 @@ func (b *Bridge) changed() {
 }
 
 func NewBridge(local localEngine, namespace string) *Bridge {
-	return &Bridge{local: local, namespace: namespace, functions: map[string]Function{}, refs: map[string]*iii.FunctionRef{}, mirrors: map[string]*iii.FunctionRef{}}
+	b := &Bridge{local: local, namespace: namespace, functions: map[string]Function{}, refs: map[string]*iii.FunctionRef{}, mirrors: map[string]*mirrorSet{}, skipped: map[string]string{}}
+	if a, ok := local.(interface{ Address() string }); ok {
+		address := a.Address()
+		// One worker name serves every owner: the engine's name lease is per namespace. III_TOKEN from the environment is right for the local engine.
+		// A mirror connection the engine rejects (another mesh client on this engine, or a twin of this worker, holds the name in that namespace) is dialed again by remirror once the name is free.
+		b.dial = func(namespace string) mirrorEngine {
+			c := iii.New(address, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-mirror"), iii.WithNamespace(namespace))
+			// As connect starts the hub connection: nothing of this client outlives Close.
+			started, cancel := context.WithCancel(context.Background())
+			cancel()
+			_ = c.Connect(started)
+			return c
+		}
+	}
+	return b
 }
 
 // SetRuntime must be a no-op for an unchanged runtime: the hub re-applies
@@ -94,7 +124,7 @@ func (b *Bridge) SetRuntime(_ context.Context, rt node.Runtime) error {
 	defer b.mu.Unlock()
 	if rt != b.rt {
 		// A leave, removal or rename: the node reports an empty revision and the hub sends the catalog again.
-		b.setCatalog(node.Catalog{})
+		b.setCatalog(node.Catalog{}, nil)
 		b.connect(rt)
 	}
 	return nil
@@ -109,7 +139,9 @@ func (b *Bridge) connect(rt node.Runtime) {
 		return
 	}
 	// An Authorization key with no value stops the SDK sending the local III_TOKEN to the hub.
-	remote := iii.New(rt.URL, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-bridge"), iii.WithNamespace(rt.Namespace), iii.WithHeaders(http.Header{"Authorization": nil, meshnet.TokenHeader: {rt.Token}}))
+	// Its registrations live in the namespace named after this machine. Calls that name no
+	// namespace would go there too, so mesh::call and mesh::node::changed name the hub's.
+	remote := iii.New(rt.URL, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-bridge"), iii.WithNamespace(rt.Node), iii.WithHeaders(http.Header{"Authorization": nil, meshnet.TokenHeader: {rt.Token}}))
 	b.remote = remote
 	b.register()
 	// The SDK calls listeners on a goroutine of its own, never under Close, so this may take b.mu.
@@ -160,24 +192,20 @@ func (b *Bridge) Status() []node.WorkerStatus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := []node.WorkerStatus{}
-	for _, s := range b.shared("") {
+	for _, s := range b.shared() {
 		out = append(out, node.WorkerStatus{Name: s.Worker, State: s.State, Functions: s.Functions})
 	}
 	return out
 }
 
-// Shared lists the share entries with their hub function ids (<node>::<fn>).
-func (b *Bridge) Shared(nodeName string) []SharedStatus {
-	prefix := ""
-	if nodeName != "" {
-		prefix = nodeName + "::"
-	}
+// Shared lists the share entries with their function ids, which the hub holds in the namespace named after this machine.
+func (b *Bridge) Shared() []SharedStatus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.shared(prefix)
+	return b.shared()
 }
 
-// Namespace is the hub namespace the bridge registers in, once the hub sent it.
+// Namespace is the hub namespace the bridge calls mesh::call in, once the hub sent it.
 func (b *Bridge) Namespace() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -201,7 +229,7 @@ func (b *Bridge) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closeRemote()
-	b.setCatalog(node.Catalog{})
+	b.setCatalog(node.Catalog{}, nil)
 	b.rt = node.Runtime{}
 }
 
@@ -212,52 +240,148 @@ func (b *Bridge) CatalogRev() string {
 	return b.catalog.Rev
 }
 
-// SetCatalog mirrors each entry another owner shares as a local function:
-// hub::<id> for the hub's, peer::<machine>::<fn> for a machine's.
-func (b *Bridge) SetCatalog(c node.Catalog) {
+// SetCatalog mirrors each entry another owner shares as a local function with
+// its own id, in a namespace named after the owner. A failed read of the
+// namespaces in use leaves the catalog as it was and returns the error, so the
+// hub sends it again.
+func (b *Bridge) SetCatalog(c node.Catalog) error {
+	var used map[string]bool
+	var sets uint64
+	if len(c.Functions) > 0 {
+		var err error
+		if used, sets, err = b.inUse(); err != nil {
+			return err
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.setCatalog(c)
+	if used != nil && sets != b.sets {
+		return errReplaced
+	}
+	b.setCatalog(c, used)
+	return nil
+}
+
+// A runtime change, a Close or another catalog came in during the unlocked read: installing over it would undo it.
+var errReplaced = fmt.Errorf("the catalog was replaced while reading the namespaces in use")
+
+// inUse lists the namespaces other workers hold on this engine, with the setCatalog runs counted before the read.
+func (b *Bridge) inUse() (map[string]bool, uint64, error) {
+	b.mu.Lock()
+	sets := b.sets
+	ours := map[string]bool{}
+	for owner, m := range b.mirrors {
+		ours[owner] = m.conn.FatalError() == nil // a rejected connection holds nothing: the rows there are another worker's
+	}
+	b.mu.Unlock()
+	var list struct {
+		Functions []Row `json:"functions"`
+	}
+	if err := call(context.Background(), b.local, "engine::functions::list", map[string]any{"include_internal": true}, &list); err != nil {
+		return nil, 0, fmt.Errorf("read the namespaces in use: %w", err)
+	}
+	used := map[string]bool{}
+	for _, r := range list.Functions {
+		// Another mesh client on this engine mirrors under the same worker name, and the engine leases that name per namespace.
+		if r.WorkerName != "mesh-mirror" || !ours[r.Namespace] {
+			used[r.Namespace] = true
+		}
+	}
+	return used, sets, nil
+}
+
+// remirror reads the namespaces in use again while an owner is not mirrored
+// because the engine rejected its connection or its namespace was in use. The
+// hub sends no catalog while its revision stands, and a local function change,
+// which runs Sync, is how such a namespace comes free.
+func (b *Bridge) remirror() error {
+	b.mu.Lock()
+	stale := false
+	for owner := range b.skipped {
+		stale = stale || b.dial != nil && owner != b.namespace
+	}
+	for _, m := range b.mirrors {
+		stale = stale || m.conn.FatalError() != nil
+	}
+	b.mu.Unlock()
+	if !stale {
+		return nil
+	}
+	used, sets, err := b.inUse()
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if sets != b.sets {
+		return errReplaced
+	}
+	b.setCatalog(b.catalog, used) // the catalog of the read: no setCatalog ran since
+	return nil
 }
 
 // setCatalog does not re-register a mirror whose schemas or internal flag changed. Callers hold b.mu.
-func (b *Bridge) setCatalog(c node.Catalog) {
+func (b *Bridge) setCatalog(c node.Catalog, used map[string]bool) {
+	b.sets++
 	b.catalog = c
-	want := map[string]node.CatalogEntry{}
+	byOwner := map[string]map[string]node.CatalogEntry{}
 	for _, e := range c.Functions {
 		if e.Owner != b.rt.Node { // its own functions are local already
-			want[mirrorID(e)] = e
+			if byOwner[e.Owner] == nil {
+				byOwner[e.Owner] = map[string]node.CatalogEntry{}
+			}
+			byOwner[e.Owner][e.ID] = e
 		}
 	}
-	for id, ref := range b.mirrors {
-		if _, ok := want[id]; !ok {
-			_ = ref.Unregister()
-			delete(b.mirrors, id)
+	for owner, m := range b.mirrors {
+		if byOwner[owner] == nil || m.conn.FatalError() != nil { // a rejected one is dialed again below while its namespace is free
+			_ = m.conn.Close()
+			delete(b.mirrors, owner)
 		}
 	}
-	for id, e := range want {
-		if b.mirrors[id] != nil {
+	b.skipped = map[string]string{}
+	for owner, want := range byOwner {
+		m := b.mirrors[owner]
+		// shortcut: checked on every catalog the hub sends, and by remirror only while an owner is out, so a project that starts under a healthy mirror's name collides until the next catalog, and a namespace with no function yet is not seen. Read the listing on every engine::on-functions-changed when that happens in practice.
+		if owner == b.namespace || used[owner] {
+			if m != nil {
+				_ = m.conn.Close()
+				delete(b.mirrors, owner)
+			}
+			b.skipped[owner] = "namespace " + owner + " is already in use on this engine"
 			continue
 		}
-		opts := iii.RegisterFunctionOptions{Description: e.Description, RequestFormat: e.RequestFormat, ResponseFormat: e.ResponseFormat}
-		if e.Internal { // the only metadata another machine's entry carries: an internal function stays out of agent catalogs here too
-			opts.Metadata = json.RawMessage(`{"internal":true}`)
-		}
-		ref, err := b.local.RegisterFunction(id, b.mirror(e), opts)
-		if err != nil {
-			log.Printf("mesh client: mirror %q: %v", id, err)
+		if b.dial == nil {
+			b.skipped[owner] = "no local engine address"
 			continue
 		}
-		b.mirrors[id] = ref
+		if m == nil {
+			m = &mirrorSet{conn: b.dial(owner), refs: map[string]*iii.FunctionRef{}}
+			b.mirrors[owner] = m
+		}
+		for id, ref := range m.refs {
+			if _, ok := want[id]; !ok {
+				_ = ref.Unregister()
+				delete(m.refs, id)
+			}
+		}
+		for id, e := range want {
+			if m.refs[id] != nil {
+				continue
+			}
+			opts := iii.RegisterFunctionOptions{Description: e.Description, RequestFormat: e.RequestFormat, ResponseFormat: e.ResponseFormat}
+			if e.Internal { // the only metadata another machine's entry carries: an internal function stays out of agent catalogs here too
+				opts.Metadata = json.RawMessage(`{"internal":true}`)
+			}
+			ref, err := m.conn.RegisterFunction(id, b.mirror(e), opts)
+			if err != nil {
+				log.Printf("mesh client: mirror %q of %s: %v", id, owner, err)
+				continue
+			}
+			m.refs[id] = ref
+		}
 	}
 	b.changed()
-}
-
-func mirrorID(e node.CatalogEntry) string {
-	if e.Owner == "hub" {
-		return "hub::" + e.ID
-	}
-	return "peer::" + e.ID // a machine's ids start with its name
 }
 
 // HubFirst orders owners: the hub, then machines by name.
@@ -278,12 +402,16 @@ func (b *Bridge) Remote() []RemoteStatus {
 	byOwner := map[string][]string{}
 	for _, e := range b.catalog.Functions {
 		if e.Owner != b.rt.Node {
-			byOwner[e.Owner] = append(byOwner[e.Owner], mirrorID(e))
+			byOwner[e.Owner] = append(byOwner[e.Owner], e.ID)
 		}
 	}
 	out := []RemoteStatus{}
 	for _, owner := range slices.SortedFunc(maps.Keys(byOwner), HubFirst) {
-		out = append(out, RemoteStatus{Machine: owner, Functions: slices.Sorted(slices.Values(byOwner[owner]))})
+		s := RemoteStatus{Machine: owner, Functions: slices.Sorted(slices.Values(byOwner[owner])), Skipped: b.skipped[owner]}
+		if s.Skipped != "" {
+			s.Functions = []string{}
+		}
+		out = append(out, s)
 	}
 	b.mu.Unlock()
 	paths := map[string]string{}
@@ -313,7 +441,7 @@ func (b *Bridge) mirror(e node.CatalogEntry) iii.Handler {
 		b.mu.Unlock()
 		if d != nil && e.Owner != "hub" {
 			if addr, ok := d.net.Peer(e.Owner); ok { // in the map: both machines turned peer to peer on
-				return d.call(ctx, e.Owner, addr, strings.TrimPrefix(e.ID, e.Owner+"::"), data)
+				return d.call(ctx, e.Owner, addr, e.ID, data)
 			}
 		}
 		if remote == nil || online == nil || online.Err() != nil {
@@ -337,11 +465,12 @@ func (b *Bridge) mirror(e node.CatalogEntry) iii.Handler {
 
 // Sync re-lists the shared functions and updates the hub registrations.
 func (b *Bridge) Sync(ctx context.Context, share []string) error {
+	mirrorErr := b.remirror() // a failure makes the client run Sync again
 	found := map[string]Function{}
 	var err error
 	if len(share) > 0 { // an empty workers filter means "no filter" to the engine
 		b.mu.Lock()
-		known, mirrors := maps.Clone(b.functions), maps.Clone(b.mirrors)
+		known := maps.Clone(b.functions)
 		b.mu.Unlock()
 		ids, workers := SharesIDs(share), share
 		if ids {
@@ -349,8 +478,8 @@ func (b *Bridge) Sync(ctx context.Context, share []string) error {
 		}
 		found, err = Discover(ctx, b.local, b.namespace, workers, ids, func(r Row) bool {
 			// The entry check also guards against an engine that ignores the workers filter.
-			// A mirror is never published back, whatever the mesh worker is named.
-			return r.Namespace == b.namespace && ShareEntry(share, r.WorkerName, r.FunctionID, Internal(r.Metadata)) != "" && Bridgeable(r.FunctionID) && mirrors[r.FunctionID] == nil
+			// A mirror is never published back: it lives in its owner's namespace, never in this one.
+			return r.Namespace == b.namespace && ShareEntry(share, r.WorkerName, r.FunctionID, Internal(r.Metadata)) != "" && Bridgeable(r.FunctionID)
 		}, known)
 	}
 	b.mu.Lock()
@@ -370,7 +499,7 @@ func (b *Bridge) Sync(ctx context.Context, share []string) error {
 	}
 	b.register()
 	b.changed()
-	return err
+	return cmp.Or(err, mirrorErr)
 }
 
 // Row is one engine::functions::list entry.
@@ -509,7 +638,7 @@ func (b *Bridge) closeRemote() {
 	b.refs = map[string]*iii.FunctionRef{}
 }
 
-func (b *Bridge) shared(prefix string) []SharedStatus {
+func (b *Bridge) shared() []SharedStatus {
 	connected := b.remote != nil && b.remote.ConnectionState() == iii.StateConnected
 	out := []SharedStatus{}
 	for _, w := range b.share {
@@ -517,7 +646,7 @@ func (b *Bridge) shared(prefix string) []SharedStatus {
 		registered := true
 		for id, f := range b.functions {
 			if ShareEntry(b.share, f.Worker, id, Internal(f.Opts.Metadata)) == w {
-				s.Functions = append(s.Functions, prefix+id)
+				s.Functions = append(s.Functions, id)
 				registered = registered && b.refs[id] != nil
 			}
 		}
@@ -542,10 +671,11 @@ func (b *Bridge) forward(id string) iii.Handler {
 		if HasChannelRefs(data) {
 			return nil, errChannels
 		}
+		data = DropMachineBound(id, data)
 		// shortcut: fixed 10m timeout and a hub-side cancel does not reach the local call; propagate both once the SDK carries cancellation
 		out, err := b.local.Call(ctx, iii.CallRequest{FunctionID: id, Namespace: b.namespace, Payload: data, Timeout: 10 * time.Minute})
 		if err != nil {
-			return nil, err
+			return nil, DropAccessRequest(err)
 		}
 		if HasChannelRefs(out) {
 			return nil, errChannels

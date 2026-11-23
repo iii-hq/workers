@@ -97,13 +97,18 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 					case `"rbac-proxy::on-config-change"`:
 						proxyMu.Lock()
 						applied, _ := proxyValue.(map[string]any)
-						value = map[string]any{"ok": true, "applied_config": applied, "bound_host": applied["host"], "bound_port": applied["port"]}
+						value = map[string]any{"ok": true, "applied_config": applied, "bound_host": applied["host"], "bound_port": applied["port"], "registration_namespace": true}
 						proxyMu.Unlock()
 					case `"engine::functions::list"`:
 						if string(frame["namespace"]) != `"default"` {
 							t.Errorf("engine catalog must be called in default: %s", frame["namespace"])
 						}
 						value = map[string]any{"functions": []any{map[string]string{"function_id": "analytics::report"}}}
+					case `"engine::workers::list"`:
+						if string(frame["namespace"]) != `"default"` {
+							t.Errorf("engine workers must be listed in default: %s", frame["namespace"])
+						}
+						value = map[string]any{"workers": []any{map[string]string{"id": "1", "name": "report", "namespace": "analytics"}}}
 					}
 					b, _ = json.Marshal(map[string]any{"type": "invocationresult", "invocation_id": frame["invocation_id"], "function_id": frame["function_id"], "result": value})
 					if conn.Write(ctx, websocket.MessageText, b) != nil {

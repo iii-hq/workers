@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -12,15 +13,17 @@ type AuthRequest struct {
 	Headers     map[string]string   `json:"headers"`
 	QueryParams map[string][]string `json:"query_params,omitempty"`
 	IPAddress   string              `json:"ip_address,omitempty"`
+	// rbac-proxy sends true when it can pin a session to a registration namespace.
+	RegistrationNamespace bool `json:"registration_namespace"`
 }
 type SessionContext struct {
 	MeshNode   string `json:"mesh_node"`
 	SessionKey string `json:"session_key"`
 }
 type AuthResult struct {
-	FunctionRegistrationPrefix string              `json:"function_registration_prefix"`
-	Namespaces                 map[string][]string `json:"namespaces"`
-	Context                    SessionContext      `json:"context"`
+	RegistrationNamespace string              `json:"registration_namespace"`
+	Namespaces            map[string][]string `json:"namespaces"`
+	Context               SessionContext      `json:"context"`
 }
 
 // Additional call grants never bypass observer confinement.
@@ -56,6 +59,10 @@ func (h *Hub) Auth(_ context.Context, req AuthRequest) (AuthResult, error) {
 	if h.Tickets == nil || h.Sessions == nil {
 		return AuthResult{}, errors.New("mesh authentication is unavailable")
 	}
+	// Refused before the ticket is read, so an old proxy that replaced a new one spends no ticket.
+	if !req.RegistrationNamespace {
+		return AuthResult{}, errors.New("rbac-proxy does not pin registration namespaces: update rbac-proxy")
+	}
 	var ticket string
 	for name, value := range req.Headers {
 		if strings.EqualFold(name, "x-iii-mesh-ticket") {
@@ -69,14 +76,18 @@ func (h *Hub) Auth(_ context.Context, req AuthRequest) (AuthResult, error) {
 	if !ok {
 		return AuthResult{}, errors.New("invalid mesh ticket")
 	}
+	if h.nameReserved(node) {
+		return AuthResult{}, fmt.Errorf("machine name %q is a namespace in use on the hub: set another client.name on the machine", node)
+	}
 	key, live := h.Sessions.openOwned(node, owner)
 	if !live {
 		return AuthResult{}, errors.New("mesh connection is closed")
 	}
 	h.queueNode(node)
+	// No grant in the machine's own namespace: rbac-proxy lets a session call, observe and target there only what it registered itself, which the observer hook relies on.
 	grants := map[string][]string{h.Namespace: union(h.defaults.Allow, nil)}
 	grants["default"] = union(grants["default"], append(configurationCalls(), "configuration::on-updated"))
-	return AuthResult{FunctionRegistrationPrefix: node, Namespaces: grants, Context: SessionContext{MeshNode: node, SessionKey: key}}, nil
+	return AuthResult{RegistrationNamespace: node, Namespaces: grants, Context: SessionContext{MeshNode: node, SessionKey: key}}, nil
 }
 func (h *Hub) sessionNode(ctx SessionContext) (string, error) {
 	node, ok := h.Sessions.Valid(ctx.SessionKey)
