@@ -941,6 +941,10 @@
 [data-iii-ui="control-plane"] .control-plane-summary-text .control-plane-summary-refs {
   display: inline;
 }
+[data-iii-ui="control-plane"] .control-plane-tile {
+  min-width: 0;
+  overflow: hidden;
+}
 [data-iii-ui="control-plane"] .control-plane-tile > span:last-child {
   overflow: hidden;
   white-space: nowrap;

@@ -24,7 +24,7 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import { RadioTower, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { RadioTower, RefreshCw } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useControlPlaneOverview, type ControlPlaneOverviewData as ControlPlaneData } from './useControlPlaneOverview'
 import { ControlPlaneHost, useControlPlaneHost } from './host'
@@ -205,21 +205,9 @@ function ControlPlaneScreenContent({
         title="Control plane"
         onClose={onRequestClose}
         actions={
-          <>
-            <IconButton label="Refresh Control plane" onClick={refresh}>
-              <RefreshCw className="control-plane-size-4" />
-            </IconButton>
-            {configurationId ? (
-              <IconButton
-                label="Control plane settings"
-                onClick={() => {
-                  window.location.hash = `#/configuration/workers/${encodeURIComponent(configurationId)}`
-                }}
-              >
-                <SlidersHorizontal className="control-plane-size-4" />
-              </IconButton>
-            ) : null}
-          </>
+          <IconButton label="Refresh Control plane" onClick={refresh}>
+            <RefreshCw className="control-plane-size-4" />
+          </IconButton>
         }
       >
         <span className="control-plane-header-description control-plane-muted">
