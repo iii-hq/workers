@@ -1,7 +1,4 @@
-# Keep the worker and its UI independent from the repository UI workspace.
-packages:
-  - ui
-
+# Config only. The root workspace owns the UI.
 minimumReleaseAgeExclude:
   - iii-sdk@0.26.0
 

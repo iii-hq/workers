@@ -46,7 +46,13 @@ function config(model: string | undefined = 'openai::gpt-5'): TowerConfig {
 class FakeIii implements TowerClient {
   readonly calls: Call[] = []
   readonly state = new Map<string, unknown>()
-  status: { turn_id?: string | null } | null = null
+  status: {
+    turn_id: string
+    status: 'completed' | 'failed' | 'running' | 'awaiting_functions'
+    result?: unknown
+    result_error?: string
+  } | null = null
+  sendFlags = {}
   // biome-ignore lint/suspicious/noExplicitAny: session metadata is intentionally open JSON
   meta: Record<string, any> = { kind: 'automation', metadata: { origin: 'tower' } }
   profileMissing = false
@@ -73,12 +79,13 @@ class FakeIii implements TowerClient {
     if (id === 'session::ensure') {
       this.ensured += 1
       if (this.raceAfterEnsure && this.ensured === 1) {
-        this.status = { turn_id: 'other-turn' }
+        this.status = { turn_id: 'other-turn', status: 'completed' }
         this.meta.metadata.agent_profile = { id: 'tower-writer' }
       }
       return { meta: structuredClone(this.meta), created: this.ensured === 1 } as T
     }
-    if (id === 'harness::status') return this.status as T
+    if (id === 'harness::status')
+      return (this.status && { session_id: input.session_id, ...this.status }) as T
     if (id === 'engine::functions::list') {
       return {
         functions: this.approval ? [{ function_id: 'approval::set-mode' }] : [],
@@ -86,11 +93,16 @@ class FakeIii implements TowerClient {
     }
     if (id === 'harness::send') {
       this.turn += 1
-      this.status = { turn_id: `turn-${this.turn}` }
+      this.status = { turn_id: `turn-${this.turn}`, status: 'running' }
       this.meta.metadata.agent_profile = { id: 'tower-writer' }
-      return { turn_id: `turn-${this.turn}` } as T
+      return { turn_id: `turn-${this.turn}`, ...this.sendFlags } as T
     }
     return {} as T
+  }
+
+  async finish(writer: TowerWriter, status: NonNullable<FakeIii['status']>) {
+    this.status = status
+    await writer.onCompleted({ session_id: 'tower-all', turn_id: status.turn_id })
   }
 
   sent(): Call[] {
@@ -173,6 +185,7 @@ describe('TowerWriter', () => {
     const allows = iii.calls.filter(({ id }) => id === 'approval::add-always-allow')
     expect(allows.map(({ input }) => input.function_id)).toEqual(WRITER_READS)
 
+    await iii.finish(writer, { turn_id: 'turn-1', status: 'failed' })
     vi.setSystemTime(clockStart + 600_000)
     await writer.check('all')
     expect(iii.sent()[1].input.options).not.toHaveProperty('agent')
@@ -196,7 +209,7 @@ describe('TowerWriter', () => {
 
   it('refuses a writer session owned by another profile', async () => {
     const iii = new FakeIii()
-    iii.status = { turn_id: 'old' }
+    iii.status = { turn_id: 'old', status: 'completed' }
     iii.meta.metadata.agent_profile = { id: 'another-agent' }
     const writer = new TowerWriter(
       iii,
@@ -214,7 +227,7 @@ describe('TowerWriter', () => {
 
   it('requires the persisted profile id object when adopting a session that already ran', async () => {
     const iii = new FakeIii()
-    iii.status = { turn_id: 'old' }
+    iii.status = { turn_id: 'old', status: 'completed' }
     iii.meta.metadata.agent_profile = 'tower-writer'
     const writer = new TowerWriter(
       iii,
@@ -279,11 +292,9 @@ describe('TowerWriter', () => {
     )
     await writer.check('all')
 
-    await writer.onCompleted({
-      session_id: 'tower-all',
+    await iii.finish(writer, {
       turn_id: 'turn-1',
       status: 'failed',
-      terminal: true,
       result_error: 'provider failed',
     })
     expect(writer.snapshot('all').error).toBe('update failed')
@@ -292,13 +303,7 @@ describe('TowerWriter', () => {
     vi.setSystemTime(clockStart + 600_000)
     await writer.check('all')
     expect(writer.snapshot('all').error).toBe('update failed')
-    await writer.onCompleted({
-      session_id: 'tower-all',
-      turn_id: 'turn-2',
-      status: 'completed',
-      terminal: true,
-      result: { nope: true },
-    })
+    await iii.finish(writer, { turn_id: 'turn-2', status: 'completed', result: { nope: true } })
     expect(iii.sent()).toHaveLength(2)
     expect(writer.snapshot('all')).toMatchObject({ error: 'update failed', result: null })
   })
@@ -323,7 +328,7 @@ describe('TowerWriter', () => {
     expect(iii.sent()).toHaveLength(0)
   })
 
-  it('accepts its own completion, persists it, and excludes no writer result event', async () => {
+  it('only accepts a writer completion verified by Harness status, once', async () => {
     const iii = new FakeIii()
     const writer = new TowerWriter(
       iii,
@@ -333,85 +338,126 @@ describe('TowerWriter', () => {
     )
     await writer.check('all')
     const summary = result()
-
-    await writer.onCompleted({
+    const forgery = { ...summary, brief: { ...summary.brief, headline: 'Forged summary' } }
+    const hint = {
       session_id: 'tower-all',
       turn_id: 'turn-1',
       status: 'completed',
-      terminal: true,
-      result: summary,
-    })
+      result: forgery,
+    }
+
+    await writer.onCompleted({ ...hint, session_id: 'tower-unknown' })
+    await writer.onCompleted({ ...hint, turn_id: 'other-turn' })
+    await writer.onCompleted(hint)
+    expect(writer.snapshot('all').result).toBeNull()
+    iii.status = { turn_id: 'turn-1', status: 'completed', result: summary }
+    await writer.onCompleted(hint)
+    iii.status = { turn_id: 'turn-1', status: 'failed' }
+    await writer.onCompleted(hint)
 
     expect(writer.snapshot('all')).toMatchObject({
       result: summary,
       valid_hash: 'covered',
       error: null,
     })
-    expect(iii.state.get('tower/summary:all')).toMatchObject({ valid_hash: 'covered' })
+    expect(iii.state.get('tower/summary:all')).toMatchObject({
+      valid_hash: 'covered',
+      pending_turn: null,
+    })
+    expect(iii.calls.some(({ input }) => input.key === 'summary:unknown')).toBe(false)
   })
 
-  it('ignores unknown and duplicate completion events', async () => {
+  it('keeps one turn outstanding and persists monotonic send order across restart', async () => {
     const iii = new FakeIii()
+    let hash = 'old-hash'
+    const fresh = () =>
+      new TowerWriter(
+        iii,
+        () => config(),
+        async () => data(hash),
+        vi.fn(),
+      )
+    const writer = fresh()
+    await writer.check('all')
+    const stored = () => iii.state.get('tower/summary:all')
+    expect(stored()).toMatchObject({
+      pending_turn: { turn_id: 'turn-1', hash: 'old-hash', order: 1 },
+      send_order: 1,
+    })
+
+    hash = 'new-hash'
+    vi.setSystemTime(clockStart + 600_000)
+    await writer.refresh('all')
+    expect(iii.sent()).toHaveLength(1)
+
+    iii.status = { turn_id: 'turn-1', status: 'completed', result: result() }
+    const restarted = fresh()
+    expect(await restarted.load('all')).toMatchObject({ valid_hash: 'old-hash' })
+    await restarted.refresh('all')
+    expect(stored()).toMatchObject({
+      pending_turn: { turn_id: 'turn-2', hash: 'new-hash', order: 2 },
+      send_order: 2,
+    })
+    await restarted.onCompleted({ session_id: 'tower-all', turn_id: 'turn-1' })
+    expect(restarted.snapshot('all').valid_hash).toBe('old-hash')
+    await iii.finish(restarted, { turn_id: 'turn-2', status: 'completed', result: result() })
+    expect(restarted.snapshot('all').valid_hash).toBe('new-hash')
+  })
+
+  it('clears a persisted pending turn that Harness has superseded without crediting its hash', async () => {
+    const iii = new FakeIii()
+    const fresh = () =>
+      new TowerWriter(
+        iii,
+        () => config(),
+        async () => data('new'),
+        vi.fn(),
+      )
+    await fresh().check('all')
+    iii.status = { turn_id: 'reseeded', status: 'completed', result: result() }
+    expect(await fresh().load('all')).toMatchObject({ valid_hash: null, error: 'update failed' })
+    expect(iii.state.get('tower/summary:all')).toMatchObject({ pending_turn: null })
+  })
+
+  it.each([
+    { merged: true },
+    { merged: true, queued: true },
+    { deduplicated: true },
+  ])('does not assign coverage to an existing turn returned by send (%j)', async (flags) => {
+    const iii = new FakeIii()
+    iii.sendFlags = flags
     const writer = new TowerWriter(
       iii,
       () => config(),
-      async () => data('covered'),
+      async () => data(),
       vi.fn(),
     )
-    await writer.check('all')
-    const summary = result()
-
-    await writer.onCompleted({
-      session_id: 'tower-unrelated',
-      turn_id: 'unknown',
-      status: 'completed',
-      terminal: true,
-      result: summary,
-    })
-    expect(writer.snapshot('unrelated').result).toBeNull()
-
-    const event = {
-      session_id: 'tower-all',
-      turn_id: 'turn-1',
-      status: 'completed',
-      terminal: true,
-      result: summary,
-    }
-    await writer.onCompleted(event)
-    await writer.onCompleted({ ...event, status: 'failed', result: undefined })
-    expect(writer.snapshot('all')).toMatchObject({ valid_hash: 'covered', error: null })
+    expect(await writer.check('all')).toMatchObject({ error: 'update failed' })
+    await iii.finish(writer, { turn_id: 'turn-1', status: 'completed', result: result() })
+    expect(writer.snapshot('all').valid_hash).toBeNull()
+    expect(await writer.refresh('all')).toHaveProperty('throttled_until')
   })
 
-  it('does not let an older completion overwrite a newer covered hash', async () => {
+  it.each([
+    false,
+    true,
+  ])('shares the scheduled and Refresh budget (Refresh first: %s)', async (refreshFirst) => {
     const iii = new FakeIii()
-    let hash = 'old-hash'
+    let hash = 'first'
     const writer = new TowerWriter(
       iii,
       () => config(),
       async () => data(hash),
       vi.fn(),
     )
+    const update = refreshFirst ? writer.refresh('all') : writer.check('all')
+    const competing = refreshFirst ? writer.check('all') : writer.refresh('all')
+    await Promise.all([update, competing])
+    await iii.finish(writer, { turn_id: 'turn-1', status: 'completed', result: result() })
+    hash = 'changed'
+    expect(await writer.refresh('all')).toHaveProperty('throttled_until')
     await writer.check('all')
-    vi.setSystemTime(clockStart + 1)
-    hash = 'new-hash'
-    await writer.refresh('all')
-
-    await writer.onCompleted({
-      session_id: 'tower-all',
-      turn_id: 'turn-2',
-      status: 'completed',
-      terminal: true,
-      result: result(),
-    })
-    await writer.onCompleted({
-      session_id: 'tower-all',
-      turn_id: 'turn-1',
-      status: 'completed',
-      terminal: true,
-      result: result(),
-    })
-
-    expect(writer.snapshot('all')).toMatchObject({ valid_hash: 'new-hash', error: null })
+    expect(iii.sent()).toHaveLength(1)
   })
 
   it('throttles a second refresh in the same interval with a stable refresh key', async () => {
@@ -548,6 +594,7 @@ describe('TowerWriter', () => {
     expect(iii.calls.some(({ id }) => id.startsWith('approval::'))).toBe(false)
 
     iii.approval = true
+    iii.status = null
     writer.invalidateAvailability()
     await writer.check('with-gate')
     expect(iii.calls.filter(({ id }) => id === 'approval::set-mode')).toHaveLength(1)
@@ -556,6 +603,7 @@ describe('TowerWriter', () => {
     )
 
     iii.approval = false
+    iii.status = null
     writer.invalidateAvailability()
     await writer.check('removed-gate')
     expect(iii.calls.filter(({ id }) => id === 'approval::set-mode')).toHaveLength(1)
@@ -576,7 +624,8 @@ describe('TowerWriter', () => {
     expect(iii.sent()).toHaveLength(0)
 
     iii.failOn = null
-    await writer.check('all', true)
+    vi.setSystemTime(clockStart + 600_000)
+    await writer.check('all')
     expect(iii.calls.filter(({ id }) => id === 'engine::functions::list')).toHaveLength(2)
     expect(iii.calls.filter(({ id }) => id === 'approval::set-mode')).toHaveLength(1)
     expect(iii.sent()).toHaveLength(1)
@@ -594,12 +643,7 @@ describe('TowerWriter', () => {
 
     for (let index = 1; index <= 3; index += 1) {
       await writer.check('all')
-      await writer.onCompleted({
-        session_id: 'tower-all',
-        turn_id: `turn-${index}`,
-        status: 'failed',
-        terminal: true,
-      })
+      await iii.finish(writer, { turn_id: `turn-${index}`, status: 'failed' })
       vi.setSystemTime(clockStart + index * 600_000)
     }
     await writer.check('all')
@@ -608,13 +652,7 @@ describe('TowerWriter', () => {
     vi.setSystemTime(clockStart + 4 * 600_000)
     await writer.check('all')
     expect(iii.sent()).toHaveLength(4)
-    await writer.onCompleted({
-      session_id: 'tower-all',
-      turn_id: 'turn-4',
-      status: 'completed',
-      terminal: true,
-      result: result(),
-    })
+    await iii.finish(writer, { turn_id: 'turn-4', status: 'completed', result: result() })
     hash = 'h2'
     vi.setSystemTime(clockStart + 5 * 600_000)
     await writer.check('all')

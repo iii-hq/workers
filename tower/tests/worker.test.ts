@@ -17,6 +17,8 @@ function fake() {
     sessions: [] as SessionMeta[],
     tickets: [] as TowerTicket[],
     state: new Map<string, unknown>(),
+    observerFailure: '',
+    writerStatus: null as Record<string, unknown> | null,
   }
   const call = vi.fn(
     async ({
@@ -32,6 +34,7 @@ function fake() {
       if (id === 'configuration::get') return { value: runtime.config }
       if (id === 'engine::functions::list')
         return { functions: runtime.functions.map((function_id) => ({ function_id })) }
+      if (id === 'state::list_keys') return { keys: [...runtime.state.keys()] }
       if (id === 'state::get') return runtime.state.get(String(input.key)) ?? null
       if (id === 'kanban::project::list')
         return {
@@ -61,7 +64,7 @@ function fake() {
       if (id === 'kanban::question::list') return { questions }
       if (id === 'harness::status')
         return String(input.session_id).startsWith('tower-')
-          ? null
+          ? runtime.writerStatus
           : {
               session_id: input.session_id,
               status: 'running',
@@ -75,7 +78,14 @@ function fake() {
       if (id === 'directory::agents::get') return { id: 'tower-writer' }
       if (id === 'session::ensure')
         return { meta: { kind: 'automation', metadata: { origin: 'tower' } } }
-      if (id === 'harness::send') return { turn_id: 'writer-turn' }
+      if (id === 'harness::send') {
+        runtime.writerStatus = {
+          session_id: input.session_id,
+          turn_id: 'writer-turn',
+          status: 'running',
+        }
+        return { turn_id: 'writer-turn' }
+      }
       if (id === 'state::set') {
         runtime.state.set(String(input.key), input.value)
         return {}
@@ -96,7 +106,12 @@ function fake() {
     },
     observe(source: { function_id: string }, target: string) {
       observers.push({ source, target })
-      return { dispose: async () => {} }
+      return {
+        dispose: async () => {},
+        ready: async () => {
+          if (source.function_id === runtime.observerFailure) throw new Error('FORBIDDEN')
+        },
+      }
     },
   } as unknown as IIIClient
   return {
@@ -190,6 +205,123 @@ describe('worker functions without an engine', () => {
     ).toBe(false)
   })
 
+  it('accepts the Engine stamp on every public RPC while keeping strict requests', async () => {
+    const f = fake()
+    towers.push(await registerTower(f.iii))
+    for (const id of f.handlers.keys()) {
+      if (f.registrations.get(id)?.metadata || id === 'tower::on-changed') continue
+      await expect(
+        f.invoke(id, { scope: 'all', _caller_worker_id: 'ade-9' }),
+      ).resolves.toBeDefined()
+      await expect(f.invoke(id, { scope: 'all', surprise: true })).rejects.toThrow()
+    }
+  })
+
+  it('fails boot when an observer is rejected and registers the sinks as callable internals', async () => {
+    const f = fake()
+    f.runtime.observerFailure = 'harness::on-turn-completed'
+    await expect(registerTower(f.iii)).rejects.toThrow(
+      'Tower observer registration failed for harness::on-turn-completed',
+    )
+    for (const { target } of f.observers) {
+      expect(f.registrations.get(target)).toMatchObject({ metadata: { internal: true } })
+      expect(f.registrations.get(target)).not.toHaveProperty('private', true)
+    }
+  })
+
+  it('rejects unknown project IDs before creating watch or writer state', async () => {
+    const f = fake()
+    f.runtime.config.summary.model = 'openai::writer-model'
+    const tower = await registerTower(f.iii)
+    towers.push(tower)
+    f.call.mockClear()
+    for (const id of ['tower::watch', 'tower::summary::refresh']) {
+      await expect(f.invoke(id, { scope: 'unknown', _caller_worker_id: 'agent' })).rejects.toThrow(
+        'unknown Tower project scope',
+      )
+    }
+    expect(tower.read.knownScopes()).toEqual(['all'])
+    expect(tower.read.activeScopes()).toEqual([])
+    expect(f.call.mock.calls.map(([request]) => request.function_id)).toEqual([
+      'kanban::project::list',
+      'kanban::project::list',
+    ])
+  })
+
+  it('wakes the scheduler at the configured cadence without another watch', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(started)
+    const f = fake()
+    f.runtime.config.summary = {
+      model: 'openai::writer-model',
+      interval_min: 0.2,
+      language: 'English',
+    }
+    towers.push(await registerTower(f.iii))
+    await f.invoke('tower::watch', { scope: 'all' })
+    const sends = () =>
+      f.call.mock.calls.filter(([request]) => request.function_id === 'harness::send')
+    await vi.advanceTimersByTimeAsync(100)
+    expect(sends()).toHaveLength(1)
+    f.runtime.writerStatus = { ...f.runtime.writerStatus, status: 'failed' }
+    await f.invoke('tower::turn-completed', {
+      input: { session_id: 'tower-all', turn_id: 'writer-turn', status: 'completed' },
+    })
+    await vi.advanceTimersByTimeAsync(11999)
+    expect(sends()).toHaveLength(1)
+    // A real later turn has stamped the writer profile on the session metadata.
+    const fakeCall = f.call.getMockImplementation()
+    assert.ok(fakeCall)
+    f.call.mockImplementation((request) =>
+      request.function_id === 'session::ensure'
+        ? Promise.resolve({
+            meta: {
+              kind: 'automation',
+              metadata: { origin: 'tower', agent_profile: { id: 'tower-writer' } },
+            },
+          })
+        : fakeCall(request),
+    )
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sends()).toHaveLength(2)
+  })
+
+  it('reconciles a saved pending turn at boot before any overview or watch', async () => {
+    const f = fake()
+    const result = {
+      checked_at: new Date(started).toISOString(),
+      unchanged: false,
+      brief: { headline: 'Recovered', text: 'The writer finished.', refs: ['KAN-1'] },
+      direction: [],
+      diary: [],
+      now: {},
+      pr_waits: {},
+    }
+    f.runtime.config.summary.model = 'openai::writer-model'
+    f.runtime.state.set('summary:all', {
+      pending_turn: { turn_id: 'before-restart', hash: 'recovered-hash', order: 1 },
+      send_order: 1,
+    })
+    f.runtime.writerStatus = {
+      session_id: 'tower-all',
+      turn_id: 'before-restart',
+      status: 'completed',
+      result,
+    }
+
+    towers.push(await registerTower(f.iii))
+
+    expect(f.runtime.state.get('summary:all')).toMatchObject({
+      result,
+      pending_turn: null,
+      valid_hash: 'recovered-hash',
+      send_order: 1,
+    })
+    expect(f.call.mock.calls.some(([request]) => request.function_id === 'harness::send')).toBe(
+      false,
+    )
+  })
+
   it('filters assumptions by comment.created_at, and decided excludes recorded/open questions', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(started)
@@ -281,7 +413,7 @@ describe('worker functions without an engine', () => {
     expect(tower.read.activeScopes()).toEqual(['all', 'p'])
     f.runtime.sessions.push({ ...root, session_id: 'new', metadata: { kanban_ticket: 'KAN-2' } })
     f.runtime.tickets.push({ ...card, id: 'c2', key: 'KAN-2', project_id: 'p2' })
-    await f.invoke('tower::turn-started', { output: { session_id: 'new', depth: 0 } })
+    await f.invoke('tower::turn-started', { input: { session_id: 'new', depth: 0 } })
     await vi.advanceTimersByTimeAsync(2000)
     expect(tower.read.activeScopes()).toEqual(['all', 'p', 'p2'])
   })
@@ -351,7 +483,7 @@ describe('worker functions without an engine', () => {
       (observer) => observer.source.function_id === 'harness::on-ask',
     )
     assert.ok(observer)
-    await f.invoke(observer.target, { output: { session_id: 's' } })
+    await f.invoke(observer.target, { input: { session_id: 's' } })
     await vi.advanceTimersByTimeAsync(2000)
     expect(f.call).toHaveBeenCalledWith({
       function_id: 'tower::on-changed',

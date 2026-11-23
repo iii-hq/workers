@@ -47,6 +47,16 @@ export const needLabel = (item: NeedsYouItem) =>
       ? 'Held call'
       : 'Stalled run'
 
+export function stallVersion(item: NeedsYouItem, runs: TowerData['runs']): string {
+  const run = runs.find((row) => row.session.session_id === item.sessionId)
+  return JSON.stringify([
+    item.createdAt,
+    run?.session.updated_at,
+    run?.status.turn_id,
+    item.kind === 'stalled' ? item.armedWakes : null,
+  ])
+}
+
 export function AskAboutButton({
   item,
   onClick,
@@ -246,6 +256,17 @@ export function NeedsYou({
     [data.items, data.questions, states],
   )
   liveChatStates.current = chatStates
+  const updateChatHandle = useCallback((id: string, handle: DecisionChatHandle) => {
+    const state = liveChatStates.current.get(id)
+    if (state) {
+      handle.update(state)
+      return
+    }
+    handle.update({ editable: false, closed: true })
+    if (handles.current.get(id) === handle) handles.current.delete(id)
+    // Let the host render the closed state before removing the binding.
+    setTimeout(() => handle.detach(), 0)
+  }, [])
   useEffect(() => {
     let mounted = true
     for (const item of data.items) {
@@ -257,32 +278,31 @@ export function NeedsYou({
         .then((handle) => {
           if (!handle) return
           if (!mounted || chatRequests.current.get(item.id) !== token) {
-            handle.detach()
+            if (active.current && !liveChatStates.current.has(item.id)) updateChatHandle(item.id, handle)
+            else handle.detach()
             return
           }
           // A click may have opened this copy while the reload lookup was pending.
           handles.current.get(item.id)?.detach()
           handles.current.set(item.id, handle)
-          handle.update(
-            liveChatStates.current.get(item.id) ?? {
-              editable: false,
-              closed: true,
-            },
-          )
+          updateChatHandle(item.id, handle)
         })
         .catch((error) => {
           if (mounted) setChatError(errorMessage(error))
+        })
+        .finally(() => {
+          if (chatRequests.current.get(item.id) === token) chatRequests.current.delete(item.id)
         })
     }
     return () => {
       mounted = false
     }
-  }, [chat, data.items, requestFor])
+  }, [chat, data.items, requestFor, updateChatHandle])
   useEffect(() => {
     for (const [id, handle] of handles.current) {
-      handle.update(chatStates.get(id) ?? { editable: false, closed: true })
+      updateChatHandle(id, handle)
     }
-  }, [chatStates])
+  }, [chatStates, updateChatHandle])
   const openChat = useCallback(
     async (item: DecisionNeed) => {
       if (!chat?.openDecisionChat) return
@@ -298,17 +318,14 @@ export function NeedsYou({
         handles.current.get(item.id)?.detach()
         handles.current.set(item.id, handle)
         if (phone) setFocused(null)
-        handle.update(
-          liveChatStates.current.get(item.id) ?? {
-            editable: false,
-            closed: true,
-          },
-        )
+        updateChatHandle(item.id, handle)
       } catch (error) {
         if (active.current) setChatError(errorMessage(error))
+      } finally {
+        if (chatRequests.current.get(item.id) === token) chatRequests.current.delete(item.id)
       }
     },
-    [chat, requestFor, phone],
+    [chat, requestFor, phone, updateChatHandle],
   )
   const openedInitial = useRef<string | null>(null)
   useEffect(() => {
@@ -413,18 +430,19 @@ export function NeedsYou({
       item,
       decision === 'deny' ? 'Deny' : decision === 'always' ? 'Always allow in this session' : 'Allow once',
       async () => {
-        if (decision === 'always')
-          await iii.call('approval::approve-always', {
-            session_id: item.sessionId,
-            function_id: item.functionId,
-            ...namespace,
-          })
-        return iii.call<{ resolved: boolean }>('approval::resolve', {
+        const result = await iii.call<{ resolved: boolean }>('approval::resolve', {
           session_id: item.sessionId,
           function_call_id: item.functionCallId,
           decision: decision === 'deny' ? 'deny' : 'allow',
           ...namespace,
         })
+        if (result.resolved && decision === 'always')
+          await iii.call('approval::approve-always', {
+            session_id: item.sessionId,
+            function_id: item.functionId,
+            ...namespace,
+          })
+        return result
       },
     )
   }
@@ -463,11 +481,12 @@ export function NeedsYou({
       onAnswer={(dismissed) => selected.kind === 'question' && answer(selected, dismissed)}
       onHeld={(decision) => selected.kind === 'held' && heldAction(selected, decision)}
       onResume={() => {
-        if (!iii) return
+        if (!iii || selected.kind !== 'stalled' || !currentItems.current.has(selected.id)) return
         void send(selected, 'continue', async () => {
           await iii.call('harness::send', {
             session_id: selected.sessionId,
             message: 'continue',
+            idempotency_key: `tower:resume:${selected.sessionId}:${stallVersion(selected, data.runs)}`,
           })
           return undefined
         })

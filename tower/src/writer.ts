@@ -10,11 +10,20 @@ interface StoredSummary {
   result: TowerSummary | null
   valid_hash: string | null
   checked_at: string | null
-  pending_turns?: Record<string, { hash: string; sent_at: number }>
-  covered_at?: number
+  pending_turn?: PendingTurn | null
+  send_order?: number
   failures?: number
   last_attempt_at?: number
+  last_send_at?: number
+  // The previous format had separate clocks for scheduled checks and Refresh.
   last_refresh_at?: number
+  pending_turns?: Record<string, { sent_at: number }>
+}
+
+interface PendingTurn {
+  turn_id: string
+  hash: string
+  order: number
 }
 
 interface WriterState extends StoredSummary {
@@ -22,13 +31,14 @@ interface WriterState extends StoredSummary {
   unavailable: boolean
   failures: number
   lastAttemptAt: number
-  lastRefreshAt: number
-  coveredAt: number
-  pending: Record<string, { hash: string; sent_at: number }>
+  lastSendAt: number
+  sendOrder: number
+  pending: PendingTurn | null
   booted: boolean
 }
 
-export interface WriterSnapshot extends StoredSummary {
+export interface WriterSnapshot
+  extends Pick<StoredSummary, 'result' | 'valid_hash' | 'checked_at'> {
   error: string | null
   unavailable: boolean
 }
@@ -37,18 +47,17 @@ export interface RefreshResult extends WriterSnapshot {
   throttled_until?: string
 }
 
-export interface TurnCompleted {
+interface SessionStatus {
   session_id: string
-  turn_id: string
-  status: string
-  terminal?: boolean
+  turn_id?: string | null
+  status: 'running' | 'awaiting_functions' | 'completed' | 'cancelled' | 'failed'
+  queued?: unknown[]
   result?: unknown
   result_error?: string | null
 }
 
-interface SessionStatus {
-  turn_id?: string | null
-}
+const terminal = (status: SessionStatus) =>
+  status.status === 'completed' || status.status === 'cancelled' || status.status === 'failed'
 
 interface SessionEnsure {
   meta: {
@@ -66,9 +75,9 @@ function initialState(): WriterState {
     unavailable: false,
     failures: 0,
     lastAttemptAt: 0,
-    lastRefreshAt: 0,
-    coveredAt: 0,
-    pending: {},
+    lastSendAt: 0,
+    sendOrder: 0,
+    pending: null,
     booted: false,
   }
 }
@@ -107,7 +116,7 @@ export class TowerWriter {
   ) {}
 
   snapshot(scope: string): WriterSnapshot {
-    return publicState(this.applyConfiguration(this.state(scope)))
+    return publicState(this.applyConfiguration(this.states.get(scope) ?? initialState()))
   }
 
   async load(scope: string): Promise<WriterSnapshot> {
@@ -121,68 +130,54 @@ export class TowerWriter {
     this.approvalsConfigured.clear()
   }
 
-  async check(scope: string, force = false): Promise<WriterSnapshot> {
-    return this.lock(scope, async () => {
-      const state = await this.boot(scope)
-      if (this.stopped) return publicState(state)
-      const config = this.config()
-      if (!config.summary.model) {
-        state.error = MODEL_ERROR
-        state.unavailable = true
-        return publicState(state)
-      }
-      const interval = config.summary.interval_min * 60_000
-      const backoff = state.failures < 3 ? 1 : Math.min(8, 2 ** (state.failures - 2))
-      if (!force && Date.now() - state.lastAttemptAt < interval * backoff) {
-        return publicState(state)
-      }
-      const data = await this.sources(scope)
-      state.lastAttemptAt = Date.now()
-      if (this.sourceUnavailable(data)) {
-        await this.fail(scope, state)
-        return publicState(state)
-      }
-      if (data.sourceHash === state.valid_hash) {
-        state.checked_at = new Date().toISOString()
-        state.error = null
-        state.unavailable = false
-        await this.persist(scope, state)
-        await this.changed(scope)
-        return publicState(state)
-      }
-      try {
-        await this.send(scope, data, false)
-      } catch {
-        await this.fail(scope, state)
-      }
-      return publicState(state)
-    })
+  nextCheckAt(scope: string): number {
+    const state = this.states.get(scope)
+    if (!state?.lastAttemptAt) return 0
+    const backoff = state.failures < 3 ? 1 : Math.min(8, 2 ** (state.failures - 2))
+    const interval = this.interval()
+    return Math.max(state.lastAttemptAt + interval * backoff, state.lastSendAt + interval)
+  }
+
+  async check(scope: string): Promise<WriterSnapshot> {
+    return this.update(scope, false)
   }
 
   async refresh(scope: string): Promise<RefreshResult> {
+    return this.update(scope, true)
+  }
+
+  private async update(scope: string, refresh: boolean): Promise<RefreshResult> {
     return this.lock(scope, async () => {
-      const state = await this.boot(scope)
-      const interval = this.config().summary.interval_min * 60_000
-      if (Date.now() - state.lastRefreshAt < interval) {
-        return {
-          ...publicState(state),
-          throttled_until: new Date(state.lastRefreshAt + interval).toISOString(),
-        }
+      const state = this.applyConfiguration(await this.boot(scope))
+      if (this.stopped || !this.config().summary.model) return publicState(state)
+
+      const now = Date.now()
+      const nextSend = state.lastSendAt + this.interval()
+      if (refresh && state.lastSendAt && now < nextSend) {
+        return { ...publicState(state), throttled_until: new Date(nextSend).toISOString() }
       }
-      if (!this.config().summary.model) {
-        state.error = MODEL_ERROR
-        state.unavailable = true
+      if (state.pending && now >= this.nextCheckAt(scope)) {
+        await this.reconcile(scope, state, await this.status(scope))
+      }
+      if (state.pending || (!refresh && now < this.nextCheckAt(scope))) {
+        if (state.pending && now >= this.nextCheckAt(scope)) state.lastAttemptAt = now
         return publicState(state)
       }
-      const data = await this.sources(scope)
-      state.lastRefreshAt = Date.now()
-      state.lastAttemptAt = Date.now()
-      if (this.sourceUnavailable(data)) {
-        await this.fail(scope, state)
-        return publicState(state)
-      }
+      state.lastAttemptAt = now
       try {
-        await this.send(scope, data, true)
+        const data = await this.sources(scope)
+        if (this.sourceUnavailable(data)) {
+          await this.fail(scope, state)
+        } else if (!refresh && data.sourceHash === state.valid_hash) {
+          state.checked_at = new Date().toISOString()
+          state.error = null
+          state.unavailable = false
+          state.failures = 0
+          await this.persist(scope, state)
+          await this.changed(scope)
+        } else if (!state.lastSendAt || Date.now() >= nextSend) {
+          await this.send(scope, state, data, refresh)
+        }
       } catch {
         await this.fail(scope, state)
       }
@@ -190,37 +185,62 @@ export class TowerWriter {
     })
   }
 
-  async onCompleted(event: TurnCompleted): Promise<void> {
-    if (!event.session_id.startsWith('tower-') || event.terminal === false) return
-    const scope = event.session_id.slice('tower-'.length)
+  async onCompleted(hint: unknown): Promise<void> {
+    if (
+      !hint ||
+      typeof hint !== 'object' ||
+      !('session_id' in hint) ||
+      typeof hint.session_id !== 'string' ||
+      !hint.session_id.startsWith('tower-') ||
+      !('turn_id' in hint) ||
+      typeof hint.turn_id !== 'string'
+    )
+      return
+
+    const scope = hint.session_id.slice('tower-'.length)
+    // A callable sink cannot create scope state or supply a result.
+    if (!this.states.has(scope)) return
     await this.lock(scope, async () => {
-      const state = await this.boot(scope)
-      const pending = state.pending[event.turn_id]
-      if (!pending) return
-      delete state.pending[event.turn_id]
-      if (pending.sent_at < state.coveredAt) {
-        await this.persist(scope, state)
-        return
-      }
-      if (event.status !== 'completed' || event.result_error || event.result === undefined) {
-        await this.fail(scope, state)
-        return
-      }
-      const next = acceptSummary(event.result, state.result)
-      if (!next || next === state.result) {
-        await this.fail(scope, state)
-        return
-      }
-      state.result = next
-      state.valid_hash = pending.hash
-      state.coveredAt = pending.sent_at
-      state.checked_at = new Date().toISOString()
-      state.error = null
-      state.unavailable = false
-      state.failures = 0
-      await this.persist(scope, state)
-      await this.changed(scope)
+      const state = this.states.get(scope)
+      if (!state?.pending || state.pending.turn_id !== hint.turn_id) return
+      const status = await this.status(scope)
+      if (status?.turn_id === hint.turn_id) await this.reconcile(scope, state, status)
     })
+  }
+
+  private async reconcile(scope: string, state: WriterState, status: SessionStatus | null) {
+    const pending = state.pending
+    if (!pending) return
+    const matches = status?.session_id === `tower-${scope}` && status.turn_id === pending.turn_id
+    if (matches && !terminal(status)) return
+    state.pending = null
+    const next =
+      matches &&
+      pending.order === state.sendOrder &&
+      status.status === 'completed' &&
+      !status.result_error
+        ? acceptSummary(status.result, state.result)
+        : null
+    if (!next || next === state.result) {
+      await this.fail(scope, state)
+      return
+    }
+    state.result = next
+    state.valid_hash = pending.hash
+    state.checked_at = new Date().toISOString()
+    state.error = null
+    state.unavailable = false
+    state.failures = 0
+    await this.persist(scope, state)
+    await this.changed(scope)
+  }
+
+  private interval(): number {
+    return this.config().summary.interval_min * 60_000
+  }
+
+  private status(scope: string): Promise<SessionStatus | null> {
+    return this.iii.call('harness::status', { session_id: `tower-${scope}`, verbose: true })
   }
 
   dispose(): void {
@@ -248,12 +268,19 @@ export class TowerWriter {
       state.result = stored.result ?? null
       state.valid_hash = stored.valid_hash ?? null
       state.checked_at = stored.checked_at ?? null
-      state.pending = stored.pending_turns ?? {}
-      state.coveredAt = stored.covered_at ?? 0
+      state.pending = stored.pending_turn ?? null
+      state.sendOrder = stored.send_order ?? 0
       state.failures = stored.failures ?? 0
       if (state.failures > 0) state.error = UPDATE_ERROR
       state.lastAttemptAt = stored.last_attempt_at ?? 0
-      state.lastRefreshAt = stored.last_refresh_at ?? 0
+      state.lastSendAt =
+        stored.last_send_at ??
+        Math.max(
+          stored.last_refresh_at ?? 0,
+          state.lastAttemptAt,
+          ...Object.values(stored.pending_turns ?? {}).map(({ sent_at }) => sent_at),
+        )
+      if (state.pending) await this.reconcile(scope, state, await this.status(scope))
     }
     state.booted = true
     return state
@@ -267,11 +294,11 @@ export class TowerWriter {
         result: state.result,
         valid_hash: state.valid_hash,
         checked_at: state.checked_at,
-        pending_turns: state.pending,
-        covered_at: state.coveredAt,
+        pending_turn: state.pending,
+        send_order: state.sendOrder,
         failures: state.failures,
         last_attempt_at: state.lastAttemptAt,
-        last_refresh_at: state.lastRefreshAt,
+        last_send_at: state.lastSendAt,
       } satisfies StoredSummary,
     })
   }
@@ -284,8 +311,12 @@ export class TowerWriter {
     await this.changed(scope)
   }
 
-  private async send(scope: string, data: TowerData, refresh: boolean): Promise<void> {
-    const state = this.state(scope)
+  private async send(
+    scope: string,
+    state: WriterState,
+    data: TowerData,
+    refresh: boolean,
+  ): Promise<void> {
     const config = this.config()
     const model = config.summary.model
     if (!model) return
@@ -305,10 +336,7 @@ export class TowerWriter {
       kind: 'automation',
       metadata: { origin: 'tower' },
     })
-    const status = await this.iii.call<SessionStatus | null>('harness::status', {
-      session_id: sessionId,
-      verbose: true,
-    })
+    const status = await this.status(scope)
     if (status?.turn_id) {
       ensured = await this.iii.call<SessionEnsure>('session::ensure', { session_id: sessionId })
     }
@@ -323,12 +351,20 @@ export class TowerWriter {
       await this.changed(scope)
       return
     }
+    if (status && (!terminal(status) || status.queued?.length)) return
     await this.configureApprovals(sessionId)
 
-    const interval = config.summary.interval_min * 60_000
-    const slot = Math.floor(Date.now() / interval)
+    state.lastSendAt = Date.now()
+    state.sendOrder += 1
+    await this.persist(scope, state)
+    const slot = Math.floor(state.lastSendAt / this.interval())
     const [provider, ...modelParts] = model.split('::')
-    const sent = await this.iii.call<{ turn_id?: string }>('harness::send', {
+    const sent = await this.iii.call<{
+      turn_id?: string
+      merged?: boolean
+      queued?: boolean
+      deduplicated?: boolean
+    }>('harness::send', {
       session_id: sessionId,
       idempotency_key: `tower:${scope}:${slot}${refresh ? ':refresh' : ''}`,
       message: JSON.stringify({
@@ -347,10 +383,14 @@ export class TowerWriter {
         output: { type: 'json', schema: SUMMARY_SCHEMA },
       },
     })
-    if (sent.turn_id) {
-      state.pending[sent.turn_id] = { hash: data.sourceHash, sent_at: Date.now() }
-      await this.persist(scope, state)
+    // A merged, queued or deduplicated send ID does not identify a new turn
+    // that covers this snapshot. The attempt still consumes the reservation.
+    if (!sent.turn_id || sent.merged || sent.queued || sent.deduplicated) {
+      await this.fail(scope, state)
+      return
     }
+    state.pending = { turn_id: sent.turn_id, hash: data.sourceHash, order: state.sendOrder }
+    await this.persist(scope, state)
     if (state.error !== UPDATE_ERROR) state.error = null
     state.unavailable = false
   }

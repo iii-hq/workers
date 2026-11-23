@@ -308,7 +308,7 @@ describe('useTowerOverview console boundary and live parts', () => {
     await act(() => finish({ pending: [] }))
     expect(f.result().loading.needsYou).toBe(false)
   })
-  it('marks a done root as waiting on a held call while preserving a reported stall', () => {
+  it('marks parked or done roots with their own held call as waiting', () => {
     const f = fake()
     const run = f.data.runs[0]
     const pending = [
@@ -323,6 +323,16 @@ describe('useTowerOverview console boundary and live parts', () => {
     const waiting = mergeHolds({ ...f.data, runs: [{ ...run, state: 'done' }] }, pending, 'all')
     expect(waiting.runs[0].state).toBe('waiting')
     expect(waiting.runs[0].needsYou.some((row) => row.kind === 'held')).toBe(true)
+    const parked = {
+      ...run,
+      state: 'working' as const,
+      status: { ...run.status, status: 'awaiting_functions' },
+    }
+    const parkedData = { ...f.data, runs: [parked] }
+    expect(mergeHolds(parkedData, pending, 'all').runs[0].state).toBe('waiting')
+    expect(mergeHolds(parkedData, [], 'all').runs[0].state).toBe('working')
+    const active = { ...parked, status: { ...parked.status, status: 'running' } }
+    expect(mergeHolds({ ...f.data, runs: [active] }, pending, 'all').runs[0].state).toBe('working')
     const stalled = mergeHolds({ ...f.data, runs: [{ ...run, state: 'stalled' }] }, pending, 'all')
     expect(stalled.runs[0].state).toBe('stalled')
   })

@@ -40,11 +40,9 @@ interface RunSnapshot {
   runningChildren: number
   childOpenAsks: number
   descendantSessionIds: string[]
-  descendants: Array<{ meta?: SessionMeta; status: HarnessStatus }>
   lastAssistant: string
   context_size: number
   completedTurnId?: string
-  metrics?: TowerRun['metrics']
 }
 
 export function isRootTurnEvent(payload: unknown): boolean {
@@ -54,14 +52,7 @@ export function isRootTurnEvent(payload: unknown): boolean {
   return event.parent == null && event.parent_session_id == null
 }
 
-function fsRoot(session: SessionMeta): string | undefined {
-  const scope = session.metadata?.fs_scope
-  if (!scope || typeof scope !== 'object') return undefined
-  const root = (scope as Record<string, unknown>).root
-  return typeof root === 'string' && root ? root : undefined
-}
-
-function linkedTicket(session?: SessionMeta): string | undefined {
+function linkedTicket(session?: Pick<SessionMeta, 'metadata'>): string | undefined {
   const ticket = session?.metadata?.kanban_ticket
   return typeof ticket === 'string' && ticket ? ticket : undefined
 }
@@ -255,7 +246,7 @@ function newestProgress(
 }
 
 export function cardForSession(
-  session: SessionMeta,
+  session: Pick<SessionMeta, 'metadata'>,
   cards: readonly TowerTicket[],
 ): TowerTicket | undefined {
   const ticket = linkedTicket(session)
@@ -397,7 +388,7 @@ export async function fetchTowerRuns(
           include_image_data: false,
         }),
       ])
-      const key = `${status?.turn_id}:${status?.step}`
+      const key = `${status?.turn_id}:${status?.step}:${status?.context != null}`
       let context = contextCache.get(session.session_id)
       if (!status?.turn_id || context?.key !== key) {
         context = {
@@ -416,7 +407,7 @@ export async function fetchTowerRuns(
         expects_wake: false,
         open_asks: 0,
       }
-      const descendants: RunSnapshot['descendants'] = []
+      const descendants: HarnessStatus[] = []
       const seen = new Set([session.session_id])
       const visit = async (children: HarnessStatus['children']) => {
         for (const child of children ?? []) {
@@ -427,7 +418,7 @@ export async function fetchTowerRuns(
             verbose: true,
           })
           if (!childStatus) continue
-          descendants.push({ status: childStatus })
+          descendants.push(childStatus)
           await visit(childStatus.children)
         }
       }
@@ -444,10 +435,9 @@ export async function fetchTowerRuns(
         session,
         status: effective,
         subtasks,
-        runningChildren: descendants.filter((child) => child.status.status === 'running').length,
-        childOpenAsks: descendants.reduce((sum, child) => sum + (child.status.open_asks ?? 0), 0),
-        descendantSessionIds: descendants.map((child) => child.status.session_id),
-        descendants,
+        runningChildren: descendants.filter((child) => child.status === 'running').length,
+        childOpenAsks: descendants.reduce((sum, child) => sum + (child.open_asks ?? 0), 0),
+        descendantSessionIds: descendants.map((child) => child.session_id),
         lastAssistant: lastAssistant(tail.messages ?? []),
         context_size: context?.total ?? 0,
       }
@@ -605,14 +595,32 @@ export function projectSnapshot(
         config.stall_after_min,
       )
     const active =
-      row.session.status === 'working' || row.status.status === 'running' || row.runningChildren > 0
+      row.session.status === 'working' ||
+      ['running', 'awaiting_functions'].includes(row.status.status) ||
+      row.runningChildren > 0
     const linkedRecently = Boolean(card) && now - row.session.updated_at < 24 * 60 * 60_000
     if (!active && !openQuestions && !row.status.expects_wake && !linkedRecently) return []
     const profile = row.session.metadata?.agent_profile
     return [
       {
-        session: row.session,
-        status: row.status,
+        session: {
+          session_id: row.session.session_id,
+          title: row.session.title,
+          created_at: row.session.created_at,
+          updated_at: row.session.updated_at,
+        },
+        status: {
+          session_id: row.status.session_id,
+          turn_id: row.status.turn_id,
+          status: row.status.status,
+          children: row.status.children.map(({ session_id }) => ({ session_id })),
+          expects_wake: row.status.expects_wake,
+          open_asks: row.status.open_asks,
+          armed_wakes: row.status.armed_wakes?.map(({ created_at, expires_at }) => ({
+            created_at,
+            expires_at,
+          })),
+        },
         card,
         subtasks: row.subtasks,
         progress: progressFor(
@@ -645,7 +653,6 @@ export function projectSnapshot(
           : row.session.kind === 'automation'
             ? ('automation' as const)
             : ('chat' as const),
-        workingDir: fsRoot(row.session),
         descendantSessionIds: row.descendantSessionIds,
       },
     ]
@@ -757,13 +764,17 @@ export function projectSnapshot(
   return result
 }
 
-interface ScopeCache {
+interface ScopeSources {
   board: BoardSnapshot
   rows: RunSnapshot[]
   asks: AskEntry[]
   questions: KanbanQuestionView[]
-  data: TowerData
   excluded: Set<string>
+  errors: TowerData['errors']
+}
+interface ScopeCache {
+  sources: ScopeSources
+  data: TowerData
 }
 interface RepositoryCache {
   at: number
@@ -779,9 +790,9 @@ export class TowerReadModel {
   private repositories = new Map<string, RepositoryCache>()
   private contexts = new Map<string, { key: string; total: number }>()
   private pending = new Map<string, Promise<TowerData>>()
+  private dirty = new Set<string>()
   private debounce?: ReturnType<typeof setTimeout>
   private deadline?: ReturnType<typeof setTimeout>
-  private completed = new Map<string, string>()
   private stopped = false
 
   constructor(
@@ -824,23 +835,15 @@ export class TowerReadModel {
   }
 
   async read(scope: string): Promise<TowerData> {
-    return this.pending.get(scope) ?? this.scopes.get(scope)?.data ?? this.rebuild(scope)
+    return this.scopes.get(scope)?.data ?? this.pending.get(scope) ?? this.rebuild(scope)
   }
 
   async watch(scope: string): Promise<{ watched_until: string }> {
-    const until = Date.now() + 120_000
+    const now = Date.now()
+    const firstWatch = (this.watched.get(scope) ?? 0) <= now
+    const until = now + 120_000
     this.watched.set(scope, until)
-    const current = await this.read(scope)
-    const next = {
-      ...current,
-      as_of: new Date().toISOString(),
-      exceptions: { ...current.exceptions },
-    }
-    await this.updatePrs(scope, next)
-    await this.publish(scope, current, next)
-    const cache = this.scopes.get(scope)
-    if (cache) cache.data = next
-    this.armDeadline()
+    await this.update(scope, firstWatch)
     return { watched_until: new Date(until).toISOString() }
   }
 
@@ -848,16 +851,7 @@ export class TowerReadModel {
     if (turn && !isRootTurnEvent(event)) return
     const id =
       event && typeof event === 'object' && 'session_id' in event ? String(event.session_id) : ''
-    if ([...this.scopes.values()].some((cache) => cache.excluded.has(id))) return
-    if (
-      turn &&
-      event &&
-      typeof event === 'object' &&
-      'turn_id' in event &&
-      'status' in event &&
-      ['completed', 'failed', 'cancelled'].includes(String(event.status))
-    )
-      this.completed.set(id, String(event.turn_id))
+    if ([...this.scopes.values()].some((cache) => cache.sources.excluded.has(id))) return
     if (this.debounce) clearTimeout(this.debounce)
     this.debounce = setTimeout(() => {
       void this.rebuildScopes().catch((error) => console.error('tower rebuild:', error))
@@ -865,20 +859,52 @@ export class TowerReadModel {
   }
 
   private async rebuildScopes(): Promise<void> {
-    for (const scope of this.scopes.keys()) await this.rebuild(scope)
+    for (const scope of new Set([...this.scopes.keys(), ...this.pending.keys()]))
+      await this.rebuild(scope)
     await this.materializeLiveProjects()
   }
 
   rebuild(scope: string): Promise<TowerData> {
+    return this.update(scope, true)
+  }
+
+  private update(scope: string, refreshSources: boolean): Promise<TowerData> {
     const pending = this.pending.get(scope)
-    if (pending) return pending
-    const work = this.build(scope).finally(() => this.pending.delete(scope))
+    if (pending) {
+      if (refreshSources) this.dirty.add(scope)
+      return pending
+    }
+    const work = (async () => {
+      try {
+        let data = await this.build(scope, refreshSources)
+        while (this.dirty.delete(scope)) data = await this.build(scope, true)
+        return data
+      } finally {
+        this.pending.delete(scope)
+      }
+    })()
     this.pending.set(scope, work)
     return work
   }
 
-  private async build(scope: string): Promise<TowerData> {
+  private async build(scope: string, refreshSources: boolean): Promise<TowerData> {
     const old = this.scopes.get(scope)
+    const sources =
+      refreshSources || !old ? await this.fetchScope(scope, old?.sources) : old.sources
+    const { board, rows, asks, questions, errors } = sources
+    const data = projectSnapshot(board, rows, asks, questions, [], scope, this.config())
+    data.errors = { ...errors }
+    const cache = { sources, data }
+    await this.updatePrs(scope, cache)
+    this.scopes.set(scope, cache)
+    this.armDeadline()
+    await this.publish(scope, old?.data, data).catch((error) =>
+      console.error('tower change notification:', error),
+    )
+    return data
+  }
+
+  private async fetchScope(scope: string, old?: ScopeSources): Promise<ScopeSources> {
     const sources = await Promise.allSettled([
       fetchTowerBoard(this.iii, scope),
       fetchTowerRuns(this.iii, this.contexts),
@@ -893,16 +919,20 @@ export class TowerReadModel {
       board: { columns: [], doneStatus: 'done', idPrefix: 'KAN' },
     }
     const board = sources[0].status === 'fulfilled' ? sources[0].value : (old?.board ?? emptyBoard)
-    const rows = sources[1].status === 'fulfilled' ? sources[1].value.rows : (old?.rows ?? [])
+    const completed = new Map(old?.rows.map((row) => [row.session.session_id, row.completedTurnId]))
+    const rows =
+      sources[1].status === 'fulfilled'
+        ? sources[1].value.rows.map((row) => ({
+            ...row,
+            completedTurnId: ['completed', 'failed', 'cancelled'].includes(row.status.status)
+              ? (row.status.turn_id ?? undefined)
+              : completed.get(row.session.session_id),
+          }))
+        : (old?.rows ?? [])
     const excluded =
       sources[1].status === 'fulfilled'
         ? sources[1].value.excluded
         : (old?.excluded ?? new Set<string>())
-    for (const row of rows) {
-      if (['completed', 'failed', 'cancelled'].includes(row.status.status) && row.status.turn_id)
-        this.completed.set(row.session.session_id, row.status.turn_id)
-      row.completedTurnId = this.completed.get(row.session.session_id)
-    }
     const known = new Set(
       rows.flatMap((row) => [row.session.session_id, ...row.descendantSessionIds]),
     )
@@ -916,27 +946,28 @@ export class TowerReadModel {
     ).filter(
       (question) => !question.comment.question || allowed(question.comment.question.session_id),
     )
-    const data = projectSnapshot(board, rows, asks, questions, [], scope, this.config())
-    const cache = { board, rows, asks, questions, data, excluded }
-    this.scopes.set(scope, cache)
+    const errors: TowerData['errors'] = {
+      board: null,
+      sessions: null,
+      needsYou: null,
+      questions: null,
+      prs: null,
+    }
     const names = ['board', 'sessions', 'needsYou', 'questions'] as const
     for (const [index, result] of sources.entries())
-      if (result.status === 'rejected') data.errors[names[index]] = messageOf(result.reason)
-    data.errors.needsYou ??= data.errors.board ?? data.errors.sessions ?? data.errors.questions
-    await this.updatePrs(scope, data)
-    await this.publish(scope, old?.data, data)
-    this.armDeadline()
-    return data
+      if (result.status === 'rejected') errors[names[index]] = messageOf(result.reason)
+    errors.needsYou ??= errors.board ?? errors.sessions ?? errors.questions
+    return { board, rows, asks, questions, excluded, errors }
   }
 
-  private repoInterval(repo: string): number | null {
+  private repoInterval(repo: string, scopes: Map<string, ScopeCache>): number | null {
     let hasLive = false
     const config = this.config()
-    for (const [scope, cache] of this.scopes) {
+    for (const [scope, cache] of scopes) {
       if (!cache.data.repositories.includes(repo)) continue
       if ((this.watched.get(scope) ?? 0) > Date.now())
         return config.prs.watched_interval_min * 60000
-      const projects = cache.board.projects
+      const projects = cache.sources.board.projects
         .filter((project) => project.repos?.includes(repo))
         .map((project) => project.id)
       hasLive ||= cache.data.runs.some(
@@ -946,11 +977,13 @@ export class TowerReadModel {
     return hasLive ? config.prs.idle_interval_min * 60000 : null
   }
 
-  private async updatePrs(_scope: string, data: TowerData): Promise<void> {
+  private async updatePrs(scope: string, cache: ScopeCache): Promise<void> {
+    const { data } = cache
+    const scopes = new Map(this.scopes).set(scope, cache)
     await Promise.all(
       data.repositories.map(async (repo) => {
         let cached = this.repositories.get(repo)
-        const interval = this.repoInterval(repo)
+        const interval = this.repoInterval(repo, scopes)
         if (cached?.pending) await cached.pending
         else if (interval !== null && (!cached || Date.now() - cached.at >= interval)) {
           cached ??= { at: 0, prs: [], error: null }
@@ -1032,26 +1065,7 @@ export class TowerReadModel {
 
   async tick(): Promise<void> {
     const active = new Set(this.activeScopes())
-    for (const [scope, cache] of this.scopes) {
-      if (active.has(scope)) {
-        await this.rebuild(scope)
-        continue
-      }
-      const next = projectSnapshot(
-        cache.board,
-        cache.rows,
-        cache.asks,
-        cache.questions,
-        cache.data.prs,
-        scope,
-        this.config(),
-      )
-      next.errors = { ...cache.data.errors }
-      await this.updatePrs(scope, next)
-      await this.publish(scope, cache.data, next)
-      cache.data = next
-    }
-    this.armDeadline()
+    for (const scope of this.scopes.keys()) await this.update(scope, active.has(scope))
   }
 
   dispose(): void {

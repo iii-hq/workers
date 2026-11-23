@@ -13,6 +13,12 @@ const scopeInput = z.strictObject({ scope: z.string().min(1) })
 const decidedInput = scopeInput.extend({ cursor: z.string().optional() })
 const assumptionsInput = scopeInput.extend({ since: z.iso.datetime().optional() })
 const request = (schema: z.ZodType) => ({ ...z.toJSONSchema(schema), type: 'object' as const })
+function parseRequest<T>(schema: z.ZodType<T>, input: unknown): T {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return schema.parse(input)
+  const payload = { ...input } as Record<string, unknown>
+  delete payload._caller_worker_id
+  return schema.parse(payload)
+}
 const array = { type: 'array', items: { type: 'object' } }
 const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object' as const,
@@ -28,7 +34,27 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   let config = defaultConfig()
   const emit = (scope: string, as_of: string, parts: string[]) =>
     client.call('tower::on-changed', { scope, as_of, parts }).then(() => {})
-  const read = new TowerReadModel(client, () => config, emit)
+  const read = new TowerReadModel(
+    client,
+    () => config,
+    async (scope, asOf, parts) => {
+      armWriterTimer()
+      await emit(scope, asOf, parts)
+    },
+  )
+  const projectIds = async () =>
+    (
+      await client.call<{ projects: Array<{ id: string }> }>('kanban::project::list', {
+        include_archived: true,
+      })
+    ).projects.map(({ id }) => id)
+  const scoped = async <T extends { scope: string }>(schema: z.ZodType<T>, input: unknown) => {
+    const payload = parseRequest(schema, input)
+    if (payload.scope !== 'all' && !(await projectIds()).includes(payload.scope)) {
+      throw new Error('unknown Tower project scope')
+    }
+    return payload
+  }
   let availability = { github: false, approval_gate: false }
   const summaryDeadlines = new Map<string, ReturnType<typeof setTimeout>>()
   const writer = new TowerWriter(
@@ -48,9 +74,42 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
     },
     (scope) => {
       armSummaryDeadline(scope)
+      armWriterTimer()
       return emit(scope, new Date().toISOString(), ['summary'])
     },
   )
+  let writerReady = false
+  let writerRunning = false
+  let writerTimer: ReturnType<typeof setTimeout> | undefined
+  function armWriterTimer(): void {
+    if (!writerReady || writerRunning) return
+    clearTimeout(writerTimer)
+    const scopes = read.activeScopes()
+    if (!config.summary.model || !scopes.length) return
+    const due = Math.min(...scopes.map((scope) => writer.nextCheckAt(scope)))
+    writerTimer = setTimeout(
+      async () => {
+        writerRunning = true
+        try {
+          const now = Date.now()
+          await Promise.all(
+            read
+              .activeScopes()
+              .filter((scope) => writer.nextCheckAt(scope) <= now)
+              .map((scope) =>
+                writer.check(scope).catch((error) => console.error('tower schedule:', error)),
+              ),
+          )
+        } finally {
+          writerRunning = false
+          armWriterTimer()
+        }
+      },
+      Math.max(100, Math.min(60_000, due - Date.now())),
+    )
+    writerTimer.unref()
+  }
+
   function armSummaryDeadline(scope: string): void {
     clearTimeout(summaryDeadlines.get(scope))
     summaryDeadlines.delete(scope)
@@ -84,7 +143,11 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
 
   iii.registerFunction(
     'tower::on-changed',
-    (event: { scope: string; as_of: string; parts: string[] }) => event,
+    ({ scope, as_of, parts }: { scope: string; as_of: string; parts: string[] }) => ({
+      scope,
+      as_of,
+      parts,
+    }),
     {
       description:
         'A cached Tower view or summary changed. Refetch the named parts for this scope.',
@@ -118,7 +181,7 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   iii.registerFunction(
     'tower::overview',
     async (input: unknown) => {
-      const { scope } = scopeInput.parse(input)
+      const { scope } = await scoped(scopeInput, input)
       const data = await read.read(scope)
       await writer.load(scope)
       armSummaryDeadline(scope)
@@ -170,7 +233,7 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   iii.registerFunction(
     'tower::needs-you::list',
     async (input: unknown) => {
-      const data = await read.read(scopeInput.parse(input).scope)
+      const data = await read.read((await scoped(scopeInput, input)).scope)
       return {
         items: data.items,
         now: data.items.filter((item) => item.urgency === 'now'),
@@ -197,7 +260,7 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
     iii.registerFunction(
       id,
       async (input: unknown) => {
-        const data = await read.read(scopeInput.parse(input).scope)
+        const data = await read.read((await scoped(scopeInput, input)).scope)
         return {
           [field]: data[field],
           as_of: data.as_of,
@@ -220,7 +283,7 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   iii.registerFunction(
     'tower::decided::list',
     async (input: unknown) => {
-      const { scope, cursor } = decidedInput.parse(input)
+      const { scope, cursor } = await scoped(decidedInput, input)
       const data = await read.read(scope)
       const all = data.questions.filter(
         (question) =>
@@ -254,7 +317,7 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   iii.registerFunction(
     'tower::assumptions::list',
     async (input: unknown) => {
-      const { scope, since } = assumptionsInput.parse(input)
+      const { scope, since } = await scoped(assumptionsInput, input)
       const data = await read.read(scope)
       return {
         questions: data.questions.filter(
@@ -276,9 +339,9 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   iii.registerFunction(
     'tower::watch',
     async (input: unknown) => {
-      const { scope } = scopeInput.parse(input)
+      const { scope } = await scoped(scopeInput, input)
       const result = await read.watch(scope)
-      void writer.check(scope).catch((error) => console.error('tower writer:', error))
+      armWriterTimer()
       return result
     },
     {
@@ -290,7 +353,12 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   )
   iii.registerFunction(
     'tower::summary::refresh',
-    (input: unknown) => writer.refresh(scopeInput.parse(input).scope),
+    async (input: unknown) => {
+      const { scope } = await scoped(scopeInput, input)
+      const result = await writer.refresh(scope)
+      armWriterTimer()
+      return result
+    },
     {
       description:
         'Request a read-only writer turn at most once per configured interval per scope; otherwise returns throttled_until.',
@@ -308,47 +376,43 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
       ),
     },
   )
-  const observed = <T>(payload: { output?: T } | T): T =>
-    payload && typeof payload === 'object' && 'output' in payload
-      ? (payload.output as T)
-      : (payload as T)
   iii.registerFunction(
     'tower::source-changed',
-    (payload: unknown) => {
-      read.onSource(observed(payload))
+    ({ input }: { input?: unknown }) => {
+      read.onSource(input)
       return {}
     },
-    { metadata: { internal: true }, private: true },
+    { metadata: { internal: true } },
   )
   iii.registerFunction(
     'tower::turn-started',
-    (payload: unknown) => {
-      read.onSource(observed(payload), true)
+    ({ input }: { input?: unknown }) => {
+      read.onSource(input, true)
       return {}
     },
-    { metadata: { internal: true }, private: true },
+    { metadata: { internal: true } },
   )
   iii.registerFunction(
     'tower::turn-completed',
-    async (payload: unknown) => {
-      const event = observed(payload) as Parameters<TowerWriter['onCompleted']>[0]
-      await writer.onCompleted(event)
-      read.onSource(event, true)
+    async ({ input }: { input?: unknown }) => {
+      read.onSource(input, true)
+      await writer.onCompleted(input)
       return {}
     },
-    { metadata: { internal: true }, private: true },
+    { metadata: { internal: true } },
   )
   iii.registerFunction(
     'tower::config-updated',
     async () => {
       const entry = await client.call<{ value: unknown }>('configuration::get', { id: 'tower' })
       config = configSchema.parse(entry.value)
+      armWriterTimer()
       await read.tick()
       for (const scope of read.knownScopes())
         await emit(scope, new Date().toISOString(), ['summary', 'configuration'])
       return {}
     },
-    { metadata: { internal: true }, private: true },
+    { metadata: { internal: true } },
   )
   iii.registerFunction(
     'tower::availability-updated',
@@ -369,33 +433,34 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
       }
       return {}
     },
-    { metadata: { internal: true }, private: true },
+    { metadata: { internal: true } },
   )
-  const observers = [
-    ...['harness::on-ask', 'harness::on-ask-settled', 'kanban::on-change'].map((function_id) =>
-      iii.observe({ function_id, capture: ['output'] }, 'tower::source-changed'),
+  const sources = [
+    ...['harness::on-ask', 'harness::on-ask-settled', 'kanban::on-change'].map(
+      (function_id) => [{ function_id }, 'tower::source-changed'] as const,
     ),
-    iii.observe(
-      { function_id: 'harness::on-turn-started', capture: ['output'] },
-      'tower::turn-started',
-    ),
-    iii.observe(
-      { function_id: 'harness::on-turn-completed', capture: ['output'] },
-      'tower::turn-completed',
-    ),
-    iii.observe(
-      {
-        function_id: 'configuration::on-updated',
-        filters: { 'input.id': { $eq: 'tower' } },
-        capture: ['output'],
-      },
+    [{ function_id: 'harness::on-turn-started' }, 'tower::turn-started'],
+    [{ function_id: 'harness::on-turn-completed' }, 'tower::turn-completed'],
+    [
+      { function_id: 'configuration::on-updated', filters: { 'input.id': { $eq: 'tower' } } },
       'tower::config-updated',
-    ),
-    iii.observe(
-      { function_id: 'engine::on-functions-changed', capture: ['output'] },
-      'tower::availability-updated',
-    ),
-  ]
+    ],
+    [{ function_id: 'engine::on-functions-changed' }, 'tower::availability-updated'],
+  ] as const
+  const observers = sources.map(([source, target]) =>
+    iii.observe({ ...source, capture: ['input'] }, target),
+  )
+  await Promise.all(
+    observers.map(async (observer, index) => {
+      try {
+        await observer.ready()
+      } catch (cause) {
+        throw new Error(`Tower observer registration failed for ${sources[index][0].function_id}`, {
+          cause,
+        })
+      }
+    }),
+  )
   await client.call('configuration::ensure', {
     id: 'tower',
     name: 'Tower',
@@ -407,6 +472,19 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
   config = configSchema.parse(entry.value)
   await refreshAvailability()
   await read.boot()
+  const { keys } = await client.call<{ keys: string[] }>('state::list_keys', { scope: 'tower' })
+  const storedScopes = keys
+    .filter((key) => key.startsWith('summary:'))
+    .map((key) => key.slice('summary:'.length))
+  const projects = storedScopes.some((scope) => scope !== 'all') ? await projectIds() : []
+  await Promise.all(
+    storedScopes
+      .filter((scope) => scope === 'all' || projects.includes(scope))
+      .map(async (scope) => {
+        await writer.load(scope)
+        armSummaryDeadline(scope)
+      }),
+  )
   const uiDir = uiDirs.find((dir) => existsSync(join(dir, 'page.js')))
   if (uiDir) {
     const assets = {
@@ -430,34 +508,26 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
         response_format: object({ content: { type: 'string' }, content_type: { type: 'string' } }),
       },
     )
-    for (const [path, asset] of Object.entries(assets))
-      if (existsSync(join(uiDir, asset.file)))
-        observers.push(
-          iii.observe(
-            { function_id: 'ade::ui::asset', args: { path, kind: asset.kind } },
-            'tower::ui-content',
-          ),
-        )
+    for (const [path, asset] of Object.entries(assets)) {
+      if (!existsSync(join(uiDir, asset.file))) continue
+      const observer = iii.observe(
+        { function_id: 'ade::ui::asset', args: { path, kind: asset.kind } },
+        'tower::ui-content',
+      )
+      void observer.ready().catch((error) => {
+        if (observer.state === 'error') console.error('Tower asset observer:', path, error)
+      })
+      observers.push(observer)
+    }
   }
-  const stale = new Map<string, string>()
-  const timer = setInterval(() => {
-    void (async () => {
-      for (const scope of read.activeScopes()) {
-        await writer.check(scope)
-        const stamp = JSON.stringify(summary(scope))
-        if (stale.get(scope) !== stamp) {
-          stale.set(scope, stamp)
-          await emit(scope, new Date().toISOString(), ['summary'])
-        }
-      }
-    })().catch((error) => console.error('tower schedule:', error))
-  }, 60000)
-  timer.unref()
+  writerReady = true
+  armWriterTimer()
   return {
     read,
     writer,
     dispose: async () => {
-      clearInterval(timer)
+      writerReady = false
+      clearTimeout(writerTimer)
       for (const deadline of summaryDeadlines.values()) clearTimeout(deadline)
       read.dispose()
       writer.dispose()

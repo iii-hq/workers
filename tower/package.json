@@ -12,7 +12,7 @@
   "scripts": {
     "build": "pnpm run build:bundle",
     "build:bundle": "pnpm run build:ui && node scripts/build-bundle.mjs",
-    "build:ui": "pnpm --dir ui run build",
+    "build:ui": "pnpm --dir .. --filter @iii-workers/tower-ui... install --frozen-lockfile && pnpm --dir .. --filter @iii-workers/tower-ui run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

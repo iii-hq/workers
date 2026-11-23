@@ -284,7 +284,7 @@ describe('Tower Needs you interactions', () => {
       by: { channel: 'tower', user: 'user' },
     })
   })
-  it('shows held arguments without options or preselection, and grants before resolving always', async () => {
+  it('shows held arguments without preselection, and grants only after resolving always', async () => {
     const call = vi.fn().mockResolvedValue({ resolved: true })
     const held = towerFixture.items.find((item) => item.kind === 'held')
     if (!held) throw new Error('Held fixture missing')
@@ -307,14 +307,6 @@ describe('Tower Needs you interactions', () => {
     await click('Always allow in this session')
     expect(call.mock.calls).toEqual([
       [
-        'approval::approve-always',
-        {
-          session_id: held.sessionId,
-          function_id: 'shell::exec',
-          namespace: 'production',
-        },
-      ],
-      [
         'approval::resolve',
         {
           session_id: held.sessionId,
@@ -323,7 +315,24 @@ describe('Tower Needs you interactions', () => {
           namespace: 'production',
         },
       ],
+      [
+        'approval::approve-always',
+        {
+          session_id: held.sessionId,
+          function_id: 'shell::exec',
+          namespace: 'production',
+        },
+      ],
     ])
+  })
+  it('does not grant Always allow for an already resolved hold', async () => {
+    const call = vi.fn().mockResolvedValue({ resolved: false })
+    await render({ iii: client(call), initialSelectedId: 'hold' })
+    await click('Always allow in this session')
+    expect(call.mock.calls).toEqual([
+      ['approval::resolve', { session_id: 'dispatch-r1', function_call_id: 'push', decision: 'allow' }],
+    ])
+    expect(container.textContent).toContain('Already resolved')
   })
   it.each(['Deny', 'Allow once'])('uses an explicit %s choice for a held call', async (choice) => {
     const call = vi.fn().mockResolvedValue({ resolved: true })
@@ -335,14 +344,33 @@ describe('Tower Needs you interactions', () => {
       decision: choice === 'Deny' ? 'deny' : 'allow',
     })
   })
-  it('resumes the stalled root with continue', async () => {
+  it('reuses the Resume idempotency key across panes and changes it for a newer stalled turn', async () => {
     const call = vi.fn().mockResolvedValue({})
-    await render({ iii: client(call), initialSelectedId: 'stall' })
-    await click('Resume')
-    expect(call).toHaveBeenCalledWith('harness::send', {
+    for (const turnId of ['first-turn', 'first-turn', 'second-turn']) {
+      await act(() => root.unmount())
+      root = createRoot(container)
+      await render({
+        iii: client(call),
+        initialSelectedId: 'stall',
+        data: {
+          ...towerFixture,
+          runs: towerFixture.runs.map((run) =>
+            run.session.session_id === 'dispatch-flaky'
+              ? { ...run, status: { ...run.status, turn_id: turnId } }
+              : run,
+          ),
+        },
+      })
+      await click('Resume')
+    }
+    expect(call).toHaveBeenCalledTimes(3)
+    expect(call).toHaveBeenNthCalledWith(1, 'harness::send', {
       session_id: 'dispatch-flaky',
       message: 'continue',
+      idempotency_key: expect.stringMatching(/^tower:resume:dispatch-flaky:.*first-turn/),
     })
+    expect(call.mock.calls[1]).toEqual(call.mock.calls[0])
+    expect(call.mock.calls[2][1].idempotency_key).not.toEqual(call.mock.calls[0][1].idempotency_key)
   })
   it('leaves a stalled item hidden until its run changes', async () => {
     await render({ initialSelectedId: 'stall' })
@@ -486,9 +514,11 @@ describe('Tower decision capability', () => {
       editable: false,
       closed: true,
     })
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(bindings[1].detach).toHaveBeenCalledOnce()
     await act(() => root.unmount())
     expect(bindings[0].detach).toHaveBeenCalled()
-    expect(bindings[1].detach).toHaveBeenCalled()
+    expect(bindings[1].detach).toHaveBeenCalledOnce()
   })
 
   it.each(['option', 'text'])('fills a %s through the host request, then only Answer sends it', async (kind) => {

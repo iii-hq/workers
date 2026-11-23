@@ -245,7 +245,7 @@ describe('server read model', () => {
     expect(call).toHaveBeenCalledWith('session::list', expect.anything())
   })
 
-  it('retains completed turn identity when a new turn starts before the debounce rebuild', async () => {
+  it('keeps the last confirmed completion while a new turn runs, ignoring event payload claims', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(at)
     const { call, iii } = fake()
@@ -262,10 +262,10 @@ describe('server read model', () => {
           }
         : original(id, input),
     )
-    read.onSource({ session_id: 'root', turn_id: 'completed-between', status: 'completed' }, true)
+    read.onSource({ session_id: 'root', turn_id: 'unverified', status: 'completed' }, true)
     await vi.advanceTimersByTimeAsync(2000)
     const data = await read.read('p')
-    expect(data.completed_root_turns).toEqual(['root/completed-between'])
+    expect(data.completed_root_turns).toEqual(['root/t'])
     expect(data.runs[0].status.turn_id).toBe('new-running')
   })
 
@@ -310,6 +310,66 @@ describe('server read model', () => {
     expect(changed).toHaveBeenLastCalledWith('all', expect.any(String), ['projects'])
   })
 
+  it('refreshes silent project and release edits when an idle scope is watched', async () => {
+    const options = { sessions: [], repos: ['owner/old'], releases: [release] }
+    const { call, iii } = fake(options)
+    const { read } = model(iii)
+    expect((await read.read('p')).repositories).toEqual(['owner/old'])
+    options.repos = ['owner/new']
+    const target_at = '2026-12-01T00:00:00Z'
+    options.releases = [{ ...release, target_at }]
+    await read.watch('p')
+    const data = await read.read('p')
+    expect(data.releases[0].target_at).toBe(target_at)
+    expect(data.repositories).toEqual(['owner/new'])
+    expect(data.prs[0].repo).toBe('owner/new')
+    expect(call.mock.calls.filter(([id]) => id === 'github::pr::list')).toEqual([
+      ['github::pr::list', expect.objectContaining({ repo: 'owner/new' })],
+    ])
+  })
+
+  it('commits before announcing and rebuilds again after a source event during a blocked watch', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(at)
+    const options = { sessions: [], repos: ['owner/first'] }
+    const { call, iii } = fake(options)
+    const { read, changed } = model(iii)
+    await read.read('p')
+    const original = call.getMockImplementation()
+    assert.ok(original)
+    let startPrRead!: () => void
+    let releasePrRead!: () => void
+    const firstPrRead = new Promise<void>((resolve) => {
+      startPrRead = resolve
+    })
+    const resumePrRead = new Promise<void>((resolve) => {
+      releasePrRead = resolve
+    })
+    call.mockImplementation(async (id, input) => {
+      if (id === 'github::pr::list' && input?.repo === 'owner/first') {
+        startPrRead()
+        await resumePrRead
+      }
+      return original(id, input)
+    })
+    const announced: string[][] = []
+    changed.mockImplementation(async () => {
+      const data = await read.read('p')
+      announced.push(data.prs.map((pr) => pr.repo))
+    })
+    const watch = read.watch('p')
+    await firstPrRead
+    expect((await read.read('p')).prs).toEqual([])
+    options.repos = ['owner/newest']
+    read.onSource({ event: 'ticket.updated' })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(call.mock.calls.filter(([id]) => id === 'kanban::project::list')).toHaveLength(2)
+    releasePrRead()
+    await watch
+    expect(announced).toEqual([['owner/first'], ['owner/newest']])
+    expect((await read.read('p')).repositories).toEqual(['owner/newest'])
+  })
+
   it('keeps board data available when GitHub is missing', async () => {
     const { call, iii } = fake({ sessions: [] })
     const original = call.getMockImplementation()
@@ -331,9 +391,16 @@ describe('context accounting', () => {
   it('caches totals by turn and step and estimates the messages tail without context or a turn', async () => {
     const { call, iii } = fake()
     const cache = new Map<string, { key: string; total: number }>()
-    expect((await fetchTowerRuns(iii, cache)).rows[0].context_size).toBe(120)
     const original = call.getMockImplementation()
     assert.ok(original)
+    call.mockImplementation(async (id, input) =>
+      id === 'harness::status'
+        ? { ...((await original(id, input)) as Record<string, unknown>), context: undefined }
+        : original(id, input),
+    )
+    expect((await fetchTowerRuns(iii, cache)).rows[0].context_size).toBe(2)
+    call.mockImplementation(original)
+    expect((await fetchTowerRuns(iii, cache)).rows[0].context_size).toBe(120)
     call.mockImplementation(async (id, input) =>
       id === 'harness::status'
         ? { ...((await original(id, input)) as Record<string, unknown>), context: { total: 900 } }
@@ -355,6 +422,58 @@ describe('context accounting', () => {
     )
     expect((await fetchTowerRuns(iii, cache)).rows[0].context_size).toBe(2)
   })
+})
+
+it('projects only run facts from nested session, runtime status and wake rows', async () => {
+  const rawSession = {
+    ...session,
+    status: 'working' as const,
+    draft: 'unsent words',
+    draft_attachments: [{ id: 'unsent attachment' }],
+    metadata: { kanban_ticket: 'KAN-1', agent_profile: { id: 'builder' }, secret: 'raw metadata' },
+  }
+  const { call, iii } = fake({ sessions: [rawSession] })
+  const original = call.getMockImplementation()
+  assert.ok(original)
+  call.mockImplementation(async (id, input) => {
+    if (id === 'harness::status' && input?.session_id === 'root')
+      return {
+        session_id: 'root',
+        turn_id: 't',
+        step: 1,
+        status: 'awaiting_functions',
+        pending_function_calls: ['held call id'],
+        queued: [{ message: 'queued text' }],
+        result: 'internal result',
+        children: [
+          { session_id: 'child', function_call_id: 'child call id', turn_id: 'child turn' },
+        ],
+        expects_wake: true,
+        open_asks: 0,
+        armed_wakes: [{ created_at: at, observer_id: 'observer id', args: { private: true } }],
+        context: { total: 120, private: true },
+      }
+    return original(id, input)
+  })
+  const { read } = model(iii)
+  const data = await read.read('all')
+  const run = data.runs[0]
+  expect(run.session).toEqual({
+    session_id: 'root',
+    title: 'Build',
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+  })
+  expect(run.status).toEqual({
+    session_id: 'root',
+    turn_id: 't',
+    status: 'awaiting_functions',
+    children: [{ session_id: 'child' }],
+    expects_wake: true,
+    open_asks: 0,
+    armed_wakes: [{ created_at: at }],
+  })
+  expect(run).toMatchObject({ state: 'working', context_size: 120, profile: 'builder' })
 })
 
 describe('fallback cache', () => {

@@ -1,9 +1,9 @@
 # tower
 
 The tower worker owns the control tower page, read model and summary schedule.
-Open the page at `#/worker/tower` or from the console navigation. It
-aggregates harness roots and asks, kanban projects, cards, releases and
-questions, and pull requests from repositories declared on projects. All
+Open the page from the console navigation or through the `#/tower` workspace
+redirect. It aggregates harness roots and asks, kanban projects, cards, releases
+and questions, and pull requests from repositories declared on projects. All
 public tower reads are read-only; approval holds remain a console concern.
 
 ## Configuration
@@ -55,9 +55,10 @@ observed card, session or PR reference retain factual direction but omit
 writer prose rather than inventing a reference.
 
 Writer state uses scope `tower`, key `summary:<scope>`. Alongside `result`,
-`valid_hash` and `checked_at`, it persists `pending_turns`, `covered_at`,
-`failures`, `last_attempt_at` and `last_refresh_at` so result ownership,
-backoff and refresh throttling survive a restart.
+`valid_hash` and `checked_at`, it persists `pending_turn`, `send_order`,
+`failures`, `last_attempt_at` and `last_send_at`. Scheduled sends and Refresh
+reserve the same send budget. On startup, the worker reconciles a pending turn
+with the writer session's current Harness status.
 
 ## Development
 
@@ -71,26 +72,27 @@ TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm test
 TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm build:bundle
 ```
 
-The worker and `ui/` share this directory's pnpm workspace and lockfile. The UI
-uses the local `packages/console-ui` package without changing the repository UI
-workspace. `build:bundle` builds the UI with strict design lint, then copies
-`page.js` and `styles.css` into `dist/bundle/` beside the worker. All assets have
-explicit deploy includes. A source install in the monorepo builds them; a
-published artifact starts its existing bundle directly. Like onboarding, a
-source-only copy of `tower/` cannot build the UI without the repository's
-`packages/console-ui` directory. Use the published artifact for that layout.
+The worker uses the lockfile in this directory. The UI uses the root pnpm
+workspace and its `@iii-dev/console-ui` package. `build:bundle` installs those UI
+dependencies from the frozen root lockfile, runs the strict design lint and
+build, and copies `page.js` and `styles.css` into `dist/bundle/` beside the worker.
+The release lists all bundled files explicitly. Build from the monorepo
+source or start the published artifact.
 
 Run UI checks from `ui/` with the same environment:
 
 ```sh
-TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm build
-TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm test
+TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm --dir ../.. --filter @iii-workers/tower-ui run typecheck
+TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm --dir ../.. --filter @iii-workers/tower-ui run build
+TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm --dir ../.. --filter @iii-workers/tower-ui run test
 ```
 
 The page reads held calls directly through `approval::list-pending`; they never
 enter a `tower::*` response. Actions are console calls to the target workers.
 Decision side chats use the optional host capabilities, and are hidden when the
-host lacks them. Overview keeps the last visit per browser via `usePaneState`.
+host lacks them. Browsers sharing an engine can create duplicate copies if they
+open the same decision concurrently, since the creation lock is browser-local.
+Overview keeps the last visit per browser via `usePaneState`.
 Run usage metrics were removed because the read model does not supply them.
 The worker UI has no Storybook setup; fixture tests and captures replace the
 old ADE-only stories.

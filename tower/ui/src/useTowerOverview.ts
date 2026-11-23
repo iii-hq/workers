@@ -130,10 +130,17 @@ export function mergeHolds(data: TowerData, holds: PendingApproval[], scope: str
         run.descendantSessionIds.includes(item.sessionId) ||
         Boolean(item.card && item.card.id === run.card?.id),
     )
+    const parkedWithHold =
+      (run.state === 'done' || (run.state === 'working' && run.status.status === 'awaiting_functions')) &&
+      needsYou.some(
+        (item) =>
+          item.kind === 'held' &&
+          (item.sessionId === run.session.session_id || run.descendantSessionIds.includes(item.sessionId)),
+      )
     return {
       ...run,
       needsYou,
-      state: run.state === 'done' && needsYou.some((item) => item.kind === 'held') ? ('waiting' as const) : run.state,
+      state: parkedWithHold ? ('waiting' as const) : run.state,
     }
   })
   return { ...data, items, runs }

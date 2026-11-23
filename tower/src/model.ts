@@ -231,7 +231,7 @@ export interface StalledNeed extends NeedBase {
 export type NeedsYouItem = QuestionNeed | HeldNeed | StalledNeed
 
 export interface TowerRun {
-  session: SessionMeta
+  session: Pick<SessionMeta, 'session_id' | 'title' | 'created_at' | 'updated_at'>
   status: HarnessStatus
   card?: TowerTicket
   subtasks: TowerTicket[] | null
@@ -242,7 +242,6 @@ export interface TowerRun {
   state: 'working' | 'waiting' | 'stalled' | 'done' | 'failed'
   profile?: string
   startedBy: 'board dispatch' | 'chat' | 'automation'
-  workingDir?: string
   descendantSessionIds: string[]
   metrics?: {
     complete: boolean

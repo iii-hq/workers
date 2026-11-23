@@ -266,7 +266,6 @@ describe('run catch-up', () => {
     expect(
       cardForSession(
         {
-          ...towerFixture.runs[0].session,
           metadata: { kanban_ticket: '  kan-616 ' },
         },
         towerFixture.tickets,

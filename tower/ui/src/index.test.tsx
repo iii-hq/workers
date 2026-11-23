@@ -50,6 +50,23 @@ function writer(result: TowerSummary = towerSummaryFixture) {
 }
 
 describe('Control tower views', () => {
+  it('offers and rebinds decision chats only within a workspace tab', async () => {
+    const openDecisionChat = vi.fn()
+    const rebindDecisionChat = vi.fn(async () => null)
+    const pageHost = { ...host, chat: { ...host.chat!, openDecisionChat, rebindDecisionChat } }
+    const hook = vi.spyOn(overviewHook, 'useTowerOverview').mockReturnValue(towerFixture)
+    try {
+      await act(() => root.render(<Tower host={pageHost} tabId="" panelSide="left" />))
+      expect(container.textContent).not.toContain('Ask about this')
+      expect(rebindDecisionChat).not.toHaveBeenCalled()
+      await act(() => root.render(<Tower host={pageHost} tabId="workspace" panelSide="left" />))
+      expect(container.textContent).toContain('Ask about this')
+      expect(rebindDecisionChat).toHaveBeenCalled()
+    } finally {
+      hook.mockRestore()
+    }
+  })
+
   it('renders fresh Summary, today’s Diary and live notes as plain text with resolved links and agent attribution', async () => {
     const text = '<img src=x onerror=alert(1)> **Literal prose**'
     const summary = writer({

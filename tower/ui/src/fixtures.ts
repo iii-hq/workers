@@ -215,13 +215,8 @@ const run = (id: string, title: string, state: TowerRun['state'], linked?: Tower
   session: {
     session_id: id,
     title,
-    description: '',
-    status: state === 'working' ? 'working' : 'done',
-    kind: 'user',
     created_at: ago(120),
     updated_at: ago(41),
-    message_count: 6,
-    metadata: linked ? { kanban_ticket: linked.key } : {},
   },
   status: {
     session_id: id,

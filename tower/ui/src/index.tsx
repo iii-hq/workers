@@ -35,7 +35,7 @@ import {
   type TowerRun,
   type TowerTicket,
 } from '../../src/types'
-import { AskAboutButton, NeedsYou, needLabel, QuestionLog, type TowerActions } from './NeedsYou'
+import { AskAboutButton, NeedsYou, needLabel, QuestionLog, stallVersion, type TowerActions } from './NeedsYou'
 import { resolveSummary, summaryIsFresh, type TowerSummary } from '../../src/summary'
 
 type TowerView = 'overview' | 'needs-you' | 'assumptions' | 'decided' | 'runs'
@@ -47,13 +47,14 @@ const VIEWS: Array<{ value: TowerView; label: string }> = [
   { value: 'runs', label: 'Runs' },
 ]
 
-export function Tower({ host, paneId, onRequestClose }: { host: Host } & PageRenderProps) {
+export function Tower({ host, paneId, tabId, onRequestClose }: { host: Host } & PageRenderProps) {
   const [scope, setScope] = usePaneState(`tower:${paneId}:scope`, ALL_PROJECTS)
   return (
     <ScopedTower
       key={scope}
       host={host}
       paneId={paneId}
+      tabId={tabId}
       onRequestClose={onRequestClose}
       scope={scope}
       onScopeChange={setScope}
@@ -64,12 +65,13 @@ export function Tower({ host, paneId, onRequestClose }: { host: Host } & PageRen
 function ScopedTower({
   host,
   paneId,
+  tabId,
   onRequestClose,
   scope,
   onScopeChange,
 }: { host: Host; scope: string; onScopeChange: (scope: string) => void } & Pick<
   PageRenderProps,
-  'paneId' | 'onRequestClose'
+  'paneId' | 'tabId' | 'onRequestClose'
 >) {
   const [lastVisit, setLastVisit] = usePaneState<string | null>(`tower:last-visit:${scope}`, null)
   const [since] = useState(lastVisit ?? undefined)
@@ -84,7 +86,7 @@ function ScopedTower({
       data={data}
       summary={data.summary}
       iii={host.iii}
-      chat={host.chat}
+      chat={tabId ? host.chat : undefined}
       scope={scope}
       onScopeChange={onScopeChange}
       onRequestClose={onRequestClose}
@@ -135,16 +137,9 @@ function TowerScreenContent({
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId ?? null)
   const [askAboutId, setAskAboutId] = useState<string | null>(null)
   const [leftRuns, setLeftRuns] = usePaneState<Record<string, string>>(`tower:${paneId}:left-runs:${user}`, {})
-  const stallVersion = (item: NeedsYouItem) => {
-    const run = sourceData.runs.find((row) => row.session.session_id === item.sessionId)
-    return JSON.stringify([
-      item.createdAt,
-      run?.session.updated_at,
-      run?.status.turn_id,
-      item.kind === 'stalled' ? item.armedWakes : null,
-    ])
-  }
-  const items = sourceData.items.filter((item) => item.kind !== 'stalled' || leftRuns[item.id] !== stallVersion(item))
+  const items = sourceData.items.filter(
+    (item) => item.kind !== 'stalled' || leftRuns[item.id] !== stallVersion(item, sourceData.runs),
+  )
   const data = {
     ...sourceData,
     items,
@@ -298,7 +293,7 @@ function TowerScreenContent({
               onLeave={(item) =>
                 setLeftRuns((current) => ({
                   ...current,
-                  [item.id]: stallVersion(item),
+                  [item.id]: stallVersion(item, sourceData.runs),
                 }))
               }
               openRuns={() => setView('runs')}
@@ -1289,7 +1284,6 @@ function Runs({
                   <p className="tower-meta">
                     {run.profile || 'default profile'} · {run.startedBy} · started{' '}
                     {formatRelative(run.session.created_at)} ago
-                    {run.workingDir ? ` · ${run.workingDir}` : ''}
                   </p>
                   {run.progress.map((progress) => (
                     <div key={progress.releaseId ?? 'none'} className="tower-progress-row">
