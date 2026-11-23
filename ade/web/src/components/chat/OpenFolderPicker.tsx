@@ -26,10 +26,10 @@ import {
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import {
-  type HarnessProject,
-  listHarnessProjects,
-  upsertHarnessProject,
-} from '@/lib/backend/projects'
+  listSavedFolders,
+  type SavedFolder,
+  upsertSavedFolder,
+} from '@/lib/backend/folders'
 import { getIiiClient } from '@/lib/iii-client'
 import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
 import {
@@ -47,7 +47,7 @@ import { cn } from '@/lib/utils'
 import { errMsg, validateWorkspaceDir } from '@/lib/working-dir'
 import { basename, parentOf } from './FolderBrowser'
 
-interface OpenProjectPickerProps {
+interface OpenFolderPickerProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The worker-echoed canonical path of the folder just added. */
@@ -85,7 +85,7 @@ const CAP =
   'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none'
 
 /**
- * "Add project": a path field first, the way Finder's Go to Folder and a
+ * "Add folder": a path field first, the way Finder's Go to Folder and a
  * shell prompt work, with the folder it points at listed underneath.
  *
  * - The field holds a path (`~/conductor/repos/`). Typing narrows the
@@ -96,20 +96,20 @@ const CAP =
  *  list does. A name that isn't in the folder is looked up across the
  *  background index (`lib/project-index`) under "Elsewhere".
  * - Recent projects sit as chips above the listing: one click adds.
- * - The footer always names the folder Add project will add.
+ * - The footer always names the folder Add folder will add.
  *
  * Adding validates the folder with the shell worker and remembers it as a
  * project before `onAdded` fires with the canonical path.
  */
-export function OpenProjectPicker({
+export function OpenFolderPicker({
   open,
   onOpenChange,
   onAdded,
-}: OpenProjectPickerProps) {
+}: OpenFolderPickerProps) {
   const pointerFine = useMediaQuery(DESKTOP_POINTER_QUERY)
   const [text, setText] = useState('')
   const [index, setIndex] = useState<ProjectIndex | null>(cachedProjectIndex)
-  const [recent, setRecent] = useState<HarnessProject[]>([])
+  const [recent, setRecent] = useState<SavedFolder[]>([])
   const [listings, setListings] = useState<
     Record<string, FolderListing | { error: string }>
   >({})
@@ -140,7 +140,7 @@ export function OpenProjectPicker({
     setListings({})
     setNewFolder(null)
     let live = true
-    listHarnessProjects().then(
+    listSavedFolders().then(
       (projects) => live && setRecent(projects),
       () => undefined,
     )
@@ -301,7 +301,7 @@ export function OpenProjectPicker({
       : undefined
   const ghost = ghostFor ? `${ghostFor.name.slice(segment.length)}/` : ''
 
-  /** The folder "Add project" adds right now. */
+  /** The folder "Add folder" adds right now. */
   const target = activeRow?.path ?? (pathMode && !segment ? dir : null)
   const targetIsProject =
     activeRow?.git ?? (target === dir ? folderListing?.project : false)
@@ -331,9 +331,9 @@ export function OpenProjectPicker({
         return
       }
       try {
-        await upsertHarnessProject(res.path)
+        await upsertSavedFolder(res.path)
       } catch (err) {
-        setError(`Can't save this project: ${errMsg(err)}`)
+        setError(`Can't save this folder: ${errMsg(err)}`)
         setBusyPath(null)
         return
       }
@@ -356,7 +356,7 @@ export function OpenProjectPicker({
   /**
    * Make a folder inside the one being listed (the shell worker's
    * `shell::fs::mkdir`, held to the same workspace roots as the listing),
-   * then step into it so "Add project" points at it.
+   * then step into it so "Add folder" points at it.
    */
   const createFolder = async (raw: string) => {
     const name = raw.trim()
@@ -490,7 +490,7 @@ export function OpenProjectPicker({
       >
         <div className="flex shrink-0 flex-col gap-1 px-5 pt-5 pr-12">
           <DialogTitle className="text-base font-medium">
-            Add project
+            Add folder
           </DialogTitle>
           <DialogDescription className="text-sm text-muted-foreground">
             Choose the folder a chat works in. Type a path, or pick a
@@ -533,7 +533,7 @@ export function OpenProjectPicker({
                 }}
                 onKeyDown={onKeyDown}
                 disabled={busyPath !== null}
-                placeholder="~/path/to/project or a folder name"
+                placeholder="~/path/to/folder or a folder name"
                 aria-label="Folder path or name"
                 role="combobox"
                 aria-expanded="true"
@@ -809,7 +809,7 @@ export function OpenProjectPicker({
             onClick={() => void add(target)}
             className="gap-2 pr-1.5"
           >
-            {busyPath ? 'Adding…' : 'Add project'}
+            {busyPath ? 'Adding…' : 'Add folder'}
             {pointerFine ? (
               <KeyCombo
                 binding="Mod+Enter"

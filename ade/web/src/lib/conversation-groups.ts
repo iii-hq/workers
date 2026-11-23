@@ -14,8 +14,15 @@
  * Group keys carry their mode, so one persisted collapsed-set covers both
  * modes without a project folder named `today` colliding with the Today
  * bucket.
+ *
+ * On an engine with chat projects (`harness::projects`, chat-projects
+ * §1.3.1) `project` groups by the conversation's project instead
+ * (`metadata.project_id`): one section per project, ordered by its newest
+ * conversation, an empty project kept as its header, and "No project" last.
+ * Each project shows its 3 newest roots, then "N more" (`capProjectRoots`).
  */
 
+import type { ChatProject } from './backend/projects'
 import type { ConvNode } from './conversation-tree'
 
 export type ConversationGrouping = 'none' | 'recent' | 'project'
@@ -34,7 +41,7 @@ export const CONVERSATION_GROUPING_OPTIONS: readonly {
   label: string
 }[] = [
   { value: 'none', label: 'None' },
-  { value: 'recent', label: 'Recent' },
+  { value: 'recent', label: 'Date' },
   { value: 'project', label: 'Project' },
 ]
 
@@ -47,7 +54,17 @@ export interface ConversationGroup {
   title?: string
   /** Root nodes of this section, in the order `buildConversationTree` gave. */
   roots: ConvNode[]
+  /** A chat project's section: the project it lists. */
+  chatProject?: ChatProject
+  /** The chat projects' "No project" section. */
+  noProject?: boolean
 }
+
+/** How many roots a project shows before "N more" (§1.3.1). */
+export const PROJECT_ROOTS_SHOWN = 3
+
+export const CHAT_PROJECT_KEY_PREFIX = 'chat-project:'
+export const CHAT_NO_PROJECT_GROUP_KEY = 'chat-project:none'
 
 const DAY_MS = 86_400_000
 
@@ -183,11 +200,92 @@ function groupByProject(roots: ConvNode[]): ConversationGroup[] {
   return groups
 }
 
+/**
+ * Sections by chat project: a project's roots are the ones whose
+ * `projectId` names it. `none`, an unknown id and no id at all land in
+ * "No project", last and only when it has rows. Projects order by their
+ * newest conversation; one without conversations sorts by its own
+ * `updated_at_ms` and still shows (its header and "No conversations yet").
+ */
+export function groupByChatProject(
+  roots: ConvNode[],
+  projects: readonly ChatProject[],
+): ConversationGroup[] {
+  const byId = new Map(projects.map((project) => [project.id, project]))
+  const rows = new Map<string, ConvNode[]>()
+  const loose: ConvNode[] = []
+  for (const node of roots) {
+    const id = node.conversation.projectId
+    if (id && byId.has(id)) {
+      const bucket = rows.get(id)
+      if (bucket) bucket.push(node)
+      else rows.set(id, [node])
+    } else {
+      loose.push(node)
+    }
+  }
+  const newest = (project: ChatProject): number => {
+    const nodes = rows.get(project.id)
+    if (!nodes?.length) return project.updated_at_ms
+    return Math.max(...nodes.map((node) => node.conversation.updatedAt))
+  }
+  const groups: ConversationGroup[] = [...projects]
+    .map((project) => ({ project, at: newest(project) }))
+    .sort((a, b) => b.at - a.at || a.project.name.localeCompare(b.project.name))
+    .map(({ project }) => ({
+      key: CHAT_PROJECT_KEY_PREFIX + project.id,
+      label: project.name,
+      roots: rows.get(project.id) ?? [],
+      chatProject: project,
+    }))
+  if (loose.length > 0) {
+    groups.push({
+      key: CHAT_NO_PROJECT_GROUP_KEY,
+      label: 'No project',
+      roots: loose,
+      noProject: true,
+    })
+  }
+  return groups
+}
+
+/**
+ * The roots a project shows: the first 3, then "N more" until it is
+ * expanded. The open conversation always shows, so the list never hides
+ * where the reader is.
+ */
+export function capProjectRoots(
+  roots: ConvNode[],
+  expanded: boolean,
+  activeId: string | null = null,
+): { shown: ConvNode[]; hidden: number } {
+  if (expanded || roots.length <= PROJECT_ROOTS_SHOWN) {
+    return { shown: roots, hidden: 0 }
+  }
+  const shown = roots.slice(0, PROJECT_ROOTS_SHOWN)
+  const active = activeId
+    ? roots
+        .slice(PROJECT_ROOTS_SHOWN)
+        .find((node) => containsConversation(node, activeId))
+    : undefined
+  if (active) shown.push(active)
+  return { shown, hidden: roots.length - shown.length }
+}
+
+function containsConversation(node: ConvNode, id: string): boolean {
+  return (
+    node.conversation.id === id ||
+    node.children.some((child) => containsConversation(child, id))
+  )
+}
+
 export function groupConversationRoots(
   roots: ConvNode[],
   grouping: ConversationGrouping,
   now: number,
   pinned: ReadonlySet<string> = new Set(),
+  /** The engine's chat projects; `project` then groups by them, not by folder. */
+  chatProjects?: readonly ChatProject[],
 ): ConversationGroup[] {
   const pinnedRoots: ConvNode[] = []
   const rest: ConvNode[] = []
@@ -216,7 +314,9 @@ export function groupConversationRoots(
   return [
     ...head,
     ...(grouping === 'project'
-      ? groupByProject(rest)
+      ? chatProjects
+        ? groupByChatProject(rest, chatProjects)
+        : groupByProject(rest)
       : groupByRecency(rest, now)),
   ]
 }

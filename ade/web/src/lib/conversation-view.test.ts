@@ -96,7 +96,7 @@ describe('defaults and toggling', () => {
 
   it('describes every setting for the trigger tooltip', () => {
     expect(describeConversationListView(DEFAULT_CONVERSATION_LIST_VIEW)).toBe(
-      'User · Recent · Last activity',
+      'User · Date · Last activity',
     )
     expect(
       describeConversationListView({

@@ -4,7 +4,7 @@ import { Button } from '@/components/shadcn/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/shadcn/dialog'
 import { Hint } from '@/components/ui/Hint'
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
-import { recentHarnessProjectPaths } from '@/lib/backend/projects'
+import { recentFolderPaths } from '@/lib/backend/folders'
 import { formatBinding } from '@/lib/keybindings/bindings'
 import { isSendEvent, sendBinding, useSendKey } from '@/lib/send-key'
 import { loadLastModel, loadLastThinkingLevel } from '@/lib/storage'
@@ -111,7 +111,7 @@ export function NewChatDialog({
     setAttachments([])
     setModel(startingModel(modelOptions))
     setThinkingLevel(loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
-    setWorkingDir(recentHarnessProjectPaths()[0] ?? null)
+    setWorkingDir(recentFolderPaths()[0] ?? null)
   }, [open, modelOptions])
 
   // A profile brings its model and reasoning effort, as it does in the
@@ -196,7 +196,7 @@ export function NewChatDialog({
             value={workingDir}
             onChange={setWorkingDir}
             triggerAppearance="chip"
-            emptyLabel="Choose project"
+            emptyLabel="Choose folder"
             popoverAlign="start"
             className="max-w-[min(20rem,60vw)]"
           />

@@ -1354,7 +1354,8 @@ export function MessageList({
           },
           { backgroundColor: 'transparent' },
         ],
-        { duration: 900, easing: 'ease-out' },
+        // 1.2 s: the landing of a jump (chat-projects §1.3.6).
+        { duration: 1200, easing: 'ease-out' },
       )
     }
     onFocusMessageHandled?.()

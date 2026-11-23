@@ -158,6 +158,22 @@ function writeStoredState(
   )
 }
 
+/**
+ * Fold or unfold every collapsible `PageSidebar` kept under `storageKey`
+ * from outside it (a header's pane button, a shortcut): the same stored
+ * state and sync event its own toggle writes. The width is kept.
+ */
+export function setPageSidebarCollapsed(
+  storageKey: string,
+  collapsed: boolean,
+): void {
+  writeStoredState(
+    storageKey,
+    { ...readStoredState(storageKey), collapsed },
+    'external-toggle',
+  )
+}
+
 function firstFocusable(root: HTMLElement): HTMLElement | null {
   return root.querySelector<HTMLElement>(
     'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',

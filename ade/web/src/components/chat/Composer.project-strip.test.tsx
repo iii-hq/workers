@@ -72,7 +72,7 @@ describe('composer controls placement', () => {
     expect(project).not.toContain('judge-provider')
     expect(html.slice(toolbar)).toContain('data-control="judge-provider"')
     const folder = project.indexOf(
-      'aria-label="select project folder, current folder: repo"',
+      'aria-label="select folder, current folder: repo"',
     )
     const worktree = project.indexOf('data-control="ide-worktree"')
     expect(folder).toBeGreaterThan(-1)

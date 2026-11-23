@@ -69,6 +69,21 @@ export const MODEL_NOTICE_CUSTOM_TYPE = 'model_notice'
 const HIDDEN_CUSTOM_TYPES = new Set(['message_order', 'runtime_context'])
 
 /**
+ * Calls the transcript never shows, nor their results (chat-projects
+ * §1.2.3): the agent's `harness::set-description`, whichever name the
+ * harness's tool mode gave it (the function id, the native `__` wire name,
+ * or an `agent_call` naming it).
+ */
+export const HIDDEN_FUNCTION_IDS: ReadonlySet<string> = new Set([
+  'harness::set-description',
+  'harness__set-description',
+])
+
+export function isHiddenFunctionId(functionId: string | undefined): boolean {
+  return functionId !== undefined && HIDDEN_FUNCTION_IDS.has(functionId)
+}
+
+/**
  * Map one typed custom record (however it arrived — `item.custom` on events,
  * a `role: 'custom'` message on `session::messages` read-backs) to its UI
  * segments. `null` means "not a typed record" so the caller can fall back.
@@ -975,6 +990,13 @@ function assistantSegments(
     // (`function` + `description`), which the row shows exactly as a whole
     // entry would. A wrapper whose target did not survive keeps the wrapper
     // name until its (elided) result names the real function.
+    if (
+      block.type === 'function_call' &&
+      (isHiddenFunctionId(block.function_id) ||
+        isHiddenFunctionId(elidedCallLabel(block).functionId))
+    ) {
+      continue
+    }
     if (block.type === 'function_call' && elided) {
       const { functionId, description, unresolvedTarget } =
         elidedCallLabel(block)
@@ -1149,6 +1171,15 @@ export function applyEntryUpsert(
     // still a placeholder (the output rides along until the call lands).
     const elided = item.elided === true
     const result = item.message
+    // A hidden call's result has no row to fill and gets none of its own.
+    if (isHiddenFunctionId(result.function_id)) {
+      const kept = messages.filter(
+        (m) =>
+          m.role !== 'function-call' ||
+          m.functionCallId !== result.function_call_id,
+      )
+      return kept.length === messages.length ? messages : kept
+    }
     const settled: FcallPatch = {
       running: false,
       pendingApproval: false,

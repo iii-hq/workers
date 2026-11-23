@@ -21,6 +21,7 @@ import {
   GitPullRequestDraft,
   Globe,
   ImageIcon,
+  Layers,
   SquareTerminal,
   Ticket,
   TriangleAlert,
@@ -70,6 +71,7 @@ import {
   ghViewer,
   readPrActivity,
 } from '@/lib/auto-fix'
+import type { ContextItems } from '@/lib/backend/context-items'
 import {
   firedGhostRow,
   type SessionObserverInfo,
@@ -78,7 +80,7 @@ import {
   type ChatFile,
   capRows,
   collectChatFiles,
-  collectChatImages,
+  collectChatImageSources,
   collectChatLinks,
   collectChatTickets,
   createPullRequestPrompt,
@@ -90,7 +92,9 @@ import {
   githubWorkerGh,
   isDefaultBranch,
   type KanbanBoard,
+  linkSourceMessages,
   type PullRequestAction,
+  type PullRequestRef,
   type PullRequestRow,
   pullRequestKey,
   readGitSummary,
@@ -132,6 +136,18 @@ import {
   type SubagentVisualStatus,
 } from './active-subagents'
 import { ContextTrackingBody, useContextTracking } from './ContextTracking'
+import {
+  attachmentSize,
+  copyLinkEntry,
+  fileIconFor,
+  type GridImage,
+  ImageGrid,
+  ItemMenu,
+  type ItemMenuEntry,
+  menuIcons,
+  shareEntry,
+  subagentStatusText,
+} from './context-items-rows'
 import {
   ObserverDetailDialog,
   ObserverStatus,
@@ -184,6 +200,72 @@ interface ChatContextPanelProps {
   onDismissPullRequest?: (key: string) => void
   /** Start (a baseline) or stop (null) auto-fix on a PR (`repo#number`). */
   onAutoFixChange?: (key: string, seen: AutoFixSeen | null) => void
+  /**
+   * What the engine lists for this conversation (`harness::context-items`,
+   * chat-projects D10). Absent or null: the pane parses the transcript it
+   * has loaded, as before.
+   */
+  items?: ContextItems | null
+  /**
+   * "Show in conversation": land the transcript on an entry (the engine's
+   * lists) or on a loaded row (the local parse).
+   */
+  onShowInConversation?: (target: {
+    entryId?: string
+    messageId?: string
+  }) => void
+  /** The phone drawer: the filter chips under the header. */
+  phone?: boolean
+}
+
+/** A link row, from the engine or the local parse. */
+interface LinkRow {
+  url: string
+  host: string
+  /** The Markdown link text, when the engine has one. */
+  title?: string
+  entryId?: string
+  messageId?: string
+}
+
+/** The phone drawer's filter chips (§1.3.6), and the sections each shows. */
+type ContextFilter =
+  | 'all'
+  | 'subagents'
+  | 'prs'
+  | 'links'
+  | 'attachments'
+  | 'images'
+
+const COMMON_SECTIONS: readonly Exclude<ContextFilter, 'all'>[] = [
+  'subagents',
+  'prs',
+  'links',
+  'attachments',
+  'images',
+]
+
+const FILTER_LABELS: Record<Exclude<ContextFilter, 'all'>, string> = {
+  subagents: 'Agents',
+  prs: 'PRs',
+  links: 'Links',
+  attachments: 'Files',
+  images: 'Images',
+}
+
+const PR_STATE_LABEL: Record<PullRequestRow['state'], string> = {
+  open: 'Open',
+  draft: 'Draft',
+  merged: 'Merged',
+  closed: 'Closed',
+}
+
+/** The pull request icon's tint by state (open, merged, closed; a draft stays quiet). */
+const PR_STATE_COLOR: Record<PullRequestRow['state'], string | undefined> = {
+  open: 'green',
+  draft: undefined,
+  merged: 'purple',
+  closed: 'rose',
 }
 
 function openSourceControl(cwd: string) {
@@ -226,7 +308,11 @@ export function ChatContextPanel({
   onAskAgent,
   onDismissPullRequest,
   onAutoFixChange,
+  items = null,
+  onShowInConversation,
+  phone = false,
 }: ChatContextPanelProps) {
+  const [filter, setFilter] = useState<ContextFilter>('all')
   const workingDir = conversation.workingDir ?? null
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const toggle = (key: string) =>
@@ -265,10 +351,71 @@ export function ChatContextPanel({
     workingDir && shellAvailable && git?.dir !== workingDir,
   )
 
-  const { links, pullRequests: mentioned } = useMemo(
-    () => collectChatLinks(conversation.messages),
-    [conversation.messages],
+  // What the conversation gathered: the engine's lists when it has
+  // `harness::context-items`, else the parse of the loaded transcript.
+  const fromEngine = items !== null
+  const parsed = useMemo(
+    () =>
+      fromEngine
+        ? null
+        : {
+            ...collectChatLinks(conversation.messages),
+            sources: linkSourceMessages(conversation.messages),
+          },
+    [fromEngine, conversation.messages],
   )
+  const links = useMemo<LinkRow[]>(
+    () =>
+      items
+        ? items.links.map((link) => ({
+            url: link.url,
+            host: link.host,
+            title: link.title,
+            entryId: link.entry_id || undefined,
+          }))
+        : (parsed?.links ?? []).map((link) => ({
+            url: link.url,
+            host: link.host,
+            messageId: parsed?.sources.get(link.url),
+          })),
+    [items, parsed],
+  )
+  const mentioned = useMemo<PullRequestRef[]>(
+    () =>
+      items
+        ? items.pull_requests.map(({ repo, number, url }) => ({
+            repo,
+            number,
+            url,
+          }))
+        : (parsed?.pullRequests ?? []),
+    [items, parsed],
+  )
+  /** Where each pull request was named, for "Show in conversation". */
+  const prOrigin = (
+    pr: PullRequestRef,
+  ): { entryId?: string; messageId?: string } | null => {
+    const key = `${pr.repo}#${pr.number}`
+    const fromItems = items?.pull_requests.find(
+      (item) => `${item.repo}#${item.number}` === key,
+    )
+    if (fromItems?.entry_id) return { entryId: fromItems.entry_id }
+    const messageId = parsed?.sources.get(key)
+    return messageId ? { messageId } : null
+  }
+  const show = onShowInConversation
+  const showEntry = (
+    target: { entryId?: string; messageId?: string } | null,
+  ): ItemMenuEntry[] =>
+    show && target && (target.entryId || target.messageId)
+      ? [
+          {
+            label: 'Show in conversation',
+            icon: menuIcons.show,
+            onSelect: () => show(target),
+          },
+        ]
+      : []
   const mentionedKey = mentioned.map((pr) => `${pr.repo}#${pr.number}`).join()
   const repo = summary?.repo ?? null
   const branch = summary?.branch ?? null
@@ -332,9 +479,38 @@ export function ChatContextPanel({
     () => new Set(dismissedPullRequests({ sessionMetadata })),
     [sessionMetadata],
   )
-  const listedPrs = pullRequests.filter(
-    (pr) => !dismissed.has(pullRequestKey(pr)),
+  // Without gh to read them, the engine's own reading of each PR (its
+  // state and checks come from the github worker, cached 120 s).
+  const engineRows = useMemo<PullRequestRow[]>(
+    () =>
+      ghVia || !items
+        ? []
+        : items.pull_requests.map((pr) => ({
+            repo: pr.repo,
+            number: pr.number,
+            url: pr.url,
+            title: pr.title ?? `${pr.repo}#${pr.number}`,
+            state: pr.state ?? 'open',
+            checks:
+              pr.checks === 'passing'
+                ? 'pass'
+                : pr.checks === 'failing'
+                  ? 'fail'
+                  : pr.checks === 'pending'
+                    ? 'pending'
+                    : null,
+            failing: pr.checks === 'failing' ? 1 : 0,
+            additions: null,
+            deletions: null,
+            autoMerge: false,
+            headRefName: null,
+            mentioned: pr.source === 'mentioned',
+          })),
+    [ghVia, items],
   )
+  const listedPrs = (
+    pullRequests.length > 0 ? pullRequests : engineRows
+  ).filter((pr) => !dismissed.has(pullRequestKey(pr)))
   const [prBusy, setPrBusy] = useState<Record<string, boolean>>({})
   const busy = (pr: PullRequestRow, on: boolean) =>
     setPrBusy((current) => ({ ...current, [pullRequestKey(pr)]: on }))
@@ -390,14 +566,70 @@ export function ChatContextPanel({
       ),
   )
 
-  const images = useMemo(
-    () => collectChatImages(conversation.messages),
-    [conversation.messages],
-  )
+  const images = useMemo<GridImage[]>(() => {
+    const showIn = (target: { entryId?: string; messageId?: string }) =>
+      show && (target.entryId || target.messageId)
+        ? [
+            {
+              label: 'Show in conversation',
+              icon: menuIcons.show,
+              onSelect: () => show(target),
+            },
+          ]
+        : []
+    if (items) {
+      return items.images.map((image, index) => {
+        const share = shareEntry(
+          conversation.id,
+          image.attachment_id,
+          `image-${index + 1}`,
+        )
+        return {
+          key: `${image.entry_id}:${image.block_index}:${index}`,
+          direction: image.direction,
+          attachmentId: image.attachment_id,
+          mime: image.mime,
+          name: `Image ${index + 1}`,
+          menu: [
+            ...(share ? [share] : []),
+            ...showIn({ entryId: image.entry_id || undefined }),
+          ],
+        }
+      })
+    }
+    return collectChatImageSources(conversation.messages).map((source) => {
+      const share = shareEntry(
+        conversation.id,
+        source.image.attachmentId,
+        source.image.name,
+      )
+      return {
+        key: `${source.messageId}:${source.image.id}`,
+        direction: source.direction,
+        image: source.image,
+        name: source.image.name,
+        menu: [
+          ...(share ? [share] : []),
+          ...showIn({ messageId: source.messageId }),
+        ],
+      }
+    })
+  }, [items, conversation.messages, conversation.id, show])
   const files = useMemo(
-    () => collectChatFiles(conversation.messages, workingDir),
-    [conversation.messages, workingDir],
+    () =>
+      fromEngine ? [] : collectChatFiles(conversation.messages, workingDir),
+    [fromEngine, conversation.messages, workingDir],
   )
+  const attachmentCount = items ? items.attachments.length : files.length
+  /** The loaded row a locally parsed file came from. */
+  const fileSource = (file: ChatFile): string | undefined =>
+    conversation.messages.find((message) =>
+      file.attachment
+        ? message.role === 'user' &&
+          (message.attachments ?? []).some((a) => a.id === file.attachment?.id)
+        : message.role === 'function-call' &&
+          JSON.stringify(message.input ?? '').includes(file.path),
+    )?.id
 
   const subagents = useMemo(() => {
     const { descendants } = collectSubagentDescendants(
@@ -414,6 +646,18 @@ export function ChatContextPanel({
     // chat opening loads it, and "disconnected" becomes "completed"). The
     // dot carries the status; the row stays where it was.
   }, [conversations, conversation.id, connectionState])
+  // Children the engine knows of that this tab's list has not loaded.
+  const engineSubagents = useMemo(
+    () =>
+      items
+        ? items.subagents.filter(
+            (item) =>
+              !subagents.some(({ child }) => child.id === item.session_id),
+          )
+        : [],
+    [items, subagents],
+  )
+  const subagentTotal = subagents.length + engineSubagents.length
   const activeCount = subagents.filter(
     (s) => subagentRank(s.status) === 0,
   ).length
@@ -525,6 +769,11 @@ export function ChatContextPanel({
   const linkRows = capRows(links, SECTION_CAP, !!expanded.links)
   const imageRows = capRows(images, IMAGE_CAP, !!expanded.images)
   const fileRows = capRows(files, SECTION_CAP, !!expanded.files)
+  const attachmentRows = capRows(
+    items?.attachments ?? [],
+    SECTION_CAP,
+    !!expanded.files,
+  )
   const ticketsWorked = tickets.filter((row) => row.action || row.by).length
   const failingPrs = listedPrs.filter((pr) => pr.failing > 0).length
 
@@ -743,7 +992,7 @@ export function ChatContextPanel({
           <EmptyState
             compact
             icon={FolderOpen}
-            title="No project folder"
+            title="No folder"
             description="Pick a folder in the composer to see its branch and changes here."
           />
         )}
@@ -797,13 +1046,38 @@ export function ChatContextPanel({
             <Row
               key={`${pr.repo}#${pr.number}`}
               icon={<GitPullRequest aria-hidden />}
-              label={pr.title}
+              color={PR_STATE_COLOR[pr.state]}
+              label={
+                <>
+                  <span className="mr-1.5 font-mono text-xs text-ink-faint">
+                    #{pr.number}
+                  </span>
+                  {pr.title}
+                </>
+              }
               title={pr.url}
+              ariaLabel={`#${pr.number} ${pr.title}, ${PR_STATE_LABEL[pr.state]}`}
               onActivate={() => openExternal(pr.url)}
               description={<PullRequestFacts pr={pr} />}
+              meta={
+                <span
+                  data-pr-state={pr.state}
+                  className="rounded-sm bg-surface px-1.5 text-meta leading-4 text-ink-faint"
+                >
+                  {PR_STATE_LABEL[pr.state]}
+                </span>
+              }
               actions={
                 <PullRequestMenu
                   pr={pr}
+                  onShow={
+                    show && prOrigin(pr)
+                      ? () => {
+                          const origin = prOrigin(pr)
+                          if (origin) show(origin)
+                        }
+                      : undefined
+                  }
                   busy={!!prBusy[pullRequestKey(pr)]}
                   canWrite={ghVia !== null}
                   autoFix={pullRequestKey(pr) in autoFixing}
@@ -853,38 +1127,25 @@ export function ChatContextPanel({
           ) : null}
         </Section>
       ) : null,
-    assets:
-      images.length + files.length > 0 ? (
+    images:
+      images.length > 0 ? (
         <Section
-          id="assets"
-          label="Assets"
-          count={images.length + files.length}
-          brief={plural([
-            [images.length, 'image', 'images'],
-            [files.length, 'file', 'files'],
-          ])}
+          id="images"
+          label="Images"
+          count={images.length}
+          extra={
+            <span className="flex items-center gap-1 text-meta font-normal text-ink-faint">
+              <span aria-hidden>· ↑</span> Sent <span aria-hidden>· ↓</span>{' '}
+              Received
+            </span>
+          }
         >
-          {images.length > 0 ? (
-            <div className="grid grid-cols-4 gap-1.5 px-2.5 pt-1 pb-1">
-              {imageRows.shown.map((image) => (
-                <ImageTile
-                  key={image.id}
-                  image={image}
-                  sessionId={conversation.id}
-                />
-              ))}
-              {imageRows.hidden > 0 ? (
-                <button
-                  type="button"
-                  aria-label={`Show ${imageRows.hidden} more images`}
-                  onClick={() => toggle('images')}
-                  className="flex aspect-square items-center justify-center rounded-sm bg-surface font-mono text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                >
-                  +{imageRows.hidden}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+          <ImageGrid
+            images={imageRows.shown}
+            sessionId={conversation.id}
+            hidden={imageRows.hidden}
+            onShowMore={() => toggle('images')}
+          />
           {/* The "+N" tile unfolds the pictures; this folds them back. */}
           {expanded.images ? (
             <ShowMore
@@ -895,28 +1156,93 @@ export function ChatContextPanel({
               onToggle={() => toggle('images')}
             />
           ) : null}
-          {fileRows.shown.map((file) => (
-            <FileRow
-              key={file.attachment ? file.attachment.id : file.path}
-              file={file}
-              sessionId={conversation.id}
-            />
-          ))}
+        </Section>
+      ) : null,
+    attachments:
+      attachmentCount > 0 ? (
+        <Section id="attachments" label="Attachments" count={attachmentCount}>
+          {items
+            ? attachmentRows.shown.map((item) => {
+                const Icon = fileIconFor(item.name, item.mime)
+                const size = attachmentSize(item.size)
+                const share = shareEntry(
+                  conversation.id,
+                  item.attachment_id,
+                  item.name,
+                )
+                const open = item.attachment_id
+                  ? () =>
+                      void downloadStoredAttachment(
+                        conversation.id,
+                        item.attachment_id as string,
+                        item.name,
+                      ).catch(() => {})
+                  : item.path
+                    ? () => openChatFile({ path: item.path as string }, null)
+                    : undefined
+                return (
+                  <Row
+                    key={`${item.entry_id}:${item.attachment_id ?? item.path ?? item.name}`}
+                    icon={<Icon aria-hidden />}
+                    label={item.name}
+                    title={item.path ?? item.name}
+                    ariaLabel={`Open ${item.name}`}
+                    onActivate={open}
+                    meta={
+                      size ? (
+                        <span
+                          className={cn(uiClasses.treeItemMeta, 'font-mono')}
+                        >
+                          {size}
+                        </span>
+                      ) : null
+                    }
+                    actions={
+                      <ItemMenu
+                        label={`Actions for ${item.name}`}
+                        entries={[
+                          ...(open
+                            ? [
+                                {
+                                  label: 'Open',
+                                  icon: menuIcons.open,
+                                  onSelect: open,
+                                },
+                              ]
+                            : []),
+                          ...(share ? [share] : []),
+                          ...showEntry({
+                            entryId: item.entry_id || undefined,
+                          }),
+                        ]}
+                      />
+                    }
+                  />
+                )
+              })
+            : fileRows.shown.map((file) => (
+                <FileRow
+                  key={file.attachment ? file.attachment.id : file.path}
+                  file={file}
+                  sessionId={conversation.id}
+                  menu={showEntry({ messageId: fileSource(file) })}
+                />
+              ))}
           <ShowMore
-            hidden={fileRows.hidden}
+            hidden={items ? attachmentRows.hidden : fileRows.hidden}
             expanded={!!expanded.files}
-            total={files.length}
+            total={attachmentCount}
             cap={SECTION_CAP}
             onToggle={() => toggle('files')}
           />
         </Section>
       ) : null,
     subagents:
-      subagents.length > 0 ? (
+      subagentTotal > 0 ? (
         <Section
           id="subagents"
-          label="Sub-agents"
-          count={subagents.length}
+          label="Subagents"
+          count={subagentTotal}
           extra={
             activeCount > 0 ? (
               <span className="flex items-center gap-1.5 text-meta font-normal text-ink">
@@ -933,7 +1259,14 @@ export function ChatContextPanel({
                 key={child.id}
                 icon={<Icon aria-hidden />}
                 color={appearance.color}
-                label={appearance.name}
+                label={
+                  <>
+                    <span className="mr-1.5 font-mono text-xs text-ink-faint">
+                      {appearance.name}
+                    </span>
+                    {child.title}
+                  </>
+                }
                 title={child.title}
                 ariaLabel={`Open ${appearance.name} in a new panel (${status})`}
                 aria-current={openSubagentId === child.id ? 'true' : undefined}
@@ -942,9 +1275,74 @@ export function ChatContextPanel({
                   onOpenConversation(child.id)
                 }}
                 meta={<SubagentStatus status={status} at={child.updatedAt} />}
+                actions={
+                  <ItemMenu
+                    label={`Actions for ${appearance.name}`}
+                    entries={[
+                      {
+                        label: 'Open',
+                        icon: menuIcons.open,
+                        onSelect: () => {
+                          setOpenSubagentId(child.id)
+                          onOpenConversation(child.id)
+                        },
+                      },
+                      ...showEntry({
+                        messageId: conversation.messages.find(
+                          (message) =>
+                            message.role === 'function-call' &&
+                            child.parentFunctionCallId !== undefined &&
+                            message.functionCallId ===
+                              child.parentFunctionCallId,
+                        )?.id,
+                      }),
+                    ]}
+                  />
+                }
               />
             )
           })}
+          {expanded.subagents || subagentRows.hidden === 0
+            ? engineSubagents.map((item) => {
+                const failed = /fail|error|cancel/.test(item.status)
+                const running = /running|working|queued|waiting|started/.test(
+                  item.status,
+                )
+                return (
+                  <Row
+                    key={item.session_id}
+                    icon={
+                      <StatusDot
+                        tone={failed ? 'alert' : running ? 'warn' : 'ok'}
+                        pulse={running}
+                      />
+                    }
+                    label={
+                      <>
+                        {item.display ? (
+                          <span className="mr-1.5 font-mono text-xs text-ink-faint">
+                            {item.display}
+                          </span>
+                        ) : null}
+                        {item.title}
+                      </>
+                    }
+                    title={item.title}
+                    ariaLabel={`Open ${item.title} in a new panel`}
+                    onActivate={() => onOpenConversation(item.session_id)}
+                    meta={
+                      <span className={uiClasses.treeItemMeta}>
+                        {subagentStatusText(
+                          item.status,
+                          item.started_at_ms,
+                          item.ended_at_ms,
+                        )}
+                      </span>
+                    }
+                  />
+                )
+              })
+            : null}
           <ShowMore
             hidden={subagentRows.hidden}
             expanded={!!expanded.subagents}
@@ -1058,15 +1456,31 @@ export function ChatContextPanel({
             <Row
               key={link.url}
               icon={<Globe aria-hidden />}
-              label={link.label}
+              label={link.title ?? link.host}
               title={link.url}
               onActivate={() => openExternal(link.url)}
-              meta={
-                <span className={cn(uiClasses.treeItemMeta, 'font-mono')}>
-                  {link.host}
+              description={
+                <span className="truncate font-mono text-ink-ghost">
+                  {link.url}
                 </span>
               }
-              actions={<CopyAction text={link.url} label="Copy link" />}
+              actions={
+                <ItemMenu
+                  label={`Actions for ${link.url}`}
+                  entries={[
+                    {
+                      label: 'Open',
+                      icon: menuIcons.open,
+                      onSelect: () => openExternal(link.url),
+                    },
+                    copyLinkEntry(link.url),
+                    ...showEntry({
+                      entryId: link.entryId,
+                      messageId: link.messageId,
+                    }),
+                  ]}
+                />
+              }
             />
           ))}
           <ShowMore
@@ -1078,6 +1492,21 @@ export function ChatContextPanel({
           />
         </Section>
       ) : null,
+  }
+  // The six common sections' counts (Sidechats join in phase 2): the empty
+  // pane, and the phone drawer's chips.
+  const commonCounts = {
+    subagents: subagentTotal,
+    prs: listedPrs.length,
+    links: links.length,
+    attachments: attachmentCount,
+    images: images.length,
+    total:
+      subagentTotal +
+      listedPrs.length +
+      links.length +
+      attachmentCount +
+      images.length,
   }
   for (const section of workerSections) {
     groups[section.id] = (
@@ -1096,8 +1525,50 @@ export function ChatContextPanel({
     <SectionMover.Provider value={onMove}>
       <div
         data-reorder-list=""
-        className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-3"
+        className="@container/context flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-3"
       >
+        {phone && commonCounts.total > 0 ? (
+          <div
+            role="toolbar"
+            aria-label="Show"
+            className="-mx-2 flex shrink-0 gap-1.5 overflow-x-auto px-2 pb-1"
+          >
+            {(['all', ...COMMON_SECTIONS] as const).map((id) => {
+              const count = id === 'all' ? null : commonCounts[id]
+              if (count === 0) return null
+              const selected = filter === id
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setFilter(id)}
+                  className={cn(
+                    'flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-sm focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
+                    selected
+                      ? 'bg-surface-selected text-ink'
+                      : 'bg-surface text-ink-faint hover:bg-surface-hover',
+                  )}
+                >
+                  {id === 'all' ? 'All' : FILTER_LABELS[id]}
+                  {count !== null ? (
+                    <span className="font-mono text-xs tabular-nums">
+                      {count}
+                    </span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+        {commonCounts.total === 0 && filter === 'all' ? (
+          <EmptyState
+            compact
+            icon={Layers}
+            title="Nothing gathered yet"
+            description="Links, files, images, subagents and pull requests from this conversation show up here."
+          />
+        ) : null}
         {landBlocked && workingDir ? (
           <StatusPanel
             variant="warn"
@@ -1118,7 +1589,8 @@ export function ChatContextPanel({
         ) : null}
 
         {order.map((section) =>
-          hiddenSections.has(section.id) ? null : (
+          hiddenSections.has(section.id) ||
+          (filter !== 'all' && section.id !== filter) ? null : (
             <Fragment key={section.id}>{groups[section.id] ?? null}</Fragment>
           ),
         )}
@@ -1339,7 +1811,10 @@ function PullRequestMenu({
   onAction,
   onAutoFix,
   onDismiss,
+  onShow,
 }: {
+  /** "Show in conversation", when the PR was named in a loaded row or entry. */
+  onShow?: () => void
   pr: PullRequestRow
   busy: boolean
   canWrite: boolean
@@ -1391,6 +1866,12 @@ function PullRequestMenu({
           <FileDiff aria-hidden className="size-4 text-ink-faint" />
           View changes
         </DropdownMenuItem>
+        {onShow ? (
+          <DropdownMenuItem onSelect={onShow}>
+            {menuIcons.show}
+            Show in conversation
+          </DropdownMenuItem>
+        ) : null}
         {live ? (
           <>
             <DropdownMenuSeparator />
@@ -1821,7 +2302,16 @@ const FILE_ICONS: [RegExp, typeof FileIcon][] = [
  * A file of the conversation. A written one opens in the IDE and copies its
  * path; an attachment downloads its stored original.
  */
-function FileRow({ file, sessionId }: { file: ChatFile; sessionId: string }) {
+function FileRow({
+  file,
+  sessionId,
+  menu = [],
+}: {
+  file: ChatFile
+  sessionId: string
+  /** Entries after the row's own ("Show in conversation"). */
+  menu?: readonly ItemMenuEntry[]
+}) {
   const Icon =
     FILE_ICONS.find(([pattern]) => pattern.test(file.name))?.[1] ?? FileIcon
   const stored = file.attachment?.attachmentId
@@ -1830,25 +2320,35 @@ function FileRow({ file, sessionId }: { file: ChatFile; sessionId: string }) {
       <span className={uiClasses.treeItemMeta}>{formatSize(file.size)}</span>
     ) : null
   if (file.attachment) {
+    const open = stored
+      ? () =>
+          // ponytail: a failed download stays quiet here; the chip in
+          // the transcript shows why.
+          void downloadStoredAttachment(sessionId, stored, file.name).catch(
+            () => {},
+          )
+      : undefined
+    const share = shareEntry(sessionId, stored, file.name)
+    const entries: ItemMenuEntry[] = [
+      ...(open
+        ? [{ label: 'Open', icon: menuIcons.open, onSelect: open }]
+        : []),
+      ...(share ? [share] : []),
+      ...menu,
+    ]
     return (
       <Row
         icon={<Icon aria-hidden />}
         label={file.name}
         description="Attached"
         ariaLabel={stored ? `Download ${file.name}` : file.name}
-        onActivate={
-          stored
-            ? () =>
-                // ponytail: a failed download stays quiet here; the chip in
-                // the transcript shows why.
-                void downloadStoredAttachment(
-                  sessionId,
-                  stored,
-                  file.name,
-                ).catch(() => {})
-            : undefined
-        }
+        onActivate={open}
         meta={size}
+        actions={
+          entries.length > 0 ? (
+            <ItemMenu label={`Actions for ${file.name}`} entries={entries} />
+          ) : undefined
+        }
       />
     )
   }
@@ -1871,7 +2371,14 @@ function FileRow({ file, sessionId }: { file: ChatFile; sessionId: string }) {
       }
       onActivate={() => openChatFile({ path: file.path }, null)}
       meta={size}
-      actions={<CopyAction text={file.path} label="Copy path" />}
+      actions={
+        <>
+          <CopyAction text={file.path} label="Copy path" />
+          {menu.length > 0 ? (
+            <ItemMenu label={`Actions for ${file.name}`} entries={menu} />
+          ) : null}
+        </>
+      }
     />
   )
 }
@@ -1879,9 +2386,10 @@ function FileRow({ file, sessionId }: { file: ChatFile; sessionId: string }) {
 /**
  * One picture of the conversation, square-cropped; opens in the viewer. A
  * picture whose bytes stayed in the session store loads when it scrolls into
- * view, the same way its chip in the transcript does.
+ * view, the same way its chip in the transcript does. Kept for injected
+ * callers; the pane's own grid is `ImageGrid` (context-items-rows).
  */
-function ImageTile({
+export function ImageTile({
   image,
   sessionId,
 }: {

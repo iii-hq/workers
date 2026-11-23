@@ -2,6 +2,8 @@ import { ArrowUpRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FullModeConfirmDialog } from '@/components/permissions/FullModeConfirmDialog'
 import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
+import { ProjectDialog } from '@/components/projects/ProjectDialog'
+import { ProjectDot } from '@/components/projects/ProjectDot'
 import { Button } from '@/components/shadcn/button'
 import {
   Dialog,
@@ -19,6 +21,8 @@ import {
   SelectValue,
 } from '@/components/shadcn/select'
 import { Switch } from '@/components/shadcn/switch'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import { useTabLimit } from '@/hooks/use-tab-limit'
@@ -30,6 +34,8 @@ import {
   saveApprovalGateDefaults,
 } from '@/lib/backend/approval-gate-config'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
+import { type ChatProject, tildePath } from '@/lib/backend/projects'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import {
   loadCompletionBellEnabled,
   playCompletionBell,
@@ -133,6 +139,18 @@ export function ConsoleSettingsTab({
   const ctx = useConversationsCtxOptional()
   const approvalGateAvailable = ctx ? ctx.approvalGateAvailable : true
   const tabLimit = useTabLimit()
+  // Chat › Projects and Session descriptions (chat-projects §1.3.7): only on
+  // an engine that has them.
+  const realBackend = getDefaultBackend().id === 'real'
+  const chatCaps = useChatCapabilities(realBackend)
+  const chatProjects = useChatProjects(realBackend)
+  const chatSettings = useChatSettings(realBackend)
+  const [projectDialog, setProjectDialog] = useState<{
+    project: ChatProject | null
+  } | null>(null)
+  const [descriptionsError, setDescriptionsError] = useState<string | null>(
+    null,
+  )
   const newChatMode = useNewChatMode()
   const sendKey = useSendKey()
   const sendKeyOptions = useMemo(buildSendKeyOptions, [])
@@ -361,9 +379,92 @@ export function ConsoleSettingsTab({
       <SettingsSection
         id={GENERAL_ANCHOR.chat}
         title="Chat"
-        description="How the chat composer behaves in this browser."
+        description="How the chat composer behaves in this browser, and the engine's projects and descriptions."
       >
+        <ProjectDialog
+          open={projectDialog !== null}
+          onOpenChange={(open) => {
+            if (!open) setProjectDialog(null)
+          }}
+          project={projectDialog?.project ?? null}
+          projects={chatProjects.projects}
+          conversations={ctx?.conversations ?? []}
+        />
         <SettingsList>
+          {chatProjects.available ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.projects}
+              label="Projects"
+              description="A project groups folders and the conversations started in them."
+              layout="stacked"
+              control={
+                <ul className="flex w-full flex-col gap-0.5">
+                  {chatProjects.projects.map((project) => (
+                    <li key={project.id}>
+                      <button
+                        type="button"
+                        onClick={() => setProjectDialog({ project })}
+                        aria-label={`Edit project ${project.name}`}
+                        className="flex min-h-11 w-full items-center gap-2.5 rounded-md px-2 text-left hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                      >
+                        <ProjectDot color={project.color} />
+                        <span className="shrink-0 text-sm font-medium text-ink">
+                          {project.name}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-faint">
+                          {project.folders.map(tildePath).join(', ')}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                  <li className="pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setProjectDialog({ project: null })}
+                    >
+                      New project
+                    </Button>
+                  </li>
+                </ul>
+              }
+            />
+          ) : null}
+          {chatCaps.chatSettings && chatCaps.setDescription ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.sessionDescriptions}
+              label="Session descriptions"
+              description={
+                descriptionsError ??
+                'Agents write a one-line description inside the turn they are running. A conversation whose description you edited keeps yours.'
+              }
+              layout="inline"
+              control={
+                <span className="flex items-center gap-3 text-sm text-ink">
+                  <label
+                    htmlFor={`${GENERAL_ANCHOR.sessionDescriptions}-switch`}
+                  >
+                    Agents keep descriptions up to date
+                  </label>
+                  <Switch
+                    id={`${GENERAL_ANCHOR.sessionDescriptions}-switch`}
+                    aria-label="Agents keep descriptions up to date"
+                    checked={chatSettings.agentWrites}
+                    onCheckedChange={(checked) => {
+                      setDescriptionsError(null)
+                      void chatSettings
+                        .setAgentWrites(checked === true)
+                        .catch((err: unknown) =>
+                          setDescriptionsError(
+                            `Not saved: ${err instanceof Error ? err.message : String(err)}`,
+                          ),
+                        )
+                    }}
+                  />
+                </span>
+              }
+            />
+          ) : null}
           <SettingsRow
             id={GENERAL_ANCHOR.sendKey}
             label="Send messages with"

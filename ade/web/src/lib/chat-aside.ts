@@ -1124,6 +1124,52 @@ export function collectChatImages(messages: readonly Message[]): Attachment[] {
   return images
 }
 
+/** A picture of the conversation with where it came from (the local parse). */
+export interface ChatImageSource {
+  image: Attachment
+  /** The transcript row that holds it, for "Show in conversation". */
+  messageId: string
+  /** Sent with a user message, or received from a function or the agent. */
+  direction: 'sent' | 'received'
+}
+
+/**
+ * `collectChatImages` with each picture's row and direction, newest first:
+ * the pane's fallback when the engine has no `harness::context-items`.
+ */
+export function collectChatImageSources(
+  messages: readonly Message[],
+): ChatImageSource[] {
+  const out: ChatImageSource[] = []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const images = collectChatImages([message])
+    for (const image of images) {
+      out.push({
+        image,
+        messageId: message.id,
+        direction: message.role === 'user' ? 'sent' : 'received',
+      })
+    }
+  }
+  return out
+}
+
+/** The newest row that mentions each URL (the local parse's "Show in conversation"). */
+export function linkSourceMessages(
+  messages: readonly Message[],
+): ReadonlyMap<string, string> {
+  const sources = new Map<string, string>()
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    for (const url of messageUrls(messages[index])) {
+      const pr = parsePullRequestUrl(url)
+      const key = pr ? `${pr.repo}#${pr.number}` : url
+      if (!sources.has(key)) sources.set(key, messages[index].id)
+    }
+  }
+  return sources
+}
+
 // ── files ──
 
 /** A file the chat holds: attached by the person or written by the agent. */

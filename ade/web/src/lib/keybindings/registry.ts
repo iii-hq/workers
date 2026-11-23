@@ -260,7 +260,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   // character, the way ⌘K is.
   {
     id: 'project.add',
-    title: 'Add project',
+    title: 'Add folder',
     group: 'Chat',
     scope: 'global',
     bindings: ['Mod+O'],

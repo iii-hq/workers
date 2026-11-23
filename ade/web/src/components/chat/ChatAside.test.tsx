@@ -396,12 +396,15 @@ describe('ChatAside on a phone', () => {
     window.localStorage.setItem('iii-chat-aside-tab', 'side-chat')
   })
 
-  it('takes the screen with one bar: back, tabs and options', () => {
+  it('is a drawer from the right: the name, close, tabs and options', () => {
     mocks.ctx = makeCtx([main, fork])
     render()
     const panel = document.querySelector('[data-side-panel-phone]')
     expect(panel?.getAttribute('role')).toBe('dialog')
-    expect(button('Back to the chat')).toBeDefined()
+    // A drawer (chat-projects §0.5), not the whole screen.
+    expect(panel?.hasAttribute('data-side-panel-drawer')).toBe(true)
+    expect(panel?.className).toContain('right-0')
+    expect(button('Close the side panel')).toBeDefined()
     expect(button('Side chat options')).toBeDefined()
     expect(
       panel
@@ -427,7 +430,7 @@ describe('ChatAside on a phone', () => {
     mocks.ctx = makeCtx([main])
     window.localStorage.setItem('iii-chat-aside-tab', 'context')
     render()
-    expect(button('Back to the chat')).toBeDefined()
+    expect(button('Close the side panel')).toBeDefined()
     expect(button('Side chat options')).toBeUndefined()
   })
 })

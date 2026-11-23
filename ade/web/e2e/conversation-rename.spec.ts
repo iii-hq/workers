@@ -1,9 +1,9 @@
 import { expect, expectPassingResult, openSession, test } from './harness-stack'
 
-test.describe('desktop rename focus', () => {
+test.describe('desktop Conversation details focus', () => {
   test.use({ scenario: 'streamed-text' })
 
-  test('every exit from the rename dialog restores row focus, and Tab stays inside it', async ({
+  test('every exit from Conversation details restores row focus, and Tab stays inside it', async ({
     page,
     stack,
   }) => {
@@ -14,12 +14,12 @@ test.describe('desktop rename focus', () => {
     await page.setViewportSize({ width: 1280, height: 800 })
     await openSession(page, stack)
 
-    /* Renaming is a dialog (the row is too narrow to edit a whole title):
-       F2, a double-click or the row's ⋯ menu opens it, Save / Enter keep
-       the new name, Cancel / Escape drop it, and every exit hands focus
-       back to the row. */
+    /* Conversation details (chat-projects §1.3.5) replaced the rename
+       dialog: F2, a double-click or the row's ⋯ menu opens it with the
+       name selected, Save / Enter keep the new name, Cancel / Escape drop
+       it, and every exit hands focus back to the row. */
     let title = stack.ready.session.title
-    const input = page.getByRole('textbox', { name: 'Chat name', exact: true })
+    const input = page.getByRole('textbox', { name: 'Name', exact: true })
     const row = (name: string) =>
       page.getByRole('button', { name: `open ${name}`, exact: true })
     for (const action of ['Save', 'Cancel', 'Enter', 'Escape'] as const) {
@@ -42,18 +42,18 @@ test.describe('desktop rename focus', () => {
     }
 
     // The ⋯ menu reaches the same dialog, and Tab stays inside it (modal):
-    // the field, Cancel, Save, then the dialog's close, never the page.
+    // the fields, Cancel, Save, then the dialog's close, never the page.
     await row(title).hover()
     await page
       .getByRole('button', { name: `more actions for ${title}`, exact: true })
       .click()
-    await page.getByRole('menuitem', { name: 'Rename' }).click()
+    await page.getByRole('menuitem', { name: 'Conversation details…' }).click()
     await expect(input).toBeFocused()
     for (let step = 0; step < 4; step++) {
       await page.keyboard.press('Tab')
       await expect(
         page.getByRole('dialog').locator(':focus'),
-        `Tab ${step + 1} left the rename dialog`,
+        `Tab ${step + 1} left Conversation details`,
       ).toHaveCount(1)
     }
     await page.keyboard.press('Escape')
@@ -91,7 +91,7 @@ test.describe('touch rows', () => {
       row.getByRole('button', { name: `rename ${title}`, exact: true }),
     ).toBeHidden()
 
-    /* The row's one trailing action — the ⋯ menu that holds Rename and
+    /* The row's one trailing action — the ⋯ menu that holds Conversation details and
        Delete — survives, and survives finger-sized: a coarse pointer gets
        48px whatever the row measures. */
     const more = row.getByRole('button', {

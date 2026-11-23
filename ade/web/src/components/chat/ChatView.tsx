@@ -1,4 +1,10 @@
-import { ArrowLeft, PanelRight, TriangleAlert } from 'lucide-react'
+import {
+  ArrowLeft,
+  Folder,
+  PanelRight,
+  PanelRightClose,
+  TriangleAlert,
+} from 'lucide-react'
 import {
   type ReactNode,
   useCallback,
@@ -11,14 +17,19 @@ import {
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
+import { ProjectDot } from '@/components/projects/ProjectDot'
+import { requestProjectDialog } from '@/components/projects/project-dialog-request'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
+import { setPageSidebarCollapsed } from '@/components/ui/PageSidebar'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
@@ -50,6 +61,11 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import {
+  badgeCount,
+  contextItemCount,
+  useContextItems,
+} from '@/lib/backend/context-items'
+import {
   getTurnStatus,
   type HarnessImageBlock,
   predictedUserEntryId,
@@ -58,6 +74,7 @@ import {
   mergeFiredObservers,
   type SessionObserverInfo,
 } from '@/lib/backend/observers'
+import { NO_PROJECT, tildePath } from '@/lib/backend/projects'
 import {
   type SessionObserverLoader,
   startSessionObserverLoader,
@@ -71,6 +88,7 @@ import type {
 import { isWaitingOnAnswer, WAITING_ON_ANSWER_LABEL } from '@/lib/chat-activity'
 import {
   AskInSideChatContext,
+  dismissedPullRequests,
   findSideChat,
   type SideChatQuote,
   SideChatQuotesContext,
@@ -80,6 +98,7 @@ import {
   sideChatQuotes,
   useQuoteHighlights,
 } from '@/lib/chat-aside'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
@@ -97,7 +116,7 @@ import {
 } from '@/lib/onboarding/open'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
-import { isCallSettled } from '@/lib/sessions/entry-mapper'
+import { entryIdOfMessage, isCallSettled } from '@/lib/sessions/entry-mapper'
 import {
   expandSlashInvocations,
   loadedSkillIds,
@@ -166,7 +185,9 @@ import {
   approvedAlwaysText,
   filesystemDecisionText,
 } from './approval-announcements'
+import { ByAgentPill } from './ByAgentPill'
 import {
+  ASIDE_STORAGE_KEY,
   type AsideRequest,
   type AsideTab,
   ChatAside,
@@ -179,6 +200,7 @@ import {
   composerControlNodes,
 } from './Composer'
 import { ContextUsage } from './ContextUsage'
+import { ConversationDetailsDialog } from './ConversationDetailsDialog'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
@@ -411,6 +433,44 @@ export function ChatView({
   const phoneViewport = useMediaQuery(MOBILE_LAYOUT_QUERY)
   const [asideRequest, setAsideRequest] = useState<AsideRequest | null>(null)
   const [asideSheetOpen, setAsideSheetOpen] = useState(false)
+  // The pane in sight (the column or the phone drawer), for the header's
+  // button and the context items' refresh rules (chat-projects §1.2.4).
+  const [asideVisible, setAsideVisible] = useState(false)
+  const realBackend = backend.id === 'real'
+  const chatCaps = useChatCapabilities(realBackend)
+  const chatProjects = useChatProjects(realBackend)
+  const chatSettings = useChatSettings(realBackend)
+  const contextItems = useContextItems(conversation.id, {
+    enabled: asideEnabled && chatCaps.contextItems,
+    visible: asideVisible,
+    messageTick: conversation.messages.length,
+  })
+  const conversationMetadata = conversation.sessionMetadata
+  const dismissedPrKeys = useMemo(
+    () =>
+      new Set(dismissedPullRequests({ sessionMetadata: conversationMetadata })),
+    [conversationMetadata],
+  )
+  const contextCount = contextItems.items
+    ? contextItemCount(contextItems.items, dismissedPrKeys)
+    : 0
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const chatProject =
+    conversation.projectId && conversation.projectId !== NO_PROJECT
+      ? (chatProjects.projects.find(
+          (project) => project.id === conversation.projectId,
+        ) ?? null)
+      : null
+  const hideAside = useCallback(() => {
+    if (phoneViewport) setAsideSheetOpen(false)
+    else setPageSidebarCollapsed(ASIDE_STORAGE_KEY, true)
+  }, [phoneViewport])
+  // The name and the description open Conversation details (§1.3.5).
+  const canEditDetails =
+    conversationsCtx !== null &&
+    !side &&
+    !readOnly &&
+    conversation.draft !== true
   const showAside = useCallback(
     (tab: AsideTab, quote?: SideChatQuote) =>
       setAsideRequest((current) => ({
@@ -2770,6 +2830,56 @@ export function ChatView({
   const chatFocusIdRef = useRef<number | null>(null)
   chatFocusIdRef.current = chatFocus?.id ?? null
 
+  /* "Show in conversation" from the context pane (chat-projects §1.3.6): a
+     loaded row is landed on at once; an entry above the loaded window asks
+     for the pages back to it (the older-pages read), once, then lands. */
+  const [entryFocus, setEntryFocus] = useState<{
+    entryId: string
+    requested: boolean
+  } | null>(null)
+  const showInConversation = useCallback(
+    (target: { entryId?: string; messageId?: string }) => {
+      if (target.messageId) {
+        setQuoteFocusId(target.messageId)
+        return
+      }
+      if (target.entryId)
+        setEntryFocus({ entryId: target.entryId, requested: false })
+    },
+    [],
+  )
+  useEffect(() => {
+    if (!entryFocus) return
+    const found = conversation.messages.find(
+      (message) => entryIdOfMessage(message.id) === entryFocus.entryId,
+    )
+    if (found) {
+      setQuoteFocusId(found.id)
+      setEntryFocus(null)
+      return
+    }
+    if (loadingOlderHistory) return
+    if (
+      entryFocus.requested ||
+      !conversationsCtx ||
+      conversation.history?.hasMore !== true
+    ) {
+      setEntryFocus(null)
+      return
+    }
+    setEntryFocus({ ...entryFocus, requested: true })
+    void conversationsCtx.loadOlderMessages(conversation.id, {
+      untilEntryId: entryFocus.entryId,
+    })
+  }, [
+    entryFocus,
+    conversation.messages,
+    conversation.id,
+    conversation.history?.hasMore,
+    loadingOlderHistory,
+    conversationsCtx,
+  ])
+
   /* Paged history: the list asks for the page above when the reader nears
  the top, and for placeholder calls when a group expands. Both are
  store actions; the view only forwards them with its conversation id. */
@@ -3128,10 +3238,24 @@ export function ChatView({
         ? [
             {
               id: 'show-context',
-              title: 'Show context panel',
-              detail: 'Folder, branch, pull requests, sub-agents and links',
+              title: 'Show context pane',
+              detail: 'Subagents, pull requests, links, files and images',
               keywords: ['side panel', 'branch', 'changes', 'subagents'],
+              // ⌘⌥0 on a Mac, Ctrl+Alt+0 elsewhere (§1.3.6).
+              shortcut: 'Mod+Alt+0',
+              firesWhileTyping: true,
+              enabled: () => !asideVisible,
               run: () => showAside('context'),
+            },
+            {
+              id: 'hide-context',
+              title: 'Hide context pane',
+              detail: 'Close the context pane',
+              keywords: ['side panel', 'close'],
+              shortcut: 'Mod+Alt+0',
+              firesWhileTyping: true,
+              enabled: () => asideVisible,
+              run: hideAside,
             },
             {
               id: 'ask-in-side-chat',
@@ -3160,6 +3284,8 @@ export function ChatView({
     streamingIndicator,
     readOnly,
     asideEnabled,
+    asideVisible,
+    hideAside,
     showAside,
     askInSideChat,
     conversation.agentProfile?.name,
@@ -3240,13 +3366,42 @@ export function ChatView({
                     />
                   )}
                 </div>
-                {asideEnabled && phoneViewport ? (
+                {asideEnabled ? (
+                  /* The pane button (§1.3.4): panel-right, panel-right-close
+                     while the pane is open beside the chat; on a phone it
+                     opens the drawer and carries the item count. */
                   <IconButton
-                    label="Side panel"
-                    className="size-12"
-                    onClick={() => setAsideSheetOpen(true)}
+                    label={
+                      asideVisible && !phoneViewport
+                        ? 'Hide context pane'
+                        : 'Show context pane'
+                    }
+                    data-context-pane-button=""
+                    className={cn(
+                      'relative',
+                      phoneViewport ? 'size-12' : 'size-8',
+                    )}
+                    onClick={() =>
+                      phoneViewport
+                        ? setAsideSheetOpen(true)
+                        : asideVisible
+                          ? hideAside()
+                          : showAside('context')
+                    }
                   >
-                    <PanelRight aria-hidden />
+                    {asideVisible && !phoneViewport ? (
+                      <PanelRightClose aria-hidden />
+                    ) : (
+                      <PanelRight aria-hidden />
+                    )}
+                    {phoneViewport && contextCount > 0 ? (
+                      <span
+                        data-context-badge=""
+                        className="absolute top-1 right-0.5 min-w-4 rounded-full bg-ink px-1 font-mono text-meta leading-4 text-background tabular-nums"
+                      >
+                        {badgeCount(contextCount)}
+                      </span>
+                    ) : null}
                   </IconButton>
                 ) : null}
                 {/* Status sits OUTSIDE the group — it is state, not a control.
@@ -3310,7 +3465,18 @@ export function ChatView({
               className="min-w-0 truncate font-medium text-ink"
               title={panelTitle ?? 'Chat'}
             >
-              {panelTitle ?? 'Chat'}
+              {canEditDetails ? (
+                /* The name opens Conversation details (§1.3.4). */
+                <button
+                  type="button"
+                  onClick={() => setDetailsOpen(true)}
+                  className="max-w-full truncate rounded-sm text-left hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                >
+                  {panelTitle ?? 'Chat'}
+                </button>
+              ) : (
+                (panelTitle ?? 'Chat')
+              )}
             </h2>
             {/* Beside the title only what sets this chat apart: read-only,
  or an agent other than the default. The model is in the composer. */}
@@ -3327,6 +3493,78 @@ export function ChatView({
           </div>
         </PageHeader>
       )}
+      {!side && (conversation.description || chatProject) ? (
+        /* Line 2 and the chips row of the header (chat-projects §1.3.4):
+           the description in Muted with "by agent · 2m" when the agent
+           wrote it, then the project and folder chips. */
+        <div
+          data-chat-header-details=""
+          className={cn(
+            headerPad,
+            'flex min-w-0 shrink-0 flex-col gap-1.5 pb-2 font-sans dark:border-x',
+          )}
+        >
+          {conversation.description ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                data-chat-description=""
+                disabled={!canEditDetails}
+                onClick={() => setDetailsOpen(true)}
+                title={conversation.description}
+                className="min-w-0 truncate rounded-sm text-left text-xs text-muted-foreground enabled:hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+              >
+                {conversation.description}
+              </button>
+              {conversation.descriptionBy === 'agent' ? (
+                <ByAgentPill atMs={conversation.descriptionAtMs} />
+              ) : null}
+            </div>
+          ) : null}
+          {chatProject ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                data-project-chip=""
+                onClick={() =>
+                  requestProjectDialog({
+                    mode: 'edit',
+                    projectId: chatProject.id,
+                  })
+                }
+                className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+              >
+                <ProjectDot color={chatProject.color} />
+                <span className="truncate">{chatProject.name}</span>
+              </button>
+              {conversation.workingDir ? (
+                <span
+                  data-folder-chip=""
+                  title={conversation.workingDir}
+                  className="inline-flex h-6 max-w-56 items-center gap-1.5 rounded-md bg-surface px-2 font-mono text-meta text-ink-faint"
+                >
+                  <Folder aria-hidden className="size-4 shrink-0" />
+                  <span className="truncate">
+                    {tildePath(conversation.workingDir)}
+                  </span>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {conversationsCtx && !side ? (
+        <ConversationDetailsDialog
+          open={detailsOpen}
+          conversation={conversation}
+          onOpenChange={setDetailsOpen}
+          onSave={(draft) =>
+            conversationsCtx.saveDetails(conversation.id, draft)
+          }
+          projects={chatProjects.available ? chatProjects.projects : undefined}
+          agentSwitch={chatCaps.setDescription && chatSettings.agentWrites}
+        />
+      ) : null}
       {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
           onDisable={() => void approvalSettings.setMode('manual')}
@@ -3664,6 +3902,10 @@ export function ChatView({
             landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
             pendingQuote={pendingQuote}
             onPendingQuoteChange={setPendingQuote}
+            contextItems={contextItems.items}
+            itemCount={contextCount}
+            onShowInConversation={showInConversation}
+            onVisibleChange={setAsideVisible}
             onJumpToMessage={(id) => {
               // A source outside the loaded history would leave the jump
               // pending until some later page happened to load it.

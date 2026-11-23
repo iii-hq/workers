@@ -1,5 +1,16 @@
 import { ChevronRight, Folder, FolderOpen, Plus } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { ProjectDot } from '@/components/projects/ProjectDot'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
 import { Hint } from '@/components/ui/Hint'
+import { type ChatProject, tildePath } from '@/lib/backend/projects'
 import { cn } from '@/lib/utils'
 
 interface ConversationGroupHeaderProps {
@@ -19,6 +30,15 @@ interface ConversationGroupHeaderProps {
   project?: boolean
   /** Start a chat in this project; the project header's trailing plus. */
   onCreate?: () => void
+  /**
+   * A chat project (chat-projects §1.3.1): drawn with its colour dot, the
+   * folder count (the conversation count on a phone), the "+" and its menu.
+   */
+  chatProject?: ChatProject
+  /** Start a chat in one of the chat project's folders. */
+  onCreateIn?: (folder: string) => void
+  /** The chat project's "⋯" menu. */
+  menu?: ReactNode
 }
 
 /**
@@ -36,7 +56,23 @@ export function ConversationGroupHeader({
   narrow = false,
   project = false,
   onCreate,
+  chatProject,
+  onCreateIn,
+  menu,
 }: ConversationGroupHeaderProps) {
+  if (chatProject) {
+    return (
+      <ChatProjectHeader
+        project={chatProject}
+        count={count}
+        collapsed={collapsed}
+        onToggle={onToggle}
+        narrow={narrow}
+        onCreateIn={onCreateIn}
+        menu={menu}
+      />
+    )
+  }
   if (project) {
     return (
       <ProjectHeader
@@ -76,6 +112,119 @@ export function ConversationGroupHeader({
         {count}
       </span>
     </button>
+  )
+}
+
+/**
+ * A chat project's header (chat-projects §1.3.1): an 8px colour dot, the
+ * name, then "3 folders" (a phone shows the conversation count instead), a
+ * "+" for a new conversation in the project — on hover with a mouse, always
+ * on touch — and the "⋯" menu. A tap folds or unfolds the project. With
+ * several folders the "+" asks which one.
+ */
+function ChatProjectHeader({
+  project,
+  count,
+  collapsed,
+  onToggle,
+  narrow,
+  onCreateIn,
+  menu,
+}: {
+  project: ChatProject
+  count: number
+  collapsed: boolean
+  onToggle: () => void
+  narrow: boolean
+  onCreateIn?: (folder: string) => void
+  menu?: ReactNode
+}) {
+  const folders = project.folders.length
+  const plusClass = cn(
+    'conversation-project-new flex shrink-0 items-center justify-center rounded-sm text-ink-faint transition-[opacity,color,background-color] duration-[var(--motion-duration-control)] hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
+    narrow ? 'size-11' : 'size-7',
+  )
+  const plusLabel = `New conversation in ${project.name}`
+  return (
+    <div
+      data-chat-project={project.id}
+      className={cn(
+        'conversation-project-header group/project mt-3 flex w-full min-w-0 items-center gap-0.5 rounded-sm pr-1',
+        narrow ? 'min-h-12' : 'min-h-9',
+      )}
+    >
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        title={project.folders.map(tildePath).join('\n')}
+        onClick={onToggle}
+        className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch rounded-sm border-0 bg-transparent pl-3 text-left font-inter focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-1 focus-visible:ring-ring/50"
+      >
+        <ProjectDot color={project.color} />
+        <span
+          className={cn(
+            'min-w-0 truncate font-medium text-ink',
+            narrow ? 'text-base' : 'text-sm',
+          )}
+        >
+          {project.name}
+        </span>
+        <span className="shrink-0 text-xs text-ink-faint tabular-nums">
+          {narrow
+            ? count
+            : `${folders} ${folders === 1 ? 'folder' : 'folders'}`}
+        </span>
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            'iii-ui-motion-control size-4 shrink-0 text-ink-ghost transition-transform',
+            !collapsed && 'rotate-90',
+          )}
+        />
+      </button>
+      {onCreateIn && folders === 1 ? (
+        <Hint label={plusLabel} disabled={narrow}>
+          <button
+            type="button"
+            aria-label={plusLabel}
+            onClick={() => onCreateIn(project.folders[0])}
+            className={plusClass}
+          >
+            <Plus className="size-4" aria-hidden />
+          </button>
+        </Hint>
+      ) : onCreateIn && folders > 1 ? (
+        <DropdownMenu>
+          <Hint label={plusLabel} disabled={narrow}>
+            <DropdownMenuTrigger aria-label={plusLabel} className={plusClass}>
+              <Plus className="size-4" aria-hidden />
+            </DropdownMenuTrigger>
+          </Hint>
+          <DropdownMenuContent
+            align="end"
+            sideOffset={6}
+            className="min-w-56 p-1.5"
+          >
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Choose a folder</DropdownMenuLabel>
+              {project.folders.map((folder) => (
+                <DropdownMenuItem
+                  key={folder}
+                  className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
+                  onClick={() => onCreateIn(folder)}
+                >
+                  <Folder aria-hidden className="text-ink-faint" />
+                  <span className="truncate font-mono text-xs">
+                    {tildePath(folder)}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+      {menu}
+    </div>
   )
 }
 
