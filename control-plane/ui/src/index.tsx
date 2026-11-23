@@ -35,7 +35,7 @@ import {
   type ControlPlaneRun,
   type ControlPlaneTicket,
 } from '../../src/types'
-import { AskAboutButton, NeedsYou, heldCallExcerpt, needLabel, QuestionLog, stallVersion, type ControlPlaneActions } from './NeedsYou'
+import { AskAboutButton, NeedsYou, needLabel, QuestionLog, stallVersion, type ControlPlaneActions } from './NeedsYou'
 import { resolveSummary, summaryIsFresh, type ControlPlaneSummary } from '../../src/summary'
 import { formatAge } from './format'
 
@@ -264,13 +264,6 @@ function ControlPlaneScreenContent({
       {summary?.throttled_until ? (
         <StatusPanel headline={`Refresh available ${new Date(summary.throttled_until).toLocaleTimeString()}`} />
       ) : null}
-      {!data.loading.needsYou && !data.availability.approval_gate ? (
-        <StatusPanel
-          variant="warn"
-          headline="Held calls are unavailable"
-          detail="The approval-gate worker is not available."
-        />
-      ) : null}
       <PageBody>
         <PageMain>
           <div ref={ref} className={`control-plane-content${view === 'needs-you' ? ' control-plane-inbox-content' : ''}`}>
@@ -345,7 +338,7 @@ function ControlPlaneScreenContent({
             <span className="control-plane-truncate">
               {view === 'runs'
                 ? `${data.runs.length} runs · ${data.runs.filter((run) => run.state === 'working').length} working · ${data.runs.filter((run) => run.state === 'stalled').length} stalled`
-                : 'Counts and states from harness, kanban, approval-gate and GitHub'}
+                : 'Counts and states from harness, kanban and GitHub'}
             </span>
           </StatusBar>
         </PageMain>
@@ -634,7 +627,7 @@ function Overview({
       label: 'Waiting',
       value:
         data.loading.sessions || data.errors.sessions || data.loading.needsYou || data.errors.needsYou ? '—' : waiting,
-      detail: 'on an answer, held call or stall',
+      detail: 'on an answer or stall',
       tone: 'ghost' as const,
     },
     {
@@ -758,9 +751,6 @@ function Overview({
                         <time className="control-plane-meta">{formatRelative(item.createdAt)}</time>
                       </div>
                       <p className="control-plane-need-title">{item.title}</p>
-                      {item.kind === 'held' ? (
-                        <p className="control-plane-muted">{item.sessionTitle || item.sessionId} · {heldCallExcerpt(item)}</p>
-                      ) : null}
                       {item.kind === 'question' && item.why ? <p className="control-plane-muted">{item.why}</p> : null}
                       <div className="control-plane-row-head">
                         <Button size="sm" variant="pill" onClick={() => openNeed(item)}>
@@ -1239,7 +1229,7 @@ function Runs({
     return (
       <EmptyState
         title="No runs in this project yet"
-        description="Root sessions with work, questions, held calls or armed wakes appear here, along with linked runs that ended in the last day."
+        description="Root sessions with work, questions or armed wakes appear here, along with linked runs that ended in the last day."
         action={{
           label: 'Open the board',
           onClick: () =>

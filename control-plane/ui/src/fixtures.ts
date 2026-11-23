@@ -171,18 +171,6 @@ const items: ControlPlaneData['items'] = [
     createdAt: ago(18),
   },
   {
-    kind: 'held',
-    id: 'hold',
-    sessionId: 'dispatch-r1',
-    functionCallId: 'push',
-    functionId: 'shell::exec',
-    arguments: { command: 'git push' },
-    title: 'shell::exec',
-    card: r1,
-    blockedCards: 0,
-    createdAt: ago(12),
-  },
-  {
     kind: 'stalled',
     id: 'stall',
     sessionId: 'dispatch-flaky',
@@ -346,7 +334,7 @@ export const controlPlaneFixture: ControlPlaneData = {
   median_decision_wait_ms: 90 * 60_000,
   assumptionsSinceVisit: [],
   prs_interval_min: 5,
-  availability: { github: true, approval_gate: true },
+  availability: { github: true },
   loadMoreDecided: () => {},
   summary: {
     result: controlPlaneSummaryFixture,

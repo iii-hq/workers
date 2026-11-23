@@ -528,18 +528,6 @@
   .control-plane-trail time {
     margin-left: auto;
   }
-  .control-plane-function,
-  .control-plane-arguments {
-    font-family: var(--font-mono);
-  }
-  .control-plane-arguments {
-    background: var(--color-surface);
-    border-radius: var(--radius-md);
-    padding: 12px;
-    font-size: 12px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
   .control-plane-stall-facts div {
     margin-bottom: 16px;
   }

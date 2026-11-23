@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { controlPlaneFixture } from './fixtures'
-import type { AskQuestion, HeldNeed, QuestionNeed } from '../../src/types'
+import type { AskQuestion, QuestionNeed } from '../../src/types'
 import { decisionChatRequest, decisionKey, selectionFromSideChat } from './side-chat'
 
 const question = controlPlaneFixture.items.find((item) => item.kind === 'question') as QuestionNeed
-const held = controlPlaneFixture.items.find((item) => item.kind === 'held') as HeldNeed
 
 describe('decision side chat page mapping', () => {
   it('maps a question to the host contract', () => {
@@ -29,19 +28,6 @@ describe('decision side chat page mapping', () => {
           }
         : undefined,
       onUseAnswer,
-    })
-  })
-
-  it('maps a held call and its already-redacted arguments', () => {
-    expect(decisionChatRequest(held, undefined, vi.fn())).toMatchObject({
-      key: decisionKey(held),
-      sessionId: held.sessionId,
-      kind: 'held',
-      held: {
-        functionCallId: held.functionCallId,
-        functionId: held.functionId,
-        arguments: held.arguments,
-      },
     })
   })
 

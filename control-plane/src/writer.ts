@@ -104,8 +104,6 @@ function profileId(metadata: Record<string, unknown> | null | undefined): string
 export class ControlPlaneWriter {
   private readonly states = new Map<string, WriterState>()
   private readonly locks = new Map<string, Promise<unknown>>()
-  private readonly approvalsConfigured = new Set<string>()
-  private approvalAvailable: Promise<boolean> | undefined
   private stopped = false
 
   constructor(
@@ -123,11 +121,6 @@ export class ControlPlaneWriter {
     return this.lock(scope, async () =>
       publicState(this.applyConfiguration(await this.boot(scope))),
     )
-  }
-
-  invalidateAvailability(): void {
-    this.approvalAvailable = undefined
-    this.approvalsConfigured.clear()
   }
 
   nextCheckAt(scope: string): number {
@@ -353,7 +346,6 @@ export class ControlPlaneWriter {
       return
     }
     if (status && (!terminal(status) || status.queued?.length)) return
-    await this.configureApprovals(sessionId)
 
     state.lastSendAt = Date.now()
     state.sendOrder += 1
@@ -394,36 +386,6 @@ export class ControlPlaneWriter {
     await this.persist(scope, state)
     if (state.error !== UPDATE_ERROR) state.error = null
     state.unavailable = false
-  }
-
-  private async configureApprovals(sessionId: string): Promise<void> {
-    if (this.approvalsConfigured.has(sessionId) || !(await this.hasApprovalGate())) return
-    await this.iii.call('approval::set-mode', { session_id: sessionId, mode: 'auto' })
-    for (const functionId of WRITER_READS) {
-      await this.iii.call('approval::add-always-allow', {
-        session_id: sessionId,
-        function_id: functionId,
-      })
-    }
-    this.approvalsConfigured.add(sessionId)
-  }
-
-  private hasApprovalGate(): Promise<boolean> {
-    if (this.approvalAvailable) return this.approvalAvailable
-    let guarded: Promise<boolean>
-    const discovered = this.iii
-      .call<{ functions?: Array<{ function_id?: string }> }>('engine::functions::list', {
-        include_internal: true,
-      })
-      .then((result) =>
-        (result.functions ?? []).some(({ function_id }) => function_id === 'approval::set-mode'),
-      )
-    guarded = discovered.catch((error) => {
-      if (this.approvalAvailable === guarded) this.approvalAvailable = undefined
-      throw error
-    })
-    this.approvalAvailable = guarded
-    return guarded
   }
 
   private applyConfiguration(state: WriterState): WriterState {

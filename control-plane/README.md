@@ -4,12 +4,11 @@ The `control-plane` worker owns the Control plane page, read model and summary
 schedule. Open it from the console navigation, via `#/workspace/control-plane`,
 or on its own at `#/worker/control-plane`. It aggregates harness roots and asks,
 kanban projects, cards, releases and questions, and pull requests from repositories
-declared on projects. The console reads approval holds directly.
+declared on projects.
 
 The worker requires configuration, harness, session-manager, kanban, state and
-iii-directory. ADE hosts its page. GitHub supplies pull requests for repositories
-set on a Kanban project's Overview. Approval-gate supplies held calls. GitHub
-and approval-gate are optional.
+iii-directory. ADE hosts its page. The optional GitHub worker supplies pull
+requests for repositories set on a Kanban project's Overview.
 
 ## Configuration
 
@@ -47,9 +46,8 @@ available `provider::model`.
 - `control-plane::configuration-id {}` returns `{id}` for the worker's settings entry.
 - `control-plane::on-changed {scope, as_of, parts}` announces changed read-model parts.
 
-`scope` is `all` or a project id. When GitHub is unavailable, pull requests
-report unavailable. Without approval-gate, writer sessions run without approval
-setup.
+`scope` is `all` or a project id. `availability.github` indicates whether the
+GitHub pull request functions are available.
 
 ## Source boundaries
 
@@ -96,8 +94,7 @@ pnpm --dir ../.. --filter @iii-workers/control-plane-ui run build
 pnpm --dir ../.. --filter @iii-workers/control-plane-ui run test
 ```
 
-The page reads held calls directly through `approval::list-pending`; they never
-enter a `control-plane::*` response. Actions are console calls to the target workers.
+Actions are console calls to the target workers.
 Decision side chats use the optional host capabilities, and are hidden when the
 host lacks them. Browsers sharing an engine can create duplicate copies if they
 open the same decision concurrently, since the creation lock is browser-local.

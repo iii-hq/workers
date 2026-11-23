@@ -2,6 +2,9 @@
 
 Renamed from “control tower” to “control plane” on 2026-11-23.
 
+**2026-11-23.** Held calls and approval-gate are out of the control plane for
+now because the operator does not use approval-gate.
+
 Status: proposed, 2026-11-21. Revised twice the same day, after two rounds of
 adversarial review (UI/UX and spec). Design canvas:
 <https://claude.ai/artifact/BWNQBKBBseVqzNgwXpvz9S> (private until shared).
@@ -27,7 +30,7 @@ now:
 The last point is **Needs you**, one feature of the control plane.
 
 The control plane is global and generic. It reads harness sessions, harness asks,
-approval-gate holds, kanban cards and releases, and GitHub pull requests.
+kanban cards and releases, and GitHub pull requests.
 Nothing in it knows about a kit: a kit, a profile or a plain chat session shows
 up there by using those contracts. Counts and states are read live from those
 contracts. The prose (the summary, the diary, what each session is doing, why
@@ -46,13 +49,11 @@ sections:
 
 Both covered one session, were refreshed by hand or by polling, and lived
 outside the product. The R1 run also showed what costs the most. It was not
-the code. Decisions waited for hours, spread over five places that do not know
-about each other:
+the code. Decisions waited for hours, spread across different places:
 
 - `harness::ask` cards in a chat nobody had open;
 - `⛔ Needs you` comments on the board (`ask=board`);
 - Backlog cards labelled `pending`;
-- calls held by `approval-gate`;
 - prose in the coordinating session.
 
 ## Goals and non-goals
@@ -90,8 +91,7 @@ Non-goals (v1):
 - Letting sub-agents ask a person. Depth > 0 still reports `blocked` to its
   parent, and the parent consolidates the questions and asks.
 - Stopping an agent that has `shell::exec` from calling any function through
-  the `iii` CLI. That gap exists today for `approval::resolve` too, and is not
-  this spec's to close.
+  the `iii` CLI.
 
 ## What exists today
 
@@ -103,7 +103,6 @@ Non-goals (v1):
 | Deliver once | `harness::send {idempotency_key}`: a repeated key returns the original turn and appends nothing | `harness/src/functions/send.rs:153-156` | — |
 | Private state | The harness claims private scopes at boot. `harness::state::*` is in `agent_call_forbidden`, which applies whatever the policy says; console and operator calls bypass it. | `harness/src/state.rs:795-806`, `functions/observe.rs:398-418` | Public scopes are readable by agents (`state::get` and `state::list` are default allows, `iii-permissions.yaml:414-415`). |
 | Who may call what | `FunctionPolicy {allow, deny, expose}`: globs over function ids. A child gets the subset of its parent's policy. An explicit `options.functions` on a send replaces the policy. | `harness/src/types/turn.rs:58`, `policy.rs:188-212`, `functions/send.rs:1480-1493` | A policy cannot confine `state::set` to one scope. |
-| Held calls | `approval::list-pending`, `resolve {decision}`, `approve-always`, `on-pending-created` / `on-pending-resolved`. `list-pending` is always denied to agents. `session::list`, `session::messages-tail` and `harness::ask::open`-like reads are held in manual mode by the default rules. | `approval-gate/src/types.rs:171-442`, `decision.rs:19-21`, `permissions/default_rules.rs:10-12` | `assistant_excerpt` is always omitted (`types.rs:196`): a hold carries the function, a redacted `arguments_excerpt` and the session title, not a "why". |
 | Card a question blocks | `Comment {id, ticket_id, parent_id, body, author, created_at}`: append-only; only `comment.created` | `kanban/src/store.rs:30,234`, `events.rs:196` | A question is a text convention that the model parses. |
 | Questions without a chat | deepwork `ask=board`: a `⛔ Needs you` comment, the pill, a wait on `kanban::on-comment`, a model that matches the reply | `kits/deepwork/agents/deepwork.md` at `0eb48c2e0` | It lives in a prompt, for one kit. Its comment format is shared with dispatch's park comments. |
 | Board dispatch | It starts the assignee's session for a To do card (`metadata.kanban_ticket`), sends `ask=board` in every first message, and on a terminal turn **parks the card** in Backlog with `unfinished` and the `needs you` pill, at boot too | `kanban/src/dispatch.rs:21-22,365,398,640-646,~728` at `dd2652220` | A turn that ends on a question looks like a stop. |
@@ -136,8 +135,7 @@ the implementation that supersedes the original screen and writer proposals.
 - **Phone, under 640 px:** a segmented control (Overview, Needs you, Runs).
   Needs you links to Assumptions and Decided at its top.
 - **Live data.** Each source keeps its own fetcher, debounced to 2 s:
-  - **Needs you:** `harness::on-ask`, `harness::on-ask-settled`,
-    `approval::on-pending-created`, `approval::on-pending-resolved`;
+  - **Needs you:** `harness::on-ask`, `harness::on-ask-settled`;
   - **Board:** `kanban::on-change`;
   - **Sessions:** `harness::on-turn-started` and `harness::on-turn-completed`,
     filtered to depth 0;
@@ -154,8 +152,8 @@ Canvas artboard `Overview`. Two columns. The left one comes first on a phone.
 | Section | Facts, read live | Prose, from the summary |
 |---|---|---|
 | Summary | — | `brief.headline`, `brief.text`, references as links |
-| Tiles | Needs you (count, and how many are Now); Working (root sessions with a turn running in their tree); Waiting (on an answer, on a held call, or stalled); Open PRs (how many have CI failing); Active releases | — |
-| Needs you (left) | the top 3 Now items in §6.1 order, each with Open and Ask about this; a "No rush" button with its count; a link to all | — |
+| Tiles | Needs you (count, and how many are Now); Working (root sessions with an active turn in their tree); Waiting (on an answer or a wake, or stalled); Open PRs (how many have CI failing); Active releases | — |
+| Needs you (left) | the top 3 Now items in §6.1 order, each with Open and with Ask about this on questions; a "No rush" button with its count; a link to all | — |
 | Diary (left) | — | today's newest `diary` lines, each with its time and reference |
 | Releases (right) | `kanban::release::list`: the newest 2 released, then active, then planned by `target_at`; each with done/total, `open_questions` and what blocks it | — |
 | In progress (right) | the runs of §7: title, state, open questions, age | `now[session:<id>]` |
@@ -213,11 +211,6 @@ looking.
 
   Its inputs are text written by other agents and people: comments, PR titles,
   assistant messages. Text that tries to make it act has nothing to act with.
-  It does not read approval holds: `approval::list-pending` is denied to
-  agents, and the screen already shows the holds.
-- **Approval rules.** The kit ships `iii-permissions.yaml` allow rules for
-  those reads in sessions `control-plane-*`. Without them, the approval-gate's default
-  rules would hold its reads, and each refresh would land in Needs you.
 - **What it reads:**
   - the message: the previous result's `checked_at`;
   - its own transcript, which holds its previous results, so the diary carries
@@ -283,14 +276,13 @@ and `limit`.
 
 #### 6.1 Items and urgency
 
-Three kinds of item, labelled the same in every view:
+Two kinds of item, labelled the same in every view:
 - **Question · <class>:** an open `harness::ask` (§6.2).
-- **Held call:** an approval-gate pending record.
 - **Stalled run:** computed by the control plane (§7), not asked by anyone.
 
 Urgency, one rule for every view:
 - **Now:**
-  - held calls and stalled runs;
+  - stalled runs;
   - questions of class `run_health`, `security`, `publish`, `external_cost` or
     `data`;
   - any question whose `about.blocks` is not empty.
@@ -315,7 +307,7 @@ The question card gains optional fields. The harness passes them through:
     "class": "security",        // security | publish | external_cost | data | scope | run_health | routine (default scope)
     "why": "…"                  // one paragraph, shown above the options
   },
-  "expires_in_min": 30,         // no value waits forever, like a held call
+  "expires_in_min": 30,         // omit to wait indefinitely
   "on_expiry": { "answer": "Retry only the unfinished checks" }   // or "block" (the default)
 }
 ```
@@ -458,12 +450,12 @@ outcome.
 
 #### 6.4 The Needs you, Assumptions and Decided views
 
-Canvas artboards `Needs you`, `Side chat`, `Phone`, `Phone answer`,
-`Phone held call`, `Edge states`.
+Canvas artboards `Needs you`, `Side chat`, `Phone`, `Phone answer` and
+`Edge states`.
 
 - **Rail:** the releases of the scope, plus "Not on the board", each with its
-  count of open items. A Sources line counts questions, held calls and stalled
-  runs; it is text, not a control.
+  count of open items. A Sources line shows counts of questions and stalled
+  runs.
 - **List:** Now and No rush, in the §6.1 order. Each row carries its kind
   label.
 - **Detail pane, for a question:**
@@ -480,13 +472,6 @@ Canvas artboards `Needs you`, `Side chat`, `Phone`, `Phone answer`,
 
   When the session has moved on since it asked, a neutral line says: "The
   session moved on since it asked; your answer arrives as a message."
-- **Detail pane, for a held call:**
-  - shown: the function, the redacted `arguments_excerpt`, the session title
-    and its card;
-  - not shown: no "why" in prose, no preselection, no "Recommended", no free
-    text, no Let the agent decide;
-  - three explicit buttons: Deny, Allow once (`approval::resolve`), and Always
-    allow in this session (`approval::approve-always`).
 - **Detail pane, for a stalled run:** the stall facts (§7), and two actions.
   Resume sends "continue" to the root session. Leave it hides the item until
   the run changes.
@@ -500,11 +485,10 @@ Canvas artboards `Needs you`, `Side chat`, `Phone`, `Phone answer`,
   question" posts a person comment on its card, which the agent reads like any
   comment that steers its work.
 - **Decided:** `kanban::question::list` for closed questions: question,
-  answer, by, when and outcome. A `not_delivered` row offers Open card. Held
-  calls are not listed, because the approval-gate keeps no history.
-- **On reload,** the view refetches `harness::ask::list`,
-  `approval::list-pending` and `kanban::question::list`, and merges them by
-  `session_id/question_id`. The harness state wins.
+  answer, by, when and outcome. A `not_delivered` row offers Open card.
+- **On reload,** the page reads questions from the worker. The worker merges
+  `harness::ask::list` and `kanban::question::list` by `session_id/question_id`.
+  The harness state wins.
 - **Edge states:**
   - Nothing needs you;
   - loading;
@@ -515,9 +499,8 @@ Canvas artboards `Needs you`, `Side chat`, `Phone`, `Phone answer`,
   - already answered;
   - withdrawn.
 - **Phone:** a scrolling list with 60 px rows. A question opens a bottom sheet
-  (canvas `Phone answer`), and a held call opens its own sheet with the three
-  buttons (canvas `Phone held call`). Both sheets scroll, with their actions
-  pinned at the bottom, and the question sheet has Ask about this.
+  (canvas `Phone answer`) with Ask about this. The sheet scrolls with its
+  actions pinned at the bottom.
 
 #### 6.5 Side chat: think a decision through before answering
 
@@ -544,17 +527,11 @@ untouched.
   `kanban::ticket::get`, `kanban::ticket::list`, `kanban::question::list`,
   `coder::read-file` and `memory::recall`.
   - The client cannot widen it.
-  - The ADE sets the copy's approval-gate always-allow for the same reads
-    (`approval::add_always_allow`, a console call), so they are not held and
-    do not land in Needs you.
   - `shell::exec` is out, so the copy cannot run git.
 - **The person answers, in the pane.** The side chat may propose an option or
   a text, and "Use this answer" fills the pane, free text included. Answer
   still calls `harness::ask::answer` on the original session. The copy cannot
   answer: the function is in `agent_call_forbidden`.
-- **Held calls.** A held call has no question, so the copy forks the held
-  session at the entry before the held call. That `session::fork` of a session
-  parked on a hold is not verified yet (Validation 4).
 - **Session gone:** the side chat starts a fresh session seeded with the
   question, the card and the trail.
 - **Cost.** The copy's first turn rereads the asker's whole context, and it
@@ -568,11 +545,14 @@ untouched.
 
 Canvas artboard `Runs`. A run is a root session that is not a side chat and
 not a writer, of kind `user` or `automation`, that either:
-- has a turn running in its tree, open questions, a held call, or a wake
-  armed; or
+- has an active turn in its tree, open questions or an armed wake; or
 - is linked to a card and ended in the last 24 h.
 
 A chat that simply ended is not a run.
+
+A root awaiting functions (`harness::status` reports `awaiting_functions`)
+counts as active. It is shown as Working unless the stalled or failed state
+applies.
 
 - **Session list.** `session::list` gains `roots: true` (sessions without
   `spawned_by`). Without it, the 200-row page fills with sub-agents.
@@ -655,9 +635,6 @@ First adopters:
      - Pull requests, with repositories from the session roots' remotes;
      - no Summary or Diary, and the fallbacks of §2 for the prose.
    - **Needs you:**
-     - **Held calls** are answered here, with `approval::resolve` and
-       `approve-always`. They are console calls, and the approval-gate already
-       refuses a second resolve of a record.
      - **Asks** are listed: sessions with `status_reason: "awaiting answer"`,
        filtered in the client, with the card read from
        `session::messages-tail`. Open opens the session's chat, where the
@@ -685,19 +662,18 @@ First adopters:
    - Session-manager: `list roots`.
    - ADE:
      - Needs you answers asks itself;
-     - the side chat, with its approval allows;
+     - the decision side chat for questions;
      - Decided and Assumptions;
      - the chat card switches to `answer`;
      - the writer trigger.
-   - The `control-plane` kit with its approval rules (§3).
+   - The `control-plane` kit with its writer profile (§3).
 3. **Adoption** (§8): the generic rules in the docs, then deepwork and the
    watchdog.
 
 ## Validation
 
-1. **Phase 1, on the dev stack.** Set up five waiting items:
+1. **Phase 1, on the test stack.** Set up four scenarios:
    - a deepwork run with `approve=on`, started from the board;
-   - a held `git push`;
    - a chat session left on an ask card, with no card;
    - a board-dispatched `backend-engineer` session that opens a PR naming its
      card;
@@ -705,9 +681,8 @@ First adopters:
 
    Then check that:
    - **Needs you:**
-     - all five show within 2 s, and again after a reload, in the §6.1 order;
-     - the held call can only be denied or allowed, with nothing preselected;
-     - two quick Allow clicks resolve once;
+     - open questions and stalled runs show within 2 s, and again after a
+       reload, in the §6.1 order;
      - Resume starts a turn on the stalled run;
      - a wait whose deadline is in the future is not marked stalled;
      - a parked dispatch card is not listed as a question.
@@ -751,15 +726,12 @@ First adopters:
      `side_chat_functions`;
    - `kanban::ticket::update`, `harness::spawn` and `harness::ask::answer` are
      refused in the copy;
-   - the copy's reads are not held by the approval-gate;
    - the original transcript is unchanged;
    - the copy is absent from Runs, and is deleted when the question closes
-     unless kept;
-   - the same check passes on a session forked while parked on a held call.
+     unless kept.
 5. **Phase 2, the control plane kit,** for a day on a project with live runs, with the
    screen open. Check that:
-   - each refresh's policy holds only reads, and no read is held by the
-     approval-gate;
+   - each refresh's policy allows only reads;
    - two open tabs trigger one refresh per slot;
    - every reference resolves;
    - a day of results, read by hand, states no counts or durations;

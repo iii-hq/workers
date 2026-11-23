@@ -182,7 +182,6 @@ describe('worker functions without an engine', () => {
       items: [],
       runs: [],
       prs: [],
-      availability: { github: false, approval_gate: false },
       prs_interval_min: 5,
       summary: {
         result: null,
@@ -190,6 +189,7 @@ describe('worker functions without an engine', () => {
         error: 'set the summary model in the Control plane settings',
       },
     })
+    expect(overview).toHaveProperty('availability', { github: false })
     expect(f.handlers.has('control-plane::ui-content')).toBe(false)
     expect(f.observers.map(({ source }) => source.function_id)).toEqual(
       expect.arrayContaining([
@@ -469,13 +469,17 @@ describe('worker functions without an engine', () => {
     const f = fake()
     controlPlanes.push(await registerControlPlane(f.iii))
     f.call.mockClear()
-    f.runtime.functions.push('approval::list-pending', 'approval::set-mode')
+    f.runtime.functions.push('github::pr::list', 'github::pr::checks', 'github::pr::view')
     await f.invoke('control-plane::availability-updated', {})
     expect(f.call).toHaveBeenCalledWith(
       expect.objectContaining({
         function_id: 'control-plane::on-changed',
         payload: expect.objectContaining({ scope: 'all', parts: ['availability', 'summary'] }),
       }),
+    )
+    expect(await f.invoke('control-plane::overview', { scope: 'all' })).toHaveProperty(
+      'availability',
+      { github: true },
     )
     f.runtime.config.summary.language = 'Portuguese'
     await f.invoke('control-plane::config-updated', {})
@@ -512,9 +516,6 @@ describe('worker functions without an engine', () => {
       repos: [],
       project_id: 'p',
     })
-    expect(
-      f.call.mock.calls.some(([request]) => request.function_id.startsWith('approval::')),
-    ).toBe(false)
   })
 
   it('validates scope inputs and sends debounced change notifications from observed source events', async () => {

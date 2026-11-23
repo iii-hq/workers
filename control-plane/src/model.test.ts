@@ -17,7 +17,6 @@ describe('needs-you ordering', () => {
         blockedCards: 0,
         createdAt: 1,
       },
-      { kind: 'held' as const, blockedCards: 1, createdAt: 4 },
       {
         kind: 'question' as const,
         questionClass: 'scope' as const,
@@ -35,10 +34,9 @@ describe('needs-you ordering', () => {
 
     expect(needUrgency(items[0])).toBe('no-rush')
     expect(sortNeeds(items)).toEqual([
-      items[3],
       items[2],
       items[1],
-      items[4],
+      items[3],
       items[0],
     ])
   })

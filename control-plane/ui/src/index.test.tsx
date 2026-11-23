@@ -259,7 +259,7 @@ describe('Control plane views', () => {
     expect(container.textContent).toContain('Run card links could not be listed')
   })
 
-  it('shows absent prose slots, top three Now items, and transcript fallbacks without a primary action', async () => {
+  it('shows absent prose slots, Now items, and transcript fallbacks without a primary action', async () => {
     await render()
     expect(container.textContent).toContain('No summary for this project')
     expect(container.textContent).toContain('No diary for this project yet')
@@ -268,7 +268,7 @@ describe('Control plane views', () => {
       Array.from(container.querySelectorAll('[data-urgency="now"] button')).filter(
         (node) => node.textContent?.trim() === 'Open',
       ),
-    ).toHaveLength(3)
+    ).toHaveLength(2)
     expect(container.querySelector('button[data-variant="default"]')).toBeNull()
     await click('Open')
     expect(container.textContent).toContain('Or answer in your own words')
@@ -296,7 +296,7 @@ describe('Control plane views', () => {
     await render({
       data: {
         ...controlPlaneFixture,
-        errors: { ...controlPlaneFixture.errors, needsYou: 'Approval is unavailable' },
+        errors: { ...controlPlaneFixture.errors, needsYou: 'Questions are unavailable' },
       },
     })
     expect(container.textContent).toContain('Some Needs you sources are unavailable')

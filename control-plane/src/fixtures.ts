@@ -183,18 +183,6 @@ const items: NeedsYouItem[] = sortNeeds([
     createdAt: ago(18),
   },
   {
-    kind: 'held',
-    id: 'hold',
-    sessionId: 'dispatch-r1',
-    functionCallId: 'push',
-    functionId: 'shell::exec',
-    arguments: { command: 'git push' },
-    title: 'shell::exec',
-    card: r1,
-    blockedCards: 0,
-    createdAt: ago(12),
-  },
-  {
     kind: 'stalled',
     id: 'stall',
     sessionId: 'dispatch-flaky',

@@ -189,18 +189,6 @@ describe('Control plane Needs you interactions', () => {
     expect(container.textContent).toContain('Sending your answer')
     expect(container.querySelector('.control-plane-options')).toBeNull()
   })
-  it('removes a held detail when another tab resolves it', async () => {
-    await render({ iii: client(vi.fn()), initialSelectedId: 'hold' })
-    expect(button('Allow once')).toBeDefined()
-    await render({
-      data: {
-        ...controlPlaneFixture,
-        items: controlPlaneFixture.items.filter((item) => item.kind !== 'held'),
-      },
-    })
-    expect(container.textContent).toContain('Choose an item')
-    expect([...container.querySelectorAll('button')].some((node) => node.textContent === 'Allow once')).toBe(false)
-  })
   it('lists releases beyond the Overview selection and filters their open items', async () => {
     const release = {
       ...controlPlaneFixture.releases[0],
@@ -312,74 +300,6 @@ describe('Control plane Needs you interactions', () => {
     expect(container.textContent).toContain('Left to the agent')
     expect(container.textContent).not.toContain(instruction)
   })
-  it('shows held arguments without preselection, and grants only after resolving always', async () => {
-    const call = vi.fn().mockResolvedValue({ resolved: true })
-    const held = controlPlaneFixture.items.find((item) => item.kind === 'held')
-    if (!held) throw new Error('Held fixture missing')
-    await render({
-      iii: client(call),
-      initialSelectedId: held.id,
-      data: {
-        ...controlPlaneFixture,
-        items: controlPlaneFixture.items.map((item) =>
-          item.id === held.id ? { ...item, sessionTitle: 'Release chat', namespace: 'production', implicitNamespace: 'default' } : item,
-        ),
-      },
-    })
-    expect(container.querySelector('input[type="radio"],input[type="checkbox"]')).toBeNull()
-    expect(container.textContent).not.toContain('Recommended')
-    expect(container.textContent).not.toContain('Let the agent decide')
-    expect(container.textContent).toContain('git push')
-    const row = container.querySelector('[data-need-id="hold"]')
-    expect(row?.textContent).toContain('shell::exec')
-    expect([...row!.querySelectorAll('.control-plane-truncate')].map((line) => line.textContent)).toEqual([
-      '{"command":"git push"}',
-      'Held call · Release chat · KAN-616',
-    ])
-    expect(container.textContent).toContain('Namespace: production')
-    expect(container.textContent).toContain('The call stays held until you pick one.')
-    expect(container.querySelector('.control-plane-decision button[data-variant="default"]')).toBeNull()
-    await click('Always allow in this session')
-    expect(container.textContent).not.toContain('The call stays held until you pick one.')
-    expect(call.mock.calls).toEqual([
-      [
-        'approval::resolve',
-        {
-          session_id: held.sessionId,
-          function_call_id: 'push',
-          decision: 'allow',
-          namespace: 'production',
-        },
-      ],
-      [
-        'approval::approve-always',
-        {
-          session_id: held.sessionId,
-          function_id: 'shell::exec',
-          namespace: 'production',
-        },
-      ],
-    ])
-  })
-  it('does not grant Always allow for an already resolved hold', async () => {
-    const call = vi.fn().mockResolvedValue({ resolved: false })
-    await render({ iii: client(call), initialSelectedId: 'hold' })
-    await click('Always allow in this session')
-    expect(call.mock.calls).toEqual([
-      ['approval::resolve', { session_id: 'dispatch-r1', function_call_id: 'push', decision: 'allow' }],
-    ])
-    expect(container.textContent).toContain('Already resolved')
-  })
-  it.each(['Deny', 'Allow once'])('uses an explicit %s choice for a held call', async (choice) => {
-    const call = vi.fn().mockResolvedValue({ resolved: true })
-    await render({ iii: client(call), initialSelectedId: 'hold' })
-    await click(choice)
-    expect(call).toHaveBeenCalledWith('approval::resolve', {
-      session_id: 'dispatch-r1',
-      function_call_id: 'push',
-      decision: choice === 'Deny' ? 'deny' : 'allow',
-    })
-  })
   it('reuses the Resume idempotency key across panes and changes it for a newer stalled turn', async () => {
     const call = vi.fn().mockResolvedValue({})
     for (const turnId of ['first-turn', 'first-turn', 'second-turn']) {
@@ -442,13 +362,12 @@ describe('Control plane question logs', () => {
     await click('Assumptions')
     expect(container.textContent).toContain('No assumptions to review')
   })
-  it('lists closed questions, not held calls or recorded assumptions', async () => {
+  it('lists closed questions without recorded assumptions', async () => {
     await render({ initialView: 'decided' })
     expect(container.textContent).toContain('May builds reach the public network?')
     expect(container.textContent).toContain('Allow only the package mirrors.')
     expect(container.textContent).toContain('not delivered')
     expect(button('Open card')).toBeDefined()
-    expect(container.textContent).not.toContain('shell::exec')
     expect(container.textContent).not.toContain('Cache artifacts between builds?')
   })
 })

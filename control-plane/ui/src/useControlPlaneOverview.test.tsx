@@ -4,7 +4,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { controlPlaneFixture } from '../../src/fixtures'
 import type { ControlPlaneData, ControlPlaneQuestion } from '../../src/types'
-import { mergeHolds, useControlPlaneOverview, type ControlPlaneOverviewData } from './useControlPlaneOverview'
+import { useControlPlaneOverview, type ControlPlaneOverviewData } from './useControlPlaneOverview'
 
 let root: Root
 let container: HTMLDivElement
@@ -28,15 +28,13 @@ function fake() {
     ...controlPlaneFixture,
     as_of: new Date().toISOString(),
     sourceHash: 'fixture',
-    items: controlPlaneFixture.items
-      .filter((item) => item.kind !== 'held')
-      .map((item) => ({
+    items: controlPlaneFixture.items.map((item) => ({
         ...item,
         urgency:
           item.kind === 'stalled' || (item.kind === 'question' && item.questionClass === 'security')
             ? ('now' as const)
             : ('no-rush' as const),
-      })),
+    })),
     runs: controlPlaneFixture.runs.map((run) => ({ ...run, context_size: 1234 })),
     prs: controlPlaneFixture.prs.map((pr) => ({ ...pr, as_of: new Date().toISOString() })),
     direction: [],
@@ -57,7 +55,7 @@ function fake() {
           unavailable: true,
           fresh: false,
         },
-        availability: { github: true, approval_gate: true },
+        availability: { github: true },
         prs_interval_min: 7,
       }
     if (id === 'control-plane::needs-you::list') return { items: data.items }
@@ -75,19 +73,6 @@ function fake() {
         error: null,
         unavailable: false,
         throttled_until: '2026-11-22T18:00:00Z',
-      }
-    if (id === 'approval::list-pending')
-      return {
-        pending: [
-          {
-            session_id: 'dispatch-r1',
-            function_call_id: 'held-a',
-            function_id: 'github::push',
-            arguments_excerpt: { ref: '[redacted]' },
-            pending_at: Date.now(),
-            session_metadata: { kanban_ticket: data.tickets[0].key },
-          },
-        ],
       }
     throw new Error(`Unexpected direct source read ${id}`)
   })
@@ -137,48 +122,36 @@ async function flush() {
 }
 
 describe('useControlPlaneOverview console boundary and live parts', () => {
-  it('loads worker facts and only reads approval holds directly, with no git remote or metrics calls', async () => {
+  it('loads worker facts without direct source reads', async () => {
     const f = fake()
     await act(() => root.render(<f.Probe />))
-    expect(f.result().items.some((item) => item.kind === 'held')).toBe(true)
-    expect(f.result().items.find((item) => item.kind === 'held')).toMatchObject({
-      arguments: { ref: '[redacted]' },
-      urgency: 'now',
-    })
     expect(f.result().prs_interval_min).toBe(7)
-    expect(f.call).toHaveBeenCalledWith('approval::list-pending', { limit: 200 })
-    expect(f.call.mock.calls.every(([id]) => id.startsWith('control-plane::') || id === 'approval::list-pending')).toBe(true)
-    expect(f.observe.mock.calls.map(([source]) => source)).toEqual([
-      'control-plane::on-changed',
-      'approval::on-pending-created',
-      'approval::on-pending-resolved',
-    ])
+    expect(f.result().items).toEqual(f.data.items)
+    expect(f.result().runs).toEqual(f.data.runs)
+    expect(f.call.mock.calls.every(([id]) => id.startsWith('control-plane::'))).toBe(true)
+    expect(f.observe.mock.calls.map(([source]) => source)).toEqual(['control-plane::on-changed'])
     expect(f.result().summary.error).toBe('set the summary model in the Control plane settings')
   })
   it('refetches just the changed part for the matching scope and keeps one subscription on Refresh', async () => {
     const f = fake()
     await act(() => root.render(<f.Probe />))
     f.call.mockClear()
-    const changed = [...f.handlers.entries()].find(([id]) => !id.includes('holds'))![1]
+    const changed = [...f.handlers.values()][0]
     await act(() => changed({ scope: 'other', parts: ['prs'] }))
     expect(f.call).not.toHaveBeenCalled()
     await act(() => changed({ scope: 'all', parts: ['prs'] }))
     expect(f.call.mock.calls.map(([id]) => id)).toEqual(['control-plane::prs::list'])
     await act(() => f.result().refresh())
-    expect(f.observe).toHaveBeenCalledTimes(3)
+    expect(f.observe).toHaveBeenCalledOnce()
   })
-  it('refreshes held calls on both approval events, renews watch each minute, and disposes on unmount', async () => {
+  it('renews watch each minute and disposes on unmount', async () => {
     const f = fake()
     await act(() => root.render(<f.Probe />))
-    f.call.mockClear()
-    const changed = [...f.handlers.entries()].find(([id]) => id.includes('holds'))![1]
-    await act(() => changed({}))
-    expect(f.call.mock.calls.map(([id]) => id)).toEqual(['approval::list-pending'])
     f.call.mockClear()
     await act(() => vi.advanceTimersByTime(60_000))
     expect(f.call.mock.calls.map(([id]) => id)).toEqual(['control-plane::watch'])
     await act(() => root.unmount())
-    expect(f.disposed).toHaveBeenCalledTimes(6)
+    expect(f.disposed).toHaveBeenCalledTimes(3)
     root = createRoot(container)
     f.call.mockClear()
     await act(() => vi.advanceTimersByTime(120_000))
@@ -206,7 +179,7 @@ describe('useControlPlaneOverview console boundary and live parts', () => {
           finish = resolve
         }),
     )
-    const changed = [...f.handlers.entries()].find(([id]) => !id.includes('holds'))![1]
+    const changed = [...f.handlers.values()][0]
     await act(() => changed({ scope: 'all', parts: ['prs'] }))
     await act(() => changed({ scope: 'all', parts: ['prs'] }))
     await act(() => finish({ prs: [], error: null }))
@@ -237,39 +210,11 @@ describe('useControlPlaneOverview console boundary and live parts', () => {
     )
     await act(() => f.result().refresh())
     f.data.prs = []
-    const changed = [...f.handlers.entries()].find(([id]) => !id.includes('holds'))![1]
+    const changed = [...f.handlers.values()][0]
     await act(() => changed({ scope: 'all', parts: ['prs'] }))
     expect(f.result().prs).toEqual([])
     await act(() => finish(earlier))
     expect(f.result().prs).toEqual([])
-  })
-  it('retains an approval read error through unrelated successful worker reads', async () => {
-    const f = fake()
-    await act(() => root.render(<f.Probe />))
-    const original = f.call.getMockImplementation()!
-    f.call.mockImplementation(async (id, input) => {
-      if (id === 'approval::list-pending') throw new Error('Approval source down')
-      return original(id, input)
-    })
-    const holdsChanged = [...f.handlers.entries()].find(([id]) => id.includes('holds'))![1]
-    const changed = [...f.handlers.entries()].find(([id]) => !id.includes('holds'))![1]
-    await act(() => holdsChanged({}))
-    expect(f.result().errors.needsYou).toBe('Approval source down')
-    f.call.mockImplementation(original)
-    await act(() => holdsChanged({}))
-    expect(f.result().errors.needsYou).toBeNull()
-    f.call.mockImplementation(async (id, input) => {
-      if (id === 'approval::list-pending') throw new Error('Approval source down')
-      return original(id, input)
-    })
-    await act(() => holdsChanged({}))
-    await act(() => changed({ scope: 'all', parts: ['items'] }))
-    expect(f.result().errors.needsYou).toBe('Approval source down')
-    await act(() => changed({ scope: 'all', parts: ['direction'] }))
-    expect(f.result().errors.needsYou).toBe('Approval source down')
-    f.call.mockImplementation(original)
-    await act(() => holdsChanged({}))
-    expect(f.result().errors.needsYou).toBeNull()
   })
   it('refetches on connected only and rejects future summary freshness', async () => {
     const f = fake()
@@ -291,81 +236,5 @@ describe('useControlPlaneOverview console boundary and live parts', () => {
     })
     await act(() => f.result().summary.refresh())
     expect(f.result().summary.fresh).toBe(false)
-  })
-  it('keeps Needs you loading until the page approval read finishes', async () => {
-    const f = fake()
-    const original = f.call.getMockImplementation()!
-    let finish!: (value: unknown) => void
-    f.call.mockImplementation((id, input) =>
-      id === 'approval::list-pending'
-        ? new Promise((resolve) => {
-            finish = resolve
-          })
-        : original(id, input),
-    )
-    await act(() => root.render(<f.Probe />))
-    expect(f.result().loading.needsYou).toBe(true)
-    await act(() => finish({ pending: [] }))
-    expect(f.result().loading.needsYou).toBe(false)
-  })
-  it('marks parked or done roots with their own held call as waiting', () => {
-    const f = fake()
-    const run = f.data.runs[0]
-    const pending = [
-      {
-        session_id: run.session.session_id,
-        function_call_id: 'hold',
-        function_id: 'f',
-        arguments_excerpt: {},
-        pending_at: 0,
-      },
-    ]
-    const waiting = mergeHolds({ ...f.data, runs: [{ ...run, state: 'done' }] }, pending, 'all')
-    expect(waiting.runs[0].state).toBe('waiting')
-    expect(waiting.runs[0].needsYou.some((row) => row.kind === 'held')).toBe(true)
-    const parked = {
-      ...run,
-      state: 'working' as const,
-      status: { ...run.status, status: 'awaiting_functions' },
-    }
-    const parkedData = { ...f.data, runs: [parked] }
-    expect(mergeHolds(parkedData, pending, 'all').runs[0].state).toBe('waiting')
-    expect(mergeHolds(parkedData, [], 'all').runs[0].state).toBe('working')
-    const active = { ...parked, status: { ...parked.status, status: 'running' } }
-    expect(mergeHolds({ ...f.data, runs: [active] }, pending, 'all').runs[0].state).toBe('working')
-    const stalled = mergeHolds({ ...f.data, runs: [{ ...run, state: 'stalled' }] }, pending, 'all')
-    expect(stalled.runs[0].state).toBe('stalled')
-  })
-  it('keeps held calls scoped and preserves independently reported stalled items', () => {
-    const f = fake()
-    const stalled = f.data.runs[0]
-    const data = {
-      ...f.data,
-      items: [
-        {
-          id: 'stalled',
-          kind: 'stalled',
-          urgency: 'now',
-          sessionId: stalled.session.session_id,
-          title: stalled.session.title,
-          blockedCards: 0,
-          createdAt: 0,
-          lastProgress: 0,
-          armedWakes: [],
-        },
-      ],
-    } as ControlPlaneData
-    const pending = [
-      {
-        session_id: stalled.session.session_id,
-        function_call_id: 'held',
-        function_id: 'f',
-        arguments_excerpt: {},
-        pending_at: 0,
-        session_metadata: { kanban_ticket: f.data.tickets[0].key },
-      },
-    ]
-    expect(mergeHolds(data, pending, 'all').items.map((row) => row.kind)).toEqual(['held', 'stalled'])
-    expect(mergeHolds(data, pending, 'another-project').items.map((row) => row.kind)).toEqual(['stalled'])
   })
 })

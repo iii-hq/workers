@@ -22,10 +22,9 @@ request data is unavailable when the GitHub worker is absent.
 
 ## Boundaries
 
-- Control plane reads facts and refreshes its own summary; it never answers questions,
-  resolves approvals or resumes runs.
-- Use harness, kanban, approval-gate or GitHub directly for actions.
-- Held approval calls are read by the console and are absent from control plane data.
+- Control plane reads facts and refreshes its own summary.
+- Use harness to resume runs, harness or kanban to answer questions, and GitHub
+  for pull request actions.
 
 ## Functions
 

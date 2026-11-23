@@ -187,20 +187,14 @@ describe('server read model', () => {
     expect(call.mock.calls.filter(([id]) => id === 'github::pr::checks')).toHaveLength(3)
   })
 
-  it('reads no GitHub with no watcher/live run and never calls a held-call or action function', async () => {
+  it('reads no GitHub with no watcher/live run and never calls an action function', async () => {
     const { call, iii } = fake({ sessions: [] })
     const { read } = model(iii)
     const data = await read.read('all')
     expect(data.prs).toEqual([])
     expect(
-      call.mock.calls.some(
-        ([id]) =>
-          id.startsWith('approval::') ||
-          id.startsWith('github::') ||
-          /answer|send|resolve/.test(id),
-      ),
+      call.mock.calls.some(([id]) => id.startsWith('github::') || /answer|send|resolve/.test(id)),
     ).toBe(false)
-    expect(data.items.some((item) => item.kind === 'held')).toBe(false)
     expect(data.repositories).toEqual(['owner/repo'])
   })
 
@@ -426,10 +420,11 @@ describe('context accounting', () => {
   })
 })
 
-it('projects only run facts from nested session, runtime status and wake rows', async () => {
+it('projects only run facts from a parked root and classifies it as working', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(at)
   const rawSession = {
     ...session,
-    status: 'working' as const,
     draft: 'unsent words',
     draft_attachments: [{ id: 'unsent attachment' }],
     metadata: { kanban_ticket: 'KAN-1', agent_profile: { id: 'builder' }, secret: 'raw metadata' },
@@ -444,7 +439,7 @@ it('projects only run facts from nested session, runtime status and wake rows', 
         turn_id: 't',
         step: 1,
         status: 'awaiting_functions',
-        pending_function_calls: ['held call id'],
+        pending_function_calls: ['pending call id'],
         queued: [{ message: 'queued text' }],
         result: 'internal result',
         children: [
@@ -476,6 +471,7 @@ it('projects only run facts from nested session, runtime status and wake rows', 
     armed_wakes: [{ created_at: at }],
   })
   expect(run).toMatchObject({ state: 'working', context_size: 120, profile: 'builder' })
+  expect(data.items).toEqual([])
 })
 
 describe('fallback cache', () => {

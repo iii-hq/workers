@@ -1,19 +1,17 @@
 import type { DecisionChatRequest } from '@iii-dev/console-ui'
 import type { Selection } from './answer-state'
-import type { AskQuestion, NeedsYouItem, ControlPlaneQuestion } from '../../src/types'
+import type { AskQuestion, QuestionNeed, ControlPlaneQuestion } from '../../src/types'
 
-export type DecisionNeed = Extract<NeedsYouItem, { kind: 'question' | 'held' }>
-
-export function decisionKey(item: DecisionNeed): string {
-  return `${item.sessionId}/${item.kind === 'question' ? item.questionId : item.functionCallId}`
+export function decisionKey(item: QuestionNeed): string {
+  return `${item.sessionId}/${item.questionId}`
 }
 
 export function decisionChatRequest(
-  item: DecisionNeed,
+  item: QuestionNeed,
   record: ControlPlaneQuestion | undefined,
   onUseAnswer: DecisionChatRequest['onUseAnswer'],
 ): DecisionChatRequest {
-  const shared = {
+  return {
     key: decisionKey(item),
     sessionId: item.sessionId,
     kind: item.kind,
@@ -22,18 +20,6 @@ export function decisionChatRequest(
     createdAt: new Date(item.createdAt).toISOString(),
     card: item.card ? { key: item.card.key, title: item.card.title } : undefined,
     onUseAnswer,
-  } as const
-  if (item.kind === 'held')
-    return {
-      ...shared,
-      held: {
-        functionCallId: item.functionCallId,
-        functionId: item.functionId,
-        arguments: item.arguments,
-      },
-    }
-  return {
-    ...shared,
     agent: item.entry.asked_by,
     why: item.entry.about.why,
     questionId: item.questionId,

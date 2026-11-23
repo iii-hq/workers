@@ -2,6 +2,9 @@
 
 Status: proposed, 2026-11-22. Revision 5, after four adversarial reviews.
 
+**2026-11-23.** Held calls and approval-gate are out of the control plane for
+now because the operator does not use approval-gate.
+
 This spec extends `README.md`, the control plane spec, in PR #1855.
 
 It moves the control plane out of the ADE shell into a `control-plane` worker, which owns:
@@ -39,8 +42,7 @@ These are the defaults, open to review.
 
 - **D1. New commits on top of #1855.** The branch history is not rewritten.
 - **D2. The side chat stays in the ADE,** behind a host capability (§5).
-  The fork, its metadata, the approval allows and the cleanup are chat
-  infrastructure.
+  The fork, its metadata and the cleanup are chat infrastructure.
 - **D3. The worker schedules the summary.**
 - **D4. A TypeScript worker:**
   - `language: javascript`, `iii-sdk` 0.26 for Node;
@@ -54,7 +56,7 @@ These are the defaults, open to review.
   rewritten for the server (§2, §4).
 - **D5. Actions stay as console calls the page makes,** as they are today.
   The worker adds no proxy that acts for a person, so no new path leads an
-  agent to `harness::ask::answer` or `approval::*`.
+  agent to `harness::ask::answer`.
 - **D6. The writer profile ships in a minimal `control-plane` kit.**
   - The harness resolves profiles only through `directory::agents::get`
     (`harness/src/agents.rs:37,126-150`), and iii-directory reads the agents
@@ -73,9 +75,9 @@ These are the defaults, open to review.
 | `model.ts`, `summary.ts`, their tests | | `control-plane/src/`, shared with the page | |
 | `data.ts` (`useControlPlaneData`, `fetchControlPlaneAsks`, `mergeControlPlaneQuestions`) and its tests | | | `control-plane/src/read-model.ts` (§2); `useControlPlaneOverview` in the page |
 | `use-summary.ts` and its tests | | | `control-plane/src/writer.ts` (§4) |
-| `DecisionSideChat.tsx`, and the fork, metadata and allows of `side-chat.ts` | `ade/web/src/components/chat/decision/`, behind §5; their imports of `./model`, `./answer-state` and `./NeedsYou` become the request's fields | | |
+| `DecisionSideChat.tsx`, and the fork and metadata of `side-chat.ts` | `ade/web/src/components/chat/decision/`, behind §5; their imports of `./model`, `./answer-state` and `./NeedsYou` become the request's fields | | |
 | `lib/decision-side-chat-lifetime.ts`, and the side-chat changes in `chat-aside.ts`, `conversations-context.tsx`, `ChatPanel`, `ChatView` | as they are | | |
-| `kits/control-plane/result.schema.json`, `kits/control-plane/tests/test_contract.py`, `kits/control-plane/iii-permissions.yaml` | | `control-plane/src/result.schema.json` (bundled) and `control-plane/tests/`; the permissions become the writer's `options.functions` (§4) | |
+| `kits/control-plane/result.schema.json`, `kits/control-plane/tests/test_contract.py` | | `control-plane/src/result.schema.json` (bundled) and `control-plane/tests/` | |
 | The prototype’s built-in screen (`workspace-tabs.ts`, `App.tsx`, nav, palette, hash route) | replaced by the worker page | | |
 
 ### Import replacements in the moved page
@@ -114,8 +116,8 @@ The deploy compiler accepts only explicit files or paths under `dist/`
 
 Required workers: harness, session-manager, kanban, state and iii-directory
 (D6).
-Optional: approval-gate and github; the page shows their part as
-unavailable when one is absent. The worker does not need `shell`.
+GitHub is optional. The page shows PRs as unavailable when the worker is
+absent. The worker does not need `shell`.
 
 Configuration, under id `control-plane` in the configuration worker:
 
@@ -135,7 +137,7 @@ These functions read only:
 
 | Function | Returns |
 |---|---|
-| `control-plane::overview {scope}` | direction (§7), tiles, the top Now questions and stalled runs, exceptions, runs in progress, PRs, the board, the latest valid summary with its freshness |
+| `control-plane::overview {scope}` | direction (§7), tiles, the top Now questions and stalled runs, exceptions, runs in progress, PRs, the board, the latest valid summary with its freshness, and `availability: { github: boolean }` |
 | `control-plane::needs-you::list {scope}` | questions (with `escalate` applied) and stalled runs, in `README.md` §6.1 order |
 | `control-plane::runs::list {scope}` | `README.md` §7, `context_size` per root |
 | `control-plane::prs::list {scope}` | open PRs of `Project.repos` with checks, card, session and wait reason |
@@ -152,8 +154,8 @@ These functions read only:
 - kanban reads;
 - `github::pr::*`.
 
-Held calls are left out. Granting `control-plane::*` therefore grants, in effect,
-the union of those sources: a policy that allows `*` exposes nothing new.
+Granting `control-plane::*` therefore grants, in effect, the union of those
+sources. A policy that allows `*` exposes nothing new.
 A narrowed policy names `control-plane::*` only where all of those sources are
 already allowed.
 
@@ -204,8 +206,6 @@ own sessions (§4).
 - calls `control-plane::overview` and the other reads;
 - subscribes once to `control-plane::on-changed` and refetches the parts that
   changed;
-- reads held calls itself, as console calls (`approval::list-pending`,
-  `approval::on-pending-created`, `approval::on-pending-resolved`);
 - calls `control-plane::watch` every minute while open.
 
 ### 3. Actions
@@ -216,7 +216,6 @@ As today, the page calls the target functions directly, as the console
 | Action | Call |
 |---|---|
 | Answer, Let the agent decide | `harness::ask::answer` with `by: {channel: "control-plane", user}` |
-| Held call: Deny / Allow once / Always allow | `approval::resolve`; for Always, `approval::approve-always` first |
 | Stalled run: Resume | `harness::send` "continue" to the root |
 | Reopen an assumption | `kanban::comment::create` |
 | Refresh the summary | `control-plane::summary::refresh {scope}` |
@@ -234,8 +233,7 @@ reads `harness::status {verbose: true}` before each send.
   Later sends carry no `agent`.
 - Every send carries:
   - `model` and `provider` at the top level, split from `summary.model`;
-  - a read-only `options.functions`, the list that was
-    `kits/control-plane/iii-permissions.yaml`;
+  - `options.functions.allow` with the reads listed in `README.md` §3;
   - `options.output` with the bundled `result.schema.json`.
 
 **Adoption after a restart.** An existing `control-plane-<scope>` is adopted when
@@ -244,10 +242,6 @@ its kind is `automation`, its origin is `control-plane`, and either:
 - its `metadata.agent_profile.id` is `control-plane-writer`.
 
 Otherwise the worker reports the scope as unavailable.
-
-**Approvals.** On creation or adoption, the worker sets the session to
-approval auto mode, with always-allow for exactly its reads. When
-approval-gate is absent, it skips this, because nothing would hold the reads.
 
 **Profile missing.** If `directory::agents::get {id: "control-plane-writer"}` fails,
 nothing is sent. The scope shows "writer profile missing: apply the control-plane
@@ -305,14 +299,16 @@ summary model in the Control plane settings".
 
 ### 5. Host capability for the side chat
 
+The control plane sends the question form of the ADE host request.
+
 ```ts
 host.chat.openDecisionChat?(request): Promise<handle>     // creates or reuses the copy
 host.chat.rebindDecisionChat?(request): Promise<handle | null>  // existing copy only; never forks, never opens
 
 request: {
-  key: string;                      // `${sessionId}/${questionId}` or `${sessionId}/${functionCallId}`
+  key: string;                      // `${sessionId}/${questionId}`
   sessionId: string;
-  kind: 'question' | 'held';
+  kind: 'question';
   title: string;                    // the copy's title
   agent?: string;                   // asked_by
   card?: { key: string; title: string };
@@ -320,12 +316,9 @@ request: {
   sourceTitle?: string;             // title of the asking session, for the fallback quote
   createdAt: string;
   why?: string;
-  // kind 'question'
-  questionId?: string;
-  questions?: { header: string; question: string;
-                options: { label: string; description?: string; recommended?: boolean }[] }[];  // 1–4
-  // kind 'held'
-  held?: { functionCallId: string; functionId: string; arguments: unknown };  // arguments already redacted
+  questionId: string;
+  questions: { header: string; question: string; multi_select?: boolean;
+               options: { label: string; description?: string; recommended?: boolean }[] }[];  // 1–4
   onUseAnswer(questionIndex: number, proposal: { option?: string; text?: string }): void;
 }
 handle: {
@@ -335,24 +328,17 @@ handle: {
 }
 ```
 
-**The quote.** The host composes it.
-- For a question: the assistant text of the step that asked (found at the
-  fork point when the copy is created), then the questions, the options
-  with their descriptions, `why` and the board trail. When the fork point
-  has no assistant text, `sourceTitle` stands in.
-- For a held call: the function id and its redacted arguments.
-
-The page never builds quote text.
-
-**Use this answer.** For a held call it proposes Deny, Allow once or Always
-allow, mapped to `questionIndex` 0.
+**The quote.** The host uses the assistant text of the step that asked (found
+at the fork point), then the questions, the options with their descriptions,
+`why` and the board trail. When the fork point has no assistant text,
+`sourceTitle` stands in.
 
 **Open or closed.** A chat is open while a `chat:<copy>` column stands
 beside the page in the workspace tab layout. The layout is shared, so
 closing the chat in one browser closes it everywhere, as with any column.
 - `rebindDecisionChat` never adds a column.
 - On mount, and when its list changes, the page calls `rebindDecisionChat`
-  with the full request for every item it shows. The host binds each copy
+  with the full request for every question it shows. The host binds each copy
   that has a column, so after a reload "Use this answer" works for any open
   copy, not only the selected one.
 - A copy with no bound page has "Use this answer" disabled.
@@ -361,8 +347,8 @@ closing the chat in one browser closes it everywhere, as with any column.
 **Where it opens.** In the ADE's chat side panel of the current workspace
 tab, beside the caller. On a phone, full screen.
 
-**What the ADE keeps.** The fork point, the metadata, the approval allows,
-Keep and cleanup (`lib/decision-side-chat-lifetime.ts`, started from
+**What the ADE owns.** The fork point, metadata, Keep and cleanup
+(`lib/decision-side-chat-lifetime.ts`, started from
 `conversations-context.tsx:279`).
 
 **Older ADE.** Without the capability, the page hides "Ask about this".
@@ -391,8 +377,8 @@ The Overview is ordered for management by exception:
    - The writer's result gains `direction`: one line per release, with
      references, under `README.md` §3's prose rules.
 2. **Needs you.**
-   - Now holds questions of a class in the project's `escalate` list, held
-     calls (always) and stalled runs.
+   - Now includes stalled runs and questions of a class in the project's
+     `escalate` list.
    - Everything else is No rush.
 3. **Exceptions:**
    - stalled runs;
@@ -430,10 +416,8 @@ days, from `asked_at` to `settled_at` of closed entries
 
 1. **Parity.**
    - `model.test.ts` and `summary.test.ts` pass in `control-plane/`.
-   - For the Control plane fixtures, the read model returns what the ADE page
-     computed, with two expected differences:
-     - held calls are absent, because the page reads them;
-     - the git-remote fallback for PRs is gone.
+   - For the Control plane fixtures, the worker computes question and run
+     states, counts and ordering. PR repositories come from `Project.repos`.
 2. **Time.** A root that stops emitting becomes a stalled run within a
    minute of crossing `stall_after_min`.
 3. **Writer.**
@@ -446,13 +430,11 @@ days, from `asked_at` to `settled_at` of closed entries
      Overview shows "update failed".
    - The writer's own turns do not change the hash.
    - A second Refresh inside the interval is throttled.
-   - The writer's reads are not held.
    - Three invalid results in a row back the interval off, and a valid one
      resets it.
    - A restart after a failed turn keeps the last valid summary and sends
      nothing.
    - Without the kit, the scope shows "writer profile missing".
-   - Without approval-gate, the session is created and sends.
 4. **Profile.** After `iii call compose::add worker=control-plane` and applying the
    `control-plane` kit:
    - `directory::agents::get {id: "control-plane-writer"}` resolves;
@@ -460,7 +442,6 @@ days, from `asked_at` to `settled_at` of closed entries
    - applying the kit does not add `github`.
 5. **Safety.**
    - No `control-plane::*` function acts for a person.
-   - `control-plane::*` responses carry no held-call data.
    - A binding targeting `control-plane::summary::refresh` spends at most one turn
      per interval.
 6. **Load.**
@@ -474,7 +455,6 @@ days, from `asked_at` to `settled_at` of closed entries
      answer" fills the right question in every open copy.
    - A closed chat stays closed.
    - `detach` disables "Use this answer" until a rebind.
-   - A held call quotes its function and its redacted arguments.
    - An older ADE hides the button.
 8. **CEO view.**
    - A release past its date with open cards is at risk.

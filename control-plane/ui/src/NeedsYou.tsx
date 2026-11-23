@@ -36,22 +36,14 @@ import {
 } from './answer-state'
 import type { ControlPlaneOverviewData as ControlPlaneData } from './useControlPlaneOverview'
 import { type AskEntry, type NeedsYouItem, type QuestionNeed, type ControlPlaneQuestion } from '../../src/types'
-import { type DecisionNeed, decisionChatRequest, selectionFromSideChat } from './side-chat'
+import { decisionChatRequest, selectionFromSideChat } from './side-chat'
 
 export type ControlPlaneActions = Pick<Host['iii'], 'call'>
 const IDLE: AnswerState = { status: 'idle' }
 export const needLabel = (item: NeedsYouItem) =>
   item.kind === 'question'
     ? `Question · ${item.questionClass.replaceAll('_', ' ')}`
-    : item.kind === 'held'
-      ? 'Held call'
-      : 'Stalled run'
-
-export function heldCallExcerpt(item: Extract<NeedsYouItem, { kind: 'held' }>): string {
-  const excerpt = typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments)
-  const text = excerpt?.replace(/\s+/g, ' ').trim() ?? ''
-  return text.length > 120 ? `${text.slice(0, 119)}…` : text
-}
+    : 'Stalled run'
 
 export function stallVersion(item: NeedsYouItem, runs: ControlPlaneData['runs']): string {
   const run = runs.find((row) => row.session.session_id === item.sessionId)
@@ -155,7 +147,6 @@ export function NeedsYou({
   const handles = useRef(new Map<string, DecisionChatHandle>())
   const chatRequests = useRef(new Map<string, symbol>())
   const [chatError, setChatError] = useState<string | null>(null)
-  const [heldProposals, setHeldProposals] = useState<Record<string, string>>({})
   const [filledFromChat, setFilledFromChat] = useState<string | null>(null)
   const [states, setStates] = useState<Record<string, AnswerState>>({})
   const inFlight = useRef(new Set<string>())
@@ -197,13 +188,6 @@ export function NeedsYou({
     }
   }, [])
   useEffect(() => {
-    if (focused?.kind !== 'held' || data.loading.needsYou) return
-    if (data.items.some((item) => item.id === focused.id)) return
-    if (inFlight.current.has(focused.id)) return
-    const status = states[focused.id]?.status ?? 'idle'
-    if (status === 'idle' || status === 'failed') setFocused(null)
-  }, [data.items, data.loading.needsYou, focused, states])
-  useEffect(() => {
     if (!entry || !selectedKey) return
     setStates((current) => ({
       ...current,
@@ -224,15 +208,13 @@ export function NeedsYou({
         .includes(query.toLowerCase()),
   )
   const fillFromChat = useCallback(
-    (item: DecisionNeed, index: number, proposal: { option?: string; text?: string }) => {
+    (item: QuestionNeed, index: number, proposal: { option?: string; text?: string }) => {
       const text = proposal.option ?? proposal.text ?? ''
-      if (item.kind === 'question') {
-        setDrafts((current) => {
-          const next = [...(current[item.id] ?? item.entry.questions.map(recommendedSelection))]
-          next[index] = selectionFromSideChat(item.entry.questions[index], text)
-          return { ...current, [item.id]: next }
-        })
-      } else setHeldProposals((current) => ({ ...current, [item.id]: text }))
+      setDrafts((current) => {
+        const next = [...(current[item.id] ?? item.entry.questions.map(recommendedSelection))]
+        next[index] = selectionFromSideChat(item.entry.questions[index], text)
+        return { ...current, [item.id]: next }
+      })
       setFocused(item)
       onFocusDecision?.()
       setFilledFromChat(item.id)
@@ -241,12 +223,10 @@ export function NeedsYou({
     [phone, onFocusDecision],
   )
   const requestFor = useCallback(
-    (item: DecisionNeed): DecisionChatRequest =>
+    (item: QuestionNeed): DecisionChatRequest =>
       decisionChatRequest(
         item,
-        data.questions.find(
-          (row) => row.key === `${item.sessionId}/${item.kind === 'question' ? item.questionId : item.functionCallId}`,
-        ),
+        data.questions.find((row) => row.key === `${item.sessionId}/${item.questionId}`),
         (index, proposal) => fillFromChat(item, index, proposal),
       ),
     [data.questions, fillFromChat],
@@ -293,7 +273,7 @@ export function NeedsYou({
   useEffect(() => {
     let mounted = true
     for (const item of data.items) {
-      if (item.kind === 'stalled' || !chat?.rebindDecisionChat) continue
+      if (item.kind !== 'question' || !chat?.rebindDecisionChat) continue
       const token = Symbol()
       chatRequests.current.set(item.id, token)
       void chat
@@ -327,7 +307,7 @@ export function NeedsYou({
     }
   }, [chatStates, updateChatHandle])
   const openChat = useCallback(
-    async (item: DecisionNeed) => {
+    async (item: QuestionNeed) => {
       if (!chat?.openDecisionChat) return
       setChatError(null)
       const token = Symbol()
@@ -354,8 +334,8 @@ export function NeedsYou({
   useEffect(() => {
     if (!initialAskAboutId || openedInitial.current === initialAskAboutId) return
     const item = data.items.find(
-      (item): item is DecisionNeed & { urgency: 'now' | 'no-rush' } =>
-        item.id === initialAskAboutId && item.kind !== 'stalled',
+      (item): item is QuestionNeed & { urgency: 'now' | 'no-rush' } =>
+        item.id === initialAskAboutId && item.kind === 'question',
     )
     if (item && chat?.openDecisionChat) {
       openedInitial.current = initialAskAboutId
@@ -370,7 +350,7 @@ export function NeedsYou({
   const send = async (
     item: NeedsYouItem,
     summary: string,
-    action: () => Promise<AskEntry | { resolved: boolean } | undefined>,
+    action: () => Promise<AskEntry | undefined>,
   ) => {
     if (inFlight.current.has(item.id)) return
     inFlight.current.add(item.id)
@@ -402,7 +382,7 @@ export function NeedsYou({
       await send(item, summary, action)
     })
     try {
-      let result: AskEntry | { resolved: boolean } | undefined
+      let result: AskEntry | undefined
       for (;;) {
         try {
           result = await action()
@@ -415,10 +395,8 @@ export function NeedsYou({
           if (!active.current || !currentItems.current.has(item.id)) return
         }
       }
-      if (item.kind === 'question' && result && 'question_id' in result) {
+      if (item.kind === 'question' && result) {
         updateState(item.id, { type: 'settled', entry: result, own: true })
-      } else if (result && 'resolved' in result && !result.resolved) {
-        updateState(item.id, { type: 'failed', error: 'Already answered' })
       } else updateState(item.id, { type: 'delivered' })
     } catch (error) {
       updateState(item.id, { type: 'failed', error: errorMessage(error) })
@@ -444,29 +422,6 @@ export function NeedsYou({
         ...(dismissed ? { dismissed: true } : { answers }),
         by: { channel: 'control-plane', user },
       }),
-    )
-  }
-  const heldAction = (item: Extract<NeedsYouItem, { kind: 'held' }>, decision: 'deny' | 'allow' | 'always') => {
-    if (!iii) return
-    const namespace = item.namespace ? { namespace: item.namespace } : {}
-    void send(
-      item,
-      decision === 'deny' ? 'Deny' : decision === 'always' ? 'Always allow in this session' : 'Allow once',
-      async () => {
-        const result = await iii.call<{ resolved: boolean }>('approval::resolve', {
-          session_id: item.sessionId,
-          function_call_id: item.functionCallId,
-          decision: decision === 'deny' ? 'deny' : 'allow',
-          ...namespace,
-        })
-        if (result.resolved && decision === 'always')
-          await iii.call('approval::approve-always', {
-            session_id: item.sessionId,
-            function_id: item.functionId,
-            ...namespace,
-          })
-        return result
-      },
     )
   }
   const detail = selected ? (
@@ -501,9 +456,7 @@ export function NeedsYou({
         ) : null
       }
       filledFromChat={filledFromChat === selected.id}
-      heldProposal={heldProposals[selected.id]}
       onAnswer={(dismissed) => selected.kind === 'question' && answer(selected, dismissed)}
-      onHeld={(decision) => selected.kind === 'held' && heldAction(selected, decision)}
       onResume={() => {
         if (!iii || selected.kind !== 'stalled' || !currentItems.current.has(selected.id)) return
         void send(selected, 'continue', async () => {
@@ -559,9 +512,9 @@ export function NeedsYou({
         </List>
         <div className="control-plane-sources">
           <Eyebrow>Sources</Eyebrow>
-          {(['question', 'held', 'stalled'] as const).map((kind) => (
+          {(['question', 'stalled'] as const).map((kind) => (
             <p key={kind}>
-              <span>{kind === 'question' ? 'Questions' : kind === 'held' ? 'Held calls' : 'Stalled runs'}</span>
+              <span>{kind === 'question' ? 'Questions' : 'Stalled runs'}</span>
               <span className="control-plane-meta">{data.items.filter((item) => item.kind === kind).length}</span>
             </p>
           ))}
@@ -600,7 +553,7 @@ export function NeedsYou({
                 ? 'No items from the available sources'
                 : 'Nothing needs you'
             }
-            description="A question, a held call or a stalled run from any session shows up here."
+            description="A question or a stalled run from any session shows up here."
             action={{ label: 'Open Runs', onClick: openRuns }}
           />
         ) : !items.length ? (
@@ -627,16 +580,7 @@ export function NeedsYou({
                         setFocused(item)
                       }}
                       label={item.title}
-                      description={item.kind === 'held' ? (
-                        <>
-                          <span className="control-plane-truncate">{heldCallExcerpt(item)}</span>
-                          <span className="control-plane-truncate">
-                            Held call · {item.sessionTitle || item.sessionId}{item.card ? ` · ${item.card.key}` : ''}
-                          </span>
-                        </>
-                      ) : (
-                        `${needLabel(item)} · ${item.card?.key ?? 'not on the board'}${item.blockedCards ? ` · blocks ${item.blockedCards}` : ''}`
-                      )}
+                      description={`${needLabel(item)} · ${item.card?.key ?? 'not on the board'}${item.blockedCards ? ` · blocks ${item.blockedCards}` : ''}`}
                       trailing={
                         <>
                           <time className="control-plane-meta">{formatRelative(item.createdAt)}</time>
@@ -678,7 +622,7 @@ export function NeedsYou({
             {detail ?? (
               <EmptyState
                 title="Choose an item"
-                description="Open a question, a held call or a stalled run from the list."
+                description="Open a question or a stalled run from the list."
               />
             )}
           </div>
@@ -699,14 +643,12 @@ export function NeedDetail({
   state,
   canSend,
   onAnswer,
-  onHeld,
   onResume,
   onLeave,
   retry,
   onBack,
   askAbout,
   filledFromChat,
-  heldProposal,
 }: {
   headingRef: Ref<HTMLHeadingElement>
   item: NeedsYouItem
@@ -718,14 +660,12 @@ export function NeedDetail({
   state: AnswerState
   canSend: boolean
   onAnswer: (dismissed?: boolean) => void
-  onHeld: (decision: 'deny' | 'allow' | 'always') => void
   onResume: () => void
   onLeave: () => void
   retry: () => void
   onBack: () => void
   askAbout: ReactNode
   filledFromChat: boolean
-  heldProposal?: string
 }) {
   const host = useControlPlaneHost()
   const inputId = useId()
@@ -742,8 +682,7 @@ export function NeedDetail({
     sending: 'Sending your answer…',
     delivered: 'Delivered',
     failed: 'Your answer did not reach the harness',
-    already:
-      item.kind === 'question' ? `Already answered${state.channel ? ` by ${state.channel}` : ''}` : 'Already resolved',
+    already: `Already answered${state.channel ? ` by ${state.channel}` : ''}`,
     withdrawn: 'Withdrawn by the asker',
     'not-delivered': 'The session that asked is gone',
     idle: '',
@@ -789,14 +728,12 @@ export function NeedDetail({
       </div>
       <div className="control-plane-decision-scroll">
         <Eyebrow className="control-plane-kind">{needLabel(item)}</Eyebrow>
-        <h2 ref={headingRef} tabIndex={-1} className={item.kind === 'held' ? 'control-plane-function' : undefined}>{item.title}</h2>
+        <h2 ref={headingRef} tabIndex={-1}>{item.title}</h2>
         <p className="control-plane-meta">
           {item.kind === 'question' ? `asked by ${entry?.asked_by ?? run?.profile ?? 'unknown profile'} · ` : ''}
-          {item.kind === 'held'
+          {item.kind === 'question'
             ? (item.sessionTitle ?? run?.session.title ?? item.sessionId)
-            : item.kind === 'question'
-              ? (item.sessionTitle ?? run?.session.title ?? item.sessionId)
-              : item.sessionId}{' '}
+            : item.sessionId}{' '}
           · {formatAge(item.createdAt)}
         </p>
         {item.kind === 'question' ? (
@@ -887,39 +824,6 @@ export function NeedDetail({
                   ? `If nobody answers, apply: ${entry.on_expiry.answer}.`
                   : 'If nobody answers, the run waits.'}
             </p>
-          </>
-        ) : item.kind === 'held' ? (
-          <>
-            {item.namespace ? (
-              <p className="control-plane-meta">
-                Namespace: {item.namespace}
-                {item.implicitNamespace && item.namespace !== item.implicitNamespace
-                  ? ` · implicit: ${item.implicitNamespace}`
-                  : ''}
-              </p>
-            ) : null}
-            {filledFromChat && heldProposal ? (
-              <p className="control-plane-muted" role="status">
-                Filled from the side chat · {heldProposal}. Choose the matching action to send it.
-              </p>
-            ) : null}
-            <Eyebrow>Arguments · redacted</Eyebrow>
-            <pre className="control-plane-arguments">
-              {typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments, null, 2)}
-            </pre>
-            {item.card ? (
-              <p className="control-plane-muted">
-                Card ·{' '}
-                <button
-                  type="button"
-                  className="control-plane-link control-plane-meta"
-                  onClick={() => host.panels?.open({ pageId: 'kanban-ticket', context: { id: item.card?.key ?? '' } })}
-                >
-                  {item.card.key}
-                </button>
-              </p>
-            ) : null}
-            {editable ? <p className="control-plane-muted">Nothing is chosen for you. The call stays held until you pick one.</p> : null}
           </>
         ) : (
           <dl className="control-plane-stall-facts">
@@ -1027,18 +931,6 @@ export function NeedDetail({
                 </Button>
               ) : null}
             </>
-          ) : item.kind === 'held' ? (
-            <>
-              <Button variant="pill" disabled={!canSend} onClick={() => onHeld('deny')}>
-                Deny
-              </Button>
-              <Button variant="pill" disabled={!canSend} onClick={() => onHeld('allow')}>
-                Allow once
-              </Button>
-              <Button variant="pill" disabled={!canSend} onClick={() => onHeld('always')}>
-                Always allow in this session
-              </Button>
-            </>
           ) : (
             <>
               <Button variant="primary" disabled={!canSend} onClick={onResume}>
@@ -1140,7 +1032,7 @@ export function QuestionLog({
           description={
             view === 'assumptions'
               ? 'Recorded choices appear here when an agent makes a material decision alone.'
-              : 'Closed questions appear here with their answer. Held calls have no history.'
+              : 'Closed questions appear here with their answer.'
           }
         />
       ) : (

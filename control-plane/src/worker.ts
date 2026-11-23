@@ -57,7 +57,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     }
     return payload
   }
-  let availability = { github: false, approval_gate: false }
+  let availability = { github: false }
   const summaryDeadlines = new Map<string, ReturnType<typeof setTimeout>>()
   const writer = new ControlPlaneWriter(
     client,
@@ -141,7 +141,6 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
       github: ['github::pr::list', 'github::pr::checks', 'github::pr::view'].every((id) =>
         ids.has(id),
       ),
-      approval_gate: ids.has('approval::list-pending'),
     }
   }
 
@@ -247,7 +246,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     },
     {
       description:
-        'Read questions and stalled runs, ordered by project escalation, cards blocked and age. Holds are console reads.',
+        'Read questions and stalled runs, ordered by project escalation, cards blocked and age.',
       request_format: request(scopeInput),
       response_format: object({
         items: array,
@@ -435,17 +434,11 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
   iii.registerFunction(
     'control-plane::availability-updated',
     async () => {
-      const previous = availability
+      const previous = availability.github
       await refreshAvailability()
-      if (previous.approval_gate !== availability.approval_gate) writer.invalidateAvailability()
-      if (
-        previous.github !== availability.github ||
-        previous.approval_gate !== availability.approval_gate
-      ) {
-        if (previous.github !== availability.github) {
-          read.invalidatePrs()
-          await read.tick()
-        }
+      if (previous !== availability.github) {
+        read.invalidatePrs()
+        await read.tick()
         for (const scope of read.knownScopes())
           await emit(scope, new Date().toISOString(), ['availability', 'summary'])
       }

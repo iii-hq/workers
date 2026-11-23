@@ -56,7 +56,6 @@ class FakeIii implements ControlPlaneClient {
   // biome-ignore lint/suspicious/noExplicitAny: session metadata is intentionally open JSON
   meta: Record<string, any> = { kind: 'automation', metadata: { origin: 'control-plane' } }
   profileMissing = false
-  approval = true
   raceAfterEnsure = false
   failOn: string | null = null
   private ensured = 0
@@ -86,11 +85,6 @@ class FakeIii implements ControlPlaneClient {
     }
     if (id === 'harness::status')
       return (this.status && { session_id: input.session_id, ...this.status }) as T
-    if (id === 'engine::functions::list') {
-      return {
-        functions: this.approval ? [{ function_id: 'approval::set-mode' }] : [],
-      } as T
-    }
     if (id === 'harness::send') {
       this.turn += 1
       this.status = { turn_id: `turn-${this.turn}`, status: 'running' }
@@ -184,8 +178,6 @@ describe('ControlPlaneWriter', () => {
       args: 'language=English',
     })
     expect(first.options.output.schema.properties.direction).toBeDefined()
-    const allows = iii.calls.filter(({ id }) => id === 'approval::add-always-allow')
-    expect(allows.map(({ input }) => input.function_id)).toEqual(WRITER_READS)
 
     await iii.finish(writer, { turn_id: 'turn-1', status: 'failed' })
     vi.setSystemTime(clockStart + 600_000)
@@ -499,12 +491,7 @@ describe('ControlPlaneWriter', () => {
   })
 
   it('turns setup and send RPC failures into update failed state', async () => {
-    for (const functionId of [
-      'session::ensure',
-      'harness::status',
-      'approval::set-mode',
-      'harness::send',
-    ]) {
+    for (const functionId of ['session::ensure', 'harness::status', 'harness::send']) {
       const iii = new FakeIii()
       iii.failOn = functionId
       const changed = vi.fn()
@@ -554,19 +541,7 @@ describe('ControlPlaneWriter', () => {
     expect(JSON.parse(iii.sent()[0].input.message).checked_at).toBe('2026-11-22T11:00:00Z')
   })
 
-  it('runs without approval-gate and reports a missing profile separately', async () => {
-    const iii = new FakeIii()
-    iii.approval = false
-    const writer = new ControlPlaneWriter(
-      iii,
-      () => config(),
-      async () => data(),
-      vi.fn(),
-    )
-    await writer.check('all')
-    expect(iii.sent()).toHaveLength(1)
-    expect(iii.calls.some(({ id }) => id.startsWith('approval::'))).toBe(false)
-
+  it('reports a missing profile separately without sending', async () => {
     const missing = new FakeIii()
     missing.profileMissing = true
     const withoutKit = new ControlPlaneWriter(
@@ -580,57 +555,6 @@ describe('ControlPlaneWriter', () => {
       unavailable: true,
     })
     expect(missing.sent()).toHaveLength(0)
-  })
-
-  it('rechecks approval-gate after availability changes', async () => {
-    const iii = new FakeIii()
-    iii.approval = false
-    const writer = new ControlPlaneWriter(
-      iii,
-      () => config(),
-      async (scope) => data(scope),
-      vi.fn(),
-    )
-
-    await writer.check('without-gate')
-    expect(iii.calls.some(({ id }) => id.startsWith('approval::'))).toBe(false)
-
-    iii.approval = true
-    iii.status = null
-    writer.invalidateAvailability()
-    await writer.check('with-gate')
-    expect(iii.calls.filter(({ id }) => id === 'approval::set-mode')).toHaveLength(1)
-    expect(iii.calls.filter(({ id }) => id === 'approval::add-always-allow')).toHaveLength(
-      WRITER_READS.length,
-    )
-
-    iii.approval = false
-    iii.status = null
-    writer.invalidateAvailability()
-    await writer.check('removed-gate')
-    expect(iii.calls.filter(({ id }) => id === 'approval::set-mode')).toHaveLength(1)
-    expect(iii.sent()).toHaveLength(3)
-  })
-
-  it('does not cache a transient approval discovery failure as gate absence', async () => {
-    const iii = new FakeIii()
-    iii.failOn = 'engine::functions::list'
-    const writer = new ControlPlaneWriter(
-      iii,
-      () => config(),
-      async () => data(),
-      vi.fn(),
-    )
-
-    expect(await writer.check('all')).toMatchObject({ error: 'update failed' })
-    expect(iii.sent()).toHaveLength(0)
-
-    iii.failOn = null
-    vi.setSystemTime(clockStart + 600_000)
-    await writer.check('all')
-    expect(iii.calls.filter(({ id }) => id === 'engine::functions::list')).toHaveLength(2)
-    expect(iii.calls.filter(({ id }) => id === 'approval::set-mode')).toHaveLength(1)
-    expect(iii.sent()).toHaveLength(1)
   })
 
   it('backs off after three failures and resets after a valid result', async () => {

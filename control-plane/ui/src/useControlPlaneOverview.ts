@@ -1,9 +1,9 @@
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { ALL_PROJECTS, isInScope } from '../../src/model'
+import { ALL_PROJECTS } from '../../src/model'
 import { summaryIsFresh } from '../../src/summary'
-import type { HeldNeed, ControlPlaneData, ControlPlaneQuestion } from '../../src/types'
+import type { ControlPlaneData, ControlPlaneQuestion } from '../../src/types'
 import type { RefreshResult, WriterSnapshot } from '../../src/writer'
 
 export interface SummaryState extends WriterSnapshot {
@@ -18,7 +18,7 @@ export interface ControlPlaneOverviewData extends ControlPlaneData {
   scope: string
   refresh(): void
   summary: SummaryState
-  availability: { github: boolean; approval_gate: boolean }
+  availability: { github: boolean }
   assumptionsSinceVisit: ControlPlaneQuestion[]
   prs_interval_min: number
   decidedCursor?: string
@@ -29,19 +29,8 @@ type Overview = ControlPlaneData & {
   availability: ControlPlaneOverviewData['availability']
   prs_interval_min: number
 }
-interface PendingApproval {
-  session_id: string
-  function_call_id: string
-  function_id: string
-  namespace?: string
-  implicit_namespace?: string
-  arguments_excerpt: unknown
-  pending_at: number
-  session_title?: string
-  session_metadata?: Record<string, unknown>
-}
-type Part = 'overview' | 'needs' | 'runs' | 'prs' | 'decided' | 'assumptions' | 'holds'
-const PARTS: Part[] = ['overview', 'needs', 'runs', 'prs', 'decided', 'assumptions', 'holds']
+type Part = 'overview' | 'needs' | 'runs' | 'prs' | 'decided' | 'assumptions'
+const PARTS: Part[] = ['overview', 'needs', 'runs', 'prs', 'decided', 'assumptions']
 const idleSummary: Overview['summary'] = {
   result: null,
   valid_hash: null,
@@ -72,80 +61,6 @@ function emptyData(): ControlPlaneData {
   }
 }
 
-// The console owns approval reads; they never pass through control-plane::*.
-export async function fetchControlPlaneHolds(iii: Host['iii']): Promise<PendingApproval[]> {
-  const pending: PendingApproval[] = []
-  let cursor: string | undefined
-  do {
-    const page = await iii.call<{ pending: PendingApproval[]; next_cursor?: string }>('approval::list-pending', {
-      limit: 200,
-      ...(cursor ? { cursor } : {}),
-    })
-    pending.push(...page.pending)
-    cursor = page.next_cursor
-  } while (cursor)
-  return pending
-}
-
-export function mergeHolds(data: ControlPlaneData, holds: PendingApproval[], scope: string): ControlPlaneData {
-  const held = holds.flatMap((pending): Array<HeldNeed & { urgency: 'now' }> => {
-    const run = data.runs.find(
-      (row) => row.session.session_id === pending.session_id || row.descendantSessionIds.includes(pending.session_id),
-    )
-    const ticket = pending.session_metadata?.kanban_ticket ?? run?.card?.key
-    const card =
-      typeof ticket === 'string'
-        ? data.tickets.find((row) => row.id === ticket.trim() || row.key.toLowerCase() === ticket.trim().toLowerCase())
-        : undefined
-    if (!isInScope(scope, card?.project_id)) return []
-    return [
-      {
-        id: `held:${pending.session_id}:${pending.function_call_id}`,
-        kind: 'held',
-        sessionId: pending.session_id,
-        functionCallId: pending.function_call_id,
-        functionId: pending.function_id,
-        arguments: pending.arguments_excerpt,
-        title: pending.function_id,
-        sessionTitle: pending.session_title ?? run?.session.title,
-        namespace: pending.namespace,
-        implicitNamespace: pending.implicit_namespace,
-        createdAt: pending.pending_at,
-        blockedCards: card ? 1 : 0,
-        card,
-        urgency: 'now',
-      },
-    ]
-  })
-  const items = [...data.items, ...held].sort(
-    (a, b) =>
-      Number(b.urgency === 'now') - Number(a.urgency === 'now') ||
-      b.blockedCards - a.blockedCards ||
-      a.createdAt - b.createdAt,
-  )
-  const runs = data.runs.map((run) => {
-    const needsYou = items.filter(
-      (item) =>
-        item.sessionId === run.session.session_id ||
-        run.descendantSessionIds.includes(item.sessionId) ||
-        Boolean(item.card && item.card.id === run.card?.id),
-    )
-    const parkedWithHold =
-      (run.state === 'done' || (run.state === 'working' && run.status.status === 'awaiting_functions')) &&
-      needsYou.some(
-        (item) =>
-          item.kind === 'held' &&
-          (item.sessionId === run.session.session_id || run.descendantSessionIds.includes(item.sessionId)),
-      )
-    return {
-      ...run,
-      needsYou,
-      state: parkedWithHold ? ('waiting' as const) : run.state,
-    }
-  })
-  return { ...data, items, runs }
-}
-
 export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?: string): ControlPlaneOverviewData {
   const iii = host.iii
   const id = useId().replace(/[^a-z0-9]/gi, '')
@@ -160,11 +75,9 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
     scope,
     data: emptyData(),
     summary: idleSummary,
-    availability: { github: false, approval_gate: false },
+    availability: { github: false },
     interval: 5,
   }))
-  const [holds, setHolds] = useState<PendingApproval[]>([])
-  const [holdsLoading, setHoldsLoading] = useState(false)
   const [sourceErrors, setSourceErrors] = useState<Partial<Record<Part, string | null>>>({})
   const [assumptions, setAssumptions] = useState<ControlPlaneQuestion[]>([])
   const [decided, setDecided] = useState<ControlPlaneQuestion[]>([])
@@ -178,18 +91,14 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
 
   useEffect(() => {
     let active = true
-    let approvalAvailable = false
-    let holdObservers: Array<() => void> = []
     const sequence: Partial<Record<Part, number>> = {}
     setSnapshot({
       scope,
       data: emptyData(),
       summary: idleSummary,
-      availability: { github: false, approval_gate: false },
+      availability: { github: false },
       interval: 5,
     })
-    setHolds([])
-    setHoldsLoading(false)
     setSourceErrors({})
     setAssumptions([])
     setDecided([])
@@ -206,15 +115,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
           const versions = { ...sequence }
           const next = await iii.call<Overview>('control-plane::overview', { scope })
           if (!current()) return
-          approvalAvailable = next.availability.approval_gate
-          if (approvalAvailable && !holdObservers.length) {
-            holdObservers = ['approval::on-pending-created', 'approval::on-pending-resolved'].map((source) =>
-              iii.observe(source, `control-plane-ui-holds-${id}::${iii.browserId}`),
-            )
-          } else if (!approvalAvailable) {
-            for (const dispose of holdObservers) dispose()
-            holdObservers = []
-          }
           setSnapshot((previous) => ({
             scope,
             data: {
@@ -236,13 +136,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
             availability: next.availability,
             interval: next.prs_interval_min,
           }))
-          if (approvalAvailable) void fetchPart('holds')
-          else {
-            sequence.holds = (sequence.holds ?? 0) + 1
-            setHoldsLoading(false)
-            setHolds([])
-            setSourceErrors((previous) => ({ ...previous, holds: null }))
-          }
         } else if (part === 'needs') {
           const next = await iii.call<Pick<ControlPlaneData, 'items'>>('control-plane::needs-you::list', { scope })
           if (current())
@@ -293,13 +186,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
           if (!current()) return
           setAssumptions(all.questions)
           setAssumptionsSinceVisit(since ? recent.questions : all.questions)
-        } else if (approvalAvailable) {
-          setHoldsLoading(true)
-          const pending = await fetchControlPlaneHolds(iii)
-          if (current()) {
-            setHolds(pending)
-            setSourceErrors((previous) => ({ ...previous, holds: null }))
-          }
         }
         if (current()) setSourceErrors((previous) => ({ ...previous, [part]: null }))
       } catch (error) {
@@ -312,7 +198,7 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
               ? 'sessions'
               : part === 'decided' || part === 'assumptions'
                 ? 'questions'
-                : part === 'needs' || part === 'holds'
+                : part === 'needs'
                   ? 'needsYou'
                   : 'board'
         setSnapshot((previous) => ({
@@ -322,8 +208,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
             loading: { ...previous.data.loading, [field]: false },
           },
         }))
-      } finally {
-        if (part === 'holds' && current()) setHoldsLoading(false)
       }
     }
     const refetch = (parts: Part[]) => {
@@ -345,9 +229,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
       }
       refetch([...changed])
     })
-    const offHolds = iii.on(`control-plane-ui-holds-${id}`, () => {
-      void fetchPart('holds')
-    })
     const unobserve = iii.observe('control-plane::on-changed', `${handler}::${iii.browserId}`)
     const watch = () => {
       setNow(Date.now())
@@ -359,7 +240,7 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
       watch()
     })
     refetchAll.current = () => refetch(PARTS)
-    refetch(PARTS.filter((part) => part !== 'holds'))
+    refetch(PARTS)
     watch()
     const timer = setInterval(watch, 60_000)
     return () => {
@@ -368,8 +249,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
       clearInterval(timer)
       reconnect()
       unobserve()
-      for (const dispose of holdObservers) dispose()
-      offHolds()
       off()
     }
   }, [iii, scope, since, id])
@@ -406,22 +285,17 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
 
   return useMemo(() => {
     const data = snapshot.scope === scope ? snapshot.data : emptyData()
-    const merged = mergeHolds(data, snapshot.scope === scope ? holds : [], scope)
     const questions = new Map(
       [...assumptions, ...decided, ...data.questions].map((question) => [question.key, question]),
     )
     return {
-      ...merged,
-      loading: {
-        ...merged.loading,
-        needsYou: merged.loading.needsYou || (snapshot.availability.approval_gate && holdsLoading),
-      },
+      ...data,
       errors: {
-        board: sourceErrors.overview ?? merged.errors.board,
-        sessions: sourceErrors.runs ?? merged.errors.sessions,
-        needsYou: sourceErrors.holds ?? sourceErrors.needs ?? merged.errors.needsYou,
-        questions: sourceErrors.decided ?? sourceErrors.assumptions ?? merged.errors.questions,
-        prs: sourceErrors.prs ?? merged.errors.prs,
+        board: sourceErrors.overview ?? data.errors.board,
+        sessions: sourceErrors.runs ?? data.errors.sessions,
+        needsYou: sourceErrors.needs ?? data.errors.needsYou,
+        questions: sourceErrors.decided ?? sourceErrors.assumptions ?? data.errors.questions,
+        prs: sourceErrors.prs ?? data.errors.prs,
       },
       scope,
       questions: [...questions.values()].sort((a, b) => b.askedAt - a.askedAt),
@@ -443,8 +317,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
   }, [
     snapshot,
     scope,
-    holds,
-    holdsLoading,
     sourceErrors,
     assumptions,
     decided,

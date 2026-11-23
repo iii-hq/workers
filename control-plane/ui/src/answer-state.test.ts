@@ -148,13 +148,4 @@ describe('Control plane answer state machine', () => {
       answerTransition({ status: 'sending' }, { type: 'failed', error: 'question withdrawn by the asker' }).status,
     ).toBe('withdrawn')
   })
-  it('provides no selection or recommendation on held calls', () => {
-    const held = controlPlaneFixture.items.filter((item) => item.kind === 'held')
-    expect(held.length).toBeGreaterThan(0)
-    for (const item of held) {
-      expect(item).not.toHaveProperty('entry')
-      expect(item).not.toHaveProperty('recommended')
-      expect(item).not.toHaveProperty('selection')
-    }
-  })
 })

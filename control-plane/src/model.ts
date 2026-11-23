@@ -212,23 +212,13 @@ export interface QuestionNeed extends NeedBase {
   currentTurnId?: string | null
 }
 
-export interface HeldNeed extends NeedBase {
-  kind: 'held'
-  functionCallId: string
-  functionId: string
-  arguments: unknown
-  sessionTitle?: string
-  namespace?: string
-  implicitNamespace?: string
-}
-
 export interface StalledNeed extends NeedBase {
   kind: 'stalled'
   lastProgress: number
   armedWakes: HarnessStatus['armed_wakes']
 }
 
-export type NeedsYouItem = QuestionNeed | HeldNeed | StalledNeed
+export type NeedsYouItem = QuestionNeed | StalledNeed
 
 export interface ControlPlaneRun {
   session: Pick<SessionMeta, 'session_id' | 'title' | 'created_at' | 'updated_at'>
@@ -281,7 +271,7 @@ export type AskClass =
   | 'routine'
 
 export interface NeedSortValue {
-  kind: 'question' | 'held' | 'stalled'
+  kind: 'question' | 'stalled'
   createdAt: number
   blockedCards: number
   questionClass?: AskClass
