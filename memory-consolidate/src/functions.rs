@@ -34,8 +34,8 @@ pub const STATUS_DESC: &str = "Check the consolidation schedule and last pass: e
 
 pub const ALIAS_UNDO_ID: &str = "memory-consolidate::alias-undo";
 pub const ALIAS_UNDO_DESC: &str = "Undo an entity-handle alias merge: every memory the merge retagged \
-     that is live, unpinned and still carries the canonical handle gets `from` back through \
-     memory::update, and the pair is recorded as distinct so no pass merges it again.";
+     that is live, unpinned, still carries the canonical handle and does not already carry \
+     `from` gets it back through memory::update, and the pair is recorded as distinct so no pass merges it again.";
 
 pub const TICK_ID: &str = "memory-consolidate::on-tick";
 pub const TICK_DESC: &str = "Internal: schedule heartbeat (observer of cron::on-tick + boot catch-up backstop). Runs a \

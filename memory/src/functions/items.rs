@@ -28,6 +28,15 @@ fn normalize_entities(entities: Vec<String>) -> Vec<String> {
     out
 }
 
+/// Normalized tags: trimmed, lowercased, empty dropped, capped at eight.
+fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+    tags.into_iter()
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .take(8)
+        .collect()
+}
+
 /// The text bound, after redaction; a note saved or revised from a turn is short.
 fn check_text(text: &str, in_turn: bool) -> Result<(), MemoryError> {
     // A note counts characters, so a non-English one is not cut short; the
@@ -133,7 +142,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
                 f.superseded_by = None;
             }
             // A re-observation can add labels; it never removes them.
-            for tag in normalize_entities(tags) {
+            for tag in normalize_tags(tags) {
                 if !f.tags.contains(&tag) && f.tags.len() < 8 {
                     f.tags.push(tag);
                 }
@@ -163,7 +172,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
                 id,
                 text,
                 entities: normalize_entities(entities),
-                tags: normalize_entities(tags),
+                tags: normalize_tags(tags),
                 confidence: Confidence::Stated,
                 corroboration: 0,
                 pinned,
@@ -591,7 +600,7 @@ async fn update_once(
     }
     if let Some(mut tags) = req.tags {
         labels.extend(crate::redact::drop_secrets(&mut tags));
-        let tags = normalize_entities(tags);
+        let tags = normalize_tags(tags);
         if in_turn {
             refuse_label(&tags, crate::learned::DEMOTED_TAG, "tag")?;
         }
@@ -1913,6 +1922,20 @@ mod tests {
         let kept = normalize_entities(many);
         assert_eq!(kept.len(), 9);
         assert_eq!(kept[8], "user");
+        // Tags keep the plain cap of eight: a `user` tag is no handle.
+        let mut tags = vec!["user".to_string()];
+        tags.extend((0..8).map(|i| format!("t{i}")));
+        let tagged = update(
+            &deps,
+            UpdateRequest {
+                tags: Some(tags),
+                ..edit(Some("blog"), &old.id)
+            },
+        )
+        .await
+        .unwrap()
+        .memory;
+        assert_eq!(tagged.tags.len(), 8);
     }
 
     #[tokio::test]

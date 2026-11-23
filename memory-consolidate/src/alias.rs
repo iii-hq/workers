@@ -324,7 +324,8 @@ pub fn retagged(entities: &[String], from: &str, to: &str) -> Vec<String> {
 }
 
 /// The judge's verdicts by pair number. `None` when the reply is not the
-/// JSON shape: it records nothing, and its pairs are asked again.
+/// JSON shape or answers a pair twice: it records nothing, and its pairs are
+/// asked again.
 pub fn parse_verdicts(text: &str) -> Option<BTreeMap<usize, (bool, String)>> {
     #[derive(Deserialize)]
     struct Item {
@@ -340,7 +341,9 @@ pub fn parse_verdicts(text: &str) -> Option<BTreeMap<usize, (bool, String)>> {
     let mut out = BTreeMap::new();
     for item in reply.pairs {
         let reason: String = item.reason.trim().chars().take(MAX_REASON_CHARS).collect();
-        out.entry(item.n).or_insert((item.same, reason));
+        if out.insert(item.n, (item.same, reason)).is_some() {
+            return None; // one item per pair: a repeat is a verdict taken back
+        }
     }
     Some(out)
 }
@@ -616,7 +619,7 @@ pub async fn run_alias_tier<T: ConsolidationTransport + ?Sized>(
         return;
     }
     // Written before the retags, so an undo always finds what they touch; a
-    // recorded memory a retag then missed does not carry `to` and is skipped.
+    // recorded memory a retag then missed still carries `from` and is skipped.
     if ledger != read
         && let Err(e) = crate::functions::state_set(iii, &ledger_key(bank), json!(ledger)).await
     {
@@ -685,14 +688,15 @@ pub struct UndoResponse {
     /// Memories given `from` back.
     pub restored: Vec<String>,
     /// Recorded memories left alone: gone, retired, pinned, no longer
-    /// carrying `to`, or carrying more than eight handles.
+    /// carrying `to`, already carrying `from`, or carrying more than eight
+    /// handles.
     pub skipped: Vec<String>,
 }
 
 /// Undo the bank's merge of `from`: the ledger entry turns `distinct` first,
 /// so no pass merges the pair again, then each recorded memory that is live,
-/// unpinned and still carries `to` gets `from` back. A failed write leaves
-/// the rest for a second call.
+/// unpinned, still carries `to` and does not already carry `from` gets
+/// `from` back. A failed write leaves the rest for a second call.
 pub async fn undo<T: ConsolidationTransport + ?Sized>(
     iii: &T,
     req: UndoRequest,
@@ -727,6 +731,8 @@ pub async fn undo<T: ConsolidationTransport + ?Sized>(
             memory.get("invalid_at").is_none_or(Value::is_null)
                 && !r.pinned
                 && entities(r).contains(&entry.to)
+                // With both handles, the merge or a person may have added `to`: drop neither.
+                && !entities(r).contains(&entry.from)
                 && retagged(&entities(r), &entry.to, &entry.from).len() <= MAX_HANDLES
         }) else {
             skipped.push(id.clone());
@@ -985,15 +991,17 @@ mod tests {
     #[test]
     fn a_reply_that_is_not_the_json_shape_gives_no_verdict() {
         let ok = parse_verdicts(
-            "```json\n{\"pairs\":[{\"n\":1,\"same\":true,\"reason\":\"one dentist\"},\
-             {\"n\":1,\"same\":false,\"reason\":\"repeat\"}]}\n```",
+            "```json\n{\"pairs\":[{\"n\":1,\"same\":true,\"reason\":\"one dentist\"}]}\n```",
         )
         .unwrap();
-        assert_eq!(ok[&1], (true, "one dentist".to_string()), "the first wins");
+        assert_eq!(ok[&1], (true, "one dentist".to_string()));
         for bad in [
             "no json here",
             "{}",
             "{\"pairs\":{}}",
+            // A pair answered twice: the judge took one verdict back.
+            "{\"pairs\":[{\"n\":1,\"same\":true,\"reason\":\"first guess\"},\
+             {\"n\":1,\"same\":false,\"reason\":\"two people\"}]}",
             "{\"pairs\":[{\"n\":1,\"same\":\"yes\",\"reason\":\"r\"}]}",
             "{\"pairs\":[{\"n\":1,\"same\":true}]}",
             "{\"pairs\":[{\"same\":true,\"reason\":\"r\"}]}",

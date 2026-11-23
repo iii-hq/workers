@@ -2930,6 +2930,69 @@ async fn a_failed_retag_keeps_the_pass_due() {
 }
 
 #[tokio::test]
+async fn an_undo_never_drops_a_handle_a_failed_retag_left_to_a_person() {
+    use memory_consolidate::alias::UndoRequest;
+    // `d` is edited after the scan: its guarded retag fails after `c`'s lands.
+    let mut rows = build_cache();
+    rows.push(tagged(
+        "d",
+        "The build cache needs 40 GB.",
+        4,
+        &["build cache"],
+    ));
+    let boundary = Boundary::with_rows(rows);
+    boundary.0.lock().unwrap().guarded = true;
+    boundary.0.lock().unwrap().stale = Some("d".into());
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(!response.checkpointed);
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build-cache"]));
+    assert_eq!(entities_of(&boundary, "d"), json!(["build cache"]));
+    assert_eq!(ledger(&boundary)[0]["ids"], json!(["c", "d"]));
+
+    // A person then gives `d` the canonical handle too.
+    let both = json!(["build cache", "build-cache"]);
+    boundary.0.lock().unwrap().rows[3]["entities"] = both.clone();
+    let undone = functions::alias_undo_with_transport(
+        &deps(deterministic_only()),
+        UndoRequest {
+            bank: "offline".into(),
+            from: "build cache".into(),
+        },
+        &boundary,
+    )
+    .await
+    .unwrap();
+    assert_eq!(undone.restored, ["c"]);
+    assert_eq!(undone.skipped, ["d"]);
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build cache"]));
+    assert_eq!(entities_of(&boundary, "d"), both);
+}
+
+#[tokio::test]
+async fn an_undo_leaves_a_memory_with_both_handles_for_a_hand_edit() {
+    use memory_consolidate::alias::UndoRequest;
+    // The retag lands, then a person puts `build cache` back: undo cannot
+    // tell this row from one a person gave `build-cache`, so it drops neither.
+    let boundary = Boundary::with_rows(build_cache());
+    run(&boundary, deterministic_only(), false).await;
+    let both = json!(["user", "build-cache", "build cache"]);
+    boundary.0.lock().unwrap().rows[2]["entities"] = both.clone();
+    let undone = functions::alias_undo_with_transport(
+        &deps(deterministic_only()),
+        UndoRequest {
+            bank: "offline".into(),
+            from: "build cache".into(),
+        },
+        &boundary,
+    )
+    .await
+    .unwrap();
+    assert!(undone.restored.is_empty());
+    assert_eq!(undone.skipped, ["c"]);
+    assert_eq!(entities_of(&boundary, "c"), both);
+}
+
+#[tokio::test]
 async fn a_pinned_memory_keeps_its_handle() {
     let mut pinned = tagged(
         "p",

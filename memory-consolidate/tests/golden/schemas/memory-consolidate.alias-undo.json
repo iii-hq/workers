@@ -1,5 +1,5 @@
 {
-  "description": "Undo an entity-handle alias merge: every memory the merge retagged that is live, unpinned and still carries the canonical handle gets `from` back through memory::update, and the pair is recorded as distinct so no pass merges it again.",
+  "description": "Undo an entity-handle alias merge: every memory the merge retagged that is live, unpinned, still carries the canonical handle and does not already carry `from` gets it back through memory::update, and the pair is recorded as distinct so no pass merges it again.",
   "function_id": "memory-consolidate::alias-undo",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -37,7 +37,7 @@
         "type": "array"
       },
       "skipped": {
-        "description": "Recorded memories left alone: gone, retired, pinned, no longer carrying `to`, or carrying more than eight handles.",
+        "description": "Recorded memories left alone: gone, retired, pinned, no longer carrying `to`, already carrying `from`, or carrying more than eight handles.",
         "items": {
           "type": "string"
         },
