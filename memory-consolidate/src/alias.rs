@@ -323,10 +323,11 @@ pub fn retagged(entities: &[String], from: &str, to: &str) -> Vec<String> {
     out
 }
 
-/// The judge's verdicts by pair number. `None` when the reply is not the
-/// JSON shape or answers a pair twice: it records nothing, and its pairs are
-/// asked again.
-pub fn parse_verdicts(text: &str) -> Option<BTreeMap<usize, (bool, String)>> {
+/// The judge's verdicts by pair number, 1 to `pairs`. `None` when the reply
+/// is not the JSON shape, answers a pair twice or names a number outside the
+/// batch (a reply numbered from zero would put a verdict on the wrong pair):
+/// it records nothing, and its pairs are asked again.
+pub fn parse_verdicts(text: &str, pairs: usize) -> Option<BTreeMap<usize, (bool, String)>> {
     #[derive(Deserialize)]
     struct Item {
         n: usize,
@@ -340,6 +341,9 @@ pub fn parse_verdicts(text: &str) -> Option<BTreeMap<usize, (bool, String)>> {
     let reply: Reply = serde_json::from_str(crate::semantic::json_object(text).ok()?).ok()?;
     let mut out = BTreeMap::new();
     for item in reply.pairs {
+        if !(1..=pairs).contains(&item.n) {
+            return None;
+        }
         let reason: String = item.reason.trim().chars().take(MAX_REASON_CHARS).collect();
         if out.insert(item.n, (item.same, reason)).is_some() {
             return None; // one item per pair: a repeat is a verdict taken back
@@ -527,7 +531,7 @@ pub async fn run_alias_tier<T: ConsolidationTransport + ?Sized>(
             crate::consolidate::tally_usage(report, &reply["usage"]);
         }
         let reply = match crate::semantic::classify(&result) {
-            crate::semantic::Outcome::Reply(text) => parse_verdicts(&text),
+            crate::semantic::Outcome::Reply(text) => parse_verdicts(&text, group.len()),
             crate::semantic::Outcome::InputShaped(_) => None,
             crate::semantic::Outcome::Transport(e) => {
                 report.notes.push(format!("alias judge skipped: {e}"));
@@ -537,10 +541,7 @@ pub async fn run_alias_tier<T: ConsolidationTransport + ?Sized>(
         match reply {
             Some(found) => {
                 parsed = true;
-                for (n, verdict) in found
-                    .into_iter()
-                    .filter(|(n, _)| (1..=group.len()).contains(n))
-                {
+                for (n, verdict) in found {
                     verdicts.insert(group.start + n - 1, verdict);
                 }
             }
@@ -992,6 +993,7 @@ mod tests {
     fn a_reply_that_is_not_the_json_shape_gives_no_verdict() {
         let ok = parse_verdicts(
             "```json\n{\"pairs\":[{\"n\":1,\"same\":true,\"reason\":\"one dentist\"}]}\n```",
+            2,
         )
         .unwrap();
         assert_eq!(ok[&1], (true, "one dentist".to_string()));
@@ -1005,8 +1007,12 @@ mod tests {
             "{\"pairs\":[{\"n\":1,\"same\":\"yes\",\"reason\":\"r\"}]}",
             "{\"pairs\":[{\"n\":1,\"same\":true}]}",
             "{\"pairs\":[{\"same\":true,\"reason\":\"r\"}]}",
+            // Numbered from zero: `1` would land on the wrong pair.
+            "{\"pairs\":[{\"n\":0,\"same\":false,\"reason\":\"r\"},\
+             {\"n\":1,\"same\":true,\"reason\":\"r\"}]}",
+            "{\"pairs\":[{\"n\":3,\"same\":true,\"reason\":\"r\"}]}",
         ] {
-            assert!(parse_verdicts(bad).is_none(), "{bad}");
+            assert!(parse_verdicts(bad, 2).is_none(), "{bad}");
         }
     }
 
