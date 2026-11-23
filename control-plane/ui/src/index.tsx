@@ -837,8 +837,10 @@ function Overview({
                     <time className="control-plane-meta" dateTime={entry.at}>
                       {new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </time>
-                    <p>{entry.text}</p>
-                    <SummaryRefs refs={entry.refs} data={data} />
+                    <p>
+                      <LinkedText text={entry.text} refs={entry.refs} data={data} />
+                    </p>
+                    <SummaryRefs refs={entry.refs.filter((ref) => !entry.text.includes(ref))} data={data} />
                   </div>
                 ))
               ) : (
@@ -871,7 +873,7 @@ function Overview({
                       <div key={release.id} className="control-plane-release" data-status={release.status}>
                         <span className="control-plane-inline-status">
                           <StatusDot
-                            tone={release.status === 'released' ? 'ok' : release.status === 'active' ? 'accent' : 'ghost'}
+                            tone={release.status === 'released' ? 'ok' : release.status === 'active' ? 'warn' : 'ghost'}
                           />
                           {release.status === 'released' ? 'Released' : release.status === 'active' ? 'Now' : 'Next'}
                         </span>

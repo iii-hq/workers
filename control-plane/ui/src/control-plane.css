@@ -986,7 +986,7 @@
   background: var(--color-ok);
 }
 [data-iii-ui="control-plane"] .control-plane-release[data-status="active"] .control-plane-bar-done {
-  background: var(--color-accent);
+  background: var(--color-warn);
 }
 [data-iii-ui="control-plane"] .control-plane-release[data-status="planned"] .control-plane-bar-done {
   background: var(--color-ink-ghost);
@@ -995,4 +995,30 @@
   padding: 12px;
   color: var(--color-ink-faint);
   font-size: 12px;
+}
+/* Tabs row: on the page gutter, a full-width hairline, a 2px ink underline on the active tab. */
+[data-iii-ui="control-plane"] .control-plane-desktop-nav {
+  padding: 0 20px;
+  box-shadow: inset 0 -1px 0 var(--color-edge);
+}
+[data-iii-ui="control-plane"] .control-plane-desktop-nav [role="tablist"] {
+  height: 40px;
+  gap: 20px;
+  padding: 0;
+  background: transparent;
+}
+[data-iii-ui="control-plane"] .control-plane-desktop-nav [role="tab"] {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+[data-iii-ui="control-plane"] .control-plane-desktop-nav [role="tab"][data-state="active"] {
+  box-shadow: inset 0 -2px 0 var(--color-ink);
+}
+[data-iii-ui="control-plane"] .control-plane-tab-count {
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
 }
