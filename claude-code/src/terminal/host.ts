@@ -1,6 +1,6 @@
 /**
  * Everything this worker does to a filesystem or a process, it does through
- * the `shell` worker — the same worker that owns the terminal session. So the
+ * the `shell::*` functions of the `ide` worker, which owns the terminal session. So the
  * agent, its workspace, and its installer all live on ONE host, whether or
  * not that is the host this worker runs on, and none of it depends on a
  * shared directory.
@@ -71,6 +71,53 @@ export async function writeFile(iii: IIIClient, path: string, content: string): 
   });
 }
 
+/** Remove a file on the terminal host; one already gone (S211) is not an error. */
+export async function removeFile(iii: IIIClient, path: string): Promise<void> {
+  try {
+    await iii.call({ function_id: 'shell::fs::rm', payload: { path }, timeoutMs: 30_000 });
+  } catch (err) {
+    if (!String(err).includes('S211')) throw err;
+  }
+}
+
+/**
+ * Whether `path` is a file on the terminal host: true or false from `test -f`,
+ * or null when the host could not say (the call failed, or no shell `test`).
+ * Asking first spares a `coder::read-file` that would fail: a miss answers
+ * C211, which callers read as "absent", but the engine records every one as
+ * a failed invocation.
+ */
+export async function fileExists(iii: IIIClient, path: string): Promise<boolean | null> {
+  try {
+    const r = await exec(iii, `test -f ${quote(path)}`, { timeoutMs: 15_000 });
+    if (r.exit_code === 0) return true;
+    if (r.exit_code === 1) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every file under `dir` on the terminal host, each as `${dir}/<relative>`
+ * (an absent `dir` is an empty set), or null when the host could not list it.
+ * One call in place of a read per file, for the same reason as `fileExists`.
+ */
+export async function listFiles(iii: IIIClient, dir: string): Promise<Set<string> | null> {
+  try {
+    const q = quote(dir);
+    // -L: a symlinked folder (or file) is listed through the link; without it
+    // find reports nothing under a linked folder, and every file would read as absent.
+    const r = await exec(iii, `if [ -d ${q} ]; then find -L ${q} -type f; fi`, {
+      timeoutMs: 15_000,
+    });
+    if (r.exit_code !== 0) return null;
+    return new Set(r.stdout.split('\n').filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * File contents, or null when the file is absent. `coder::read-file` returns
  * the text inline; `shell::fs::read` streams through a channel, which a
@@ -96,7 +143,7 @@ export async function readFile(iii: IIIClient, path: string): Promise<string | n
   }
 }
 
-/** The terminal host's working directory — the shell worker's primary root. */
+/** The terminal host's working directory — the ide worker's primary root. */
 export async function hostRoot(iii: IIIClient): Promise<string> {
   const pwd = await probe(iii, 'pwd');
   return pwd || '.';

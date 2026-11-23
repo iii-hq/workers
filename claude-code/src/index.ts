@@ -21,6 +21,7 @@ import {
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
+import { pluginSourceLine } from './iii-plugin/install.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { ranSinceStart, register, startupScanDone } from './run.js';
 import { startStatusRecovery } from './session-link.js';
@@ -50,6 +51,10 @@ const bootConfig: Config = {
   claude_executable: resolveClaudeExecutable(seed.claude_executable),
 };
 
+// Child processes (headless turns and the hooks they run) find the engine
+// through III_URL; make it the address we connected to.
+process.env.III_URL = url;
+
 const iii = registerWorker(url, { workerName: 'claude-code' });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker
@@ -65,7 +70,7 @@ try {
 // to it (or an empty value) re-runs the PATH lookup.
 const holder: ConfigHolder = { current: bootConfig };
 
-// What a terminal session runs. The prepare step talks to the `shell` worker
+// What a terminal session runs. The prepare step talks to the `ide` worker
 // (install the CLI, equip the workspace, write the hooks) and can take minutes
 // on a cold host, so it is chained off the config reload rather than awaited:
 // `claude::*` must register whether or not there is a terminal host to prepare.
@@ -137,6 +142,7 @@ registerAuth(iii, () => prepared);
 registerUi(iii);
 
 console.log(`claude-code worker connected to ${url}`);
+console.log(pluginSourceLine());
 
 const shutdown = async () => {
   try {
