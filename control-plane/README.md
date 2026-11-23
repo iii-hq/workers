@@ -21,7 +21,9 @@ summary model and stall timeout.
 | `stall_after_min` | `30` |
 | `summary.model` | unset |
 | `summary.interval_min` | `10` |
+| `summary.reasoning` | unset (the model's default effort) |
 | `summary.language` | `English` |
+| `summary.guidance` | unset (free text: what the summary should focus on, its tone and length) |
 | `prs.watched_interval_min` | `5` |
 | `prs.idle_interval_min` | `30` |
 | `escalate` | `{}` |

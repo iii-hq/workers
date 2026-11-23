@@ -26,11 +26,11 @@ const resultContract = z.strictObject({
   checked_at: timestamp,
   unchanged: z.boolean(),
   brief: z
-    .strictObject({ headline: z.string(), text: z.string(), refs })
+    .strictObject({ headline: z.string(), happened: z.string(), happening: z.string(), remaining: z.string(), refs })
     .refine((brief) =>
-      brief.headline && brief.text
-        ? brief.refs.length > 0
-        : brief.headline === '' && brief.text === '' && brief.refs.length === 0,
+      brief.headline
+        ? brief.refs.length > 0 && Boolean(brief.happened || brief.happening || brief.remaining)
+        : !brief.happened && !brief.happening && !brief.remaining && brief.refs.length === 0,
     ),
   diary: z
     .array(line.extend({ at: timestamp }))

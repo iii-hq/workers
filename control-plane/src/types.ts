@@ -43,7 +43,13 @@ export type AgentMessage = NonNullable<TranscriptItem['message']>
 
 export interface ControlPlaneConfig {
   stall_after_min: number
-  summary: { model?: string; reasoning?: string; interval_min: number; language: string }
+  summary: {
+    model?: string
+    reasoning?: string
+    guidance?: string
+    interval_min: number
+    language: string
+  }
   prs: { watched_interval_min: number; idle_interval_min: number }
   escalate: Record<string, AskClass[]>
 }

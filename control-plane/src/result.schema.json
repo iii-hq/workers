@@ -14,13 +14,22 @@
     "brief": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["headline", "text", "refs"],
+      "required": ["headline", "happened", "happening", "remaining", "refs"],
       "properties": {
         "headline": {
           "type": "string"
         },
-        "text": {
-          "type": "string"
+        "happened": {
+          "type": "string",
+          "description": "What happened: the milestones since the last summary, in natural language."
+        },
+        "happening": {
+          "type": "string",
+          "description": "What is happening now: live runs, cards in progress, pull requests waiting."
+        },
+        "remaining": {
+          "type": "string",
+          "description": "What is left: open cards, the rest of the active releases, decisions waiting on the person."
         },
         "refs": {
           "$ref": "#/definitions/refs"
@@ -30,9 +39,6 @@
         {
           "properties": {
             "headline": {
-              "minLength": 1
-            },
-            "text": {
               "minLength": 1
             },
             "refs": {
@@ -45,7 +51,13 @@
             "headline": {
               "const": ""
             },
-            "text": {
+            "happened": {
+              "const": ""
+            },
+            "happening": {
+              "const": ""
+            },
+            "remaining": {
               "const": ""
             },
             "refs": {

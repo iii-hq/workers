@@ -363,8 +363,10 @@ tab, beside the caller. On a phone, full screen.
 ### 7. The Overview follows the canvas
 
 The design canvas is the source of truth for the page. The Overview has:
-- **Summary:** the eyebrow with the writer's age, the headline, and the
-  paragraph with its references linked in place. Without a model or the
+- **Summary:** a box with the eyebrow and the writer's age, the headline,
+  and three natural-language parts side by side (stacked when narrow): what
+  happened, what is happening now, and what is left, with references linked
+  in place. The settings' `summary.guidance` steers focus, tone and length. Without a model or the
   writer profile, the canvas no-summary panel, with Open settings.
 - **Five tiles:** Needs you (now / no rush), Working, Waiting (on you /
   stalled), Open PRs (CI failing in N), Active releases.

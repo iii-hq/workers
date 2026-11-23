@@ -80,6 +80,7 @@ export const mockUi = {
   SearchField: ({ onChange, ...props }: Props) => (
     <input {...props} onChange={(event) => onChange(event.target.value)} />
   ),
+  ShadcnTextarea: ({ ...props }: Props) => <textarea {...props} />,
   ModelPicker: ({ value, options, onChange, automatic, loading, thinkingLevel, onThinkingLevelChange, showReasoningEffort }: Props) => (
     <>
       <select

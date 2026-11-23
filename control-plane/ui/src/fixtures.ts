@@ -10,8 +10,10 @@ export const controlPlaneSummaryFixture: ControlPlaneSummary = {
   checked_at: iso(4),
   unchanged: false,
   brief: {
-    headline: 'Assistente R1 is verifying its last cards.',
-    text: 'KAN-616 is verifying its last cards; KAN-597 holds R2 on build isolation.',
+    headline: 'Assistente R1 is in its last validation round, and R2 waits on a security decision.',
+    happened: 'KAN-635 passed the second branch review, and iii-hq/workers#1834 is ready for review.',
+    happening: 'KAN-616 is verifying the last R1 cards.',
+    remaining: 'KAN-597 holds R2 until you choose how builds are isolated.',
     refs: ['KAN-616', 'KAN-597', 'iii-hq/workers#1834'],
   },
   diary: [{ at: iso(18), text: 'KAN-635 verification passed.', refs: ['KAN-635'] }],

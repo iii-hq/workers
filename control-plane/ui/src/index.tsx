@@ -49,6 +49,13 @@ const VIEWS: Array<{ value: ControlPlaneView; label: string }> = [
   { value: 'runs', label: 'Runs' },
 ]
 
+/** The summary box: what happened, what is happening, what is left. */
+const SUMMARY_PARTS = [
+  ['happened', 'What happened', 'ok'],
+  ['happening', 'Happening now', 'warn'],
+  ['remaining', "What's left", 'ghost'],
+] as const
+
 export function ControlPlane({ host, paneId, tabId, onRequestClose, configurationId }: { host: Host; configurationId?: string } & PageRenderProps) {
   const [scope, setScope] = usePaneState(`control-plane:${paneId}:scope`, ALL_PROJECTS)
   return (
@@ -710,12 +717,27 @@ function Overview({
             <AgentSource checkedAt={summary.checked_at} />
           </div>
           <h3>{summary.brief.headline}</h3>
-          <p className="control-plane-summary-text">
-            <LinkedText text={summary.brief.text} refs={summary.brief.refs} data={data} />
-          </p>
-          <div className="control-plane-row-head">
-            <SummaryRefs refs={summary.brief.refs.filter((ref) => !summary.brief.text.includes(ref))} data={data} />
+          <div className="control-plane-summary-parts">
+            {SUMMARY_PARTS.map(([key, label, tone]) =>
+              summary.brief[key] ? (
+                <section key={key} className="control-plane-summary-part">
+                  <span className="control-plane-summary-label">
+                    <StatusDot tone={tone} />
+                    {label}
+                  </span>
+                  <p className="control-plane-summary-text">
+                    <LinkedText text={summary.brief[key]} refs={summary.brief.refs} data={data} />
+                  </p>
+                </section>
+              ) : null,
+            )}
           </div>
+          <SummaryRefs
+            refs={summary.brief.refs.filter(
+              (ref) => !SUMMARY_PARTS.some(([key]) => summary.brief[key].includes(ref)),
+            )}
+            data={data}
+          />
           {summaryError === 'update failed' ? (
             <p className="control-plane-meta">
               The last update failed; this is the last valid summary, {formatAge(summary.checked_at)}.

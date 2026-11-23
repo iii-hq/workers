@@ -8,7 +8,9 @@ const result = {
   unchanged: false,
   brief: {
     headline: 'KAN-635 verification landed',
-    text: 'KAN-635 is verified; iii-hq/workers#1834 waits on CI.',
+    happened: 'KAN-635 is verified.',
+    happening: 'iii-hq/workers#1834 waits on CI.',
+    remaining: '',
     refs: ['KAN-635', 'iii-hq/workers#1834'],
   },
   diary: [
@@ -59,7 +61,7 @@ describe('Control plane writer contract', () => {
       acceptSummary(
         {
           ...result,
-          brief: { headline: '', text: '', refs: [] },
+          brief: { headline: '', happened: '', happening: '', remaining: '', refs: [] },
           diary: [],
           now: {},
           pr_waits: {},

@@ -152,6 +152,18 @@ describe('Control plane views', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...value, summary: { interval_min: 10 } })
     await change('stall_after_min', '45')
     expect(onChange).toHaveBeenLastCalledWith({ ...sonnet, stall_after_min: 45 })
+    const guidance = container.querySelector<HTMLTextAreaElement>('textarea[data-field="summary.guidance"]')!
+    const setText = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+    await act(() => {
+      setText?.call(guidance, 'Highlight failing PRs.')
+      guidance.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenLastCalledWith({
+      ...sonnet,
+      summary: { ...sonnet.summary, guidance: 'Highlight failing PRs.' },
+    })
+    await change('summary.language', 'Português')
+    expect(onChange).toHaveBeenLastCalledWith({ ...sonnet, summary: { ...sonnet.summary, language: 'Português' } })
     const [pageId, [command]] = registerCommands.mock.calls[0]
     expect(pageId).toBe('control-plane')
     expect(command).toMatchObject({ id: 'open', title: 'Open control plane' })
@@ -186,7 +198,7 @@ describe('Control plane views', () => {
       ...controlPlaneSummaryFixture,
       brief: {
         ...controlPlaneSummaryFixture.brief,
-        text,
+        happening: text,
         refs: ['KAN-616', 'session:dispatch-r1', 'iii-hq/iii-cloud#451', 'KAN-99999'],
       },
       diary: [
@@ -484,6 +496,12 @@ describe('canvas overview', () => {
     await render({ summary: { ...writer(), error: 'update failed', fresh: false } })
     expect(container.textContent).toContain('The last update failed; this is the last valid summary')
     expect(container.textContent).toContain(controlPlaneSummaryFixture.brief.headline)
+    const parts = [...container.querySelectorAll('.control-plane-summary-part')].map((part) => part.textContent)
+    expect(parts).toEqual([
+      `What happened${controlPlaneSummaryFixture.brief.happened}`,
+      `Happening now${controlPlaneSummaryFixture.brief.happening}`,
+      `What's left${controlPlaneSummaryFixture.brief.remaining}`,
+    ])
     expect(container.textContent).not.toContain('Refresh available')
     expect(container.querySelector('.control-plane-freshness .bg-warn')).not.toBeNull()
   })

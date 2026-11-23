@@ -17,7 +17,7 @@ describe('control-plane writer result contract', () => {
       acceptSummary(
         {
           ...result,
-          brief: { headline: '', text: '', refs: [] },
+          brief: { headline: '', happened: '', happening: '', remaining: '', refs: [] },
           diary: [],
           now: {},
           pr_waits: {},
@@ -118,7 +118,7 @@ describe('control-plane writer result contract', () => {
     }
     const previous = {
       ...result,
-      brief: { ...result.brief, text: 'Previously accepted text.' },
+      brief: { ...result.brief, happening: 'Previously accepted text.' },
     }
     expect(acceptSummary(next, previous, checked + 60_000)).toEqual({
       ...previous,

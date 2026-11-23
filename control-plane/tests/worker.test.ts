@@ -335,7 +335,13 @@ describe('worker functions without an engine', () => {
     const result = {
       checked_at: new Date(started).toISOString(),
       unchanged: false,
-      brief: { headline: 'Recovered', text: 'The writer finished.', refs: ['KAN-1'] },
+      brief: {
+        headline: 'Recovered',
+        happened: 'The writer finished.',
+        happening: '',
+        remaining: '',
+        refs: ['KAN-1'],
+      },
       diary: [],
       now: {},
       pr_waits: {},
@@ -402,7 +408,7 @@ describe('worker functions without an engine', () => {
       result: {
         checked_at: checkpoint,
         unchanged: false,
-        brief: { headline: '', text: '', refs: [] },
+        brief: { headline: '', happened: '', happening: '', remaining: '', refs: [] },
         diary: [],
         now: {},
         pr_waits: {},

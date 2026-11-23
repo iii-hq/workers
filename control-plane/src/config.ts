@@ -20,6 +20,8 @@ export const configSchema = z.strictObject({
         .optional(),
       /** The reasoning effort picked with the model, as the chat stores it (`default`, `lowest`, or a model effort). */
       reasoning: z.string().min(1).optional(),
+      /** The person's guidance for the prose: focus, tone, emphasis. The profile's rules still win. */
+      guidance: z.string().max(4000).optional(),
       interval_min: z.number().positive().default(10),
       language: z.string().min(1).default('English'),
     })

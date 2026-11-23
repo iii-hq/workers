@@ -8,6 +8,7 @@ import {
   type JsonValue,
   type ModelOption,
   type ReasoningEffortOption,
+  ShadcnTextarea,
 } from '@iii-dev/console-ui'
 import { useEffect, useState } from 'react'
 
@@ -82,6 +83,12 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
     if (model !== summary.model) delete next.reasoning
     onChange({ ...config, summary: next })
   }
+  const setSummaryText = (key: 'guidance' | 'language', text: string) => {
+    const next = { ...summary }
+    if (text.trim()) next[key] = text
+    else delete next[key]
+    onChange({ ...config, summary: next })
+  }
   const setReasoning = (level: string) => {
     const next = { ...summary }
     if (level && level !== 'default') next.reasoning = level
@@ -105,6 +112,36 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
             onChange={setModel}
             onThinkingLevelChange={setReasoning}
             automatic={{ label: 'No summary', onSelect: () => setModel(null) }}
+          />
+        )}
+      />
+      <SettingsField
+        label="Writer guidance"
+        field="summary.guidance"
+        description="What the summary and diary should focus on, highlight or skip, and their tone and length. Sent with every refresh; the writer's rules (references, no invented facts) still apply."
+        error={errors?.get('/summary/guidance')}
+        renderControl={(props) => (
+          <ShadcnTextarea
+            data-field={props['data-field' as keyof typeof props] as string | undefined}
+            rows={4}
+            maxLength={4000}
+            placeholder="Highlight blocked cards and failing PRs. Keep the brief to two sentences."
+            value={typeof summary.guidance === 'string' ? summary.guidance : ''}
+            onChange={(event) => setSummaryText('guidance', event.target.value)}
+          />
+        )}
+      />
+      <SettingsField
+        label="Summary language"
+        field="summary.language"
+        description="The language of the summary and diary. Card keys and timestamps stay as they are."
+        error={errors?.get('/summary/language')}
+        renderControl={(props) => (
+          <Input
+            {...props}
+            placeholder="English"
+            value={typeof summary.language === 'string' ? summary.language : ''}
+            onChange={(language) => setSummaryText('language', language)}
           />
         )}
       />

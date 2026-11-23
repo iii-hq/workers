@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WRITER_READS, type ControlPlaneSummary } from '../src/summary.js'
 import type { ControlPlaneClient, ControlPlaneConfig, ControlPlaneData } from '../src/types.js'
-import { ControlPlaneWriter, reasoningOptions } from '../src/writer.js'
+import { ControlPlaneWriter, reasoningOptions, writerTargetHash } from '../src/writer.js'
 
 interface Call {
   id: string
@@ -15,7 +15,13 @@ function result(checkedAt = new Date().toISOString()): ControlPlaneSummary {
   return {
     checked_at: checkedAt,
     unchanged: false,
-    brief: { headline: 'KAN-1 is moving.', text: 'KAN-1 remains the focus.', refs: ['KAN-1'] },
+    brief: {
+      headline: 'KAN-1 is moving.',
+      happened: '',
+      happening: 'KAN-1 remains the focus.',
+      remaining: '',
+      refs: ['KAN-1'],
+    },
     diary: [],
     now: {},
     pr_waits: {},
@@ -31,6 +37,8 @@ function data(hash = 'hash-1'): ControlPlaneData {
     errors: { board: null, sessions: null, needsYou: null, questions: null, prs: null },
   } as ControlPlaneData
 }
+
+const covered = (hash: string) => writerTargetHash(hash, config().summary)
 
 function config(model: string | undefined = 'openai::gpt-5'): ControlPlaneConfig {
   return {
@@ -255,7 +263,7 @@ describe('ControlPlaneWriter', () => {
     const iii = new FakeIii()
     iii.state.set('control-plane/summary:all', {
       result: result('2026-11-22T10:00:00Z'),
-      valid_hash: 'same',
+      valid_hash: covered('same'),
       checked_at: '2026-11-22T10:00:00Z',
     })
     const changed = vi.fn()
@@ -305,7 +313,7 @@ describe('ControlPlaneWriter', () => {
     const iii = new FakeIii()
     iii.state.set('control-plane/summary:all', {
       result: result('2026-11-22T10:00:00Z'),
-      valid_hash: 'still-current',
+      valid_hash: covered('still-current'),
       checked_at: '2026-11-22T10:00:00Z',
     })
     const restarted = new ControlPlaneWriter(
@@ -350,11 +358,11 @@ describe('ControlPlaneWriter', () => {
 
     expect(writer.snapshot('all')).toMatchObject({
       result: summary,
-      valid_hash: 'covered',
+      valid_hash: covered('covered'),
       error: null,
     })
     expect(iii.state.get('control-plane/summary:all')).toMatchObject({
-      valid_hash: 'covered',
+      valid_hash: covered('covered'),
       pending_turn: null,
     })
     expect(iii.calls.some(({ input }) => input.key === 'summary:unknown')).toBe(false)
@@ -374,7 +382,7 @@ describe('ControlPlaneWriter', () => {
     await writer.check('all')
     const stored = () => iii.state.get('control-plane/summary:all')
     expect(stored()).toMatchObject({
-      pending_turn: { turn_id: 'turn-1', hash: 'old-hash', order: 1 },
+      pending_turn: { turn_id: 'turn-1', hash: covered('old-hash'), order: 1 },
       send_order: 1,
     })
 
@@ -385,16 +393,16 @@ describe('ControlPlaneWriter', () => {
 
     iii.status = { turn_id: 'turn-1', status: 'completed', result: result() }
     const restarted = fresh()
-    expect(await restarted.load('all')).toMatchObject({ valid_hash: 'old-hash' })
+    expect(await restarted.load('all')).toMatchObject({ valid_hash: covered('old-hash') })
     await restarted.refresh('all')
     expect(stored()).toMatchObject({
-      pending_turn: { turn_id: 'turn-2', hash: 'new-hash', order: 2 },
+      pending_turn: { turn_id: 'turn-2', hash: covered('new-hash'), order: 2 },
       send_order: 2,
     })
     await restarted.onCompleted({ session_id: 'control-plane-all', turn_id: 'turn-1' })
-    expect(restarted.snapshot('all').valid_hash).toBe('old-hash')
+    expect(restarted.snapshot('all').valid_hash).toBe(covered('old-hash'))
     await iii.finish(restarted, { turn_id: 'turn-2', status: 'completed', result: result() })
-    expect(restarted.snapshot('all').valid_hash).toBe('new-hash')
+    expect(restarted.snapshot('all').valid_hash).toBe(covered('new-hash'))
   })
 
   it('clears a persisted pending turn that Harness has superseded without crediting its hash', async () => {
@@ -454,6 +462,34 @@ describe('ControlPlaneWriter', () => {
     const keys = iii.sent().map(({ input }) => input.idempotency_key)
     expect(new Set(keys).size).toBe(2)
     expect(keys[1]).toMatch(/^control-plane:all:\d+:refresh:\d+$/)
+  })
+
+  it('sends the settings guidance and rewrites on the next check when it changes', async () => {
+    const iii = new FakeIii()
+    let settings = config()
+    const writer = new ControlPlaneWriter(
+      iii,
+      () => settings,
+      async () => data(),
+      vi.fn(),
+    )
+
+    await writer.check('all')
+    expect(JSON.parse(iii.sent()[0].input.message)).not.toHaveProperty('guidance')
+    await iii.finish(writer, { turn_id: 'turn-1', status: 'completed', result: result() })
+
+    vi.advanceTimersByTime(600_000)
+    await writer.check('all')
+    expect(iii.sent()).toHaveLength(1)
+
+    settings = {
+      ...settings,
+      summary: { ...settings.summary, guidance: '  Highlight failing PRs.  ' },
+    }
+    vi.advanceTimersByTime(600_000)
+    await writer.check('all')
+    expect(iii.sent()).toHaveLength(2)
+    expect(JSON.parse(iii.sent()[1].input.message).guidance).toBe('Highlight failing PRs.')
   })
 
   it('maps the picked reasoning effort the way the chat sends it', () => {

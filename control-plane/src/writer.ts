@@ -83,6 +83,15 @@ function initialState(): WriterState {
   }
 }
 
+/** What a valid result covers: the sources plus the person's prose preferences. */
+export function writerTargetHash(
+  sourceHash: string,
+  summary: ControlPlaneConfig['summary'],
+): string {
+  const { model, reasoning, language, guidance } = summary
+  return `${sourceHash}|${JSON.stringify([model ?? null, reasoning ?? null, language, guidance?.trim() ?? ''])}`
+}
+
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
 /** The chat's mapping of a picked effort onto `harness::send` options (ade/web `lib/backend/real.ts`). */
@@ -183,7 +192,7 @@ export class ControlPlaneWriter {
         const data = await this.sources(scope)
         if (this.sourceUnavailable(data)) {
           await this.fail(scope, state)
-        } else if (!refresh && data.sourceHash === state.valid_hash) {
+        } else if (!refresh && this.targetHash(data) === state.valid_hash) {
           state.checked_at = new Date().toISOString()
           state.error = null
           state.unavailable = false
@@ -281,7 +290,8 @@ export class ControlPlaneWriter {
       key: `summary:${scope}`,
     })
     if (stored && typeof stored === 'object') {
-      state.result = stored.result ?? null
+      // A result stored in an older shape is dropped; the next check rewrites it.
+      state.result = stored.result ? acceptSummary(stored.result, null) : null
       state.valid_hash = stored.valid_hash ?? null
       state.checked_at = stored.checked_at ?? null
       state.pending = stored.pending_turn ?? null
@@ -404,6 +414,7 @@ export class ControlPlaneWriter {
         repos: data.repositories,
         session_ids: data.runs.map((run) => run.session.session_id),
         args: `language=${config.summary.language}`,
+        ...(config.summary.guidance?.trim() ? { guidance: config.summary.guidance.trim() } : {}),
         digest,
       }),
       provider,
@@ -421,10 +432,18 @@ export class ControlPlaneWriter {
       await this.fail(scope, state)
       return
     }
-    state.pending = { turn_id: sent.turn_id, hash: data.sourceHash, order: state.sendOrder }
+    state.pending = { turn_id: sent.turn_id, hash: this.targetHash(data), order: state.sendOrder }
     await this.persist(scope, state)
     if (state.error !== UPDATE_ERROR) state.error = null
     state.unavailable = false
+  }
+
+  /**
+   * What a valid result covers: the sources, and the person's prose preferences.
+   * Changing the model, effort, language or guidance makes the next check rewrite.
+   */
+  private targetHash(data: ControlPlaneData): string {
+    return writerTargetHash(data.sourceHash, this.config().summary)
   }
 
   private applyConfiguration(state: WriterState): WriterState {
