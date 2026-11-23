@@ -53,4 +53,17 @@ describe('writer digest', () => {
     expect(digest.activity.map((row) => row.card)).toEqual(['KAN-9'])
     expect(digest.scope).toBe('Assistente')
   })
+
+  it('marks pull requests unread instead of empty when no repository was read', () => {
+    const unread = writerDigest(
+      { ...base, repositories: [], prs: [] },
+      { scopeName: 'All', since: null, activity: [] },
+    )
+    expect(unread.prs).toBeNull()
+    const read = writerDigest(
+      { ...base, repositories: ['iii-hq/workers'], prs: [] },
+      { scopeName: 'All', since: null, activity: [] },
+    )
+    expect(read.prs).toEqual([])
+  })
 })

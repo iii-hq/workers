@@ -415,9 +415,11 @@ export class ControlPlaneWriter {
     await this.persist(scope, state)
     const slot = Math.floor(state.lastSendAt / this.interval())
     const [provider, ...modelParts] = model.split('::')
+    // "What happened" covers the last day, not only the minutes since the last check.
+    const since = new Date(Date.now() - 86_400_000).toISOString()
     const activity = await this.iii
       .call<{ activity?: ActivityRow[] }>('kanban::activity::list', {
-        since: state.checked_at ?? new Date(Date.now() - 86_400_000).toISOString(),
+        since,
         limit: 200,
       })
       .then((result) => result?.activity ?? [])
@@ -427,7 +429,7 @@ export class ControlPlaneWriter {
         scope === 'all'
           ? 'All projects'
           : ((data.projects ?? []).find((project) => project.id === scope)?.name ?? scope),
-      since: state.checked_at,
+      since,
       activity,
     })
     const sent = await this.iii.call<{

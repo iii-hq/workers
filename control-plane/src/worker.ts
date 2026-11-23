@@ -64,7 +64,8 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     () => config,
     async (scope) => {
       const data = await read.read(scope)
-      if (availability.github) return data
+      // Unread pull requests are not "no pull requests": the writer then gets none.
+      if (availability.github && read.prsRead(scope)) return data
       const available = {
         ...data,
         prs: [],

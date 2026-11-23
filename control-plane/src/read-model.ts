@@ -807,6 +807,12 @@ export class ControlPlaneReadModel {
     return this.scopes.get(scope)?.data ?? this.pending.get(scope) ?? this.rebuild(scope)
   }
 
+  /** Every repository of the scope has been read at least once (§2 reads none while nobody watches). */
+  prsRead(scope: string): boolean {
+    const repos = this.scopes.get(scope)?.data.repositories ?? []
+    return repos.every((repo) => (this.repositories.get(repo)?.at ?? 0) > 0)
+  }
+
   async watch(scope: string): Promise<{ watched_until: string }> {
     const now = Date.now()
     const firstWatch = (this.watched.get(scope) ?? 0) <= now

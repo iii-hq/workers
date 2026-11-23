@@ -117,13 +117,16 @@ export function writerDigest(
       session: `session:${item.sessionId}`,
       title: clip(item.title ?? '', 200),
     })),
-    prs: (data.prs ?? []).slice(0, PRS).map((pr) => ({
-      ref: `${pr.repo}#${pr.number}`,
-      title: clip(pr.title ?? '', 120),
-      card: pr.card?.key ?? null,
-      checks: pr.checks,
-      draft: pr.isDraft,
-      wait: pr.waitReason,
-    })),
+    // null: pull requests were not read this time (no repositories, GitHub unavailable, or not read yet).
+    prs: !(data.repositories ?? []).length
+      ? null
+      : (data.prs ?? []).slice(0, PRS).map((pr) => ({
+          ref: `${pr.repo}#${pr.number}`,
+          title: clip(pr.title ?? '', 120),
+          card: pr.card?.key ?? null,
+          checks: pr.checks,
+          draft: pr.isDraft,
+          wait: pr.waitReason,
+        })),
   }
 }

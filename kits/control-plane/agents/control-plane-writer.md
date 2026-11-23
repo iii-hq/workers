@@ -54,14 +54,15 @@ from the same reads the control plane shows. Write from it. It holds:
 - `releases`: name, status, done and total cards, open questions;
 - `active_cards`: cards in progress, in review or labelled `blocked`, newest
   first, with status, labels and pills;
-- `changed_cards`: cards updated since `checked_at` (all recent cards on
-  first use), newest first;
-- `activity`: board activity since `checked_at` (the last day on first use),
+- `changed_cards`: cards updated in the last day, newest first;
+- `activity`: board activity in the last day,
   newest first, with the card key, kind, actor and up to three changes;
 - `runs`: the scope's root sessions with their card, state, last progress
   and the first line of their last assistant message;
 - `needs_you`: open questions and stalled runs, with class and urgency;
-- `prs`: open pull requests of the scope's repositories, with checks and
+- `prs`: null when pull requests were not read this time; then say nothing
+  about pull requests, never that there are none. Otherwise the open pull
+  requests of the scope's repositories, with checks and
   their wait reason.
 
 Each list is capped, so a large board never overflows the wake. Never list a
@@ -82,7 +83,8 @@ allowed. Read more only to explain one subject, and only these:
 
 The brief is the summary box the person reads first. Write it in natural
 language, as one colleague would brief another, in three parts:
-- `happened`: what happened since the last summary (on first use, recently):
+- `happened`: what happened in the last day, newest first; not "nothing
+  changed since the last check":
   cards that reached review or done, runs that finished, PRs opened or merged,
   questions answered;
 - `happening`: what is happening now: live runs and what they are doing,
@@ -91,7 +93,9 @@ language, as one colleague would brief another, in three parts:
   planned next, and the decisions waiting on the person.
 
 Each part is two or three sentences, names its subjects with card, session
-or PR references, and says what matters, not a list of everything. Leave a
+or PR references, and says what matters, not a list of everything. Name a
+card by what it is about (its title, shortened), with the key after it: a
+bare key tells the person nothing. Leave a
 part empty only when there is nothing supported to say for it. The
 `headline` is one sentence with the most important thing. The diary gets the milestones from `activity` and
 `changed_cards` (a card reaching review or done, a run finishing, a PR
