@@ -488,7 +488,9 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     id: configurationId,
     name: 'Control plane',
     description: 'Control plane read model and summary writer.',
-    schema: z.toJSONSchema(configSchema),
+    // The input schema: a key with a default is optional, so a value saved before
+    // the key existed still validates (the output schema would require it).
+    schema: z.toJSONSchema(configSchema, { io: 'input' }),
     initial_value: defaultConfig(),
   })
   const entry = await client.call<{ value: unknown }>('configuration::get', { id: configurationId })
