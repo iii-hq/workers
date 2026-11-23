@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.4
+
+- **A one-line description in the agent picker.** The `deepwork` profile's description explained the whole run (tickets, leads, waves, rounds, the dev flow) and filled the composer's agent picker with a truncated paragraph. It now says when to pick it: "Use for big goals: plans tickets, runs agents in parallel, reviews the work." The kit's own description and the README keep the full explanation.
+
 ## 0.9.2
 
 - **A check waits for the machine instead of stopping the run.** In KAN-616 the machine ran out of memory overnight: other sessions' build output filled a tmpfs `/tmp`, swap filled, and two validations in a row died at their deadline with the database and web suites still running. The run then finished `blocked: environment` at 03:20 and sat until a person resumed it nine hours later, long after memory was freed. Now a batch check needs `min_free_mem_gb` (default 4) of available memory before it starts, `min_free_gb` also covers `/tmp`, where every long run writes its logs, and a batch the machine could not check twice in a row waits 30 minutes, looks at the machine again and retries. The run stops `blocked` only after three waits.
