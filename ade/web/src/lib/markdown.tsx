@@ -518,6 +518,12 @@ function MarkdownImage({
   )
 }
 
+/* Chat table cells wrap (the shared cells are `whitespace-nowrap`) and keep
+   a floor width, so many columns overflow into the viewport's scroll instead
+   of collapsing to a word per line. `break-words` leaves the min-content
+   width alone: an unbreakable token (a URL) widens the table and scrolls. */
+const MARKDOWN_CELL_CLASS = 'min-w-[10ch] whitespace-normal break-words'
+
 const components: Components = {
   h1: ({ className, ...rest }) => (
     <h1
@@ -707,9 +713,13 @@ const components: Components = {
       </span>
     )
   },
+  /* The frame grows with the table (`inline-block min-w-full`) instead of
+     clipping it at the column width, so a wide table scrolls inside the
+     viewport rather than losing its last columns; cells wrap their text
+     with a floor width, so one long column cannot crowd out the others. */
   table: ({ className, ...rest }) => (
     <TableViewport className="my-4">
-      <TableFrame>
+      <TableFrame className="inline-block min-w-full align-top">
         <Table density="compact" inset className={className} {...rest} />
       </TableFrame>
     </TableViewport>
@@ -724,8 +734,12 @@ const components: Components = {
     <TableFooter className={className} {...rest} />
   ),
   tr: ({ className, ...rest }) => <TableRow className={className} {...rest} />,
-  th: ({ className, ...rest }) => <TableHead className={className} {...rest} />,
-  td: ({ className, ...rest }) => <TableCell className={className} {...rest} />,
+  th: ({ className, ...rest }) => (
+    <TableHead className={cn(MARKDOWN_CELL_CLASS, className)} {...rest} />
+  ),
+  td: ({ className, ...rest }) => (
+    <TableCell className={cn(MARKDOWN_CELL_CLASS, className)} {...rest} />
+  ),
   caption: ({ className, ref: _ref, ...rest }) => (
     <TableCaption className={className} {...rest} />
   ),

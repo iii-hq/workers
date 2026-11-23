@@ -21,4 +21,22 @@ describe('Markdown tables', () => {
     expect(html).not.toContain('font-mono')
     expect(html).toContain('font-code')
   })
+
+  it('lets a wide table scroll instead of clipping its last columns', () => {
+    const html = renderToStaticMarkup(
+      <Markdown>{`| Function | Description |
+| --- | --- |
+| shell::exec | Run a command in the foreground and return its full output |`}</Markdown>,
+    )
+
+    // The frame grows with the table, so the viewport has something to scroll.
+    expect(html).toMatch(
+      /<div [^>]*data-slot="table-frame"[^>]*class="[^"]*\binline-block\b[^"]*\bmin-w-full\b/,
+    )
+    // Cells wrap their text instead of forcing one line.
+    expect(html).toMatch(
+      /<td [^>]*class="[^"]*\bwhitespace-normal\b[^"]*"[^>]*>Run a command/,
+    )
+    expect(html).not.toContain('whitespace-nowrap')
+  })
 })
