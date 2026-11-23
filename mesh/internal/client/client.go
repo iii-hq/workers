@@ -984,7 +984,7 @@ func (r *runner) status() Status {
 	if r.restart {
 		s.State = "restart required"
 	}
-	s.Shared = r.bridge.Shared(s.Node)
+	s.Shared = r.bridge.Shared()
 	s.Remote = r.bridge.Remote()
 	return s
 }

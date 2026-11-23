@@ -38,8 +38,8 @@ func (w *signedWorkers) SetRuntime(_ context.Context, r node.Runtime) error {
 	w.runtimes <- r
 	return nil
 }
-func (w *signedWorkers) SetCatalog(node.Catalog) {}
-func (w *signedWorkers) CatalogRev() string      { return "" }
+func (w *signedWorkers) SetCatalog(node.Catalog) error { return nil }
+func (w *signedWorkers) CatalogRev() string            { return "" }
 func (w *signedWorkers) Status() []node.WorkerStatus {
 	return []node.WorkerStatus{{Name: "shell", State: "shared", Functions: []string{"shell::exec"}}}
 }
@@ -94,15 +94,12 @@ func (r *registeredNodeRPC) serve(ctx context.Context, w http.ResponseWriter, re
 	}
 }
 func (r *registeredNodeRPC) Call(ctx context.Context, req iii.CallRequest) (json.RawMessage, error) {
-	if req.Namespace != "default" {
-		return nil, fmt.Errorf("wrong control namespace %s", req.Namespace)
+	if req.Namespace != "laptop" {
+		return nil, fmt.Errorf("wrong machine namespace %s", req.Namespace)
 	}
-	fn := strings.TrimPrefix(req.FunctionID, "laptop::")
-	if fn == req.FunctionID {
-		return nil, errors.New("node prefix missing")
-	}
+	fn := req.FunctionID
 	r.mu.Lock()
-	if !r.registered[fn] || r.namespace != "default" {
+	if !r.registered[fn] || r.namespace != "laptop" {
 		r.mu.Unlock()
 		select {
 		case r.notReady <- struct{}{}:
@@ -141,7 +138,7 @@ func TestDelayedRegisteredNodeReceivesHubSignedNamespace(t *testing.T) {
 	r := &registeredNodeRPC{registered: map[string]bool{}, replies: map[string]chan map[string]json.RawMessage{}, notReady: make(chan struct{}, 8)}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { r.serve(ctx, w, req) }))
 	defer server.Close()
-	client := iii.New("ws"+strings.TrimPrefix(server.URL, "http"), iii.WithName("mesh-node"), iii.WithNamespace("default"))
+	client := iii.New("ws"+strings.TrimPrefix(server.URL, "http"), iii.WithName("mesh-node"), iii.WithNamespace("laptop"))
 	defer client.Close()
 	if err := client.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -188,7 +185,7 @@ func TestDelayedRegisteredNodeReceivesHubSignedNamespace(t *testing.T) {
 		t.Fatalf("config hook calls %d", hooksCalled)
 	}
 	details, err := h.GetNode(ctx, NodeRequest{Name: "laptop"})
-	if err != nil || details.StatusError != "" || details.Version != h.Version || details.Path != "relay hub" || !reflect.DeepEqual(details.Workers, []ComponentState{{Name: "shell", State: "shared", Functions: []string{"laptop::shell::exec"}}}) {
+	if err != nil || details.StatusError != "" || details.Version != h.Version || details.Path != "relay hub" || !reflect.DeepEqual(details.Workers, []ComponentState{{Name: "shell", State: "shared", Functions: []string{"shell::exec"}}}) {
 		t.Fatalf("details %+v error %v", details, err)
 	}
 	cancel()

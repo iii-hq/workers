@@ -301,9 +301,11 @@ func newTarget(t *testing.T) (*Bridge, *fakeNet, *fakeLocal, *probe) {
 	t.Setenv("HOME", t.TempDir()) // the SDK writes an iii ps marker per client
 	p := &probe{release: make(chan struct{}), ended: make(chan error, 2*MaxCallsInFlight)}
 	rows := []map[string]any{row("shell::run", "local", "ide")} // a worker beta does not share
-	for _, id := range append(slices.Clone(probeFunctions), "mesh::status", "approval::resolve", "peer::desk::coder::read-file", "hub::shell::exec") {
+	for _, id := range append(slices.Clone(probeFunctions), "mesh::status", "approval::resolve") {
 		rows = append(rows, row(id, "local", "probe"))
 	}
+	// Its mirrors of other owners, each in the owner's namespace.
+	rows = append(rows, row("coder::read-file", "desk", "mesh-mirror"), row("shell::exec", "hub", "mesh-mirror"))
 	local := engine(&rows)
 	list := local.fn
 	local.ctxFn = func(ctx context.Context, r iii.CallRequest) (json.RawMessage, error) {
@@ -317,7 +319,7 @@ func newTarget(t *testing.T) (*Bridge, *fakeNet, *fakeLocal, *probe) {
 	if err := b.SetRuntime(context.Background(), node.Runtime{Node: "beta", Namespace: "hub"}); err != nil { // no hub connection: the gate needs none
 		t.Fatal(err)
 	}
-	b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "desk::coder::read-file", Owner: "desk"}, {ID: "shell::exec", Owner: "hub"}}})
+	b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "coder::read-file", Owner: "desk"}, {ID: "shell::exec", Owner: "hub"}}})
 	if err := b.Sync(context.Background(), []string{"probe"}); err != nil {
 		t.Fatal(err)
 	}
@@ -329,26 +331,26 @@ func newTarget(t *testing.T) (*Bridge, *fakeNet, *fakeLocal, *probe) {
 }
 
 // newCaller is machine alpha with peer to peer on towards nb: it holds mirrors of
-// what beta and the hub share. Its hub connection is down unless hubURL is set.
-func newCaller(t *testing.T, nb *fakeNet, hubURL string) (*Bridge, *fakeNet, *fakeLocal) {
+// what beta and the hub share, by owner. Its hub connection is down unless hubURL is set.
+func newCaller(t *testing.T, nb *fakeNet, hubURL string) (*Bridge, *fakeNet, map[string]*fakeMirror) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	local := engine(&[]map[string]any{})
-	a := NewBridge(local, "local")
+	a := NewBridge(engine(&[]map[string]any{}), "local")
 	t.Cleanup(a.Close)
 	if err := a.SetRuntime(context.Background(), node.Runtime{Node: "alpha", Namespace: "hub", URL: hubURL}); err != nil {
 		t.Fatal(err)
 	}
+	conns := mirrorsOf(a)
 	catalog := node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "hub"}}}
 	for _, id := range probeFunctions {
-		catalog.Functions = append(catalog.Functions, node.CatalogEntry{ID: "beta::" + id, Owner: "beta"})
+		catalog.Functions = append(catalog.Functions, node.CatalogEntry{ID: id, Owner: "beta"})
 	}
 	a.SetCatalog(catalog)
 	n := &fakeNet{self: alphaAddr, to: nb, heard: time.Now(), peers: map[string]netip.Addr{"hub": hubAddr, "beta": betaAddr}}
 	if err := a.SetDirect(n, testVersion); err != nil {
 		t.Fatal(err)
 	}
-	return a, n, local
+	return a, n, conns
 }
 
 func codeOf(err error) string {
@@ -416,6 +418,19 @@ func TestDirectCallRunsWhatIsShared(t *testing.T) {
 	}
 }
 
+// The listener entry point: a call another machine sent straight to this one.
+func TestDirectCallDropsMachineBoundFields(t *testing.T) {
+	_, n, local, _ := newTarget(t)
+	stamped := `{"command":"ls","fs_scope":{"root":"/alpha"},"caller_fs_root":"/alpha","caller_session_id":"s1"}`
+	if status, _, raw, _ := n.send(t, alphaAddr, "/call?function=probe::echo", stamped); status != 200 {
+		t.Fatalf("echo: %d %s", status, raw)
+	}
+	calls := local.called("probe::echo")
+	if got := string(calls[len(calls)-1].Payload); got != `{"command":"ls"}` {
+		t.Fatalf("the local engine got %s", got)
+	}
+}
+
 func TestDirectGateRefusesBeforeTheBody(t *testing.T) {
 	b, n, local, _ := newTarget(t)
 	old := time.Now().Add(-directGrace - time.Minute)
@@ -440,8 +455,8 @@ func TestDirectGateRefusesBeforeTheBody(t *testing.T) {
 		{"a worker that is not shared", "POST", "/call?function=shell::run", testVersion, alphaAddr, time.Now(), 403, "FORBIDDEN"},
 		{"mesh::status", "POST", "/call?function=mesh::status", testVersion, alphaAddr, time.Now(), 403, "FORBIDDEN"},
 		{"approval::resolve", "POST", "/call?function=approval::resolve", testVersion, alphaAddr, time.Now(), 403, "FORBIDDEN"},
-		{"a mirror of another machine", "POST", "/call?function=peer::desk::coder::read-file", testVersion, alphaAddr, time.Now(), 403, "FORBIDDEN"},
-		{"a mirror of the hub", "POST", "/call?function=hub::shell::exec", testVersion, alphaAddr, time.Now(), 403, "FORBIDDEN"},
+		{"a mirror of another machine", "POST", "/call?function=coder::read-file", testVersion, alphaAddr, time.Now(), 403, "FORBIDDEN"},
+		{"a mirror of the hub", "POST", "/call?function=shell::exec", testVersion, alphaAddr, time.Now(), 403, "FORBIDDEN"},
 		{"a declared length over the cap", "POST", "/call?function=probe::echo", testVersion, alphaAddr, time.Now(), 413, "payload_too_large"},
 	} {
 		n.set(func() { n.heard = c.heard })
@@ -644,11 +659,11 @@ func TestDirectRefusesWithoutDeadlines(t *testing.T) {
 }
 
 // calling starts a call of beta's waiting function through alpha's mirror and returns once it runs on beta.
-func calling(t *testing.T, alpha *fakeLocal, beta *Bridge) chan error {
+func calling(t *testing.T, alpha map[string]*fakeMirror, beta *Bridge) chan error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() {
-		_, err := alpha.mirrors["peer::beta::probe::wait"](context.Background(), json.RawMessage(`{}`))
+		_, err := alpha["beta"].fns["probe::wait"](context.Background(), json.RawMessage(`{}`))
 		done <- err
 	}()
 	waitUntil(t, "the call to run on beta", func() bool { return beta.direct.running(alphaAddr) == 1 })
@@ -748,14 +763,14 @@ func TestDirectOffEndsCalls(t *testing.T) {
 		t.Fatalf("the caller of a target that turned off: %v", err)
 	}
 	p.outlives(t, d)
-	if _, err := local.mirrors["peer::beta::probe::echo"](context.Background(), json.RawMessage(`{}`)); codeOf(err) != "mesh_offline" {
+	if _, err := local["beta"].fns["probe::echo"](context.Background(), json.RawMessage(`{}`)); codeOf(err) != "mesh_offline" {
 		t.Fatalf("a call to a closed listener: %v", err)
 	}
 	// Nothing is reused: the next call reaches the new listener.
 	if err := b.SetDirect(nb, testVersion); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := local.mirrors["peer::beta::probe::echo"](context.Background(), json.RawMessage(`{"x":1}`)); err != nil || string(out.(json.RawMessage)) != `{"x":1}` {
+	if out, err := local["beta"].fns["probe::echo"](context.Background(), json.RawMessage(`{"x":1}`)); err != nil || string(out.(json.RawMessage)) != `{"x":1}` {
 		t.Fatalf("a call after the target reopened: %s %v", out, err)
 	}
 }
@@ -828,7 +843,7 @@ func TestDirectCallerTakesOnlyTheTargetsAnswer(t *testing.T) {
 	defer stand.Close()
 	na.set(func() { na.plain = stand.Listener.Addr().String() })
 	echo := func(payload string) (any, error) {
-		return local.mirrors["peer::beta::probe::echo"](context.Background(), json.RawMessage(payload))
+		return local["beta"].fns["probe::echo"](context.Background(), json.RawMessage(payload))
 	}
 	answers := func(f func(http.ResponseWriter, *http.Request)) {
 		mu.Lock()
@@ -1011,7 +1026,7 @@ func TestMirrorRouting(t *testing.T) {
 		return a.online != nil && a.online.Err() == nil
 	})
 	echo := func() (string, error) {
-		out, err := local.mirrors["peer::beta::probe::echo"](context.Background(), json.RawMessage(`{"x":1}`))
+		out, err := local["beta"].fns["probe::echo"](context.Background(), json.RawMessage(`{"x":1}`))
 		raw, _ := out.(json.RawMessage)
 		return string(raw), err
 	}
@@ -1037,12 +1052,12 @@ func TestMirrorRouting(t *testing.T) {
 		t.Fatalf("both on: %s %v, %d dials", out, err, na.dials())
 	}
 	direct("both on")
-	// The local id travels: the target knows its functions without its own name in front.
+	// The bare id travels, as the target knows it.
 	if na.dialed[0] != "[2001:db8::b]:9136" {
 		t.Fatalf("dialed %v", na.dialed)
 	}
 
-	if _, err := local.mirrors["hub::shell::exec"](context.Background(), json.RawMessage(`{}`)); err != nil || na.dials() != 1 {
+	if _, err := local["hub"].fns["shell::exec"](context.Background(), json.RawMessage(`{}`)); err != nil || na.dials() != 1 {
 		t.Fatalf("the hub's function: %v, %d dials", err, na.dials())
 	}
 	throughHub("owner hub, although the hub is in the map", "hub")
@@ -1057,7 +1072,7 @@ func TestMirrorRouting(t *testing.T) {
 	// A payload the target never reads must not cost the caller the refusal: a close on unread data resets the connection.
 	large := json.RawMessage(`"` + strings.Repeat("a", 1<<20) + `"`)
 	for range 40 {
-		if _, err := local.mirrors["peer::beta::probe::echo"](context.Background(), large); codeOf(err) != "FORBIDDEN" {
+		if _, err := local["beta"].fns["probe::echo"](context.Background(), large); codeOf(err) != "FORBIDDEN" {
 			t.Fatalf("the refusal of a call with a large payload: %v", err)
 		}
 	}
@@ -1100,10 +1115,10 @@ func TestMirrorRouting(t *testing.T) {
 func TestDirectCallNeedsNoHubConnection(t *testing.T) {
 	_, nb, _, _ := newTarget(t)
 	_, _, local := newCaller(t, nb, "")
-	if _, err := local.mirrors["hub::shell::exec"](context.Background(), json.RawMessage(`{}`)); codeOf(err) != "mesh_offline" {
+	if _, err := local["hub"].fns["shell::exec"](context.Background(), json.RawMessage(`{}`)); codeOf(err) != "mesh_offline" {
 		t.Fatalf("the hub's function with the hub connection down: %v", err)
 	}
-	if out, err := local.mirrors["peer::beta::probe::echo"](context.Background(), json.RawMessage(`{"x":1}`)); err != nil || string(out.(json.RawMessage)) != `{"x":1}` {
+	if out, err := local["beta"].fns["probe::echo"](context.Background(), json.RawMessage(`{"x":1}`)); err != nil || string(out.(json.RawMessage)) != `{"x":1}` {
 		t.Fatalf("a direct call with the hub connection down: %s %v", out, err)
 	}
 }
@@ -1119,7 +1134,7 @@ func TestDirectCallRefreshesStatusAtMostEveryFiveSeconds(t *testing.T) {
 	a.mu.Unlock()
 	echo := func() {
 		t.Helper()
-		if _, err := local.mirrors["peer::beta::probe::echo"](context.Background(), json.RawMessage(`{}`)); err != nil {
+		if _, err := local["beta"].fns["probe::echo"](context.Background(), json.RawMessage(`{}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1142,9 +1157,10 @@ func TestDirectCallRefreshesStatusAtMostEveryFiveSeconds(t *testing.T) {
 func TestRemoteReportsThePath(t *testing.T) {
 	b := NewBridge(engine(&[]map[string]any{}), "local")
 	defer b.Close()
+	mirrorsOf(b)
 	catalog := node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "hub"}}}
 	for _, m := range []string{"m-direct", "m-relay", "m-idle", "m-off"} {
-		catalog.Functions = append(catalog.Functions, node.CatalogEntry{ID: m + "::probe::echo", Owner: m})
+		catalog.Functions = append(catalog.Functions, node.CatalogEntry{ID: "probe::echo", Owner: m})
 	}
 	b.SetCatalog(catalog)
 	paths := func() []string {
@@ -1164,7 +1180,7 @@ func TestRemoteReportsThePath(t *testing.T) {
 	if got := paths(); !slices.Equal(got, []string{"hub=", "m-direct=direct", "m-idle=idle", "m-off=hub", "m-relay=relay"}) {
 		t.Fatalf("peer to peer on: %v", got)
 	}
-	if raw, _ := json.Marshal(b.Remote()[:2]); string(raw) != `[{"machine":"hub","functions":["hub::shell::exec"]},{"machine":"m-direct","functions":["peer::m-direct::probe::echo"],"path":"direct"}]` {
+	if raw, _ := json.Marshal(b.Remote()[:2]); string(raw) != `[{"machine":"hub","functions":["shell::exec"]},{"machine":"m-direct","functions":["probe::echo"],"path":"direct"}]` {
 		t.Fatalf("status %s", raw)
 	}
 }

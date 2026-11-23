@@ -21,14 +21,14 @@ type WorkersRequest struct {
 	Namespace string `json:"namespace"`
 }
 
-// StatusRequest carries the hub's version: the hub hands its namespace only to a node on the same one.
+// StatusRequest carries the hub's version: the hub hands its namespace, where mesh::call goes, only to a node on the same one.
 type StatusRequest struct {
 	HubVersion string `json:"hub_version"`
 }
 
-// CatalogEntry is one function shared in the mesh. ID is its hub-engine id.
+// CatalogEntry is one function shared in the mesh.
 type CatalogEntry struct {
-	ID             string          `json:"id"`
+	ID             string          `json:"id"`    // its function id; Owner names the namespace
 	Owner          string          `json:"owner"` // "hub" or the machine's name
 	Description    string          `json:"description,omitempty"`
 	RequestFormat  json.RawMessage `json:"request_format,omitempty"`
@@ -99,7 +99,7 @@ func (n *Node) handle(ctx context.Context, fn string, s Signed) (json.RawMessage
 		n.statusMu.Unlock()
 		if moved {
 			if wanted != "" {
-				n.workers.SetCatalog(Catalog{}) // a hub on another version refuses every mirror call
+				_ = n.workers.SetCatalog(Catalog{}) // a hub on another version refuses every mirror call; an empty catalog reads nothing, so it cannot fail
 			}
 			n.changed()
 		}
@@ -124,7 +124,9 @@ func (n *Node) handle(ctx context.Context, fn string, s Signed) (json.RawMessage
 		if err = json.Unmarshal(raw, &catalog); err != nil {
 			return nil, err
 		}
-		n.workers.SetCatalog(catalog)
+		if err = n.workers.SetCatalog(catalog); err != nil {
+			return nil, err
+		}
 		result = struct{}{}
 	default:
 		return nil, errors.New("unknown node function")

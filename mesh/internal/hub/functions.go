@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -53,26 +54,28 @@ func (h *Hub) RevokeToken(ctx context.Context, req RevokeTokenRequest) (RevokeTo
 	return RevokeTokenResult{Revoked: true}, nil
 }
 
-func functionPrefixes(raw json.RawMessage) (map[string]bool, error) {
+// workerNamespaces lists the namespaces a worker other than that namespace's own machine uses.
+// Workers, not function rows. A function row names an unnamed worker after the first segment of its id, and a machine's rows are unnamed for an instant on every connect, because rbac-proxy fixes the namespace before the SDK names the worker. That would reserve the machine's own name.
+func workerNamespaces(raw json.RawMessage) (map[string]bool, error) {
 	var list struct {
-		Functions []struct {
-			FunctionID string `json:"function_id"`
-		} `json:"functions"`
+		Workers []struct {
+			Name      *string `json:"name"`
+			Namespace string  `json:"namespace"`
+		} `json:"workers"`
 	}
 	if err := json.Unmarshal(raw, &list); err != nil {
 		return nil, err
 	}
-	if list.Functions == nil {
-		return nil, errors.New("missing engine functions listing")
+	if list.Workers == nil {
+		return nil, errors.New("missing engine workers listing")
 	}
 	taken := map[string]bool{}
-	for _, f := range list.Functions {
-		if f.FunctionID == "" {
-			return nil, errors.New("missing engine function ID")
+	for _, w := range list.Workers {
+		if w.Namespace == "" {
+			return nil, errors.New("missing engine worker namespace")
 		}
-		prefix, _, _ := strings.Cut(f.FunctionID, "::")
-		if prefix != "" {
-			taken[prefix] = true
+		if w.Name == nil || !strings.HasPrefix(*w.Name, "rbac-proxy:"+w.Namespace+"::") {
+			taken[w.Namespace] = true
 		}
 	}
 	return taken, nil
@@ -84,7 +87,7 @@ type NodeRequest struct {
 type ComponentState struct {
 	Name      string   `json:"name"`
 	State     string   `json:"state"`
-	Functions []string `json:"functions"` // hub function ids (<node>::<local id>)
+	Functions []string `json:"functions"` // the machine's function ids
 }
 type NodeEntry struct {
 	Name      string           `json:"name"`
@@ -266,21 +269,43 @@ func (h *Hub) engineRPC() rpc {
 	return nil
 }
 func (h *Hub) refreshNames(ctx context.Context) error {
-	raw, err := h.engineRPC().Call(ctx, iii.CallRequest{FunctionID: "engine::functions::list", Namespace: "default", Payload: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
-	if err != nil {
-		return fmt.Errorf("list engine function prefixes: %w", err)
+	engine := h.engineRPC()
+	if engine == nil || h.Coordinator == nil {
+		return errors.New("hub engine is not connected")
 	}
-	taken, err := functionPrefixes(raw)
+	raw, err := engine.Call(ctx, iii.CallRequest{FunctionID: "engine::workers::list", Namespace: "default", Payload: json.RawMessage(`{}`), Timeout: 15 * time.Second})
+	if err != nil {
+		return fmt.Errorf("list engine workers: %w", err)
+	}
+	taken, err := workerNamespaces(raw)
 	if err != nil {
 		return err
 	}
-	// A shared worker or id that is not running yet keeps its prefix: a machine under it would take its ids.
-	for _, w := range h.Config().Share {
-		prefix, _, _ := strings.Cut(w, "::")
-		taken[prefix] = true
-	}
+	taken["default"], taken[h.Namespace] = true, true
+	h.mu.Lock()
+	h.taken = taken
+	h.mu.Unlock()
 	h.Coordinator.SetNameTaken(func(name string) bool { return taken[name] })
+	// shortcut: engine::workers::list leaves out a connection that sent no pid (a hand-rolled client), and the set is read at hub start, at each join and rename and on each function change, so a project whose workers connect and register nothing is seen at the next function change. Observe engine::on-workers-changed when either gap is seen in practice.
+	for _, n := range h.Coordinator.Nodes() {
+		if n.Name == "hub" || !taken[n.Name] {
+			continue
+		}
+		log.Printf("mesh: machine %q: another worker uses its namespace on the hub: closing its sessions", n.Name)
+		// Only for these machines: CloseNode also voids the admissions in flight for every machine.
+		if h.MeshGateway != nil {
+			h.MeshGateway.CloseNode(n.Name)
+		}
+		h.Sessions.CloseNode(n.Name)
+	}
 	return nil
+}
+
+// nameReserved reads the set the last refreshNames stored.
+func (h *Hub) nameReserved(name string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return name == "default" || name == h.Namespace || h.taken[name]
 }
 func (h *Hub) registerFunctions(ctx context.Context, client *iii.Client) error {
 	publish, err := meshclient.StatusEvents(ctx, client, h.statusChanged)

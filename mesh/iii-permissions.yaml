@@ -4,7 +4,6 @@ rules:
   - mesh::nodes::list
   - mesh::nodes::get
   - '!mesh-node::*'
-  - '!*::mesh-node::*'
   - '!mesh::auth'
   - '!mesh::middleware'
   - '!mesh::on-observer-registration'
@@ -15,9 +14,9 @@ rules:
   - '!mesh::on-status-changed'
   - '!mesh::ui-content'
   - '!mesh::configuration-id'
-  - '!*::shell::pty::*'
-  - '!*::shell::scm::*'
-  - '!*::shell::ui-state::*'
-  - '!*::shell::config-status'
-  - '!*::shell::kill-session-jobs'
-  - '!*::shell::on-config-change'
+  - '!shell::pty::*'
+  - '!shell::scm::*'
+  - '!shell::ui-state::*'
+  - '!shell::config-status'
+  - '!shell::kill-session-jobs'
+  - '!shell::on-config-change'

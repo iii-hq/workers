@@ -148,6 +148,20 @@ func eventually(t *testing.T, duration time.Duration, what string, check func() 
 	}
 	t.Fatalf("%s: %v", what, err)
 }
+
+// engine starts another iii engine in a directory of its own, as a machine runs its own, and returns its URL.
+func (f *fixture) engine(name string) string {
+	t := f.t
+	t.Helper()
+	dir, port := t.TempDir(), freePort(t)
+	configPath := filepath.Join(dir, "engine.json")
+	writeJSON(t, configPath, map[string]any{"workers": []any{map[string]any{"name": "iii-worker-manager", "config": map[string]any{"host": "127.0.0.1", "port": port}}}})
+	startProcess(t, dir, "engine-"+name, binary(t, "III_BIN"), []string{"III_NAMESPACE=default"}, "--no-update-check", "--config", configPath)
+	url := fmt.Sprintf("ws://127.0.0.1:%d", port)
+	connect(t, f.ctx, url, "e2e-"+name, "default").Close()
+	return url
+}
+
 func newFixture(t *testing.T, ns string) *fixture {
 	t.Helper()
 	t.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")

@@ -690,12 +690,17 @@ rules:
   - a2ui::template::apply
   - a2ui::template::delete
 
-  # Remote tool calls keep the approval default; local read grants must not
-  # become cross-tenant grants through a prefix glob.
+  # A mesh machine is an engine namespace, and a bare rule matches every
+  # namespace: the denies above hold on every machine, and so do the read-only
+  # allows. Write `<namespace>/<pattern>` to limit a rule to one machine.
   - mesh::status
   - mesh::nodes::list
   - mesh::nodes::get
   - '!mesh-node::*'
+  # The `*::` denies cover a mesh older than namespaces, whose ids still carry
+  # the machine prefix, and still match a call in another namespace by its old
+  # spelling. Delete them one release after the mesh release;
+  # `shell::pty::sessions` then runs on every machine with no prompt.
   - '!*::mesh-node::*'
   - '!mesh::auth'
   - '!mesh::middleware'

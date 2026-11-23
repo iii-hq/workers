@@ -29,18 +29,19 @@ import (
 	"tailscale.com/tailcfg"
 )
 
-// machine is one client: its own stack, a real node and a real bridge whose local project is a namespace of the fixture's engine.
+// machine is one client: its own stack, its own engine, a real node and a real bridge whose local project is a namespace of that engine.
 type machine struct {
 	*testNode
-	bridge *meshclient.Bridge
-	local  string
+	bridge    *meshclient.Bridge
+	local     string
+	engineURL string
 }
 
 func (f *fixture) machine(name string) *machine {
 	t := f.t
 	t.Helper()
-	m := &machine{testNode: f.enrollMesh(name), local: name + "-local"}
-	m.bridge = meshclient.NewBridge(connect(t, f.ctx, f.engineURL, "mesh", m.local), m.local)
+	m := &machine{testNode: f.enrollMesh(name), local: name + "-local", engineURL: f.engine(name)}
+	m.bridge = meshclient.NewBridge(connect(t, f.ctx, m.engineURL, "mesh", m.local), m.local)
 	t.Cleanup(m.bridge.Close)
 	m.mesh.OnChange(m.bridge.MapChanged) // the hook the client's runner sets
 	f.startNode(m.testNode, m.bridge)
@@ -160,9 +161,17 @@ func TestE2EPeerToPeer(t *testing.T) {
 	cfg.Share = []string{"greeter"}
 	mustCall(t, f.admin, "default", "configuration::set", map[string]any{"id": "mesh", "value": cfg})
 
+	beta, alpha := f.machine("beta"), f.machine("alpha")
+	onAlpha, onBeta := connect(t, f.ctx, alpha.engineURL, "e2e-admin", "default"), connect(t, f.ctx, beta.engineURL, "e2e-admin", "default")
 	// Beta's project: a shared worker with a fast function, one that waits and two ids no machine may share, and a worker it does not share.
-	probe := connect(t, f.ctx, f.engineURL, "probe", "beta-local")
-	answer(probe, "probe::echo", func(context.Context) string { echoes.Add(1); return "beta" })
+	probe := connect(t, f.ctx, beta.engineURL, "probe", "beta-local")
+	// Echo says what reached it: the direct entry point drops what only the caller's machine understands.
+	if _, err := iii.RegisterFunctionTyped(probe, "probe::echo", func(_ context.Context, got json.RawMessage) (map[string]any, error) {
+		echoes.Add(1)
+		return map[string]any{"node": "beta", "got": got}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	answer(probe, "probe::wait", func(ctx context.Context) string {
 		waiting <- struct{}{}
 		select {
@@ -173,9 +182,8 @@ func TestE2EPeerToPeer(t *testing.T) {
 	})
 	answer(probe, "mesh::status", never)
 	answer(probe, "approval::resolve", never)
-	answer(connect(t, f.ctx, f.engineURL, "hidden", "beta-local"), "hidden::peek", never)
+	answer(connect(t, f.ctx, beta.engineURL, "hidden", "beta-local"), "hidden::peek", never)
 
-	beta, alpha := f.machine("beta"), f.machine("alpha")
 	// share sets beta's share list and waits until it holds exactly the ids in want.
 	share := func(workers []string, want ...string) {
 		t.Helper()
@@ -193,36 +201,42 @@ func TestE2EPeerToPeer(t *testing.T) {
 			return nil
 		})
 	}
-	// mirrored is whether the engine lists every id in a machine's project.
-	mirrored := func(m *machine, ids ...string) error {
-		out, err := call(f.ctx, f.admin, "default", "engine::functions::list", map[string]any{})
+	// mirrored is whether the engine on lists every id in the namespace named after owner.
+	mirrored := func(on *iii.Client, owner string, ids ...string) error {
+		out, err := call(f.ctx, on, "default", "engine::functions::list", map[string]any{})
 		var list struct{ Functions []meshclient.Row }
 		if err == nil {
 			err = json.Unmarshal(out, &list)
 		}
 		for _, id := range ids {
-			if err == nil && !slices.ContainsFunc(list.Functions, func(r meshclient.Row) bool { return r.Namespace == m.local && r.FunctionID == id }) {
-				err = fmt.Errorf("%s has no %s", m.local, id)
+			if err == nil && !slices.ContainsFunc(list.Functions, func(r meshclient.Row) bool { return r.Namespace == owner && r.FunctionID == id }) {
+				err = fmt.Errorf("no %s in namespace %s", id, owner)
 			}
 		}
 		return err
 	}
-	ask := func(id string) (string, error) {
+	type reply struct {
+		Node string
+		Got  map[string]json.RawMessage
+	}
+	// ask calls id in namespace on alpha's engine, as an agent there does.
+	ask := func(namespace, id, payload string) (reply, error) {
 		// 20 s: the first packets between two machines can wait 5 s for a WireGuard retry.
-		out, err := f.admin.Call(f.ctx, iii.CallRequest{FunctionID: id, Namespace: alpha.local, Payload: json.RawMessage(`{}`), Timeout: 20 * time.Second})
-		var reply struct{ Node string }
+		out, err := onAlpha.Call(f.ctx, iii.CallRequest{FunctionID: id, Namespace: namespace, Payload: json.RawMessage(payload), Timeout: 20 * time.Second})
+		var r reply
 		if err == nil {
-			err = json.Unmarshal(out, &reply)
+			err = json.Unmarshal(out, &r)
 		}
-		return reply.Node, err
+		delete(r.Got, "_caller_worker_id") // every engine stamps its own on a call it delivers
+		return r, err
 	}
 	// echo calls beta's echo through alpha's mirror and returns what it added to the hub connections: alpha's mesh::call frames and the calls beta took.
 	echo := func() (sent, taken int) {
 		t.Helper()
 		sent, taken = alpha.invoked("node-to-hub", "mesh::call"), beta.invoked("hub-to-node", "")
 		ran := echoes.Load()
-		if node, err := ask("peer::beta::probe::echo"); err != nil || node != "beta" || echoes.Load() != ran+1 {
-			t.Fatalf("peer::beta::probe::echo answered %q after %d runs: %v", node, echoes.Load()-ran, err)
+		if r, err := ask("beta", "probe::echo", `{}`); err != nil || r.Node != "beta" || echoes.Load() != ran+1 {
+			t.Fatalf("probe::echo in beta answered %q after %d runs: %v", r.Node, echoes.Load()-ran, err)
 		}
 		return alpha.invoked("node-to-hub", "mesh::call") - sent, beta.invoked("hub-to-node", "") - taken
 	}
@@ -243,7 +257,7 @@ func TestE2EPeerToPeer(t *testing.T) {
 
 	share([]string{"probe"}, "probe::echo", "probe::wait")
 	eventually(t, 30*time.Second, "the mirrors of what beta and the hub share", func() error {
-		return errors.Join(mirrored(alpha, "peer::beta::probe::echo", "peer::beta::probe::wait", "hub::greeter::hello"), mirrored(beta, "hub::greeter::hello"))
+		return errors.Join(mirrored(onAlpha, "beta", "probe::echo", "probe::wait"), mirrored(onAlpha, "hub", "greeter::hello"), mirrored(onBeta, "hub", "greeter::hello"))
 	})
 
 	// Off at both: the hub carries the call.
@@ -267,6 +281,10 @@ func TestE2EPeerToPeer(t *testing.T) {
 		t.Fatalf("with peer to peer on: %d calls sent to the hub, %d taken from it", sent, taken)
 	}
 	t.Logf("alpha reaches beta by %q", alpha.path("beta"))
+	sent, taken := alpha.invoked("node-to-hub", "mesh::call"), beta.invoked("hub-to-node", "")
+	if r, err := ask("beta", "probe::echo", stamped); err != nil || len(r.Got) != 1 || string(r.Got["command"]) != `"hostname"` || alpha.invoked("node-to-hub", "mesh::call") != sent || beta.invoked("hub-to-node", "") != taken {
+		t.Fatalf("beta's echo peer to peer got %v: %v", r.Got, err)
+	}
 
 	// What a machine that skips its own bridge gets from beta's port.
 	ran := echoes.Load()
@@ -280,7 +298,7 @@ func TestE2EPeerToPeer(t *testing.T) {
 		{"hidden::peek", version, map[string]any{}, "403 FORBIDDEN"},
 		{"mesh::status", version, map[string]any{}, "403 FORBIDDEN"},
 		{"approval::resolve", version, map[string]any{}, "403 FORBIDDEN"},
-		{"hub::greeter::hello", version, map[string]any{}, "403 FORBIDDEN"}, // a mirror: beta is no way to the hub
+		{"greeter::hello", version, map[string]any{}, "403 FORBIDDEN"}, // a mirror: beta is no way to the hub
 		{"probe::echo", "0.0.9", map[string]any{}, "403 FORBIDDEN"},
 		{"probe::echo", version, refs, "400 channels_unsupported"},
 	} {
@@ -311,14 +329,14 @@ func TestE2EPeerToPeer(t *testing.T) {
 		t.Fatalf("direct call of an unshared probe::echo: %s, %d runs", got, echoes.Load()-ran-1)
 	}
 	eventually(t, 30*time.Second, "alpha's mirror of the unshared echo to go", func() error {
-		if mirrored(alpha, "peer::beta::probe::echo") == nil {
+		if mirrored(onAlpha, "beta", "probe::echo") == nil {
 			return errors.New("still mirrored")
 		}
 		return nil
 	})
 	share([]string{"probe"}, "probe::echo", "probe::wait")
 	eventually(t, 30*time.Second, "alpha's mirrors of beta's probe again", func() error {
-		return mirrored(alpha, "peer::beta::probe::echo", "peer::beta::probe::wait")
+		return mirrored(onAlpha, "beta", "probe::echo", "probe::wait")
 	})
 	if sent, taken := echo(); sent != 0 || taken != 0 {
 		t.Fatalf("shared again: %d calls sent to the hub, %d taken from it", sent, taken)
@@ -342,15 +360,15 @@ func TestE2EPeerToPeer(t *testing.T) {
 	}
 
 	// The hub path dies: the proxy is gone, the coordinator and the relay run in this process and stay.
-	if node, err := ask("hub::greeter::hello"); err != nil || node != "hub" {
-		t.Fatalf("hub::greeter::hello answered %q: %v", node, err)
+	if r, err := ask("hub", "greeter::hello", `{}`); err != nil || r.Node != "hub" {
+		t.Fatalf("greeter::hello in hub answered %q: %v", r.Node, err)
 	}
 	if err := syscall.Kill(-f.proxy.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 30*time.Second, "alpha's hub mirror to go offline", func() error {
-		if node, err := ask("hub::greeter::hello"); err == nil || !strings.Contains(err.Error(), "mesh_offline") {
-			return fmt.Errorf("hub::greeter::hello answered %q: %v", node, err)
+		if r, err := ask("hub", "greeter::hello", `{}`); err == nil || !strings.Contains(err.Error(), "mesh_offline") {
+			return fmt.Errorf("greeter::hello in hub answered %q: %v", r.Node, err)
 		}
 		return nil
 	})
@@ -360,11 +378,11 @@ func TestE2EPeerToPeer(t *testing.T) {
 
 	// The hub removes alpha during a call: both ends drop it at once, and beta has no keepalive to tell it otherwise.
 	from, done := alpha.mesh.Self(), make(chan error, 1)
-	go func() { _, err := ask("peer::beta::probe::wait"); done <- err }()
+	go func() { _, err := ask("beta", "probe::wait", `{}`); done <- err }()
 	select {
 	case <-waiting:
 	case err := <-done:
-		t.Fatalf("peer::beta::probe::wait returned: %v", err)
+		t.Fatalf("probe::wait in beta returned: %v", err)
 	}
 	if !serving() {
 		t.Fatal("beta runs a direct call and no handler is seen")
@@ -400,7 +418,7 @@ func TestE2EPeerToPeer(t *testing.T) {
 		}
 		return nil
 	})
-	if node, err := ask("peer::beta::probe::echo"); err == nil {
-		t.Fatalf("a removed machine's call answered %q", node)
+	if r, err := ask("beta", "probe::echo", `{}`); err == nil {
+		t.Fatalf("a removed machine's call answered %q", r.Node)
 	}
 }

@@ -2,10 +2,12 @@
 
 Mesh joins iii engines. One project runs the hub. Other projects run the same
 worker in client mode: they join the hub with its URL and a join code or token,
-need no root, and share chosen local workers, which the hub project calls under
-names such as `laptop::shell::exec`. The hub can share its own workers too.
-Every joined machine calls what the hub and the other machines share, under
-names such as `hub::shell::exec` and `peer::laptop::shell::exec`. It uses
+need no root, and share chosen local workers. A shared function keeps its id
+and lives in an engine namespace named after its machine: the hub project calls
+`shell::exec` in namespace `laptop` (`iii call -n laptop shell::exec`). The hub
+can share its own workers too. Every joined machine calls what the hub shares in
+namespace `hub` and what another machine shares in a namespace named after it
+(see [Namespaces](#namespaces)). It uses
 [configuration](https://github.com/iii-hq/workers/tree/main/configuration) and
 [rbac-proxy](https://github.com/iii-hq/workers/tree/main/rbac-proxy).
 
@@ -17,10 +19,69 @@ iii call --engine ws://127.0.0.1:49834 compose::add worker=mesh worker=rbac-prox
 
 Compose resolves dependencies and starts the hub in the project. Install or
 update mesh and rbac-proxy together: `rbac-proxy::on-config-change` must return
-`ok:true`, `applied_config`, `bound_host` and `bound_port`, with no error and a
-live listener matching the mesh-owned configuration. Older proxies that return
-only `{ok:true}` leave the mesh gateway inactive. These compatible changes
+`ok:true`, `applied_config`, `bound_host`, `bound_port` and
+`registration_namespace: true`, with no error and a live listener matching the
+mesh-owned configuration. An older proxy leaves the mesh gateway inactive, and
+`mesh::status` says so in `proxy`: `rbac-proxy does not pin registration
+namespaces: update rbac-proxy`. These compatible changes
 require coordinated publication before the registry install flow can be used.
+
+## Updating to namespaces
+
+- A function shared through the mesh keeps its id and lives in an engine
+  namespace named after its machine. `laptop::shell::exec` is now `shell::exec`
+  in namespace `laptop`. On a joined machine, `hub::shell::exec` is
+  `shell::exec` in namespace `hub`, and `peer::laptop::shell::exec` is
+  `shell::exec` in namespace `laptop`.
+- Update the hub, every machine and rbac-proxy together. A hub with an older
+  rbac-proxy keeps its gateway inactive and says why in `mesh::status`. A
+  machine on an older mesh cannot connect.
+- **Update approval-gate, harness and iii-directory first**, to their releases
+  that understand machine namespaces. The mesh does not check them. With older
+  ones, a deny or a guard hook written for a mesh id stops matching, and a
+  machine that registers `judge::evaluate` receives the function-search queries
+  of the hub.
+- **Read-only allow rules now apply on every machine with no prompt.** The
+  shipped rules allow `coder::info`, `coder::read-file`, `coder::search`,
+  `coder::list-folder`, `coder::tree` and `coder::list-templates`. A bare rule
+  matches every namespace, so an agent on the hub or on any joined machine runs
+  them on every machine that shares `coder`. Before, a remote call asked first.
+  `shell::pty::sessions` has a bare allow too, but stays denied on another
+  machine for this release: the shipped rules keep `!*::shell::pty::*`, which
+  still matches the call's old spelling. It will run with no prompt once that
+  line is removed.
+- A call from another machine arrives without the caller's folder scope.
+  `coder` and `shell` then use the roots of the machine that runs the call. With
+  the default configuration (`fs.host_roots: []`) that is every path outside the
+  deny list, so set `fs.host_roots` on a machine that shares `coder` or `shell`.
+  Folder access is not asked for across machines.
+- Rewrite your rules and hook filters: `hub::<id>` becomes `hub/<id>`,
+  `peer::<machine>::<id>` becomes `<machine>/<id>`, and on the hub
+  `<machine>::<id>` becomes `<machine>/<id>`. A rule that starts with `hub::` or
+  `peer::` is refused when loaded: approval-gate then asks for every call, and a
+  harness agent policy denies every call, until the rule is fixed. A deny or a
+  hook filter written `<machine>::<id>` or `*::<id>` keeps matching calls in
+  other namespaces for now, with a warning for hook filters; an allow in that
+  form matches nothing, so the call asks. Do not rely on the old spellings: a
+  later release drops them.
+- A machine cannot be named `default`, like the hub's namespace, or like a
+  namespace in use on the hub's engine. Rename it with `client.name`. A
+  connected machine loses its connection when a project on the hub starts under
+  its name.
+- A machine name is a namespace. After a removal or a rename another machine can
+  take the name, and it then inherits the `<name>/…` rules and the "always
+  approve" answers stored for that name, on the hub and on every machine that
+  mirrors it. Remove them when a machine leaves.
+- "Always approve" answers given for a prefixed id no longer match. The call
+  asks again.
+- A folder granted "for the session" or "always" applies to calls in the
+  agent's own namespace only. A call in another namespace on the same engine
+  asks for the folder again, per call.
+- The function search uses the judge in the directory's own namespace, or in
+  `default`. A judge that runs only in another namespace is not used.
+- A workflow's `notify.function_id` runs in the workflow worker's own
+  namespace. It can no longer name a function on another machine; observe the
+  run instead.
 
 ## Quickstart
 
@@ -56,10 +117,11 @@ minute; a missing rbac-proxy or entry, or an entry another worker owns, is not
 retried: the hub waits for the event that changes it.
 
 The list holds each node's name, address, platform, version, online state and
-shared workers; each shared worker lists its hub function ids
-(`<node>::<function>`). The hub reads an online node again when the functions
-registered on its engine change, when the node says its shared workers or its
-path changed, and when the nodes are listed, so a worker shared or stopped
+shared workers; each shared worker lists its function ids, which the hub
+engine holds in the namespace named after the node. The hub reads an online
+node again when the functions registered on its engine change, when the node
+says its shared workers or its path changed, and when the nodes are listed, so
+a worker shared or stopped
 after the join shows within about a second and **Refresh** shows each node's
 current path. A node looks at its path once more 5 seconds after it reported
 one that is not direct. A later move between direct and relayed is not
@@ -116,12 +178,12 @@ transitions.
 ## Console
 
 Open **Mesh** in the Console of a hub to see the joined machines, online first.
-Each card lists the workers that machine shares, each with its hub function ids
+Each card lists the workers that machine shares, each with its function ids
 and their descriptions, then its address, platform, version and connection path.
 A card also warns when that machine shares more than the mesh carries.
 **Remove** on a card removes that machine after a confirmation.
 Next comes **Shared workers**: a row for each of the hub's own workers, whose
-functions joined machines call as `hub::<function>`. Its switch shares every
+functions joined machines call by the same id in namespace `hub`. Its switch shares every
 public function of the worker, including ones it registers later. Open the row
 to pick functions one by one instead, internal ones included: that stores a
 fixed list of function ids. A shared id that no listed worker registers now
@@ -148,9 +210,9 @@ the worker pushes it (`starting`, `waiting for join`, `joining`,
 `join failed`, `removed by hub`, `left hub`), what happens next and whether the
 worker keeps trying, and, while there is an enrollment to forget, **Leave
 hub**. Both actions are described under [State and removal](#state-and-removal).
-**Available from the mesh** lists what this machine can call, hub first: the
-hub's functions as `hub::<function>` and each other machine's as
-`peer::<machine>::<function>`, with their descriptions. It updates from the
+**Available from the mesh** lists what this machine can call, hub first: each
+owner's functions by id, in the namespace named after the owner, with their
+descriptions. An owner that is not mirrored here says why. It updates from the
 same `mesh::on-status-changed` push.
 
 In both modes a shared worker reads `not saved yet` only while the form differs
@@ -207,11 +269,9 @@ those it registered with `metadata.internal: true`; an entry that is a function
 id, such as `harness::send`, shares that one function alone, internal or not,
 even when its worker is not shared. A machine mirrors an internal function as
 internal too: out of the default `engine::functions::list` and agent catalogs,
-called by id. A machine that joins or renames cannot take a shared worker's
-name or the prefix of a shared function id. `mesh::status` reports each entry
-under `shared`, with its function ids as machines call them (`hub::<function>`)
-and a state: `shared`, `not running`, `name conflict` (a joined machine has the
-name the worker's function ids start with) or `too large`. `catalog_skipped`
+called by id. `mesh::status` reports each entry under `shared`, with its
+function ids, which machines call in namespace `hub`, and a state: `shared`,
+`not running` or `too large`. `catalog_skipped`
 lists the machines whose shares do not fit (see [Client mode](#client-mode)).
 A machine's call runs with this project's access and nothing on the hub asks
 first, so sharing `shell` or another worker that runs commands, or one of its
@@ -361,12 +421,56 @@ keys. `mesh::join::cycle` and the page's **Generate new code** button replace it
 by hand. `mesh::nodes::remove name=<node>`, or **Remove** on the machine's
 card, removes a node, revokes its token and replaces the code.
 
+## Namespaces
+
+A machine name is an engine namespace. The hub engine holds each machine's
+shared functions, with their own ids, in a namespace named after the machine. A
+machine's engine holds the hub's shared functions in namespace `hub` and each
+other machine's in a namespace named after it; the machine's own functions stay
+in its project namespace. Call a function there by naming the namespace:
+
+```bash
+# On the hub, or on another machine: machine laptop's shell::exec.
+iii call --engine ws://127.0.0.1:49834 -n laptop shell::exec --json '{"command":"ls"}'
+# On a machine: the hub's shell::exec.
+iii call --engine ws://127.0.0.1:49834 -n hub shell::exec --json '{"command":"ls"}'
+```
+
+Two machines can share the same id: each lives in its own namespace. An owner
+whose name is a namespace already in use on a machine's engine, such as the
+machine's own project namespace or one where another project's mesh client
+on that engine already mirrors, is not mirrored there, and that machine's
+`mesh::status` says so under `remote[].skipped`. On the hub, `mesh::auth`
+refuses a machine named `default`, like the hub's namespace or like a namespace
+another worker uses on the hub's engine, and asks for another `client.name`.
+
+A machine name is a namespace, so after a removal or a rename another machine
+can take the name and then inherits the `<name>/…` rules and the "always
+approve" answers stored for it, on the hub and on every machine that mirrors it.
+Remove them when a machine leaves.
+
+## What a machine receives
+
+A call from another machine, through the hub or peer to peer, arrives without
+the fields that only the caller's machine understands. The machine drops
+`fs_scope`, `caller_fs_root` and `caller_session_id` from every payload,
+`session_id` from `a2ui::` calls, and `session_id` and `turn_id` from `ade::`
+calls, at the top level of the payload; nothing else changes. `coder` and
+`shell` then use the roots of the machine that runs the call: with the default
+configuration (`fs.host_roots: []`) that is every path outside the deny list,
+and an unscoped command gets no write confinement. Set `fs.host_roots` on a
+machine that shares `coder` or `shell`. Folder access is not asked for across
+machines: the folder request a jail rejection carries is cut from the error
+before it leaves the machine, so the caller's approval gate never asks a person
+on the calling machine for a folder on another one.
+
 ## Node boundary
 
-Every node connection passes the hub gateway and rbac-proxy. Its functions
-register under the node's name, and `<node>::mesh-node::*` accepts only
-requests signed by the hub. A node's call grants in the project's namespace
-are `mesh::call` and `mesh::node::changed`. No function registers either id.
+Every node connection passes the hub gateway and rbac-proxy, which pins it to
+the namespace named after the node: its functions register there with their own
+ids, a connection that declares another namespace is closed, and `mesh-node::*`
+in that namespace accepts only requests signed by the hub. A node's call grants
+in the project's namespace are `mesh::call` and `mesh::node::changed`. No function registers either id.
 `mesh::node::changed` carries nothing the hub reads: it makes the hub read that
 node's signed status again. For `mesh::call`, the hub's middleware answers it
 by running a function from its list of shared functions. It refuses
@@ -382,8 +486,7 @@ function and the owner, never the payload. In `default` a node may call
 `configuration::get`, `ensure`, `register` and `set` only for entries named
 `<node>__*` (reads are raw, templates are refused) and observe
 `configuration::on-updated` for those entries. It may also
-observe its own `<node>::*` functions in the project's namespace, with empty
-args. Other observations, ADE assets and condition callbacks are refused. A
+observe its own functions in its own namespace, with empty args. Other observations, ADE assets and condition callbacks are refused. A
 client bridge receives calls and calls only `mesh::call` and
 `mesh::node::changed`; it uses none of the configuration grants.
 
@@ -485,9 +588,10 @@ removal.
 
 A client is a project's own mesh worker joined to another project's hub as a
 node, without root, publishing chosen local workers there. The hub sees them
-as `<node>::<function>`, for example `laptop::mesh-probe::echo`, and
-each call is forwarded to the local engine. Every other joined machine calls
-them through the hub as `peer::<node>::<function>`, or directly when both
+with their own ids in the namespace named after the node, for example
+`mesh-probe::echo` in namespace `laptop`, and each call is forwarded to the
+local engine. Every other joined machine calls them in namespace `laptop` too:
+through the hub, or directly when both
 machines turn on `client.peer_to_peer` (see [Peer to peer](#peer-to-peer)). Networking runs in
 userspace: no TUN device, no root, no system service. A client opens no hub
 listener and writes no hub state.
@@ -540,15 +644,15 @@ meanwhile.
 `client.share` takes the same entries as the hub's `share`: a worker's name
 shares its public functions, and a function id shares that one function, internal
 ones included. `mesh::status` and the Console's Mesh page report the hub,
-assigned name (`node`), hub namespace, state, each share entry with its hub
+assigned name (`node`), hub namespace, state, each share entry with its
 function IDs and, under `remote`, what this machine can call in the mesh, hub
-first.
+first, with `skipped` for an owner that is not mirrored.
 
 The client registers on its local engine a mirror for each function the hub or
-another machine shares: `hub::<function>` for the hub's and
-`peer::<machine>::<function>` for a machine's, with the owner's description and
-schemas. Its own functions are never mirrored back, and a mirror is never
-shared again. Calling a mirror calls `mesh::call` on the hub, which runs the
+another machine shares, with the owner's id, description and schemas, on a
+local connection of its own per owner (worker `mesh-mirror`) in the namespace
+named after the owner: `hub` for the hub's, `desk` for machine `desk`'s. Its
+own functions are never mirrored back, and a mirror is never shared again. Calling a mirror calls `mesh::call` on the hub, which runs the
 function where it lives. A mirror fails at once with `mesh_offline` while the
 client is not connected, and a call in flight ends with `mesh_offline` when the
 connection drops. Such a call may still run: the SDK sends a call it queued
@@ -572,19 +676,19 @@ machine:
   before.
 - listens on TCP port 9136 of its own tunnel address, reachable only from those
   machines, and takes their calls there.
-- sends its `peer::<machine>::<function>` calls to such a machine directly,
+- sends its calls in such a machine's namespace to that machine directly,
   one HTTP request on its own connection per call, inside the WireGuard tunnel
   between the two machines.
 
 A hub does not take part in the setting: it ignores it. The hub still admits and
 removes machines, hands out keys and addresses, builds the catalog of what each
 machine shares (so a machine that shares must still reach the hub to be listed),
-serves `hub::<function>` calls and serves every pair where either machine has
+serves calls in namespace `hub` and serves every pair where either machine has
 the setting off.
 
 | Calling machine | Target | Route |
 | --- | --- | --- |
-| any | the hub (`hub::…`) | hub |
+| any | the hub (namespace `hub`) | hub |
 | setting off | any | hub |
 | setting on | setting off, or not yet in its map | hub |
 | setting on | setting on | direct; the hub engine is not called |
@@ -622,8 +726,9 @@ The target decides, per call, from the tunnel address the connection comes
 from. It refuses, before reading the payload, a caller that is not a joined
 machine, the hub or itself, a caller on another mesh version, and any function
 that is not in its own current share list, so an unshare takes effect at the
-next call without the hub, and `hub::…`, `peer::…`, `mesh::`, `approval::` and
-the other ids that are never shared cannot be reached through it. It runs the
+next call without the hub, and its mirrors of other owners, `mesh::`,
+`approval::` and the other ids that are never shared cannot be reached through
+it. It runs the
 function exactly as for a call through the hub: caller `mesh`, no confirmation,
 and the function is not told which machine called.
 
@@ -667,12 +772,13 @@ a minute or more.
 Saving another `client.name` on a joined client renames the machine without
 leaving. The client asks the hub over its control connection, which proves the
 machine's keys, so a machine renames only itself. The hub applies the rules of
-a join: the name is sanitized, and `hub`, the other reserved words, another
-machine's name and an engine function prefix get a suffix such as `-2`. The
-answer is the name the machine now has, reported as `node`; `requested_name` is
-the `client.name` the hub last answered for. Shared function IDs change prefix
-(`old::x` becomes `new::x`): the hub closes the machine's sessions under the
-old name and the client reconnects by itself, so calls in flight fail and the
+a join: the name is sanitized, and `hub`, the other reserved words and another
+machine's name get a suffix such as `-2`. The answer is the name the machine
+now has, reported as `node`; `requested_name` is the `client.name` the hub last
+answered for. The shared functions move to the namespace of the new name
+(`x` in namespace `old` becomes `x` in namespace `new`): the hub closes the
+machine's sessions under the old name and the client reconnects by itself, so
+calls in flight fail and the
 shared functions are away for a moment, while the state reads `renaming`. A
 rename that fails keeps the old name working, sets `rename_error` until another
 name is saved and is asked again with the retry backoff, so a hub that was
@@ -687,13 +793,13 @@ Sharing `ide`, `harness` or any worker that runs commands, or one of their
 functions by id such as `harness::send`, gives all of them remote code
 execution on this machine, so a join code is execute access to everything
 shared in the mesh. A machine writes the descriptions and schemas of
-its own shared functions, and every other machine lists them under
-`peer::<its name>::`. `mesh`, `secrets`, `configuration` and `rbac-proxy`
-cannot be shared, and functions under `engine::`, `mesh::`, `mesh-node::`,
-`secrets::`, `configuration::`, `rbac-proxy::` and `approval::` are never
-published or mirrored. The approval gate keeps agents away only from ids that
-start with `approval::`, so a mirrored `peer::<machine>::approval::resolve`
-would let an agent on one machine approve another machine's agent calls.
+its own shared functions, and every other machine lists them in the namespace
+named after it. `mesh`, `mesh-mirror`, `secrets`, `configuration` and
+`rbac-proxy` cannot be shared, and functions under `engine::`, `mesh::`,
+`mesh-node::`, `secrets::`, `configuration::`, `rbac-proxy::` and `approval::`
+are never published or mirrored. The approval gate keeps agents away only from
+ids that start with `approval::`, so a mirrored `approval::resolve` would let
+an agent on one machine approve another machine's agent calls.
 Inbound tailnet connections to the client are refused, except TCP port 9136
 while `client.peer_to_peer` is on, from the hub and from the machines the hub
 shows this one because both turned it on. The caller is named by its tunnel address and may
@@ -800,18 +906,20 @@ running a build before 0.3.1.
 ## Agent access
 
 The [Your machines skill](skills/SKILL.md) describes machine discovery, the
-mirrored names and remote paths. Discovery reads are allowed; remote shell/coder
-calls require approval by default, even when the local equivalent is allowed.
-That includes the mirrored `hub::…` and `peer::…` ids on a joined machine: they
-match no allow rule, and deny rules written with `*::`, such as
-`!*::shell::pty::*`, cover them too. Approval happens only on the calling
-machine; the machine that runs the call does not ask and applies none of its
-own rules. A session in `full` mode, an id approved "always" and, in `auto`
-mode, an id on the configured always-allow list run without asking and skip the
-deny rules too. "Always" approvals are kept by id: a machine that later takes a
-removed machine's name inherits those given to its `peer::<name>::…` ids. Node
-control (`mesh-node`), proxy, configuration-hook and console internals are
-denied to agents.
+namespaces and remote paths. Discovery reads are allowed. A remote call follows
+the same rules as a local one, per namespace: a bare rule matches every
+namespace, so the shipped read-only allows (`coder::read-file` and the other
+`coder::` reads) run on every machine with no prompt, and the shipped denies,
+such as `!shell::pty::*`, hold on every machine. Write `<namespace>/<pattern>`
+to limit a rule to one machine, for example `laptop/shell::*`. Other remote
+shell and coder calls require approval by default. Approval happens only on the
+calling machine; the machine that runs the call does not ask and applies none
+of its own rules. A session in `full` mode, an id approved "always" and, in
+`auto` mode, an id on the configured always-allow list run without asking and
+skip the deny rules too. "Always" approvals are kept by namespace and id: a
+machine that later takes a removed machine's name inherits those given in its
+namespace. Node control (`mesh-node`), proxy, configuration-hook and console
+internals are denied to agents in every namespace.
 
 See [NOTICE](NOTICE) for upstream provenance and licenses.
 
