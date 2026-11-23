@@ -33,6 +33,7 @@ import {
 } from '@/lib/onboarding/api'
 import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
+  type KitInstall,
   onboardingKitsSnapshot,
   retryOnboardingKit,
   startOnboardingKits,
@@ -138,6 +139,10 @@ export function OnboardingWizardHost() {
   useEffect(() => {
     if (open && live) void startOnboardingKits()
   }, [open, live])
+  // Failed-kit notices dismissed after setup closed; a retry shows it again.
+  const [hiddenKits, setHiddenKits] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
   const status = useRef<OnboardingStatus | null>(null)
   const refreshModels = ctx?.refreshModels
   const onboarding = useOnboarding(open, () => {
@@ -164,6 +169,13 @@ export function OnboardingWizardHost() {
       .then(async (state) => {
         if (cancelled || !state) return
         status.current = state.status
+        // Someone who has been through setup on this machine gets the
+        // template's kits checked on every load, wizard open or not, so a
+        // kit that failed before is retried after a reload. A first run
+        // waits for the wizard, as before.
+        if (state.status === 'completed' || state.status === 'dismissed') {
+          void startOnboardingKits()
+        }
         // Someone who finished setup may jump straight to any part of it.
         if (state.status === 'completed') {
           setVisited(new Set(STEPS.map((entry) => entry.id)))
@@ -338,6 +350,15 @@ export function OnboardingWizardHost() {
     onboarding.snapshot.providers,
     record,
   ])
+
+  const retryKit = useCallback((kit: string) => {
+    setHiddenKits((current) => {
+      const next = new Set(current)
+      next.delete(kit)
+      return next
+    })
+    void retryOnboardingKit(kit)
+  }, [])
 
   // Each time the dialog closes a new visit starts. A run that outlives the
   // visit it started in (a Connect or a Chromium download left running
@@ -610,7 +631,7 @@ export function OnboardingWizardHost() {
                     failedKits={kits.filter(
                       (install) => install.state === 'failed',
                     )}
-                    onRetryKit={(kit) => void retryOnboardingKit(kit)}
+                    onRetryKit={(kit) => retryKit(kit)}
                   />
                 )}
               </m.div>
@@ -618,7 +639,67 @@ export function OnboardingWizardHost() {
           </DialogContent>
         </Dialog>
       </MotionConfig>
+      {!open ? (
+        <FailedKitsNotice
+          kits={kits.filter(
+            (install) =>
+              install.state === 'failed' && !hiddenKits.has(install.kit),
+          )}
+          onRetry={(kit) => retryKit(kit)}
+          onDismiss={(kit) =>
+            setHiddenKits((current) => new Set([...current, kit]))
+          }
+        />
+      ) : null}
     </LazyMotion>
+  )
+}
+
+/**
+ * Template kits whose install failed before the Directory saved a plan have
+ * no row in Directory → Kits, so once setup is closed they would fail
+ * silently. This stays in the corner until each is retried or dismissed;
+ * a reload retries them anyway (see the host's kit effects).
+ */
+function FailedKitsNotice({
+  kits,
+  onRetry,
+  onDismiss,
+}: {
+  kits: readonly KitInstall[]
+  onRetry: (kit: string) => void
+  onDismiss: (kit: string) => void
+}) {
+  if (kits.length === 0) return null
+  return (
+    <div
+      role="alert"
+      className="fixed right-4 bottom-4 z-50 flex w-[min(380px,calc(100vw-32px))] flex-col gap-2 rounded-xl border border-alert/30 bg-alert-muted px-3.5 py-3 font-sans text-sm leading-5 text-ink shadow-floating"
+    >
+      {kits.map((install) => (
+        <div key={install.kit} className="flex items-start gap-3">
+          <span className="min-w-0 flex-1 text-pretty">
+            The {install.kit} kit could not be installed
+            {install.message ? `: ${install.message}` : '.'}
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded-field px-2 py-0.5 font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            onClick={() => onRetry(install.kit)}
+          >
+            Try again
+          </button>
+          <button
+            type="button"
+            aria-label={`Dismiss the ${install.kit} kit notice`}
+            className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            onClick={() => onDismiss(install.kit)}
+          >
+            <X className="size-3.5" aria-hidden />
+          </button>
+        </div>
+      ))}
+    </div>
   )
 }
 
