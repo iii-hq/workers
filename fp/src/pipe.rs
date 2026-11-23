@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use iii_sdk::IIIClient;
-use iii_sdk::protocol::CallRequest;
+use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 
 use crate::util;
 
@@ -94,6 +94,10 @@ pub struct PipeStep {
     // `~0`/`~1` escapes are decoded.
     #[serde(default)]
     pub into: Option<String>,
+    /// Namespace of the target function (default: this worker's; say
+    /// `default` for the engine's).
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -128,6 +132,28 @@ pub(crate) fn is_scoped_step(function_id: &str) -> bool {
         || function_id.starts_with("coder::")
 }
 
+/// The namespace a call names. A blank one is no namespace: the SDK refuses
+/// to send one, so validation and the call must both drop it.
+pub(crate) fn named_namespace(namespace: Option<&str>) -> Option<&str> {
+    namespace.filter(|ns| !ns.trim().is_empty())
+}
+
+/// The namespace a call names when it is not `own`.
+pub(crate) fn other_namespace<'a>(namespace: Option<&'a str>, own: &str) -> Option<&'a str> {
+    named_namespace(namespace).filter(|ns| *ns != own)
+}
+
+/// What `register_worker` resolves when, as in main.rs, no namespace option is set.
+pub(crate) fn env_namespace() -> String {
+    std::env::var("III_NAMESPACE")
+        .ok()
+        .filter(|ns| !ns.trim().is_empty())
+        .unwrap_or_else(|| "default".into())
+}
+
+// shortcut: mesh ids carry no machine prefix since machines are namespaces, so
+// this strip matches only in front of a mesh older than that; delete it and its
+// branch in bus_step_args one release after the mesh release (follow-up ticket).
 pub(crate) fn remote_scoped_step(function_id: &str) -> bool {
     !is_scoped_step(function_id)
         && function_id
@@ -291,19 +317,59 @@ fn forbidden_unprefixed_step(
     None
 }
 
+/// What a running gate refuses in a call that its absence admits: a database
+/// write, or a call in another namespace (the approver sees `via` in this
+/// worker's namespace only, so a call elsewhere would run unapproved there).
+/// Empty when the gate's state decides nothing about the call.
+pub(crate) fn gate_refusals(
+    function: &str,
+    namespace: Option<&str>,
+    own: &str,
+    via: &str,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if forbidden_step(function, false).is_none()
+        && let Some(reason) = forbidden_step(function, true)
+    {
+        reasons.push(reason.to_string());
+    }
+    if let Some(ns) = other_namespace(namespace, own) {
+        reasons.push(format!(
+            "a call in namespace {ns} must be approved in that namespace — call {function} \
+             directly with \"namespace\": \"{ns}\" instead of through {via}"
+        ));
+    }
+    reasons
+}
+
 /// Static validation, separated from execution for testability. Every
 /// problem in the request is collected before anything is refused, so one
 /// corrected resend is enough.
 fn validate_with_approval_gate(
     req: &PipeRequest,
     approval_gate_running: bool,
+    own_namespace: &str,
 ) -> Result<(), String> {
     let mut problems = Vec::new();
     if req.through.is_empty() || req.through.len() > MAX_STEPS {
         problems.push(format!("a pipe takes 1..={MAX_STEPS} steps"));
     }
     for (i, step) in req.through.iter().enumerate() {
-        if let Some(reason) = forbidden_step(&step.function, approval_gate_running) {
+        let gated = if approval_gate_running {
+            gate_refusals(
+                &step.function,
+                step.namespace.as_deref(),
+                own_namespace,
+                PIPE_ID,
+            )
+        } else {
+            Vec::new()
+        };
+        for reason in forbidden_step(&step.function, false)
+            .map(str::to_string)
+            .into_iter()
+            .chain(gated)
+        {
             problems.push(format!("step {} ({}): {reason}", i + 1, step.function));
         }
         if is_scoped_step(&step.function) {
@@ -396,7 +462,24 @@ fn bounded_problem(problem: String) -> String {
 }
 
 pub fn validate(req: &PipeRequest) -> Result<(), String> {
-    validate_with_approval_gate(req, true)
+    validate_with_approval_gate(req, true, &env_namespace())
+}
+
+/// The gate state for a pipe only the gate's answer splits. An unknown state
+/// refuses a step in another namespace, as `fp::batch` does; a pipe whose
+/// only gated step is a database write keeps the lookup error.
+fn split_gate(req: &PipeRequest, own: &str, lookup: Result<bool, String>) -> Result<bool, String> {
+    match lookup {
+        Err(_)
+            if req
+                .through
+                .iter()
+                .any(|s| other_namespace(s.namespace.as_deref(), own).is_some()) =>
+        {
+            Ok(true)
+        }
+        lookup => lookup,
+    }
 }
 
 pub(crate) async fn approval_gate_running(iii: &IIIClient) -> Result<bool, String> {
@@ -602,33 +685,52 @@ fn step_error(i: usize, function: &str, msg: &str, receipts: &[StepReceipt]) -> 
     }
 }
 
+/// A bus step's call, in the namespace the step names (none: this worker's).
+fn step_request(step: &PipeStep, args: Value) -> CallRequestWithMetadata {
+    let request = CallRequest {
+        function_id: step.function.clone(),
+        payload: args,
+        action: None,
+        timeout_ms: Some(STEP_TIMEOUT_MS),
+    };
+    match named_namespace(step.namespace.as_deref()) {
+        Some(namespace) => request.namespace(namespace),
+        None => request.into(),
+    }
+}
+
 /// Execute a pipe: transforms inline, everything else over the bus. The first
 /// failing step stops the pipe with a teachable error carrying the trail.
 pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, String> {
+    let own = iii.namespace().unwrap_or_else(|| "default".into());
     // Gate discovery is a bus round trip that couples every pipe to
     // engine::functions::info availability — pay it only when the gate
     // actually decides the verdict. Both static verdicts are computed first
     // (12 steps max, trivially cheap); agreeing verdicts are final as-is.
     match (
-        validate_with_approval_gate(&req, false),
-        validate_with_approval_gate(&req, true),
+        validate_with_approval_gate(&req, false, &own),
+        validate_with_approval_gate(&req, true, &own),
     ) {
         (Ok(()), Ok(())) => {}
         (Err(_), Err(_)) => {
-            // The gate only decides database writes, so the complete list
-            // needs its real state when the pipe holds one. Pipes without one
-            // stay off the bus, and an unknown state fails closed.
-            let gate =
-                if req.through.iter().any(|s| {
-                    s.function.starts_with("database::") && s.function != "database::query"
-                }) {
-                    approval_gate_running(iii).await.unwrap_or(true)
-                } else {
-                    false
-                };
-            validate_with_approval_gate(&req, gate)?;
+            // The gate only decides database writes and steps in another
+            // namespace, so the complete list needs its real state when the
+            // pipe holds one. Pipes without one stay off the bus, and an
+            // unknown state fails closed.
+            let gate = if req.through.iter().any(|s| {
+                (s.function.starts_with("database::") && s.function != "database::query")
+                    || other_namespace(s.namespace.as_deref(), &own).is_some()
+            }) {
+                approval_gate_running(iii).await.unwrap_or(true)
+            } else {
+                false
+            };
+            validate_with_approval_gate(&req, gate, &own)?;
         }
-        _ => validate_with_approval_gate(&req, approval_gate_running(iii).await?)?,
+        _ => {
+            let gate = split_gate(&req, &own, approval_gate_running(iii).await)?;
+            validate_with_approval_gate(&req, gate, &own)?
+        }
     }
     let preview_chars = preview_len(req.preview_chars);
 
@@ -689,19 +791,26 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
         let value = match util::apply(&step.function, &args) {
             Some(result) => result.map_err(|msg| step_error(i, &step.function, &msg, &receipts))?,
             None => {
+                // The gate can register while an earlier step runs, so a step
+                // its state decides reads it again, mapped as at admission
+                // (`split_gate`); other steps skip the lookup.
+                // shortcut: the gate can still register between this read and
+                // the call; only the engine can close that, if it ever matters.
+                let gated = gate_refusals(&step.function, step.namespace.as_deref(), &own, PIPE_ID);
+                if !gated.is_empty()
+                    && split_gate(&req, &own, approval_gate_running(iii).await)
+                        .map_err(|e| step_error(i, &step.function, &e, &receipts))?
+                {
+                    return Err(step_error(i, &step.function, &gated.join("; "), &receipts));
+                }
                 // SECURITY: the stamp must be the LAST write to args before
                 // dispatch — after `into` threading above — or a threaded
                 // value at /fs_scope would reach the shell worker as trusted.
                 let args = bus_step_args(&step.function, args, req.fs_scope.as_ref())
                     .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
-                iii.call(CallRequest {
-                    function_id: step.function.clone(),
-                    payload: args,
-                    action: None,
-                    timeout_ms: Some(STEP_TIMEOUT_MS),
-                })
-                .await
-                .map_err(|e| step_error(i, &step.function, &e.to_string(), &receipts))?
+                iii.call(step_request(step, args))
+                    .await
+                    .map_err(|e| step_error(i, &step.function, &e.to_string(), &receipts))?
             }
         };
 
@@ -908,8 +1017,8 @@ mod tests {
         ]}))
         .unwrap();
 
-        assert!(validate_with_approval_gate(&req, true).is_err());
-        assert!(validate_with_approval_gate(&req, false).is_ok());
+        assert!(validate_with_approval_gate(&req, true, "own").is_err());
+        assert!(validate_with_approval_gate(&req, false, "own").is_ok());
 
         // `run` consults engine::functions::info only when the two verdicts
         // above differ — a pipe with no database write, even a read-only
@@ -919,8 +1028,8 @@ mod tests {
             { "function": "database::query", "payload": { "db": "primary", "sql": "SELECT 1" } },
         ]}))
         .unwrap();
-        assert!(validate_with_approval_gate(&query_only, true).is_ok());
-        assert!(validate_with_approval_gate(&query_only, false).is_ok());
+        assert!(validate_with_approval_gate(&query_only, true, "own").is_ok());
+        assert!(validate_with_approval_gate(&query_only, false, "own").is_ok());
 
         // Only the engine's "registered nowhere" NOT_FOUND unlocks writes; a
         // NOT_FOUND naming the namespaces that hold the gate (two non-default
@@ -945,6 +1054,92 @@ mod tests {
         // lowercase code — it must NOT read as gate absence
         assert!(gate_presence_from_error(&remote("function_not_found", "")).is_err());
         assert!(gate_presence_from_error(&iii_sdk::Error::Timeout).is_err());
+    }
+
+    fn step_in(namespace: Option<&str>) -> PipeRequest {
+        parse(json!({ "through": [
+            { "function": "state::get", "namespace": namespace,
+              "payload": { "scope": "s", "key": "k" } },
+        ]}))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_step_in_another_namespace_is_refused_while_the_gate_runs_or_is_unknown() {
+        let req = step_in(Some("laptop"));
+        assert!(validate_with_approval_gate(&req, false, "own").is_ok());
+        let lost = || Err("could not inspect approval-gate availability".to_string());
+        for gate in [Ok(true), split_gate(&req, "own", lost())] {
+            let err = validate_with_approval_gate(&req, gate.unwrap(), "own").unwrap_err();
+            assert!(
+                err.contains(
+                    "step 1 (state::get): a call in namespace laptop must be approved in that \
+                     namespace — call state::get directly with \"namespace\": \"laptop\" \
+                     instead of through fp::pipe"
+                ),
+                "{err}"
+            );
+        }
+        assert_eq!(split_gate(&req, "own", Ok(false)), Ok(false));
+        // A database write alone keeps the lookup error: no write runs on a guess.
+        let write = parse(json!({ "through": [{ "function": "database::execute" }] })).unwrap();
+        assert!(split_gate(&write, "own", lost()).is_err());
+    }
+
+    #[test]
+    fn a_step_in_its_own_namespace_or_without_one_still_runs_under_the_gate() {
+        for namespace in [None, Some("own"), Some(" ")] {
+            assert!(
+                validate_with_approval_gate(&step_in(namespace), true, "own").is_ok(),
+                "{namespace:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_step_the_gate_decides_is_refused_with_the_up_front_reason() {
+        for (function, namespace) in [
+            ("database::execute", None),
+            ("state::get", Some("laptop")),
+            ("database::execute", Some("laptop")),
+        ] {
+            let req =
+                parse(json!({ "through": [{ "function": function, "namespace": namespace }] }))
+                    .unwrap();
+            let up_front = validate_with_approval_gate(&req, true, "own").unwrap_err();
+            let reasons = gate_refusals(function, namespace, "own", PIPE_ID);
+            assert!(!reasons.is_empty(), "{function}");
+            for reason in reasons {
+                let problem = format!("step 1 ({function}): {reason}");
+                assert!(up_front.contains(&problem), "{up_front}");
+            }
+        }
+        for (function, namespace) in [
+            ("database::query", None),
+            ("state::get", None),
+            ("state::get", Some("own")),
+            ("state::get", Some(" ")),
+            // Refused with or without the gate: its state decides nothing.
+            ("configuration::get", None),
+        ] {
+            let reasons = gate_refusals(function, namespace, "own", PIPE_ID);
+            assert!(reasons.is_empty(), "{function}: {reasons:?}");
+        }
+    }
+
+    #[test]
+    fn a_step_calls_in_the_namespace_it_names() {
+        for (namespace, expected) in [
+            (Some("laptop"), r#"namespace: Some("laptop")"#),
+            (None, "namespace: None"),
+            (Some(" "), "namespace: None"),
+        ] {
+            let request = format!(
+                "{:?}",
+                step_request(&step_in(namespace).through[0], json!({}))
+            );
+            assert!(request.contains(expected), "{request}");
+        }
     }
 
     fn scope() -> Value {
@@ -1340,14 +1535,14 @@ mod tests {
         ]}))
         .unwrap();
         // Without the gate only the configuration step is refused...
-        let without = validate_with_approval_gate(&req, false).unwrap_err();
+        let without = validate_with_approval_gate(&req, false, "own").unwrap_err();
         assert!(
             without.starts_with("pipe refused, 1 problem(s)"),
             "{without}"
         );
         // ...with it the database write is refused too, so the run path must
         // consult the real gate state before reporting a complete list.
-        let with = validate_with_approval_gate(&req, true).unwrap_err();
+        let with = validate_with_approval_gate(&req, true, "own").unwrap_err();
         assert!(with.starts_with("pipe refused, 2 problem(s)"), "{with}");
         assert!(with.contains("database::execute"), "{with}");
     }

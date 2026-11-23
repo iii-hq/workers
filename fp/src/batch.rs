@@ -132,13 +132,6 @@ fn call_args(call: &BatchCall, fs_scope: Option<&Value>) -> Result<Value, String
     pipe::bus_step_args(&call.function, args, fs_scope)
 }
 
-/// The namespace a call names when it is not `own` (a blank one is no namespace).
-fn other_namespace<'a>(call: &'a BatchCall, own: &str) -> Option<&'a str> {
-    call.namespace
-        .as_deref()
-        .filter(|ns| !ns.trim().is_empty() && *ns != own)
-}
-
 fn validate_with_approval_gate(
     req: &BatchRequest,
     approval_gate_running: bool,
@@ -149,18 +142,21 @@ fn validate_with_approval_gate(
         problems.push(format!("a batch takes 1..={HARD_MAX_CALLS} calls"));
     }
     for (i, call) in req.calls.iter().enumerate() {
-        if let Some(reason) = forbidden_call(&call.function, approval_gate_running) {
+        let gated = if approval_gate_running {
+            pipe::gate_refusals(
+                &call.function,
+                call.namespace.as_deref(),
+                own_namespace,
+                BATCH_ID,
+            )
+        } else {
+            Vec::new()
+        };
+        for reason in forbidden_call(&call.function, false)
+            .into_iter()
+            .chain(gated)
+        {
             problems.push(format!("call {} ({}): {reason}", i + 1, call.function));
-        }
-        // The approver sees `fp::batch` in this worker's namespace only, so a
-        // call elsewhere would run unapproved there.
-        if approval_gate_running && let Some(ns) = other_namespace(call, own_namespace) {
-            problems.push(format!(
-                "call {} ({f}): a call in namespace {ns} must be approved in that namespace — \
-                 call {f} directly with \"namespace\": \"{ns}\" instead of through fp::batch",
-                i + 1,
-                f = call.function
-            ));
         }
         if pipe::is_scoped_step(&call.function) && req.fs_scope.is_none() {
             problems.push(format!(
@@ -189,11 +185,7 @@ fn validate_with_approval_gate(
 }
 
 pub fn validate(req: &BatchRequest) -> Result<Vec<String>, String> {
-    // What `register_worker` resolves when, as in main.rs, no namespace option is set.
-    let own = std::env::var("III_NAMESPACE")
-        .ok()
-        .filter(|ns| !ns.trim().is_empty());
-    validate_with_approval_gate(req, true, own.as_deref().unwrap_or("default"))
+    validate_with_approval_gate(req, true, &pipe::env_namespace())
 }
 
 fn error_parts(error: &iii_sdk::Error) -> (String, String) {
@@ -250,11 +242,20 @@ async fn one(
                 action: None,
                 timeout_ms: Some(timeout_ms),
             };
-            let request: CallRequestWithMetadata = match call.namespace {
-                Some(namespace) => request.namespace(namespace),
-                None => request.into(),
-            };
-            iii.call(request).await.map_err(|e| error_parts(&e))
+            let request: CallRequestWithMetadata =
+                match pipe::named_namespace(call.namespace.as_deref()) {
+                    Some(namespace) => request.namespace(namespace),
+                    None => request.into(),
+                };
+            // As in `pipe::run`: the gate can register while earlier calls
+            // run, so a call its state decides reads it again.
+            let own = iii.namespace().unwrap_or_else(|| "default".into());
+            let gated = pipe::gate_refusals(&function, call.namespace.as_deref(), &own, BATCH_ID);
+            if !gated.is_empty() && pipe::approval_gate_running(&iii).await.unwrap_or(true) {
+                Err(("FORBIDDEN".to_string(), gated.join("; ")))
+            } else {
+                iii.call(request).await.map_err(|e| error_parts(&e))
+            }
         }
     };
     match outcome {
@@ -302,7 +303,7 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
             // unknown state fails closed.
             let gate = if req.calls.iter().any(|c| {
                 (c.function.starts_with("database::") && c.function != "database::query")
-                    || other_namespace(c, &own).is_some()
+                    || pipe::other_namespace(c.namespace.as_deref(), &own).is_some()
             }) {
                 pipe::approval_gate_running(&iii).await.unwrap_or(true)
             } else {
@@ -483,6 +484,32 @@ mod tests {
     #[test]
     fn without_a_gate_a_call_may_name_any_namespace() {
         assert!(validate_with_approval_gate(&call_in(Some("other")), false, "own").is_ok());
+    }
+
+    #[test]
+    fn a_call_the_gate_decides_is_refused_with_the_up_front_reason() {
+        for (function, namespace) in [
+            ("database::execute", None),
+            ("state::get", Some("other")),
+            ("database::execute", Some("other")),
+        ] {
+            let req = parse(json!({ "calls": [{ "function": function, "namespace": namespace }] }));
+            let up_front = validate_with_approval_gate(&req, true, "own").unwrap_err();
+            let reasons = pipe::gate_refusals(function, namespace, "own", BATCH_ID);
+            assert!(!reasons.is_empty(), "{function}");
+            for reason in reasons {
+                let problem = format!("call 1 ({function}): {reason}");
+                assert!(up_front.contains(&problem), "{up_front}");
+            }
+        }
+        for (function, namespace) in [
+            ("database::query", None),
+            ("state::get", Some("own")),
+            ("fp::pipe", None),
+        ] {
+            let reasons = pipe::gate_refusals(function, namespace, "own", BATCH_ID);
+            assert!(reasons.is_empty(), "{function}: {reasons:?}");
+        }
     }
 
     #[test]

@@ -34,6 +34,13 @@ clap = { version = "4", features = ["derive", "env"] }
 # stream key in one pass.
 aho-corasick = "1"
 
+# tests/gate_flip.rs: an in-process fake engine; all three are already in the
+# tree through iii-sdk.
+[dev-dependencies]
+tokio = { version = "1", features = ["net"] }
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
+
 # Release profile for published binaries: thin LTO with one codegen unit runs
 # faster than Cargo's default, and strip drops the symbol table for a smaller
 # download at no runtime cost.

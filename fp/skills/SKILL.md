@@ -47,6 +47,8 @@ for small values).
   internals) — call those directly. So is `workflow::start`, which needs the
   caller stamp a direct call gets; `workflow::status`/`stop` are allowed. Session reads (`session::get-attachment`,
   `session::messages-tail`, …) and `state::*` stay allowed on purpose.
+- While the approval gate runs, a step naming another namespace is refused;
+  call it directly with `namespace`.
 - The first pipe step receives no threaded value — start with a producer
   (a fetch, `state::get`) or seed a leading transform via `payload.value`.
 - 1–12 steps, 120 s per bus step; the whole pipe must fit the caller's
@@ -56,7 +58,7 @@ for small values).
 
 ## Functions
 
-- `fp::pipe` — `{ through: [{function, payload?, into?}], preview_chars? }`
+- `fp::pipe` — `{ through: [{function, payload?, into?, namespace?}], preview_chars? }`
   → `{ steps: [{function, chars}], value_preview }`.
 - `fp::get` / `fp::pick` / `fp::omit` — pointer extract / key
   subset / key drop.
