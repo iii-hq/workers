@@ -964,7 +964,8 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
             let key = |mem: &Memory| key_of_id[&mem.id].as_str();
             // `Bank::recall` at `recall_limit` is this ranking, cut.
             let ranked: Vec<&str> = hits.iter().take(limit).map(|(mem, _)| key(mem)).collect();
-            let told = memory::hooks::select(hits, &evidence, &HashSet::new(), limit);
+            let told =
+                memory::hooks::select(hits, &evidence, &HashSet::new(), &HashSet::new(), limit);
             let subjects = told
                 .iter()
                 .flat_map(|(mem, _)| memory::hooks::subjects(mem))

@@ -59,7 +59,6 @@ function controller(
       envFile: '.env',
       installed: new Set(['llm-router']),
       consoleConfig: null,
-      judgeProvider: null,
       browser: null,
       browserError: null,
       ...snapshot,
@@ -71,7 +70,6 @@ function controller(
     run,
     signInNeeded: new Set(),
     skipStep: () => undefined,
-    judgeInstalled: false,
     checkChromium: async () => null,
     installChromium: async () => ({ ok: true as const }),
     chromiumProgress: null,
@@ -332,6 +330,124 @@ describe('ModelsStep after Connect failed', () => {
     )
     expect(button(/^Connect/).disabled).toBe(false)
     await act(async () => button(/^Skip for now$/).click())
+    expect(onNext).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the focus to Continue when a run ends with a provider working', async () => {
+    const ready = {
+      providers: [
+        {
+          id: 'claude-code',
+          title: 'Claude Code',
+          configured: false,
+          available: true,
+          ownsAuthentication: true,
+          modelCount: 13,
+        },
+      ],
+      installed: new Set(['llm-router', 'provider-claude-code']),
+    }
+    const onNext = vi.fn()
+    const render = (running: OnboardingController['running']) =>
+      act(() =>
+        root.render(
+          <ModelsStep
+            onboarding={controller(ready, undefined, {
+              running,
+              activity: [FAILED],
+              signInNeeded: new Set(['openai-codex']),
+            })}
+            onBack={() => undefined}
+            onNext={onNext}
+          />,
+        ),
+      )
+    render('models')
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    render(null)
+    const primary = [...container.querySelectorAll('footer button')].at(
+      -1,
+    ) as HTMLButtonElement
+    expect(primary.textContent).toBe('Continue')
+    expect(document.activeElement).toBe(primary)
+    await act(async () => primary.click())
+    expect(onNext).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the focus to Continue when the last pending checkbox is cleared', () => {
+    act(() =>
+      root.render(
+        <ModelsStep
+          onboarding={controller({
+            providers: [
+              {
+                id: 'claude-code',
+                title: 'Claude Code',
+                configured: false,
+                available: true,
+                ownsAuthentication: true,
+                modelCount: 13,
+              },
+            ],
+            installed: new Set(['llm-router', 'provider-claude-code']),
+          })}
+          onBack={() => undefined}
+          onNext={() => undefined}
+        />,
+      ),
+    )
+    const codex = checkbox('Codex')
+    // Ticking it makes Connect the primary action; clearing it with the
+    // keyboard focus on the checkbox must hand that focus to Continue.
+    if (!codex.checked) act(() => codex.click())
+    expect(
+      ([...container.querySelectorAll('footer button')].at(-1) as HTMLElement)
+        .textContent,
+    ).toMatch(/^Connect/)
+    act(() => codex.focus())
+    act(() => codex.click())
+    const primary = [...container.querySelectorAll('footer button')].at(
+      -1,
+    ) as HTMLButtonElement
+    expect(primary.textContent).toBe('Continue')
+    expect(document.activeElement).toBe(primary)
+  })
+
+  it('makes Continue the primary, focused action when another provider works', async () => {
+    const onNext = vi.fn()
+    act(() =>
+      root.render(
+        <ModelsStep
+          onboarding={controller(
+            {
+              providers: [
+                {
+                  id: 'claude-code',
+                  title: 'Claude Code',
+                  configured: false,
+                  available: true,
+                  ownsAuthentication: true,
+                  modelCount: 13,
+                },
+              ],
+              installed: new Set(['llm-router', 'provider-claude-code']),
+            },
+            undefined,
+            { activity: [FAILED] },
+          )}
+          onBack={() => undefined}
+          onNext={onNext}
+        />,
+      ),
+    )
+    // Codex is still ticked from the Connect that failed on it.
+    act(() => checkbox('Codex').click())
+    const footer = [...container.querySelectorAll('footer button')]
+    const primary = footer.at(-1) as HTMLButtonElement
+    expect(primary.textContent).toBe('Continue')
+    expect(document.activeElement).toBe(primary)
+    expect(button(/^Try again$/).disabled).toBe(false)
+    await act(async () => primary.click())
     expect(onNext).toHaveBeenCalledTimes(1)
   })
 

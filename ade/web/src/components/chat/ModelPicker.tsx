@@ -9,6 +9,7 @@ import {
 import {
   type KeyboardEvent,
   type RefObject,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -29,11 +30,13 @@ import {
 } from '@/lib/models-catalog'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import {
+  type PinnedModel,
   resolvePinnedModels,
   savePinnedModels,
   usePinnedModels,
   withPinnedEffort,
 } from '@/lib/pinned-models'
+import { saveLastModel, saveLastThinkingLevel } from '@/lib/storage'
 import { playUiSound } from '@/lib/ui-sounds'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
@@ -303,6 +306,19 @@ export function ModelPicker({
     () => resolvePinnedModels(storedPinned, options, safeValue ?? null),
     [storedPinned, options, safeValue],
   )
+  /* New chats follow the last chat's model; putting a different model in
+     the Default slot is the person choosing it, so the next chat starts there. */
+  const savePinned = useCallback(
+    (list: PinnedModel[] | null) => {
+      savePinnedModels(list)
+      const first = list?.[0]
+      if (first && first.id !== pinned[0]?.id) {
+        saveLastModel(first.id)
+        saveLastThinkingLevel(first.effort)
+      }
+    },
+    [pinned],
+  )
   const pickerDisabled = disabled || loading
   const subtle = triggerAppearance === 'subtle'
   const showEffort = selectedEfforts.length > 1 && thinkingLevel !== 'default'
@@ -563,7 +579,7 @@ export function ModelPicker({
           }
         }
       }}
-      onPinnedChange={savePinnedModels}
+      onPinnedChange={savePinned}
       automatic={
         automatic && {
           label: automatic.label,
@@ -714,7 +730,7 @@ export function ModelPicker({
         providers={presentProviders}
         pinned={pinned}
         thinkingLevel={thinkingLevel}
-        onPinnedChange={savePinnedModels}
+        onPinnedChange={savePinned}
         disabled={disabled}
       />
 

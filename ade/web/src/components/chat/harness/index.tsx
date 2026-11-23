@@ -1,7 +1,11 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
-import { isHarnessFunction, unwrapEnvelope } from './parsers'
+import {
+  isHarnessFunction,
+  isStreamingArguments,
+  unwrapEnvelope,
+} from './parsers'
 import { SpawnActivityDisplay, SpawnPreview, SpawnView } from './SpawnView'
 import { SubmitResultView } from './SubmitResultView'
 
@@ -48,6 +52,13 @@ function tryRenderSpawn(message: FunctionCallMessage): React.ReactNode | null {
   if (message.functionId !== 'harness::spawn' || message.pendingApproval)
     return null
   const running = !!message.running
+  // While the model is still writing the spawn's arguments there is no
+  // child to describe — the prominent display slot would otherwise sit in
+  // the chat for the whole stream reading "no task · creating the child
+  // session…" while nothing of the sort is happening. Claim nothing, so the
+  // card stays a plain running row and expands to the generic streaming
+  // request pane like every other in-flight call.
+  if (running && isStreamingArguments(message.input)) return null
   const rawOutput = message.output
   // Guard errors (spawn depth/fan-out), failed/cancelled children and
   // gate denials all arrive as error envelopes — surface them before

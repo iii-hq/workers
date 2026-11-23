@@ -153,6 +153,17 @@ export function safeParseRequest<T>(
   return parsed.success ? parsed.data : null
 }
 
+/** True while the model is still writing the call: the harness rides a
+    `_partial` flag and a bounded `_streaming` raw tail beside whatever
+    fields it has reconstructed so far (router.rs `enrich_streaming_args`).
+    A spawn request parsed from such input is hollow — no task, no policy —
+    so a view that would describe the child from it describes nothing. */
+export function isStreamingArguments(input: unknown): boolean {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false
+  const obj = input as Record<string, unknown>
+  return typeof obj._streaming === 'string' || obj._partial === true
+}
+
 /** Flatten a task to display text: string passes through; an AgentMessage
     joins its `content[].text` blocks. */
 export function taskText(task: SpawnTask | undefined | null): string | null {

@@ -61,6 +61,20 @@ pub struct WorkerConfig {
     #[serde(default = "default_recall_budget_tokens")]
     pub recall_budget_tokens: u64,
 
+    /// Pinned memories shown on each turn's first step, a turn with no
+    /// message to recall for included: first in the memory message, outside
+    /// `recall_limit`, read under the same banks recall reads. Past it the
+    /// most recently updated go in, and the rest are reported skipped
+    /// (`memory_pinned_skipped`).
+    #[serde(default = "default_pinned_limit")]
+    pub pinned_limit: usize,
+
+    /// Characters the pinned lines may take, each counted as rendered
+    /// (`- text (date)`), outside `recall_budget_tokens`. A line too long for
+    /// what is left is skipped; an older, shorter one still fits.
+    #[serde(default = "default_pinned_max_chars")]
+    pub pinned_max_chars: usize,
+
     /// Extract new memories after each completed turn (a pass reads up to 4
     /// runs of 24,000 bytes of new messages, off the hot path; a longer user
     /// message takes up to 4 `router::complete` calls of its own). Disable to
@@ -157,6 +171,12 @@ fn default_recall_limit() -> usize {
 }
 fn default_recall_budget_tokens() -> u64 {
     1_200
+}
+fn default_pinned_limit() -> usize {
+    5
+}
+fn default_pinned_max_chars() -> usize {
+    1_000
 }
 fn default_extraction_window() -> usize {
     12

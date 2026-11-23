@@ -12,7 +12,6 @@ import type {
 import { BrowserStep } from './BrowserStep'
 import { isChromiumMissingCall } from './ChromiumMissingAction'
 import { stepPosition } from './OnboardingWizard'
-import { ReadyStep } from './ReadyStep'
 import type {
   ActivityEntry,
   MachineSnapshot,
@@ -56,7 +55,6 @@ function controller(
       detections: null,
       envFile: '.env',
       installed: new Set(['browser']),
-      judgeProvider: null,
       consoleConfig: null,
       browser: MISSING,
       browserError: null,
@@ -69,7 +67,6 @@ function controller(
     run: async () => true,
     signInNeeded: new Set(),
     skipStep: () => undefined,
-    judgeInstalled: false,
     checkChromium: async () => null,
     installChromium: async () => ({ ok: true }),
     chromiumProgress: null,
@@ -313,46 +310,13 @@ describe('setup step numbering', () => {
       { id: 'welcome' as const },
       { id: 'models' as const },
       { id: 'browser' as const },
-      { id: 'judge' as const },
-      { id: 'ready' as const },
+      { id: 'explore' as const },
     ]
-    expect(stepPosition(withBrowser, 'models')).toEqual({ index: 1, total: 3 })
-    expect(stepPosition(withBrowser, 'browser')).toEqual({ index: 2, total: 3 })
-    expect(stepPosition(withBrowser, 'judge')).toEqual({ index: 3, total: 3 })
+    expect(stepPosition(withBrowser, 'models')).toEqual({ index: 1, total: 2 })
+    expect(stepPosition(withBrowser, 'browser')).toEqual({ index: 2, total: 2 })
     const without = withBrowser.filter((entry) => entry.id !== 'browser')
-    expect(stepPosition(without, 'judge')).toEqual({ index: 2, total: 2 })
-    expect(stepPosition(without, 'ready')).toBeUndefined()
-  })
-})
-
-describe('ReadyStep after a Chromium download', () => {
-  it('lists Chromium among what setup did', () => {
-    const out = renderToStaticMarkup(
-      <ReadyStep
-        onboarding={controller({
-          snapshot: { browser: READY },
-          activity: [downloadEntry('done')],
-        })}
-        judges={[]}
-        onNext={noop}
-        onBack={noop}
-      />,
-    )
-    expect(out).toContain('Chromium is ready for agents')
-    expect(out).not.toContain('131.0.6778.85')
-    expect(out).not.toContain('~/.cache/iii/browser')
-  })
-
-  it('says nothing about Chromium when setup did not download it', () => {
-    const out = renderToStaticMarkup(
-      <ReadyStep
-        onboarding={controller({ snapshot: { browser: READY } })}
-        judges={[]}
-        onNext={noop}
-        onBack={noop}
-      />,
-    )
-    expect(out).not.toContain('Chromium')
+    expect(stepPosition(without, 'models')).toEqual({ index: 1, total: 1 })
+    expect(stepPosition(without, 'explore')).toBeUndefined()
   })
 })
 

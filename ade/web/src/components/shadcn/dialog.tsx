@@ -43,7 +43,14 @@ function DialogOverlay({
   )
 }
 
-/* `--dialog-max-width` lets a caller widen the desktop dialog without a
+/* The sheet is a one-column grid. The column is `minmax(0, 1fr)`, not the
+   implicit `auto`: an `auto` track grows to its content's min-content width
+   (grid items default to `min-width: auto`), so one nowrap value or a table
+   inside a worker's card widened the whole card past the sheet's max-width
+   and it rendered clipped — nothing inside could truncate because nothing
+   inside was ever narrower than its content. Pinned by dialog.test.tsx.
+
+   `--dialog-max-width` lets a caller widen the desktop dialog without a
    viewport utility of its own (the console ratchets those). */
 function DialogContent({
   className,
@@ -62,7 +69,7 @@ function DialogContent({
           data-slot="dialog-content"
           className={cn(
             NEUTRAL_SURFACE,
-            'fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-dialog-surface p-4 font-inter text-sm text-popover-foreground ring-1 ring-dialog-edge duration-100 outline-none sm:max-w-[var(--dialog-max-width,24rem)] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95',
+            'fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] grid-cols-[minmax(0,1fr)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-dialog-surface p-4 font-inter text-sm text-popover-foreground ring-1 ring-dialog-edge duration-100 outline-none sm:max-w-[var(--dialog-max-width,24rem)] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95',
             className,
           )}
           {...props}

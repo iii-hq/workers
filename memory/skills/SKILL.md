@@ -48,13 +48,16 @@ rule; point-in-time information belongs in memories.
   save call is needed. Where the header asks you to save, save it as a note.
   Pinning, another bank and the `user` entity are the user's actions on the
   console's memory page, refused from inside a turn: when the user wants it
-  kept for good, tell them to pin it there.
+  kept for good, tell them to pin it there. A pinned memory is shown at the
+  top of the `<memory>` message on every turn of its bank, whatever the turn
+  asks (the 5 most recently updated, within 1,000 characters, by default).
 - The user asks what you remember about a topic — `memory::recall { "query": "..." }`
   ranks the bank's memories for it. A turn is given fewer: only the hits with
   evidence, one line per fact and the newer of a stated change;
   `memory::preview` shows exactly what a turn on that topic would be given.
   A turn recalls on the user's message (or the earlier one it continues);
-  a notification turn recalls nothing, so call `memory::recall` when one needs it.
+  a notification turn recalls nothing (only the pinned memories go in), so
+  call `memory::recall` when one needs it.
 - The user asks to forget something — find it via recall/list, then
   `memory::delete` it (a recoverable tombstone), with the `bank` recall
   returned for it. A pinned memory is the user's to delete on the memory page.
@@ -106,9 +109,11 @@ rule; point-in-time information belongs in memories.
   best-effort, at most once. Deleting a session or trashing a bank purges
   its in-flight extraction state.
 - Injection is bounded (`max_rule_chars`, `learned_max_chars`,
-  `recall_budget_tokens`) — an over-budget rule is truncated visibly, never
-  silently dropped. Its marker counts the hidden lines; read them with
-  `memory::rule::list { "bank": "<bank>" }`, the bank the marker names.
+  `recall_budget_tokens`, `pinned_limit`, `pinned_max_chars`) — an
+  over-budget rule is truncated visibly, never silently dropped: its marker
+  counts the hidden lines; read them with `memory::rule::list { "bank": "<bank>" }`,
+  the bank the marker names. Pinned memories past their cap are named by id
+  in the step's `memory_pinned_skipped`; read one with `memory::get`.
 - Recalled memories are dated by when their fact was last stated; trust a
   newer memory over an older one that contradicts it. Dated events are stored
   with absolute dates.
@@ -121,7 +126,8 @@ rule; point-in-time information belongs in memories.
   most `max_memories_per_turn` per turn), and a pin, another bank, the `user`
   entity and the `demoted-rule` tag are refused.
 - `memory::get / list / update / delete / pin` — memory CRUD; delete tombstones,
-  update bumps a revision, pinned records are untouchable by automatic paths.
+  update bumps a revision, pinned records are shown on every turn and are
+  untouchable by automatic paths.
   From a turn, update revises only a note saved from a turn, delete refuses a
   pinned memory, and `memory::pin` is refused.
 - `memory::recall` — rank a bank's memories against a query (the injection
@@ -133,7 +139,8 @@ rule; point-in-time information belongs in memories.
   reach; `covered < live` means some vectors have not landed yet.
 - `memory::preview` — the FULL injection dry-run for a hypothetical chat
   message: the system-prompt rules section, the memories a turn would be
-  handed (past the relevance cut and token budget), and the appended message verbatim;
+  handed (its pinned ones first, then those past the relevance cut and token
+  budget), and the appended message verbatim;
   naming a directory's bank (`<name>-<6 hex>`) previews it with
   `default_bank` read under it, as its turns get it.
 - `memory::tags` — a bank's distinct tags with counts. Add `tags` on save

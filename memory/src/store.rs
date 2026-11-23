@@ -1907,6 +1907,19 @@ impl Bank {
         (page, total)
     }
 
+    /// Live pinned memories, most recently updated first, as [`Self::list`] orders them.
+    pub async fn pinned(&self) -> Vec<Memory> {
+        let inner = self.inner.read().await;
+        let mut pinned: Vec<Memory> = inner
+            .memories
+            .values()
+            .filter(|m| m.is_live() && m.pinned)
+            .cloned()
+            .collect();
+        pinned.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
+        pinned
+    }
+
     /// Distinct tags across live memories with usage counts, most used
     /// first (the console's filter source).
     pub async fn tags(&self) -> Vec<(String, usize)> {
@@ -3623,7 +3636,8 @@ mod tests {
                     )
                     .await;
                 assert_eq!(ev[&texts[target].id].z, None, "{question}");
-                let picked = crate::hooks::select(hits, &ev, &std::collections::HashSet::new(), 6);
+                let picked =
+                    crate::hooks::select(hits, &ev, &Default::default(), &Default::default(), 6);
                 let picked: Vec<&str> = picked.iter().map(|(m, _)| m.text.as_str()).collect();
                 assert!(
                     picked.contains(&texts[target].text.as_str()),

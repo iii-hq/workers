@@ -43,12 +43,12 @@ describe('setup telemetry', () => {
   })
 
   it('keeps the step identity over any property of the same name', () => {
-    const message = setupStepMessage('judge', 3, {
+    const message = setupStepMessage('browser', 3, {
       step_id: 'spoofed',
       tour_id: 'other',
       outcome: 'skipped',
     })
-    expect(message.step_id).toBe('judge')
+    expect(message.step_id).toBe('browser')
     expect(message.tour_id).toBe(SETUP_TOUR_ID)
   })
 

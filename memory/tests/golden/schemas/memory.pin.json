@@ -1,5 +1,5 @@
 {
-  "description": "Pin or unpin a memory. Pinned memories rank higher in recall and are untouchable by every automatic path. Refused from inside a turn.",
+  "description": "Pin or unpin a memory. A pinned memory is shown on every turn that reads its bank, first in the memory message and under a cap (`pinned_limit`, `pinned_max_chars`), ranks higher in recall and is untouchable by every automatic path. Refused from inside a turn.",
   "function_id": "memory::pin",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
