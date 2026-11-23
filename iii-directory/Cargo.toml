@@ -75,7 +75,7 @@ tempfile = "3"
 # BDD test runner. Drives Gherkin .feature files under tests/features/.
 cucumber = "0.22"
 uuid = { version = "1", features = ["v4"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "test-util"] }
 # Mock HTTP server for the registry-source tests.
 wiremock = "0.6"
 
