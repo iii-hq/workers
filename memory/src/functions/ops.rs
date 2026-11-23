@@ -84,7 +84,16 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
     );
 
     // 5. Advisory: an embed provider answers (semantic recall needs it).
-    checks.push(embeddings_check(deps, cfg.embeddings_enabled).await);
+    let embedded = if cfg.embeddings_enabled {
+        Some(
+            crate::embed_client::query_vector(deps, "doctor probe")
+                .await
+                .map(|q| q.model),
+        )
+    } else {
+        None
+    };
+    checks.push(embeddings_check(embedded));
 
     // 6. Advisory: extraction passes succeed (a failing one only logs).
     let health = crate::extract::pass_health();
@@ -116,21 +125,22 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
     })
 }
 
-async fn embeddings_check(deps: &Deps, enabled: bool) -> DoctorCheck {
-    let (ok, detail) = if !enabled {
-        (
+/// `None` when embeddings are off by config; otherwise the model the probe
+/// was embedded with, or why it was not.
+fn embeddings_check(embedded: Option<Result<String, String>>) -> DoctorCheck {
+    let (ok, detail) = match embedded {
+        None => (
             true,
-            "embeddings disabled by config; recall is lexical-only".into(),
-        )
-    } else {
-        match crate::embed_client::query_vector(deps, "doctor probe").await {
-            Some(q) => (true, format!("router::embed answered (model {})", q.model)),
-            None => (
-                false,
-                "router::embed returned no vector; recall runs lexical-only (BM25 + entities)"
-                    .into(),
+            "embeddings disabled by config; recall is lexical-only".to_string(),
+        ),
+        Some(Ok(model)) => (true, format!("router::embed answered (model {model})")),
+        Some(Err(why)) => (
+            false,
+            format!(
+                "router::embed returned no vector ({why}); recall runs lexical-only (BM25 + \
+                 entities)"
             ),
-        }
+        ),
     };
     DoctorCheck {
         name: "embeddings-available".into(),
@@ -472,6 +482,32 @@ mod tests {
             none.detail.ends_with("set extraction_model"),
             "{}",
             none.detail
+        );
+    }
+
+    #[test]
+    fn a_failed_embed_says_why_recall_is_lexical_only() {
+        let why = "remote error (provider/not_configured): MiniLM is not downloaded yet";
+        let down = embeddings_check(Some(Err(why.into())));
+        assert_eq!(down.name, "embeddings-available");
+        assert!(!down.ok);
+        assert_eq!(
+            down.detail,
+            format!(
+                "router::embed returned no vector ({why}); recall runs lexical-only (BM25 + entities)"
+            )
+        );
+
+        let up = embeddings_check(Some(Ok("all-MiniLM-L6-v2".into())));
+        assert!(up.ok);
+        assert_eq!(up.detail, "router::embed answered (model all-MiniLM-L6-v2)");
+        assert!(!up.detail.contains("lexical-only"), "{}", up.detail);
+
+        let off = embeddings_check(None);
+        assert!(off.ok);
+        assert_eq!(
+            off.detail,
+            "embeddings disabled by config; recall is lexical-only"
         );
     }
 }

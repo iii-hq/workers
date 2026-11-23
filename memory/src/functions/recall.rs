@@ -110,7 +110,9 @@ pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallRespons
     };
     let query_vec = match req.mode {
         RecallMode::Lexical => None,
-        _ => crate::embed_client::query_vector(deps, &req.query).await,
+        _ => crate::embed_client::query_vector(deps, &req.query)
+            .await
+            .ok(),
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
     // Read before ranking, so a lower bound of what the arm saw.
