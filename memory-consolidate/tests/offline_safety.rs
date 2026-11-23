@@ -235,6 +235,35 @@ impl ConsolidationTransport for Boundary {
                         json!(survivor["corroboration"].as_u64().unwrap() + 1);
                     Ok(json!({"reinforced":true,"survivor":survivor.clone()}))
                 }
+                "memory::update" => {
+                    if let Some(id) = inner.stale.take() {
+                        let edited = inner.rows.iter_mut().find(|r| r["id"] == id).unwrap();
+                        edited["revision"] = json!(edited["revision"].as_u64().unwrap() + 1);
+                    }
+                    let at = inner
+                        .rows
+                        .iter()
+                        .position(|r| r["id"] == payload["id"])
+                        .unwrap();
+                    let current = &inner.rows[at];
+                    assert_ne!(current["pinned"], true, "a pinned memory is never retagged");
+                    assert!(current["invalid_at"].is_null());
+                    let stale = payload["expected_memory"].as_object().is_some_and(|f| {
+                        f.iter()
+                            .any(|(k, v)| current.get(k).unwrap_or(&Value::Null) != v)
+                    });
+                    if inner.guarded && stale {
+                        return Err(format!(
+                            "memory `{}` changed since expected snapshot",
+                            current["id"]
+                        ));
+                    }
+                    let row = &mut inner.rows[at];
+                    row["entities"] = payload["entities"].clone();
+                    row["revision"] = json!(row["revision"].as_u64().unwrap() + 1);
+                    row["updated_at"] = json!(row["updated_at"].as_u64().unwrap() + 1_000);
+                    Ok(json!({"memory":row.clone()}))
+                }
                 "memory::rule::list" => Ok(json!({"bank":payload["bank"],"rules":[
                     {"name":"learned","content":inner.learned,"updated_at":0}
                 ]})),
@@ -2612,4 +2641,725 @@ async fn verify_saves_the_cursor_after_each_note() {
         verify_cursor(&boundary)["first"],
         json!({"updated_at":1,"id":"tea"})
     );
+}
+
+// ---- alias tier ----------------------------------------------------------
+
+fn tagged(id: &str, text: &str, at: u64, handles: &[&str]) -> Value {
+    let mut memory = row(id, text, at);
+    memory["entities"] = json!(handles);
+    memory
+}
+
+/// `build-cache` on two memories, `build cache` on one.
+fn build_cache() -> Vec<Value> {
+    vec![
+        tagged(
+            "a",
+            "The build cache lives on the CI runner.",
+            1,
+            &["build-cache"],
+        ),
+        tagged(
+            "b",
+            "The build cache is pruned weekly.",
+            2,
+            &["build-cache", "ci"],
+        ),
+        tagged(
+            "c",
+            "Clear the build cache before a release.",
+            3,
+            &["user", "build cache"],
+        ),
+    ]
+}
+
+/// `dentist` and `dentista`, one memory each: a near pair.
+fn dentist() -> Vec<Value> {
+    vec![
+        tagged(
+            "d",
+            "The user's dentist is Dr. Silva.",
+            4,
+            &["user", "dentist"],
+        ),
+        tagged(
+            "e",
+            "The dentista appointment moved to Friday.",
+            5,
+            &["user", "dentista"],
+        ),
+    ]
+}
+
+fn same(reason: &str) -> Value {
+    json!({"pairs":[{"n":1,"same":true,"reason":reason}]})
+}
+
+fn entities_of(boundary: &Boundary, id: &str) -> Value {
+    boundary.snapshot()["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap()["entities"]
+        .clone()
+}
+
+/// The ledger without its clock.
+fn ledger(boundary: &Boundary) -> Value {
+    let mut entries = boundary.snapshot()["state"]["aliases:offline"].clone();
+    for entry in entries.as_array_mut().into_iter().flatten() {
+        entry.as_object_mut().unwrap().remove("ms");
+    }
+    entries
+}
+
+#[tokio::test]
+async fn a_dry_run_lists_alias_candidates_and_writes_nothing() {
+    let boundary = Boundary::with_rows([build_cache(), dentist()].concat());
+    boundary.decision(same("never asked"));
+    let before = boundary.snapshot();
+    let response = run(&boundary, deterministic_only(), true).await;
+    assert_eq!(
+        serde_json::to_value(&response.banks[0].aliases).unwrap(),
+        json!([
+            {"from":"build cache","to":"build-cache","tier":"spelling","similarity":1.0,
+             "applied":false,"ids":["c"],"reason":"same letters, separators aside"},
+            {"from":"dentista","to":"dentist","tier":"near","similarity":0.7,
+             "applied":false,"reason":"waits for the judge"},
+        ])
+    );
+    assert_eq!(before, boundary.snapshot());
+    assert!(
+        boundary
+            .calls()
+            .iter()
+            .all(|(f, _)| f != "memory::update" && f != "router::complete" && f != "state::set")
+    );
+}
+
+#[tokio::test]
+async fn a_spelling_alias_is_retagged_without_a_model_call() {
+    let rows = build_cache();
+    let boundary = Boundary::with_rows(rows.clone());
+    boundary.0.lock().unwrap().guarded = true;
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+    let mut expected = rows[2].clone();
+    expected["stated_at"] = Value::Null;
+    assert_eq!(
+        payloads(&boundary, "memory::update"),
+        [json!({
+            "bank": "offline",
+            "id": "c",
+            "entities": ["user", "build-cache"],
+            "expected_memory": expected,
+            "reason": "alias: build cache -> build-cache (same letters, separators aside)",
+        })]
+    );
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build-cache"]));
+    assert_eq!(model_calls(&boundary), 0);
+    let aliases = &response.banks[0].aliases;
+    assert!(aliases[0].applied);
+    assert_eq!(aliases[0].ids, ["c"]);
+    assert_eq!(
+        ledger(&boundary),
+        json!([{"from":"build cache","to":"build-cache","tier":"spelling","verdict":"same",
+            "reason":"same letters, separators aside","ids":["c"]}])
+    );
+
+    let again = run(&boundary, deterministic_only(), false).await;
+    assert!(again.banks[0].aliases.is_empty());
+    assert_eq!(payloads(&boundary, "memory::update").len(), 1);
+}
+
+#[tokio::test]
+async fn a_near_alias_waits_for_the_judge() {
+    // No router: the pair waits with a note, nothing is written.
+    let boundary = Boundary::with_rows(dentist());
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(
+        response.checkpointed,
+        "a missing router never blocks the pass"
+    );
+    assert_eq!(response.banks[0].aliases[0].reason, "waits for the judge");
+    assert_eq!(
+        response.banks[0].notes,
+        ["alias judge skipped: no synthetic decision supplied"]
+    );
+    assert!(payloads(&boundary, "memory::update").is_empty());
+
+    // The call cap at 0: no call at all.
+    let capped = WorkerConfig {
+        max_llm_calls_per_run: 0,
+        ..deterministic_only()
+    };
+    let response = run(&boundary, capped, false).await;
+    assert_eq!(model_calls(&boundary), 1);
+    assert_eq!(
+        response.banks[0].notes,
+        ["alias judge deferred: per-run LLM call cap reached"]
+    );
+
+    // `same`: retagged, with the judge's reason.
+    boundary.decision(same("another language's word for the same dentist"));
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert_eq!(model_calls(&boundary), 2);
+    let prompt = &payloads(&boundary, "router::complete")[1]["prompt"];
+    let prompt: Value = serde_json::from_str(prompt.as_str().unwrap()).unwrap();
+    assert_eq!(
+        prompt,
+        json!({"pairs":[{"n":1,"a":"dentista","a_memories":["The dentista appointment moved to Friday."],
+            "b":"dentist","b_memories":["The user's dentist is Dr. Silva."]}]})
+    );
+    let updates = payloads(&boundary, "memory::update");
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["entities"], json!(["user", "dentist"]));
+    assert_eq!(
+        updates[0]["reason"],
+        "alias: dentista -> dentist (another language's word for the same dentist)"
+    );
+    assert!(response.banks[0].aliases[0].applied);
+
+    // `distinct`: nothing written, and the pair is never asked again.
+    let boundary = Boundary::with_rows(vec![
+        tagged("g1", "Gabriel runs the payments on-call.", 1, &["gabriel"]),
+        tagged("g2", "Gabriela joined the design team.", 2, &["gabriela"]),
+    ]);
+    boundary.decision(json!({"pairs":[{"n":1,"same":false,"reason":"two people"}]}));
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(!response.banks[0].aliases[0].applied);
+    assert_eq!(response.banks[0].aliases[0].reason, "two people");
+    let again = run(&boundary, deterministic_only(), false).await;
+    assert!(again.banks[0].aliases.is_empty());
+    assert_eq!(model_calls(&boundary), 1);
+    assert!(payloads(&boundary, "memory::update").is_empty());
+    assert_eq!(ledger(&boundary)[0]["verdict"], "distinct");
+}
+
+#[tokio::test]
+async fn payments_api_and_ledger_api_are_never_offered_to_the_judge() {
+    // The seeds of harness-e2e's linked-update case.
+    let boundary = Boundary::with_rows(vec![
+        tagged(
+            "on",
+            "dana-1 is the primary on-call engineer for payments-api incidents.",
+            1,
+            &["dana", "payments-api"],
+        ),
+        tagged(
+            "up",
+            "Unanswered payments-api pages escalate to marco-2 after 15 minutes.",
+            2,
+            &["marco", "payments-api"],
+        ),
+        tagged(
+            "near",
+            "kai-3 is the primary on-call engineer for ledger-api incidents.",
+            3,
+            &["kai", "ledger-api"],
+        ),
+        tagged("left", "dana-1 left our company last week.", 4, &["dana"]),
+    ]);
+    let yes: Vec<Value> = (1..=20)
+        .map(|n| json!({"n":n,"same":true,"reason":"same"}))
+        .collect();
+    boundary.decision(json!({ "pairs": yes }));
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.banks[0].aliases.is_empty());
+    assert_eq!(model_calls(&boundary), 0);
+    assert!(payloads(&boundary, "memory::update").is_empty());
+    assert!(
+        payloads(&boundary, "state::get")
+            .iter()
+            .all(|p| p["key"] != "aliases:offline")
+    );
+}
+
+#[tokio::test]
+async fn retags_share_the_supersede_cap_and_finish_on_the_next_pass() {
+    let boundary = Boundary::with_rows(vec![
+        tagged("d1", "The dentist is on Main Street.", 1, &["dentist"]),
+        tagged("d2", "The dentist opens at nine.", 2, &["dentist"]),
+        tagged(
+            "e1",
+            "The dentista appointment is on Friday.",
+            3,
+            &["dentista"],
+        ),
+        tagged("e2", "The dentista sent a reminder.", 4, &["dentista"]),
+    ]);
+    boundary.decision(same("the same dentist"));
+    let cfg = WorkerConfig {
+        max_supersedes_per_run: 1,
+        ..deterministic_only()
+    };
+    let response = run(&boundary, cfg.clone(), false).await;
+    assert_eq!(response.banks[0].capped, 1);
+    assert_eq!(response.banks[0].aliases[0].ids, ["e1"]);
+    assert_eq!(ledger(&boundary)[0]["ids"], json!(["e1"]));
+
+    let response = run(&boundary, cfg.clone(), false).await;
+    assert_eq!(response.banks[0].capped, 0);
+    assert_eq!(response.banks[0].aliases[0].ids, ["e2"]);
+    assert_eq!(response.banks[0].aliases[0].reason, "the same dentist");
+    assert_eq!(model_calls(&boundary), 1, "a recorded `same` needs no call");
+    assert_eq!(ledger(&boundary)[0]["ids"], json!(["e1", "e2"]));
+    assert_eq!(entities_of(&boundary, "e2"), json!(["dentist"]));
+
+    assert!(run(&boundary, cfg, false).await.banks[0].aliases.is_empty());
+    assert_eq!(payloads(&boundary, "memory::update").len(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_retag_keeps_the_pass_due() {
+    let boundary = Boundary::with_rows(build_cache());
+    boundary.fail_once("memory::update");
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(!response.checkpointed);
+    assert!(!response.banks[0].errors.is_empty());
+    assert!(!response.banks[0].aliases[0].applied);
+    assert_eq!(boundary.snapshot()["state"]["last_run"], json!({"ms":7}));
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build cache"]));
+
+    let retry = run(&boundary, deterministic_only(), false).await;
+    assert!(retry.checkpointed);
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build-cache"]));
+}
+
+#[tokio::test]
+async fn an_undo_never_drops_a_handle_a_failed_retag_left_to_a_person() {
+    use memory_consolidate::alias::UndoRequest;
+    // `d` is edited after the scan: its guarded retag fails after `c`'s lands.
+    let mut rows = build_cache();
+    rows.push(tagged(
+        "d",
+        "The build cache needs 40 GB.",
+        4,
+        &["build cache"],
+    ));
+    let boundary = Boundary::with_rows(rows);
+    boundary.0.lock().unwrap().guarded = true;
+    boundary.0.lock().unwrap().stale = Some("d".into());
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(!response.checkpointed);
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build-cache"]));
+    assert_eq!(entities_of(&boundary, "d"), json!(["build cache"]));
+    assert_eq!(ledger(&boundary)[0]["ids"], json!(["c", "d"]));
+
+    // A person then gives `d` the canonical handle too.
+    let both = json!(["build cache", "build-cache"]);
+    boundary.0.lock().unwrap().rows[3]["entities"] = both.clone();
+    let undone = functions::alias_undo_with_transport(
+        &deps(deterministic_only()),
+        UndoRequest {
+            bank: "offline".into(),
+            from: "build cache".into(),
+        },
+        &boundary,
+    )
+    .await
+    .unwrap();
+    assert_eq!(undone.restored, ["c"]);
+    assert_eq!(undone.skipped, ["d"]);
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build cache"]));
+    assert_eq!(entities_of(&boundary, "d"), both);
+}
+
+#[tokio::test]
+async fn an_undo_leaves_a_memory_with_both_handles_for_a_hand_edit() {
+    use memory_consolidate::alias::UndoRequest;
+    // The retag lands, then a person puts `build cache` back: undo cannot
+    // tell this row from one a person gave `build-cache`, so it drops neither.
+    let boundary = Boundary::with_rows(build_cache());
+    run(&boundary, deterministic_only(), false).await;
+    let both = json!(["user", "build-cache", "build cache"]);
+    boundary.0.lock().unwrap().rows[2]["entities"] = both.clone();
+    let undone = functions::alias_undo_with_transport(
+        &deps(deterministic_only()),
+        UndoRequest {
+            bank: "offline".into(),
+            from: "build cache".into(),
+        },
+        &boundary,
+    )
+    .await
+    .unwrap();
+    assert!(undone.restored.is_empty());
+    assert_eq!(undone.skipped, ["c"]);
+    assert_eq!(entities_of(&boundary, "c"), both);
+}
+
+#[tokio::test]
+async fn a_pinned_memory_keeps_its_handle() {
+    let mut pinned = tagged(
+        "p",
+        "Never clear the build cache on Fridays.",
+        4,
+        &["build cache"],
+    );
+    pinned["pinned"] = json!(true);
+    let boundary = Boundary::with_rows([build_cache(), vec![pinned]].concat());
+    let response = run(&boundary, deterministic_only(), false).await;
+    let alias = &response.banks[0].aliases[0];
+    assert_eq!(
+        (alias.from.as_str(), alias.to.as_str()),
+        ("build cache", "build-cache")
+    );
+    assert_eq!(alias.ids, ["c"]);
+    assert_eq!(alias.skipped_pinned, ["p"]);
+    assert_eq!(entities_of(&boundary, "p"), json!(["build cache"]));
+    assert_eq!(payloads(&boundary, "memory::update").len(), 1);
+}
+
+#[tokio::test]
+async fn an_older_memory_worker_is_still_retagged() {
+    // A record edited after the scan: memory that knows the guard refuses
+    // the retag, and the pass stays due.
+    let boundary = Boundary::with_rows(build_cache());
+    boundary.0.lock().unwrap().guarded = true;
+    boundary.0.lock().unwrap().stale = Some("c".into());
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(!response.checkpointed);
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build cache"]));
+
+    // An older memory worker ignores `expected_memory` and `reason`: the
+    // retag lands all the same.
+    let boundary = Boundary::with_rows(build_cache());
+    boundary.0.lock().unwrap().stale = Some("c".into());
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed);
+    assert!(response.banks[0].aliases[0].applied);
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build-cache"]));
+}
+
+#[tokio::test]
+async fn an_undone_merge_is_restored_and_never_merged_again() {
+    use memory_consolidate::alias::UndoRequest;
+    let boundary = Boundary::with_rows(build_cache());
+    boundary.0.lock().unwrap().guarded = true;
+    run(&boundary, deterministic_only(), false).await;
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build-cache"]));
+
+    let deps = deps(deterministic_only());
+    let undo = |from: &str| UndoRequest {
+        bank: "offline".into(),
+        from: from.into(),
+    };
+    let undone = functions::alias_undo_with_transport(&deps, undo("build cache"), &boundary)
+        .await
+        .unwrap();
+    assert_eq!(
+        (undone.to.as_str(), undone.restored.as_slice()),
+        ("build-cache", &["c".to_string()][..])
+    );
+    assert_eq!(entities_of(&boundary, "c"), json!(["user", "build cache"]));
+    let updates = payloads(&boundary, "memory::update");
+    assert_eq!(
+        updates[1]["reason"],
+        "alias merge undone: build-cache -> build cache"
+    );
+    assert_eq!(ledger(&boundary)[0]["verdict"], "distinct");
+    assert_eq!(ledger(&boundary)[0]["ids"], json!(["c"]));
+
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed);
+    assert!(response.banks[0].aliases.is_empty());
+    assert_eq!(payloads(&boundary, "memory::update").len(), 2);
+
+    // A second undo finds nothing left to restore; an unknown handle is an error.
+    let again = functions::alias_undo_with_transport(&deps, undo("build cache"), &boundary)
+        .await
+        .unwrap();
+    assert!(again.restored.is_empty());
+    assert_eq!(again.skipped, ["c"]);
+    let unknown = functions::alias_undo_with_transport(&deps, undo("dentista"), &boundary).await;
+    assert!(
+        unknown
+            .unwrap_err()
+            .to_string()
+            .contains("no alias merge from `dentista`")
+    );
+}
+
+#[tokio::test]
+async fn a_merge_winner_is_retagged_on_the_next_pass() {
+    // `w` absorbs its duplicate first, so this pass's snapshot of it is stale.
+    let boundary = Boundary::with_rows(vec![
+        tagged(
+            "w",
+            "Clear the build cache before a release.",
+            1,
+            &["build cache"],
+        ),
+        tagged(
+            "w2",
+            "clear the build cache before a release!",
+            2,
+            &["build cache"],
+        ),
+        tagged(
+            "a",
+            "The build cache lives on the CI runner.",
+            3,
+            &["build-cache"],
+        ),
+        tagged(
+            "b",
+            "The build cache is pruned weekly.",
+            4,
+            &["build-cache"],
+        ),
+    ]);
+    boundary.0.lock().unwrap().guarded = true;
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+    assert_eq!(response.superseded, 1);
+    assert!(payloads(&boundary, "memory::update").is_empty());
+
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+    assert_eq!(response.banks[0].aliases[0].ids, ["w"]);
+    assert_eq!(entities_of(&boundary, "w"), json!(["build-cache"]));
+}
+
+#[tokio::test]
+async fn symbol_and_dot_variants_are_never_merged_without_the_judge() {
+    let no_calls = WorkerConfig {
+        max_llm_calls_per_run: 0,
+        ..deterministic_only()
+    };
+    for (a, b) in [
+        ("c++", "c#"),
+        ("c", "c++"),
+        ("java 1.8", "java 18"),
+        ("angular 1.5", "angular 15"),
+    ] {
+        let boundary = Boundary::with_rows(vec![
+            tagged("x", "The billing service is written in it.", 1, &[a]),
+            tagged("y", "The build tooling targets it.", 2, &[b]),
+        ]);
+        let response = run(&boundary, no_calls.clone(), false).await;
+        assert_eq!(model_calls(&boundary), 0, "{a} / {b}");
+        assert!(
+            payloads(&boundary, "memory::update").is_empty(),
+            "{a} / {b}"
+        );
+        assert!(
+            response.banks[0].aliases.iter().all(|p| !p.applied),
+            "{a} / {b}"
+        );
+    }
+}
+
+/// Three near pairs, one memory per handle: `adriana`, `daniela` and
+/// `dentista` against the older handle of each.
+fn three_near_pairs() -> Vec<Value> {
+    vec![
+        tagged("a1", "Adrian reviews the payments code.", 1, &["adrian"]),
+        tagged("a2", "Adriana leads the design review.", 2, &["adriana"]),
+        tagged("d1", "Daniel owns the deploy scripts.", 3, &["daniel"]),
+        tagged("d2", "Daniela joined the data team.", 4, &["daniela"]),
+        tagged("t1", "The dentist is Dr. Silva.", 5, &["dentist"]),
+        tagged(
+            "t2",
+            "The dentista appointment moved to Friday.",
+            6,
+            &["dentista"],
+        ),
+    ]
+}
+
+fn truncated(boundary: &Boundary) {
+    boundary.0.lock().unwrap().replies.push_back(Ok(json!({
+        "message":{"stop_reason":"length","content":[{"type":"text","text":"{\"pairs\":[{\"n\":1,"}]}
+    })));
+}
+
+/// How many pairs each judge call was shown.
+fn asked(boundary: &Boundary) -> Vec<usize> {
+    payloads(boundary, "router::complete")
+        .iter()
+        .map(|p| {
+            let prompt: Value = serde_json::from_str(p["prompt"].as_str().unwrap()).unwrap();
+            prompt["pairs"].as_array().unwrap().len()
+        })
+        .collect()
+}
+
+fn verdicts(boundary: &Boundary) -> Vec<(String, String, String)> {
+    ledger(boundary)
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| {
+            let s = |k: &str| e[k].as_str().unwrap().to_string();
+            (s("from"), s("verdict"), s("reason"))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_truncated_judge_reply_halves_the_batch_and_the_pass_makes_progress() {
+    let boundary = Boundary::with_rows(three_near_pairs());
+    truncated(&boundary);
+    boundary.decision(json!({"pairs":[{"n":1,"same":false,"reason":"two people"}]}));
+    boundary.decision(json!({"pairs":[
+        {"n":1,"same":false,"reason":"two people"},
+        {"n":2,"same":true,"reason":"the same dentist"}]}));
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+    assert_eq!(asked(&boundary), [3, 1, 2]);
+    assert_eq!(
+        verdicts(&boundary),
+        [
+            ("adriana".into(), "distinct".into(), "two people".into()),
+            ("daniela".into(), "distinct".into(), "two people".into()),
+            ("dentista".into(), "same".into(), "the same dentist".into()),
+        ]
+    );
+    assert_eq!(entities_of(&boundary, "t2"), json!(["dentist"]));
+    // Every pair has its verdict: the next pass asks nothing.
+    run(&boundary, deterministic_only(), false).await;
+    assert_eq!(model_calls(&boundary), 3);
+}
+
+#[tokio::test]
+async fn a_pair_whose_reply_never_parses_is_kept_apart_once_another_parses() {
+    let boundary = Boundary::with_rows(three_near_pairs());
+    // No reply parses at all: the judge itself fails, nothing is recorded.
+    for _ in 0..5 {
+        boundary.decision(json!("no verdict here"));
+    }
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert_eq!(asked(&boundary), [3, 1, 2, 1, 1]);
+    assert!(ledger(&boundary).is_null(), "{}", ledger(&boundary));
+    assert!(
+        response.banks[0]
+            .aliases
+            .iter()
+            .all(|p| p.reason == "waits for the judge")
+    );
+
+    // `daniela` never parses, alone or not; its siblings do.
+    boundary.decision(json!("no verdict here"));
+    boundary.decision(json!({"pairs":[{"n":1,"same":false,"reason":"two people"}]}));
+    boundary.decision(json!("no verdict here"));
+    boundary.decision(json!("no verdict here"));
+    boundary.decision(json!({"pairs":[{"n":1,"same":true,"reason":"the same dentist"}]}));
+    run(&boundary, deterministic_only(), false).await;
+    assert_eq!(asked(&boundary)[5..], [3, 1, 2, 1, 1]);
+    let kept_apart = verdicts(&boundary);
+    assert_eq!(kept_apart[1].0, "daniela");
+    assert_eq!(kept_apart[1].1, "distinct");
+    assert_eq!(kept_apart.len(), 3);
+    assert_eq!(entities_of(&boundary, "t2"), json!(["dentist"]));
+    // It blocks nothing: the next pass asks nothing.
+    run(&boundary, deterministic_only(), false).await;
+    assert_eq!(model_calls(&boundary), 10);
+}
+
+#[tokio::test]
+async fn user_is_never_retagged_by_a_merge_or_an_undo() {
+    use memory_consolidate::alias::UndoRequest;
+    // Seven handles plus `user`: the most a retag sends.
+    let eight = [
+        "build cache",
+        "postgres",
+        "redis",
+        "kafka",
+        "nginx",
+        "docker",
+        "rust",
+        "user",
+    ];
+    let mut rows = build_cache();
+    rows[2]["entities"] = json!(eight);
+    let boundary = Boundary::with_rows(rows);
+    run(&boundary, deterministic_only(), false).await;
+    let mut merged = eight;
+    merged[0] = "build-cache";
+    assert_eq!(entities_of(&boundary, "c"), json!(merged));
+    let deps = deps(deterministic_only());
+    let undo = |from: &str| UndoRequest {
+        bank: "offline".into(),
+        from: from.into(),
+    };
+    functions::alias_undo_with_transport(&deps, undo("build cache"), &boundary)
+        .await
+        .unwrap();
+    assert_eq!(entities_of(&boundary, "c"), json!(eight));
+
+    // A ledger entry naming `user`, written by hand, is never undone.
+    let entry = |from: &str, to: &str| {
+        json!({"from":from,"to":to,"tier":"spelling","verdict":"same","reason":"by hand",
+            "ms":1,"ids":["c"]})
+    };
+    boundary.0.lock().unwrap().state.insert(
+        "aliases:offline".into(),
+        json!([entry("user", "users"), entry("me", "user")]),
+    );
+    for from in ["user", "me"] {
+        let refused = functions::alias_undo_with_transport(&deps, undo(from), &boundary).await;
+        assert!(refused.is_err(), "{from}");
+    }
+    assert_eq!(entities_of(&boundary, "c"), json!(eight));
+    assert_eq!(payloads(&boundary, "memory::update").len(), 2);
+}
+
+#[tokio::test]
+async fn a_memory_with_more_than_eight_handles_is_never_retagged() {
+    use memory_consolidate::alias::UndoRequest;
+    // Eight handles plus `user`, as extraction writes them: an older memory
+    // worker cuts an update at eight, so a retag would drop `user`.
+    let nine = [
+        "build cache",
+        "postgres",
+        "redis",
+        "kafka",
+        "nginx",
+        "docker",
+        "rust",
+        "tokio",
+        "user",
+    ];
+    let mut rows = build_cache();
+    rows[2]["entities"] = json!(nine);
+    let boundary = Boundary::with_rows(rows);
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+    assert!(payloads(&boundary, "memory::update").is_empty());
+    assert_eq!(entities_of(&boundary, "c"), json!(nine));
+    assert!(!response.banks[0].aliases[0].applied);
+    assert_eq!(
+        notes_with(&response.banks[0], "more than 8 handles"),
+        1,
+        "{:?}",
+        response.banks[0].notes
+    );
+
+    // An undo leaves such a memory alone too.
+    let mut merged = nine;
+    merged[0] = "build-cache";
+    boundary.0.lock().unwrap().rows[2]["entities"] = json!(merged);
+    boundary.0.lock().unwrap().state.insert(
+        "aliases:offline".into(),
+        json!([{"from":"build cache","to":"build-cache","tier":"spelling","verdict":"same",
+            "reason":"same letters, separators aside","ms":1,"ids":["c"]}]),
+    );
+    let undone = functions::alias_undo_with_transport(
+        &deps(deterministic_only()),
+        UndoRequest {
+            bank: "offline".into(),
+            from: "build cache".into(),
+        },
+        &boundary,
+    )
+    .await
+    .unwrap();
+    assert_eq!(undone.skipped, ["c"]);
+    assert!(payloads(&boundary, "memory::update").is_empty());
+    assert_eq!(entities_of(&boundary, "c"), json!(merged));
 }

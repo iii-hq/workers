@@ -315,7 +315,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
           model(
             'llm_model',
             'Model',
-            'Used by the judge, semantic and verify tiers. Automatic uses the default model of the first usable provider.',
+            'Used by the judge, alias, semantic and verify tiers. Automatic uses the default model of the first usable provider.',
             { automatic: true },
           ),
           toggle('llm_assist_enabled', 'Judge tier', 'Confirms reorder merges and promotes standing instructions.'),
@@ -326,6 +326,12 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
             defaultValue: true,
           }),
           toggle('verify_enabled', 'Verify tier', 'Checks each note against the transcript it came from.'),
+          toggle(
+            'alias_merge_enabled',
+            'Alias merge',
+            'Retags memories whose entity handle is another spelling of a handle in use. A near spelling merges only after the model confirms it.',
+            { defaultValue: true },
+          ),
         ],
       },
     ],
@@ -341,6 +347,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'promote_corroboration_threshold',
       'semantic_enabled',
       'verify_enabled',
+      'alias_merge_enabled',
     ],
   },
   {

@@ -1,5 +1,6 @@
-//! The REST surface: `POST /memory-consolidate/run` and
-//! `POST /memory-consolidate/status` through the http worker.
+//! The REST surface: `POST /memory-consolidate/run`,
+//! `POST /memory-consolidate/status` and `POST /memory-consolidate/alias-undo`
+//! through the http worker.
 //!
 //! The worker observes `http::on-request` once per public function, with
 //! args `{ method: "POST", path }`, the path being the function id with
@@ -20,11 +21,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::functions::{self, Deps, RUN_ID, STATUS_ID};
+use crate::functions::{self, ALIAS_UNDO_ID, Deps, RUN_ID, STATUS_ID};
 
 pub const REST_ID: &str = "memory-consolidate::rest";
 pub const REST_DESC: &str = "Internal: target of the memory-consolidate REST routes, the http::on-request observers \
-     with args { method: POST, path: /memory-consolidate/run | /memory-consolidate/status }. \
+     with args { method: POST, path: /memory-consolidate/run | /memory-consolidate/status | \
+     /memory-consolidate/alias-undo }. \
      Receives the HttpRequest, runs the function the route's path names with the request's \
      JSON body, and returns the HttpResponse { status_code, body }: 200 with the function's \
      result, or 400/404/500 with { error }.";
@@ -34,8 +36,8 @@ pub const REST_DESC: &str = "Internal: target of the memory-consolidate REST rou
 /// channels); they are ignored.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RestRequest {
-    /// The matched route's path: `/memory-consolidate/run` or
-    /// `/memory-consolidate/status`.
+    /// The matched route's path: `/memory-consolidate/run`,
+    /// `/memory-consolidate/status` or `/memory-consolidate/alias-undo`.
     pub path: String,
     /// The request body parsed as JSON; `null` when it is empty or not JSON.
     #[serde(default)]
@@ -64,6 +66,8 @@ pub async fn handle(deps: &Deps, request: RestRequest) -> RestResponse {
         json_call(input, |r| functions::run(deps, r)).await
     } else if request.path == route_path(STATUS_ID) {
         json_call(input, |r| functions::status(deps, r)).await
+    } else if request.path == route_path(ALIAS_UNDO_ID) {
+        json_call(input, |r| functions::alias_undo(deps, r)).await
     } else {
         return response(
             404,
@@ -100,7 +104,7 @@ fn response(status_code: u16, body: Value) -> RestResponse {
     RestResponse { status_code, body }
 }
 
-/// Register [`REST_ID`], the target of both REST routes.
+/// Register [`REST_ID`], the target of every REST route.
 pub fn register(iii: &IIIClient, deps: &Arc<Deps>) {
     let deps = deps.clone();
     iii.register_function(
@@ -146,6 +150,7 @@ mod tests {
     fn routes_are_the_function_ids_with_slashes() {
         assert_eq!(route_path(RUN_ID), "/memory-consolidate/run");
         assert_eq!(route_path(STATUS_ID), "/memory-consolidate/status");
+        assert_eq!(route_path(ALIAS_UNDO_ID), "/memory-consolidate/alias-undo");
     }
 
     /// The run route reads `bank` from the body: a bank outside the
