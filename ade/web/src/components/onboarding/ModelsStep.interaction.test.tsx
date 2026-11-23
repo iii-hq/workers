@@ -374,6 +374,45 @@ describe('ModelsStep after Connect failed', () => {
     expect(onNext).toHaveBeenCalledTimes(1)
   })
 
+  it('hands the focus to Continue when the last pending checkbox is cleared', () => {
+    act(() =>
+      root.render(
+        <ModelsStep
+          onboarding={controller({
+            providers: [
+              {
+                id: 'claude-code',
+                title: 'Claude Code',
+                configured: false,
+                available: true,
+                ownsAuthentication: true,
+                modelCount: 13,
+              },
+            ],
+            installed: new Set(['llm-router', 'provider-claude-code']),
+          })}
+          onBack={() => undefined}
+          onNext={() => undefined}
+        />,
+      ),
+    )
+    const codex = checkbox('Codex')
+    // Ticking it makes Connect the primary action; clearing it with the
+    // keyboard focus on the checkbox must hand that focus to Continue.
+    if (!codex.checked) act(() => codex.click())
+    expect(
+      ([...container.querySelectorAll('footer button')].at(-1) as HTMLElement)
+        .textContent,
+    ).toMatch(/^Connect/)
+    act(() => codex.focus())
+    act(() => codex.click())
+    const primary = [...container.querySelectorAll('footer button')].at(
+      -1,
+    ) as HTMLButtonElement
+    expect(primary.textContent).toBe('Continue')
+    expect(document.activeElement).toBe(primary)
+  })
+
   it('makes Continue the primary, focused action when another provider works', async () => {
     const onNext = vi.fn()
     act(() =>

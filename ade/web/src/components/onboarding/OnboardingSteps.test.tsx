@@ -302,6 +302,28 @@ describe('ExploreStep', () => {
   // QA 2026-11-16 F6: the picks drew round radio dots while Models and
   // Judge use checkboxes. Every choice list is a checkbox (single choice
   // ticks one).
+  it('names a template kit that failed to install and offers a retry', () => {
+    const html = renderToStaticMarkup(
+      <ExploreStep
+        connected
+        prompts={PROMPTS}
+        onPrompt={noop}
+        tour={{ kind: 'idle' }}
+        onTour={noop}
+        onOwn={noop}
+        onFinish={noop}
+        onBack={noop}
+        failedKits={[
+          { kit: 'iii/deepwork', state: 'failed', message: 'registry offline' },
+        ]}
+      />,
+    )
+    expect(html).toContain(
+      'The iii/deepwork kit could not be installed: registry offline',
+    )
+    expect(html).toContain('Try again')
+  })
+
   it('draws each pick as a checkbox, never a radio dot', () => {
     const html = explore(true)
     expect(html.match(/data-pick-mark="checkbox"/g)).toHaveLength(3)

@@ -34,6 +34,7 @@ import {
 import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
   onboardingKitsSnapshot,
+  retryOnboardingKit,
   startOnboardingKits,
   subscribeOnboardingKits,
 } from '@/lib/onboarding/kits'
@@ -177,6 +178,9 @@ export function OnboardingWizardHost() {
           !cancelled &&
           shouldAutoOpenOnboarding(state, browserIsAutomated(), models)
         ) {
+          // Same default as a manual reopen: past the welcome once setup
+          // has been finished.
+          if (state.status === 'completed') setStep('models')
           setOpen(true)
         }
       })
@@ -335,6 +339,34 @@ export function OnboardingWizardHost() {
     record,
   ])
 
+  // Each time the dialog closes a new visit starts. A run that outlives the
+  // visit it started in (a Connect or a Chromium download left running
+  // after Close) must not move, or finish, a later one.
+  const [visit, setVisit] = useState(0)
+  useEffect(() => {
+    if (!open) setVisit((current) => current + 1)
+  }, [open])
+
+  // Models and Browser ask to move on when their run returns, from a
+  // callback made before the run started. The move happens here instead,
+  // after that run's results have rendered, so the next step and the saved
+  // summary come from the settled state rather than the stale callback.
+  const [advance, setAdvance] = useState<{
+    from: WizardStepId
+    visit: number
+  } | null>(null)
+  const requestAdvance = useCallback(
+    (from: WizardStepId, at: number) => setAdvance({ from, visit: at }),
+    [],
+  )
+  useEffect(() => {
+    if (!advance) return
+    setAdvance(null)
+    if (!open || advance.visit !== visit || step !== advance.from) return
+    if (advance.from === 'models' && showBrowser) go('browser')
+    else finishSetup()
+  }, [advance, open, visit, step, showBrowser, go, finishSetup])
+
   const start = useCallback(
     (choice: FinishChoice) => {
       report('finish', finishStep(choice))
@@ -454,8 +486,13 @@ export function OnboardingWizardHost() {
       ) {
         return
       }
-      const primary = primaryAction(content.current)
-      if (!primary) return
+      // The step's real primary button is the last one in its footer. While
+      // it is disabled (Check again while a check runs), Enter does nothing:
+      // it must never fall back to Skip or Back.
+      const buttons =
+        content.current?.querySelectorAll<HTMLButtonElement>('footer button')
+      const primary = buttons?.[buttons.length - 1]
+      if (!primary || primary.disabled) return
       event.preventDefault()
       primary.click()
     }
@@ -547,14 +584,14 @@ export function OnboardingWizardHost() {
                   <ModelsStep
                     onboarding={onboarding}
                     onBack={() => go('welcome')}
-                    onNext={() => (showBrowser ? go('browser') : finishSetup())}
+                    onNext={() => requestAdvance('models', visit)}
                   />
                 ) : step === 'browser' ? (
                   <BrowserStep
                     onboarding={onboarding}
                     position={stepPosition(steps, 'browser')}
                     onBack={() => go('models')}
-                    onNext={finishSetup}
+                    onNext={() => requestAdvance('browser', visit)}
                   />
                 ) : (
                   <ExploreStep
@@ -570,6 +607,10 @@ export function OnboardingWizardHost() {
                     onOwn={() => start({ kind: 'own' })}
                     onFinish={() => start({ kind: 'finish' })}
                     onBack={() => go(showBrowser ? 'browser' : 'models')}
+                    failedKits={kits.filter(
+                      (install) => install.state === 'failed',
+                    )}
+                    onRetryKit={(kit) => void retryOnboardingKit(kit)}
                   />
                 )}
               </m.div>

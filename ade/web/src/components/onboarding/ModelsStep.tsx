@@ -196,7 +196,12 @@ export function ModelsStep({
   useEffect(() => {
     if (!continuePrimary || busy) return
     const active = document.activeElement
-    if (active?.matches('input, textarea, select, [contenteditable="true"]')) {
+    // Text entry only: a checkbox that was just unticked hands over.
+    if (
+      active?.matches(
+        'textarea, select, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"])',
+      )
+    ) {
       return
     }
     continueRef.current?.focus()

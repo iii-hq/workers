@@ -17,6 +17,7 @@ import { m, useReducedMotion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { DEFAULT_AGENT_ID } from '@/components/chat/agent-defaults'
 import { Skeleton } from '@/components/ui/Skeleton'
+import type { KitInstall } from '@/lib/onboarding/kits'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { cn } from '@/lib/utils'
 import { Button } from './controls'
@@ -380,6 +381,8 @@ export function ExploreStep({
   onOwn,
   onFinish,
   onBack,
+  failedKits = [],
+  onRetryKit = () => undefined,
 }: {
   /** A model is connected: the examples and the tour can run. */
   connected: boolean
@@ -396,6 +399,14 @@ export function ExploreStep({
   onFinish: () => void
   /** Back to the last setup step. */
   onBack: () => void
+  /**
+   * Template kits whose install failed before the Directory saved a plan:
+   * nothing else shows them (a planned kit waits in Directory → Kits), so
+   * the last step says so and offers to retry. Kits also install again on
+   * the next page load.
+   */
+  failedKits?: readonly KitInstall[]
+  onRetryKit?: (kit: string) => void
 }) {
   const [examples, setExamples] = useState(false)
   const [picked, setPicked] = useState<ChoiceId | null>(null)
@@ -566,6 +577,26 @@ export function ExploreStep({
           The tour could not start: {tour.error}
         </p>
       ) : null}
+      {failedKits.map((install) => (
+        <div
+          key={install.kit}
+          role="alert"
+          className="-mt-2 flex items-center justify-between gap-3 px-1 text-pretty text-sm leading-5 text-alert-strong"
+        >
+          <span className="min-w-0">
+            The {install.kit} kit could not be installed
+            {install.message ? `: ${install.message}` : '.'}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            onClick={() => onRetryKit(install.kit)}
+          >
+            Try again
+          </Button>
+        </div>
+      ))}
     </StepLayout>
   )
 }
