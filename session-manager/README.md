@@ -103,7 +103,7 @@ function's registered schema — see `iii call engine::workers::info name=sessio
 
 Two functions write a session's title, description and metadata.
 `session::set-meta` replaces the whole metadata map with the one it is given.
-`session::patch-meta { session_id, title?, description?, set?, unset? }`
+`session::patch-meta { session_id, title?, description?, set?, unset?, touch? }`
 merges on the server, under the session's write lock: each key in `set`
 replaces that top-level key whole, each key in `unset` is removed, and every
 key the patch does not name stays as stored, so two writers that each change
@@ -111,7 +111,11 @@ their own keys never lose one another's. A key named in both `set` and
 `unset` is refused (`session/invalid_request`), an unknown session is
 `session/not_found`, and a patch that changes nothing writes nothing. It
 calls `session::on-meta-updated` once, with the merged metadata, and answers
-`{ meta }`. Write metadata with `patch-meta` unless you mean to replace it all.
+`{ meta }`. Like `set-meta`, a write bumps `updated_at`, which orders
+`session::list`; `touch: false` keeps it, for writes that are not activity
+(the harness moving a conversation into a project) and must not re-order
+lists; the write and its event happen all the same. Write metadata with
+`patch-meta` unless you mean to replace it all.
 `session::messages` items carry the entry `origin` (hook annotations —
 e.g. which memory bank fed a generate), so consumers can render
 provenance without a second lookup.

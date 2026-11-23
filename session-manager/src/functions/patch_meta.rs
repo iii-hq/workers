@@ -27,6 +27,11 @@ pub struct PatchMetaRequest {
     /// Top-level metadata keys to remove. A key named in both `set` and
     /// `unset` is refused (`session/invalid_request`).
     pub unset: Option<Vec<String>>,
+    /// Bump `updated_at` (default true, as `session::set-meta` does). `false`
+    /// keeps it as it is, for writes that are not activity (a conversation
+    /// moved into a project) and must not re-order lists sorted by it; the
+    /// write and its `session::on-meta-updated` happen all the same.
+    pub touch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]

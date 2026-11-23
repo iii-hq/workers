@@ -386,7 +386,8 @@ impl SessionService {
     /// Merge metadata keys under the session's write lock: each `set` key is
     /// replaced whole, each `unset` key removed, every other key kept. One
     /// `session::on-meta-updated` with the merged map; nothing is written
-    /// (and nothing emitted) when the patch changes nothing.
+    /// (and nothing emitted) when the patch changes nothing. `touch: false`
+    /// keeps `updated_at`.
     pub async fn patch_meta(&self, req: PatchMetaRequest) -> ServiceResult<PatchMetaResponse> {
         let set = req.set.unwrap_or_default();
         let unset = req.unset.unwrap_or_default();
@@ -424,7 +425,9 @@ impl SessionService {
         }
         meta = next;
         let now = self.clock.now_ms();
-        meta.updated_at = now;
+        if req.touch.unwrap_or(true) {
+            meta.updated_at = now;
+        }
         self.store.put_meta(&meta).await?;
 
         let event = EmittableEvent {

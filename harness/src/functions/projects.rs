@@ -370,9 +370,7 @@ pub async fn assign(
         if current == Some(project.as_str()) {
             continue;
         }
-        session
-            .patch_meta(&id, &MetaPatch::set(METADATA_KEY, json!(project)))
-            .await?;
+        session.patch_meta(&id, &membership_patch(&project)).await?;
         updated += 1;
     }
     Ok(ProjectAssignResponse { updated })
@@ -389,6 +387,20 @@ async fn emit_changed(deps: &Deps, revision: u64, project_id: &str, change: &str
 }
 
 // ── membership ──
+
+/// The write that puts a conversation in `project` (an id or `"none"`).
+/// Membership is not activity: it keeps the session's `updated_at`, so
+/// bringing, moving or releasing conversations never re-orders the lists
+/// (D50).
+pub fn membership_patch(project: &str) -> MetaPatch {
+    MetaPatch::set(METADATA_KEY, json!(project)).quiet()
+}
+
+/// The write that takes a conversation out of a deleted project, keeping its
+/// `updated_at` (D50).
+pub fn release_patch() -> MetaPatch {
+    MetaPatch::unset(METADATA_KEY).quiet()
+}
 
 /// The named sessions and every descendant: sub-agents through
 /// `parent_session_id`, side chats through `side_chat_of`, at any depth.
@@ -468,7 +480,7 @@ async fn bring_existing(
     let mut moved = 0;
     for id in bring_candidates(&sessions, project, all_projects, added) {
         session
-            .patch_meta(&id, &MetaPatch::set(METADATA_KEY, json!(project.id)))
+            .patch_meta(&id, &membership_patch(&project.id))
             .await?;
         moved += 1;
     }
@@ -487,7 +499,7 @@ async fn release(deps: &Deps, project_id: &str) -> Result<u64, HarnessError> {
         .filter(|s| s.meta_str(METADATA_KEY) == Some(project_id))
     {
         session
-            .patch_meta(&member.session_id, &MetaPatch::unset(METADATA_KEY))
+            .patch_meta(&member.session_id, &release_patch())
             .await?;
         released += 1;
     }
@@ -532,7 +544,7 @@ pub async fn stamp_on_send(
         return;
     };
     if let Err(error) = session
-        .patch_meta(session_id, &MetaPatch::set(METADATA_KEY, json!(project.id)))
+        .patch_meta(session_id, &membership_patch(&project.id))
         .await
     {
         tracing::warn!(session_id, %error, "could not stamp the conversation's project");
@@ -802,6 +814,245 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(taken.rejected_code().as_deref(), Some("name_taken"));
+    }
+
+    /// A fake session-manager on a fake engine: `session::list` (with the
+    /// metadata subset filter), `session::get` and `session::patch-meta`
+    /// over `sessions`, bumping `updated_at` unless a patch says
+    /// `touch: false`, as session-manager does. Returns the deps, the
+    /// sessions and every patch-meta payload it received.
+    async fn fake_session_manager(
+        dir: &std::path::Path,
+        sessions: Vec<Value>,
+    ) -> (
+        Deps,
+        std::sync::Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
+        std::sync::Arc<Mutex<Vec<Value>>>,
+    ) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let store = std::sync::Arc::new(Mutex::new(
+            sessions
+                .into_iter()
+                .map(|s| (s["session_id"].as_str().unwrap().to_string(), s))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        ));
+        let patches = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (served, recorded) = (store.clone(), patches.clone());
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let hello = json!({"type": "workerregistered", "worker_id": "w",
+                "features": ["observe.v2"]});
+            socket
+                .send(Message::Text(hello.to_string().into()))
+                .await
+                .unwrap();
+            let mut clock = 10_000i64;
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(text) = frame.to_text() else { continue };
+                let Ok(message) = serde_json::from_str::<Value>(text) else {
+                    continue;
+                };
+                if message["type"] != "invokefunction" || message["invocation_id"].is_null() {
+                    continue;
+                }
+                let function = message["function_id"].as_str().unwrap_or_default();
+                let data = &message["data"];
+                let result = {
+                    let mut store = served.lock().unwrap();
+                    match function {
+                        "session::list" => {
+                            let filter = data["metadata"].as_object().cloned().unwrap_or_default();
+                            let sessions: Vec<Value> = store
+                                .values()
+                                .filter(|s| {
+                                    filter.iter().all(|(k, v)| s["metadata"].get(k) == Some(v))
+                                })
+                                .cloned()
+                                .collect();
+                            json!({ "sessions": sessions })
+                        }
+                        "session::get" => store
+                            .get(data["session_id"].as_str().unwrap_or_default())
+                            .map(|meta| json!({ "meta": meta }))
+                            .unwrap_or(Value::Null),
+                        "session::patch-meta" => {
+                            recorded.lock().unwrap().push(data.clone());
+                            let id = data["session_id"].as_str().unwrap_or_default();
+                            let meta = store.get_mut(id).unwrap();
+                            let metadata = meta["metadata"].as_object_mut().unwrap();
+                            for key in data["unset"].as_array().into_iter().flatten() {
+                                metadata.remove(key.as_str().unwrap());
+                            }
+                            for (key, value) in data["set"].as_object().into_iter().flatten() {
+                                metadata.insert(key.clone(), value.clone());
+                            }
+                            clock += 1000;
+                            if data["touch"] != json!(false) {
+                                meta["updated_at"] = json!(clock);
+                            }
+                            json!({ "meta": meta })
+                        }
+                        "engine::workers::register" => json!({ "success": true }),
+                        _ => Value::Null,
+                    }
+                };
+                let reply = json!({"type": "invocationresult",
+                    "invocation_id": message["invocation_id"],
+                    "function_id": function, "result": result});
+                if socket
+                    .send(Message::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let iii = std::sync::Arc::new(iii_sdk::register_worker(
+            &url,
+            iii_sdk::InitOptions::default(),
+        ));
+        let cfg = crate::config::WorkerConfig {
+            folders_file_path: dir.join("harness-folders.json").to_string_lossy().into(),
+            projects_file_path: dir.join("harness-projects.json").to_string_lossy().into(),
+            session_timeout_ms: 5_000,
+            ..crate::config::WorkerConfig::default()
+        };
+        let deps = Deps::new(
+            iii.clone(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(cfg))),
+            crate::discovery::new_cell(),
+            crate::skills::new_cell(),
+            crate::events::TurnEvents::register(&iii),
+            crate::hooks::HookRegistry::register(&iii),
+        );
+        (deps, store, patches)
+    }
+
+    fn stored(id: &str, metadata: Value) -> Value {
+        json!({ "session_id": id, "title": id, "description": "", "status": "done",
+                "message_count": 2, "created_at": 100, "updated_at": 500, "metadata": metadata })
+    }
+
+    /// D50: bringing (create and update), moving (assign, with descendants),
+    /// releasing (delete) and stamping on send write `project_id` with
+    /// `touch: false`, so no conversation's `updated_at` moves and the lists
+    /// keep their order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn membership_writes_never_move_updated_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = vec![
+            stored("s_web", json!({ "fs_scope": { "root": "/w/web" } })),
+            stored("s_api", json!({ "fs_scope": { "root": "/w/api/src" } })),
+            stored(
+                "s_sub",
+                json!({ "fs_scope": { "root": "/w/web" }, "parent_session_id": "s_web" }),
+            ),
+            stored("s_infra", json!({ "fs_scope": { "root": "/w/infra" } })),
+            stored("s_new", json!({ "fs_scope": { "root": "/w/web/x" } })),
+        ];
+        let (deps, store, patches) = fake_session_manager(dir.path(), sessions).await;
+        let updated_at = |id: &str| store.lock().unwrap()[id]["updated_at"].clone();
+        let project_of = |id: &str| store.lock().unwrap()[id]["metadata"]["project_id"].clone();
+
+        let created = create(
+            &deps,
+            ProjectCreateRequest {
+                name: "acme".into(),
+                color: "blue".into(),
+                folders: vec!["/w/web".into(), "/w/api".into()],
+                bring_existing: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            created.moved, 3,
+            "s_web, s_api and s_new are roots in its folders"
+        );
+        let updated = update(
+            &deps,
+            ProjectUpdateRequest {
+                id: created.project.id.clone(),
+                name: None,
+                color: None,
+                folders: Some(vec!["/w/web".into(), "/w/api".into(), "/w/infra".into()]),
+                account: None,
+                autocompact: None,
+                bring_existing: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.moved, 1, "only the folder this update added");
+        assert_eq!(project_of("s_infra"), json!(created.project.id));
+
+        let other = create(
+            &deps,
+            ProjectCreateRequest {
+                name: "other".into(),
+                color: "rose".into(),
+                folders: vec!["/w/elsewhere".into()],
+                bring_existing: None,
+            },
+        )
+        .await
+        .unwrap();
+        let moved = assign(
+            &deps,
+            ProjectAssignRequest {
+                session_ids: vec!["s_web".into()],
+                project: other.project.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(moved.updated, 2, "the conversation and its subagent");
+        assert_eq!(project_of("s_sub"), json!(other.project.id));
+
+        let ProjectDeleteResponse::Project(released) = delete(
+            &deps,
+            ProjectDeleteRequest {
+                id: Some(created.project.id.clone()),
+                path: None,
+            },
+        )
+        .await
+        .unwrap() else {
+            panic!("delete by id releases its conversations");
+        };
+        assert_eq!(released.released, 3);
+        assert_eq!(project_of("s_api"), Value::Null);
+
+        let session = deps.session().await;
+        stamp_on_send(&deps, &session, "s_api", None, Some("/w/elsewhere/repo")).await;
+        assert_eq!(project_of("s_api"), json!(other.project.id));
+
+        for id in ["s_web", "s_api", "s_sub", "s_infra", "s_new"] {
+            assert_eq!(updated_at(id), json!(500), "{id} kept its updated_at");
+        }
+        let patches = patches.lock().unwrap();
+        assert_eq!(patches.len(), 3 + 1 + 2 + 3 + 1, "{patches:?}");
+        assert!(
+            patches.iter().all(|p| p["touch"] == json!(false)),
+            "every membership write is touch: false: {patches:?}"
+        );
+    }
+
+    #[test]
+    fn membership_patches_keep_updated_at_and_descriptions_do_not() {
+        let patch = membership_patch("prj_1");
+        assert!(!patch.touch);
+        assert_eq!(patch.set["project_id"], "prj_1");
+        let release = release_patch();
+        assert!(!release.touch);
+        assert_eq!(release.unset, vec!["project_id".to_string()]);
+        assert!(MetaPatch::default().touch, "other writes keep the default");
     }
 
     #[test]

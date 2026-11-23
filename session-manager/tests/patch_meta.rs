@@ -47,6 +47,7 @@ async fn concurrent_patches_of_different_keys_all_land() {
                     description: None,
                     set: Some(map(json!({ format!("k{index}"): index }))),
                     unset: None,
+                    touch: None,
                 })
                 .await
                 .map(|(_, events)| events.len())
@@ -63,6 +64,7 @@ async fn concurrent_patches_of_different_keys_all_land() {
             description: None,
             set: None,
             unset: None,
+            touch: None,
         })
         .await
         .unwrap();
@@ -88,6 +90,7 @@ async fn two_racing_patches_of_one_key_leave_one_whole_value() {
         description: None,
         set: Some(map(json!({ "description_history": value }))),
         unset: None,
+        touch: None,
     };
     let (a, b) = tokio::join!(
         service.patch_meta(patch(json!([{ "text": "a" }]))),
@@ -102,6 +105,7 @@ async fn two_racing_patches_of_one_key_leave_one_whole_value() {
             description: None,
             set: None,
             unset: None,
+            touch: None,
         })
         .await
         .unwrap();
@@ -110,4 +114,50 @@ async fn two_racing_patches_of_one_key_leave_one_whole_value() {
         history == json!([{ "text": "a" }]) || history == json!([{ "text": "b" }]),
         "{history}"
     );
+}
+
+/// chat-projects D50: a membership write (`touch: false`) keeps `updated_at`,
+/// still emits once; the default bumps it; a no-op stays silent.
+#[tokio::test]
+async fn touch_false_keeps_updated_at_and_still_emits_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service(dir.path());
+    let (created, _) = service.create(CreateRequest::default()).await.unwrap();
+    let before = created.meta.updated_at;
+    let patch = |touch: Option<bool>, project: &str| PatchMetaRequest {
+        session_id: created.session_id.clone(),
+        title: None,
+        description: None,
+        set: Some(map(json!({ "project_id": project }))),
+        unset: None,
+        touch,
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let (quiet, events) = service
+        .patch_meta(patch(Some(false), "prj_1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        quiet.meta.updated_at, before,
+        "touch: false keeps updated_at"
+    );
+    assert_eq!(events.len(), 1, "the write is still announced");
+    assert_eq!(
+        quiet.meta.metadata.as_ref().unwrap()["project_id"],
+        json!("prj_1")
+    );
+
+    let (_, events) = service
+        .patch_meta(patch(Some(false), "prj_1"))
+        .await
+        .unwrap();
+    assert!(events.is_empty(), "a no-op stays silent");
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let (touched, events) = service.patch_meta(patch(None, "prj_2")).await.unwrap();
+    assert!(
+        touched.meta.updated_at > before,
+        "the default bumps updated_at"
+    );
+    assert_eq!(events.len(), 1);
 }

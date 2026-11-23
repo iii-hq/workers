@@ -52,6 +52,47 @@ Feature: session::patch-meta — merge metadata keys on the server
     And delivery 0 to "ui::meta" has "metadata.owner" = "u_1"
     And delivery 0 to "ui::meta" has "metadata.tag" = "keep"
 
+  # Prevents: membership writes (a conversation moved into a project)
+  # re-ordering lists sorted by updated_at (chat-projects D50).
+  Scenario: touch false keeps updated_at and still emits once
+    Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"
+    Given the clock advances by 250 ms
+    When I call "session::patch-meta" with:
+      """
+      { "session_id": "s_001", "set": { "project_id": "prj_1" }, "touch": false }
+      """
+    Then the call succeeds
+    And the response field "meta.metadata.project_id" is "prj_1"
+    And the response field "meta.updated_at" is 1000000
+    And function "ui::meta" received 1 "session::on-meta-updated" delivery
+    And delivery 0 to "ui::meta" has "metadata.project_id" = "prj_1"
+    And delivery 0 to "ui::meta" has "metadata.owner" = "u_1"
+    When I call "session::get" with:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the response field "meta.updated_at" is 1000000
+    And the response field "meta.metadata.project_id" is "prj_1"
+
+  # Prevents: the default changing set-meta's "a write is activity" rule.
+  Scenario: the default touch bumps updated_at
+    Given the clock advances by 250 ms
+    When I call "session::patch-meta" with:
+      """
+      { "session_id": "s_001", "set": { "project_id": "prj_1" }, "touch": true }
+      """
+    Then the response field "meta.updated_at" is 1000250
+
+  # Prevents: a quiet no-op still announcing itself.
+  Scenario: a touch false patch that changes nothing is silent
+    Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"
+    When I call "session::patch-meta" with:
+      """
+      { "session_id": "s_001", "set": { "owner": "u_1" }, "touch": false }
+      """
+    Then the call succeeds
+    And function "ui::meta" received no deliveries
+
   # Prevents: an ambiguous patch silently picking a winner.
   Scenario: a key in both set and unset is refused
     Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"

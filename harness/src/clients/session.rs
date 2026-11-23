@@ -159,15 +159,38 @@ struct SummaryPage {
 
 /// A `session::patch-meta` request: `set` replaces each named top-level
 /// metadata key whole, `unset` removes keys, every other key stays.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MetaPatch {
     pub title: Option<String>,
     pub description: Option<String>,
     pub set: serde_json::Map<String, Value>,
     pub unset: Vec<String>,
+    /// Bump the session's `updated_at` (the default). `false` for writes that
+    /// are not activity and must not re-order lists sorted by it: project
+    /// membership (chat-projects D50). A session-manager without
+    /// `session::patch-meta` gets a `set-meta`, which always bumps it.
+    pub touch: bool,
+}
+
+impl Default for MetaPatch {
+    fn default() -> Self {
+        Self {
+            title: None,
+            description: None,
+            set: serde_json::Map::new(),
+            unset: Vec::new(),
+            touch: true,
+        }
+    }
 }
 
 impl MetaPatch {
+    /// The same patch, keeping the session's `updated_at` (`touch: false`).
+    pub fn quiet(mut self) -> Self {
+        self.touch = false;
+        self
+    }
+
     /// A patch that writes one key.
     pub fn set(key: &str, value: Value) -> Self {
         let mut patch = Self::default();
@@ -196,6 +219,9 @@ impl MetaPatch {
         }
         if !self.unset.is_empty() {
             payload["unset"] = json!(self.unset);
+        }
+        if !self.touch {
+            payload["touch"] = json!(false);
         }
         payload
     }

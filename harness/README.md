@@ -706,7 +706,9 @@ keeps it out on purpose. `bring_existing` stamps the root conversations whose
 sub-agents (`parent_session_id`) and side chats (`side_chat_of`).
 `harness::send` stamps `project_id` on a conversation that has none when its
 working folder belongs to a project, and a sub-agent copies its parent's.
-Every write goes through `session::patch-meta`. A refusal is one JSON object
+Every write goes through `session::patch-meta`, with `touch: false`: moving
+a conversation in or out of a project keeps its `updated_at`, so the lists
+sorted by it keep their order. A refusal is one JSON object
 in the error message, `{ code, message, ... }`: `name_taken`, `folder_taken`
 (with `project_id`, `project_name`), `bad_name`, `bad_color`, `no_folders`,
 `too_many_folders`, `folder_not_absolute`, `not_found`, `bad_request`.
