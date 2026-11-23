@@ -10,6 +10,7 @@ import {
   engineFunctionsListEmpty,
   harnessObserveState,
 } from '@/stories/fixtures/engine-fixtures'
+import type { FunctionCallMessage } from '@/types/chat'
 import { FunctionCallCard } from './FunctionCallCard'
 import { FIRST_PARTY_RENDERERS } from './renderer-registry'
 
@@ -57,6 +58,61 @@ describe('featured first-party renderers', () => {
     )
     expect(collapsed).not.toContain('no functions returned')
     expect(expanded).toContain('no functions returned')
+  })
+})
+
+describe('spawn card while the call is in flight', () => {
+  const base: FunctionCallMessage = {
+    id: 'fc-spawn',
+    role: 'function-call',
+    functionId: 'harness::spawn',
+    functionCallId: 'toolu_spawn',
+    description: 'Starting the lead for KAN-47 (one-pager)',
+    input: {},
+    running: true,
+    createdAt: 0,
+  }
+
+  it('claims nothing while the arguments are still streaming', () => {
+    // Mid-stream the harness hands the console a hollow request: the
+    // wrapper's `function` resolved, the payload still being written.
+    const streaming: FunctionCallMessage = {
+      ...base,
+      input: { _streaming: '{"task": "Lead the KAN-47 one-pager: read' },
+    }
+    const spawn = FIRST_PARTY_RENDERERS.find(
+      (renderer) => renderer.id === 'first-party/harness-spawn',
+    )
+    expect(spawn?.tryRenderRunning?.(streaming)).toBeNull()
+
+    const collapsed = renderToStaticMarkup(
+      <FunctionCallCard message={streaming} />,
+    )
+    expect(collapsed).toContain('Starting the lead for KAN-47 (one-pager)')
+    expect(collapsed).not.toContain('data-function-display-slot')
+    expect(collapsed).not.toContain('no task')
+    expect(collapsed).not.toContain('creating the child session')
+    expect(collapsed).not.toContain('spawning')
+
+    const expanded = renderToStaticMarkup(
+      <FunctionCallCard message={streaming} defaultOpen />,
+    )
+    expect(expanded).toContain('streaming…')
+    expect(expanded).toContain('Lead the KAN-47 one-pager')
+    expect(expanded).not.toContain('no task')
+  })
+
+  it('describes the child once the request is whole and the spawn runs', () => {
+    const whole: FunctionCallMessage = {
+      ...base,
+      input: { task: 'Lead the KAN-47 one-pager.', display: { name: 'Lead' } },
+    }
+    const collapsed = renderToStaticMarkup(<FunctionCallCard message={whole} />)
+    expect(collapsed).toContain('data-function-display-slot')
+    expect(collapsed).toContain('spawning')
+    expect(collapsed).toContain('Lead the KAN-47 one-pager.')
+    expect(collapsed).toContain('creating the child session')
+    expect(collapsed).not.toContain('no task')
   })
 })
 
