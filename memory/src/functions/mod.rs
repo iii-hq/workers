@@ -70,8 +70,9 @@ pub const DELETE_DESC: &str = "Delete a memory (tombstone: sets invalid_at). It 
      bank's, or one recalled from a bank read under it); a pinned memory is refused.";
 
 pub const PIN_ID: &str = "memory::pin";
-pub const PIN_DESC: &str = "Pin or unpin a memory. Pinned memories rank higher in recall and are untouchable by \
-     every automatic path. Refused from inside a turn.";
+pub const PIN_DESC: &str = "Pin or unpin a memory. A pinned memory is shown on every turn that reads its bank, \
+     first in the memory message and under a cap (`pinned_limit`, `pinned_max_chars`), ranks \
+     higher in recall and is untouchable by every automatic path. Refused from inside a turn.";
 
 pub const SUPERSEDE_ID: &str = "memory::supersede";
 pub const SUPERSEDE_DESC: &str = "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \

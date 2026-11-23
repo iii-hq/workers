@@ -21,7 +21,7 @@ import {
   X,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { type MemoryItem, recall } from './memory-data'
+import { type MemoryItem, pinTitle, recall } from './memory-data'
 import { useDirtyDelta } from './widgets'
 
 /**
@@ -169,11 +169,7 @@ function FactRow({
           onClick={() => onPin(memory)}
           disabled={busy || superseded}
           aria-label={memory.pinned ? 'unpin memory' : 'pin memory'}
-          title={
-            memory.pinned
-              ? 'unpin (allows automatic consolidation again)'
-              : 'pin (untouchable by every automatic path)'
-          }
+          title={pinTitle(memory.pinned)}
         >
           {memory.pinned ? (
             <PinOff size={16} aria-hidden />

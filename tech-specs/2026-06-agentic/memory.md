@@ -91,8 +91,9 @@ Consumer-facing:
   repeat from inside a turn adds no corroboration: it refreshes the stated time of the turn's own
   note and leaves any other memory unchanged.
 - `memory::get` / `memory::list` / `memory::update` / `memory::delete` / `memory::pin` — memory
-  CRUD; delete tombstones, update bumps a revision, pinned records are untouchable by every
-  automatic path.
+  CRUD; delete tombstones, update bumps a revision, pinned records are shown on every turn of
+  their bank and are untouchable by every automatic path. Only a person pins (console, REST or
+  CLI); a pin from inside a turn is refused.
 - `memory::recall` — rank a bank's memories against a query with the injection hook's exact
   scorer; a query matching a superseded memory's words returns the live memory that replaced
   it, never the retired text (the raw `lexical` and `semantic` modes do not);
@@ -150,14 +151,18 @@ at-least-once, unordered.
 
 - `harness::hook::pre-generate` (priority 100, `on_error: fail_open`) — injects the bank's rules
   into the system prompt once per session (frozen on its first step, then verbatim) and, on each
-  turn's first step only, up to `recall_limit` recalled memories as ONE appended message (the
+  turn's first step only, ONE appended message: the bank's pinned memories first, a turn with no
+  query included (the same layer rules as recall; at most `pinned_limit` = 5 lines within
+  `pinned_max_chars` = 1,000 characters, the most recently updated first, the rest named in
+  `memory_pinned_skipped`; outside recall's slots and budget, never told twice, and not sent again
+  while the window shows them), then up to `recall_limit` recalled memories (the
   harness persists appended messages and replays them on later steps). A rules change, a bank
   switch or memory turned off appends one update message instead of editing the prompt; whether
   one is due is read from the window the step sends (its newest rules update, else the frozen
   section), so a lost or compacted-away update is re-sent and a delivered one never is. Hook
-  annotations (`memory_bank`, `memory_recalled`, `memory_ids`, `memory_rules`,
+  annotations (`memory_bank`, `memory_recalled`, `memory_ids` (pinned lines first), `memory_rules`,
   `memory_rules_truncated`, `memory_rules_updated`, `memory_retrieval`, `memory_recall`,
-  `memory_recall_skip_reason`, `memory_injected_chars`) land on the entry
+  `memory_recall_skip_reason`, `memory_pinned_skipped`, `memory_injected_chars`) land on the entry
   origin — which bank and which memories fed a turn is product surface, not plumbing.
 - `harness::turn-completed` — spawns the extraction pass.
 - `session::deleted` — drops the session's extraction cursor.

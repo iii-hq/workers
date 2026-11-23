@@ -20,8 +20,8 @@ import { type MemoryItem, preview, type TurnPreview } from './memory-data'
  * composes the ENTIRE memory payload a chat turn on this bank would get,
  * via `memory::preview`, which runs the same code as the pre-generate
  * hook: the system-prompt section with rules and budgets applied, the
- * memories past the relevance cut and token budget, and the appended
- * message verbatim.
+ * pinned memories every turn opens with, the recalled ones past the
+ * relevance cut and token budget, and the appended message verbatim.
  */
 
 interface RecallPanelProps {
@@ -80,7 +80,9 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
     }
   }
 
-  const maxScore = result?.memories[0]?.score || 1
+  // Pinned lines lead with score 0: the best recalled line sets the scale.
+  const maxScore =
+    Math.max(0, ...(result?.memories ?? []).map((m) => m.score)) || 1
 
   return (
     <div className="mem-ui-stack">
@@ -186,7 +188,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                         aria-hidden
                       />
                       <span className="mem-ui-score">
-                        {score.toFixed(2)}
+                        {score > 0 ? score.toFixed(2) : 'always'}
                       </span>
                       {memory.pinned ? (
                         <Badge variant="accent">Pinned</Badge>
