@@ -84,8 +84,9 @@ export function normalizeKinds(kinds: Iterable<unknown>): ConversationKind[] {
 
 export function isDefaultConversationListView(
   view: ConversationListView,
+  /** The defaults in force (Project grouping when the engine has projects). */
+  defaults: ConversationListView = DEFAULT_CONVERSATION_LIST_VIEW,
 ): boolean {
-  const defaults = DEFAULT_CONVERSATION_LIST_VIEW
   return (
     view.grouping === defaults.grouping &&
     view.sort === defaults.sort &&

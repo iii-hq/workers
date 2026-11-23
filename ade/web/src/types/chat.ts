@@ -557,6 +557,24 @@ export interface Conversation {
   /** flips to true after the user explicitly renames; otherwise auto-derived */
   titleManual?: boolean
   /**
+   * The conversation's one-line description (the session's `description`),
+   * written by the agent (`harness::set-description`) or by the user in
+   * Conversation details. Absent when empty.
+   */
+  description?: string
+  /** Who wrote the description (`metadata.description_by`). */
+  descriptionBy?: 'agent' | 'user'
+  /** When the description last changed (`metadata.description_at_ms`). */
+  descriptionAtMs?: number
+  /**
+   * The chat project it belongs to (`metadata.project_id`): a project id, or
+   * `none` when it was kept out of every project on purpose. Absent: none
+   * stamped yet.
+   */
+  projectId?: string
+  /** `agent` once the agent named the conversation (`metadata.title_by`, D13). */
+  titleBy?: 'agent'
+  /**
    * Who the session is for. Absent means `user`: a local draft, or a
    * session-manager that predates kinds. A spawned sub-agent carries its
    * own value but is listed under its root's (see `conversation-view`).

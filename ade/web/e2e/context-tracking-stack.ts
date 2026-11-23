@@ -197,7 +197,9 @@ export const test = base.extend<{ stack: Stack }>({
           })
           if (!(await section.isVisible()))
             await page
-              .getByRole('button', { name: /^(Context|Side panel)$/i })
+              .getByRole('button', {
+                name: /^(Context|Side panel|Show context pane)$/i,
+              })
               .first()
               .click()
           await expect(section).toBeVisible()

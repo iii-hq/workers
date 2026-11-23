@@ -11,10 +11,18 @@
  * - "new chat" is a LOCAL DRAFT (`draft: true`, id `console-<uuid>`); the
  *   session is materialised by `ensureSession` on the first send so empty
  *   chats never litter the store.
- * - rename / model / thinking / skills changes write through
- *   `session::set-meta`. The console owns the metadata convention
- *   `{ surface, model, thinking_level, skills, title_manual }`;
- *   metadata replaces WHOLESALE, so the full object is always sent.
+ * - rename / model / thinking / skills changes write the console's metadata
+ *   convention `{ surface, model, thinking_level, skills, title_manual, … }`
+ *   (`CONSOLE_METADATA_KEYS`). On an engine with `session::patch-meta`
+ *   (chat-projects D9) only those keys, plus the ones a write names, are
+ *   sent (`set` / `unset`), so a key another writer owns — the agent's
+ *   `description_*`, the harness's `project_id` — is never written back
+ *   from a stale copy. Without it the write falls back to
+ *   `session::set-meta`, whose metadata replaces WHOLESALE, so the full
+ *   object is sent.
+ * - the chat-projects keys (`description`, `description_by`,
+ *   `description_at_ms`, `project_id`, `title_by`) are read onto the
+ *   conversation by `conversationProjectFields`.
  * - delete delegates the entire subtree to the harness; local cleanup waits
  *   for completion. Authoritative `session::on-deleted` events still reconcile.
  * - transcript content reconciles `message-added` / `message-updated`
@@ -33,6 +41,7 @@ import {
   type SystemPromptAddon,
   type SystemPromptState,
 } from '@/components/chat/system-prompt-selection'
+import { getChatProjectsState } from '@/hooks/use-chat-projects'
 import {
   createDraftAttachmentStore,
   type DraftAttachmentChange,
@@ -42,10 +51,17 @@ import {
   releaseRemovedDraftAttachments,
 } from '@/lib/attachments/draft-attachments'
 import { uploadAttachments } from '@/lib/attachments/store'
-import { upsertHarnessProject } from '@/lib/backend/projects'
+import { upsertSavedFolder } from '@/lib/backend/folders'
+import { assignProject, projectOf } from '@/lib/backend/projects'
+import { getChatCapabilities } from '@/lib/chat-capabilities'
 import { retireChatDraftSeed } from '@/lib/chat-draft-seeds'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
+import {
+  applyPatchToMetadata,
+  buildDetailsPatch,
+  type ConversationDetailsDraft,
+} from '@/lib/conversation-details'
 import { errText, isFunctionNotFound } from '@/lib/errors'
 import {
   FILE_MENTION_RE,
@@ -66,6 +82,7 @@ import {
   isInvalidCursorError,
   isMissingFunctionError,
   listSessions,
+  patchSessionMeta,
   setSessionDraft,
   setSessionMeta,
   TRANSCRIPT_OLDER_PAGE_LIMIT,
@@ -689,7 +706,7 @@ export function metadataFor(
   }
 }
 
-const CONSOLE_METADATA_KEYS = [
+export const CONSOLE_METADATA_KEYS = [
   'surface',
   'model',
   'thinking_level',
@@ -700,6 +717,55 @@ const CONSOLE_METADATA_KEYS = [
   'agent_profile',
   'skills',
 ] as const
+
+/**
+ * The `session::patch-meta` body for one console write: the console-owned
+ * keys (and the `extraKeys` a write named) as `set` when the full write
+ * holds them and `unset` when it does not. The legacy `mode` key is always
+ * dropped. Keys outside that list are left to whoever owns them.
+ */
+export function consoleMetadataPatch(
+  full: Readonly<Record<string, unknown>>,
+  extraKeys: Iterable<string> = [],
+): { set: Record<string, unknown>; unset: string[] } {
+  const keys = new Set<string>([...CONSOLE_METADATA_KEYS, ...extraKeys])
+  const set: Record<string, unknown> = {}
+  const unset: string[] = ['mode']
+  keys.delete('mode')
+  for (const key of keys) {
+    if (Object.hasOwn(full, key) && full[key] !== undefined)
+      set[key] = full[key]
+    else unset.push(key)
+  }
+  return { set, unset }
+}
+
+/** The chat-projects keys (spec §0.4) read onto a conversation. */
+export function conversationProjectFields(
+  description: string | undefined,
+  md: Readonly<Record<string, unknown>>,
+): Pick<
+  Conversation,
+  'description' | 'descriptionBy' | 'descriptionAtMs' | 'projectId' | 'titleBy'
+> {
+  const text = typeof description === 'string' ? description.trim() : ''
+  return {
+    description: text || undefined,
+    descriptionBy:
+      md.description_by === 'agent' || md.description_by === 'user'
+        ? md.description_by
+        : undefined,
+    descriptionAtMs:
+      typeof md.description_at_ms === 'number'
+        ? md.description_at_ms
+        : undefined,
+    projectId:
+      typeof md.project_id === 'string' && md.project_id.length > 0
+        ? md.project_id
+        : undefined,
+    titleBy: md.title_by === 'agent' ? 'agent' : undefined,
+  }
+}
 
 function migrationMetadataFor(
   c: Conversation,
@@ -782,6 +848,7 @@ function conversationFromMeta(
     id: meta.session_id,
     title: meta.title || meta.session_id,
     titleManual: md.title_manual === true,
+    ...conversationProjectFields(meta.description, md),
     kind: isConversationKind(meta.kind) ? meta.kind : 'user',
     model:
       typeof md.model === 'string' && md.model.length > 0
@@ -885,6 +952,7 @@ export function applyConversationMetadataEvent(
     ...(movedTo ? { workingDir: movedTo } : {}),
     title: event.title || conversation.title,
     titleManual: md.title_manual === true || conversation.titleManual,
+    ...conversationProjectFields(event.description, md),
     model:
       typeof md.model === 'string' && md.model.length > 0
         ? md.model
@@ -1116,6 +1184,11 @@ export function mergeConversationMeta(
     Object.assign(merged, {
       title: existing.title,
       titleManual: existing.titleManual,
+      description: existing.description,
+      descriptionBy: existing.descriptionBy,
+      descriptionAtMs: existing.descriptionAtMs,
+      projectId: existing.projectId,
+      titleBy: existing.titleBy,
       model: existing.model,
       thinkingLevel: existing.thinkingLevel,
       workingDir: existing.workingDir,
@@ -1264,6 +1337,15 @@ export interface ConversationsApi {
   /** Keep one session hydrated and subscribed while a chat panel is mounted. */
   watchConversation: (id: string) => () => void
   rename: (id: string, title: string) => void
+  /**
+   * Save "Conversation details" (chat-projects §1.3.5): one
+   * `session::patch-meta` (or a `set-meta` on an older engine) for the name,
+   * the description and its switch, then `harness::projects::assign` when
+   * the project changed. Rejects with the engine's error.
+   */
+  saveDetails: (id: string, draft: ConversationDetailsDraft) => Promise<void>
+  /** Move a conversation (and its subagents and sidechats) to a project, or `none`. */
+  moveToProject: (id: string, projectId: string) => Promise<void>
   remove: (id: string, options?: DeleteSessionTreeOptions) => Promise<void>
   setModel: (id: string, model: ModelId) => void
   /** Persist this session's reasoning effort and remember it for new chats. */
@@ -2874,8 +2956,11 @@ export function useConversations(
     ],
   )
 
-  /** Sessions with a write queued for this tick, and the title it carries. */
-  const metaWriteQueueRef = useRef(new Map<string, string | undefined>())
+  /** Sessions with a write queued for this tick: the title it carries, and
+   *  the non-console metadata keys it touched (a patch-meta write names them). */
+  const metaWriteQueueRef = useRef(
+    new Map<string, { title?: string; keys: Set<string> }>(),
+  )
 
   /* Every edit of one tick lands as ONE write, built after the last of them:
      a model pick also sets that model's effort (two setters, one handler),
@@ -2884,23 +2969,38 @@ export function useConversations(
      may apply two in flight either way; a revision check on set-meta is the
      upgrade path if that ever shows up. */
   const writeMeta = useCallback(
-    (id: string, title?: string) => {
+    (id: string, title?: string, keys: readonly string[] = []) => {
       const queue = metaWriteQueueRef.current
-      const scheduled = queue.has(id)
-      queue.set(id, title ?? queue.get(id))
-      if (scheduled) return
+      const queued = queue.get(id)
+      if (queued) {
+        if (title) queued.title = title
+        for (const key of keys) queued.keys.add(key)
+        return
+      }
+      queue.set(id, { title, keys: new Set(keys) })
       queueMicrotask(() => {
-        const queuedTitle = queue.get(id)
+        const entry = queue.get(id)
         queue.delete(id)
+        const queuedTitle = entry?.title
         const conv = conversationsRef.current.find((c) => c.id === id)
         if (!serverEnabled || !conv || conv.draft) return
         // A read-only session keeps its metadata; only a rename is written.
         if (conv.sessionMetadata?.read_only === true && !queuedTitle) return
-        void setSessionMeta({
-          session_id: id,
-          ...(queuedTitle ? { title: queuedTitle } : {}),
-          metadata: metadataForWrite(conv),
-        }).catch((err) => {
+        const full = metadataForWrite(conv)
+        const write = getChatCapabilities().patchMeta
+          ? patchSessionMeta({
+              session_id: id,
+              ...(queuedTitle ? { title: queuedTitle } : {}),
+              ...(conv.sessionMetadata?.read_only === true
+                ? {}
+                : consoleMetadataPatch(full, entry?.keys)),
+            })
+          : setSessionMeta({
+              session_id: id,
+              ...(queuedTitle ? { title: queuedTitle } : {}),
+              metadata: full,
+            })
+        void write.catch((err) => {
           if (import.meta.env.DEV)
             console.warn('[conversations] set_meta failed', err)
         })
@@ -2914,12 +3014,17 @@ export function useConversations(
      and the write sees both: a write built from the render's `conversations`
      re-sent the pre-pick model right after the pick. */
   const editMeta = useCallback(
-    (id: string, edit: (c: Conversation) => Conversation, title?: string) => {
+    (
+      id: string,
+      edit: (c: Conversation) => Conversation,
+      title?: string,
+      keys?: readonly string[],
+    ) => {
       conversationsRef.current = conversationsRef.current.map((c) =>
         c.id === id ? edit(c) : c,
       )
       patchConversation(id, edit)
-      writeMeta(id, title)
+      writeMeta(id, title, keys)
     },
     [patchConversation, writeMeta],
   )
@@ -2936,6 +3041,97 @@ export function useConversations(
       else patchConversation(id, edit)
     },
     [patchConversation, editMeta],
+  )
+
+  const moveToProject = useCallback(
+    async (id: string, projectId: string) => {
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      if (!conv) return
+      const previous = conv.projectId
+      const edit = (c: Conversation): Conversation => ({
+        ...c,
+        projectId,
+        sessionMetadata: {
+          ...(c.sessionMetadata ?? {}),
+          project_id: projectId,
+        },
+      })
+      conversationsRef.current = conversationsRef.current.map((c) =>
+        c.id === id ? edit(c) : c,
+      )
+      patchConversation(id, edit)
+      if (!serverEnabled || conv.draft) return
+      try {
+        await assignProject([id], projectId)
+      } catch (err) {
+        const undo = (c: Conversation): Conversation => ({
+          ...c,
+          projectId: previous,
+          sessionMetadata: patchSessionMetadata(c.sessionMetadata, {
+            project_id: previous,
+          }),
+        })
+        conversationsRef.current = conversationsRef.current.map((c) =>
+          c.id === id ? undo(c) : c,
+        )
+        patchConversation(id, undo)
+        throw err
+      }
+    },
+    [serverEnabled, patchConversation],
+  )
+
+  const saveDetails = useCallback(
+    async (id: string, draft: ConversationDetailsDraft) => {
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      if (!conv) return
+      const patch = buildDetailsPatch(conv, draft, Date.now())
+      if (patch) {
+        const edit = (c: Conversation): Conversation => {
+          const sessionMetadata = applyPatchToMetadata(c.sessionMetadata, patch)
+          return {
+            ...c,
+            ...(patch.title ? { title: patch.title, titleManual: true } : {}),
+            ...(patch.description !== undefined
+              ? conversationProjectFields(patch.description, sessionMetadata)
+              : {}),
+            projectId: c.projectId,
+            sessionMetadata,
+            updatedAt: Date.now(),
+          }
+        }
+        conversationsRef.current = conversationsRef.current.map((c) =>
+          c.id === id ? edit(c) : c,
+        )
+        patchConversation(id, edit)
+        if (serverEnabled && !conv.draft) {
+          const head = {
+            session_id: id,
+            ...(patch.title ? { title: patch.title } : {}),
+            ...(patch.description !== undefined
+              ? { description: patch.description }
+              : {}),
+          }
+          if (getChatCapabilities().patchMeta) {
+            await patchSessionMeta({
+              ...head,
+              set: patch.set,
+              ...(patch.unset.length ? { unset: patch.unset } : {}),
+            })
+          } else {
+            const latest = conversationsRef.current.find((c) => c.id === id)
+            await setSessionMeta({
+              ...head,
+              metadata: latest ? metadataForWrite(latest) : {},
+            })
+          }
+        }
+      }
+      if (draft.projectId !== (conv.projectId ?? 'none')) {
+        await moveToProject(id, draft.projectId)
+      }
+    },
+    [serverEnabled, patchConversation, moveToProject],
   )
 
   const remove = useCallback(
@@ -3023,11 +3219,16 @@ export function useConversations(
   // race on the wholesale metadata replace.
   const setSessionMetadata = useCallback(
     (id: string, patch: Record<string, unknown>) =>
-      editMeta(id, (c) => ({
-        ...c,
-        sessionMetadata: patchSessionMetadata(c.sessionMetadata, patch),
-        updatedAt: Date.now(),
-      })),
+      editMeta(
+        id,
+        (c) => ({
+          ...c,
+          sessionMetadata: patchSessionMetadata(c.sessionMetadata, patch),
+          updatedAt: Date.now(),
+        }),
+        undefined,
+        Object.keys(patch),
+      ),
     [editMeta],
   )
 
@@ -3094,7 +3295,7 @@ export function useConversations(
       // DirectoryPicker persists before selection; this also covers working
       // directory changes initiated by extensions and other control surfaces.
       if (dir && serverEnabled)
-        void upsertHarnessProject(dir).catch(() => undefined)
+        void upsertSavedFolder(dir).catch(() => undefined)
       // Moving the working directory away from a console-claimed worktree
       // releases the claim (keepPath guards the pick-this-worktree flow,
       // which records the claim before updating the dir).
@@ -3312,10 +3513,20 @@ export function useConversations(
           ? deriveTitle(titleHint)
           : conv.title
       try {
+        // A chat started in one of a project's folders (or from the
+        // project's "+") is stamped with it at creation (chat-projects D8).
+        const projectId =
+          conv.projectId ??
+          (getChatCapabilities().projects
+            ? projectOf(conv.workingDir, getChatProjectsState().projects)?.id
+            : undefined)
         const resp = await ensureSessionApi({
           session_id: id,
           title,
-          metadata: metadataFor(conv),
+          metadata: {
+            ...metadataFor(conv),
+            ...(projectId ? { project_id: projectId } : {}),
+          },
           // A chat someone starts here is a user session; automations and
           // the e2e suite name their own kind when they create theirs.
           kind: 'user',
@@ -3591,6 +3802,8 @@ export function useConversations(
     select,
     watchConversation,
     rename,
+    saveDetails,
+    moveToProject,
     remove,
     setModel,
     setThinkingLevel,

@@ -45,6 +45,8 @@ import {
   useWorkersConfigurationRoute,
 } from '@/hooks/use-hash-route'
 import type { ThemePreference } from '@/hooks/use-theme'
+import { getDefaultBackend } from '@/lib/backend'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import {
   configurationFormFamily,
   resolveConfigurationFamily,
@@ -319,6 +321,15 @@ export function Configuration({
   const approvalGateAvailable = conversations
     ? conversations.approvalGateAvailable
     : true
+  // Chat › Projects and Session descriptions render on engines that have them.
+  const chatCaps = useChatCapabilities(getDefaultBackend().id === 'real')
+  const chatSearch = useMemo(
+    () => ({
+      projects: chatCaps.projects,
+      descriptions: chatCaps.chatSettings && chatCaps.setDescription,
+    }),
+    [chatCaps.projects, chatCaps.chatSettings, chatCaps.setDescription],
+  )
   const searchIndex = useMemo(() => {
     const prefixes = sharedIdPrefixes(entries.map((entry) => entry.id))
     const docs: SettingsSearchDoc[] = [
@@ -328,7 +339,7 @@ export function Configuration({
         aliases: ['preferences'],
         description:
           'ADE appearance, permissions, providers, and filesystem access.',
-        fields: generalSearchFields(approvalGateAvailable),
+        fields: generalSearchFields(approvalGateAvailable, chatSearch),
       },
       ...entries.map((entry) => ({
         id: entry.id,
@@ -342,7 +353,7 @@ export function Configuration({
       })),
     ]
     return buildSettingsSearchIndex(docs)
-  }, [entries, approvalGateAvailable])
+  }, [entries, approvalGateAvailable, chatSearch])
 
   const selectSearchResult = useCallback(
     (docId: string, field?: SettingsSearchField) => {

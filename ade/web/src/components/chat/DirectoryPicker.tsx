@@ -26,11 +26,11 @@ import { Hint } from '@/components/ui/Hint'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
-  deleteHarnessProject,
-  type HarnessProject,
-  listHarnessProjects,
-  upsertHarnessProject,
-} from '@/lib/backend/projects'
+  deleteSavedFolder,
+  listSavedFolders,
+  type SavedFolder,
+  upsertSavedFolder,
+} from '@/lib/backend/folders'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 import {
@@ -49,7 +49,7 @@ import {
   worktreeIndicators,
 } from '@/lib/worktrees'
 import { basename, FolderBrowser, isAbsPath, parentOf } from './FolderBrowser'
-import { OpenProjectPicker } from './OpenProjectPicker'
+import { OpenFolderPicker } from './OpenFolderPicker'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -59,7 +59,7 @@ import { OpenProjectPicker } from './OpenProjectPicker'
  * Per-session working-directory picker, project-switcher style.
  *
  * Opens to your harness projects (most-recent first) — pick one in a click,
- * or "Add project" to browse for a new directory (`FolderBrowser`: a dialog
+ * or "Add folder" to browse for a new directory (`FolderBrowser`: a dialog
  * with parent columns on desktop, the same sheet on phones). The search box
  * filters projects live; pasting an absolute path selects it. Every
  * selection — pasted, remembered, or browsed — is
@@ -117,9 +117,9 @@ interface DirectoryPickerProps {
 }
 
 function withProject(
-  projects: HarnessProject[],
-  project: HarnessProject,
-): HarnessProject[] {
+  projects: SavedFolder[],
+  project: SavedFolder,
+): SavedFolder[] {
   return [
     project,
     ...projects.filter((item) => item.path !== project.path),
@@ -141,7 +141,7 @@ function ProjectRow({
   onSaveRename,
   onForget,
 }: {
-  project: HarnessProject
+  project: SavedFolder
   selected: boolean
   /** Faint trailing text: "default" for the pinned row, the parent folder
  when two projects share a name. */
@@ -237,7 +237,7 @@ function ProjectRow({
       <button
         type="button"
         aria-label={`rename ${project.name}`}
-        title="rename project"
+        title="rename folder"
         onClick={onBeginRename}
         className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
       >
@@ -251,7 +251,7 @@ function ProjectRow({
         <button
           type="button"
           aria-label={`forget ${project.name}`}
-          title="forget this project"
+          title="forget this folder"
           onClick={onForget}
           className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
         >
@@ -289,7 +289,7 @@ export function DirectoryPicker({
   worktrees,
   className,
   triggerAppearance = 'default',
-  emptyLabel = 'Choose project',
+  emptyLabel = 'Choose folder',
   presentation = 'trigger',
   onSelect,
   popoverAlign = 'end',
@@ -299,12 +299,12 @@ export function DirectoryPicker({
   const [view, setView] = useState<'projects' | 'browse' | 'worktrees'>(
     'projects',
   )
-  const [projects, setProjects] = useState<HarnessProject[]>([])
+  const [projects, setProjects] = useState<SavedFolder[]>([])
   const [projectsLoading, setProjectsLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   const [projectName, setProjectName] = useState('')
-  // desktop "Add project" dialog (phones browse inside the sheet instead)
+  // desktop "Add folder" dialog (phones browse inside the sheet instead)
   const [browseOpen, setBrowseOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [validating, setValidating] = useState<string | null>(null)
@@ -319,9 +319,9 @@ export function DirectoryPicker({
   const refreshProjects = useCallback(async () => {
     setProjectsLoading(true)
     try {
-      setProjects(await listHarnessProjects())
+      setProjects(await listSavedFolders())
     } catch (err) {
-      setError(`can't load projects — ${errMsg(err)}`)
+      setError(`can't load folders — ${errMsg(err)}`)
     } finally {
       setProjectsLoading(false)
     }
@@ -390,12 +390,12 @@ export function DirectoryPicker({
       const res = await validateWorkspaceDir(dir)
       if (res.ok) {
         try {
-          const project = await upsertHarnessProject(res.path)
+          const project = await upsertSavedFolder(res.path)
           setProjects((current) => withProject(current, project))
           setValidating(null)
           select(res.path)
         } catch (err) {
-          setError(`can't save this project — ${errMsg(err)}`)
+          setError(`can't save this folder — ${errMsg(err)}`)
           setValidating(null)
         }
         return
@@ -410,18 +410,18 @@ export function DirectoryPicker({
     setValidating(dir)
     setError(null)
     try {
-      await deleteHarnessProject(dir)
+      await deleteSavedFolder(dir)
       setProjects((current) =>
         current.filter((project) => project.path !== dir),
       )
     } catch (err) {
-      setError(`can't remove this project — ${errMsg(err)}`)
+      setError(`can't remove this folder — ${errMsg(err)}`)
     } finally {
       setValidating(null)
     }
   }, [])
 
-  const beginRename = useCallback((project: HarnessProject) => {
+  const beginRename = useCallback((project: SavedFolder) => {
     setRenamingPath(project.path)
     setProjectName(project.name)
     setError(null)
@@ -432,11 +432,11 @@ export function DirectoryPicker({
     setValidating(renamingPath)
     setError(null)
     try {
-      const project = await upsertHarnessProject(renamingPath, projectName)
+      const project = await upsertSavedFolder(renamingPath, projectName)
       setProjects((current) => withProject(current, project))
       setRenamingPath(null)
     } catch (err) {
-      setError(`can't rename this project — ${errMsg(err)}`)
+      setError(`can't rename this folder — ${errMsg(err)}`)
     } finally {
       setValidating(null)
     }
@@ -495,7 +495,7 @@ export function DirectoryPicker({
         .map(([name]) => name),
     )
   }, [projects])
-  const hintFor = (project: HarnessProject): string | undefined =>
+  const hintFor = (project: SavedFolder): string | undefined =>
     ambiguousNames.has(project.name)
       ? `…/${basename(parentOf(project.path))}`
       : undefined
@@ -561,7 +561,7 @@ export function DirectoryPicker({
     >
       {!embedded ? (
         <Hint
-          label={value ? `Project · ${value}` : 'Choose a project folder'}
+          label={value ? `Folder · ${value}` : 'Choose a folder'}
           side="bottom"
           align="start"
           disabled={triggerAppearance !== 'chip'}
@@ -573,7 +573,7 @@ export function DirectoryPicker({
             aria-label={
               triggerAppearance === 'default'
                 ? 'working directory'
-                : `select project folder, current folder: ${label}`
+                : `select folder, current folder: ${label}`
             }
             aria-haspopup="dialog"
             aria-expanded={open}
@@ -689,10 +689,10 @@ export function DirectoryPicker({
               onKeyDown={onSearchKey}
               placeholder={
                 view === 'projects'
-                  ? 'Search projects or paste a path…'
+                  ? 'Search folders or paste a path…'
                   : 'Filter worktrees…'
               }
-              aria-label="search projects and directories"
+              aria-label="search folders and directories"
               name="directory-search"
               className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-ink-ghost focus:outline-none md:text-sm"
             />
@@ -823,7 +823,7 @@ export function DirectoryPicker({
 
             {projectsLoading ? (
               <div className="rounded-md bg-surface px-3 py-4 font-inter text-base text-ink-faint md:text-xs">
-                Loading projects…
+                Loading folders…
               </div>
             ) : null}
 
@@ -884,8 +884,8 @@ export function DirectoryPicker({
             !isAbsPath(query) ? (
               <div className="rounded-md bg-surface px-3 py-4 font-inter text-base text-ink-faint md:text-xs">
                 {projects.length === 0
-                  ? 'No projects yet.'
-                  : 'No matching projects.'}{' '}
+                  ? 'No folders yet.'
+                  : 'No matching folders.'}{' '}
                 Add one to get started.
               </div>
             ) : null}
@@ -897,7 +897,7 @@ export function DirectoryPicker({
                 className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-inter text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-sm"
               >
                 <Plus className="size-4 shrink-0 text-ink-faint" aria-hidden />
-                Add project
+                Add folder
               </button>
             </div>
           </div>
@@ -919,11 +919,11 @@ export function DirectoryPicker({
       </DirectoryPickerSurface>
 
       {browseInDialog ? (
-        <OpenProjectPicker
+        <OpenFolderPicker
           open={browseOpen}
           onOpenChange={(next) => {
             setBrowseOpen(next)
-            // "Add project" lived in the popover, which is gone.
+            // "Add folder" lived in the popover, which is gone.
             if (!next) triggerRef.current?.focus()
           }}
           onAdded={(path) => {
@@ -961,7 +961,7 @@ function DirectoryPickerSurface({
       // biome-ignore lint/a11y/useSemanticElements: this flex surface owns scroll layout and cannot use fieldset's rendering semantics
       <div
         role="group"
-        aria-label="select working directory"
+        aria-label="Choose a folder"
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent"
       >
         {children}
@@ -973,8 +973,8 @@ function DirectoryPickerSurface({
     return (
       <BottomSheet open={open} onOpenChange={onOpenChange}>
         <BottomSheetContent
-          heading="Projects"
-          closeLabel="Close project picker"
+          heading="Choose a folder"
+          closeLabel="Close folder picker"
           className="h-[min(36rem,calc(100dvh-1.5rem))]"
         >
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -995,9 +995,14 @@ function DirectoryPickerSurface({
         collisionPadding={12}
         sticky
         role="dialog"
-        aria-label="select working directory"
+        aria-label="Choose a folder"
         className="iii-ui-motion-dropdown max-h-(--available-height) w-[min(320px,calc(100vw-24px))] gap-0 overflow-y-auto overscroll-contain p-1"
       >
+        {/* The picker's title (D27): the saved folders follow, then Add
+ folder to browse for a new one. */}
+        <div className="px-2 pt-1.5 pb-1 font-inter text-xs font-medium text-ink-faint">
+          Choose a folder
+        </div>
         <PortalScope>{children}</PortalScope>
       </PopoverContent>
     </Popover>

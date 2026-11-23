@@ -364,8 +364,8 @@ export function ChatSettingsSheet({
             title="Working directory"
             description={
               worktreePicker?.enabled
-                ? 'Choose a recent project, folder, or managed worktree.'
-                : 'Choose a recent project or browse folders.'
+                ? 'Choose a saved folder, browse for one, or pick a managed worktree.'
+                : 'Choose a saved folder or browse for one.'
             }
             onBack={navigation.back}
             backLabel="Back to chat settings"

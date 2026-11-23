@@ -22,7 +22,7 @@ import {
 } from '@/lib/working-dir'
 
 /**
- * Folder browsing for "Add project", one shell workspace listing per level.
+ * Folder browsing for "Add folder", one shell workspace listing per level.
  *
  * Wide (the desktop dialog) shows the current folder next to its two parents,
  * Finder column style; narrow (the phone sheet) shows the current folder only.
@@ -294,10 +294,10 @@ export function FolderBrowser({
         )}
       >
         {onBack ? (
-          <Hint label="Back to projects" disabled={!keyboard}>
+          <Hint label="Back to folders" disabled={!keyboard}>
             <button
               type="button"
-              aria-label="back to projects"
+              aria-label="back to folders"
               onClick={onBack}
               className={iconButton}
             >

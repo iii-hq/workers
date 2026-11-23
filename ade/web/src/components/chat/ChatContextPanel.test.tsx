@@ -299,7 +299,8 @@ describe('ChatContextPanel', () => {
       status: 'done',
     })
     const view = await render(main, { conversations: [main, ended] })
-    const row = view.querySelector('[aria-label$="(completed)"]')
+    // The row frame: the open button, then its status and its menu.
+    const row = view.querySelector('[aria-label$="(completed)"]')?.parentElement
     expect(row).not.toBeNull()
     expect(row?.querySelector('.bg-ok')).toBeNull()
     expect(row?.querySelector('.bg-accent')).toBeNull()
@@ -400,8 +401,12 @@ describe('ChatContextPanel', () => {
         ],
       }),
     )
-    const assets = view.querySelector('section[aria-label="Assets"]')
-    expect(assets?.querySelector('button')?.textContent).toContain('3')
+    // Assets split into Images and Attachments (chat-projects D11).
+    const pictures = view.querySelector('section[aria-label="Images"]')
+    expect(pictures?.querySelector('button')?.textContent).toContain('1')
+    expect(pictures?.querySelector('[data-direction="sent"]')).not.toBeNull()
+    const assets = view.querySelector('section[aria-label="Attachments"]')
+    expect(assets?.querySelector('button')?.textContent).toContain('2')
     const img = view.querySelector('img[src="data:image/png;base64,AAAA"]')
     expect(img?.closest('button')?.getAttribute('aria-label')).toBe(
       'View shot.png',
@@ -482,9 +487,10 @@ describe('ChatContextPanel', () => {
 
     it('moves a section with its handle and keeps the move', async () => {
       const view = await render(withLinks)
-      expect(labels(view)).toEqual(['Project', 'Links', 'Tracking'])
+      // The common sections first, then the ADE's own (D11).
+      expect(labels(view)).toEqual(['Links', 'Tracking', 'Project'])
       const handle = view.querySelector(
-        'button[aria-label="Move Links"]',
+        'button[aria-label="Move Project"]',
       ) as HTMLButtonElement
       act(() => {
         handle.dispatchEvent(
@@ -495,7 +501,7 @@ describe('ChatContextPanel', () => {
       const kept: string[] = JSON.parse(
         window.localStorage.getItem('iii-context-order') ?? '[]',
       )
-      expect(kept.indexOf('links')).toBeLessThan(kept.indexOf('project'))
+      expect(kept.indexOf('project')).toBeLessThan(kept.indexOf('tracking'))
     })
 
     it("shows a worker's section with its summary, folded or empty", async () => {
@@ -517,9 +523,9 @@ describe('ChatContextPanel', () => {
         const view = await render(withLinks)
         expect(labels(view)).toEqual([
           'Sentinel errors',
-          'Project',
           'Links',
           'Tracking',
+          'Project',
         ])
         const section = () =>
           view.querySelector(
@@ -552,7 +558,7 @@ describe('ChatContextPanel', () => {
 
         act(() => report({ empty: true }))
         expect(section().hidden).toBe(true)
-        expect(labels(view)).toEqual(['Project', 'Links', 'Tracking'])
+        expect(labels(view)).toEqual(['Links', 'Tracking', 'Project'])
       } finally {
         dispose()
       }
@@ -569,7 +575,7 @@ describe('ChatContextPanel', () => {
       })
       try {
         const view = await render(withLinks)
-        expect(labels(view)).toEqual(['Project', 'Links', 'Tracking'])
+        expect(labels(view)).toEqual(['Links', 'Tracking', 'Project'])
         expect(view.textContent).not.toContain('rogue body')
         expect(warn).toHaveBeenCalled()
       } finally {
@@ -859,7 +865,7 @@ describe('ChatContextPanel', () => {
 
   it('asks for a folder when the chat has none', async () => {
     const view = await render(chat('main'))
-    expect(view.textContent).toContain('No project folder')
+    expect(view.textContent).toContain('No folder')
     expect(mocks.call).toHaveBeenCalledExactlyOnceWith('ade::context::list', {
       session_id: 'main',
     })

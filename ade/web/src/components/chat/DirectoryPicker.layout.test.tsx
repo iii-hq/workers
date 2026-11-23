@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { SheetPage } from '@/components/ui/SheetNavigation'
 import { DirectoryPicker } from './DirectoryPicker'
 
-vi.mock('@/lib/backend/projects', () => ({
-  listHarnessProjects: vi.fn().mockResolvedValue([]),
-  upsertHarnessProject: vi.fn(),
-  deleteHarnessProject: vi.fn(),
+vi.mock('@/lib/backend/folders', () => ({
+  listSavedFolders: vi.fn().mockResolvedValue([]),
+  upsertSavedFolder: vi.fn(),
+  deleteSavedFolder: vi.fn(),
 }))
 
 describe('DirectoryPicker narrow layout', () => {

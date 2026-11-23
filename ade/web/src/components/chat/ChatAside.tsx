@@ -1,6 +1,5 @@
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import {
-  ArrowLeft,
   BookmarkPlus,
   Check,
   ChevronsDownUp,
@@ -25,8 +24,8 @@ import { Button } from '@/components/shadcn/button'
 import {
   Sheet,
   SheetClose,
+  SheetOverlay,
   SheetPortal,
-  SheetTitle,
 } from '@/components/shadcn/sheet'
 import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
 import {
@@ -48,6 +47,7 @@ import {
   autoFixState,
   ghViewer,
 } from '@/lib/auto-fix'
+import type { ContextItems } from '@/lib/backend/context-items'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
 import {
   DISMISSED_PRS_KEY,
@@ -78,6 +78,7 @@ import {
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
+import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
 import { deleteSession, setSessionMeta } from '@/lib/sessions/api'
 import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import { PortalScope } from '@/lib/ui-scope'
@@ -99,6 +100,12 @@ export interface AsideRequest {
 }
 
 const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
+/** The pane's stored geometry and open state (`PageSidebar`), per device. */
+export const ASIDE_STORAGE_KEY = 'console:chat:aside'
+/** Show / Hide context pane (§1.3.6): ⌘⌥0 on a Mac, Ctrl+Alt+0 elsewhere. */
+export const CONTEXT_PANE_SHORTCUT = 'Mod+Alt+0'
+/** The chat's header height beside the pane (PageHeader at sm and up). */
+const CHAT_HEADER_PX = 44
 /** How often auto-fix reads a watched PR while the chat is open. */
 const AUTO_FIX_EVERY_MS = 90_000
 
@@ -146,6 +153,11 @@ interface ChatAsideProps {
   sheetOpen: boolean
   onSheetOpenChange: (open: boolean) => void
   request: AsideRequest | null
+  /**
+   * Each new value puts the pane away: the column folds, the drawer beside
+   * a narrow chat closes (the header's button, Mod+Alt+0, the palette).
+   */
+  hideRequest?: number
   observers: readonly SessionObserverInfo[]
   /** This chat's observer events, for the Observers section. */
   observerEvents?: readonly SystemMessage[]
@@ -160,6 +172,17 @@ interface ChatAsideProps {
   onJumpToMessage: (messageId: string) => void
   /** Hand the main chat's agent an instruction (see ChatContextPanel). */
   onAskAgent?: (text: string, send: boolean) => void
+  /** The engine's context items (`harness::context-items`), when it has them. */
+  contextItems?: ContextItems | null
+  /** How many items the pane lists, beside "Context" (0 hides it). */
+  itemCount?: number
+  /** "Show in conversation" from a pane row; the phone drawer closes first. */
+  onShowInConversation?: (target: {
+    entryId?: string
+    messageId?: string
+  }) => void
+  /** The pane or drawer came into sight or left it (the header's button). */
+  onVisibleChange?: (visible: boolean) => void
 }
 
 /**
@@ -175,6 +198,7 @@ export function ChatAside({
   sheetOpen,
   onSheetOpenChange,
   request,
+  hideRequest,
   observers,
   observerEvents,
   observersListed,
@@ -184,6 +208,10 @@ export function ChatAside({
   onPendingQuoteChange,
   onJumpToMessage,
   onAskAgent,
+  contextItems = null,
+  itemCount = 0,
+  onShowInConversation,
+  onVisibleChange,
 }: ChatAsideProps) {
   const ctx = useConversationsCtx()
   const [tab, setTabState] = useState<AsideTab>(readStoredTab)
@@ -211,6 +239,11 @@ export function ChatAside({
     return () => observer.disconnect()
   }, [phone])
   const visible = phone ? sheetOpen : expanded
+  const onVisibleChangeRef = useRef(onVisibleChange)
+  onVisibleChangeRef.current = onVisibleChange
+  useEffect(() => {
+    onVisibleChangeRef.current?.(visible)
+  }, [visible])
 
   // ── the side chat ──
   const [forkId, setForkId] = useState<string | null>(null)
@@ -540,12 +573,24 @@ export function ChatAside({
     >
       <TabsList
         variant="line"
-        aria-label="Side panel"
+        aria-label="Context pane"
         className="w-full justify-start gap-1 p-0 group-data-horizontal/tabs:h-full"
       >
         <TabsTrigger value="context" className={ASIDE_TAB}>
           <Layers aria-hidden className="size-4" />
           Context
+          {itemCount > 0 ? (
+            <span
+              data-context-count=""
+              data-keep-mono=""
+              className="font-mono text-meta font-normal text-ink-faint tabular-nums"
+            >
+              {itemCount}
+              <span className="sr-only">
+                {itemCount === 1 ? ' item' : ' items'}
+              </span>
+            </span>
+          ) : null}
         </TabsTrigger>
         <TabsTrigger value="side-chat" className={ASIDE_TAB}>
           <SideChatIcon aria-hidden className="size-4" />
@@ -611,6 +656,17 @@ export function ChatAside({
         }
         landBlocked={landBlocked}
         active={visible}
+        items={contextItems}
+        phone={phone}
+        onShowInConversation={
+          onShowInConversation
+            ? (target) => {
+                // On a phone the drawer closes first (§1.3.6).
+                if (phone) onSheetOpenChange(false)
+                onShowInConversation(target)
+              }
+            : undefined
+        }
       />
     ) : (
       <div className="flex min-h-0 flex-1 flex-col">
@@ -736,6 +792,7 @@ export function ChatAside({
       <PhonePanel
         open={sheetOpen}
         onOpenChange={onSheetOpenChange}
+        title={conversation.title}
         tabs={tabs}
         options={
           tab === 'side-chat' && fork ? (
@@ -761,13 +818,13 @@ export function ChatAside({
 
   return (
     <PageSidebar
-      label="Side panel"
+      label="Context pane"
       side={side}
       // A hairline where the panel meets the chat, on the edge it shares.
       className={
         side === 'left' ? 'border-r border-edge' : 'border-l border-edge'
       }
-      storageKey="console:chat:aside"
+      storageKey={ASIDE_STORAGE_KEY}
       defaultWidth={340}
       minWidth={280}
       maxWidth={480}
@@ -778,6 +835,11 @@ export function ChatAside({
       narrowMode="drawer"
       closeDrawerOnSelect={false}
       expandRequest={expandSeq}
+      collapseRequest={hideRequest}
+      // Beside a narrow chat the drawer opens under the chat's 44px header
+      // (PageHeader beside a pane), so the pane button that opened it, now
+      // "Hide context pane", stays in reach to close it.
+      drawerOffsetTop={CHAT_HEADER_PX}
       header={
         <>
           {tabs}
@@ -1192,20 +1254,25 @@ export function SelectionToolbar({
 }
 
 /**
- * The side panel on a phone: the whole screen, one bar (back, the tabs, the
- * side chat's options) and the rest for the content. It follows the visual
- * viewport, so a raised keyboard shrinks it instead of covering the
- * composer.
+ * The side panel on a phone (max-width 639px): a drawer from the right
+ * (chat-projects §0.5), min(screen width − 48, 380) wide on the popover
+ * surface over the sheet scrim. It slides in over 220 ms (none with reduced
+ * motion) and closes on a tap on the scrim, a swipe to the right, Escape or
+ * its close button. It names the conversation above the tabs, and the
+ * Context tab carries the item count. It follows the visual viewport, so a
+ * raised keyboard shrinks it instead of covering the side chat's composer.
  */
 function PhonePanel({
   open,
   onOpenChange,
+  title,
   tabs,
   options,
   children,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  title: string
   tabs: ReactNode
   options: ReactNode
   children: ReactNode
@@ -1214,7 +1281,13 @@ function PhonePanel({
     <Sheet open={open} onOpenChange={(next) => onOpenChange(next)}>
       <SheetPortal>
         <PortalScope>
-          <PhonePanelContent tabs={tabs} options={options}>
+          <SheetOverlay className="bg-black/30" />
+          <PhonePanelContent
+            title={title}
+            tabs={tabs}
+            options={options}
+            onClose={() => onOpenChange(false)}
+          >
             {children}
           </PhonePanelContent>
         </PortalScope>
@@ -1223,36 +1296,82 @@ function PhonePanel({
   )
 }
 
+/** How far a finger travels right before the drawer follows it shut. */
+const SWIPE_CLOSE_PX = 64
+
 function PhonePanelContent({
+  title,
   tabs,
   options,
+  onClose,
   children,
 }: {
+  title: string
   tabs: ReactNode
   options: ReactNode
+  onClose: () => void
   children: ReactNode
 }) {
   // Mounted only while open, so the fit starts with the panel on screen.
   const ref = useRef<HTMLDivElement>(null)
   useVisualViewportFit(ref)
+  const swipe = useRef<{ x: number; y: number; id: number } | null>(null)
   return (
     <DialogPrimitive.Popup
       ref={ref}
       aria-describedby={undefined}
+      // The drawer's accessible name; nothing above the conversation's
+      // name is shown (§1.3.6: the name, then "Context" and the count).
+      aria-label="Context"
       data-side-panel-phone=""
-      className="fixed inset-x-0 top-0 z-50 flex h-dvh flex-col bg-panel pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] font-sans text-ink focus:outline-none"
+      data-side-panel-drawer=""
+      onKeyDown={(event) => {
+        // The drawer is portaled out of the chat's workspace pane, where
+        // the pane's own commands listen: its shortcut closes it here.
+        if (bindingMatchesEvent(CONTEXT_PANE_SHORTCUT, event)) {
+          event.preventDefault()
+          onClose()
+        }
+      }}
+      onPointerDown={(event) => {
+        if (event.pointerType === 'mouse') return
+        swipe.current = {
+          x: event.clientX,
+          y: event.clientY,
+          id: event.pointerId,
+        }
+      }}
+      onPointerUp={(event) => {
+        const start = swipe.current
+        swipe.current = null
+        if (!start || start.id !== event.pointerId) return
+        const dx = event.clientX - start.x
+        const dy = Math.abs(event.clientY - start.y)
+        if (dx > SWIPE_CLOSE_PX && dx > dy * 1.5) onClose()
+      }}
+      onPointerCancel={() => {
+        swipe.current = null
+      }}
+      className="fixed top-0 right-0 z-50 flex h-dvh w-[min(calc(100vw-48px),380px)] flex-col bg-popover pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] font-sans text-ink shadow-floating transition-transform duration-[var(--motion-duration-panel)] ease-[var(--motion-ease-enter)] focus:outline-none data-ending-style:translate-x-full data-starting-style:translate-x-full motion-reduce:transition-none"
     >
-      <SheetTitle className="sr-only">Side panel</SheetTitle>
-      <div className="flex h-13 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-1">
+      <div className="flex h-12 shrink-0 items-center gap-1 pr-1 pl-4">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+          {title}
+        </span>
         <SheetClose
           render={
-            <IconButton label="Back to the chat" className="size-11 shrink-0">
-              <ArrowLeft aria-hidden />
+            <IconButton
+              label="Close the context pane"
+              className="size-11 shrink-0"
+            >
+              <X aria-hidden />
             </IconButton>
           }
         />
-        <div className="flex min-w-0 flex-1">{tabs}</div>
-        {options ?? <span className="size-11 shrink-0" aria-hidden />}
+      </div>
+      <div className="flex h-11 shrink-0 items-center gap-1 px-1">
+        <div className="flex min-w-0 flex-1 self-stretch">{tabs}</div>
+        {options ?? null}
       </div>
       <div className="flex min-h-0 flex-1 flex-col">{children}</div>
     </DialogPrimitive.Popup>

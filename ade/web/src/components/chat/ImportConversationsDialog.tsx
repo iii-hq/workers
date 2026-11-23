@@ -1343,7 +1343,7 @@ export function ImportConversationsDialog({
               >
                 {discovery?.next_cursor
                   ? 'None of the newest histories match. Older ones have not been searched yet.'
-                  : 'Search matches chat titles and project folders.'}
+                  : 'Search matches chat titles and folders.'}
               </Placeholder>
             ) : (
               <Placeholder

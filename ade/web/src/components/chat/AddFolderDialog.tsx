@@ -8,11 +8,11 @@ import {
   DialogTitle,
 } from '@/components/shadcn/dialog'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
-import { upsertHarnessProject } from '@/lib/backend/projects'
+import { upsertSavedFolder } from '@/lib/backend/folders'
 import { errMsg, validateWorkspaceDir } from '@/lib/working-dir'
 import { FolderBrowser } from './FolderBrowser'
 
-interface AddProjectDialogProps {
+interface AddFolderDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The worker-echoed canonical path of the folder just added. */
@@ -20,20 +20,20 @@ interface AddProjectDialogProps {
 }
 
 /**
- * "Add project" on its own, outside the directory picker: the folder
+ * "Add folder" on its own, outside the directory picker: the folder
  * browser in a dialog. A chosen folder is validated against the live shell
- * worker and remembered as a project before `onAdded` fires with the
- * canonical path, the same contract the picker's own Add project keeps.
+ * worker and remembered in the folder catalogue before `onAdded` fires with the
+ * canonical path, the same contract the picker's own Add folder keeps.
  *
  * The dialog is the shadcn one: a titled header that says what choosing
  * does, the browser as the body, and the browser's own footer (keys on the
  * left, Cancel and Use on the right) as the dialog's footer.
  */
-export function AddProjectDialog({
+export function AddFolderDialog({
   open,
   onOpenChange,
   onAdded,
-}: AddProjectDialogProps) {
+}: AddFolderDialogProps) {
   const pointerFine = useMediaQuery(DESKTOP_POINTER_QUERY)
   const phone = useMediaQuery('(max-width: 767px)')
   const [validating, setValidating] = useState(false)
@@ -51,9 +51,9 @@ export function AddProjectDialog({
         return
       }
       try {
-        await upsertHarnessProject(res.path)
+        await upsertSavedFolder(res.path)
       } catch (err) {
-        setError(`Can't save this project: ${errMsg(err)}`)
+        setError(`Can't save this folder: ${errMsg(err)}`)
         setValidating(false)
         return
       }
@@ -85,10 +85,10 @@ export function AddProjectDialog({
             <FolderPlus className="size-4" />
           </span>
           <div className="flex min-w-0 flex-col gap-1">
-            <DialogTitle>Add project</DialogTitle>
+            <DialogTitle>Add folder</DialogTitle>
             <DialogDescription>
-              Choose a folder for the chat to work in. It is remembered as a
-              project, so the next chat can pick it in one click.
+              Choose a folder for the chat to work in. It is remembered, so the
+              next chat can pick it in one click.
             </DialogDescription>
           </div>
         </DialogHeader>

@@ -156,8 +156,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       snapshot,
     })
     expect(
-      (await call('ade::context::list', { session_id: b.session_id }))
-        .items,
+      (await call('ade::context::list', { session_id: b.session_id })).items,
     ).toEqual([])
     const hook = await call('ade::context::inject-guidance', {
       session_id: a.session_id,
@@ -182,7 +181,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       .getByText('Tracking test A', { exact: true })
       .click()
     const contextButton = page.getByRole('button', {
-      name: /^(Context|Side panel)$/i,
+      name: /^(Context|Side panel|Show context pane)$/i,
     })
     if (await contextButton.count()) await contextButton.first().click()
     const section = page.getByRole('region', { name: 'Tracking', exact: true })
@@ -203,7 +202,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       }, theme)
       // A phone may show chat first; switch to its Context screen if necessary.
       const open = page.getByRole('button', {
-        name: /^(Context|Side panel)$/i,
+        name: /^(Context|Side panel|Show context pane)$/i,
       })
       if ((await open.count()) && !(await section.isVisible()))
         await open.first().click()
@@ -215,8 +214,8 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
     await section.getByRole('button', { name: 'Update in chat' }).click()
     // A draft action never saves a new snapshot or starts a background turn.
     expect(
-      (await call('ade::context::list', { session_id: a.session_id }))
-        .items[0].updated_at,
+      (await call('ade::context::list', { session_id: a.session_id })).items[0]
+        .updated_at,
     ).toBe(item.updated_at)
     item = await call('ade::context::save', {
       session_id: a.session_id,
@@ -225,8 +224,8 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       snapshot: { ...snapshot, progress: 80 },
     })
     expect(
-      (await call('ade::context::list', { session_id: b.session_id }))
-        .items[0].progress,
+      (await call('ade::context::list', { session_id: b.session_id })).items[0]
+        .progress,
     ).toBe(80)
     // Restart the actual ADE worker, not just the React component.
     consoleProcess.kill('SIGTERM')
@@ -253,7 +252,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       page.locator(`[data-chat-session-id="${a.session_id}"]`),
     ).toHaveAttribute('data-chat-session-hydrated', 'true')
     const reopen = page.getByRole('button', {
-      name: /^(Context|Side panel)$/i,
+      name: /^(Context|Side panel|Show context pane)$/i,
     })
     if (!(await section.isVisible())) await reopen.first().click()
     await expect(section.getByRole('progressbar')).toHaveAttribute(
@@ -275,7 +274,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       page.locator(`[data-chat-session-id="${a.session_id}"]`),
     ).toHaveAttribute('data-chat-session-hydrated', 'true')
     const reopenEmpty = page.getByRole('button', {
-      name: /^(Context|Side panel)$/i,
+      name: /^(Context|Side panel|Show context pane)$/i,
     })
     if (!(await section.isVisible())) await reopenEmpty.first().click()
     await expect(section).toContainText('Ask in chat')

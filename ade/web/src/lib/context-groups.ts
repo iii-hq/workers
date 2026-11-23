@@ -6,14 +6,15 @@ export const CONTEXT_GROUPS = CONTEXT_PANEL_GROUPS
 export type ContextGroup = (typeof CONTEXT_GROUPS)[number]
 
 const GROUP_LABELS: Record<ContextGroup, string> = {
+  subagents: 'Subagents',
+  prs: 'Pull requests',
+  links: 'Links',
+  attachments: 'Attachments',
+  images: 'Images',
+  tracking: 'Tracking',
   project: 'Project',
   tickets: 'Tickets',
-  prs: 'Pull requests',
-  assets: 'Assets',
-  subagents: 'Sub-agents',
   observers: 'Observers',
-  links: 'Links',
-  tracking: 'Tracking',
 }
 
 /** The worker named beside a section's title, unless it reads the same. */
@@ -37,9 +38,11 @@ export interface ContextSectionInfo {
   source?: string
 }
 
-/** The id this browser kept for a group before it was renamed. */
-const RENAMED_GROUPS: Readonly<Record<string, ContextGroup>> = {
-  triggers: 'observers',
+/** The ids this browser kept for a group before it was renamed or split. */
+const RENAMED_GROUPS: Readonly<Record<string, readonly ContextGroup[]>> = {
+  triggers: ['observers'],
+  // Assets became Attachments and Images (chat-projects D11).
+  assets: ['attachments', 'images'],
 }
 
 /** A list of ids kept in this browser, for every chat. */
@@ -53,7 +56,7 @@ function idListStore(key: string) {
       value = Array.isArray(stored)
         ? stored
             .filter((id): id is string => typeof id === 'string')
-            .map((id) => RENAMED_GROUPS[id] ?? id)
+            .flatMap((id) => RENAMED_GROUPS[id] ?? [id])
         : []
     } catch {
       value = []

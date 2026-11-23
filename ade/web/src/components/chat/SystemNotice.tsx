@@ -580,7 +580,7 @@ function workingDirCopy(scope: WorkingDirScope): {
             path: null,
             title: 'Working directory cleared',
             description:
-              'From the next message on this session runs unscoped: shell and file operations are no longer confined to a project folder. Earlier turns keep the scope they ran in.',
+              'From the next message on this session runs unscoped: shell and file operations are no longer confined to a folder. Earlier turns keep the scope they ran in.',
           }
         : {
             verb: 'changed to',

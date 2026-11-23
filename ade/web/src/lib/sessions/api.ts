@@ -95,6 +95,24 @@ export async function setSessionMeta(input: {
   return client.call('session::set-meta', input)
 }
 
+/**
+ * Merge metadata keys on the server (`session::patch-meta`, chat-projects
+ * D9): each key in `set` is replaced whole, each key in `unset` removed, and
+ * every other key is left as it is, so two writers never lose each other's
+ * keys. A key in both is refused (`bad_request`). Only on engines that list
+ * the function (`ChatCapabilities.patchMeta`); `setSessionMeta` otherwise.
+ */
+export async function patchSessionMeta(input: {
+  session_id: string
+  title?: string
+  description?: string
+  set?: Record<string, unknown>
+  unset?: string[]
+}): Promise<{ meta: SessionMeta }> {
+  const client = await getIiiClient()
+  return client.call('session::patch-meta', input)
+}
+
 /** `session::set-draft`'s answer: what is parked after the write. */
 export interface SetDraftResponse {
   draft: string | null

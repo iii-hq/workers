@@ -229,7 +229,11 @@ export function PaletteHost({
         id: `chat:${conversation.id}`,
         kind: 'chat',
         title: conversation.title || 'untitled chat',
-        detail: conversation.model ?? undefined,
+        // Search matches the name and the description (chat-projects §1.3.1).
+        detail: conversation.description ?? conversation.model ?? undefined,
+        ...(conversation.description
+          ? { keywords: [conversation.description] }
+          : {}),
         run: () => {
           select(conversation.id)
           openScreen('chat')

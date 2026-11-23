@@ -228,6 +228,9 @@ const OLDER_PAGE_ROOT_MARGIN = '600px 0px 0px 0px'
 const OPEN_SETTLE_QUIET_MS = 120
 /** Reveal no later than this after hydration, settled or not. */
 const OPEN_SETTLE_MAX_MS = 800
+/** How long a landed row flashes (chat-projects §1.3.6). */
+const JUMP_FLASH_MS = 1200
+
 /** A fast open shows nothing rather than a flash of the loading line. */
 const OPEN_INDICATOR_DELAY_MS = 150
 const HISTORY_EDGE_BUTTON_CLASS =
@@ -1319,6 +1322,17 @@ export function MessageList({
  gives the jump a visible landmark. Gated on hydration so it never
  centers against a partial history. */
   const focusAppliedRef = useRef<string | null>(null)
+  // The landed row carries `data-flash="true"` for as long as it flashes:
+  // a mark the reduced-motion case, tests and reviewers can see.
+  const flashRef = useRef<{ node: HTMLElement; timer: number } | null>(null)
+  const endFlash = useCallback(() => {
+    const flash = flashRef.current
+    if (!flash) return
+    flashRef.current = null
+    window.clearTimeout(flash.timer)
+    delete flash.node.dataset.flash
+  }, [])
+  useEffect(() => endFlash, [endFlash])
   // biome-ignore lint/correctness/useExhaustiveDependencies: message arrival is the retry trigger while the target row hasn't rendered yet.
   useEffect(() => {
     if (!focusMessageId) {
@@ -1346,6 +1360,12 @@ export function MessageList({
     // The request is handed back below; the row must outlive it to be landed on.
     pinRow(topLevelRowKey(node))
     scrollRowToCenter(container, node)
+    endFlash()
+    node.dataset.flash = 'true'
+    flashRef.current = {
+      node,
+      timer: window.setTimeout(endFlash, JUMP_FLASH_MS),
+    }
     if (typeof node.animate === 'function') {
       node.animate(
         [
@@ -1354,7 +1374,8 @@ export function MessageList({
           },
           { backgroundColor: 'transparent' },
         ],
-        { duration: 900, easing: 'ease-out' },
+        // 1.2 s: the landing of a jump (chat-projects §1.3.6).
+        { duration: JUMP_FLASH_MS, easing: 'ease-out' },
       )
     }
     onFocusMessageHandled?.()
@@ -1364,6 +1385,7 @@ export function MessageList({
     messages,
     onFocusMessageHandled,
     cancelTailAnimation,
+    endFlash,
     pinRow,
     scrollRowToCenter,
     transitionTailState,
