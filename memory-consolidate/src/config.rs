@@ -44,6 +44,17 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_llm_calls_per_run")]
     pub max_llm_calls_per_run: usize,
 
+    /// Merge entity-handle aliases after the deterministic pass: memories
+    /// tagged with a spelling variant of a handle (`build cache` beside
+    /// `build-cache`) are retagged in place through `memory::update`. A near
+    /// spelling (`dentista` beside `dentist`) merges only after a
+    /// `router::complete` judge confirms it, one call per bank per pass (a
+    /// reply cut short or unparseable halves the batch, a call per half) and
+    /// only for pairs with no recorded verdict. `user` is never touched. On
+    /// by default; off = no alias merges and no alias model calls.
+    #[serde(default = "default_true")]
+    pub alias_merge_enabled: bool,
+
     /// Run the LLM-assisted tier after the deterministic pass: an
     /// `router::complete` judge confirms reorder merges and promotes
     /// standing instructions into the bank's `learned` rule. Off by
@@ -51,7 +62,7 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub llm_assist_enabled: bool,
 
-    /// Model for the judge, semantic and verify tiers, as `provider::id`.
+    /// Model for the judge, alias, semantic and verify tiers, as `provider::id`.
     /// Empty is automatic: the default model of the first usable provider
     /// by id, else the first listed chat model of a usable provider. A
     /// usable provider is available and signed in, or owns its sign-in. The
@@ -70,7 +81,9 @@ pub struct WorkerConfig {
     /// `router::complete` judge merges paraphrases and supersedes outdated
     /// states, each with a reason. On by default; costs one LLM call per
     /// batch of new memories, and stops with a note (never an error) when
-    /// no router or embeddings are available. Off = no model calls.
+    /// no router or embeddings are available. Off = no semantic model calls
+    /// (the alias judge stops only with `alias_merge_enabled` off or
+    /// `max_llm_calls_per_run` at 0).
     #[serde(default = "default_true")]
     pub semantic_enabled: bool,
 
@@ -223,6 +236,7 @@ mod tests {
         // The semantic tier is on by default (fail-soft without a router).
         assert!(cfg.semantic_enabled);
         assert!(!cfg.verify_enabled);
+        assert!(cfg.alias_merge_enabled);
         assert_eq!(cfg.verify_max_per_run, 20);
     }
 

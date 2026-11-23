@@ -535,14 +535,25 @@ test('memory-consolidate groups schedule, scope and model', async () => {
     [
       ['Schedule', ['enabled', 'interval_hours', 'dry_run']],
       ['Scope and limits', ['banks', 'max_supersedes_per_run', 'max_llm_calls_per_run']],
-      ['Model assistance', ['llm_model', 'llm_assist_enabled', 'promote_corroboration_threshold', 'semantic_enabled', 'verify_enabled']],
+      [
+        'Model assistance',
+        [
+          'llm_model',
+          'llm_assist_enabled',
+          'promote_corroboration_threshold',
+          'semantic_enabled',
+          'verify_enabled',
+          'alias_merge_enabled',
+        ],
+      ],
     ],
   )
   const fields = spec.sections.flatMap((section) => section.fields)
   const byPath = (path) => fields.find((field) => field.path.join('.') === path)
   assert.equal(byPath('max_llm_calls_per_run').min, 0)
-  // Rust defaults: the semantic tier is on, the verify tier is off.
+  // Rust defaults: the semantic tier and alias merge are on, the verify tier is off.
   assert.equal(byPath('semantic_enabled').defaultValue, true)
+  assert.equal(byPath('alias_merge_enabled').defaultValue, true)
   assert.equal(byPath('verify_enabled').defaultValue, undefined)
 })
 

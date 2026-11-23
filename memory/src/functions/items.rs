@@ -9,14 +9,23 @@ use crate::error::MemoryError;
 use crate::events::ItemEvent;
 use crate::types::{Confidence, Memory, Provenance, fingerprint, now_ms, stated_now_ms};
 
-/// Normalized entity handles: trimmed, lowercased, empty dropped, capped.
+/// Normalized entity handles: trimmed, lowercased, empty dropped, capped at
+/// eight plus `user`, which the cap never drops (extraction writes eight
+/// handles and then `user`, and an edit sends them all back).
 fn normalize_entities(entities: Vec<String>) -> Vec<String> {
-    entities
-        .into_iter()
-        .map(|e| e.trim().to_lowercase())
-        .filter(|e| !e.is_empty())
-        .take(8)
-        .collect()
+    let user = crate::scope::LAYER_ENTITY;
+    let mut out: Vec<String> = Vec::new();
+    for e in entities.into_iter().map(|e| e.trim().to_lowercase()) {
+        let room = if e == user {
+            !out.contains(&e)
+        } else {
+            out.iter().filter(|h| *h != user).count() < 8
+        };
+        if !e.is_empty() && room {
+            out.push(e);
+        }
+    }
+    out
 }
 
 /// The text bound, after redaction; a note saved or revised from a turn is short.
@@ -476,6 +485,16 @@ pub struct UpdateRequest {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub pinned: Option<bool>,
+    /// Optional snapshot of the memory as the caller read it (a full record
+    /// or a revision-bound projection): the write is refused when the memory
+    /// changed since.
+    #[serde(default)]
+    pub expected_memory: Option<serde_json::Value>,
+    /// Why, carried on the `memory::on-item-changed` event this call emits
+    /// (not persisted on the record). Secrets redacted, trimmed, capped at
+    /// 500 chars.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, MemoryError> {
@@ -536,6 +555,14 @@ async fn update_once(
             memory.id
         )));
     }
+    if let Some(snapshot) = &req.expected_memory
+        && !crate::store::snapshot_matches(&memory, snapshot)?
+    {
+        return Err(MemoryError::InvalidInput(format!(
+            "memory `{}` changed since expected snapshot",
+            memory.id
+        )));
+    }
     let expected = memory.clone();
     let mut text_changed = false;
     let mut labels: Vec<&'static str> = Vec::new();
@@ -573,6 +600,8 @@ async fn update_once(
     if let Some(pinned) = req.pinned {
         memory.pinned = pinned;
     }
+    // A legacy record goes by `updated_at`, which moves below: pin it first.
+    memory.stated_at = Some(memory.last_stated());
     memory.updated_at = now_ms();
     memory.revision += 1;
     if bank
@@ -582,7 +611,7 @@ async fn update_once(
     {
         return Ok(None);
     }
-    let reason = crate::redact::reason(&labels);
+    let reason = update_reason(clamp_reason(req.reason), &labels);
     deps.emitter
         .item_with(ItemEvent::Updated, &bank_name, &memory, reason.as_deref())
         .await;
@@ -591,6 +620,14 @@ async fn update_once(
         crate::embed_client::spawn_backfill(deps, &bank_name);
     }
     Ok(Some(MemoryResponse { memory }))
+}
+
+/// An update event's reason: the caller's, then what redaction dropped.
+fn update_reason(asked: Option<String>, labels: &[&'static str]) -> Option<String> {
+    match (asked, crate::redact::reason(labels)) {
+        (Some(asked), Some(redacted)) => Some(format!("{asked}; {redacted}")),
+        (asked, redacted) => asked.or(redacted),
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -682,6 +719,8 @@ pub async fn pin(deps: &Deps, req: PinRequest) -> Result<MemoryResponse, MemoryE
             entities: None,
             tags: None,
             pinned: Some(req.pinned),
+            expected_memory: None,
+            reason: None,
         },
     )
     .await
@@ -729,8 +768,14 @@ pub struct SupersedeResponse {
 
 const MAX_REASON_CHARS: usize = 500;
 
+/// A caller's reason as an event carries it: secrets redacted, trimmed, capped.
 pub(crate) fn clamp_reason(reason: Option<String>) -> Option<String> {
-    let reason: String = reason?.trim().chars().take(MAX_REASON_CHARS).collect();
+    let reason: String = crate::redact::redact(reason?.trim())
+        .text
+        .trim()
+        .chars()
+        .take(MAX_REASON_CHARS)
+        .collect();
     (!reason.is_empty()).then_some(reason)
 }
 
@@ -1111,6 +1156,8 @@ mod tests {
             entities: None,
             tags: None,
             pinned: None,
+            expected_memory: None,
+            reason: None,
         }
     }
 
@@ -1746,6 +1793,126 @@ mod tests {
 
         let revised = update(&deps, reword(&c.id)).await.unwrap().memory;
         assert_eq!(revised.text, "The office is in Faro.");
+    }
+
+    #[tokio::test]
+    async fn an_update_with_a_stale_expected_memory_is_refused_and_a_matching_one_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let read = saved(&deps, "The dentist is on Friday.").await;
+        let retag = |expected: &Memory| UpdateRequest {
+            entities: Some(vec!["dentist".into()]),
+            expected_memory: Some(serde_json::to_value(expected).unwrap()),
+            reason: Some("alias: dentista -> dentist".into()),
+            ..edit(Some("blog"), &read.id)
+        };
+        let edited = update(
+            &deps,
+            UpdateRequest {
+                tags: Some(vec!["health".into()]),
+                ..edit(Some("blog"), &read.id)
+            },
+        )
+        .await
+        .unwrap()
+        .memory;
+        match update(&deps, retag(&read)).await {
+            Err(MemoryError::InvalidInput(m)) => {
+                assert!(m.contains("changed since expected snapshot"), "{m}")
+            }
+            other => panic!("expected a stale refusal, got {other:?}"),
+        }
+        assert_eq!(stored(&deps, "blog", &read.id).await, edited);
+        let applied = update(&deps, retag(&edited)).await.unwrap().memory;
+        assert_eq!(applied.entities, ["dentist"]);
+        assert_eq!(applied.revision, edited.revision + 1);
+    }
+
+    #[test]
+    fn an_update_reason_rides_the_event_before_any_redaction() {
+        let asked = || Some("alias: dentista -> dentist".to_string());
+        assert_eq!(update_reason(asked(), &[]), asked());
+        assert_eq!(
+            update_reason(asked(), &["api_key"]).as_deref(),
+            Some("alias: dentista -> dentist; redacted: api_key")
+        );
+        assert_eq!(
+            update_reason(None, &["api_key"]).as_deref(),
+            Some("redacted: api_key")
+        );
+        assert_eq!(update_reason(None, &[]), None);
+    }
+
+    #[test]
+    fn a_secret_in_a_reason_never_reaches_the_event() {
+        let reason = update_reason(
+            clamp_reason(Some("alias: key AKIAIOSFODNN7EXAMPLE".into())),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(reason, "alias: key [REDACTED:aws_access_key]");
+    }
+
+    /// A legacy record of bank `blog`: no `stated_at`, updated at 10.
+    async fn legacy(deps: &Deps, entities: &[&str]) -> Memory {
+        let memory = Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..record(&fingerprint("some text"), 0, true, false)
+        };
+        let (bank, _) = deps.store().await.ensure_bank("blog", None).await.unwrap();
+        bank.commit(memory.clone()).await.unwrap();
+        memory
+    }
+
+    #[tokio::test]
+    async fn a_retag_keeps_when_the_fact_was_last_stated() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let old = legacy(&deps, &["dentista"]).await;
+        let retagged = update(
+            &deps,
+            UpdateRequest {
+                entities: Some(vec!["dentist".into()]),
+                expected_memory: Some(serde_json::to_value(&old).unwrap()),
+                reason: Some("alias: dentista -> dentist".into()),
+                ..edit(Some("blog"), &old.id)
+            },
+        )
+        .await
+        .unwrap()
+        .memory;
+        assert!(retagged.updated_at > old.updated_at);
+        assert_eq!(retagged.last_stated(), old.last_stated());
+        assert_eq!(
+            stored(&deps, "blog", &old.id).await.last_stated(),
+            old.last_stated()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retag_of_eight_handles_and_user_keeps_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = deps(dir.path(), 8);
+        let mut handles = vec!["dentista", "a", "b", "c", "d", "e", "f", "g", "user"];
+        let old = legacy(&deps, &handles).await;
+        handles[0] = "dentist";
+        let retagged = update(
+            &deps,
+            UpdateRequest {
+                entities: Some(handles.iter().map(|h| h.to_string()).collect()),
+                ..edit(Some("blog"), &old.id)
+            },
+        )
+        .await
+        .unwrap()
+        .memory;
+        assert_eq!(retagged.entities, handles);
+        // The cap still holds for the other handles, and `user` is kept once.
+        let mut many: Vec<String> = (0..12).map(|i| format!("e{i}")).collect();
+        many.extend(["User".into(), "user".into()]);
+        let kept = normalize_entities(many);
+        assert_eq!(kept.len(), 9);
+        assert_eq!(kept[8], "user");
     }
 
     #[tokio::test]

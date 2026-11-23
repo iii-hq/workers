@@ -26,6 +26,7 @@ pub fn build_manifest() -> ModuleManifest {
             "banks": [],
             "max_supersedes_per_run": 200,
             "max_llm_calls_per_run": 200,
+            "alias_merge_enabled": true,
             "llm_assist_enabled": false,
             "llm_model": "",
             "promote_corroboration_threshold": 4,

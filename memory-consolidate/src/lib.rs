@@ -2,13 +2,14 @@
 //!
 //! Deterministic near-duplicate dedup over live memories, applied strictly
 //! through the memory worker's functions (`memory::supersede`, with
-//! `reinforce` on merges, and the opt-in verify tier's internal
-//! `memory::correct`): nothing is deleted, pinned untouchable, audit via
+//! `reinforce` on merges, `memory::update` for entity-handle alias retags,
+//! and the opt-in verify tier's internal `memory::correct`): nothing is deleted, pinned untouchable, audit via
 //! memory's own `memory::on-item-changed` events (each carrying a `reason`). Self-scheduled with catch-up-on-boot
 //! semantics: the last completed pass is persisted in the state worker, so
 //! a pass missed while the worker was down runs shortly after boot instead
 //! of waiting a full interval.
 
+pub mod alias;
 pub mod config;
 pub mod configuration;
 pub mod consolidate;

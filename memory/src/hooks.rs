@@ -4846,6 +4846,8 @@ Formal."
                     entities: None,
                     tags: None,
                     pinned: None,
+                    expected_memory: None,
+                    reason: None,
                 },
             )
             .await
@@ -4942,6 +4944,8 @@ Formal."
                 entities: None,
                 tags: None,
                 pinned: Some(true),
+                expected_memory: None,
+                reason: None,
             },
         )
         .await

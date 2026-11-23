@@ -19,16 +19,23 @@ pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
 pub const RUN_ID: &str = "memory-consolidate::run";
 pub const RUN_DESC: &str = "Run one consolidation pass now (all configured banks, or one bank). Deterministic \
-     near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic \
-     merge/supersede of new memories, each with a reason; verify of notes against their \
-     source transcript, replacing a contradicted one), applied strictly through \
-     memory::supersede and memory::correct; pinned memories are untouchable. dry_run plans \
-     without writing.";
+     near-duplicate dedup, entity-handle alias merge (a spelling variant retagged through \
+     memory::update, a near spelling only once a judge confirms it), plus the optional LLM \
+     tiers when enabled (reorder judge; semantic merge/supersede of new memories, each with a \
+     reason; verify of notes against their source transcript, replacing a contradicted one), \
+     applied strictly through memory::supersede, memory::update and memory::correct; pinned \
+     memories are untouchable. dry_run plans without writing.";
 
 pub const STATUS_ID: &str = "memory-consolidate::status";
 pub const STATUS_DESC: &str = "Check the consolidation schedule and last pass: enabled, interval, last run, due, and \
      the reports of the last 30 passes (newest first), each with per-bank results and LLM \
-     calls, tokens and cost; only the newest lists its groups and semantic actions.";
+     calls, tokens and cost; only the newest lists its groups, alias pairs and semantic \
+     actions.";
+
+pub const ALIAS_UNDO_ID: &str = "memory-consolidate::alias-undo";
+pub const ALIAS_UNDO_DESC: &str = "Undo an entity-handle alias merge: every memory the merge retagged \
+     that is live, unpinned and still carries the canonical handle gets `from` back through \
+     memory::update, and the pair is recorded as distinct so no pass merges it again.";
 
 pub const TICK_ID: &str = "memory-consolidate::on-tick";
 pub const TICK_DESC: &str = "Internal: schedule heartbeat (observer of cron::on-tick + boot catch-up backstop). Runs a \
@@ -74,7 +81,7 @@ pub struct StatusResponse {
     /// A scheduled pass is overdue right now.
     pub due: bool,
     /// The last 30 passes, newest first: `{ ms, dry_run, banks }`. Older
-    /// passes' banks leave out `groups` and `semantic`.
+    /// passes' banks leave out `groups`, `aliases` and `semantic`.
     pub reports: Vec<Value>,
 }
 
@@ -104,8 +111,8 @@ pub(crate) fn is_due(now_ms: u64, last_run_ms: u64, interval_hours: u64) -> bool
 }
 
 /// The ring with `report` in front, at most [`REPORTS_KEPT`]. Only the newest
-/// keeps its banks' `groups` and `semantic` lists, which repeat memory texts,
-/// so 30 passes stay about the size of one.
+/// keeps its banks' `groups`, `aliases` and `semantic` lists, which repeat
+/// memory texts and ids, so 30 passes stay about the size of one.
 pub(crate) fn with_report(ring: Option<Value>, report: Value) -> Vec<Value> {
     let mut reports = vec![report];
     if let Some(Value::Array(older)) = ring {
@@ -119,6 +126,7 @@ pub(crate) fn with_report(ring: Option<Value>, report: Value) -> Vec<Value> {
         .filter_map(Value::as_object_mut)
     {
         bank.remove("groups");
+        bank.remove("aliases");
         bank.remove("semantic");
     }
     reports
@@ -229,7 +237,26 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
     let mut llm_calls_left = cfg.max_llm_calls_per_run;
     let mut reports = Vec::new();
     for bank in &banks {
-        let (mut report, rows) = consolidate::run_bank(transport, bank, dry_run, &mut budget).await;
+        let (mut report, mut rows) =
+            consolidate::run_bank(transport, bank, dry_run, &mut budget).await;
+        // Before the judge tier: a retag replaces its row, so a reorder merge
+        // after it is guarded with the record as retagged.
+        if cfg.alias_merge_enabled {
+            let opts = crate::alias::AliasOptions {
+                model: cfg.llm_model.clone(),
+                max_llm_calls: llm_calls_left,
+                dry_run,
+            };
+            crate::alias::run_alias_tier(
+                transport,
+                bank,
+                &mut rows,
+                &mut report,
+                &mut budget,
+                &opts,
+            )
+            .await;
+        }
         if cfg.llm_assist_enabled && !dry_run {
             let opts = consolidate::LlmOptions {
                 model: cfg.llm_model.clone(),
@@ -326,6 +353,26 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
         superseded,
         checkpointed,
     })
+}
+
+/// `memory-consolidate::alias-undo`, behind the run gate: a pass and an undo
+/// must never interleave their ledger writes.
+pub async fn alias_undo(
+    deps: &Deps,
+    req: crate::alias::UndoRequest,
+) -> Result<crate::alias::UndoResponse, Error> {
+    alias_undo_with_transport(deps, req, deps.iii.as_ref()).await
+}
+
+pub async fn alias_undo_with_transport<T: ConsolidationTransport + ?Sized>(
+    deps: &Deps,
+    req: crate::alias::UndoRequest,
+    transport: &T,
+) -> Result<crate::alias::UndoResponse, Error> {
+    let _gate = deps.run_gate.lock().await;
+    crate::alias::undo(transport, req)
+        .await
+        .map_err(Error::Handler)
 }
 
 pub async fn status(deps: &Deps, _req: StatusRequest) -> Result<StatusResponse, Error> {
@@ -425,6 +472,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<RunRequest, RunResponse>(RUN_ID, RUN_DESC),
         spec::<StatusRequest, StatusResponse>(STATUS_ID, STATUS_DESC),
+        spec::<crate::alias::UndoRequest, crate::alias::UndoResponse>(
+            ALIAS_UNDO_ID,
+            ALIAS_UNDO_DESC,
+        ),
     ]
 }
 
@@ -463,6 +514,13 @@ pub fn register_all(iii: &IIIClient, deps: &Arc<Deps>) {
         STATUS_DESC,
         |d, r| async move { status(&d, r).await },
     );
+    register::<crate::alias::UndoRequest, crate::alias::UndoResponse, _, _>(
+        iii,
+        deps,
+        ALIAS_UNDO_ID,
+        ALIAS_UNDO_DESC,
+        |d, r| async move { alias_undo(&d, r).await },
+    );
     tracing::info!("all memory-consolidate::* functions registered");
 }
 
@@ -488,7 +546,8 @@ mod tests {
         // Only the newest keeps the lists that repeat memory texts.
         let pass = |n: usize| {
             json!({ "n": n, "banks": [{ "bank": "b", "superseded": 1,
-                "groups": [{ "texts": ["a long memory"] }], "semantic": [{ "reason": "same" }] }] })
+                "groups": [{ "texts": ["a long memory"] }], "semantic": [{ "reason": "same" }],
+                "aliases": [{ "from": "dentista", "to": "dentist", "ids": ["fp1"] }] }] })
         };
         let ring = with_report(Some(json!([pass(1)])), pass(0));
         assert_eq!(ring[0], pass(0));
