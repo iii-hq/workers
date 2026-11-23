@@ -210,7 +210,8 @@ result = answer["value"]
 
 The in-process Node and Python bus bridges refuse `state::claim-namespace`,
 `harness::state::*`, `provider-openai-codex::state::*`,
-`provider::openai-codex::{login,auth}::*` and `engine::observers::dispose`.
+`provider::openai-codex::{login,auth}::*`, `mcp-client::*` and
+`engine::observers::dispose`.
 The checks apply before dispatch, including queued and fire-and-forget calls,
 calls through an observer to its target, and observers: an observer can
 neither observe nor target one of them. Guests share this worker's one engine

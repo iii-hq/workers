@@ -1,0 +1,3010 @@
+//! One task per configured server: connect, list, register, call; and the
+//! wire types of `servers::list`.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::error::Error;
+use std::path::PathBuf;
+use std::pin::pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use futures::future::join_all;
+use http::{HeaderName, HeaderValue};
+use rmcp::model::{
+    CallToolRequestParams, ClientCapabilities, ClientConfig, GetPromptRequestParams,
+    GetPromptResponse, Implementation, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams,
+};
+use rmcp::service::{
+    ClientCacheConfig, ClientInitializeError, NotificationContext, RunningService,
+    RunningServiceCancellationToken,
+};
+use rmcp::transport::auth::{
+    AuthClient, AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
+    CredentialStore, OAuthClientConfig,
+};
+use rmcp::transport::streamable_http_client::{
+    AuthRequiredError, InsufficientScopeError, StreamableHttpClientTransportConfig,
+    StreamableHttpError,
+};
+use rmcp::transport::{DynamicTransportError, IntoTransport, StreamableHttpClientTransport};
+use rmcp::{ClientHandler, Peer, RoleClient, ServiceError, ServiceExt};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
+use tokio::time::{Instant, sleep, timeout};
+
+use crate::approvals::{APPROVALS_REF, APPROVALS_SECRET, Approvals, is_fingerprint};
+use crate::auth::{self, Minter, PendingLogins, token_request_body};
+use crate::config::{
+    Auth, Checked, Entry, HttpEntry, RawConfig, STDIO_OFF, StdioEntry, Transport, check_entry,
+    check_url_text, fingerprint,
+};
+use crate::credential_store::VaultCredentialStore;
+use crate::functions::SecretChange;
+use crate::host::{EventKind, Handler, Host, ServerEvent};
+use crate::prompts::{self, PromptInfo, prompt_wanted};
+use crate::reconcile::{
+    Registry, Skipped, Target, ToolInfo, Wanted, WantedSet, function_id, tool_wanted,
+};
+use crate::refs::{Ref, Resolved, Store, Text, event_matches, ref_error, resolve_all};
+use crate::resources::{self, list_id, read_id, resource_wanted, templates_id};
+use crate::stdio::{self, ChildGuard, LogLine, RestartPolicy, StderrRing};
+use crate::translate::{
+    BlockCtx, CallFailure, ServerSecrets, cap_blocks, failure_text, prompt_result, read_result,
+    scrub, strip_args, tool_result,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    Disabled,
+    ConfigError,
+    Unapproved,
+    Connecting,
+    Ready,
+    Unavailable,
+    AuthFailed,
+    NeedsLogin,
+}
+
+impl State {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            State::Disabled => "disabled",
+            State::ConfigError => "config_error",
+            State::Unapproved => "unapproved",
+            State::Connecting => "connecting",
+            State::Ready => "ready",
+            State::Unavailable => "unavailable",
+            State::AuthFailed => "auth_failed",
+            State::NeedsLogin => "needs_login",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    Config,
+    Approval,
+    Secret,
+    Connect,
+    Authorize,
+    Tools,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    InvalidConfig,
+    StdioDisabled,
+    Unapproved,
+    SecretMissing,
+    SecretNotShared,
+    SpawnFailed,
+    Exited,
+    ConnectFailed,
+    HandshakeFailed,
+    CredentialRejected,
+    LoginRequired,
+    RateLimited,
+    ListFailed,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ServerError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl ServerError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        ServerError {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Timings {
+    pub http_handshake: Duration,
+    pub stdio_start: Duration,
+    pub list: Duration,
+    pub call: Duration,
+    pub backoff_min: Duration,
+    pub backoff_max: Duration,
+    pub budget_starts: u32,
+    pub budget_window: Duration,
+    pub cooldown: Duration,
+    pub stable_after: Duration,
+    pub stop_grace: Duration,
+    pub relist_min_interval: Duration,
+}
+
+impl Default for Timings {
+    fn default() -> Self {
+        let s = Duration::from_secs;
+        Timings {
+            http_handshake: s(30),
+            stdio_start: s(60),
+            list: s(30),
+            call: s(120),
+            backoff_min: s(1),
+            backoff_max: s(60),
+            budget_starts: 5,
+            budget_window: s(600),
+            cooldown: s(300),
+            stable_after: s(60),
+            stop_grace: s(5),
+            relist_min_interval: s(60),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagerOptions {
+    pub stdio_enabled: bool,
+    pub timings: Timings,
+    pub worker_cwd: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ServersList {
+    pub stdio_enabled: bool,
+    pub callback_url: String,
+    pub servers: Vec<ServerView>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ServerView {
+    pub name: String,
+    /// `http` or `stdio`.
+    pub transport: String,
+    pub target: String,
+    pub auth: String,
+    pub state: State,
+    pub stage: Option<Stage>,
+    /// Unix milliseconds of the last state change.
+    pub since: u64,
+    pub error: Option<ServerError>,
+    pub approved: bool,
+    pub fingerprint: String,
+    pub protocol_version: Option<String>,
+    pub server_info: Option<ServerInfoView>,
+    pub tools_listed: bool,
+    pub tools: Vec<ToolView>,
+    pub skipped: Vec<Skipped>,
+    pub has_instructions: bool,
+    pub capabilities: CapabilitiesView,
+    pub resource_functions: Vec<ResourceFnView>,
+    pub prompts: Vec<PromptView>,
+    pub list_errors: ListErrors,
+    pub login: Option<LoginView>,
+    pub process: Option<ProcessView>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ServerInfoView {
+    pub name: String,
+    pub title: Option<String>,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ToolView {
+    pub name: String,
+    pub function_id: String,
+    pub registered: bool,
+    pub annotations: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct CapabilitiesView {
+    pub resources: bool,
+    pub prompts: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ResourceFnView {
+    /// `list`, `read` or `templates`.
+    pub name: String,
+    pub function_id: String,
+    pub registered: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PromptView {
+    pub name: String,
+    pub function_id: String,
+    pub registered: bool,
+    pub title: Option<String>,
+    pub arguments: u32,
+    pub required: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct ListErrors {
+    pub prompts: Option<String>,
+    pub templates: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LoginView {
+    pub pending: bool,
+    pub expires_at: u64,
+}
+
+/// A started sign-in. Its `Debug` shows no field: the authorize URL goes to
+/// the operator only, never into a panic message or a log line.
+#[derive(Clone, Serialize, JsonSchema)]
+pub struct LoginStart {
+    pub authorize_url: String,
+    pub redirect_uri: String,
+    /// Unix milliseconds.
+    pub expires_at: u64,
+}
+
+impl std::fmt::Debug for LoginStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoginStart { .. }")
+    }
+}
+
+/// A sign-in waiting for its callback: the rmcp session, the store it saves
+/// to, and the resolved URL that store is bound to.
+struct Login {
+    session: AuthorizationSession,
+    store: VaultCredentialStore,
+    url: String,
+}
+
+/// The text of every failure to read or refresh a sign-in session; rmcp's
+/// own text is never shown.
+const SESSION_UNREADABLE: &str = "the sign-in session could not be read or refreshed";
+const NONE_WAITING: &str = "no sign-in is waiting for this address; start again";
+
+/// Whether an entry signs in: http with `oauth`, or with no `auth` and no
+/// secret header (it may be challenged).
+fn signs_in(entry: &Entry) -> bool {
+    matches!(entry.transport, Transport::Http(_)) && matches!(entry.auth_kind(), "oauth" | "none")
+}
+
+/// The resolved URL; a `secret://` one must pass the rules a literal does.
+fn resolved_url(http: &HttpEntry, resolved: &Resolved) -> Result<String, String> {
+    let url = resolved.text(&http.url);
+    if let Text::Ref(r) = &http.url
+        && let Err(m) = check_url_text(&url)
+    {
+        return Err(format!("the address stored in `{r}` {m}"));
+    }
+    Ok(url)
+}
+
+/// An rmcp manager on `store`; private addresses only for a loopback server.
+async fn oauth_manager(
+    url: &str,
+    store: VaultCredentialStore,
+) -> Result<AuthorizationManager, AuthError> {
+    let mut manager = match auth::is_loopback(url) {
+        true => AuthorizationManager::new_allowing_private_addresses(url).await?,
+        false => AuthorizationManager::new(url).await?,
+    };
+    manager.set_credential_store(store);
+    Ok(manager)
+}
+
+/// Sets the metadata `challenge` points at, else the discovered one.
+async fn discover(
+    manager: &mut AuthorizationManager,
+    challenge: Option<&str>,
+) -> Result<(), AuthError> {
+    let resolution = manager.resolve_metadata_from_challenge(challenge).await?;
+    manager.set_metadata(resolution.metadata);
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProcessView {
+    pub pid: Option<u32>,
+    pub started_at: Option<u64>,
+    pub restarts: u32,
+    pub restart_budget: u32,
+    pub next_restart_at: Option<u64>,
+    pub last_exit: Option<ExitInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ExitInfo {
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+}
+
+/// A stdio server's stderr tail, redacted when it was read.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Logs {
+    pub lines: Vec<LogLine>,
+    /// Lines pushed out of the ring.
+    pub dropped: u64,
+}
+
+/// What `ProcessView` shows, and the policy that spaces the starts.
+struct ProcessFacts {
+    policy: RestartPolicy,
+    pid: Option<u32>,
+    started_at: Option<u64>,
+    next_restart_at: Option<u64>,
+    last_exit: Option<ExitInfo>,
+}
+
+/// The wait between two failed attempts: `min`, doubling, capped at `max`.
+pub struct Backoff {
+    min: Duration,
+    max: Duration,
+    next: Duration,
+}
+
+impl Backoff {
+    pub fn new(min: Duration, max: Duration) -> Self {
+        Backoff {
+            min,
+            max,
+            next: min,
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Duration {
+        let wait = self.next.min(self.max);
+        self.next = wait.saturating_mul(2);
+        wait
+    }
+
+    pub fn reset(&mut self) {
+        self.next = self.min;
+    }
+}
+
+/// A `Retry-After` value given as a number of seconds; an HTTP date is `None`.
+pub fn retry_after_secs(value: Option<&str>) -> Option<Duration> {
+    let value = value?.trim();
+    if !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok().map(Duration::from_secs)
+}
+
+pub(crate) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+fn client_config() -> ClientConfig {
+    ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("iii-mcp-client", env!("CARGO_PKG_VERSION")),
+    )
+    .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
+}
+
+type Session = RunningService<RoleClient, Notifier>;
+
+/// A session's peer. A call holds it while in flight, and the last holder
+/// ends the session: a reconnect never cuts off a call on the old one.
+struct Conn {
+    peer: Peer<RoleClient>,
+    end: Option<RunningServiceCancellationToken>,
+}
+
+impl Conn {
+    fn new(session: &Session) -> Arc<Conn> {
+        Arc::new(Conn {
+            peer: session.peer().clone(),
+            end: Some(session.cancellation_token()),
+        })
+    }
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        if let Some(end) = self.end.take() {
+            end.cancel();
+        }
+    }
+}
+
+/// A call's ask for a new session after a 401 on `Conn`, answered by the
+/// server task with the session to retry on.
+type Recover = (Arc<Conn>, oneshot::Sender<Result<Arc<Conn>, CallFailure>>);
+
+type HttpError = StreamableHttpError<reqwest::Error>;
+
+/// The list a server said changed.
+#[derive(Clone, Copy, PartialEq)]
+enum ListChanged {
+    Tools,
+    Prompts,
+    Resources,
+}
+
+/// The rmcp handler of a session: hands list-changed notifications to the
+/// server task.
+struct Notifier {
+    info: ClientConfig,
+    tx: mpsc::UnboundedSender<ListChanged>,
+    /// rmcp's session task holds this until its last log line (the session
+    /// DELETE), which may come after the server itself is gone.
+    _secrets: Arc<ServerSecrets>,
+}
+
+impl ClientHandler for Notifier {
+    fn get_info(&self) -> ClientConfig {
+        self.info.clone()
+    }
+
+    async fn on_tool_list_changed(&self, _: NotificationContext<RoleClient>) {
+        let _ = self.tx.send(ListChanged::Tools);
+    }
+
+    async fn on_prompt_list_changed(&self, _: NotificationContext<RoleClient>) {
+        let _ = self.tx.send(ListChanged::Prompts);
+    }
+
+    async fn on_resource_list_changed(&self, _: NotificationContext<RoleClient>) {
+        let _ = self.tx.send(ListChanged::Resources);
+    }
+}
+
+/// A stdio server's child and the task reading its stderr.
+struct Process {
+    child: ChildGuard,
+    reader: Reader,
+}
+
+/// The stderr reader of one child; aborted when dropped.
+struct Reader {
+    task: JoinHandle<()>,
+    /// The ring's push count when the child started: older lines are not its.
+    from: u64,
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// A ready session, for stdio the process behind it, and the values its
+/// references resolved to.
+struct Live {
+    session: Session,
+    process: Option<Process>,
+    resolved: Resolved,
+}
+
+/// The exit of the session's process; never, for http.
+async fn exited(process: &mut Option<Process>) -> ExitInfo {
+    match process {
+        Some(p) => p.child.wait().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn exit_text(exit: &ExitInfo) -> String {
+    match (exit.code, exit.signal) {
+        (Some(code), _) => format!("exited with code {code}"),
+        (None, Some(signal)) => format!("killed by signal {signal}"),
+        (None, None) => "exited".into(),
+    }
+}
+
+/// A failed handshake's text, with nothing a response body could put in it.
+fn init_text(e: &ClientInitializeError) -> String {
+    match e {
+        ClientInitializeError::JsonRpcError(d) => rpc_text(d),
+        ClientInitializeError::TransportError { error, .. } => transport_text(error),
+        // Their text prints what the server sent.
+        ClientInitializeError::ExpectedInitResponse(_)
+        | ClientInitializeError::ExpectedInitResult(_) => "unexpected response".into(),
+        _ => e.to_string(),
+    }
+}
+
+/// The reference a 401 blames: the bearer token, the client secret, else the
+/// first secret header.
+fn credential_ref(http: &HttpEntry) -> Option<String> {
+    match &http.auth {
+        Auth::Bearer { token } => return Some(token.to_string()),
+        Auth::ClientCredentials { client_secret, .. } => return Some(client_secret.to_string()),
+        _ => {}
+    }
+    http.headers.values().find_map(|v| match v {
+        Text::Ref(r) => Some(r.to_string()),
+        Text::Literal(_) => None,
+    })
+}
+
+/// The token a bearer entry sends.
+fn bearer_token(http: &HttpEntry, resolved: &Resolved) -> Option<String> {
+    match &http.auth {
+        Auth::Bearer { token } => Some(resolved.text(&Text::Ref(token.clone()))),
+        _ => None,
+    }
+}
+
+/// The errors behind a failed handshake, outermost first.
+fn init_chain(e: &ClientInitializeError) -> Vec<&(dyn Error + 'static)> {
+    match e {
+        ClientInitializeError::TransportError { error, .. } => transport_chain(error),
+        _ => vec![],
+    }
+}
+
+fn transport_chain(e: &DynamicTransportError) -> Vec<&(dyn Error + 'static)> {
+    let top: &(dyn Error + 'static) = e.error.as_ref();
+    std::iter::successors(Some(top), |&x| x.source()).collect()
+}
+
+/// The `WWW-Authenticate` value of a 401 in `chain`.
+fn challenge_in(chain: &[&(dyn Error + 'static)]) -> Option<String> {
+    let found = chain
+        .iter()
+        .find_map(|x| x.downcast_ref::<AuthRequiredError>());
+    found.map(|c| c.www_authenticate_header.clone())
+}
+
+/// Whether a handshake was answered 401, with a challenge or without. The
+/// text of a bare 401 carries the response body: matched, never passed on.
+fn unauthorized(e: &ClientInitializeError) -> bool {
+    let chain = init_chain(e);
+    let bare = matches!(chain.first().and_then(|x| x.downcast_ref::<HttpError>()),
+        Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP 401"));
+    bare || chain.iter().any(|x| x.is::<AuthRequiredError>())
+}
+
+/// The wait a 429 at connect asks for.
+fn retry_wait(e: &ClientInitializeError) -> Option<Duration> {
+    let ClientInitializeError::TransportError { error, .. } = e else {
+        return None;
+    };
+    match error.error.downcast_ref::<HttpError>() {
+        Some(HttpError::HttpStatus(s)) if s.status == 429 => {
+            retry_after_secs(s.retry_after.as_deref())
+        }
+        _ => None,
+    }
+}
+
+/// A transport error's text with nothing a response body could have put in
+/// it: an unexpected response keeps only its `HTTP NNN Reason` prefix.
+fn transport_text(e: &DynamicTransportError) -> String {
+    match e.error.downcast_ref::<HttpError>() {
+        Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP ") => {
+            t.split(": ").next().unwrap_or_default().to_string()
+        }
+        Some(HttpError::UnexpectedServerResponse(_) | HttpError::Deserialize(_)) => {
+            "unexpected response".into()
+        }
+        Some(HttpError::Auth(_)) => SESSION_UNREADABLE.into(),
+        Some(other) => other.to_string(),
+        None => e.error.to_string(),
+    }
+}
+
+/// The most of a server's error message passed on.
+const MESSAGE_CAP: usize = 4096;
+
+/// A server's error message cut to `MESSAGE_CAP` bytes on a char boundary.
+fn server_message(message: &str) -> String {
+    message[..message.floor_char_boundary(MESSAGE_CAP)].to_string()
+}
+
+/// A listing as `T`s. The error may quote what the server sent: cut like
+/// its messages.
+fn listing<T: serde::de::DeserializeOwned>(list: impl Serialize) -> Result<Vec<T>, String> {
+    let parsed = serde_json::to_value(list).and_then(serde_json::from_value);
+    parsed.map_err(|e| server_message(&e.to_string()))
+}
+
+/// A JSON-RPC error without its `data`, which is whatever the server sent.
+fn rpc_text(e: &rmcp::ErrorData) -> String {
+    format!("MCP error {}: {}", e.code.0, server_message(&e.message))
+}
+
+/// A failed request's text, as body-free as `transport_text`.
+fn service_text(error: &ServiceError) -> String {
+    match error {
+        ServiceError::TransportSend(e) => transport_text(e),
+        ServiceError::McpError(e) => rpc_text(e),
+        other => other.to_string(),
+    }
+}
+
+fn classify_call_error(error: &ServiceError, entry: &Entry) -> CallFailure {
+    let e = match error {
+        ServiceError::McpError(e) => {
+            return CallFailure::JsonRpc {
+                code: e.code.0,
+                message: server_message(&e.message),
+            };
+        }
+        ServiceError::TransportSend(e) => e,
+        _ => return CallFailure::Transport(service_text(error)),
+    };
+    // `HttpStatus` is `#[error(transparent)]`: only this downcast finds a 429.
+    let status: Option<u16> = match e.error.downcast_ref::<HttpError>() {
+        Some(HttpError::HttpStatus(s)) if s.status == 429 => {
+            let retry_after = s.retry_after.clone();
+            return CallFailure::RateLimited { retry_after };
+        }
+        Some(HttpError::Auth(AuthError::AuthorizationRequired)) => {
+            return CallFailure::LoginRequired;
+        }
+        // A store outage or a refresh not sent: this request fails, the
+        // session stays (`Rejected` leaves the server `ready`).
+        Some(HttpError::Auth(_)) => return CallFailure::Rejected(SESSION_UNREADABLE.into()),
+        Some(HttpError::HttpStatus(s)) => Some(s.status),
+        Some(HttpError::UnexpectedServerResponse(t)) => t
+            .strip_prefix("HTTP ")
+            .and_then(|t| t.get(..3))
+            .and_then(|code| code.parse().ok()),
+        _ => None,
+    };
+    let top: &(dyn Error + 'static) = e.error.as_ref();
+    let mut challenged = false;
+    for x in std::iter::successors(Some(top), |&x| x.source()) {
+        if let Some(s) = x.downcast_ref::<InsufficientScopeError>() {
+            let scope = s.required_scope.clone();
+            return CallFailure::InsufficientScope { scope };
+        }
+        challenged |= x.is::<AuthRequiredError>();
+    }
+    if challenged || status == Some(401) {
+        let reference = match &entry.transport {
+            // Signed in: rmcp already refreshed once, a header is no credential.
+            Transport::Http(HttpEntry {
+                auth: Auth::OAuth { .. },
+                ..
+            }) => return CallFailure::LoginRequired,
+            Transport::Http(http) => credential_ref(http),
+            Transport::Stdio(_) => None,
+        };
+        return match (reference, challenged) {
+            (Some(reference), _) => CallFailure::CredentialRejected { reference },
+            (None, true) => CallFailure::LoginRequired,
+            (None, false) => CallFailure::NoSignIn,
+        };
+    }
+    match status {
+        Some(403) => CallFailure::InsufficientScope { scope: None },
+        // A 404 is a lost session: an outage like a 5xx.
+        Some(s) if (400..500).contains(&s) && s != 404 => CallFailure::Rejected(transport_text(e)),
+        _ => CallFailure::Transport(transport_text(e)),
+    }
+}
+
+/// Tool name to its annotations, for the tools a listing wants.
+fn tool_views(wanted: &WantedSet) -> BTreeMap<String, Option<Value>> {
+    wanted
+        .values()
+        .filter_map(|w| match &w.target {
+            Target::Tool { name } => Some((
+                name.clone(),
+                w.def.metadata.pointer("/mcp/annotations").cloned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A prompt listing as functions.
+struct PromptList {
+    wanted: WantedSet,
+    skipped: Vec<Skipped>,
+    /// The wanted prompts in server order.
+    views: Vec<PromptView>,
+}
+
+/// One listing's outcome in its `list_errors` entry: the first failure of a
+/// run logs a warning, a success clears it.
+fn note_list(server: &str, what: &str, slot: &mut Option<String>, error: Option<String>) {
+    if let Some(message) = &error
+        && slot.is_none()
+    {
+        tracing::warn!(
+            "`{server}` could not list its {what}, their functions stay as they were: {message}"
+        );
+    }
+    *slot = error;
+}
+
+/// The params of one list page: `None` without a cursor.
+fn page_params(args: &Map<String, Value>) -> Result<Option<PaginatedRequestParams>, String> {
+    match args.get("cursor") {
+        None => Ok(None),
+        Some(Value::String(cursor)) => {
+            let params = PaginatedRequestParams::default().with_cursor(Some(cursor.clone()));
+            Ok(Some(params))
+        }
+        Some(_) => Err("invalid_argument: cursor must be a string".into()),
+    }
+}
+
+fn wire(result: impl Serialize) -> Value {
+    serde_json::to_value(result).unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+struct Status {
+    state: State,
+    stage: Option<Stage>,
+    error: Option<ServerError>,
+    since: u64,
+}
+
+/// What a handshake and a listing learned.
+#[derive(Default)]
+struct Info {
+    protocol_version: Option<String>,
+    server_info: Option<ServerInfoView>,
+    instructions: Option<String>,
+    capabilities: CapabilitiesView,
+    tools_listed: bool,
+    /// Tool name to its annotations, for the tools that were not skipped.
+    tools: BTreeMap<String, Option<Value>>,
+    /// The tools the listing skipped.
+    skipped: Vec<Skipped>,
+    /// The wanted prompts in server order; `view` fills `registered`.
+    prompts: Vec<PromptView>,
+    prompts_skipped: Vec<Skipped>,
+    /// The resource functions the registry holds; `view` fills `registered`.
+    resource_fns: Vec<ResourceFnView>,
+    list_errors: ListErrors,
+}
+
+const UNAPPROVED: &str = "this entry is not the one an operator approved: review it on the MCP client page, or call mcp-client::servers::approve";
+
+/// An entry as configured and as checked.
+struct Spec {
+    raw: Value,
+    checked: Checked,
+}
+
+struct Server {
+    name: String,
+    /// Replaced when the entry changes; the server and its registry stay.
+    spec: RwLock<Arc<Spec>>,
+    host: Arc<dyn Host>,
+    approvals: Arc<Approvals>,
+    timings: Timings,
+    worker_cwd: PathBuf,
+    status: watch::Sender<Status>,
+    registry: Registry,
+    info: Mutex<Info>,
+    /// Replaced in every error this server stores or a handler returns, and
+    /// in every log line of the process.
+    secrets: Arc<ServerSecrets>,
+    /// Read by the running task, replaced by each start.
+    recoveries: Mutex<mpsc::UnboundedSender<Recover>>,
+    /// The last sign-in challenge of an entry that signs in; set, a no-`auth`
+    /// entry shows as `oauth`.
+    challenge: Mutex<Option<String>>,
+    /// The session store of the resolved URL it is bound to. Clones share
+    /// one refresh mutex, so every rmcp manager of this server takes a clone.
+    store: Mutex<Option<(String, VaultCredentialStore)>>,
+    /// A finished sign-in's manager and the URL it is for, for the next connect.
+    handoff: Mutex<Option<(String, AuthorizationManager)>>,
+    peer: RwLock<Option<Arc<Conn>>>,
+    /// Each session's `Notifier` holds a clone; the server task reads them.
+    notes: mpsc::UnboundedSender<ListChanged>,
+    /// Held by the running task, so a restarted task reads the same channel.
+    notes_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<ListChanged>>,
+    /// A call answered -32602 asks the server task to list the tools again.
+    relist: Notify,
+    /// The same for a prompt call and the prompts.
+    relist_prompts: Notify,
+    task: Mutex<Option<(oneshot::Sender<()>, JoinHandle<()>)>>,
+    /// The stderr of every process this server started, across restarts.
+    ring: Arc<Mutex<StderrRing>>,
+    facts: Mutex<ProcessFacts>,
+}
+
+/// The state an entry starts in, from what its config alone says.
+fn first_status(checked: &Checked) -> (State, Option<Stage>, Option<ServerError>) {
+    let fail = |state, stage, code, message: String| {
+        (state, Some(stage), Some(ServerError::new(code, message)))
+    };
+    // Rule 9 fires only with stdio off; nothing is resolved or spawned.
+    if checked.errors.iter().any(|i| i.message == STDIO_OFF) {
+        let code = ErrorCode::StdioDisabled;
+        return fail(State::ConfigError, Stage::Config, code, STDIO_OFF.into());
+    }
+    let Some(entry) = &checked.entry else {
+        let message = checked
+            .errors
+            .iter()
+            .map(|i| format!("{}: {}", i.path, i.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return fail(
+            State::ConfigError,
+            Stage::Config,
+            ErrorCode::InvalidConfig,
+            message,
+        );
+    };
+    if entry.disabled {
+        return (State::Disabled, None, None);
+    }
+    // A sign-in entry too: the approval gate comes before its stored session.
+    (State::Connecting, Some(Stage::Secret), None)
+}
+
+impl Server {
+    fn start(
+        host: &Arc<dyn Host>,
+        approvals: &Arc<Approvals>,
+        opts: &ManagerOptions,
+        name: &str,
+        raw: &Value,
+    ) -> Arc<Server> {
+        let checked = check_entry(name, raw, opts.stdio_enabled);
+        let (state, stage, error) = first_status(&checked);
+        let (notes, notes_rx) = mpsc::unbounded_channel();
+        let status = Status {
+            state,
+            stage,
+            error,
+            since: now_ms(),
+        };
+        let server = Arc::new(Server {
+            name: name.into(),
+            spec: RwLock::new(Arc::new(Spec {
+                raw: raw.clone(),
+                checked,
+            })),
+            host: host.clone(),
+            approvals: approvals.clone(),
+            timings: opts.timings,
+            worker_cwd: opts.worker_cwd.clone(),
+            status: watch::channel(status).0,
+            registry: Registry::new(),
+            info: Mutex::default(),
+            secrets: ServerSecrets::new(),
+            recoveries: Mutex::new(mpsc::unbounded_channel().0),
+            challenge: Mutex::default(),
+            store: Mutex::default(),
+            handoff: Mutex::default(),
+            peer: RwLock::default(),
+            notes,
+            notes_rx: tokio::sync::Mutex::new(notes_rx),
+            relist: Notify::new(),
+            relist_prompts: Notify::new(),
+            task: Mutex::default(),
+            ring: Arc::default(),
+            facts: Mutex::new(ProcessFacts {
+                policy: RestartPolicy::new(&opts.timings),
+                pid: None,
+                started_at: None,
+                next_restart_at: None,
+                last_exit: None,
+            }),
+        });
+        server.emit(EventKind::State);
+        if state == State::Connecting {
+            server.spawn();
+        }
+        server
+    }
+
+    fn spec(&self) -> Arc<Spec> {
+        self.spec.read().unwrap().clone()
+    }
+
+    fn is_stdio(&self) -> bool {
+        let spec = self.spec();
+        let entry = spec.checked.entry.as_ref();
+        entry.is_some_and(|e| matches!(e.transport, Transport::Stdio(_)))
+    }
+
+    fn spawned(&self, pid: Option<u32>) {
+        {
+            let mut f = self.facts.lock().unwrap();
+            (f.pid, f.started_at) = (pid, Some(now_ms()));
+        }
+        self.emit(EventKind::Process);
+    }
+
+    fn ended(&self, exit: &ExitInfo) {
+        {
+            let mut f = self.facts.lock().unwrap();
+            (f.pid, f.last_exit) = (None, Some(exit.clone()));
+        }
+        self.emit(EventKind::Process);
+    }
+
+    /// The wait before the next start, kept as `next_restart_at`. An exit
+    /// after `stable_after` of `ready` is not a failed start.
+    fn schedule(&self, stable: bool) -> Duration {
+        let wait = {
+            let mut f = self.facts.lock().unwrap();
+            let wait = match stable {
+                true => self.timings.backoff_min,
+                false => f.policy.on_failed_start(Instant::now()),
+            };
+            f.next_restart_at = Some(now_ms() + wait.as_millis() as u64);
+            wait
+        };
+        self.emit(EventKind::Process);
+        wait
+    }
+
+    /// Starts the task, with a fresh backoff.
+    fn spawn(self: &Arc<Self>) {
+        let (stop, stopped) = oneshot::channel();
+        let (recover, recoveries) = mpsc::unbounded_channel();
+        *self.recoveries.lock().unwrap() = recover;
+        let handle = tokio::spawn(self.clone().run(stopped, recoveries));
+        *self.task.lock().unwrap() = Some((stop, handle));
+    }
+
+    /// Stops the task and starts it again on `spec`, or on the entry it has,
+    /// with a fresh restart budget. The registry stays and the next listing
+    /// reconciles it; only a disabled entry loses its functions.
+    async fn restart(self: &Arc<Self>, spec: Option<Spec>) {
+        self.halt().await;
+        self.facts.lock().unwrap().policy.reset();
+        if let Some(spec) = spec {
+            *self.challenge.lock().unwrap() = None;
+            *self.spec.write().unwrap() = Arc::new(spec);
+        }
+        let (state, stage, error) = first_status(&self.spec().checked);
+        if state == State::Disabled {
+            self.registry.clear().await;
+            *self.info.lock().unwrap() = Info::default();
+        }
+        self.set(state, stage, error);
+        if state == State::Connecting {
+            self.spawn();
+        }
+    }
+
+    fn emit(&self, kind: EventKind) {
+        self.host.emit(ServerEvent {
+            server: self.name.clone(),
+            kind,
+        });
+    }
+
+    fn set(&self, state: State, stage: Option<Stage>, error: Option<ServerError>) {
+        self.set_if(|_| true, state, stage, error);
+    }
+
+    /// Sets the status when `from` holds for the current state. A `state`
+    /// event goes out only when the state, the stage or the error code changed.
+    fn set_if(
+        &self,
+        from: impl FnOnce(State) -> bool,
+        state: State,
+        stage: Option<Stage>,
+        error: Option<ServerError>,
+    ) {
+        let error = error.map(|mut e| {
+            e.message = scrub(&e.message, &self.secrets.values());
+            e
+        });
+        let logged = error.as_ref().map(|e| e.message.clone());
+        let code = |e: &Option<ServerError>| e.as_ref().map(|e| e.code);
+        let changed = self.status.send_if_modified(|s| {
+            if !from(s.state) {
+                return false;
+            }
+            let changed = s.state != state || s.stage != stage || code(&s.error) != code(&error);
+            if s.state != state {
+                s.since = now_ms();
+            }
+            (s.state, s.stage, s.error) = (state, stage, error);
+            changed
+        });
+        if changed {
+            if let Some(message) = logged {
+                tracing::warn!(
+                    "`{}` MCP server is {}: {message}",
+                    self.name,
+                    state.as_str()
+                );
+            }
+            self.emit(EventKind::State);
+        }
+    }
+
+    fn fail(&self, state: State, stage: Stage, code: ErrorCode, message: String) {
+        self.set(state, Some(stage), Some(ServerError::new(code, message)));
+    }
+
+    /// A connect's progress; a retry stays `unavailable` until it is `ready`.
+    fn progress(&self, stage: Stage) {
+        let state = State::Connecting;
+        self.set_if(|s| s == state, state, Some(stage), None);
+    }
+
+    /// Leaves `ready`; a server that already left it keeps its status.
+    fn leave_ready(&self, state: State, stage: Stage, code: ErrorCode, message: String) {
+        let error = Some(ServerError::new(code, message));
+        self.set_if(|s| s == State::Ready, state, Some(stage), error);
+    }
+
+    /// Connects, serves and reconnects until `stop`. Only `unavailable` is
+    /// tried again; every other failure waits for a change from outside.
+    async fn run(
+        self: Arc<Self>,
+        mut stop: oneshot::Receiver<()>,
+        mut recoveries: mpsc::UnboundedReceiver<Recover>,
+    ) {
+        let mut notes = self.notes_rx.lock().await;
+        let mut backoff = Backoff::new(self.timings.backoff_min, self.timings.backoff_max);
+        let stdio = self.is_stdio();
+        // Kept across reconnects with the client secret it was made for.
+        let mut minter: Option<(String, Minter)> = None;
+        loop {
+            // The connect lists the tools: what came before it is stale.
+            while notes.try_recv().is_ok() {}
+            // Asked of a session that is gone: those calls fail as unavailable.
+            while recoveries.try_recv().is_ok() {}
+            let attempt = tokio::select! {
+                attempt = self.connect(&mut minter) => attempt,
+                _ = &mut stop => return,
+            };
+            let (wait, stable) = match attempt {
+                Ok(live) => {
+                    let (minter, asks) = (minter.as_ref().map(|(_, m)| m), &mut recoveries);
+                    match self
+                        .serve(live, &mut stop, &mut notes, asks, &mut backoff, minter)
+                        .await
+                    {
+                        Some(stable) => (None, Some(stable)),
+                        None => return,
+                    }
+                }
+                Err(wait) => (wait, None),
+            };
+            // `connecting` after a failed attempt: the approvals could not be read.
+            let (state, stage) = {
+                let s = self.status.borrow();
+                (s.state, s.stage)
+            };
+            if !matches!(state, State::Unavailable | State::Connecting) {
+                drop(recoveries);
+                let _ = (&mut stop).await;
+                return;
+            }
+            // A spawn, an exit, and a handshake or first listing that failed
+            // are failed starts; a failed approval or secret step is not.
+            let start = match stable {
+                Some(stable) => Some(stable),
+                None => matches!(stage, Some(Stage::Connect | Stage::Tools)).then_some(false),
+            };
+            // A 429's `Retry-After` as sent: a reconnect or a change cuts it short.
+            let wait = match (wait, start) {
+                (Some(wait), _) => wait,
+                (None, Some(stable)) if stdio => self.schedule(stable),
+                _ => backoff.next(),
+            };
+            tokio::select! {
+                _ = sleep(wait) => {}
+                _ = &mut stop => return,
+            }
+            self.facts.lock().unwrap().next_restart_at = None;
+        }
+    }
+
+    /// Serves a ready session until `stop` (`None`) or until the server
+    /// leaves `ready` (whether it was `ready` for `stable_after`), then
+    /// closes the session and stops its process. A call's 401 is answered
+    /// here with a new session: `minter` mints for a client-credentials entry.
+    async fn serve(
+        self: &Arc<Self>,
+        live: Live,
+        stop: &mut oneshot::Receiver<()>,
+        notes: &mut mpsc::UnboundedReceiver<ListChanged>,
+        recoveries: &mut mpsc::UnboundedReceiver<Recover>,
+        backoff: &mut Backoff,
+        minter: Option<&Minter>,
+    ) -> Option<bool> {
+        let Live {
+            session,
+            mut process,
+            mut resolved,
+        } = live;
+        let mut cancel = session.cancellation_token();
+        let mut ended = Box::pin(session.waiting());
+        let mut status = self.status.subscribe();
+        let mut stable = pin!(sleep(self.timings.stable_after));
+        let mut stable_seen = false;
+        let mut last_relist: Option<Instant> = None;
+        let mut last_prompt_relist: Option<Instant> = None;
+        let interval = self.timings.relist_min_interval;
+        let (stopped, open, exit) = loop {
+            let mut asked = None;
+            let due = tokio::select! {
+                _ = &mut *stop => break (true, true, None),
+                _ = status.wait_for(|s| s.state != State::Ready) => break (false, true, None),
+                _ = &mut ended => {
+                    if process.is_none() {
+                        let message = format!("the MCP session with {} ended", self.name);
+                        let (state, code) = (State::Unavailable, ErrorCode::ConnectFailed);
+                        self.leave_ready(state, Stage::Connect, code, message);
+                    }
+                    break (false, false, None);
+                }
+                exit = exited(&mut process) => break (false, true, Some(exit)),
+                _ = &mut stable, if !stable_seen => {
+                    stable_seen = true;
+                    backoff.reset();
+                    if process.is_some() {
+                        self.facts.lock().unwrap().policy.on_stable();
+                        self.emit(EventKind::Process);
+                    }
+                    None
+                }
+                Some(change) = notes.recv() => Some(change),
+                Some((seen, reply)) = recoveries.recv() => {
+                    asked = Some((seen, Some(reply)));
+                    None
+                }
+                _ = self.relist.notified() => {
+                    let due = last_relist.is_none_or(|t| t.elapsed() >= interval);
+                    due.then_some(ListChanged::Tools)
+                }
+                _ = self.relist_prompts.notified() => {
+                    let due = last_prompt_relist.is_none_or(|t| t.elapsed() >= interval);
+                    due.then_some(ListChanged::Prompts)
+                }
+            };
+            if let Some(first) = due {
+                // This re-list covers every change queued so far, so a burst
+                // costs one per kind; a change that arrives during it gets its own.
+                let mut due = vec![first];
+                while let Ok(change) = notes.try_recv() {
+                    if !due.contains(&change) {
+                        due.push(change);
+                    }
+                }
+                let now = Some(Instant::now());
+                if due.contains(&ListChanged::Tools) {
+                    last_relist = now;
+                }
+                if due.contains(&ListChanged::Prompts) {
+                    last_prompt_relist = now;
+                }
+                let refused = tokio::select! {
+                    refused = self.relist(&due) => refused,
+                    _ = &mut *stop => break (true, true, None),
+                };
+                // A 401 on the re-list recovers as a call's does, then lists once more.
+                asked = refused.map(|seen| (seen, None));
+            }
+            if let Some((seen, reply)) = asked {
+                let current = self.peer.read().unwrap().clone();
+                let ready = self.status.borrow().state == State::Ready;
+                let answer = match current {
+                    // Recovered since that request was sent.
+                    Some(conn) if !Arc::ptr_eq(&conn, &seen) => Ok(conn),
+                    // A failed recovery, or anything else, left `ready` first.
+                    _ if !ready => Err(self.unavailable()),
+                    _ => {
+                        let reopened = tokio::select! {
+                            reopened = self.reopen(&mut resolved, minter) => reopened,
+                            _ = &mut *stop => break (true, true, None),
+                        };
+                        reopened.map(|session| {
+                            let conn = Conn::new(&session);
+                            *self.peer.write().unwrap() = Some(conn.clone());
+                            cancel = session.cancellation_token();
+                            // The old session ends with the last call on it, which
+                            // ends within its own timeout.
+                            let old = std::mem::replace(&mut ended, Box::pin(session.waiting()));
+                            let t = self.timings;
+                            tokio::spawn(timeout(t.call.max(t.list) + t.stop_grace, old));
+                            conn
+                        })
+                    }
+                };
+                let relist = reply.is_none() && answer.is_ok();
+                if let Some(reply) = reply {
+                    let _ = reply.send(answer);
+                }
+                if relist {
+                    tokio::select! {
+                        _ = self.relist_tools(true) => {}
+                        _ = &mut *stop => break (true, true, None),
+                    }
+                }
+            }
+        };
+        self.peer.write().unwrap().take();
+        if open {
+            // Closes the child's stdin too. A stdio session ends with its
+            // process: waiting for it here would add to the stop grace.
+            cancel.cancel();
+            if process.is_none() {
+                let _ = timeout(self.timings.stop_grace, ended).await;
+            }
+        }
+        if let Some(Process { child, mut reader }) = process {
+            let exit = match exit {
+                Some(exit) => exit,
+                None => child.stop(self.timings.stop_grace).await,
+            };
+            self.ended(&exit);
+            // Any end but a stop is the process ending, closed stdout included.
+            if !stopped {
+                let message = self.with_stderr(exit_text(&exit), &mut reader).await;
+                let (state, code) = (State::Unavailable, ErrorCode::Exited);
+                self.leave_ready(state, Stage::Connect, code, message);
+            }
+        }
+        (!stopped).then_some(stable_seen)
+    }
+
+    /// `head`, then the child's last stderr line once the reader reached
+    /// EOF, or after 500 ms: a grandchild may hold the pipe open.
+    async fn with_stderr(&self, head: String, reader: &mut Reader) -> String {
+        let _ = timeout(Duration::from_millis(500), &mut reader.task).await;
+        let ring = self.ring.lock().unwrap();
+        match ring.last().filter(|_| ring.pushed() > reader.from) {
+            Some(line) => format!("{head}: {line}"),
+            None => head,
+        }
+    }
+
+    /// `tools/list` again on the live session, then the reconcile. A failure
+    /// leaves the registry as it was. A first rejected credential returns the
+    /// session it was refused on, for the recovery a call would get.
+    async fn relist_tools(self: &Arc<Self>, retried: bool) -> Option<Arc<Conn>> {
+        let conn = self.peer.read().unwrap().clone()?;
+        let limit = self.timings.list;
+        let listed = match timeout(limit, conn.peer.list_all_tools()).await {
+            Ok(Ok(tools)) => listing::<ToolInfo>(tools),
+            Ok(Err(e)) => match self.classify(&e) {
+                CallFailure::CredentialRejected { .. } if !retried => return Some(conn),
+                failure => Err(failure_text(&self.name, &self.request_failed(failure))),
+            },
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let tools = match listed {
+            Ok(tools) => tools,
+            Err(message) => {
+                let message = scrub(&message, &self.secrets.values());
+                tracing::warn!(
+                    "listing the tools of `{}` again failed, its functions stay as they were: {message}",
+                    self.name
+                );
+                return None;
+            }
+        };
+        let has_instructions = self.info.lock().unwrap().instructions.is_some();
+        let (wanted, skipped) = tool_wanted(&self.name, &tools, has_instructions);
+        {
+            let mut info = self.info.lock().unwrap();
+            info.tools = tool_views(&wanted);
+            info.skipped = skipped;
+        }
+        // A function goes away only when its own list drops it.
+        let (prompt_ids, resource_ids) = (self.prefix("prompts"), self.prefix("resources"));
+        let untouched = |id: &str| id.starts_with(&prompt_ids) || id.starts_with(&resource_ids);
+        self.reconcile(wanted, &untouched).await;
+        None
+    }
+
+    /// `mcp::<server>::<kind>::`, the start of every id of that kind.
+    fn prefix(&self, kind: &str) -> String {
+        format!("mcp::{}::{kind}::", self.name)
+    }
+
+    /// Lists each changed kind again, in turn; the session the tools were
+    /// refused on with a rejected credential.
+    async fn relist(self: &Arc<Self>, due: &[ListChanged]) -> Option<Arc<Conn>> {
+        let mut refused = None;
+        for change in due {
+            match change {
+                ListChanged::Tools => refused = self.relist_tools(false).await,
+                ListChanged::Prompts => self.relist_prompts().await,
+                ListChanged::Resources => self.recheck_templates().await,
+            }
+        }
+        refused
+    }
+
+    /// `prompts/list` on the live session, as functions. A failure is
+    /// returned as its scrubbed text.
+    async fn list_prompts(&self, peer: &Peer<RoleClient>) -> Result<PromptList, String> {
+        let limit = self.timings.list;
+        let listed = match timeout(limit, peer.list_all_prompts()).await {
+            Ok(Ok(prompts)) => listing::<PromptInfo>(prompts),
+            Ok(Err(e)) => Err(service_text(&e)),
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let prompts = listed.map_err(|m| scrub(&m, &self.secrets.values()))?;
+        let (wanted, skipped) = prompt_wanted(&self.name, &prompts);
+        let prefix = self.prefix("prompts");
+        let mut seen = HashSet::new();
+        let views = prompts
+            .iter()
+            .filter(|p| wanted.contains_key(&format!("{prefix}{}", p.name)))
+            .filter(|p| seen.insert(p.name.as_str()))
+            .map(|p| {
+                let args = p.arguments.as_deref().unwrap_or(&[]);
+                let required = args.iter().filter(|a| a.required == Some(true)).count();
+                PromptView {
+                    name: p.name.clone(),
+                    function_id: format!("{prefix}{}", p.name),
+                    registered: false,
+                    title: p.title.clone(),
+                    arguments: args.len() as u32,
+                    required: required as u32,
+                }
+            })
+            .collect();
+        Ok(PromptList {
+            wanted,
+            skipped,
+            views,
+        })
+    }
+
+    /// Puts a prompt listing (`None`: prompts not advertised) in `info` and
+    /// returns the prompt functions it wants; `None` when it failed, and the
+    /// prompts stay as they were.
+    fn take_prompts(&self, listed: Option<Result<PromptList, String>>) -> Option<WantedSet> {
+        let mut info = self.info.lock().unwrap();
+        let (wanted, error) = match listed {
+            Some(Ok(list)) => {
+                (info.prompts, info.prompts_skipped) = (list.views, list.skipped);
+                (Some(list.wanted), None)
+            }
+            Some(Err(e)) => (None, Some(e)),
+            None => {
+                (info.prompts, info.prompts_skipped) = (vec![], vec![]);
+                (Some(WantedSet::new()), None)
+            }
+        };
+        note_list(&self.name, "prompts", &mut info.list_errors.prompts, error);
+        wanted
+    }
+
+    /// Whether the first page of `resources/templates/list` holds a
+    /// template; method-not-found is none. A failure is returned as its
+    /// scrubbed text and noted in `list_errors.templates`.
+    async fn has_template(&self, peer: &Peer<RoleClient>) -> Result<bool, String> {
+        let limit = self.timings.list;
+        let listed = match timeout(limit, peer.list_resource_templates(None)).await {
+            Ok(Ok(page)) => Ok(!page.resource_templates.is_empty()),
+            Ok(Err(ServiceError::McpError(e)))
+                if e.code == rmcp::model::ErrorCode::METHOD_NOT_FOUND =>
+            {
+                Ok(false)
+            }
+            Ok(Err(e)) => Err(scrub(&service_text(&e), &self.secrets.values())),
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let error = listed.as_ref().err().cloned();
+        let mut info = self.info.lock().unwrap();
+        note_list(
+            &self.name,
+            "resource templates",
+            &mut info.list_errors.templates,
+            error,
+        );
+        listed
+    }
+
+    /// `prompts/list` again, then the reconcile of the prompt functions
+    /// only. A failure leaves them as they were.
+    async fn relist_prompts(self: &Arc<Self>) {
+        let Some(conn) = self.peer.read().unwrap().clone() else {
+            return;
+        };
+        if !self.info.lock().unwrap().capabilities.prompts {
+            return;
+        }
+        let listed = self.list_prompts(&conn.peer).await;
+        let Some(wanted) = self.take_prompts(Some(listed)) else {
+            return;
+        };
+        let prefix = self.prefix("prompts");
+        self.reconcile(wanted, &|id| !id.starts_with(&prefix)).await;
+    }
+
+    /// The first template page again, then the reconcile of the templates
+    /// function only. A `tools` event goes out every time, changed or not:
+    /// an open page reloads its resource list on it.
+    async fn recheck_templates(self: &Arc<Self>) {
+        let Some(conn) = self.peer.read().unwrap().clone() else {
+            return;
+        };
+        if !self.info.lock().unwrap().capabilities.resources {
+            return;
+        }
+        let id = templates_id(&self.name);
+        let changed = match self.has_template(&conn.peer).await {
+            Ok(has) => {
+                let mut wanted = resource_wanted(&self.name, has);
+                wanted.retain(|k, _| *k == id);
+                self.reconcile(wanted, &|x| x != id).await
+            }
+            Err(_) => false,
+        };
+        if !changed {
+            self.emit(EventKind::Tools);
+        }
+    }
+
+    /// Also keeps the challenge of a sign-in entry's 401.
+    fn classify(&self, error: &ServiceError) -> CallFailure {
+        let spec = self.spec();
+        let Some(entry) = &spec.checked.entry else {
+            return CallFailure::Transport(service_text(error));
+        };
+        if let ServiceError::TransportSend(e) = error
+            && signs_in(entry)
+            && let Some(challenge) = challenge_in(&transport_chain(e))
+        {
+            *self.challenge.lock().unwrap() = Some(challenge);
+        }
+        classify_call_error(error, entry)
+    }
+
+    /// Applies a failed request's state rule: a rejected credential or a
+    /// sign-in challenge stops the server, an unclassified transport failure
+    /// is an outage, and anything else fails this request only. The registry
+    /// is never touched.
+    fn request_failed(&self, failure: CallFailure) -> CallFailure {
+        let stdio = self.is_stdio();
+        let (state, stage, code) = match &failure {
+            CallFailure::CredentialRejected { .. } | CallFailure::NoSignIn => (
+                State::AuthFailed,
+                Stage::Authorize,
+                ErrorCode::CredentialRejected,
+            ),
+            CallFailure::LoginRequired => (
+                State::NeedsLogin,
+                Stage::Authorize,
+                ErrorCode::LoginRequired,
+            ),
+            // A stdio pipe fails when its process ends, which `serve` reports
+            // as `exited` with the code.
+            CallFailure::Transport(_) if !stdio => {
+                (State::Unavailable, Stage::Connect, ErrorCode::ConnectFailed)
+            }
+            _ => return failure,
+        };
+        self.leave_ready(state, stage, code, failure_text(&self.name, &failure));
+        failure
+    }
+
+    async fn close(&self, mut session: Session) {
+        self.peer.write().unwrap().take();
+        let _ = timeout(self.timings.stop_grace, session.close()).await;
+    }
+
+    /// Stops the task and closes its session; the registry stays.
+    async fn halt(&self) {
+        let task = self.task.lock().unwrap().take();
+        if let Some((stop, handle)) = task {
+            let _ = stop.send(());
+            // The task bounds its own close by `stop_grace`.
+            let _ = handle.await;
+        }
+        self.peer.write().unwrap().take();
+        // A child the stop caught mid-connect went with its guard.
+        let mut f = self.facts.lock().unwrap();
+        (f.pid, f.next_restart_at) = (None, None);
+    }
+
+    /// Closes the session and moves to `unapproved`; the registry stays.
+    async fn unapprove(&self) {
+        let state = self.status.borrow().state;
+        if matches!(state, State::Disabled | State::ConfigError) {
+            return;
+        }
+        self.halt().await;
+        let code = ErrorCode::Unapproved;
+        self.fail(State::Unapproved, Stage::Approval, code, UNAPPROVED.into());
+    }
+
+    /// Stops the task, closes its session and unregisters every function.
+    async fn stop(&self) {
+        self.halt().await;
+        self.registry.clear().await;
+    }
+
+    /// One attempt, from the secrets to `ready`. `Err` carries the wait a
+    /// 429 asked for.
+    async fn connect(
+        self: &Arc<Self>,
+        minter: &mut Option<(String, Minter)>,
+    ) -> Result<Live, Option<Duration>> {
+        let spec = self.spec();
+        let Some(entry) = spec.checked.entry.as_ref() else {
+            return Err(None);
+        };
+        // The gate: nothing is resolved, sent or spawned for an entry no operator approved.
+        if let Err(e) = self.approvals.load(&*self.host).await {
+            let error = ref_error(APPROVALS_REF, e);
+            self.set(State::Connecting, Some(Stage::Approval), Some(error));
+            return Err(None);
+        }
+        let approved = || {
+            self.approvals
+                .is_approved(&self.name, &spec.checked.fingerprint)
+        };
+        if !approved() {
+            let code = ErrorCode::Unapproved;
+            self.fail(State::Unapproved, Stage::Approval, code, UNAPPROVED.into());
+            // An approve between the check and `fail` saw no `unapproved` to restart.
+            if !approved() {
+                return Err(None);
+            }
+            self.set(State::Connecting, Some(Stage::Secret), None);
+        }
+        // Resolved again on every attempt.
+        self.progress(Stage::Secret);
+        let Some(resolved) = self.resolve(entry).await else {
+            return Err(None);
+        };
+        let (session, mut process) = match &entry.transport {
+            Transport::Http(http) => {
+                let url = resolved_url(http, &resolved);
+                // An invalid address fails in `open_http`, before any request.
+                let handed = url.as_ref().ok().and_then(|url| self.handed_over(url));
+                let (bearer, remint, signed) = match &http.auth {
+                    Auth::ClientCredentials {
+                        token_url,
+                        client_id,
+                        client_secret,
+                        scope,
+                    } => {
+                        let secret = resolved.text(&Text::Ref(client_secret.clone()));
+                        let body = token_request_body(client_id, &secret, scope.as_deref());
+                        if minter
+                            .as_ref()
+                            .is_some_and(|(made_for, _)| *made_for != body)
+                        {
+                            *minter = None;
+                        }
+                        let (_, m) = minter.get_or_insert_with(|| {
+                            let made =
+                                Minter::new(auth::http_client(), token_url.clone(), body.clone());
+                            (body, made)
+                        });
+                        let Some(token) = self.mint(m).await else {
+                            return Err(None);
+                        };
+                        (Some(token), Some(&*m), None)
+                    }
+                    Auth::OAuth {
+                        client_id,
+                        client_secret,
+                        ..
+                    } => match (handed, url) {
+                        (Some(manager), _) => (None, None, Some(manager)),
+                        (None, Err(_)) => (None, None, None),
+                        (None, Ok(url)) => {
+                            let secret = |r: &Ref| resolved.text(&Text::Ref(r.clone()));
+                            let client = client_id.clone().zip(client_secret.as_ref().map(secret));
+                            match self.restore(&url, None, client).await {
+                                Ok(Some(manager)) => (None, None, Some(manager)),
+                                // No request to the server without a session.
+                                Ok(None) => {
+                                    self.needs_login();
+                                    return Err(None);
+                                }
+                                Err(()) => return Err(None),
+                            }
+                        }
+                    },
+                    // A handoff left before a config change is not for a non-sign-in entry.
+                    _ => {
+                        let handed = handed.filter(|_| signs_in(entry));
+                        (bearer_token(http, &resolved), None, handed)
+                    }
+                };
+                let session = self.open_http(entry, http, &resolved, bearer, remint, signed);
+                (session.await?, None)
+            }
+            Transport::Stdio(stdio) => {
+                let (session, process) = self.open_stdio(stdio, &resolved).await?;
+                (session, Some(process))
+            }
+        };
+        let peer = session.peer().clone();
+        let handshake = peer
+            .peer_info()
+            .and_then(|i| serde_json::to_value(&*i).ok())
+            .unwrap_or_default();
+
+        self.progress(Stage::Tools);
+        let limit = self.timings.list;
+        let listed = match timeout(limit, peer.list_all_tools()).await {
+            Ok(Ok(tools)) => listing::<ToolInfo>(tools),
+            Ok(Err(e)) => {
+                // The next attempt mints a token instead of reusing the refused one.
+                if let Some((_, m)) = minter.as_ref()
+                    && matches!(self.classify(&e), CallFailure::CredentialRejected { .. })
+                {
+                    m.invalidate().await;
+                }
+                Err(service_text(&e))
+            }
+            Err(_) => Err(self.no_answer(limit)),
+        };
+        let tools = match listed {
+            Ok(tools) => tools,
+            Err(message) => {
+                let mut error = (Stage::Tools, ErrorCode::ListFailed, message);
+                // A child that died during the listing is `exited` with its code;
+                // asked before the session closes stdin, which would end it.
+                if let Some(p) = &mut process
+                    && let Ok(exit) = timeout(Duration::from_millis(500), p.child.wait()).await
+                {
+                    let message = self.with_stderr(exit_text(&exit), &mut p.reader).await;
+                    error = (Stage::Connect, ErrorCode::Exited, message);
+                }
+                let (stage, code, message) = error;
+                self.fail(State::Unavailable, stage, code, message);
+                self.close(session).await;
+                if let Some(process) = process {
+                    let exit = process.child.stop(self.timings.stop_grace).await;
+                    self.ended(&exit);
+                }
+                return Err(None);
+            }
+        };
+        let instructions = handshake["instructions"]
+            .as_str()
+            .filter(|t| !t.trim().is_empty())
+            .map(String::from);
+        let (mut wanted, skipped) = tool_wanted(&self.name, &tools, instructions.is_some());
+        let caps = &handshake["capabilities"];
+        let capabilities = CapabilitiesView {
+            resources: !caps["resources"].is_null(),
+            prompts: !caps["prompts"].is_null(),
+        };
+        {
+            let mut info = self.info.lock().unwrap();
+            let server_info = &handshake["serverInfo"];
+            info.protocol_version = handshake["protocolVersion"].as_str().map(String::from);
+            info.server_info = server_info.is_object().then(|| ServerInfoView {
+                name: server_info["name"].as_str().unwrap_or("").into(),
+                title: server_info["title"].as_str().map(String::from),
+                version: server_info["version"].as_str().unwrap_or("").into(),
+            });
+            info.instructions = instructions;
+            info.capabilities = capabilities.clone();
+            info.tools_listed = true;
+            info.tools = tool_views(&wanted);
+            info.skipped = skipped;
+            if !capabilities.resources {
+                info.list_errors.templates = None;
+            }
+        }
+        // A kind no longer advertised wants nothing and is not left
+        // untouched, so its functions go.
+        let listed = match capabilities.prompts {
+            true => Some(self.list_prompts(&peer).await),
+            false => None,
+        };
+        let prompt_fns = self.take_prompts(listed);
+        let template = match capabilities.resources {
+            true => Some(self.has_template(&peer).await),
+            false => None,
+        };
+        let prompts_failed = prompt_fns.is_none();
+        let template_failed = matches!(template, Some(Err(_)));
+        wanted.extend(prompt_fns.unwrap_or_default());
+        if let Some(template) = template {
+            wanted.extend(resource_wanted(&self.name, template.unwrap_or(false)));
+        }
+        *self.peer.write().unwrap() = Some(Conn::new(&session));
+        let (prefix, templates) = (self.prefix("prompts"), templates_id(&self.name));
+        let untouched = |id: &str| {
+            (prompts_failed && id.starts_with(&prefix)) || (template_failed && id == templates)
+        };
+        self.reconcile(wanted, &untouched).await;
+        self.set(State::Ready, None, None);
+        Ok(Live {
+            session,
+            process,
+            resolved,
+        })
+    }
+
+    /// The entry's references, resolved; a failure sets the status.
+    async fn resolve(&self, entry: &Entry) -> Option<Resolved> {
+        match resolve_all(&*self.host, &entry.refs()).await {
+            Ok(resolved) => {
+                self.secrets.set_resolved(resolved.secrets());
+                Some(resolved)
+            }
+            Err(e) => {
+                let state = match e.code {
+                    ErrorCode::ConnectFailed => State::Unavailable,
+                    _ => State::ConfigError,
+                };
+                self.set(state, Some(Stage::Secret), Some(e));
+                None
+            }
+        }
+    }
+
+    fn needs_login(&self) {
+        let message = failure_text(&self.name, &CallFailure::LoginRequired);
+        let code = ErrorCode::LoginRequired;
+        self.fail(State::NeedsLogin, Stage::Authorize, code, message);
+    }
+
+    /// The manager a finished sign-in left for `url`.
+    fn handed_over(&self, url: &str) -> Option<AuthorizationManager> {
+        let handed = self.handoff.lock().unwrap().take();
+        handed
+            .filter(|(made_for, _)| made_for == url)
+            .map(|(_, m)| m)
+    }
+
+    /// The session store bound to `resource`, the resolved URL: never the
+    /// entry's target, which stays the same when a `secret://` URL changes.
+    /// A refresh token the provider refuses sets `needs_login`.
+    fn store(self: &Arc<Self>, resource: &str) -> VaultCredentialStore {
+        let mut held = self.store.lock().unwrap();
+        if let Some((bound, store)) = &*held
+            && bound == resource
+        {
+            return store.clone();
+        }
+        let server = Arc::downgrade(self);
+        let rejected = Arc::new(move || {
+            if let Some(s) = server.upgrade() {
+                s.request_failed(CallFailure::LoginRequired);
+            }
+        });
+        let store = VaultCredentialStore::new(self.host.clone(), &self.name, resource, rejected)
+            .with_secrets(self.secrets.clone());
+        *held = Some((resource.into(), store.clone()));
+        store
+    }
+
+    /// The store a sign-out wipes: the one in use, whose refresh mutex the
+    /// task's refreshes hold, else one for the entry; `None` for an entry
+    /// that does not sign in.
+    fn session_store(&self) -> Option<VaultCredentialStore> {
+        let spec = self.spec();
+        let entry = spec.checked.entry.as_ref().filter(|e| signs_in(e))?;
+        let held = self.store.lock().unwrap().as_ref().map(|(_, s)| s.clone());
+        let fresh = || {
+            VaultCredentialStore::new(
+                self.host.clone(),
+                &self.name,
+                &entry.target(),
+                Arc::new(|| {}),
+            )
+        };
+        Some(held.unwrap_or_else(fresh))
+    }
+
+    /// The stored session for `url` as an rmcp manager; `Ok(None)` without
+    /// one. With a challenge, the vault is read before any discovery
+    /// request. `client` is a configured client id and its resolved secret.
+    /// A failure sets the status and is tried again.
+    async fn restore(
+        self: &Arc<Self>,
+        url: &str,
+        challenge: Option<&str>,
+        client: Option<(String, String)>,
+    ) -> Result<Option<AuthorizationManager>, ()> {
+        let store = self.store(url);
+        let restored: Result<_, AuthError> = async {
+            if challenge.is_some()
+                && store
+                    .load()
+                    .await?
+                    .is_none_or(|c| c.token_response.is_none())
+            {
+                return Ok(None);
+            }
+            let mut manager = oauth_manager(url, store).await?;
+            if challenge.is_some() {
+                discover(&mut manager, challenge).await?;
+            }
+            if !manager.initialize_from_store().await? {
+                return Ok(None);
+            }
+            // rmcp configures the stored client id without its secret.
+            if let Some((client_id, secret)) = client {
+                let config = OAuthClientConfig::new(client_id, url).with_client_secret(secret);
+                manager.configure_client(config)?;
+            }
+            Ok(Some(manager))
+        }
+        .await;
+        restored.map_err(|e| {
+            let (stage, message) = match e {
+                AuthError::CredentialStoreError(_) => (
+                    Stage::Secret,
+                    "the sign-in session could not be read: the secrets worker did not answer",
+                ),
+                _ => (
+                    Stage::Connect,
+                    "the server's OAuth metadata could not be read",
+                ),
+            };
+            let code = ErrorCode::ConnectFailed;
+            self.fail(State::Unavailable, stage, code, message.into());
+        })
+    }
+
+    /// A client-credentials token, redacted from here on before it is
+    /// used. A refusal is `auth_failed`, no answer `unavailable`.
+    async fn mint(&self, minter: &Minter) -> Option<String> {
+        self.progress(Stage::Authorize);
+        match minter.token().await {
+            Ok(token) => {
+                self.secrets.add(&token);
+                Some(token)
+            }
+            Err(e) => {
+                let state = match e.code {
+                    ErrorCode::CredentialRejected => State::AuthFailed,
+                    _ => State::Unavailable,
+                };
+                self.set(state, Some(Stage::Authorize), Some(e));
+                None
+            }
+        }
+    }
+
+    /// A new session after a 401 on a call, with the credential acquired
+    /// again: minted again, or the references resolved again. A failure sets
+    /// the status and is the call's: a refused credential is
+    /// `CredentialRejected`, anything else `Unavailable`.
+    async fn reopen(
+        self: &Arc<Self>,
+        resolved: &mut Resolved,
+        minter: Option<&Minter>,
+    ) -> Result<Session, CallFailure> {
+        let spec = self.spec();
+        let Some(entry) = &spec.checked.entry else {
+            return Err(self.unavailable());
+        };
+        let Transport::Http(http) = &entry.transport else {
+            return Err(self.unavailable());
+        };
+        let bearer = match minter {
+            Some(minter) => {
+                minter.invalidate().await;
+                self.mint(minter).await.map(Some)
+            }
+            None => self.resolve(entry).await.map(|fresh| {
+                *resolved = fresh;
+                bearer_token(http, resolved)
+            }),
+        };
+        // With what was just acquired: no second resolve, no second mint.
+        let session = match bearer {
+            Some(bearer) => self
+                .open_http(entry, http, resolved, bearer, None, None)
+                .await
+                .ok(),
+            None => None,
+        };
+        let state = self.status.borrow().state;
+        session.ok_or_else(|| match (state, credential_ref(http)) {
+            (State::AuthFailed, Some(reference)) => CallFailure::CredentialRejected { reference },
+            _ => self.unavailable(),
+        })
+    }
+
+    /// Every session's handshake. rmcp's response cache goes off at once:
+    /// no answer is served again without a request, nor in place of an error.
+    async fn handshake<T, E, A>(&self, transport: T) -> Result<Session, ClientInitializeError>
+    where
+        T: IntoTransport<RoleClient, E, A>,
+        E: Error + Send + Sync + 'static,
+    {
+        let session = self.notifier().serve(transport).await?;
+        let off = ClientCacheConfig::disabled();
+        session.peer().set_response_cache_config(off).await;
+        Ok(session)
+    }
+
+    fn notifier(&self) -> Notifier {
+        Notifier {
+            info: client_config(),
+            tx: self.notes.clone(),
+            _secrets: self.secrets.clone(),
+        }
+    }
+
+    /// The http transport from the resolved entry and `bearer`, or through
+    /// `AuthClient` on a `signed` session, then the handshake. With `remint`,
+    /// a 401 mints once more and tries again: the token held may be one the
+    /// provider no longer takes. A challenge to an open entry tries its
+    /// stored session.
+    async fn open_http(
+        self: &Arc<Self>,
+        entry: &Entry,
+        http: &HttpEntry,
+        resolved: &Resolved,
+        bearer: Option<String>,
+        remint: Option<&Minter>,
+        signed: Option<AuthorizationManager>,
+    ) -> Result<Session, Option<Duration>> {
+        let url = match resolved_url(http, resolved) {
+            Ok(url) => url,
+            Err(message) => {
+                let code = ErrorCode::InvalidConfig;
+                self.fail(State::ConfigError, Stage::Secret, code, message);
+                return Err(None);
+            }
+        };
+        let mut headers = HashMap::new();
+        for (name, text) in &http.headers {
+            let parsed = HeaderName::from_bytes(name.as_bytes())
+                .ok()
+                .zip(HeaderValue::from_str(&resolved.text(text)).ok());
+            let Some((header, mut value)) = parsed else {
+                let message = format!("header `{name}` is not a valid HTTP header value");
+                self.fail(
+                    State::ConfigError,
+                    Stage::Secret,
+                    ErrorCode::InvalidConfig,
+                    message,
+                );
+                return Err(None);
+            };
+            value.set_sensitive(matches!(text, Text::Ref(_)));
+            headers.insert(header, value);
+        }
+        let mut config =
+            StreamableHttpClientTransportConfig::with_uri(url.clone()).custom_headers(headers);
+        if let Some(token) = bearer {
+            config = config.auth_header(token);
+        }
+        let plain = signed.is_none();
+
+        self.progress(Stage::Connect);
+        let limit = self.timings.http_handshake;
+        let served = match signed {
+            Some(manager) => {
+                let client = AuthClient::new(auth::http_client(), manager);
+                let transport = StreamableHttpClientTransport::with_client(client, config);
+                timeout(limit, self.handshake(transport)).await
+            }
+            None => {
+                let transport = StreamableHttpClientTransport::from_config(config);
+                timeout(limit, self.handshake(transport)).await
+            }
+        };
+        match served {
+            Ok(Ok(session)) => Ok(session),
+            Ok(Err(e)) => {
+                if let Some(minter) = remint
+                    && unauthorized(&e)
+                {
+                    minter.invalidate().await;
+                    let token = self.mint(minter).await.ok_or(None)?;
+                    let again = self.open_http(entry, http, resolved, Some(token), None, None);
+                    return Box::pin(again).await;
+                }
+                let challenge = challenge_in(&init_chain(&e)).filter(|_| signs_in(entry));
+                if challenge.is_some() {
+                    self.challenge.lock().unwrap().clone_from(&challenge);
+                }
+                // The vault is read only after a challenge: an open server
+                // never depends on the secrets worker.
+                if plain && entry.auth_kind() == "none" && challenge.is_some() {
+                    match self.restore(&url, challenge.as_deref(), None).await {
+                        Ok(Some(manager)) => {
+                            let again =
+                                self.open_http(entry, http, resolved, None, None, Some(manager));
+                            return Box::pin(again).await;
+                        }
+                        Ok(None) => {}
+                        Err(()) => return Err(None),
+                    }
+                }
+                let (state, stage, code, message) = self.handshake_failure(&e, entry, http);
+                self.fail(state, stage, code, message);
+                Err(retry_wait(&e))
+            }
+            Err(_) => {
+                self.fail(
+                    State::Unavailable,
+                    Stage::Connect,
+                    ErrorCode::HandshakeFailed,
+                    self.no_answer(limit),
+                );
+                Err(None)
+            }
+        }
+    }
+
+    /// Spawns the child, starts its stderr reader, then the handshake over
+    /// its stdout and stdin. A child that exits first is `exited`.
+    async fn open_stdio(
+        &self,
+        stdio: &StdioEntry,
+        resolved: &Resolved,
+    ) -> Result<(Session, Process), Option<Duration>> {
+        self.progress(Stage::Connect);
+        let spawned = match stdio::spawn(stdio, resolved, &self.worker_cwd) {
+            Ok(spawned) => spawned,
+            Err(e) => {
+                self.set(State::Unavailable, Some(Stage::Connect), Some(e));
+                return Err(None);
+            }
+        };
+        let mut child = spawned.child;
+        self.spawned(spawned.pid);
+        let from = self.ring.lock().unwrap().pushed();
+        let ring = self.ring.clone();
+        let (host, server) = (self.host.clone(), self.name.clone());
+        let on_line = move || {
+            let (server, kind) = (server.clone(), EventKind::Stderr);
+            host.emit(ServerEvent { server, kind });
+        };
+        let read = stdio::read_stderr(spawned.stderr, ring, resolved.secrets(), on_line);
+        let mut reader = Reader {
+            task: tokio::spawn(read),
+            from,
+        };
+        let limit = self.timings.stdio_start;
+        let handshake = self.handshake((spawned.stdout, spawned.stdin));
+        let (exit, failure) = tokio::select! {
+            served = timeout(limit, handshake) => match served {
+                Ok(Ok(session)) => return Ok((session, Process { child, reader })),
+                // stdout EOF usually fails `serve` before the exit is reaped.
+                Ok(Err(e)) => {
+                    let exit = timeout(Duration::from_millis(500), child.wait()).await;
+                    (exit.ok(), format!("MCP handshake failed: {}", init_text(&e)))
+                }
+                Err(_) => (None, format!("no MCP handshake after {} s", limit.as_secs())),
+            },
+            exit = child.wait() => (Some(exit), String::new()),
+        };
+        let (code, head, exit) = match exit {
+            Some(exit) => (ErrorCode::Exited, exit_text(&exit), exit),
+            None => {
+                let exit = child.stop(self.timings.stop_grace).await;
+                (ErrorCode::HandshakeFailed, failure, exit)
+            }
+        };
+        self.ended(&exit);
+        let message = self.with_stderr(head, &mut reader).await;
+        self.fail(State::Unavailable, Stage::Connect, code, message);
+        Err(None)
+    }
+
+    fn no_answer(&self, limit: Duration) -> String {
+        format!("no answer from {} within {} s", self.name, limit.as_secs())
+    }
+
+    /// The row of the connect sequence a failed handshake stops at.
+    fn handshake_failure(
+        &self,
+        e: &ClientInitializeError,
+        entry: &Entry,
+        http: &HttpEntry,
+    ) -> (State, Stage, ErrorCode, String) {
+        let auth = entry.auth_kind();
+        let chain = init_chain(e);
+        let challenged = chain.iter().any(|x| x.is::<AuthRequiredError>());
+        let scope = chain
+            .iter()
+            .find_map(|x| x.downcast_ref::<InsufficientScopeError>());
+        let http_error = chain.first().and_then(|x| x.downcast_ref::<HttpError>());
+        // Its text carries the response body: matched, never passed on.
+        let bare_401 = matches!(http_error,
+            Some(HttpError::UnexpectedServerResponse(t)) if t.starts_with("HTTP 401"));
+        let rejected = |failure: CallFailure| {
+            let message = failure_text(&self.name, &failure);
+            (
+                State::AuthFailed,
+                Stage::Authorize,
+                ErrorCode::CredentialRejected,
+                message,
+            )
+        };
+        // A sign-in entry's 401 is a sign-in matter, never a credential's.
+        let login = match auth {
+            "none" => challenged,
+            "oauth" => challenged || bare_401,
+            _ => false,
+        };
+        if let Some(HttpError::Auth(e)) = http_error {
+            let stage = match e {
+                AuthError::CredentialStoreError(_) => Stage::Secret,
+                _ => Stage::Connect,
+            };
+            let code = ErrorCode::ConnectFailed;
+            return (State::Unavailable, stage, code, SESSION_UNREADABLE.into());
+        }
+        if login {
+            let message = failure_text(&self.name, &CallFailure::LoginRequired);
+            return (
+                State::NeedsLogin,
+                Stage::Authorize,
+                ErrorCode::LoginRequired,
+                message,
+            );
+        }
+        if (challenged || bare_401)
+            && let Some(reference) = credential_ref(http)
+        {
+            return rejected(CallFailure::CredentialRejected { reference });
+        }
+        if bare_401 {
+            let message = failure_text(&self.name, &CallFailure::NoSignIn);
+            return (
+                State::AuthFailed,
+                Stage::Authorize,
+                ErrorCode::CredentialRejected,
+                message,
+            );
+        }
+        if let Some(s) = scope {
+            let scope = s.required_scope.clone();
+            return rejected(CallFailure::InsufficientScope { scope });
+        }
+        let (code, message) = match http_error {
+            Some(HttpError::HttpStatus(s)) if s.status == 429 => {
+                let retry_after = s.retry_after.clone();
+                let failure = CallFailure::RateLimited { retry_after };
+                (ErrorCode::RateLimited, failure_text(&self.name, &failure))
+            }
+            Some(HttpError::Client(e)) => {
+                // reqwest's own text holds the resolved URL; its causes do not.
+                let cause = std::iter::successors(e.source(), |&x| x.source())
+                    .last()
+                    .map_or_else(|| "no HTTP answer".into(), |c| c.to_string());
+                let target = entry.target();
+                let message = format!("could not reach {target}: {cause}");
+                (ErrorCode::ConnectFailed, message)
+            }
+            _ => (ErrorCode::HandshakeFailed, init_text(e)),
+        };
+        (State::Unavailable, Stage::Connect, code, message)
+    }
+
+    /// The one caller of `Registry::apply`: an id absent from `wanted` for
+    /// which `untouched` holds stays as it is. Whether anything changed.
+    async fn reconcile(
+        self: &Arc<Self>,
+        wanted: WantedSet,
+        untouched: &(dyn Fn(&str) -> bool + Sync),
+    ) -> bool {
+        let plan = self
+            .registry
+            .apply(&*self.host, wanted, untouched, &|w| self.handler_for(w))
+            .await;
+        for id in &plan.lost_read_only {
+            tracing::warn!(
+                "`{id}` is no longer marked read-only by its server; an approval-gate allow rule for it stays in force until someone updates the rules"
+            );
+        }
+        let ids = [
+            ("list", list_id(&self.name)),
+            ("read", read_id(&self.name)),
+            ("templates", templates_id(&self.name)),
+        ];
+        let mut held = Vec::new();
+        for (name, function_id) in ids {
+            if self.registry.target(&function_id).await.is_some() {
+                let name = name.into();
+                let registered = false;
+                held.push(ResourceFnView {
+                    name,
+                    function_id,
+                    registered,
+                });
+            }
+        }
+        self.info.lock().unwrap().resource_fns = held;
+        let changed = !(plan.remove.is_empty() && plan.change.is_empty() && plan.add.is_empty());
+        if changed {
+            self.emit(EventKind::Tools);
+        }
+        changed
+    }
+
+    fn handler_for(self: &Arc<Self>, wanted: &Wanted) -> Handler {
+        // Weak: the host holds the handler, and the server holds the host.
+        let server = Arc::downgrade(self);
+        let name = self.name.clone();
+        let target = wanted.target.clone();
+        let declared: Arc<BTreeSet<String>> = Arc::new(
+            wanted.def.request_format["properties"]
+                .as_object()
+                .map(|p| p.keys().cloned().collect())
+                .unwrap_or_default(),
+        );
+        Arc::new(move |payload| {
+            let (server, name, target) = (server.upgrade(), name.clone(), target.clone());
+            let declared = declared.clone();
+            Box::pin(async move {
+                let Some(server) = server else {
+                    return Err(format!("`{name}` MCP server was removed"));
+                };
+                let out = server.call(&target, &declared, payload).await;
+                out.map_err(|e| scrub(&e, &server.secrets.values()))
+            })
+        })
+    }
+
+    /// One request on `conn` within `limit`. A rejected credential is
+    /// acquired again and the request sent once more on a new session; a
+    /// timeout never is. A failure applies its state rule and comes back as
+    /// its text; a -32602 also asks for the re-list `relist` serves.
+    async fn send<T, F>(
+        &self,
+        mut conn: Arc<Conn>,
+        limit: Duration,
+        request: impl Fn(Peer<RoleClient>) -> F,
+        relist: Option<&Notify>,
+    ) -> Result<T, String>
+    where
+        F: Future<Output = Result<T, ServiceError>>,
+    {
+        let mut retried = false;
+        let failure = loop {
+            let error = match timeout(limit, request(conn.peer.clone())).await {
+                Ok(Ok(result)) => return Ok(result),
+                Ok(Err(e)) => e,
+                Err(_) => {
+                    let secs = limit.as_secs();
+                    break CallFailure::Timeout { secs };
+                }
+            };
+            let state = self.status.borrow().state;
+            let failure = match state {
+                // Set while this request was out (a refused refresh token):
+                // the request's own error, a closed session, says less.
+                State::NeedsLogin => CallFailure::LoginRequired,
+                _ => self.classify(&error),
+            };
+            if !retried && matches!(failure, CallFailure::CredentialRejected { .. }) {
+                retried = true;
+                match self.recover(conn).await {
+                    Ok(fresh) => conn = fresh,
+                    Err(failure) => break failure,
+                }
+                continue;
+            }
+            if let (CallFailure::JsonRpc { code: -32602, .. }, Some(relist)) = (&failure, relist) {
+                relist.notify_one();
+            }
+            break self.request_failed(failure);
+        };
+        Err(failure_text(&self.name, &failure))
+    }
+
+    /// Asks the server task for a session after a 401 on `seen`. A task
+    /// that is gone, or goes, answers nothing: the call is unavailable.
+    async fn recover(&self, seen: Arc<Conn>) -> Result<Arc<Conn>, CallFailure> {
+        let (reply, answer) = oneshot::channel();
+        let _ = self.recoveries.lock().unwrap().send((seen, reply));
+        answer.await.unwrap_or_else(|_| Err(self.unavailable()))
+    }
+
+    fn unavailable(&self) -> CallFailure {
+        let status = self.status.borrow();
+        let for_secs = now_ms().saturating_sub(status.since) / 1000;
+        let state = status.state.as_str();
+        CallFailure::Unavailable { state, for_secs }
+    }
+
+    /// `declared`: the properties of the function's request schema.
+    async fn call(
+        &self,
+        target: &Target,
+        declared: &BTreeSet<String>,
+        payload: Value,
+    ) -> Result<Value, String> {
+        let state = self.status.borrow().state;
+        if state == State::NeedsLogin {
+            return Err(failure_text(&self.name, &CallFailure::LoginRequired));
+        }
+        let conn = self.peer.read().unwrap().clone();
+        let (State::Ready, Some(conn)) = (state, conn) else {
+            return Err(failure_text(&self.name, &self.unavailable()));
+        };
+        let args = strip_args(payload, declared);
+        let ctx = BlockCtx {
+            server: &self.name,
+            read_registered: self.registry.target(&read_id(&self.name)).await.is_some(),
+            asked_uri: None,
+            many: false,
+        };
+        let (list, call) = (self.timings.list, self.timings.call);
+        // One call sends one request: a list page never follows `next_cursor`.
+        match target {
+            Target::Instructions => {
+                let text = self.info.lock().unwrap().instructions.clone();
+                let block = json!({"type": "text", "text": text});
+                let content = cap_blocks(vec![block], "instructions cut at 120 KiB");
+                Ok(json!({ "content": content }))
+            }
+            Target::Tool { name } => {
+                let params = &CallToolRequestParams::new(name.clone()).with_arguments(args);
+                let call_tool =
+                    move |p: Peer<RoleClient>| async move { p.call_tool(params.clone()).await };
+                let result = self.send(conn, call, call_tool, Some(&self.relist));
+                tool_result(&wire(result.await?), &ctx)
+            }
+            Target::ResourceList => {
+                let params = &page_params(&args)?;
+                let page = move |p: Peer<RoleClient>| async move {
+                    p.list_resources(params.clone()).await
+                };
+                Ok(resources::list_page(&wire(
+                    self.send(conn, list, page, None).await?,
+                )))
+            }
+            Target::ResourceTemplates => {
+                let params = &page_params(&args)?;
+                let page = move |p: Peer<RoleClient>| async move {
+                    p.list_resource_templates(params.clone()).await
+                };
+                Ok(resources::templates_page(&wire(
+                    self.send(conn, list, page, None).await?,
+                )))
+            }
+            Target::ResourceRead => {
+                let Some(Value::String(uri)) = args.get("uri") else {
+                    return Err("invalid_argument: uri must be a string".into());
+                };
+                let params = &ReadResourceRequestParams::new(uri.clone());
+                let read =
+                    move |p: Peer<RoleClient>| async move { p.read_resource(params.clone()).await };
+                let result = self.send(conn, call, read, None).await?;
+                Ok(read_result(&wire(result), uri, &ctx))
+            }
+            Target::Prompt { name } => {
+                let params = &GetPromptRequestParams::new(name.clone())
+                    .with_arguments(prompts::coerce(&args)?);
+                let get = move |p: Peer<RoleClient>| async move {
+                    p.get_prompt_once(params.clone()).await
+                };
+                let response = self
+                    .send(conn, call, get, Some(&self.relist_prompts))
+                    .await?;
+                let GetPromptResponse::Complete(result) = response else {
+                    return Err(
+                        "MCP error: the prompt asked for input this client does not provide".into(),
+                    );
+                };
+                Ok(prompt_result(&wire(result), &ctx))
+            }
+        }
+    }
+
+    /// `expires_at`: the server's pending login.
+    fn view(&self, registered: &HashSet<String>, expires_at: Option<u64>) -> ServerView {
+        let status = self.status.borrow().clone();
+        let info = self.info.lock().unwrap();
+        let spec = self.spec();
+        let (transport, target, auth) = match &spec.checked.entry {
+            Some(entry) => {
+                let transport = match entry.transport {
+                    Transport::Http(_) => "http",
+                    Transport::Stdio(_) => "stdio",
+                };
+                let auth = match self.challenge.lock().unwrap().is_some() {
+                    true => "oauth",
+                    false => entry.auth_kind(),
+                };
+                (transport, entry.target(), auth)
+            }
+            None => {
+                let command = spec.raw.get("command");
+                let transport = if command.is_some() { "stdio" } else { "http" };
+                let target = match spec.raw.get("url").and_then(Value::as_str) {
+                    Some(url) => refused_url_target(url),
+                    None => command.and_then(Value::as_str).unwrap_or("").to_string(),
+                };
+                (transport, target, "none")
+            }
+        };
+        let tools = info
+            .tools
+            .iter()
+            .map(|(name, annotations)| {
+                let function_id = function_id(&self.name, name);
+                ToolView {
+                    name: name.clone(),
+                    registered: registered.contains(&function_id),
+                    function_id,
+                    annotations: annotations.clone(),
+                }
+            })
+            .collect();
+        ServerView {
+            name: self.name.clone(),
+            transport: transport.into(),
+            target,
+            auth: auth.into(),
+            state: status.state,
+            stage: status.stage,
+            since: status.since,
+            error: status.error,
+            approved: self
+                .approvals
+                .is_approved(&self.name, &spec.checked.fingerprint),
+            fingerprint: spec.checked.fingerprint.clone(),
+            protocol_version: info.protocol_version.clone(),
+            server_info: info.server_info.clone(),
+            tools_listed: info.tools_listed,
+            tools,
+            skipped: info
+                .skipped
+                .iter()
+                .chain(&info.prompts_skipped)
+                .cloned()
+                .collect(),
+            has_instructions: info.instructions.is_some(),
+            capabilities: info.capabilities.clone(),
+            resource_functions: info
+                .resource_fns
+                .iter()
+                .map(|f| ResourceFnView {
+                    registered: registered.contains(&f.function_id),
+                    ..f.clone()
+                })
+                .collect(),
+            prompts: info
+                .prompts
+                .iter()
+                .map(|p| PromptView {
+                    registered: registered.contains(&p.function_id),
+                    ..p.clone()
+                })
+                .collect(),
+            list_errors: info.list_errors.clone(),
+            login: expires_at.map(|expires_at| LoginView {
+                pending: true,
+                expires_at,
+            }),
+            process: self.is_stdio().then(|| {
+                let f = self.facts.lock().unwrap();
+                ProcessView {
+                    pid: f.pid,
+                    started_at: f.started_at,
+                    restarts: f.policy.restarts(),
+                    restart_budget: f.policy.budget(),
+                    next_restart_at: f.next_restart_at,
+                    last_exit: f.last_exit.clone(),
+                }
+            }),
+        }
+    }
+}
+
+pub struct Manager {
+    host: Arc<dyn Host>,
+    approvals: Arc<Approvals>,
+    opts: ManagerOptions,
+    /// Serialises config applies and secret changes.
+    servers: tokio::sync::Mutex<BTreeMap<String, Arc<Server>>>,
+    /// The start-up load of the approvals, retried until it succeeds.
+    load: JoinHandle<()>,
+    /// Set first by `shutdown`: a config applied during or after it starts nothing.
+    closed: AtomicBool,
+    logins: PendingLogins<Login>,
+}
+
+impl Manager {
+    /// Starts reading the approvals at once, whatever the config holds, so a
+    /// write by anyone else after the start is seen as one.
+    pub fn new(host: Arc<dyn Host>, opts: ManagerOptions) -> Arc<Manager> {
+        let approvals = Arc::new(Approvals::new());
+        let (h, a, t) = (host.clone(), approvals.clone(), opts.timings);
+        let load = tokio::spawn(async move {
+            let mut backoff = Backoff::new(t.backoff_min, t.backoff_max);
+            while a.load(&*h).await.is_err() {
+                sleep(backoff.next()).await;
+            }
+        });
+        Arc::new(Manager {
+            host,
+            approvals,
+            opts,
+            servers: tokio::sync::Mutex::default(),
+            load,
+            closed: AtomicBool::default(),
+            logins: PendingLogins::new(),
+        })
+    }
+
+    pub fn stdio_enabled(&self) -> bool {
+        self.opts.stdio_enabled
+    }
+
+    /// The host this manager was built with.
+    pub fn host(&self) -> Arc<dyn Host> {
+        self.host.clone()
+    }
+
+    /// Restarts only the entries whose raw value changed: an equal entry
+    /// sees no reconnect, no registry operation and no event.
+    pub async fn apply_config(self: &Arc<Self>, raw: RawConfig) {
+        let mut servers = self.servers.lock().await;
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        let (kept, removed): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut *servers)
+            .into_iter()
+            .partition(|(name, _)| raw.0.contains_key(name));
+        *servers = kept;
+        join_all(removed.iter().map(|(name, s)| async move {
+            s.stop().await;
+            s.emit(EventKind::State);
+            self.logins.cancel(name);
+            // After the stop: a refresh of the stopped task saved or went.
+            if let Some(store) = s.session_store()
+                && let Err(e) = store.sign_out().await
+            {
+                tracing::warn!("clearing the sign-in session of removed `{name}` failed: {e}");
+            }
+            self.approvals.clear_pending(name);
+            if let Err(e) = self.approvals.forget(&*self.host, name).await {
+                tracing::warn!("forgetting the approval of removed `{name}` failed: {e}");
+            }
+        }))
+        .await;
+        let mut restarts = Vec::new();
+        for (name, value) in raw.0 {
+            if servers.get(&name).is_some_and(|s| s.spec().raw == value) {
+                continue;
+            }
+            self.promote(&name, &fingerprint(&value)).await;
+            match servers.get(&name) {
+                Some(s) => {
+                    // Started for the entry as it was; disabling keeps the session.
+                    self.logins.cancel(&name);
+                    let checked = check_entry(&name, &value, self.opts.stdio_enabled);
+                    let spec = Spec {
+                        raw: value,
+                        checked,
+                    };
+                    let s = s.clone();
+                    restarts.push(async move { s.restart(Some(spec)).await });
+                }
+                None => {
+                    let server =
+                        Server::start(&self.host, &self.approvals, &self.opts, &name, &value);
+                    servers.insert(name, server);
+                }
+            }
+        }
+        join_all(restarts).await;
+    }
+
+    /// Writes the pending approval an arriving entry matches, before its
+    /// task starts.
+    async fn promote(&self, name: &str, fingerprint: &str) {
+        if self.approvals.pending(name).as_deref() != Some(fingerprint) {
+            return;
+        }
+        self.approvals.clear_pending(name);
+        if let Err(e) = self.approvals.approve(&*self.host, name, fingerprint).await {
+            tracing::warn!("saving the approval of `{name}` failed, it stays unapproved: {e}");
+        }
+    }
+
+    /// Approves `fingerprint` for `name`, or the entry as loaded. A new
+    /// fingerprint for a running, approved entry (an edit approved before
+    /// its write) waits in memory for that write and revokes nothing.
+    pub async fn approve(&self, name: &str, fingerprint: Option<&str>) -> Result<(), String> {
+        let servers = self.servers.lock().await;
+        let loaded = servers.get(name);
+        let current = loaded.map(|s| s.spec().checked.fingerprint.clone());
+        let fingerprint = match (fingerprint, &current) {
+            (Some(fp), _) if !is_fingerprint(fp) => {
+                return Err("`fingerprint` must be 64 lower-case hex characters".into());
+            }
+            (Some(fp), _) => fp.to_string(),
+            (None, Some(current)) => current.clone(),
+            (None, None) => return Err(format!("no MCP server named `{name}` is configured")),
+        };
+        if let Some(current) = &current
+            && *current != fingerprint
+            && self.approvals.is_approved(name, current)
+        {
+            self.approvals.set_pending(name, &fingerprint);
+            return Ok(());
+        }
+        self.approvals
+            .approve(&*self.host, name, &fingerprint)
+            .await?;
+        if let Some(s) = loaded
+            && current == Some(fingerprint)
+        {
+            let state = s.status.borrow().state;
+            if state == State::Unapproved {
+                s.restart(None).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Starts the server again with a fresh backoff and budget. A disabled,
+    /// unapproved or invalid entry is left as it is.
+    pub async fn reconnect(&self, name: &str) -> Result<State, String> {
+        let servers = self.servers.lock().await;
+        let s = servers
+            .get(name)
+            .ok_or_else(|| format!("no MCP server named `{name}` is configured"))?;
+        let state = s.status.borrow().state;
+        if matches!(state, State::Disabled | State::Unapproved) || s.spec().checked.entry.is_none()
+        {
+            return Ok(state);
+        }
+        s.restart(None).await;
+        let state = s.status.borrow().state;
+        Ok(state)
+    }
+
+    /// The stderr tail of a stdio server; an http server has none.
+    pub async fn logs(&self, server: &str) -> Result<Logs, String> {
+        // Not held while reading: an apply holds it across a stop.
+        let s = self.servers.lock().await.get(server).cloned();
+        let s = s.ok_or_else(|| format!("no server named `{server}`"))?;
+        let (lines, dropped) = match s.is_stdio() {
+            true => s.ring.lock().unwrap().snapshot(),
+            false => (vec![], 0),
+        };
+        Ok(Logs { lines, dropped })
+    }
+
+    /// Resolves again the references of each server whose entry names the
+    /// changed one, and restarts it when a value changed or it is not
+    /// `ready`: the way out of `auth_failed` and of a secret `config_error`.
+    /// A change of the approvals goes to the tamper check only.
+    pub async fn on_secret_change(&self, change: &SecretChange) {
+        let servers = self.servers.lock().await;
+        let approvals = Ref {
+            store: Store::Secret,
+            name: APPROVALS_SECRET.into(),
+        };
+        if event_matches(change, &[approvals]) {
+            if self.approvals.on_change(&*self.host).await {
+                for name in servers.keys() {
+                    self.logins.cancel(name);
+                }
+                join_all(servers.values().map(|s| s.unapprove())).await;
+            }
+            return;
+        }
+        let mut restarts = Vec::new();
+        for server in servers.values() {
+            let spec = server.spec();
+            let Some(entry) = &spec.checked.entry else {
+                continue;
+            };
+            let state = server.status.borrow().state;
+            let refs = entry.refs();
+            if matches!(state, State::Disabled | State::Unapproved) || !event_matches(change, &refs)
+            {
+                continue;
+            }
+            let unchanged = state == State::Ready
+                && match resolve_all(&*self.host, &refs).await {
+                    // A minted token is no reference value.
+                    Ok(resolved) => resolved.secrets() == server.secrets.resolved(),
+                    Err(_) => false,
+                };
+            if !unchanged {
+                restarts.push(server.restart(None));
+            }
+        }
+        join_all(restarts).await;
+    }
+
+    pub async fn list(&self) -> ServersList {
+        let registered = self.host.registered().await;
+        let port = self.host.http_port().await;
+        let servers = self.servers.lock().await;
+        let now = std::time::Instant::now();
+        let view = |s: &Arc<Server>| s.view(&registered, self.logins.pending(&s.name, now));
+        ServersList {
+            stdio_enabled: self.opts.stdio_enabled,
+            callback_url: auth::redirect_uri(port),
+            servers: servers.values().map(view).collect(),
+        }
+    }
+
+    fn emit_login(&self, server: &str) {
+        let (server, kind) = (server.into(), EventKind::Login);
+        self.host.emit(ServerEvent { server, kind });
+    }
+
+    /// Starts a sign-in: discovery, registration unless a client id is
+    /// configured, and the authorize URL, for the operator only.
+    pub async fn login_start(&self, server: &str) -> Result<LoginStart, String> {
+        let s = self.servers.lock().await.get(server).cloned();
+        let s = s.ok_or_else(|| format!("no server named `{server}`"))?;
+        let spec = s.spec();
+        let Some(entry) = spec.checked.entry.as_ref().filter(|e| signs_in(e)) else {
+            return Err(format!("`{server}` does not use sign-in"));
+        };
+        let Transport::Http(http) = &entry.transport else {
+            return Err(format!("`{server}` does not use sign-in"));
+        };
+        // Discovery sends requests: only for an entry an operator approved.
+        if !self
+            .approvals
+            .is_approved(server, &spec.checked.fingerprint)
+        {
+            return Err(format!("approve `{server}` before signing in"));
+        }
+        let challenge = s.challenge.lock().unwrap().clone();
+        if matches!(http.auth, Auth::None) && challenge.is_none() {
+            return Err(format!("`{server}` did not ask for sign-in"));
+        }
+        let resolved = resolve_all(&*self.host, &entry.refs()).await;
+        let resolved = resolved.map_err(|e| e.message)?;
+        let url = resolved_url(http, &resolved)?;
+        let redirect_uri = auth::redirect_uri(self.host.http_port().await);
+        let mut request =
+            AuthorizationRequest::new(&redirect_uri).with_client_name("iii mcp-client");
+        request = match &http.auth {
+            Auth::OAuth { scopes, .. } if !scopes.is_empty() => request.with_scopes(scopes),
+            // The challenge's scope is then the default.
+            _ => request.with_initial_scope_selection(),
+        };
+        if let Auth::OAuth {
+            client_id,
+            client_secret,
+            client_metadata_url,
+            ..
+        } = &http.auth
+        {
+            if let Some(id) = client_id {
+                request = request.with_preregistered_client(id);
+            }
+            if let Some(secret) = client_secret {
+                request = request.with_client_secret(resolved.text(&Text::Ref(secret.clone())));
+            }
+            if let Some(metadata_url) = client_metadata_url {
+                request = request.with_client_metadata_url(metadata_url);
+            }
+        }
+        let store = s.store(&url);
+        let started: Result<_, AuthError> = async {
+            let mut manager = oauth_manager(&url, store.clone()).await?;
+            discover(&mut manager, challenge.as_deref()).await?;
+            AuthorizationSession::new(manager, request)
+                .await
+                .map_err(|(_, e)| e)
+        }
+        .await;
+        let session = started.map_err(|e| auth::login_error_text(&e))?;
+        let authorize_url = session.get_authorization_url().to_string();
+        let state = auth::state_of(&authorize_url).ok_or("sign-in failed")?;
+        let now = std::time::Instant::now();
+        let login = Login {
+            session,
+            store,
+            url,
+        };
+        self.logins.insert(state, server, login, now);
+        let expires_at = self.logins.pending(server, now).unwrap_or_default();
+        self.emit_login(server);
+        Ok(LoginStart {
+            authorize_url,
+            redirect_uri,
+            expires_at,
+        })
+    }
+
+    /// Finishes the sign-in the callback's `state` started, whichever server
+    /// that is, and connects it. The pending login is spent whatever the outcome.
+    pub async fn login_complete(&self, callback_url: &str) -> Result<(String, State), String> {
+        let state = auth::state_of(callback_url).ok_or(
+            "this address holds no sign-in state; paste the whole address the browser ended on",
+        )?;
+        let now = std::time::Instant::now();
+        let (name, login) = self.logins.take(&state, now).ok_or(NONE_WAITING)?;
+        self.emit_login(&name);
+        let exchanged = {
+            // rmcp saves the exchanged session without this guard: a refresh in
+            // flight, which loaded the old session, saves first.
+            let _refresh = login.store.acquire_refresh_guard().await;
+            login.session.handle_callback_url(callback_url).await
+        };
+        exchanged.map_err(|e| auth::login_error_text(&e))?;
+        let s = {
+            let servers = self.servers.lock().await;
+            let Some(s) = servers.get(&name).cloned() else {
+                // Removed during the sign-in: its wipe ran before this save.
+                if let Err(e) = login.store.sign_out().await {
+                    tracing::warn!("clearing the sign-in session of removed `{name}` failed: {e}");
+                }
+                return Err(format!("no server named `{name}`"));
+            };
+            *s.handoff.lock().unwrap() = Some((login.url, login.session.auth_manager));
+            s.restart(None).await;
+            s
+        };
+        let mut status = s.status.subscribe();
+        let limit = self.opts.timings.http_handshake + self.opts.timings.list;
+        let _ = timeout(limit, status.wait_for(|s| s.state != State::Connecting)).await;
+        let state = s.status.borrow().state;
+        Ok((name, state))
+    }
+
+    /// Drops the server's pending login; nothing pending is no error.
+    pub async fn login_cancel(&self, server: &str) -> Result<(), String> {
+        if !self.servers.lock().await.contains_key(server) {
+            return Err(format!("no server named `{server}`"));
+        }
+        if self.logins.cancel(server) {
+            self.emit_login(server);
+        }
+        Ok(())
+    }
+
+    /// Ends the session and clears it from the vault. The task stops first:
+    /// a refresh in flight finishes or goes before the wipe, which waits for
+    /// the refresh mutex and is never awaited beside a call on the store.
+    pub async fn sign_out(&self, server: &str) -> Result<State, String> {
+        let servers = self.servers.lock().await;
+        let s = servers
+            .get(server)
+            .ok_or_else(|| format!("no server named `{server}`"))?;
+        let store = s
+            .session_store()
+            .ok_or_else(|| format!("`{server}` does not use sign-in"))?;
+        self.logins.cancel(server);
+        s.halt().await;
+        let wiped = store.sign_out().await;
+        let state = s.status.borrow().state;
+        if !matches!(state, State::Disabled | State::Unapproved) {
+            s.needs_login();
+        }
+        self.emit_login(server);
+        wiped?;
+        let state = s.status.borrow().state;
+        Ok(state)
+    }
+
+    pub async fn wait_for(&self, server: &str, state: State, within: Duration) -> bool {
+        let status = self
+            .servers
+            .lock()
+            .await
+            .get(server)
+            .map(|s| s.status.subscribe());
+        let Some(mut status) = status else {
+            return false;
+        };
+        let reached = timeout(within, status.wait_for(|s| s.state == state)).await;
+        matches!(reached, Ok(Ok(_)))
+    }
+
+    pub async fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.load.abort();
+        let mut servers = self.servers.lock().await;
+        join_all(std::mem::take(&mut *servers).values().map(|s| s.stop())).await;
+    }
+}
+
+/// A refused `url` as listed: rule 3 refuses a literal credential in it, so
+/// the user name, password, query and fragment never come back. A url with
+/// none of them is shown as written; an unparsable one as nothing.
+fn refused_url_target(url: &str) -> String {
+    let Ok(mut u) = url::Url::parse(url) else {
+        return String::new();
+    };
+    let bare = u.username().is_empty() && u.password().is_none();
+    if bare && u.query().is_none() && u.fragment().is_none() {
+        return url.into();
+    }
+    let _ = u.set_username("");
+    let _ = u.set_password(None);
+    u.set_query(None);
+    u.set_fragment(None);
+    u.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::check_entry;
+
+    #[test]
+    fn a_server_error_message_is_cut_and_its_data_never_shown() {
+        let huge = format!("a{}", "é".repeat(150_000));
+        let rpc = |message: &str, data| {
+            let code = rmcp::model::ErrorCode(-32000);
+            ServiceError::McpError(rmcp::ErrorData::new(code, message.to_string(), data))
+        };
+        let raw = json!({"url": "https://example.com/mcp"});
+        let entry = check_entry("s", &raw, true).entry.unwrap();
+        let text = failure_text("s", &classify_call_error(&rpc(&huge, None), &entry));
+        let prefix = "MCP error -32000: ";
+        assert!(text.starts_with(prefix) && text.len() <= prefix.len() + MESSAGE_CAP);
+        // Cut on a char boundary: the last `é` that fits stays whole.
+        assert_eq!(text.len(), prefix.len() + MESSAGE_CAP - 1);
+        let result = json!({"content": [{"type": "text", "text": text}]});
+        assert!(crate::translate::harness_bytes(&result) <= 262_144);
+        assert!(service_text(&rpc(&huge, None)).len() <= prefix.len() + MESSAGE_CAP);
+
+        let data = Some(json!({"token": "data-only-value"}));
+        assert_eq!(service_text(&rpc("boom", data)), "MCP error -32000: boom");
+    }
+
+    #[test]
+    fn a_listing_error_is_cut_like_a_server_message() {
+        let prompts = json!([{"name": "p", "arguments": "x".repeat(3 * MESSAGE_CAP)}]);
+        let raw = serde_json::from_value::<Vec<PromptInfo>>(prompts.clone()).err();
+        assert!(
+            raw.unwrap().to_string().len() > MESSAGE_CAP,
+            "the error quotes the value"
+        );
+        let cut = listing::<PromptInfo>(prompts).err().unwrap();
+        assert!(
+            cut.starts_with("invalid type") && cut.len() <= MESSAGE_CAP,
+            "{cut}"
+        );
+    }
+
+    #[test]
+    fn wire_names_are_snake_case() {
+        assert_eq!(json!(State::ConfigError), json!("config_error"));
+        assert_eq!(json!(State::NeedsLogin), json!("needs_login"));
+        assert_eq!(json!(Stage::Authorize), json!("authorize"));
+        assert_eq!(
+            json!(ErrorCode::CredentialRejected),
+            json!("credential_rejected")
+        );
+        for state in [
+            State::Disabled,
+            State::ConfigError,
+            State::Unapproved,
+            State::Connecting,
+            State::Ready,
+            State::Unavailable,
+            State::AuthFailed,
+            State::NeedsLogin,
+        ] {
+            assert_eq!(json!(state), json!(state.as_str()));
+        }
+    }
+}

@@ -19,6 +19,7 @@ fn validate_function(function_id: &str) -> Result<(), String> {
             "provider::openai-codex::login::",
             "provider::openai-codex::auth::",
             "provider-openai-codex::state::",
+            "mcp-client::",
         ]
         .iter()
         .any(|prefix| function_id.starts_with(prefix))

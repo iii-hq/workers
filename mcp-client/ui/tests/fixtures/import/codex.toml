@@ -1,0 +1,4 @@
+# ~/.codex/config.toml
+[mcp_servers.docs]
+url = "https://docs.example.com/mcp"
+bearer_token_env_var = "DOCS_TOKEN"

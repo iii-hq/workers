@@ -1,0 +1,2 @@
+{ "mcpServers": { "internal-api": { "type": "http", "url": "https://mcp.example.org", "headersHelper": "/opt/bin/get-mcp-auth-headers.sh" },
+"codex-style": { "url": "https://mcp.example.com/mcp", "http_headers_helper": "print-headers --json" } } }

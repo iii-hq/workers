@@ -66,6 +66,18 @@ rules:
   - '!secrets::access'
   - '!secrets::import'
   - '!secrets::on-config-change'
+  # mcp-client. The approval gate never reads these lines at runtime. The MCP client
+  # page writes its own allow rules, one per read function by exact id, into
+  # the approval gate's entry (mcp-client/README.md, Agent access). These lines
+  # show the intended split for a server named `linear`. `mcp-client::*` is
+  # refused by the harness, fp and code-runner whatever a policy says.
+  - '!mcp-client::*'
+  - 'mcp::linear::list_*'
+  - 'mcp::linear::get_*'
+  - mcp::linear::search_documentation
+  - mcp::linear::whoami
+  - mcp::linear::extract_images
+  - mcp::linear::instructions
   # queue's engine event handler (functions/workers available): wakes waits
   # for a target function and the engine-restart check; engine dispatch only.
   - '!queue::on-engine-change'

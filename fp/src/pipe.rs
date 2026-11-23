@@ -22,7 +22,7 @@ use iii_sdk::protocol::CallRequest;
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, mcp-client::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -169,6 +169,12 @@ fn forbidden_unprefixed_step(
         || function_id.starts_with("provider-openai-codex::state::")
     {
         return Some("operator-only state functions are not supported in a pipe");
+    }
+    if function_id.starts_with("mcp-client::") {
+        return Some(
+            "operator-only MCP client functions are not supported in a pipe — steps run with \
+             worker authority, which would bypass the agent-level deny on them",
+        );
     }
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
@@ -848,6 +854,9 @@ mod tests {
             ("database::transactionExecute", "read-only"),
             ("database::beginTransaction", "read-only"),
             ("database::runStatement", "read-only"),
+            ("mcp-client::servers::approve", "operator-only"),
+            ("mcp-client::login::start", "operator-only"),
+            ("laptop::mcp-client::servers::approve", "operator-only"),
         ] {
             let req = parse(json!({ "through": [{ "function": function }] })).unwrap();
             assert!(validate(&req).unwrap_err().contains(needle), "{function}");
@@ -859,6 +868,14 @@ mod tests {
         ]}))
         .unwrap();
         assert!(validate(&ok).is_ok());
+
+        // Only the operator namespace is refused: the tools are ordinary steps,
+        // approved together with the pipe call that carries them.
+        let mcp = parse(json!({ "through": [
+            { "function": "mcp::linear::list_issues", "payload": {} },
+        ]}))
+        .unwrap();
+        assert!(validate(&mcp).is_ok());
 
         // Only workflow::start is refused: reading or stopping a run is harmless.
         let wf = parse(json!({ "through": [

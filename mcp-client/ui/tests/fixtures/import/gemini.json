@@ -1,0 +1,3 @@
+{ "mcpServers": { "local": { "command": "path/to/server", "args": ["--arg1", "value1"], "env": { "API_KEY": "$MY_API_TOKEN", "WIN_KEY": "%MY_WIN_TOKEN%" }, "cwd": "./server-directory", "timeout": 30000, "trust": false },
+"streaming": { "httpUrl": "https://api.example.com/mcp", "headers": { "X-Workspace": "acme" }, "includeTools": ["a"], "oauth": { "enabled": true, "clientId": "gemini-client", "clientSecret": "@@FAKE@@", "scopes": ["read"], "redirectUri": "https://client.example.com/oauth/callback", "tokenUrl": "https://auth.example.com/token" } },
+"legacy": { "url": "https://events.example.com/sse" } } }
