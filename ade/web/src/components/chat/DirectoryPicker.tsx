@@ -889,17 +889,6 @@ export function DirectoryPicker({
                 Add one to get started.
               </div>
             ) : null}
-
-            <div className="mt-1 border-t border-border pt-1">
-              <button
-                type="button"
-                onClick={addProject}
-                className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-inter text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-sm"
-              >
-                <Plus className="size-4 shrink-0 text-ink-faint" aria-hidden />
-                Add project
-              </button>
-            </div>
           </div>
         ) : (
           <FolderBrowser
@@ -915,6 +904,19 @@ export function DirectoryPicker({
               setError(null)
             }}
           />
+        )}
+        {/* Add project stays under the list, never scrolling away with it. */}
+        {view === 'projects' && (
+          <div className="mx-4 mt-1 shrink-0 border-t border-border pt-1 md:mx-0">
+            <button
+              type="button"
+              onClick={addProject}
+              className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-inter text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-sm"
+            >
+              <Plus className="size-4 shrink-0 text-ink-faint" aria-hidden />
+              Add project
+            </button>
+          </div>
         )}
       </DirectoryPickerSurface>
 

@@ -1,4 +1,4 @@
-import { FolderPlus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import {
   Dialog,
@@ -82,7 +82,7 @@ export function AddProjectDialog({
             aria-hidden
             className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground"
           >
-            <FolderPlus className="size-4" />
+            <Plus className="size-4" />
           </span>
           <div className="flex min-w-0 flex-col gap-1">
             <DialogTitle>Add project</DialogTitle>

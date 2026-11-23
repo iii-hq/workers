@@ -13,7 +13,7 @@ import {
   ShadcnTabsList,
   ShadcnTabsTrigger,
 } from '@iii-dev/console-ui'
-import { ChevronsUpDown, Columns3, LayoutGrid, Milestone, Network, Plus, SquareKanban } from 'lucide-react'
+import { ChevronsUpDown, Columns3, Folders, LayoutGrid, Milestone, Network, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { FolderGlyph } from './plan/parts'
 import type { ProjectView } from './shared'
@@ -76,7 +76,7 @@ export function ProjectSwitcher({
             type="button"
             variant="ghost"
           >
-            {value ? <FolderGlyph color={value.color} /> : <SquareKanban size={16} />}
+            {value ? <FolderGlyph color={value.color} /> : <Folders size={16} />}
             <span className="kb-hub-switcher__name">{value?.name ?? 'All projects'}</span>
             <ChevronsUpDown className="kb-hub-switcher__chevron" size={16} />
           </ShadcnButton>
@@ -92,7 +92,7 @@ export function ProjectSwitcher({
         >
           <ShadcnDropdownMenuGroup>
             <ShadcnDropdownMenuRadioItem className="kb-menu__row" value={ALL}>
-              <SquareKanban size={16} />
+              <Folders size={16} />
               <span className="kb-menu__label">All projects</span>
               <span className="kb-menu__hint">{totals}</span>
             </ShadcnDropdownMenuRadioItem>
@@ -114,7 +114,7 @@ export function ProjectSwitcher({
         <ShadcnDropdownMenuGroup>
           <ShadcnDropdownMenuItem className="kb-menu__row" onClick={onNewProject}>
             <Plus size={16} />
-            New project…
+            New project
           </ShadcnDropdownMenuItem>
           {onOpenReleases ? (
             <ShadcnDropdownMenuItem className="kb-menu__row" onClick={onOpenReleases}>
