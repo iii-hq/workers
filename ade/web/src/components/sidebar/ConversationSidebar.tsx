@@ -774,7 +774,9 @@ export function ConversationSidebar({
             item.group.chatProject ? (
               <ProjectMenu
                 project={item.group.chatProject}
-                conversationCount={countConversations(item.group.roots)}
+                // As the list counts a project: its conversations, not the
+                // subagents nested under them (spec §1.3.2, P11).
+                conversationCount={item.group.roots.length}
                 narrow={narrow}
                 onNewConversation={() => {
                   const folder = item.group.chatProject?.folders[0]
