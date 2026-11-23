@@ -102,6 +102,18 @@ impl WorkerConfig {
         serde_json::to_value(self).expect("WorkerConfig serializes")
     }
 
+    /// The ids the proxy calls with a session's payload or context
+    /// (middleware, auth function, registration hooks): a pinned session
+    /// must not host them.
+    pub fn called_ids(&self) -> [Option<&str>; 4] {
+        [
+            self.middleware_function_id.as_deref(),
+            self.rbac.auth_function_id.as_deref(),
+            self.rbac.on_function_registration_function_id.as_deref(),
+            self.rbac.on_observer_registration_function_id.as_deref(),
+        ]
+    }
+
     /// The JSON Schema registered with the `configuration` worker, with the
     /// built-in default attached as the top-level `example` (mirrors
     /// approval-gate / context-manager).
