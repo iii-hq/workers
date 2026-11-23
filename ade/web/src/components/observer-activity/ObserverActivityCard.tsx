@@ -149,7 +149,6 @@ export function ObserverActivityCard({
   }
 
   const title = activityTitle(activity)
-  const source = activity.label ?? activity.functionId
   const target =
     activity.delivery.kind === 'call'
       ? activity.delivery.functionId
@@ -196,8 +195,8 @@ export function ObserverActivityCard({
             ·
           </span>
           <div className="flex min-w-0 items-baseline gap-2 text-ink-faint">
-            <span className="min-w-0 truncate" title={source}>
-              {source}
+            <span className="min-w-0 truncate" title={eventText}>
+              {eventText}
             </span>
             <span aria-hidden className="shrink-0 text-ink-ghost">
               →
@@ -510,32 +509,14 @@ function ObserverTarget({
   )
 }
 
-/** Human-readable compact event copy. `action` describes what happened;
- * `label` remains the fallback that names the observer. */
+/** Human-readable event copy: the `action` the observer was armed with,
+ * which says what it waits for in the caller's own words. The host knows no
+ * observed function or condition, so without one it falls back to the
+ * `label`, then the observed function id. */
 export function activityEventText(activity: ObserverActivityMessage): string {
-  const action = activity.action?.trim()
-  if (action) return action
-  const label = activity.label?.trim()
-  if (label) return label
-  if (activity.functionId === 'state::on-changed') {
-    const key = eqFilter(activity.filters, 'input.key')
-    if (key) {
-      const scope = eqFilter(activity.filters, 'input.scope')
-      return scope ? `${scope}/${key}` : key
-    }
-  }
-  return activity.functionId
-}
-
-/** The `$eq` operand of one filter field, when it is a non-empty string. */
-function eqFilter(
-  filters: Record<string, unknown> | undefined,
-  field: string,
-): string | undefined {
-  const condition = filters?.[field]
-  if (!condition || typeof condition !== 'object') return undefined
-  const value = (condition as { $eq?: unknown }).$eq
-  return typeof value === 'string' && value.length > 0 ? value : undefined
+  return (
+    activity.action?.trim() || activity.label?.trim() || activity.functionId
+  )
 }
 
 function activityTitle(activity: ObserverActivityMessage): string {
