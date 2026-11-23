@@ -29,6 +29,11 @@ struct Fixture {
     kind: Option<&'static str>,
     /// Owner lookups answered late, holding an import in flight.
     delay_lookups: usize,
+    /// Where the queue worker serves `engine::queue::*`: a call to any
+    /// other namespace finds no function.
+    queue_namespace: String,
+    /// Every `engine::queue::*` frame, as sent.
+    queue_frames: Vec<Value>,
 }
 struct Stack {
     deps: Arc<Deps>,
@@ -65,6 +70,10 @@ fn key() -> String {
 }
 impl Stack {
     async fn new(root: &std::path::Path) -> Self {
+        Self::in_namespace(root, None).await
+    }
+    /// A stack whose worker and queue worker both run in `namespace`.
+    async fn in_namespace(root: &std::path::Path, namespace: Option<&str>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let (tx, mut rx) = mpsc::unbounded_channel::<Request>();
@@ -72,6 +81,7 @@ impl Stack {
         let host = owner.clone();
         let fixture = Arc::new(Mutex::new(Fixture {
             path: vec![source()],
+            queue_namespace: namespace.unwrap_or("default").into(),
             ..Fixture::default()
         }));
         let replies = fixture.clone();
@@ -119,6 +129,11 @@ impl Stack {
                             "invokefunction" => {
                                 let function = request["function_id"].as_str().unwrap();
                                 replies.lock().unwrap().calls.push(function.to_owned());
+                                let missing = function.starts_with("engine::queue::") && {
+                                    let mut fixture = replies.lock().unwrap();
+                                    fixture.queue_frames.push(request.clone());
+                                    request["namespace"] != fixture.queue_namespace
+                                };
                                 let result = match function {
                                     "engine::functions::info" if replies.lock().unwrap().lookup == "function" => Value::Null,
                                     "engine::workers::info" if replies.lock().unwrap().lookup == "worker" => Value::Null,
@@ -133,10 +148,11 @@ impl Stack {
                                         json!({"messages":fixture.path[start..end],"next_cursor":(end < fixture.path.len()).then(||end.to_string())})
                                     },
                                     "session::messages-tail" => json!({"messages":replies.lock().unwrap().path}),
-                                    "engine::queue::enqueue" => {
+                                    "engine::queue::enqueue" if !missing => {
                                         replies.lock().unwrap().queued.push(request["data"]["data"].clone());
                                         json!({"ok":true})
                                     },
+                                    "engine::queue::topic_stats" => json!({"depth":0,"dlq_depth":0}),
                                     "state::get" => replies.lock().unwrap().cursor.clone(),
                                     "state::set" => { replies.lock().unwrap().cursor = request["data"]["value"].clone(); json!({"ok":true}) },
                                     "router::complete" => {
@@ -151,7 +167,12 @@ impl Stack {
                                     _ => Value::Null,
                                 };
                                 if !request["invocation_id"].is_null() {
-                                    let reply = json!({"type":"invocationresult","invocation_id":request["invocation_id"],"function_id":function,"result":result}).to_string();
+                                    let reply = if missing {
+                                        json!({"type":"invocationresult","invocation_id":request["invocation_id"],"function_id":function,
+                                            "error":{"code":"function_not_found","message":format!("Function {function} not found in namespace {}",request["namespace"])}})
+                                    } else {
+                                        json!({"type":"invocationresult","invocation_id":request["invocation_id"],"function_id":function,"result":result})
+                                    }.to_string();
                                     let late = function == "engine::workers::info" && {
                                         let mut fixture = replies.lock().unwrap();
                                         let late = fixture.delay_lookups > 0;
@@ -177,7 +198,10 @@ impl Stack {
         });
         let iii = Arc::new(iii_sdk::register_worker(
             &url,
-            iii_sdk::InitOptions::default(),
+            iii_sdk::InitOptions {
+                namespace: namespace.map(Into::into),
+                ..iii_sdk::InitOptions::default()
+            },
         ));
         wait.await.unwrap();
         let deps = Arc::new(Deps {
@@ -1397,13 +1421,9 @@ async fn a_default_bank_turn_teaches_its_sub_agent() {
     assert!(taught.contains(said), "the item reaches agent-reviewer");
 }
 
-#[tokio::test]
-async fn an_older_stamp_still_matches_the_job_read_from_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let stack = Stack::new(dir.path()).await;
-    enable_extraction(&stack).await;
-    // Stamped before `memory_derived` existed, by a process that is gone:
-    // the job reads its bank back from the stamp.
+/// Ends `older-turn`, stamped into `main` by a process that is gone (before
+/// `memory_derived` existed), with no hook call.
+async fn complete_older_turn(stack: &Stack) {
     let origin = json!({"turn_id":"older-turn","memory_extraction":true,"memory_bank":"main"});
     let text = "The user prefers copper instruments.";
     stack.fixture.lock().unwrap().path = vec![
@@ -1416,12 +1436,88 @@ async fn an_older_stamp_still_matches_the_job_read_from_it() {
     memory::hooks::turn_completed(&stack.deps, completed)
         .await
         .unwrap();
-    let queued = stack.fixture.lock().unwrap().queued.clone();
+}
+
+#[tokio::test]
+async fn an_older_stamp_still_matches_the_job_read_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    // The job reads its bank back from the stamp.
+    complete_older_turn(&stack).await;
+    let (queued, frame) = {
+        let fixture = stack.fixture.lock().unwrap();
+        (fixture.queued.clone(), fixture.queue_frames[0].clone())
+    };
+    // A stack without namespaces: the engine's `default`, and a job that
+    // names none.
+    assert_eq!(frame["namespace"], "default");
+    assert!(frame["data"].get("namespace").is_none(), "{frame}");
     let job: memory::hooks::ExtractJobInput = serde_json::from_value(queued[0].clone()).unwrap();
     assert_eq!((job.bank.as_deref(), job.derived), (Some("main"), false));
     memory::extract::try_run(&stack.deps, &job).await.unwrap();
     assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
     assert!(dir.path().join("main/memories.jsonl").exists());
+}
+
+#[tokio::test]
+async fn a_namespaced_worker_queues_its_job_in_its_own_namespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::in_namespace(dir.path(), Some("ops")).await;
+    enable_extraction(&stack).await;
+    complete_older_turn(&stack).await;
+    let (queued, frame) = {
+        let fixture = stack.fixture.lock().unwrap();
+        (fixture.queued.clone(), fixture.queue_frames[0].clone())
+    };
+    assert_eq!(queued.len(), 1, "{frame}");
+    assert_eq!(frame["function_id"], "engine::queue::enqueue");
+    assert_eq!(frame["namespace"], "ops");
+    // The queue worker calls the job's function in the namespace it names.
+    assert_eq!(frame["data"]["namespace"], "ops");
+    assert_eq!(frame["data"]["function_id"], memory::hooks::EXTRACT_JOB_FN);
+    assert_eq!(frame["data"]["messageReceiptId"], "memx-older-turn");
+    // Queued, not run inline: the inline pass releases the job first.
+    let job: memory::hooks::ExtractJobInput = serde_json::from_value(queued[0].clone()).unwrap();
+    assert!(stack.deps.store().await.holds_extraction_job(&job).unwrap());
+}
+
+#[tokio::test]
+async fn doctor_reads_queue_stats_in_the_workers_namespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::in_namespace(dir.path(), Some("ops")).await;
+    let report = memory::functions::ops::doctor(&stack.deps, Default::default())
+        .await
+        .unwrap();
+    let frame = stack.fixture.lock().unwrap().queue_frames[0].clone();
+    assert_eq!(frame["function_id"], "engine::queue::topic_stats");
+    assert_eq!(frame["namespace"], "ops");
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.name == "extraction-queue")
+        .unwrap();
+    assert_eq!(check.detail, "no dead-lettered jobs reported");
+}
+
+#[tokio::test]
+async fn an_unreachable_queue_extracts_inline() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    stack.fixture.lock().unwrap().queue_namespace = "elsewhere".into();
+    complete_older_turn(&stack).await;
+    let written = dir.path().join("main/memories.jsonl");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !written.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let fixture = stack.fixture.lock().unwrap();
+    assert!(fixture.queued.is_empty());
+    assert_eq!(fixture.prompts.len(), 1);
 }
 
 #[tokio::test]

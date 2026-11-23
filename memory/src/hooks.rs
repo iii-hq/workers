@@ -16,6 +16,7 @@
 //! turn. Handlers are idempotent: redelivered steps re-run them safely.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use schemars::JsonSchema;
@@ -48,8 +49,8 @@ pub const EXTRACT_JOB_DESC: &str = "Internal: target of the queue::on-message ob
      queue is refused, whoever calls it.";
 pub const SESSION_DELETED_DESC: &str = "Internal: target of the session::on-deleted observer — drops the session's extraction \
      cursor and state. A direct call is refused.";
-/// Durable queue (iii-queue builtin or the queue worker) carrying one
-/// extraction job per completed turn: retries + DLQ instead of a lost
+/// Durable queue (the queue worker, in this worker's namespace) carrying
+/// one extraction job per completed turn: retries + DLQ instead of a lost
 /// pass when this worker restarts mid-extraction.
 pub const EXTRACTION_QUEUE: &str = "memory-extraction";
 
@@ -1357,9 +1358,65 @@ fn keep_told_section(input: &PreGenerateInput) -> HookResponse {
     }
 }
 
+/// One `engine::queue::*` call in this worker's own namespace.
+pub(crate) async fn queue_call(
+    iii: &iii_sdk::IIIClient,
+    function_id: &str,
+    payload: Value,
+    timeout_ms: u64,
+) -> Result<Value, Error> {
+    // The queue worker registers these ids in the namespace it runs in, and
+    // the SDK sends an implicit `engine::*` call to `default`.
+    let namespace = iii.namespace().unwrap_or_else(|| "default".into());
+    iii.call(
+        CallRequest {
+            function_id: function_id.into(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }
+        .namespace(namespace),
+    )
+    .await
+}
+
+/// Queue `job` for [`EXTRACT_JOB_FN`] on [`EXTRACTION_QUEUE`].
+pub(crate) async fn enqueue_extraction(
+    iii: &iii_sdk::IIIClient,
+    job: &ExtractJobInput,
+    receipt: String,
+    timeout_ms: u64,
+) -> Result<(), Error> {
+    let mut payload = json!({
+        "queue": EXTRACTION_QUEUE,
+        "function_id": EXTRACT_JOB_FN,
+        "data": job,
+        "messageReceiptId": receipt,
+    });
+    // The queue worker calls a job's function in `default` unless the job
+    // names its namespace.
+    if let Some(namespace) = iii.namespace().filter(|ns| ns != "default") {
+        payload["namespace"] = json!(namespace);
+    }
+    queue_call(iii, "engine::queue::enqueue", payload, timeout_ms)
+        .await
+        .map(drop)
+}
+
+/// Set while extraction jobs fail to queue.
+static QUEUE_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Records whether a job was `queued`; true only for the first failure since
+/// boot or since the last queued job.
+fn opens_outage(down: &AtomicBool, queued: bool) -> bool {
+    let was_down = down.swap(!queued, Ordering::Relaxed);
+    !queued && !was_down
+}
+
 /// Ack fast; hand the extraction pass to the durable queue (retries +
-/// DLQ, receipt-id deduped by turn), falling back to an inline spawn when
-/// no queue surface is installed. Redelivery is safe either way: memory
+/// DLQ, receipt-id deduped by turn) in this worker's own namespace, falling
+/// back to an inline spawn when no queue answers there (one WARN per
+/// outage, DEBUG for repeats). Redelivery is safe either way: memory
 /// effects carry durable source-bound receipts. The model call and event
 /// delivery are not exactly-once.
 pub async fn turn_completed(
@@ -1393,26 +1450,18 @@ pub async fn turn_completed(
         .unwrap_or_else(|| format!("t{}", now_ms()));
     let store = deps.store().await;
     let enqueued = match crate::store::run_blocking(|| store.hold_extraction_job(&job)).await {
-        Ok(()) => deps
-            .iii
-            .call(CallRequest {
-                function_id: "engine::queue::enqueue".into(),
-                payload: json!({
-                    "queue": EXTRACTION_QUEUE,
-                    "function_id": EXTRACT_JOB_FN,
-                    "data": job,
-                    "messageReceiptId": format!("memx-{receipt}"),
-                }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
+        Ok(()) => enqueue_extraction(&deps.iii, &job, format!("memx-{receipt}"), 5_000)
             .await
-            .map(drop)
             .map_err(|e| e.to_string()),
         Err(e) => Err(e.to_string()),
     };
+    let new_outage = opens_outage(&QUEUE_DOWN, enqueued.is_ok());
     if let Err(e) = enqueued {
-        tracing::debug!(error = %e, "extraction job not queued; extracting inline");
+        if new_outage {
+            tracing::warn!(error = %e, "extraction job not queued; extracting inline");
+        } else {
+            tracing::debug!(error = %e, "extraction job not queued; extracting inline");
+        }
         let _ = crate::store::run_blocking(|| store.release_extraction_job(&job)).await;
         let deps = deps.clone();
         tokio::spawn(async move { extract::run(deps, job).await });
@@ -1848,6 +1897,15 @@ fn last_user_text(messages: Option<&Value>) -> String {
 mod tests {
     use super::*;
     use crate::deps::offline_deps;
+
+    #[test]
+    fn an_outage_warns_once_until_a_job_is_queued() {
+        let down = AtomicBool::new(false);
+        assert!(opens_outage(&down, false));
+        assert!(!opens_outage(&down, false));
+        assert!(!opens_outage(&down, true));
+        assert!(opens_outage(&down, false));
+    }
 
     #[test]
     fn the_extraction_observer_id_is_the_worker_and_its_topic() {

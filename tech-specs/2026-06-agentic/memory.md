@@ -58,8 +58,9 @@ the `http` worker.
 
 One LLM call per completed turn, off the hot path:
 
-1. `harness::turn-completed` enqueues one durable extraction job (`engine::queue::enqueue`,
-   receipt-id deduped per turn; inline spawn fallback when no queue worker is present).
+1. `harness::turn-completed` enqueues one durable extraction job (`engine::queue::enqueue` in the
+   worker's own namespace, receipt-id deduped per turn; inline spawn fallback, one WARN per outage,
+   when no queue worker answers there).
 2. The job walks `session::messages` incrementally — a per-session cursor in the `state` worker
    (scope `memory_cursor`) means each pass reads only messages newer than the last pass. The cursor
    advances only after every durable write lands; commit failures propagate so the queue retries
