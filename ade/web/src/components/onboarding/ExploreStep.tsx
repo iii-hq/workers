@@ -580,7 +580,8 @@ export function ExploreStep({
       {failedKits.map((install) => (
         <div
           key={install.kit}
-          role="alert"
+          role="status"
+          aria-live="polite"
           className="-mt-2 flex items-center justify-between gap-3 px-1 text-pretty text-sm leading-5 text-alert-strong"
         >
           <span className="min-w-0">

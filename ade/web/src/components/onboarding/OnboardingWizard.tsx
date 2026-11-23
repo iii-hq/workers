@@ -673,7 +673,8 @@ function FailedKitsNotice({
   if (kits.length === 0) return null
   return (
     <div
-      role="alert"
+      role="status"
+      aria-live="polite"
       className="fixed right-4 bottom-4 z-50 flex w-[min(380px,calc(100vw-32px))] flex-col gap-2 rounded-xl border border-alert/30 bg-alert-muted px-3.5 py-3 font-sans text-sm leading-5 text-ink shadow-floating"
     >
       {kits.map((install) => (
