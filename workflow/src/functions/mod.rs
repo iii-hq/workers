@@ -8,6 +8,7 @@ use crate::config::WorkerConfig;
 use crate::locks::WorkflowLocks;
 
 pub mod inject_guidance;
+pub mod inject_result_contract;
 pub mod list;
 pub mod node_result;
 pub mod stamp_reply;
@@ -380,6 +381,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { validate_result::handle(&d, event).await }
         })
         .description(validate_result::VALIDATE_RESULT_DESC),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        inject_result_contract::RESULT_CONTRACT_ID,
+        RegisterFunction::new_async(move |event: inject_result_contract::ResultContractEvent| {
+            let d = d.clone();
+            async move { inject_result_contract::handle(&d, event).await }
+        })
+        .description(inject_result_contract::RESULT_CONTRACT_DESC),
     );
 
     crate::events::register_run_completed(iii, deps);

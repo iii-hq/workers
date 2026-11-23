@@ -1,8 +1,8 @@
 //! `workflow::validate-result` — the post_turn hook that holds a JSON node to
 //! delivering its result, without the harness's `submit_result` tool.
 //!
-//! A JSON node is sent with a text contract and an opening that asks it to
-//! deliver the value with `workflow-result::submit` (`tick::json_output_instruction`,
+//! A JSON node is sent with a text contract, and its system prompt asks it to
+//! deliver the value with `workflow-result::submit` (`inject_result_contract`,
 //! `submit`). This hook observes `harness::hook::on-post-turn` for node sessions
 //! (`configuration::observe_post_turn_hook`): a turn whose attempt submitted
 //! passes; otherwise a final message that is itself a valid JSON value passes
@@ -195,7 +195,7 @@ mod tests {
             miss.contains("output schema") && miss.contains("answer"),
             "{miss}"
         );
-        // The schema rides on every deny: the opening that carried it may be compacted away.
+        // The schema rides on every deny: the system-prompt contract is fail-open, so a step may lack it.
         let schema = output()["schema"].to_string();
         assert!(
             prose.ends_with(&schema) && miss.ends_with(&schema),

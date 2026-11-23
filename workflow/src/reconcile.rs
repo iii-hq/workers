@@ -95,7 +95,7 @@ pub(crate) fn output_schema(output: &Value) -> Option<&Value> {
 }
 
 /// Why an answer does not settle a JSON node with contract `output`, the schema
-/// repeated: the opening that carried it may be compacted away by then. Pure.
+/// repeated: the system-prompt contract is fail-open, so the model may not have it. Pure.
 pub(crate) fn correction_reason(output: &Value, error: String) -> String {
     match output_schema(output) {
         Some(schema) => format!("{error}{SCHEMA_MARKER}{schema}"),
@@ -243,7 +243,7 @@ const MIN_CONTINUE_MS: i64 = 300_000;
 const CONTINUE_PROMPT: &str = "The provider failed temporarily and your previous turn ended \
     before you delivered your result. Continue from where you stopped: everything above still \
     stands, so do not repeat calls that already returned. Then deliver the complete result as \
-    your opening message asks.";
+    your instructions say.";
 
 /// The node's own `timeout_ms`, else the worker default. Pure.
 fn node_timeout_ms(def: &WorkflowDef, cfg: &WorkerConfig, uid: &str) -> u64 {
