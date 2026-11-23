@@ -695,7 +695,7 @@ function FailedKitsNotice({
             className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             onClick={() => onDismiss(install.kit)}
           >
-            <X className="size-3.5" aria-hidden />
+            <X className="size-4" aria-hidden />
           </button>
         </div>
       ))}
