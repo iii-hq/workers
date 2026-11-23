@@ -914,6 +914,11 @@
               "null"
             ]
           },
+          "stopped": {
+            "default": false,
+            "description": "The session's latest turn carries a stop: cancelled, or flagged by `harness::stop` while parked (`quiet_deadlines`). `expects_wake` stays true then, because a delivery can still wake the session; this is the extra fact. A client deciding whether a parked session is still live must treat `completed && expects_wake && stopped` as stopped.",
+            "type": "boolean"
+          },
           "transient_resumes": {
             "format": "uint32",
             "minimum": 0.0,

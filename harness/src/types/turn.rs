@@ -526,6 +526,12 @@ pub struct TurnRecord {
 }
 
 impl TurnRecord {
+    /// Whether a stop reached this turn: cancelled while it ran, or flagged
+    /// while parked (`harness::stop`'s `quiet_deadlines`).
+    pub fn is_stopped(&self) -> bool {
+        self.status == TurnStatus::Cancelled || self.abort
+    }
+
     /// Whether a `harness::turn` step must still run for this record: a
     /// finished turn that still promises a reseed, or still owes its exchange's
     /// completion, needs its step delivered again, like a running one.
