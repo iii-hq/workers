@@ -1,4 +1,19 @@
-import { type Host, ShadcnButton, ShadcnSkeleton, ShadcnSwitch } from '@iii-dev/console-ui'
+import {
+  type Host,
+  ShadcnButton,
+  ShadcnDropdownMenu,
+  ShadcnDropdownMenuContent,
+  ShadcnDropdownMenuGroup,
+  ShadcnDropdownMenuLabel,
+  ShadcnDropdownMenuRadioGroup,
+  ShadcnDropdownMenuRadioItem,
+  ShadcnDropdownMenuTrigger,
+  ShadcnSkeleton,
+  ShadcnSwitch,
+  ShadcnTooltip,
+  ShadcnTooltipContent,
+  ShadcnTooltipTrigger,
+} from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
 import {
@@ -12,19 +27,22 @@ import {
   ClipboardCheck,
   Code2,
   Database,
+  Expand,
   FileText,
   FlaskConical,
+  FolderOpen,
   FolderPlus,
+  Folders,
+  ListTree,
   type LucideIcon,
   Maximize2,
-  MessagesSquare,
+  MessageCircleMore,
   Minus,
   Network,
   Palette,
   Pencil,
   Plus,
   Search,
-  SquareKanban,
   Terminal,
   TriangleAlert,
   X,
@@ -146,8 +164,9 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   // The card whose chat is open beside the tree: it stays marked (and in view) while you read.
   const [selectedId, setSelectedId] = usePaneState<string | null>(`kanban:tree-selected:${paneKey}`, null)
   const [hideDone, setHideDone] = usePaneState<boolean>(`kanban:tree-hide-done:${paneKey}`, false)
-  // Nodes the user opened or closed; the rest follow `defaultOpen`.
-  const [toggled, setToggled] = usePaneState<Record<string, boolean>>(`kanban:tree-open:${paneKey}`, {})
+  // Cards opened or closed by hand; the rest follow `depth` (below). A new key: folds saved when the tree started
+  // folded would otherwise keep it folded.
+  const [toggled, setToggled] = usePaneState<Record<string, boolean>>(`kanban:tree-folds:${paneKey}`, {})
   const [activeId, setActiveId] = useState<string | null>(null)
   const chartRef = useRef<HTMLDivElement | null>(null)
   /** The project being edited from its card (the project dialog). */
@@ -288,56 +307,19 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   }, [tree, hideDone, project, data.projects])
 
   /**
-   * Open by default: the groups, anything not finished, and anything with running or failed work under it (a
-   * finished orchestrator whose sub-agent failed must not hide that). A finished subtree stays folded until asked.
+   * Every level opens by default, so the parent → child lines read at a glance. `depth` folds the chart at one level
+   * (Collapse all = the top level; the level menu = any level), and `toggled` holds the cards opened or closed by
+   * hand on top of it. Both are pane state: they survive a reload and stay per pane.
    */
-  const needsEyes = useMemo(() => {
-    const ids = new Set<string>()
-    const visit = (node: Node): boolean => {
-      let flagged =
-        node.kind !== 'group' && (node.state === 'active' || node.state === 'failed' || node.state === 'waiting')
-      for (const kid of kidsOf(node)) if (visit(kid)) flagged = true
-      if (flagged) ids.add(node.id)
-      return flagged
-    }
-    if (root) visit(root)
-    return ids
-  }, [root])
-  // Decided once per node, when it first appears: work that finishes while you watch stays open (it never folds
-  // itself away under you); a subtree that was already finished when the chart opened starts folded.
-  const firstSeen = useRef(new Map<string, boolean>())
-  const sessionsPending = loading && sessions.length === 0 && !error
-  const scopeKey = project?.id ?? 'all'
-  const seenFor = useRef(scopeKey)
-  if (seenFor.current !== scopeKey) {
-    seenFor.current = scopeKey
-    firstSeen.current = new Map()
-  }
-  const defaultOpen = useCallback(
-    (node: Node) => {
-      const known = firstSeen.current.get(node.id)
-      // Folded at first sight, it still opens when work under it starts, fails or needs an answer: nobody should
-      // have to open a branch to learn an agent is waiting on them. (A branch folded by hand stays folded.)
-      if (known !== undefined) {
-        if (known || !needsEyes.has(node.id)) return known
-        // Opened for that work, it stays open after the work finishes (the result is what was being read).
-        firstSeen.current.set(node.id, true)
-        return true
-      }
-      const open =
-        node.kind === 'group' || needsEyes.has(node.id) || (node.state !== 'done' && node.state !== 'canceled')
-      // Not before the sessions are read: a failed agent under a finished ticket must still open it.
-      if (!sessionsPending) firstSeen.current.set(node.id, open)
-      return open
-    },
-    [needsEyes, sessionsPending],
-  )
+  const [depth, setDepth] = usePaneState<number | null>(`kanban:tree-depth:${paneKey}`, null)
   const isOpen = useCallback(
-    (node: Node) =>
+    (node: Node, level: number) => {
       // The chart's root is always open: a fold saved for it as a child (under All projects) doesn't fold the chart.
-      node.id === root?.id ||
-      ((toggled && typeof toggled === 'object' ? toggled[node.id] : undefined) ?? defaultOpen(node)),
-    [toggled, defaultOpen, root],
+      if (node.id === root?.id) return true
+      const own = toggled && typeof toggled === 'object' ? toggled[node.id] : undefined
+      return own ?? (typeof depth !== 'number' || level < depth)
+    },
+    [toggled, depth, root],
   )
   const camera = useCamera(paneKey)
   /** The card a fold was asked on: it stays where it is while the layout moves (use-chart-motion). */
@@ -346,34 +328,41 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     anchor.current = id
   }
   useChartMotion({ camera, chart: chartRef, anchor, chartKey: root?.id ?? null })
+  /** Fold or unfold one card; `branch` (Option-click, Option-arrow) takes everything under it along. */
   const setOpen = useCallback(
-    (node: Node, open: boolean) => {
+    (node: Node, open: boolean, branch = false) => {
       holdStill(node.id)
-      setToggled({ ...(toggled ?? {}), [node.id]: open })
+      const next = { ...(toggled ?? {}), [node.id]: open }
+      if (branch) {
+        const visit = (n: Node) => {
+          for (const kid of kidsOf(n)) {
+            if (kidsOf(kid).length > 0) next[kid.id] = open
+            visit(kid)
+          }
+        }
+        visit(node)
+      }
+      setToggled(next)
     },
     [toggled, setToggled],
   )
-  const setAll = (open: boolean) => {
-    if (!root) return
-    const next: Record<string, boolean> = {}
-    const visit = (node: Node) => {
-      // The root stays open: collapsing it would leave one card.
-      if (kidsOf(node).length > 0 && node !== root) next[node.id] = open
-      kidsOf(node).forEach(visit)
-    }
-    visit(root)
-    holdStill(root.id)
-    setToggled(next)
+  /** Fold the whole chart at `level` (null = unfold everything); hand-made folds are cleared. */
+  const foldAt = (level: number | null) => {
+    if (root) holdStill(root.id)
+    setDepth(level)
+    setToggled({})
   }
+  /** What each level of the chart holds ("Tickets", "Subtasks, agents"), for the level menu. */
+  const levels = useMemo(() => levelsOf(root), [root])
 
   /** The cards on screen, depth first: what the arrow keys move through. */
   const visible = useMemo(() => {
-    const rows: { node: Node; parent: Node | null }[] = []
-    const visit = (node: Node, parent: Node | null) => {
-      rows.push({ node, parent })
-      if (isOpen(node)) for (const kid of kidsOf(node)) visit(kid, node)
+    const rows: { node: Node; parent: Node | null; level: number }[] = []
+    const visit = (node: Node, parent: Node | null, level: number) => {
+      rows.push({ node, parent, level })
+      if (isOpen(node, level)) for (const kid of kidsOf(node)) visit(kid, node, level + 1)
     }
-    if (root) visit(root, null)
+    if (root) visit(root, null, 1)
     return rows
   }, [root, isOpen])
   const focusedId = visible.some((row) => row.node.id === activeId) ? activeId : (visible[0]?.node.id ?? null)
@@ -435,11 +424,12 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   }
 
   /**
-   * A ticket's card opens its conversation beside the tree: the session working it now, else the one that worked
-   * it last. A ticket no agent has touched starts a chat about it (its mention in the composer, not sent). On a
-   * console without a workspace chat, the ticket's details open instead.
+   * A card's chat, beside the tree. A ticket's: the session working it now, else the one that worked it last; a
+   * ticket no agent has touched starts a chat about it (its mention in the composer, not sent). On a console without
+   * a workspace chat, the ticket's details open instead. The chart's root: the project's (or board's) own chat. A
+   * project under "All projects" opens that project.
    */
-  const activate = (node: Node) => {
+  const openChat = (node: Node) => {
     if (node.kind === 'ticket') {
       setSelectedId(node.id)
       // From the whole tree, not the filtered one: Hide done must not hide the ticket's finished conversation.
@@ -460,7 +450,18 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         keepFocusOnCard(node.id)
         revealSoon(node.id)
       }
-    } else if (node.project && node.project.id !== project?.id) onOpenProject(node.project.id)
+    } else if (node.id === root?.id) askAboutProject()
+    else if (node.project && node.project.id !== project?.id) onOpenProject(node.project.id)
+  }
+
+  /**
+   * A click on a card (or Enter on it): a card with children folds or unfolds them, as a native tree does; a card
+   * with none opens its chat. The chart's root is always open, so it has nothing to fold. Option-click takes the
+   * whole branch along.
+   */
+  const activate = (node: Node, level: number, branch = false) => {
+    if (kidsOf(node).length > 0 && node.id !== root?.id) setOpen(node, !isOpen(node, level), branch)
+    else if (node.kind !== 'group') openChat(node)
   }
 
   /**
@@ -494,7 +495,7 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     if ((event.target as HTMLElement).getAttribute('role') !== 'treeitem') return
     const index = visible.findIndex((row) => row.node.id === focusedId)
     if (index < 0) return
-    const { node, parent } = visible[index]
+    const { node, parent, level } = visible[index]
     const kids = kidsOf(node)
     const go = (next: number) => {
       const row = visible[Math.max(0, Math.min(visible.length - 1, next))]
@@ -515,16 +516,22 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         break
       case 'ArrowRight':
         if (kids.length === 0) return
-        if (!isOpen(node)) setOpen(node, true)
+        if (!isOpen(node, level) || event.altKey) setOpen(node, true, event.altKey)
         else focusRow(kids[0].id)
         break
       case 'ArrowLeft':
-        if (kids.length > 0 && isOpen(node) && node !== root) setOpen(node, false)
+        if (kids.length > 0 && isOpen(node, level) && node !== root) setOpen(node, false, event.altKey)
         else if (parent) focusRow(parent.id)
         else return
         break
       case 'Enter':
-        activate(node)
+        activate(node, level, event.altKey)
+        break
+      case 'c':
+      case 'C':
+        // The card's chat, beside the tree (what a click on a card without children does).
+        if ((node.kind === 'group' && node !== root) || event.metaKey || event.ctrlKey || event.altKey) return
+        openChat(node)
         break
       case 'd':
       case 'D':
@@ -549,6 +556,7 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   }
 
   const { stats } = tree
+  const canChat = Boolean(host.chat?.openDraft || host.chat?.selectConversation)
   const summary = [
     `${stats.tickets} ${stats.tickets === 1 ? 'ticket' : 'tickets'}`,
     `${stats.sessions} ${stats.sessions === 1 ? 'agent' : 'agents'}`,
@@ -603,11 +611,12 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           node={root}
           now={now}
           onActivate={activate}
+          onChat={openChat}
+          canChat={canChat}
           onFocusRow={setActiveId}
           onDetails={onOpenTicket}
           onEditProject={setEditingProject}
           onCreateProject={() => setCreatingProject(true)}
-          onToggle={setOpen}
           position={1}
           phaseSince={phaseSince}
           prompted={prompted}
@@ -638,14 +647,14 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           ) : null}
         </span>
         <span className="tw:flex-1" />
-        {host.chat?.openDraft || host.chat?.selectConversation ? (
+        {canChat ? (
           narrow ? (
             <IconAction label={project ? 'Ask about this project' : 'Ask about the board'} onClick={askAboutProject}>
-              <MessagesSquare size={16} />
+              <MessageCircleMore size={16} />
             </IconAction>
           ) : (
             <ShadcnButton className="tw:shrink-0" onClick={askAboutProject} size="sm" type="button" variant="outline">
-              <MessagesSquare size={16} />
+              <MessageCircleMore size={16} />
               {project ? 'Ask about this project' : 'Ask about the board'}
             </ShadcnButton>
           )
@@ -678,12 +687,16 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
             <Maximize2 size={16} />
           </IconAction>
         </span>
-        <IconAction label="Expand all" onClick={() => setAll(true)}>
-          <ChevronsUpDown size={16} />
-        </IconAction>
-        <IconAction label="Collapse all" onClick={() => setAll(false)}>
-          <ChevronsDownUp size={16} />
-        </IconAction>
+        {/* biome-ignore lint/a11y/useSemanticElements: a fieldset would bring its own border and legend into a toolbar */}
+        <span aria-label="Fold" className="tw:inline-flex tw:items-center tw:gap-0.5" role="group">
+          <IconAction disabled={!root} label="Expand all" onClick={() => foldAt(null)}>
+            <ChevronsUpDown size={16} />
+          </IconAction>
+          <IconAction disabled={!root} label="Collapse all" onClick={() => foldAt(2)}>
+            <ChevronsDownUp size={16} />
+          </IconAction>
+          <LevelMenu depth={typeof depth === 'number' ? depth : null} levels={levels} onPick={foldAt} />
+        </span>
       </div>
       {moveError ? (
         <Notice
@@ -790,9 +803,13 @@ type ItemProps = {
   stats: ProjectTree['stats']
   now: number
   focusedId: string | null
-  isOpen: (node: Node) => boolean
-  onToggle: (node: Node, open: boolean) => void
-  onActivate: (node: Node) => void
+  isOpen: (node: Node, level: number) => boolean
+  /** A click on the card: fold or unfold it, or (no children) open its chat. */
+  onActivate: (node: Node, level: number, branch: boolean) => void
+  /** The card's chat beside the tree (the root's: the project's own chat; a project under All: that project). */
+  onChat: (node: Node) => void
+  /** This console can show a chat (beside the page, or as the main chat). */
+  canChat: boolean
   onFocusRow: (id: string) => void
   /** The card whose chat is open beside the tree. */
   selectedId: string | null
@@ -812,11 +829,12 @@ type ItemProps = {
 
 /** One node: its card, then (open) its children laid out by `layoutOf`, hung off the card by the connectors. */
 const ChartItem = memo(function ChartItem(props: ItemProps) {
-  const { node, level, position, setSize, spine, data, focusedId, isOpen, onToggle, onActivate, onFocusRow } = props
+  const { node, level, position, setSize, spine, data, focusedId, isOpen, onActivate, onFocusRow } = props
   const kids = kidsOf(node)
-  const open = kids.length > 0 && isOpen(node)
+  // The chart's root is always open: it has children but nothing to fold.
+  const foldable = kids.length > 0 && level > 1
+  const open = kids.length > 0 && isOpen(node, level)
   const layout = layoutOf(kids.length, spine)
-  const toggle = () => onToggle(node, !open)
   const name =
     node.kind === 'group'
       ? node.name
@@ -848,6 +866,7 @@ const ChartItem = memo(function ChartItem(props: ItemProps) {
       data-waiting={!agentsAtWork(node) && waitsOnYou(node) ? 'true' : undefined}
       data-selected={node.id === props.selectedId ? 'true' : undefined}
       data-state={node.kind === 'group' ? undefined : node.state}
+      data-fold={foldable ? (open ? 'open' : 'closed') : undefined}
       onFocus={(event) => {
         if (event.target === event.currentTarget) onFocusRow(node.id)
       }}
@@ -857,17 +876,17 @@ const ChartItem = memo(function ChartItem(props: ItemProps) {
       {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: the treeitem takes the keys (Enter) */}
       <div
         className="kb-chart__card"
-        onClick={() => {
+        onClick={(event) => {
           onFocusRow(node.id)
-          onActivate(node)
+          onActivate(node, level, event.altKey)
         }}
       >
         {node.kind === 'group' ? (
-          <GroupCard {...props} node={node} onToggle={toggle} open={open} />
+          <GroupCard {...props} count={foldable ? kids.length : 0} node={node} open={open} />
         ) : node.kind === 'ticket' ? (
-          <TicketCard {...props} node={node} onToggle={toggle} open={open} />
+          <TicketCard {...props} count={kids.length} node={node} open={open} />
         ) : (
-          <SessionCard {...props} node={node} onToggle={toggle} open={open} />
+          <SessionCard {...props} count={kids.length} node={node} open={open} />
         )}
       </div>
       {open ? (
@@ -903,10 +922,9 @@ function NodeCard({
   note,
   facts,
   live,
-  action,
+  actions,
   count,
   open,
-  onToggle,
   kind,
 }: {
   tile: ReactNode
@@ -920,11 +938,11 @@ function NodeCard({
   facts: ReactNode
   /** What an agent is doing right now (a live line under the description). */
   live?: ReactNode
-  /** A quiet action at the end of the footer (a ticket's details). */
-  action?: ReactNode
+  /** The card's own actions at the end of the footer (details, chat): icon buttons that never fold the card. */
+  actions?: ReactNode
+  /** Its children (0: nothing to fold, so no disclosure). */
   count: number
   open: boolean
-  onToggle: () => void
   kind: 'group' | 'ticket' | 'session'
 }) {
   return (
@@ -943,27 +961,15 @@ function NodeCard({
       {note ? <p className="kb-node__note">{note}</p> : null}
       {live ? <p className="kb-node__live">{live}</p> : null}
       <div className="kb-node__foot">
-        <span className="kb-node__facts">{facts}</span>
-        {action}
         {count > 0 ? (
-          <ShadcnButton
-            aria-hidden="true"
-            className="kb-node__toggle"
-            data-open={open ? 'true' : undefined}
-            onClick={(event) => {
-              event.stopPropagation()
-              onToggle()
-            }}
-            size="xs"
-            tabIndex={-1}
-            title={`${open ? 'Hide' : 'Show'} ${count}`}
-            type="button"
-            variant="ghost"
-          >
-            {count}
+          // The disclosure, as a native tree draws it: the whole card is the control (aria-expanded on the item).
+          <span aria-hidden="true" className="kb-node__fold" data-open={open ? 'true' : undefined}>
             <ChevronDown size={16} />
-          </ShadcnButton>
+            {count}
+          </span>
         ) : null}
+        <span className="kb-node__facts">{facts}</span>
+        {actions ? <span className="kb-node__actions">{actions}</span> : null}
       </div>
     </div>
   )
@@ -997,6 +1003,23 @@ function StateBadge({ state, label, step }: { state: WorkState; label?: string; 
 
 const dot = <span aria-hidden="true">·</span>
 
+/** A card's icon action: its own click only — the card around it never folds or opens with it. */
+function CardAction({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <IconAction
+      className="kb-node__action"
+      label={label}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick()
+      }}
+      size="icon-xs"
+    >
+      {children}
+    </IconAction>
+  )
+}
+
 /** The tickets and agent sessions under a node, as drawn (so "Hide done" changes them too). */
 function tally(node: Node): { tickets: number; sessions: number } {
   const out = { tickets: 0, sessions: 0 }
@@ -1014,10 +1037,13 @@ function GroupCard({
   data,
   agents,
   open,
-  onToggle,
+  count,
+  level,
+  canChat,
+  onChat,
   onEditProject,
   onCreateProject,
-}: ItemProps & { node: GroupNode; open: boolean; onToggle: () => void }) {
+}: ItemProps & { node: GroupNode; open: boolean; count: number }) {
   const p = node.project
   const counts = tally(node)
   const total = p ? p.total : node.children.length
@@ -1026,7 +1052,7 @@ function GroupCard({
   return (
     <NodeCard
       badge={pct !== null ? <span className="kb-node__badge" data-kind="meta">{`${pct}%`}</span> : null}
-      count={node.children.length}
+      count={count}
       description={
         p?.description?.trim() ||
         (isAll
@@ -1046,39 +1072,37 @@ function GroupCard({
           </span>
         </>
       }
-      action={
-        p ? (
-          <IconAction
-            className="kb-node__action"
-            label="Edit project"
-            onClick={(event) => {
-              event.stopPropagation()
-              onEditProject(p)
-            }}
-            size="icon-xs"
-          >
-            <Pencil size={16} />
-          </IconAction>
-        ) : node.id === 'project:none' ? (
-          <IconAction
-            className="kb-node__action"
-            label="Create a project for these tickets"
-            onClick={(event) => {
-              event.stopPropagation()
-              onCreateProject()
-            }}
-            size="icon-xs"
-          >
-            <FolderPlus size={16} />
-          </IconAction>
-        ) : null
+      actions={
+        <>
+          {p ? (
+            <CardAction label="Edit project" onClick={() => onEditProject(p)}>
+              <Pencil size={16} />
+            </CardAction>
+          ) : node.id === 'project:none' ? (
+            <CardAction label="Create a project for these tickets" onClick={onCreateProject}>
+              <FolderPlus size={16} />
+            </CardAction>
+          ) : null}
+          {level > 1 && p ? (
+            // Under "All projects": the project's own tree.
+            <CardAction label="Open project" onClick={() => onChat(node)}>
+              <FolderOpen size={16} />
+            </CardAction>
+          ) : level === 1 && canChat ? (
+            <CardAction
+              label={p ? 'Ask about this project (C)' : 'Ask about the board (C)'}
+              onClick={() => onChat(node)}
+            >
+              <MessageCircleMore size={16} />
+            </CardAction>
+          ) : null}
+        </>
       }
       kind="group"
       name={node.name}
-      onToggle={onToggle}
       open={open}
       sub={isAll ? 'Board' : p?.lead ? `Lead · ${assigneeName(p.lead, agents)}` : 'Project'}
-      tile={isAll ? <SquareKanban size={16} /> : <span className="kb-label__dot" data-tone={node.color ?? undefined} />}
+      tile={isAll ? <Folders size={16} /> : <span className="kb-label__dot" data-tone={node.color ?? undefined} />}
     />
   )
 }
@@ -1089,9 +1113,11 @@ function TicketCard({
   agents,
   now,
   open,
-  onToggle,
+  count,
+  canChat,
+  onChat,
   onDetails,
-}: ItemProps & { node: TicketNode; open: boolean; onToggle: () => void }) {
+}: ItemProps & { node: TicketNode; open: boolean; count: number }) {
   const { ticket } = node
   const column = data.columns.find((c) => c.id === ticket.status)
   const subtasks = node.subtasks.length
@@ -1128,7 +1154,7 @@ function TicketCard({
           step={statusStep(data.columns, ticket.status, data.done_status, data.canceled_status)}
         />
       }
-      count={node.sessions.length + subtasks}
+      count={count}
       description={ticket.title}
       facts={
         <>
@@ -1151,23 +1177,21 @@ function TicketCard({
           <span>{formatRelative(ticket.updated_at, now)}</span>
         </>
       }
-      action={
-        <IconAction
-          className="kb-node__action"
-          label="Ticket details (D)"
-          onClick={(event) => {
-            event.stopPropagation()
-            onDetails(ticket.key)
-          }}
-          size="icon-xs"
-        >
-          <FileText size={16} />
-        </IconAction>
+      actions={
+        <>
+          <CardAction label="Open details (D)" onClick={() => onDetails(ticket.key)}>
+            <Expand size={16} />
+          </CardAction>
+          {canChat ? (
+            <CardAction label="Open chat (C)" onClick={() => onChat(node)}>
+              <MessageCircleMore size={16} />
+            </CardAction>
+          ) : null}
+        </>
       }
       kind="ticket"
       live={live}
       name={ticket.key}
-      onToggle={onToggle}
       open={open}
       sub={assigneeName(ticket.assignee, agents)}
       tile={
@@ -1186,10 +1210,12 @@ function SessionCard({
   node,
   now,
   open,
-  onToggle,
+  count,
+  canChat,
+  onChat,
   prompted,
   phaseSince,
-}: ItemProps & { node: SessionNode; open: boolean; onToggle: () => void }) {
+}: ItemProps & { node: SessionNode; open: boolean; count: number }) {
   const { session } = node
   // What it is doing now: a prompt that just reached it, its live phase, or a question waiting on you.
   const promptedAt = prompted.get(session.id)
@@ -1222,8 +1248,15 @@ function SessionCard({
   const sub = [node.inferred ? session.agent?.name : null, model].filter(Boolean).join(' · ') || null
   return (
     <NodeCard
+      actions={
+        canChat ? (
+          <CardAction label="Open chat (C)" onClick={() => onChat(node)}>
+            <MessageCircleMore size={16} />
+          </CardAction>
+        ) : null
+      }
       badge={<StateBadge state={node.state} />}
-      count={node.children.length}
+      count={count}
       description={session.name}
       facts={
         <>
@@ -1251,7 +1284,6 @@ function SessionCard({
       live={live}
       name={role}
       note={node.state === 'failed' ? session.statusReason : null}
-      onToggle={onToggle}
       open={open}
       sub={sub}
       tile={<Icon size={16} />}
@@ -1306,6 +1338,100 @@ function countSessions(nodes: readonly SessionNode[]): number {
     total += 1
   })
   return total
+}
+
+type Level = { level: number; holds: string }
+
+/**
+ * The levels the chart can fold at, from the top: a level any card of which has children, with what its cards are
+ * ("Tickets", "Subtasks, agents"). The root's level is left out: it never folds.
+ */
+function levelsOf(root: GroupNode | null): Level[] {
+  if (!root) return []
+  const kinds = new Map<number, Set<string>>()
+  const folds = new Set<number>()
+  const visit = (node: Node, parent: Node | null, level: number) => {
+    const kind =
+      node.kind === 'group'
+        ? 'Projects'
+        : node.kind === 'session'
+          ? 'Agents'
+          : parent?.kind === 'ticket'
+            ? 'Subtasks'
+            : 'Tickets'
+    const bucket = kinds.get(level) ?? new Set<string>()
+    bucket.add(kind)
+    kinds.set(level, bucket)
+    const kids = kidsOf(node)
+    if (kids.length > 0) folds.add(level)
+    for (const kid of kids) visit(kid, node, level + 1)
+  }
+  visit(root, null, 1)
+  return [...folds]
+    .filter((level) => level > 1)
+    .sort((a, b) => a - b)
+    .map((level) => {
+      const [first, ...rest] = [...(kinds.get(level) ?? [])]
+      const holds = [first, ...rest.map((k) => k.toLowerCase())].join(', ')
+      return { level, holds }
+    })
+}
+
+/**
+ * Fold the chart at a level: every card at it closes, and everything above stays open — "show me down to the
+ * tickets". Expand all and Collapse all are its two ends.
+ */
+function LevelMenu({
+  levels,
+  depth,
+  onPick,
+}: {
+  levels: Level[]
+  depth: number | null
+  onPick: (level: number | null) => void
+}) {
+  const value = depth === null || !levels.some((l) => l.level === depth) ? 'all' : String(depth)
+  // Controlled: a radio row does not close a Base UI menu by itself.
+  const [open, setOpen] = useState(false)
+  return (
+    <ShadcnDropdownMenu onOpenChange={setOpen} open={open}>
+      <ShadcnTooltip>
+        <ShadcnTooltipTrigger
+          render={
+            <ShadcnDropdownMenuTrigger
+              disabled={levels.length === 0}
+              render={<ShadcnButton aria-label="Fold at a level" size="icon-sm" type="button" variant="ghost" />}
+            />
+          }
+        >
+          <ListTree size={16} />
+        </ShadcnTooltipTrigger>
+        <ShadcnTooltipContent side="bottom">Fold at a level</ShadcnTooltipContent>
+      </ShadcnTooltip>
+      <ShadcnDropdownMenuContent align="end" className="kb-menu">
+        <ShadcnDropdownMenuGroup>
+          <ShadcnDropdownMenuLabel>Show down to</ShadcnDropdownMenuLabel>
+          <ShadcnDropdownMenuRadioGroup
+            onValueChange={(next: string) => {
+              setOpen(false)
+              onPick(next === 'all' ? null : Number(next))
+            }}
+            value={value}
+          >
+            {levels.map(({ level, holds }) => (
+              <ShadcnDropdownMenuRadioItem className="kb-menu__row" key={level} value={String(level)}>
+                <span className="kb-menu__label">{`Level ${level}`}</span>
+                <span className="kb-menu__hint">{holds}</span>
+              </ShadcnDropdownMenuRadioItem>
+            ))}
+            <ShadcnDropdownMenuRadioItem className="kb-menu__row" value="all">
+              <span className="kb-menu__label">All levels</span>
+            </ShadcnDropdownMenuRadioItem>
+          </ShadcnDropdownMenuRadioGroup>
+        </ShadcnDropdownMenuGroup>
+      </ShadcnDropdownMenuContent>
+    </ShadcnDropdownMenu>
+  )
 }
 
 function ChartSkeleton() {
