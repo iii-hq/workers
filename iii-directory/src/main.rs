@@ -435,8 +435,7 @@ const JUDGE_HUB_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_
 /// unqualified, by its entry point in `catalog`.
 fn judge_hub_installed(catalog: &[ToolSchema], own: &str) -> bool {
     // shortcut: config-client follow() takes no namespace, so a judge hub in another namespace is not followed and its window cache just expires; add a namespace to follow() if that matters.
-    catalog.iter().any(|tool| tool.name == JUDGE_HUB_FN)
-        && call_namespace(catalog, JUDGE_HUB_FN, own).is_none()
+    call_namespace(catalog, JUDGE_HUB_FN, own) == Some(None)
 }
 
 /// Register the internal `directory::__on_workers_changed` handler and
@@ -870,6 +869,14 @@ mod tests {
         assert!(judge_hub_installed(
             &[ToolSchema {
                 namespaces: vec!["proj".into()],
+                ..tool("judge::evaluate")
+            }],
+            "proj"
+        ));
+        // Never the first namespace that happens to hold it: `alpha` can be another machine.
+        assert!(!judge_hub_installed(
+            &[ToolSchema {
+                namespaces: vec!["alpha".into()],
                 ..tool("judge::evaluate")
             }],
             "proj"
