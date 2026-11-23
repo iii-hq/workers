@@ -363,7 +363,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     },
     {
       description:
-        'Request a read-only writer turn at most once per configured interval per scope; otherwise returns throttled_until.',
+        'Request a read-only writer turn now. If one is already running for the scope, join it (writing: true) instead of starting another.',
       request_format: request(scopeInput),
       response_format: object(
         {
@@ -372,9 +372,9 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
           checked_at: { type: ['string', 'null'] },
           error: { type: ['string', 'null'] },
           unavailable: { type: 'boolean' },
-          throttled_until: { type: 'string', format: 'date-time' },
+          writing: { type: 'boolean' },
         },
-        ['result', 'valid_hash', 'checked_at', 'error', 'unavailable'],
+        ['result', 'valid_hash', 'checked_at', 'error', 'unavailable', 'writing'],
       ),
     },
   )

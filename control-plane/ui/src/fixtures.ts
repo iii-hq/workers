@@ -328,6 +328,7 @@ export const controlPlaneFixture: ControlPlaneData = {
   availability: { github: true },
   loadMoreDecided: () => {},
   summary: {
+    writing: false,
     result: controlPlaneSummaryFixture,
     valid_hash: 'fixture',
     checked_at: iso(4),

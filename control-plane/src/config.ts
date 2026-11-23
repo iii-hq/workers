@@ -18,6 +18,8 @@ export const configSchema = z.strictObject({
         .string()
         .regex(/^[^:]+::.+$/)
         .optional(),
+      /** The reasoning effort picked with the model, as the chat stores it (`default`, `lowest`, or a model effort). */
+      reasoning: z.string().min(1).optional(),
       interval_min: z.number().positive().default(10),
       language: z.string().min(1).default('English'),
     })

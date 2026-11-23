@@ -7,6 +7,7 @@ import {
   type Host,
   type JsonValue,
   type ModelOption,
+  type ReasoningEffortOption,
 } from '@iii-dev/console-ui'
 import { useEffect, useState } from 'react'
 
@@ -21,6 +22,17 @@ interface CatalogRow {
   context_window?: unknown
   supports_thinking?: unknown
   supports_vision?: unknown
+  reasoning_efforts?: unknown
+}
+
+function efforts(value: unknown): ReasoningEffortOption[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const rows = value.flatMap((raw: { effort?: unknown; description?: unknown }) =>
+    typeof raw?.effort === 'string' && raw.effort
+      ? [{ effort: raw.effort, ...(typeof raw.description === 'string' ? { description: raw.description } : {}) }]
+      : [],
+  )
+  return rows.length ? rows : undefined
 }
 
 /** The chat's catalog: `router::models::list`, keyed `provider::id` as the writer reads it. */
@@ -35,6 +47,7 @@ export function modelOptions(rows: unknown): ModelOption[] {
         contextWindow: typeof raw.context_window === 'number' ? raw.context_window : undefined,
         supportsThinking: typeof raw.supports_thinking === 'boolean' ? raw.supports_thinking : undefined,
         supportsVision: typeof raw.supports_vision === 'boolean' ? raw.supports_vision : undefined,
+        reasoningEfforts: efforts(raw.reasoning_efforts),
       },
     ]
   })
@@ -65,6 +78,14 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
     const next = { ...summary }
     if (model) next.model = model
     else delete next.model
+    // An effort belongs to its model; a new model starts at its default.
+    if (model !== summary.model) delete next.reasoning
+    onChange({ ...config, summary: next })
+  }
+  const setReasoning = (level: string) => {
+    const next = { ...summary }
+    if (level && level !== 'default') next.reasoning = level
+    else delete next.reasoning
     onChange({ ...config, summary: next })
   }
   return (
@@ -72,17 +93,17 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
       <SettingsField
         label="Summary model"
         field="summary.model"
-        description="The model that writes the summary and the diary. The same catalog as the chat."
+        description="The model that writes the summary and the diary, and its reasoning effort. The same catalog as the chat."
         error={errors?.get('/summary/model')}
         renderControl={() => (
           <ModelPicker
             value={typeof summary.model === 'string' ? summary.model : null}
             options={catalog.options}
             loading={catalog.loading}
-            thinkingLevel="medium"
-            showReasoningEffort={false}
+            thinkingLevel={typeof summary.reasoning === 'string' ? summary.reasoning : 'default'}
+            showReasoningEffort
             onChange={setModel}
-            onThinkingLevelChange={() => undefined}
+            onThinkingLevelChange={setReasoning}
             automatic={{ label: 'No summary', onSelect: () => setModel(null) }}
           />
         )}

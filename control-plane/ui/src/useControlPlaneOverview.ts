@@ -10,7 +10,6 @@ export interface SummaryState extends WriterSnapshot {
   fresh: boolean
   loading: boolean
   refreshing: boolean
-  throttled_until?: string
   refresh(): void
   now: number
 }
@@ -31,6 +30,7 @@ type Overview = ControlPlaneData & {
 type Part = 'overview' | 'needs' | 'runs' | 'prs' | 'decided' | 'assumptions'
 const PARTS: Part[] = ['overview', 'needs', 'runs', 'prs', 'decided', 'assumptions']
 const idleSummary: Overview['summary'] = {
+  writing: false,
   result: null,
   valid_hash: null,
   checked_at: null,
@@ -80,7 +80,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS): Contr
   const [decided, setDecided] = useState<ControlPlaneQuestion[]>([])
   const [decidedCursor, setDecidedCursor] = useState<string>()
   const [refreshing, setRefreshing] = useState(false)
-  const [throttled, setThrottled] = useState<string>()
   const [now, setNow] = useState(Date.now)
   const [loadNext, setLoadNext] = useState<() => void>(() => () => {})
   const refresh = useCallback(() => refetchAll.current(), [])
@@ -99,7 +98,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS): Contr
     setAssumptions([])
     setDecided([])
     setDecidedCursor(undefined)
-    setThrottled(undefined)
     const update = (patch: Partial<ControlPlaneData>) =>
       setSnapshot((previous) => ({ ...previous, data: { ...previous.data, ...patch } }))
     const fetchPart = async (part: Part, cursor?: string) => {
@@ -250,7 +248,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS): Contr
       .call<RefreshResult>('control-plane::summary::refresh', { scope })
       .then(
         (result) => {
-          setThrottled(result.throttled_until)
           setSnapshot((previous) =>
             previous.scope === scope
               ? {
@@ -295,7 +292,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS): Contr
         ...snapshot.summary,
         loading: data.loading.board,
         refreshing,
-        throttled_until: throttled,
         refresh: refreshSummary,
         now,
       },
@@ -315,7 +311,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS): Contr
     refresh,
     refreshSummary,
     refreshing,
-    throttled,
     now,
   ])
 }

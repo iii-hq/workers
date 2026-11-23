@@ -21,6 +21,7 @@ import {
   StatusBar,
   type Host,
   type PageRenderProps,
+  uiClasses,
 } from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
@@ -162,6 +163,8 @@ function ControlPlaneScreenContent({
     data.refresh()
     summary?.refresh()
   }
+  // Spins while the click's reads are in flight and while a writer turn runs.
+  const refreshing = Boolean(summary?.refreshing || summary?.writing)
   const openNeed = (item?: NeedsYouItem, askAbout = false) => {
     setSelectedId(item?.id ?? null)
     setAskAboutId(askAbout ? (item?.id ?? null) : null)
@@ -205,8 +208,8 @@ function ControlPlaneScreenContent({
         title="Control plane"
         onClose={onRequestClose}
         actions={
-          <IconButton label="Refresh Control plane" onClick={refresh}>
-            <RefreshCw className="control-plane-size-4" />
+          <IconButton label="Refresh Control plane" onClick={refresh} aria-busy={refreshing}>
+            <RefreshCw className={`control-plane-size-4${refreshing ? ` ${uiClasses.spin}` : ''}`} />
           </IconButton>
         }
       >
@@ -303,7 +306,6 @@ function ControlPlaneScreenContent({
                 summary={freshSummary}
                 summaryLoading={summary?.loading}
                 summaryError={summary?.error}
-                summaryThrottledUntil={summary?.throttled_until}
                 configurationId={configurationId}
                 refreshSummary={summary?.refresh ?? data.refresh}
                 canAsk={!!chat?.openDecisionChat}
@@ -404,7 +406,6 @@ function SummarySlot({
   diary = false,
   loading,
   error,
-  throttledUntil,
   configurationId,
 }: {
   checkedAt?: number
@@ -412,7 +413,6 @@ function SummarySlot({
   diary?: boolean
   loading?: boolean
   error?: string | null
-  throttledUntil?: string
   configurationId?: string
 }) {
   if (!diary && (error === MODEL_MISSING || error === PROFILE_MISSING))
@@ -453,13 +453,9 @@ function SummarySlot({
                 ? 'No diary for this project yet.'
                 : 'No summary for this project. Live facts are shown below.'}
       </span>
-      {throttledUntil ? (
-        <span className="control-plane-meta">Refresh available {new Date(throttledUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-      ) : (
-        <Button variant="ghost" size="sm" onClick={refresh}>
-          Refresh
-        </Button>
-      )}
+      <Button variant="ghost" size="sm" onClick={refresh}>
+        Refresh
+      </Button>
     </div>
   )
 }
@@ -632,7 +628,6 @@ function Overview({
   summary,
   summaryLoading,
   summaryError,
-  summaryThrottledUntil,
   configurationId,
   refreshSummary,
   canAsk,
@@ -647,7 +642,6 @@ function Overview({
   summary: ControlPlaneSummary | null
   summaryLoading?: boolean
   summaryError?: string | null
-  summaryThrottledUntil?: string
   configurationId?: string
   refreshSummary: () => void
   canAsk: boolean
@@ -691,11 +685,20 @@ function Overview({
     {
       label: 'Active releases',
       value: data.loading.board || data.errors.board ? '—' : active.length,
-      detail: active.map((release) => release.name).join(', ') || 'No active releases',
+      detail: active.map((release) => release.name.split(' — ')[0]).join(', ') || 'No active releases',
       tone: 'ghost' as const,
     },
   ]
   const noRush = data.items.length - nowItems.length
+  // Done, now and next: the latest released, every active one, then the planned ones, at most eight.
+  const releasedLast = data.releases.filter((release) => release.status === 'released').slice(-1)
+  const orderedReleases = [
+    ...releasedLast,
+    ...data.releases.filter((release) => release.status === 'active'),
+    ...data.releases.filter((release) => release.status === 'planned'),
+  ]
+  const shownReleases = orderedReleases.slice(0, 8)
+  const hiddenReleases = data.releases.length - shownReleases.length
   return (
     <>
       {summaryError !== MODEL_MISSING && summaryError !== PROFILE_MISSING && summary?.brief.headline ? (
@@ -710,12 +713,6 @@ function Overview({
           </p>
           <div className="control-plane-row-head">
             <SummaryRefs refs={summary.brief.refs.filter((ref) => !summary.brief.text.includes(ref))} data={data} />
-            {summaryThrottledUntil ? (
-              <span className="control-plane-meta">
-                Refresh available{' '}
-                {new Date(summaryThrottledUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            ) : null}
           </div>
           {summaryError === 'update failed' ? (
             <p className="control-plane-meta">
@@ -731,7 +728,6 @@ function Overview({
             refresh={refreshSummary}
             loading={summaryLoading}
             error={summaryError}
-            throttledUntil={summaryThrottledUntil}
             configurationId={configurationId}
           />
         </>
@@ -818,13 +814,7 @@ function Overview({
               ))}
               </div>
             ) : data.errors.needsYou ? null : (
-              <CardBody>
-                <EmptyState
-                  compact
-                  title="Nothing needs you now"
-                  description="Work can keep going. No urgent questions or stalled runs."
-                />
-              </CardBody>
+              <p className="control-plane-empty-line">Nothing needs you now. Work keeps going.</p>
             )}
             <button
               type="button"
@@ -872,31 +862,36 @@ function Overview({
                 <Skeleton className="control-plane-h-28 control-plane-w-full" />
               ) : data.releases.length ? (
                 <div className="control-plane-releases">
-                  {data.releases.map((release) => {
+                  {shownReleases.map((release) => {
                     const blocker = data.items.find(
                       (item) => item.card?.release_id === release.id && item.urgency === 'now',
                     )
+                    const [name, ...about] = release.name.split(' — ')
                     return (
-                      <div key={release.id} className="control-plane-release">
-                        <div className="control-plane-row-head">
-                          <span className="control-plane-inline-status">
-                            <StatusDot
-                              tone={release.status === 'released' ? 'ok' : release.status === 'active' ? 'ink' : 'ghost'}
-                            />
-                            {release.status === 'released' ? 'Released' : release.status === 'active' ? 'Now' : 'Next'}
-                          </span>
-                          <span className="control-plane-meta control-plane-ml-auto">
+                      <div key={release.id} className="control-plane-release" data-status={release.status}>
+                        <span className="control-plane-inline-status">
+                          <StatusDot
+                            tone={release.status === 'released' ? 'ok' : release.status === 'active' ? 'accent' : 'ghost'}
+                          />
+                          {release.status === 'released' ? 'Released' : release.status === 'active' ? 'Now' : 'Next'}
+                        </span>
+                        <button
+                          type="button"
+                          className="control-plane-release-name"
+                          title={release.name}
+                          onClick={() => host.panels?.open({ pageId: 'kanban-releases', context: { id: release.id } })}
+                        >
+                          {name}
+                        </button>
+                        <span className="control-plane-release-about" title={about.join(' — ')}>
+                          {about.join(' — ') || '\u00a0'}
+                        </span>
+                        <div className="control-plane-release-progress">
+                          <ProgressBar done={release.done} total={release.total} label={release.name} />
+                          <span className="control-plane-meta">
                             {release.done}/{release.total}
                           </span>
                         </div>
-                        <button
-                          type="button"
-                          className="control-plane-text-left control-plane-font-semibold"
-                          onClick={() => host.panels?.open({ pageId: 'kanban-releases', context: { id: release.id } })}
-                        >
-                          {release.name}
-                        </button>
-                        <ProgressBar done={release.done} total={release.total} label={release.name} />
                         {blocker ? (
                           <button
                             type="button"
@@ -913,6 +908,15 @@ function Overview({
                       </div>
                     )
                   })}
+                  {hiddenReleases ? (
+                    <button
+                      type="button"
+                      className="control-plane-link control-plane-muted control-plane-text-left"
+                      onClick={() => host.panels?.open({ pageId: 'kanban-releases', context: {} })}
+                    >
+                      +{hiddenReleases} more · Open releases
+                    </button>
+                  ) : null}
                 </div>
               ) : (
                 <EmptyState compact title="No releases yet" description="The project's releases will appear here." />
@@ -951,9 +955,7 @@ function Overview({
                 </div>
               ))
             ) : (
-              <CardBody>
-                <EmptyState compact title="No runs in progress" description="Root sessions doing work will appear here." />
-              </CardBody>
+              <p className="control-plane-empty-line">No runs in progress. Root sessions doing work appear here.</p>
             )}
           </Section>
           <PullRequests data={data} scope={scope} summary={summary} />

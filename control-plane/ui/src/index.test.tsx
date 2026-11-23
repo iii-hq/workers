@@ -67,7 +67,12 @@ describe('Control plane views', () => {
       fn === 'router::models::list'
         ? {
             models: [
-              { id: 'claude-code/claude-sonnet-5-5', provider: 'claude-code', display_name: 'Claude Sonnet 5.5' },
+              {
+                id: 'claude-code/claude-sonnet-5-5',
+                provider: 'claude-code',
+                display_name: 'Claude Sonnet 5.5',
+                reasoning_efforts: [{ effort: 'low' }, { effort: 'high' }, { effort: 'max' }],
+              },
               { id: 'codex/gpt-6-luna', provider: 'openai-codex', display_name: 'GPT-6-Luna (Codex)' },
             ],
           }
@@ -131,10 +136,22 @@ describe('Control plane views', () => {
       ...value,
       summary: { model: 'claude-code::claude-code/claude-sonnet-5-5', interval_min: 10 },
     })
+    const sonnet = { ...value, summary: { ...value.summary, model: 'claude-code::claude-code/claude-sonnet-5-5' } }
+    await act(() => root.render(<Form id={id} schema={null} value={sonnet} onChange={onChange} />))
+    const reasoning = container.querySelector<HTMLSelectElement>('select[data-reasoning-picker]')!
+    expect([...reasoning.options].map((option) => option.value)).toEqual(['default', 'low', 'high', 'max'])
+    await act(() => {
+      reasoning.value = 'max'
+      reasoning.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenLastCalledWith({
+      ...value,
+      summary: { model: 'claude-code::claude-code/claude-sonnet-5-5', interval_min: 10, reasoning: 'max' },
+    })
     await pick('')
     expect(onChange).toHaveBeenLastCalledWith({ ...value, summary: { interval_min: 10 } })
     await change('stall_after_min', '45')
-    expect(onChange).toHaveBeenLastCalledWith({ ...value, stall_after_min: 45 })
+    expect(onChange).toHaveBeenLastCalledWith({ ...sonnet, stall_after_min: 45 })
     const [pageId, [command]] = registerCommands.mock.calls[0]
     expect(pageId).toBe('control-plane')
     expect(command).toMatchObject({ id: 'open', title: 'Open control plane' })
@@ -463,19 +480,23 @@ describe('canvas overview', () => {
     expect(container.textContent).toContain('Median decision wait · 90 min over the last 7 days')
   })
 
-  it('shows the worker failure with the last valid summary age and refresh throttling', async () => {
-    await render({
-      summary: {
-        ...writer(),
-        error: 'update failed',
-        fresh: false,
-        throttled_until: new Date(Date.now() + 60_000).toISOString(),
-      },
-    })
+  it('shows the worker failure with the last valid summary age', async () => {
+    await render({ summary: { ...writer(), error: 'update failed', fresh: false } })
     expect(container.textContent).toContain('The last update failed; this is the last valid summary')
     expect(container.textContent).toContain(controlPlaneSummaryFixture.brief.headline)
-    expect(container.textContent).toContain('Refresh available')
+    expect(container.textContent).not.toContain('Refresh available')
     expect(container.querySelector('.control-plane-freshness .bg-warn')).not.toBeNull()
+  })
+
+  it('keeps Refresh enabled and spins its icon while the writer is working', async () => {
+    await render({ summary: { ...writer(), writing: true } })
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh Control plane"]')!
+    expect(button.disabled).toBe(false)
+    expect(button.querySelector('svg')?.getAttribute('class')).toContain('spin')
+    await render({ summary: { ...writer(), writing: false } })
+    expect(
+      container.querySelector('button[aria-label="Refresh Control plane"] svg')?.getAttribute('class'),
+    ).not.toContain('spin')
   })
 
   it.each([

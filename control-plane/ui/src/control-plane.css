@@ -950,3 +950,49 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* Release cards: status color on the dot and the bar, short name, one-line subtitle, aligned rows. */
+[data-iii-ui="control-plane"] .control-plane-release {
+  display: grid;
+  grid-template-rows: auto auto auto auto 1fr;
+  gap: 6px;
+}
+[data-iii-ui="control-plane"] .control-plane-release-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="control-plane"] .control-plane-release-about {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="control-plane"] .control-plane-release-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="control-plane"] .control-plane-release-progress > .control-plane-bar {
+  flex: 1 1 auto;
+  background: var(--color-edge);
+}
+[data-iii-ui="control-plane"] .control-plane-release[data-status="released"] .control-plane-bar-done {
+  background: var(--color-ok);
+}
+[data-iii-ui="control-plane"] .control-plane-release[data-status="active"] .control-plane-bar-done {
+  background: var(--color-accent);
+}
+[data-iii-ui="control-plane"] .control-plane-release[data-status="planned"] .control-plane-bar-done {
+  background: var(--color-ink-ghost);
+}
+[data-iii-ui="control-plane"] .control-plane-empty-line {
+  padding: 12px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}

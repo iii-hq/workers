@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WRITER_READS, type ControlPlaneSummary } from '../src/summary.js'
 import type { ControlPlaneClient, ControlPlaneConfig, ControlPlaneData } from '../src/types.js'
-import { ControlPlaneWriter } from '../src/writer.js'
+import { ControlPlaneWriter, reasoningOptions } from '../src/writer.js'
 
 interface Call {
   id: string
@@ -175,6 +175,7 @@ describe('ControlPlaneWriter', () => {
       session_ids: ['run-1'],
       args: 'language=English',
     })
+    expect(JSON.parse(first.message).digest).toMatchObject({ scope: 'All projects' })
     expect(first.options.output.schema.properties).not.toHaveProperty('direction')
 
     await iii.finish(writer, { turn_id: 'turn-1', status: 'failed' })
@@ -427,32 +428,11 @@ describe('ControlPlaneWriter', () => {
     expect(await writer.check('all')).toMatchObject({ error: 'update failed' })
     await iii.finish(writer, { turn_id: 'turn-1', status: 'completed', result: result() })
     expect(writer.snapshot('all').valid_hash).toBeNull()
-    expect(await writer.refresh('all')).toHaveProperty('throttled_until')
+    await writer.refresh('all')
+    expect(iii.sent()).toHaveLength(2)
   })
 
-  it.each([
-    false,
-    true,
-  ])('shares the scheduled and Refresh budget (Refresh first: %s)', async (refreshFirst) => {
-    const iii = new FakeIii()
-    let hash = 'first'
-    const writer = new ControlPlaneWriter(
-      iii,
-      () => config(),
-      async () => data(hash),
-      vi.fn(),
-    )
-    const update = refreshFirst ? writer.refresh('all') : writer.check('all')
-    const competing = refreshFirst ? writer.check('all') : writer.refresh('all')
-    await Promise.all([update, competing])
-    await iii.finish(writer, { turn_id: 'turn-1', status: 'completed', result: result() })
-    hash = 'changed'
-    expect(await writer.refresh('all')).toHaveProperty('throttled_until')
-    await writer.check('all')
-    expect(iii.sent()).toHaveLength(1)
-  })
-
-  it('throttles a second refresh in the same interval with a stable refresh key', async () => {
+  it('keeps Refresh always available: it joins a running writer turn, then sends at once', async () => {
     const iii = new FakeIii()
     const writer = new ControlPlaneWriter(
       iii,
@@ -462,30 +442,32 @@ describe('ControlPlaneWriter', () => {
     )
 
     await writer.refresh('all')
-    const second = await writer.refresh('all')
-
+    const joined = await writer.refresh('all')
+    expect(joined.writing).toBe(true)
+    expect(joined).not.toHaveProperty('throttled_until')
     expect(iii.sent()).toHaveLength(1)
-    expect(iii.sent()[0].input.idempotency_key).toMatch(/^control-plane:all:\d+:refresh$/)
-    expect(second.throttled_until).toBe('2026-11-22T12:10:00.000Z')
+
+    await iii.finish(writer, { turn_id: 'turn-1', status: 'completed', result: result() })
+    expect(writer.snapshot('all').writing).toBe(false)
+    await writer.refresh('all')
+    expect(iii.sent()).toHaveLength(2)
+    const keys = iii.sent().map(({ input }) => input.idempotency_key)
+    expect(new Set(keys).size).toBe(2)
+    expect(keys[1]).toMatch(/^control-plane:all:\d+:refresh:\d+$/)
   })
 
-  it('keeps the refresh rate limit after a restart', async () => {
-    const iii = new FakeIii()
-    await new ControlPlaneWriter(
-      iii,
-      () => config(),
-      async () => data(),
-      vi.fn(),
-    ).refresh('all')
-    const restarted = new ControlPlaneWriter(
-      iii,
-      () => config(),
-      async () => data(),
-      vi.fn(),
-    )
-
-    expect((await restarted.refresh('all')).throttled_until).toBe('2026-11-22T12:10:00.000Z')
-    expect(iii.sent()).toHaveLength(1)
+  it('maps the picked reasoning effort the way the chat sends it', () => {
+    expect(reasoningOptions('openai-codex', undefined)).toEqual({})
+    expect(reasoningOptions('openai-codex', 'high')).toEqual({
+      thinking_level: 'high',
+      provider_options: { 'openai-codex': { reasoning_effort: 'high' } },
+    })
+    expect(reasoningOptions('claude-code', 'max')).toEqual({
+      provider_options: { 'claude-code': { reasoning_effort: 'max' } },
+    })
+    expect(reasoningOptions('claude-code', 'default')).toEqual({ provider_options: {} })
+    expect(reasoningOptions('claude-code', 'lowest')).toEqual({ reasoning: 'lowest' })
+    expect(reasoningOptions('claude-code', 'off')).toEqual({ thinking_level: 'off' })
   })
 
   it('turns setup and send RPC failures into update failed state', async () => {

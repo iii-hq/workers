@@ -5,15 +5,13 @@ import type { ControlPlaneData } from './types.js'
 export const SUMMARY_INTERVAL = 10 * 60_000
 export const SUMMARY_MAX_AGE = 30 * 60_000
 export const SUMMARY_SCHEMA = schema
+/** Detail reads only: the wake's digest carries the scope, so the writer never lists a whole board. */
 export const WRITER_READS = [
-  'kanban::ticket::list',
+  'kanban::ticket::get',
   'kanban::activity::list',
-  'kanban::release::list',
-  'session::list',
   'session::messages-tail',
   'harness::status',
   'harness::ask::list',
-  'github::pr::list',
   'github::pr::checks',
 ] as const
 

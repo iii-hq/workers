@@ -151,14 +151,13 @@ describe('useControlPlaneOverview console boundary and live parts', () => {
     await act(() => vi.advanceTimersByTime(120_000))
     expect(f.call).not.toHaveBeenCalled()
   })
-  it('reads every assumption and exposes throttled_until from summary refresh', async () => {
+  it('reads every assumption and calls summary refresh for the scope', async () => {
     const f = fake()
     await act(() => root.render(<f.Probe />))
     expect(f.call).toHaveBeenCalledWith('control-plane::assumptions::list', { scope: 'all' })
     expect(f.call.mock.calls.some(([id, payload]) => id === 'control-plane::assumptions::list' && 'since' in (payload as object))).toBe(false)
     await act(() => f.result().summary.refresh())
     expect(f.call).toHaveBeenCalledWith('control-plane::summary::refresh', { scope: 'all' })
-    expect(f.result().summary.throttled_until).toBe('2026-11-22T18:00:00Z')
   })
   it('does not accept an older response after a newer part fetch or a scope change', async () => {
     const f = fake()

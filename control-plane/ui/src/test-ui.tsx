@@ -10,6 +10,7 @@ const Box = ({ children, className, ...props }: Props) => (
 )
 const TabsContext = createContext<((value: string) => void) | undefined>(undefined)
 export const mockUi = {
+  uiClasses: { spin: 'iii-ui-spin', pulse: 'iii-ui-pulse', eyebrow: 'iii-ui-eyebrow' },
   Button: ({ children, variant, size: _size, ...props }: Props) => (
     <button type="button" data-variant={variant} {...props}>
       {children}
@@ -79,20 +80,34 @@ export const mockUi = {
   SearchField: ({ onChange, ...props }: Props) => (
     <input {...props} onChange={(event) => onChange(event.target.value)} />
   ),
-  ModelPicker: ({ value, options, onChange, automatic, loading }: Props) => (
-    <select
-      data-model-picker
-      aria-busy={loading}
-      value={value ?? ''}
-      onChange={(event) => (event.target.value ? onChange(event.target.value) : automatic?.onSelect())}
-    >
-      {automatic ? <option value="">{automatic.label}</option> : null}
-      {options.map((option: { id: string; label: string }) => (
-        <option key={option.id} value={option.id}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+  ModelPicker: ({ value, options, onChange, automatic, loading, thinkingLevel, onThinkingLevelChange, showReasoningEffort }: Props) => (
+    <>
+      <select
+        data-model-picker
+        aria-busy={loading}
+        value={value ?? ''}
+        onChange={(event) => (event.target.value ? onChange(event.target.value) : automatic?.onSelect())}
+      >
+        {automatic ? <option value="">{automatic.label}</option> : null}
+        {options.map((option: { id: string; label: string }) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {showReasoningEffort ? (
+        <select data-reasoning-picker value={thinkingLevel} onChange={(event) => onThinkingLevelChange(event.target.value)}>
+          <option value="default">default</option>
+          {(options.find((option: { id: string }) => option.id === value)?.reasoningEfforts ?? []).map(
+            (row: { effort: string }) => (
+              <option key={row.effort} value={row.effort}>
+                {row.effort}
+              </option>
+            ),
+          )}
+        </select>
+      ) : null}
+    </>
   ),
   Select: ({ options, value, onChange, ...props }: Props) => (
     <select value={value} onChange={(event) => onChange(event.target.value)} {...props}>

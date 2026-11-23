@@ -1,3 +1,4 @@
+import { type ActivityRow, writerDigest } from './digest.js'
 import { acceptSummary, SUMMARY_SCHEMA, type ControlPlaneSummary, WRITER_READS } from './summary.js'
 import type { ControlPlaneClient, ControlPlaneConfig, ControlPlaneData } from './types.js'
 
@@ -41,11 +42,11 @@ export interface WriterSnapshot
   extends Pick<StoredSummary, 'result' | 'valid_hash' | 'checked_at'> {
   error: string | null
   unavailable: boolean
+  /** A writer turn is running for this scope; Refresh joins it instead of starting another. */
+  writing: boolean
 }
 
-export interface RefreshResult extends WriterSnapshot {
-  throttled_until?: string
-}
+export type RefreshResult = WriterSnapshot
 
 interface SessionStatus {
   session_id: string
@@ -82,6 +83,26 @@ function initialState(): WriterState {
   }
 }
 
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+
+/** The chat's mapping of a picked effort onto `harness::send` options (ade/web `lib/backend/real.ts`). */
+export function reasoningOptions(
+  provider: string,
+  effort: string | undefined,
+): Record<string, unknown> {
+  if (!effort) return {}
+  if (effort === 'lowest') return { reasoning: 'lowest' }
+  return {
+    ...(THINKING_LEVELS.includes(effort) ? { thinking_level: effort } : {}),
+    ...(effort === 'off'
+      ? {}
+      : {
+          provider_options:
+            effort === 'default' ? {} : { [provider]: { reasoning_effort: effort } },
+        }),
+  }
+}
+
 function publicState(state: WriterState): WriterSnapshot {
   return {
     result: state.result,
@@ -89,6 +110,7 @@ function publicState(state: WriterState): WriterSnapshot {
     checked_at: state.checked_at,
     error: state.error,
     unavailable: state.unavailable,
+    writing: Boolean(state.pending),
   }
 }
 
@@ -146,10 +168,10 @@ export class ControlPlaneWriter {
 
       const now = Date.now()
       const nextSend = state.lastSendAt + this.interval()
-      if (refresh && state.lastSendAt && now < nextSend) {
-        return { ...publicState(state), throttled_until: new Date(nextSend).toISOString() }
-      }
-      if (state.pending && now >= this.nextCheckAt(scope)) {
+      // Refresh is always available. It sends at once, unless a writer turn is
+      // already running: then it joins that turn. One outstanding turn per
+      // scope is what bounds the spend.
+      if (state.pending && (refresh || now >= this.nextCheckAt(scope))) {
         await this.reconcile(scope, state, await this.status(scope))
       }
       if (state.pending || (!refresh && now < this.nextCheckAt(scope))) {
@@ -168,7 +190,7 @@ export class ControlPlaneWriter {
           state.failures = 0
           await this.persist(scope, state)
           await this.changed(scope)
-        } else if (!state.lastSendAt || Date.now() >= nextSend) {
+        } else if (refresh || !state.lastSendAt || Date.now() >= nextSend) {
           await this.send(scope, state, data, refresh)
         }
       } catch {
@@ -352,6 +374,21 @@ export class ControlPlaneWriter {
     await this.persist(scope, state)
     const slot = Math.floor(state.lastSendAt / this.interval())
     const [provider, ...modelParts] = model.split('::')
+    const activity = await this.iii
+      .call<{ activity?: ActivityRow[] }>('kanban::activity::list', {
+        since: state.checked_at ?? new Date(Date.now() - 86_400_000).toISOString(),
+        limit: 200,
+      })
+      .then((result) => result?.activity ?? [])
+      .catch(() => [])
+    const digest = writerDigest(data, {
+      scopeName:
+        scope === 'all'
+          ? 'All projects'
+          : ((data.projects ?? []).find((project) => project.id === scope)?.name ?? scope),
+      since: state.checked_at,
+      activity,
+    })
     const sent = await this.iii.call<{
       turn_id?: string
       merged?: boolean
@@ -359,7 +396,7 @@ export class ControlPlaneWriter {
       deduplicated?: boolean
     }>('harness::send', {
       session_id: sessionId,
-      idempotency_key: `control-plane:${scope}:${slot}${refresh ? ':refresh' : ''}`,
+      idempotency_key: `control-plane:${scope}:${slot}${refresh ? `:refresh:${state.sendOrder}` : ''}`,
       message: JSON.stringify({
         checked_at: state.checked_at,
         refresh_at: new Date().toISOString(),
@@ -367,11 +404,13 @@ export class ControlPlaneWriter {
         repos: data.repositories,
         session_ids: data.runs.map((run) => run.session.session_id),
         args: `language=${config.summary.language}`,
+        digest,
       }),
       provider,
       model: modelParts.join('::'),
       options: {
         ...(!status?.turn_id ? { agent: 'control-plane-writer' } : {}),
+        ...reasoningOptions(provider, config.summary.reasoning),
         functions: { allow: WRITER_READS },
         output: { type: 'json', schema: SUMMARY_SCHEMA },
       },
