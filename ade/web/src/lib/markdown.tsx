@@ -518,11 +518,15 @@ function MarkdownImage({
   )
 }
 
-/* Chat table cells wrap (the shared cells are `whitespace-nowrap`) and keep
-   a floor width, so many columns overflow into the viewport's scroll instead
-   of collapsing to a word per line. `break-words` leaves the min-content
-   width alone: an unbreakable token (a URL) widens the table and scrolls. */
-const MARKDOWN_CELL_CLASS = 'min-w-[10ch] whitespace-normal break-words'
+/* Chat table cells wrap their text (the shared cells are `whitespace-nowrap`)
+   inside a box as wide as the content, up to 32ch. That box is the column's
+   floor: short columns stay tight, a long one wraps at a readable width, and
+   a table whose floors outgrow the message scrolls instead of squeezing every
+   column to a word per line. `break-words` splits a token longer than the box
+   (a URL); `inline-block` keeps the cell's GFM alignment. */
+const MARKDOWN_CELL_CLASS = 'whitespace-normal'
+const MARKDOWN_CELL_CONTENT_CLASS =
+  'inline-block w-max max-w-[32ch] align-top break-words'
 
 const components: Components = {
   h1: ({ className, ...rest }) => (
@@ -716,7 +720,7 @@ const components: Components = {
   /* The frame grows with the table (`inline-block min-w-full`) instead of
      clipping it at the column width, so a wide table scrolls inside the
      viewport rather than losing its last columns; cells wrap their text
-     with a floor width, so one long column cannot crowd out the others. */
+     at a bounded width, so one long column cannot crowd out the others. */
   table: ({ className, ...rest }) => (
     <TableViewport
       className="my-4 rounded-lg focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
@@ -738,11 +742,15 @@ const components: Components = {
     <TableFooter className={className} {...rest} />
   ),
   tr: ({ className, ...rest }) => <TableRow className={className} {...rest} />,
-  th: ({ className, ...rest }) => (
-    <TableHead className={cn(MARKDOWN_CELL_CLASS, className)} {...rest} />
+  th: ({ className, children, ...rest }) => (
+    <TableHead className={cn(MARKDOWN_CELL_CLASS, className)} {...rest}>
+      <span className={MARKDOWN_CELL_CONTENT_CLASS}>{children}</span>
+    </TableHead>
   ),
-  td: ({ className, ...rest }) => (
-    <TableCell className={cn(MARKDOWN_CELL_CLASS, className)} {...rest} />
+  td: ({ className, children, ...rest }) => (
+    <TableCell className={cn(MARKDOWN_CELL_CLASS, className)} {...rest}>
+      <span className={MARKDOWN_CELL_CONTENT_CLASS}>{children}</span>
+    </TableCell>
   ),
   caption: ({ className, ref: _ref, ...rest }) => (
     <TableCaption className={className} {...rest} />

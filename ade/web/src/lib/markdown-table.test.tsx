@@ -37,9 +37,9 @@ describe('Markdown tables', () => {
     expect(html).toMatch(
       /<div [^>]*data-slot="table-frame"[^>]*class="[^"]*\binline-block\b[^"]*\bmin-w-full\b/,
     )
-    // Cells wrap their text instead of forcing one line.
+    // Cells wrap their text in a box at most 32ch wide instead of one line.
     expect(html).toMatch(
-      /<td [^>]*class="[^"]*\bwhitespace-normal\b[^"]*"[^>]*>Run a command/,
+      /<td [^>]*class="[^"]*\bwhitespace-normal\b[^"]*"[^>]*><span class="[^"]*\bmax-w-\[32ch\][^"]*">Run a command/,
     )
     expect(html).not.toContain('whitespace-nowrap')
   })
