@@ -1037,6 +1037,12 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// question about what memory holds of the user: all its siblings come; a
 /// line kept only on the words outside a read slot takes no part in that);
 /// nothing when none has any.
+/// A tagged line carrying none of the subjects the question names (an entity
+/// of a hit, every word of it among the question words that hit matched)
+/// stands only on its words, never on meaning or the turn's best: "kai is on
+/// call for ledger-api" reads close to "dana is on call for payments-api",
+/// and only their tags tell them apart. Untagged and `user`-only lines are
+/// never on another subject.
 /// An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
@@ -1137,8 +1143,32 @@ pub fn select(
             let e = ev(m);
             alone(e) || (e.cosine.is_some() && e.z.is_none())
         });
+    // The subjects the question names: a hit's entities whose every word
+    // that hit matched.
+    let named: HashSet<String> = pool
+        .iter()
+        .flat_map(|(m, _)| {
+            let e = ev(m);
+            subjects(m).into_iter().filter(move |s| {
+                let words = crate::index::tokenize(s);
+                !words.is_empty() && words.iter().all(|w| e.matched.contains(w))
+            })
+        })
+        .collect();
+    // Tagged with none of them: a line on another subject. Meaning cannot
+    // tell a sibling service's line from the named one's, its tags can.
+    // shortcut: such a line on two question words still stands ("payments-api
+    // incidents" over a ledger-api incidents line); veto siblings of the named
+    // subject when an eval shows them told.
+    let elsewhere = |m: &Memory| {
+        let on = subjects(m);
+        !named.is_empty() && !on.is_empty() && on.is_disjoint(&named)
+    };
     let stands = |m: &Memory| {
         let e = ev(m);
+        if elsewhere(m) {
+            return on_words(e);
+        }
         alone(e) || (anchored && e.relevance >= RELEVANCE_SHARE * best)
     };
     // A line that stands, told by the statement nothing in `pool` supersedes
@@ -3728,8 +3758,10 @@ Formal."
     #[tokio::test]
     async fn a_newer_note_about_a_told_lines_subject_joins_right_after_it() {
         // The departure shares no word with the question and no change word
-        // with the on-call line: only the entity both carry.
+        // with the on-call line: only the entity both carry. kai's ledger-api
+        // line shares one word, and is never told.
         let mut memories = vec![
+            on_ledger(&["kai", "ledger-api"]),
             tagged(
                 "fp-hired",
                 "dana-7f3a joined our company in 2023.",
@@ -3778,6 +3810,26 @@ Formal."
     async fn a_question_matching_only_a_retired_line_is_told_its_successor_once() {
         // The linked update consolidation leaves: the departure retired the
         // on-call line, and only the on-call line shares words with the question.
+        let (ids, message) = told_with_on_call_retired(None).await;
+        assert_eq!(ids, ["fp-backup", "fp-left"]);
+        assert_eq!(message.matches("left our company").count(), 1, "{message}");
+        assert!(
+            !message.contains("primary on-call engineer for payments-api"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_line_on_another_subject_is_not_told_beside_a_retired_lines_successor() {
+        // The departure stands on the retired on-call line's words; kai's
+        // ledger-api line, on one word of its own, does not.
+        let (ids, _) = told_with_on_call_retired(Some(on_ledger(&["kai", "ledger-api"]))).await;
+        assert_eq!(ids, ["fp-backup", "fp-left"]);
+    }
+
+    /// The ids (sorted) and message [`injection`] tells [`PAGE`] from a bank
+    /// where dana's departure retired her on-call line, `extra` beside them.
+    async fn told_with_on_call_retired(extra: Option<Memory>) -> (Vec<String>, String) {
         let dir = tempfile::tempdir().unwrap();
         let cfg = offline_cfg(6);
         let deps = offline_deps(dir.path(), cfg.clone());
@@ -3801,7 +3853,10 @@ Formal."
                 "dana-7f3a left our company last week and her accounts were deactivated.",
                 4,
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(extra)
+        {
             repo.commit(m).await.unwrap();
         }
         repo.supersede("fp-oncall", "fp-left", false, (None, None))
@@ -3818,15 +3873,9 @@ Formal."
             &HashSet::new(),
         )
         .await;
-        let mut ids: Vec<&str> = out.memories.iter().map(|(m, _, _)| m.id.as_str()).collect();
+        let mut ids: Vec<String> = out.memories.iter().map(|(m, _, _)| m.id.clone()).collect();
         ids.sort();
-        assert_eq!(ids, ["fp-backup", "fp-left"]);
-        let message = out.message.expect("the memory lines");
-        assert_eq!(message.matches("left our company").count(), 1, "{message}");
-        assert!(
-            !message.contains("primary on-call engineer for payments-api"),
-            "{message}"
-        );
+        (ids, out.message.expect("the memory lines"))
     }
 
     #[tokio::test]
@@ -3877,6 +3926,16 @@ Formal."
     /// A note on dana alone, said at `at`.
     fn on_dana(id: &str, text: &str, at: u64) -> Memory {
         tagged(id, text, at, &["dana"])
+    }
+
+    /// kai on call for ledger-api, tagged `entities`: a near-miss of [`PAGE`].
+    fn on_ledger(entities: &[&str]) -> Memory {
+        tagged(
+            "fp-ledger",
+            "kai-4e8b is the primary on-call engineer for ledger-api incidents.",
+            3,
+            entities,
+        )
     }
 
     /// The ids [`with_updates`] gives a turn told `told` asking `query`, the
@@ -4226,6 +4285,92 @@ Formal."
         };
         let picked = selected(vec![("fp-best", best), ("fp-new", embedded)], 6);
         assert_eq!(picked, ["fp-best"], "its vector says it is far in meaning");
+    }
+
+    /// MiniLM's evidence for a line on `matched` of [`PAGE`]'s seven terms:
+    /// its cosine weighs five times its words.
+    fn minilm(matched: &[&str], lexical: f32, cosine: f32, z: f32) -> Evidence {
+        Evidence {
+            matched: matched.iter().map(|w| w.to_string()).collect(),
+            terms: 7,
+            lexical,
+            relevance: lexical + 5.0 * cosine,
+            cosine: Some(cosine),
+            z: Some(z),
+            vector: true,
+            ..Evidence::default()
+        }
+    }
+
+    /// The payments-api escalation line, told on `payments` and `api`.
+    fn escalation() -> (Memory, Evidence) {
+        let line = tagged(
+            "fp-backup",
+            "Unanswered payments-api pages escalate to marco-1c2d after 15 minutes.",
+            3,
+            &["marco", "payments-api"],
+        );
+        (line, minilm(&["payments", "api"], 1.0, 0.611, 2.77))
+    }
+
+    #[test]
+    fn a_line_on_another_tagged_subject_does_not_stand_on_meaning() {
+        // On `api` alone, kai's line clears half the best on meaning (2.61 of
+        // 4.06), and stands out (z 2.26) once the on-call line is retired.
+        for z in [1.72, 2.26] {
+            let near = minilm(&["api"], 0.448, 0.432, z);
+            let hits = vec![escalation(), (on_ledger(&["kai", "ledger-api"]), near)];
+            assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-backup"], "z {z}");
+        }
+    }
+
+    #[test]
+    fn a_line_on_another_subject_still_stands_on_two_question_words() {
+        // The departure, reached through the retired on-call line's words,
+        // is tagged dana alone, a subject the question never names.
+        let left = on_dana(
+            "fp-left",
+            "dana-7f3a left our company last week and her accounts were deactivated.",
+            4,
+        );
+        let hits = vec![
+            escalation(),
+            (left, minilm(&["payments", "api"], 0.972, 0.226, 0.52)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-backup", "fp-left"]);
+    }
+
+    #[test]
+    fn an_untagged_or_user_line_is_never_another_subject() {
+        for entities in [&[][..], &["user"]] {
+            let near = minilm(&["api"], 0.448, 0.432, 1.72);
+            let hits = vec![escalation(), (on_ledger(entities), near)];
+            assert_eq!(
+                kept(hits, &HashSet::new(), 6),
+                ["fp-backup", "fp-ledger"],
+                "{entities:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_named_subject_gates_nothing() {
+        // No hit holds every word of one of its entities (`payments` without
+        // `api`): kai's line stands on the share of the best, as before.
+        let (line, _) = escalation();
+        let best = minilm(&["payments", "escalate"], 1.0, 0.611, 2.77);
+        let near = minilm(&["incidents"], 0.448, 0.432, 1.72);
+        let hits = vec![(line, best), (on_ledger(&["kai", "ledger-api"]), near)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-backup", "fp-ledger"]);
+    }
+
+    #[test]
+    fn known_limit_a_line_on_another_subject_on_two_question_words_is_told() {
+        // "... for payments-api incidents?": kai's ledger-api line holds `api`
+        // and `incidents`, and its words admit it whatever its tags say.
+        let near = minilm(&["api", "incidents"], 0.9, 0.432, 1.72);
+        let hits = vec![escalation(), (on_ledger(&["kai", "ledger-api"]), near)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-backup", "fp-ledger"]);
     }
 
     #[test]
