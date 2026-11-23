@@ -131,7 +131,7 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     icon: HardDrive,
     description: 'Shared runtime state.',
   },
-  tower: {
+  'control-plane': {
     icon: RadioTower,
     description: 'Project progress, runs, and what needs you.',
     keywords: ['overview', 'runs', 'approvals'],

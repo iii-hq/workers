@@ -41,7 +41,7 @@ fn entry(ticket: Option<&str>, outcome: Option<&str>) -> AskEntry {
     if let Some(outcome) = outcome {
         value["state"] = json!("answered");
         value["answer_text"] = json!("Isolate");
-        value["by"] = json!({"channel":"tower","user":"Pat"});
+        value["by"] = json!({"channel":"control-plane","user":"Pat"});
         value["outcome"] = json!(outcome);
     }
     serde_json::from_value(value).unwrap()
@@ -192,7 +192,7 @@ fn all_settlement_outcomes_close_the_question_and_keep_who_answered() {
             .answer
             .as_ref()
             .unwrap();
-        assert_eq!(answer.by.as_ref().unwrap().channel, "tower");
+        assert_eq!(answer.by.as_ref().unwrap().channel, "control-plane");
         assert_eq!(answer.by.as_ref().unwrap().user.as_deref(), Some("Pat"));
     }
 }
@@ -374,7 +374,7 @@ fn list_filters_projects_releases_state_and_pages_newest_first() {
     let project = plan::create_project(
         &mut board,
         &ProjectFields {
-            name: Some("Tower".into()),
+            name: Some("Control plane".into()),
             ..Default::default()
         },
         &context,
@@ -422,7 +422,7 @@ fn list_filters_projects_releases_state_and_pages_newest_first() {
     assert!(next.cursor.is_none());
     for input in [
         ListInput {
-            project: Some("Tower".into()),
+            project: Some("Control plane".into()),
             ..Default::default()
         },
         ListInput {
@@ -582,16 +582,17 @@ fn withdrawn_purge_settlement_closes_an_open_question_without_attribution() {
 #[test]
 fn project_repos_request_preserves_omitted_vs_null_vs_empty() {
     use iii_kanban::functions::{ProjectCreateInput, ProjectUpdateInput};
-    let omitted: ProjectUpdateInput = serde_json::from_value(json!({"id":"Tower"})).unwrap();
+    let omitted: ProjectUpdateInput =
+        serde_json::from_value(json!({"id":"Control plane"})).unwrap();
     assert!(omitted.repos.is_none());
     let clear: ProjectUpdateInput =
-        serde_json::from_value(json!({"id":"Tower","repos":null})).unwrap();
+        serde_json::from_value(json!({"id":"Control plane","repos":null})).unwrap();
     assert_eq!(clear.repos, Some(None));
     let empty: ProjectUpdateInput =
-        serde_json::from_value(json!({"id":"Tower","repos":[]})).unwrap();
+        serde_json::from_value(json!({"id":"Control plane","repos":[]})).unwrap();
     assert_eq!(empty.repos, Some(Some(vec![])));
     let create: ProjectCreateInput =
-        serde_json::from_value(json!({"name":"Tower","repos":["iii-hq/workers"]})).unwrap();
+        serde_json::from_value(json!({"name":"Control plane","repos":["iii-hq/workers"]})).unwrap();
     assert_eq!(create.repos, Some(vec!["iii-hq/workers".into()]));
 }
 

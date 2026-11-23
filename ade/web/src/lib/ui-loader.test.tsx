@@ -473,7 +473,7 @@ describe('host.chat decision chats', () => {
     })
     harness.emit({
       op: 'sync',
-      assets: [{ path: 'tower/page.js', kind: 'script', hash: 'one' }],
+      assets: [{ path: 'control-plane/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(captured).toBeDefined())
     return { host: captured as Parameters<SetupFn>[0], harness }

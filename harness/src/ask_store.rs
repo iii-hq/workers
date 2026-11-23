@@ -37,10 +37,10 @@ pub enum Outcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum Channel {
     Chat,
-    Tower,
+    ControlPlane,
     Kanban,
     Expiry,
 }
@@ -110,7 +110,7 @@ impl Entry {
         }
         let channel = self.by.as_ref().map(|by| match by.channel {
             Channel::Chat => "chat",
-            Channel::Tower => "tower",
+            Channel::ControlPlane => "control-plane",
             Channel::Kanban => "kanban",
             Channel::Expiry => "expiry",
         });

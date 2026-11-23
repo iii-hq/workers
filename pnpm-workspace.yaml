@@ -50,7 +50,7 @@ packages:
   - kanban/ui
   - kanban/native-ui
   - onboarding/ui
-  - tower/ui
+  - control-plane/ui
   - stories/ui
   - ios-simulator/ui
   - whatsapp/ui

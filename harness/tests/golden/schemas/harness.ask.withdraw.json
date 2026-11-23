@@ -221,7 +221,7 @@
       "Channel": {
         "enum": [
           "chat",
-          "tower",
+          "control-plane",
           "kanban",
           "expiry"
         ],

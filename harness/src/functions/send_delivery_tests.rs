@@ -1033,7 +1033,7 @@ async fn an_ask_deleted_during_send_is_not_recreated_or_reported_delivered() {
         .await
         .unwrap();
     stack.data.lock().unwrap().delete_on_append = true;
-    let answer = serde_json::from_value(json!({"session_id":"s","question_id":"q", "answers":[{"header":"Builds","choice":"Isolate"}],"by":{"channel":"tower"}})).unwrap();
+    let answer = serde_json::from_value(json!({"session_id":"s","question_id":"q", "answers":[{"header":"Builds","choice":"Isolate"}],"by":{"channel":"control-plane"}})).unwrap();
     let closed = crate::ask_store::answer(&stack.deps, answer).await.unwrap();
     assert_eq!(
         closed.outcome,

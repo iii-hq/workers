@@ -172,23 +172,23 @@ def test_claude_code_release_builds_its_ui_from_the_root_workspace():
     assert "claude-code/ui" in root_workspace["packages"]
 
 
-def test_tower_release_builds_its_ui_from_the_root_workspace():
+def test_control_plane_release_builds_its_ui_from_the_root_workspace():
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
-    artifact = document["workers"]["tower"]["artifact"]
-    workspace = yaml.safe_load((ROOT / "tower/pnpm-workspace.yaml").read_text(encoding="utf-8"))
-    worker_lock = yaml.safe_load((ROOT / "tower/pnpm-lock.yaml").read_text(encoding="utf-8"))
+    artifact = document["workers"]["control-plane"]["artifact"]
+    workspace = yaml.safe_load((ROOT / "control-plane/pnpm-workspace.yaml").read_text(encoding="utf-8"))
+    worker_lock = yaml.safe_load((ROOT / "control-plane/pnpm-lock.yaml").read_text(encoding="utf-8"))
     root_workspace = yaml.safe_load((ROOT / "pnpm-workspace.yaml").read_text(encoding="utf-8"))
     root_lock = yaml.safe_load((ROOT / "pnpm-lock.yaml").read_text(encoding="utf-8"))
-    ui = root_lock["importers"]["tower/ui"]
+    ui = root_lock["importers"]["control-plane/ui"]
 
     assert "packages" not in workspace
     assert workspace["allowBuilds"] == {"esbuild": True}
     assert set(worker_lock["importers"]) == {"."}
-    assert "tower/ui" in root_workspace["packages"]
+    assert "control-plane/ui" in root_workspace["packages"]
     assert ui["dependencies"]["@iii-dev/console-ui"] == {
         "specifier": "workspace:*", "version": "link:../../packages/console-ui",
     }
-    assert artifact["workspace_root"] == "tower"
+    assert artifact["workspace_root"] == "control-plane"
     assert artifact["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
     assert artifact["build_command"] == ["pnpm", "run", "build:bundle"]
     assert {"dist/bundle/page.js", "dist/bundle/styles.css"} <= set(artifact["include"])
@@ -204,7 +204,7 @@ def test_worker_bundle_start_commands_target_packaged_entrypoints():
         "opengantry",
         "openwiki",
         "pi",
-        "tower",
+        "control-plane",
         "vscode",
     ):
         worker = document["workers"][worker_id]

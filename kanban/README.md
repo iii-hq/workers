@@ -124,7 +124,7 @@ comments.
 `kanban::activity::list` takes optional `ticket_id`, `types`, `since` and
 `limit`. With a ticket it returns that ticket's history oldest first. Without
 `ticket_id` it returns activity across the whole board newest first, which is
-the catch-up feed for the control tower.
+the catch-up feed for the control plane.
 
 Every change also records **which agent session made it**. The harness runs
 each agent turn with `iii.session.id` (and the turn id, `iii.message.id`) in
@@ -349,7 +349,7 @@ An agent records a material choice it made without asking with
 session_id?, about? }`. It appends the question and answer together and marks
 the row `recorded`; it does not answer a harness ask. Use your profile id as
 `recorded_by`. A pull request for a card names the card key in its title or
-branch so the control tower can link it.
+branch so the control plane can link it.
 
 Question mirror and record writes emit the existing `kanban::on-comment` and
 `kanban::on-change` events in comment order. There are no separate public kanban

@@ -59,14 +59,14 @@ describe('decision chat host capability', () => {
   it('places the same copy id beside the caller for repeated opens', async () => {
     const open = vi.fn()
     const stop = registerDecisionChatWorkspace({
-      caller: () => ({ tabId: 'tab', paneId: 'tower-pane' }),
+      caller: () => ({ tabId: 'tab', paneId: 'control-plane-pane' }),
       open,
       close: vi.fn(),
     })
     mocks.create.mockResolvedValue({ meta: copy() })
     const capabilities = decisionChatCapabilities(
       { call: vi.fn() as IiiClient['call'] },
-      'tower',
+      'control-plane',
     )
 
     await Promise.all([
@@ -77,20 +77,20 @@ describe('decision chat host capability', () => {
     expect(mocks.create).toHaveBeenCalledTimes(2)
     expect(open).toHaveBeenCalledWith('copy', {
       tabId: 'tab',
-      paneId: 'tower-pane',
+      paneId: 'control-plane-pane',
     })
     stop()
   })
 
   it('rebinds an existing copy without forking, and returns null without one', async () => {
     const stop = registerDecisionChatWorkspace({
-      caller: () => ({ tabId: 'tab', paneId: 'tower-pane' }),
+      caller: () => ({ tabId: 'tab', paneId: 'control-plane-pane' }),
       open: vi.fn(),
       close: vi.fn(),
     })
     const capabilities = decisionChatCapabilities({
       call: vi.fn(async () => ({
-        value: { tabs: [{ id: 'tower', screens: ['chat:copy'] }] },
+        value: { tabs: [{ id: 'control-plane', screens: ['chat:copy'] }] },
       })) as IiiClient['call'],
     })
     mocks.find.mockResolvedValueOnce(null).mockResolvedValueOnce(copy())
@@ -108,14 +108,16 @@ describe('decision chat host capability', () => {
   it('does not rebind a copy without a workspace column', async () => {
     const open = vi.fn()
     const stop = registerDecisionChatWorkspace({
-      caller: () => ({ tabId: 'tab', paneId: 'tower-pane' }),
+      caller: () => ({ tabId: 'tab', paneId: 'control-plane-pane' }),
       open,
       close: vi.fn(),
     })
     mocks.find.mockResolvedValue(copy())
     const capabilities = decisionChatCapabilities({
       call: vi.fn(async () => ({
-        value: { tabs: [{ id: 'tower', screens: ['ext:tower'] }] },
+        value: {
+          tabs: [{ id: 'control-plane', screens: ['ext:control-plane'] }],
+        },
       })) as IiiClient['call'],
     })
     const rebound = await capabilities.rebindDecisionChat?.(request())
@@ -129,7 +131,7 @@ describe('decision chat host capability', () => {
   it('closes through the workspace bridge, while a detached handle stays inert', async () => {
     const close = vi.fn()
     const stop = registerDecisionChatWorkspace({
-      caller: () => ({ tabId: 'tab', paneId: 'tower-pane' }),
+      caller: () => ({ tabId: 'tab', paneId: 'control-plane-pane' }),
       open: vi.fn(),
       close,
     })
@@ -158,7 +160,7 @@ describe('decision chat host capability', () => {
     }
     await act(() => root.render(<Probe />))
     const stop = registerDecisionChatWorkspace({
-      caller: () => ({ tabId: 'tab', paneId: 'tower-pane' }),
+      caller: () => ({ tabId: 'tab', paneId: 'control-plane-pane' }),
       open: vi.fn(),
       close: vi.fn(),
     })
@@ -171,7 +173,7 @@ describe('decision chat host capability', () => {
       .mockResolvedValueOnce(copy('newest'))
     const capabilities = decisionChatCapabilities({
       call: vi.fn(async () => ({
-        value: { tabs: [{ id: 'tower', screens: ['chat:newest'] }] },
+        value: { tabs: [{ id: 'control-plane', screens: ['chat:newest'] }] },
       })) as IiiClient['call'],
     })
     const older = capabilities.rebindDecisionChat({
@@ -209,7 +211,7 @@ describe('decision chat host capability', () => {
     await act(() => root.render(<Probe />))
     const open = vi.fn()
     const stop = registerDecisionChatWorkspace({
-      caller: () => ({ tabId: 'tab', paneId: 'tower-pane' }),
+      caller: () => ({ tabId: 'tab', paneId: 'control-plane-pane' }),
       open,
       close: vi.fn(),
     })
@@ -221,7 +223,9 @@ describe('decision chat host capability', () => {
     )
     const capabilities = decisionChatCapabilities({
       call: vi.fn(async () => ({
-        value: { tabs: [{ id: 'tower', screens: ['ext:tower'] }] },
+        value: {
+          tabs: [{ id: 'control-plane', screens: ['ext:control-plane'] }],
+        },
       })) as IiiClient['call'],
     })
     const opening = capabilities.openDecisionChat({

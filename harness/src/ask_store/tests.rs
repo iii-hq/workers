@@ -228,7 +228,7 @@ fn request(extra: Value) -> AskRequest {
 
 fn response(session: &str, question: &str) -> AnswerRequest {
     serde_json::from_value(json!({"session_id":session,"question_id":question,
-        "answers":[{"header":"Builds","choice":"Isolate"}],"by":{"channel":"tower","user":"person"}})).unwrap()
+        "answers":[{"header":"Builds","choice":"Isolate"}],"by":{"channel":"control-plane","user":"person"}})).unwrap()
 }
 
 #[tokio::test]
@@ -340,7 +340,7 @@ async fn concurrent_answers_reserve_once_and_report_the_winning_channel() {
     );
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     let err = a.err().or(b.err()).unwrap().to_string();
-    assert!(err.contains("already answered by tower"), "{err}");
+    assert!(err.contains("already answered by control-plane"), "{err}");
     let store = db.lock().unwrap();
     assert_eq!(store.idem_reads, ["ask:s/q", "ask:s/q"]);
     assert_eq!(store.sends["ask:s/q"], "Builds: Isolate");
@@ -731,7 +731,10 @@ async fn purge_preserves_reserved_answers_and_dismissals_as_not_delivered() {
     assert_eq!(store.events.len(), 2);
     for event in &store.events {
         assert_eq!(event["outcome"], "not_delivered");
-        assert_eq!(event["by"], json!({"channel":"tower", "user":"person"}));
+        assert_eq!(
+            event["by"],
+            json!({"channel":"control-plane", "user":"person"})
+        );
         if event["question_id"] == "dismissed" {
             assert_eq!(event["state"], "dismissed");
             assert_eq!(event["answer_text"], DISMISS_TEXT);

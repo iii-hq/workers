@@ -688,11 +688,11 @@ answers | dismissed, by }`. `answers` has one row per question, in question orde
     { "header": "Region", "other": "eu-west-2" },
     { "header": "Budget", "skipped": true }
   ],
-  "by": { "channel": "tower", "user": "Ada" }
+  "by": { "channel": "control-plane", "user": "Ada" }
 }
 ```
 
-`by.channel` is `chat`, `tower`, `kanban`, or `expiry`. The first answer
+`by.channel` is `chat`, `control-plane`, `kanban`, or `expiry`. The first answer
 reserves the entry, delivers the same text as the chat card with idempotency
 key `ask:<session_id>/<question_id>`, and closes it. Concurrent or later
 answers fail with `already answered by <channel>`. The delivery reservation

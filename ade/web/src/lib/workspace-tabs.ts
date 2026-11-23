@@ -556,7 +556,8 @@ export const EXT_SCREEN_PREFIX = 'ext:'
  * through this map.
  */
 const MIGRATED_SCREENS: Record<string, string> = {
-  tower: 'tower',
+  tower: 'control-plane',
+  'ext:tower': 'control-plane',
   worktrees: 'worktree',
   memory: 'memory',
   browser: 'browser',

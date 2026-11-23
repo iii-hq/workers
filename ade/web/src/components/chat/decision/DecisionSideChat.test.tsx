@@ -100,7 +100,11 @@ beforeEach(() => {
       id === 'session::get'
         ? { meta }
         : id === 'ade::workspace::get'
-          ? { value: { tabs: [{ id: 'tower', screens: ['chat:copy'] }] } }
+          ? {
+              value: {
+                tabs: [{ id: 'control-plane', screens: ['chat:copy'] }],
+              },
+            }
           : id === 'session::set-meta'
             ? { meta: { ...meta, metadata: input.metadata } }
             : {},
@@ -132,7 +136,7 @@ beforeEach(() => {
     modelOptions: [],
   }
   stopWorkspace = registerDecisionChatWorkspace({
-    caller: () => ({ tabId: 'tab', paneId: 'tower' }),
+    caller: () => ({ tabId: 'tab', paneId: 'control-plane' }),
     open: vi.fn(),
     close: vi.fn(),
   })

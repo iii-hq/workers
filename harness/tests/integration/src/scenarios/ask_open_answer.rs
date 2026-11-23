@@ -137,13 +137,13 @@ pub(super) fn scenario() -> ScenarioFixture {
             "session_id": "{{session_id}}",
             "question_id": QUESTION_ID,
             "answers": [{ "header": "Approach", "choice": "Continue" }],
-            "by": { "channel": "tower", "user": "integration" }
+            "by": { "channel": "control-plane", "user": "integration" }
         }),
         json!({
             "question_id": QUESTION_ID,
             "state": "answered",
             "answer_text": ANSWER_TEXT,
-            "by": { "channel": "tower", "user": "integration" }
+            "by": { "channel": "control-plane", "user": "integration" }
         }),
     )
     .generation(
@@ -284,7 +284,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     && call["question_id"] == QUESTION_ID
                     && call["state"] == "answered"
                     && call["answer_text"] == ANSWER_TEXT
-                    && call["by"]["channel"] == "tower"
+                    && call["by"]["channel"] == "control-plane"
             }),
             "harness::on-ask-settled did not carry the answered entry: {recorded:?}"
         );

@@ -94,7 +94,7 @@ a `run_health` question with an expiry default instead of ending blocked.
 
 Record a material choice you made alone with `kanban::question::record`, using
 your agent profile as `recorded_by`. Name the card key in the title or branch
-of every pull request for that card so the control tower can link it.
+of every pull request for that card so the control plane can link it.
 
 ## Functions
 

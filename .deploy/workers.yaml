@@ -2322,13 +2322,13 @@ workers:
         outputs:
         - dist
     publish: true
-  tower:
+  control-plane:
     source:
-      path: tower
+      path: control-plane
       package_manifest: package.json
     artifact:
       kind: javascript-bundle
-      workspace_root: tower
+      workspace_root: control-plane
       runtime:
         name: node
         version: 22.20.0

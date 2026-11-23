@@ -392,8 +392,8 @@ mod tests {
 
     #[test]
     fn answer_race_requires_one_winner_and_one_already_answered_refusal() {
-        let entry = json!({ "state": "answered", "by": { "channel": "tower" } });
-        let refused = Err("invalid request: already answered by tower".to_string());
+        let entry = json!({ "state": "answered", "by": { "channel": "control-plane" } });
+        let refused = Err("invalid request: already answered by control-plane".to_string());
         assert_eq!(
             answer_race_output(Ok(entry.clone()), refused.clone()).unwrap(),
             entry
