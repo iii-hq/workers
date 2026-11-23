@@ -461,10 +461,13 @@ function useScrollEdges<T extends HTMLElement>() {
  */
 export function TerminalSnippet({
   functionId,
+  namespaceFlag = [],
   args,
   copy,
 }: {
   functionId: string
+  /** `cliNamespace`'s words, shown as they are copied. */
+  namespaceFlag?: readonly string[]
   args: readonly { key: string; value: string; kind: string }[]
   copy: string
 }) {
@@ -481,6 +484,7 @@ export function TerminalSnippet({
               $
             </span>
             <span className="sh-cmd">iii</span> <span className="sh-word">call</span>{' '}
+            {namespaceFlag.length ? <span className="sh-word">{namespaceFlag.join(' ')} </span> : null}
             <span className="sh-word">{functionId}</span>
             {args.map((a) => (
               <span key={a.key || a.value}>

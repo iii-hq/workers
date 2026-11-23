@@ -74,8 +74,16 @@ export function cliToken(arg: CliArg): string {
   return arg.key ? `${arg.key}=${arg.value}` : arg.value
 }
 
+/**
+ * The `iii call` flag for a namespace: none for `default`, because the CLI
+ * resolves an id there unless `-n` names another, and only there.
+ */
+export function cliNamespace(namespace = 'default'): string[] {
+  return namespace === 'default' ? [] : ['-n', shellWord(namespace)]
+}
+
 /** The same call as one CLI line, ready to paste. */
-export function asCliCommand(functionId: string, payload: unknown): string {
+export function asCliCommand(functionId: string, payload: unknown, namespace?: string): string {
   const args = cliArgs(payload).map(cliToken)
-  return ['iii', 'call', shellWord(functionId), ...args].join(' ')
+  return ['iii', 'call', ...cliNamespace(namespace), shellWord(functionId), ...args].join(' ')
 }
