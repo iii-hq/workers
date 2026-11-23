@@ -4,13 +4,7 @@
  * the tree. The wizard host mounted once in `App` is the only listener.
  */
 
-export type WizardStepId =
-  | 'welcome'
-  | 'models'
-  | 'browser'
-  | 'judge'
-  | 'ready'
-  | 'explore'
+export type WizardStepId = 'welcome' | 'models' | 'browser' | 'explore'
 
 /**
  * What the palette's "Set up models and keys" row answers to. People look
@@ -29,7 +23,6 @@ export const SETUP_WIZARD_KEYWORDS: readonly string[] = [
   'provider',
   'model',
   'key',
-  'judge',
 ]
 
 type Listener = (step: WizardStepId | undefined) => void

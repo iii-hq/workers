@@ -23,9 +23,6 @@ import {
 import {
   DEVICE_PROVIDERS,
   type DeviceProvider,
-  JUDGE_HUB_WORKER,
-  JUDGE_OPTIONS,
-  type JudgeOption,
   KEY_PROVIDERS,
   type KeyProvider,
   ROUTER_CONFIGURATION,
@@ -351,7 +348,7 @@ export type PlanStep =
     }
   | {
       kind: 'set-config'
-      /** Configuration family (`llm-router`, `judge`, `judge-typesafe`). */
+      /** Configuration family (`llm-router`). */
       configuration: string
       /** Dotted path inside the entry value. */
       path: string[]
@@ -360,8 +357,6 @@ export type PlanStep =
       owner: string
     }
   | { kind: 'wait-models'; providerId: string; title: string }
-  /** Ask the judge hub for its models: proves the strategy answers, key included. */
-  | { kind: 'check-judge'; title: string; hosted: boolean }
 
 export interface ProviderSelection {
   choice: ProviderChoice
@@ -482,129 +477,6 @@ function keyStep(
 }
 
 /**
- * The option Judge answers with now: the hub's `provider` when its worker is
- * installed, else the first installed option. More than one judge worker can
- * be running (a key shared with the OpenAI provider makes that common), so the
- * first installed one is not necessarily the one in use.
- */
-export function activeJudge(
-  installed: ReadonlySet<string>,
-  provider: string | null,
-): JudgeOption | undefined {
-  const running = JUDGE_OPTIONS.filter((option) => installed.has(option.worker))
-  return running.find((option) => option.id === provider) ?? running[0]
-}
-
-/**
- * The workers setting Judge up with `option` adds, each with what it brings:
- * the secrets worker (only for a hosted judge's key), the `judge` hub, and
- * the option's own worker — whichever is not running yet.
- */
-export function judgeWorkers(
-  option: JudgeOption,
-  installedWorkers: ReadonlySet<string>,
-  withKey = option.envVar !== undefined,
-): Record<string, string> {
-  const why: Record<string, string> = {}
-  if (option.envVar && withKey && !installedWorkers.has(SECRETS_WORKER)) {
-    why[SECRETS_WORKER] = SECRETS_WHY
-  }
-  if (!installedWorkers.has(JUDGE_HUB_WORKER)) {
-    why[JUDGE_HUB_WORKER] =
-      'Answers the small decisions agents make along the way.'
-  }
-  if (!installedWorkers.has(option.worker)) {
-    why[option.worker] = `Runs ${option.title}, the model behind those answers.`
-  }
-  return why
-}
-
-export interface JudgeSelection {
-  option: JudgeOption
-  /** A hosted option not running yet needs one. */
-  key?: KeyInput
-}
-
-/**
- * The actions that leave Judge answering with exactly the checked options:
- * add the hub and every checked strategy not running yet (keys behind
- * references), make the first checked one the hub's default, prove it
- * answers, then remove the strategies that were unchecked — and the hub
- * with them when nothing is left to answer.
- */
-export function judgePlan(
-  selections: readonly JudgeSelection[],
-  installedWorkers: ReadonlySet<string>,
-  {
-    removals = [],
-    currentDefault = null,
-  }: {
-    /** Running strategies the user unchecked. */
-    removals?: readonly JudgeOption[]
-    /** The hub's `provider` setting now, when it is running. */
-    currentDefault?: string | null
-  } = {},
-): PlanStep[] {
-  const hubRunning = installedWorkers.has(JUDGE_HUB_WORKER)
-  if (selections.length === 0) {
-    return removeStep(
-      [
-        ...removals.map((option) => option.worker),
-        ...(removals.length > 0 ? [JUDGE_HUB_WORKER] : []),
-      ],
-      installedWorkers,
-    )
-  }
-  const why: Record<string, string> = {}
-  for (const { option, key } of selections) {
-    Object.assign(why, judgeWorkers(option, installedWorkers, Boolean(key)))
-  }
-  const steps: PlanStep[] = []
-  const workers = Object.keys(why)
-  if (workers.length > 0) steps.push({ kind: 'add-workers', workers, why })
-  for (const { option, key } of selections) {
-    if (!option.envVar || !key || installedWorkers.has(option.worker)) continue
-    steps.push(
-      keyStep(option.envVar, option.keyOwner ?? option.title, key, [
-        option.worker,
-      ]),
-    )
-    steps.push({
-      kind: 'set-config',
-      configuration: option.worker,
-      path: ['api_key'],
-      value: keyReference(option.envVar, key),
-      owner: option.title,
-    })
-  }
-  const primary = selections[0].option
-  const changesDefault = !hubRunning || currentDefault !== primary.id
-  if (changesDefault) {
-    steps.push({
-      kind: 'set-config',
-      configuration: JUDGE_HUB_WORKER,
-      path: ['provider'],
-      value: primary.id,
-      owner: primary.title,
-    })
-  }
-  if (workers.length > 0 || changesDefault) {
-    steps.push({
-      kind: 'check-judge',
-      title: primary.title,
-      hosted: primary.envVar !== undefined,
-    })
-  }
-  return [
-    ...steps,
-    ...removeStep(
-      removals.map((option) => option.worker),
-      installedWorkers,
-    ),
-  ]
-}
-
-/**
  * One short sentence per step, as the plan preview and the activity log show
  * it. Plain words for someone exploring iii: the worker being added is named,
  * function ids, references and configuration entries are not.
@@ -634,11 +506,9 @@ export function describeStep(step: PlanStep): string {
     case 'set-config':
       return step.path[step.path.length - 1] === 'api_key'
         ? `Connect ${step.owner} with that key`
-        : `Have Judge answer with ${step.owner}`
+        : `Update the ${step.configuration} settings for ${step.owner}`
     case 'wait-models':
       return `Check that ${step.title} models are ready`
-    case 'check-judge':
-      return `Check that ${step.title} answers`
   }
 }
 
@@ -658,8 +528,6 @@ export function stepDetail(step: PlanStep): string {
       return `configuration::set ${step.configuration} ${step.path.join('.')}`
     case 'wait-models':
       return `router::models::list provider=${step.providerId}`
-    case 'check-judge':
-      return 'judge::models::list'
   }
 }
 

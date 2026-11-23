@@ -17,6 +17,7 @@ import { m, useReducedMotion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { DEFAULT_AGENT_ID } from '@/components/chat/agent-defaults'
 import { Skeleton } from '@/components/ui/Skeleton'
+import type { KitInstall } from '@/lib/onboarding/kits'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { cn } from '@/lib/utils'
 import { Button } from './controls'
@@ -61,7 +62,8 @@ function promptIcon(
 /*
  * Both screens here are a choice, made in two moves: pick one of the
  * options, then confirm it with the footer's button, which names what it
- * will do; with nothing picked it is Close setup, and closes setup. The
+ * will do. Explore on my own starts out picked, so the button closes setup
+ * into a chat until another option is picked. The
  * options are a single-choice group (radio semantics), so arrow keys move
  * the pick and Space or a click sets it. Drawn as checkboxes, like every
  * choice list in the ADE (single choice ticks one): the picked one carries
@@ -176,6 +178,11 @@ function usePickGroup<K extends string>(
   onPick: (key: K) => void,
   /** The rows are on screen; when they come back, they arrive again. */
   active = true,
+  /**
+   * Whether arriving moves the focus into the rows. Off while the pick is a
+   * default, so setup's primary button keeps the focus and Enter takes it.
+   */
+  claimFocus = true,
 ) {
   const buttons = useRef(new Map<K, HTMLButtonElement>())
   const register = useCallback(
@@ -222,6 +229,10 @@ function usePickGroup<K extends string>(
       arrived.current = false
       return
     }
+    if (!arrived.current && !claimFocus) {
+      arrived.current = true
+      return
+    }
     // On arrival the picked row, else the group (found from the first
     // row); after that only the first row, when it opens late and the
     // focus is still on a row.
@@ -256,7 +267,7 @@ function usePickGroup<K extends string>(
       cancelAnimationFrame(outer)
       cancelAnimationFrame(inner)
     }
-  }, [picked, first, active])
+  }, [picked, first, active, claimFocus])
   return { register, onKeyDown, tabbable }
 }
 
@@ -370,6 +381,8 @@ export function ExploreStep({
   onOwn,
   onFinish,
   onBack,
+  failedKits = [],
+  onRetryKit = () => undefined,
 }: {
   /** A model is connected: the examples and the tour can run. */
   connected: boolean
@@ -384,8 +397,16 @@ export function ExploreStep({
   onOwn: () => void
   /** Close the wizard: Close setup, with nothing picked. */
   onFinish: () => void
-  /** Back to Ready. */
+  /** Back to the last setup step. */
   onBack: () => void
+  /**
+   * Template kits whose install failed before the Directory saved a plan:
+   * nothing else shows them (a planned kit waits in Directory → Kits), so
+   * the last step says so and offers to retry. Kits also install again on
+   * the next page load.
+   */
+  failedKits?: readonly KitInstall[]
+  onRetryKit?: (kit: string) => void
 }) {
   const [examples, setExamples] = useState(false)
   const [picked, setPicked] = useState<ChoiceId | null>(null)
@@ -404,9 +425,19 @@ export function ExploreStep({
   // A pick that has since gone out of reach (the model left, the examples
   // emptied) counts as no pick: the button goes back to Close setup. While
   // the tour gets ready its row stays ticked and every row holds still.
-  const choice = picked !== null && available[picked] ? picked : null
+  // Until something is picked, exploring alone is: the primary button gets
+  // the focus, so Enter from the last setup step closes setup into a chat.
+  const wanted = picked ?? 'own'
+  const choice = available[wanted] ? wanted : null
   const can = (id: ChoiceId) => available[id] && !preparing
-  const group = usePickGroup(CHOICES, can, choice, setPicked, !examples)
+  const group = usePickGroup(
+    CHOICES,
+    can,
+    choice,
+    setPicked,
+    !examples,
+    picked !== null || choice === null,
+  )
 
   if (examples) {
     const chosen = prompt !== null ? prompts?.[prompt] : undefined
@@ -546,6 +577,27 @@ export function ExploreStep({
           The tour could not start: {tour.error}
         </p>
       ) : null}
+      {failedKits.map((install) => (
+        <div
+          key={install.kit}
+          role="status"
+          aria-live="polite"
+          className="-mt-2 flex items-center justify-between gap-3 px-1 text-pretty text-sm leading-5 text-alert-strong"
+        >
+          <span className="min-w-0">
+            The {install.kit} kit could not be installed
+            {install.message ? `: ${install.message}` : '.'}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            onClick={() => onRetryKit(install.kit)}
+          >
+            Try again
+          </Button>
+        </div>
+      ))}
     </StepLayout>
   )
 }
