@@ -110,9 +110,10 @@ rule; point-in-time information belongs in memories.
   its in-flight extraction state.
 - Injection is bounded (`max_rule_chars`, `learned_max_chars`,
   `recall_budget_tokens`, `pinned_limit`, `pinned_max_chars`) — an
-  over-budget rule is truncated visibly, never silently dropped; pinned
-  memories past their cap are named in the step's `memory_pinned_skipped`. Its marker counts the hidden lines; read them with
-  `memory::rule::list { "bank": "<bank>" }`, the bank the marker names.
+  over-budget rule is truncated visibly, never silently dropped: its marker
+  counts the hidden lines; read them with `memory::rule::list { "bank": "<bank>" }`,
+  the bank the marker names. Pinned memories past their cap are named by id
+  in the step's `memory_pinned_skipped`; read one with `memory::get`.
 - Recalled memories are dated by when their fact was last stated; trust a
   newer memory over an older one that contradicts it. Dated events are stored
   with absolute dates.

@@ -1042,7 +1042,9 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
 /// one is not sent again. `pinned` holds the ids of the pinned lines the turn
 /// opens with: they rank like any hit, so a line they supersede is still not
-/// told, but are never told here and take no slot.
+/// told, but take no place in the pool or a slot. Those that stand come last,
+/// so [`with_updates`] still links their newer statements; the caller drops
+/// them, since they are told already.
 pub fn select(
     hits: Vec<(Memory, f32)>,
     evidence: &HashMap<String, Evidence>,
@@ -1055,10 +1057,18 @@ pub fn select(
     // Every question word `a` matched, `b` matched too.
     let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
     // Evidence: a word of the question, or a meaning above the model's floor.
+    // A pinned line takes no place in the quota, so pins never crowd recall out.
+    let mut room = POOL_PER_SLOT.saturating_mul(limit);
     let pool: Vec<(Memory, f32)> = hits
         .into_iter()
         .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
-        .take(POOL_PER_SLOT.saturating_mul(limit))
+        .take_while(|(m, _)| {
+            room > 0
+                && (pinned.contains(&m.id) || {
+                    room -= 1;
+                    true
+                })
+        })
         .collect();
     // Each stale line's newest superseder in `pool` (reversed: a tie goes to the better-ranked).
     let newest: Vec<Option<usize>> = pool
@@ -1146,8 +1156,10 @@ pub fn select(
     let mut pool: Vec<Option<(Memory, f32)>> = pool.into_iter().map(Some).collect();
     // After the cut, so a low-relevance twin never takes the fact down with it.
     let mut kept: Vec<(Memory, f32)> = Vec::new();
+    let mut pinned_told: Vec<(Memory, f32)> = Vec::new();
     for (m, s) in order.into_iter().filter_map(|i| pool[i].take()) {
         if pinned.contains(&m.id) {
+            pinned_told.push((m, s));
             continue;
         }
         let e = ev(&m);
@@ -1197,6 +1209,7 @@ pub fn select(
     let Some(first) = listed.first().map(|m| ev(m)).filter(|first| {
         on(&first.matched, first.terms) && listed.iter().all(|m| same(ev(m), first))
     }) else {
+        kept.extend(pinned_told);
         return kept;
     };
     if first.matched == ["user"] && first.of_me {
@@ -1213,6 +1226,7 @@ pub fn select(
             kept.extend(siblings);
         }
     }
+    kept.extend(pinned_told);
     kept
 }
 
@@ -4966,6 +4980,70 @@ Formal."
         let ids: Vec<&str> = out.memories.iter().map(|(m, ..)| m.id.as_str()).collect();
         assert_eq!(ids, ["fp-plain"]);
         assert_eq!(out.pinned, 0);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_line_the_question_reaches_still_brings_its_newer_note() {
+        // The departure shares no word with the question: only the pinned
+        // on-call line it updates links it in.
+        let pin = Memory {
+            pinned: true,
+            ..on_call(2)
+        };
+        let ids = told_ids(
+            vec![
+                pin,
+                tagged(
+                    "fp-backup",
+                    "Unanswered payments-api pages escalate to marco-1c2d after 15 minutes.",
+                    3,
+                    &["marco", "payments-api"],
+                ),
+                on_dana(
+                    "fp-left",
+                    "dana-7f3a left our company last week and her accounts were deactivated.",
+                    4,
+                ),
+            ],
+            PAGE,
+        )
+        .await;
+        assert_eq!(
+            ids.first().map(String::as_str),
+            Some("fp-oncall"),
+            "{ids:?}"
+        );
+        let mut rest = ids[1..].to_vec();
+        rest.sort();
+        assert_eq!(rest, ["fp-backup", "fp-left"], "each once: {ids:?}");
+    }
+
+    #[test]
+    fn pins_take_no_place_in_the_recall_pool() {
+        // One slot, a pool of four: four pins ranked first leave it to the fifth hit.
+        let mut hits: Vec<(Memory, f32)> = (0..4)
+            .map(|n| {
+                (
+                    pinned(&format!("fp-pin{n}"), &format!("pinned fact {n}"), 1),
+                    1.0,
+                )
+            })
+            .collect();
+        hits.push((memory("fp-plain", "plain fact"), 0.5));
+        let evidence: HashMap<String, Evidence> = hits
+            .iter()
+            .map(|(m, _)| (m.id.clone(), words(1, 1, 1.0)))
+            .collect();
+        let pins: HashSet<String> = hits[..4].iter().map(|(m, _)| m.id.clone()).collect();
+        let ids: Vec<String> = select(hits, &evidence, &HashSet::new(), &pins, 1)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect();
+        assert_eq!(ids.first().map(String::as_str), Some("fp-plain"), "{ids:?}");
+        assert!(
+            ids[1..].iter().all(|id| pins.contains(id)),
+            "pins come last: {ids:?}"
+        );
     }
 
     #[tokio::test]
