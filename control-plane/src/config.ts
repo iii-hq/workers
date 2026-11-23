@@ -29,5 +29,7 @@ export const configSchema = z.strictObject({
     })
     .prefault({}),
   escalate: z.record(z.string(), z.array(classes)).default({}),
+  /** Retired 2026-11-23 with the at-risk rule; still accepted so a saved value keeps validating. Ignored. */
+  at_risk_days: z.number().optional(),
 })
 export const defaultConfig = (): ControlPlaneConfig => configSchema.parse({})
