@@ -37,6 +37,9 @@ pub struct RunEvidence {
     pub tree_statuses: Vec<Value>,
     /// Raw scripted-router calls and abort acknowledgements.
     pub router_evidence: Value,
+    /// Every `session::on-meta-updated` event of the run's session, in
+    /// arrival order (the probe observes it).
+    pub meta_updates: Vec<Value>,
 }
 
 /// Compact form published in `playground-result.json`.
@@ -500,6 +503,7 @@ mod tests {
             tree_sessions: Vec::new(),
             tree_statuses: Vec::new(),
             router_evidence: Value::Null,
+            meta_updates: Vec::new(),
         }
     }
 

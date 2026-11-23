@@ -929,13 +929,22 @@ async fn generate_step(
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
     // Stored by the pre-generate turn write below, so a replayed reply resolves the same.
-    let (decision_tools, native_names) = concrete_allowed_tools(
+    let (mut decision_tools, native_names) = concrete_allowed_tools(
         &policy,
         &functions.functions,
         &record.dispatch_only_functions,
         expose,
     );
     record.native_names = native_names;
+    // `harness::set-description` is offered in every exposure mode, with its
+    // own description, while the policy allows it and the Chat setting
+    // `descriptions.agent_writes` is on (chat-projects §1.2.3).
+    let set_description = description_tool(&policy, cfg.descriptions.agent_writes);
+    decision_tools.retain(|tool| tool.name != crate::description::SET_DESCRIPTION_ID);
+    if let (Some(tool), ExposeMode::Native) = (&set_description, expose) {
+        decision_tools.push(tool.clone());
+        decision_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    }
     if expose == ExposeMode::Native && decision_tools.is_empty() {
         tracing::warn!(
             session_id = %record.session_id,
@@ -947,6 +956,9 @@ async fn generate_step(
         &decision_tools,
         record.options.response_language.as_ref(),
     );
+    if let (Some(tool), ExposeMode::AgentCall) = (set_description, expose) {
+        tools.push(tool);
+    }
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -2231,6 +2243,49 @@ async fn finish_step(
                 continue;
             }
 
+            // harness::set-description is answered here too, like the ask:
+            // the turn's own session is the only one it writes (D1, D13),
+            // through one session::patch-meta. Never parks.
+            if call.function_id == crate::description::SET_DESCRIPTION_ID && namespace == implicit {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                let mut data = Box::pin(set_description_result(
+                    &session,
+                    &record.session_id,
+                    call_args,
+                ))
+                .await;
+                let mut annotations = serde_json::Map::new();
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &namespace,
+                    &call.function_id,
+                    call_args,
+                    crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
+                )
+                .await;
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin_with(&record.turn_id, &annotations),
+                )
+                .await?;
+                call::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
             // A bound approval gate too old to show a namespace could approve a
             // call in another one unseen: refuse it before any hook runs.
             let gate = if namespace != implicit
@@ -2647,6 +2702,28 @@ async fn finish_step(
     // the model, so that step advances as usual. Steering is only read when
     // an ask was accepted, so ordinary function steps pay no extra reads.
     if !dispatch_calls.is_empty() {
+        // A step whose only calls are harness::set-description, in a message
+        // that already has its reply text, ends the turn: the model is not
+        // called again (chat-projects §1.2.3).
+        let describes_only = crate::description::ends_turn(
+            dispatch_calls.iter().map(|call| call.function_id.as_str()),
+            crate::description::has_reply_text(&outcome.message.content),
+            submit_call.is_some(),
+            false,
+        );
+        if describes_only
+            && !(has_user_after_watermark(&session, &record).await?
+                || has_queued(deps, &record).await?)
+        {
+            return Box::pin(finalize_with_contract(
+                deps,
+                &session,
+                &mut record,
+                &strategy,
+                &outcome.message,
+            ))
+            .await;
+        }
         let asked_this_step = ask_accepted_this_step(&record);
         let steering = asked_this_step
             && (has_user_after_watermark(&session, &record).await?
@@ -2677,6 +2754,33 @@ async fn finish_step(
         &outcome.message,
     ))
     .await
+}
+
+/// Answer one in-turn `harness::set-description` for the turn's own session:
+/// read the conversation, decide, and write with one `session::patch-meta`.
+async fn set_description_result(
+    session: &SessionClient,
+    session_id: &str,
+    args: &Value,
+) -> call::ResultData {
+    let current = match session.summary(session_id).await {
+        Ok(Some(current)) => current,
+        Ok(None) => {
+            return crate::description::write_failed(&HarnessError::Dependency(format!(
+                "session {session_id} does not exist"
+            )));
+        }
+        Err(error) => return crate::description::write_failed(&error),
+    };
+    match crate::description::decide(args, &current, AgentMessage::now_ms()) {
+        crate::description::Decision::Answer(response) => crate::description::result(&response),
+        crate::description::Decision::Write { patch, response } => {
+            match session.patch_meta(session_id, &patch).await {
+                Ok(_) => crate::description::result(&response),
+                Err(error) => crate::description::write_failed(&error),
+            }
+        }
+    }
 }
 
 /// Decide one in-turn `harness::ask` against the record's per-step markers
@@ -5137,6 +5241,16 @@ fn concrete_allowed_tools(
     }
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     (tools, names)
+}
+
+/// The `harness::set-description` tool for a turn, or `None` when its policy
+/// denies it or the Chat setting `descriptions.agent_writes` is off.
+fn description_tool(
+    policy: &CompiledPolicy,
+    agent_writes: bool,
+) -> Option<crate::types::model::AgentFunction> {
+    (agent_writes && policy.allows(crate::description::SET_DESCRIPTION_ID))
+        .then(crate::description::tool)
 }
 
 /// The native tool name of `function_id` in a namespace other than its

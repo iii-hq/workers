@@ -34,6 +34,7 @@ mod queued_message_edit_unqueue;
 mod repeated_failed_call_breaker;
 mod reseed_parked_message;
 mod router_midstream_terminal_error;
+mod set_description_ends_turn;
 mod spawn_reuse_guard;
 mod standing_wake_delivery;
 mod state_worker_sidecar;
@@ -92,6 +93,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         repeated_failed_call_breaker::scenario(),
         reseed_parked_message::scenario(),
         router_midstream_terminal_error::scenario(),
+        set_description_ends_turn::scenario(),
         spawn_reuse_guard::scenario(),
         stop_cancel_cascade::scenario(),
         stop_parked::quiet_deadlines(),
@@ -115,7 +117,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 46);
+        assert_eq!(fixtures.len(), 47);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

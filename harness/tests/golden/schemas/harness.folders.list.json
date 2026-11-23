@@ -1,0 +1,47 @@
+{
+  "function_id": "harness::folders::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "FoldersListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SavedFolder": {
+        "description": "One saved folder.",
+        "properties": {
+          "last_used_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "last_used_at",
+          "name",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "folders": {
+        "items": {
+          "$ref": "#/definitions/SavedFolder"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "folders"
+    ],
+    "title": "FoldersListResponse",
+    "type": "object"
+  }
+}

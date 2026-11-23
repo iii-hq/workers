@@ -136,6 +136,7 @@ rules:
   - '!session::create'
   - '!session::ensure'
   - '!session::set-meta'
+  - '!session::patch-meta'
   - '!session::set-draft'
   - '!session::set-status'
   - '!session::delete'
@@ -240,6 +241,22 @@ rules:
   # discovery: iii delivers to them, agents never call them.
   - '!harness::on-engine-change'
   - '!harness::on-compose-operation'
+  # Chat projects (chat-projects phase 1): the apps and the console create,
+  # change, delete and assign projects, save folders and change the Chat
+  # settings on the person's behalf; agents only read the projects
+  # (harness::projects::list, allowed below) and keep their own conversation's
+  # description (harness::set-description, intercepted in the turn). The two
+  # change events are delivered by iii, never called by agents.
+  - '!harness::projects::create'
+  - '!harness::projects::update'
+  - '!harness::projects::delete'
+  - '!harness::projects::assign'
+  - '!harness::projects::upsert'
+  - '!harness::projects::on-changed'
+  - '!harness::folders::upsert'
+  - '!harness::folders::delete'
+  - '!harness::chat-settings::set'
+  - '!harness::chat-settings::on-changed'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below. Planning is
@@ -447,6 +464,12 @@ rules:
   # enforces ownership; the standalone teardown stays behind the
   # needs_approval default for the console's privileged path.
   - harness::status
+  # harness::set-description writes only the calling turn's own conversation
+  # (the turn loop answers it with the trusted session id; a direct call
+  # fails). harness::projects::list is a read; its description asks for
+  # `version: 2` (without it, the D26 shim answers the saved folders).
+  - harness::set-description
+  - harness::projects::list
   - eval::status
   - eval::result
   - harness::observers::list

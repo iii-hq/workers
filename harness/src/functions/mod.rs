@@ -4,10 +4,12 @@
 //! the same `handle` functions directly (SOP §7).
 
 pub mod ask_settle;
+pub mod chat_settings;
 pub mod compact;
 pub mod context_policy;
 pub mod delete_session_tree;
 pub mod filesystem;
+pub mod folders;
 pub mod function_call;
 pub mod function_resolve;
 pub mod metrics;
@@ -126,17 +128,7 @@ pub const FILESYSTEM_INFO_ID: &str = "harness::filesystem::info";
 pub const FILESYSTEM_INFO_DESC: &str =
     "Internal control-plane: the default working-directory root new sessions are scoped to.";
 
-pub const PROJECTS_LIST_ID: &str = "harness::projects::list";
-pub const PROJECTS_LIST_DESC: &str =
-    "Internal control-plane: list the operator's durable project catalog.";
-
-pub const PROJECTS_UPSERT_ID: &str = "harness::projects::upsert";
-pub const PROJECTS_UPSERT_DESC: &str =
-    "Internal control-plane: remember, touch, or rename a project directory.";
-
-pub const PROJECTS_DELETE_ID: &str = "harness::projects::delete";
-pub const PROJECTS_DELETE_DESC: &str =
-    "Internal control-plane: remove a project directory from the durable catalog.";
+pub use crate::description::SET_DESCRIPTION_ID;
 
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
@@ -319,6 +311,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, ASK_ID, ASK_DESC, |_d, r| async move {
         crate::ask::direct_handle(r).await
     });
+    // Same pattern: the turn loop answers it with the turn's own session.
+    register(
+        iii,
+        deps,
+        crate::description::SET_DESCRIPTION_ID,
+        crate::description::TOOL_DESC,
+        |_d, r| async move { crate::description::direct_handle(r).await },
+    );
     // Catalog-visible so the model finds the observe controls; the turn loop
     // intercepts the calls, and these handlers only answer direct calls
     // (always an error).
@@ -477,28 +477,97 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, r| async move { filesystem::info(&d, r).await },
     );
 
-    // Operator project catalog — trusted console control-plane, durable in the
-    // harness-owned private state namespace and absent from the agent catalog.
+    // Saved-folder catalogue (D25) — trusted console control-plane, a
+    // harness-owned JSON file, absent from the agent catalog.
     register_internal(
         iii,
         deps,
-        PROJECTS_LIST_ID,
-        PROJECTS_LIST_DESC,
+        folders::LIST_ID,
+        folders::LIST_DESC,
+        |d, r| async move { folders::list(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        folders::UPSERT_ID,
+        folders::UPSERT_DESC,
+        |d, r| async move { folders::upsert(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        folders::DELETE_ID,
+        folders::DELETE_DESC,
+        |d, r| async move { folders::delete(&d, r).await },
+    );
+
+    // Chat projects. `list` is the one agents read (its description asks for
+    // `version: 2`); the writes are the console's and the apps'.
+    register(
+        iii,
+        deps,
+        projects::LIST_ID,
+        projects::LIST_DESC,
         |d, r| async move { projects::list(&d, r).await },
     );
     register_internal(
         iii,
         deps,
-        PROJECTS_UPSERT_ID,
-        PROJECTS_UPSERT_DESC,
-        |d, r| async move { projects::upsert(&d, r).await },
+        projects::CREATE_ID,
+        projects::CREATE_DESC,
+        |d, r| async move { projects::create(&d, r).await },
     );
     register_internal(
         iii,
         deps,
-        PROJECTS_DELETE_ID,
-        PROJECTS_DELETE_DESC,
+        projects::UPDATE_ID,
+        projects::UPDATE_DESC,
+        |d, r| async move { projects::update(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        projects::DELETE_ID,
+        projects::DELETE_DESC,
         |d, r| async move { projects::delete(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        projects::ASSIGN_ID,
+        projects::ASSIGN_DESC,
+        |d, r| async move { projects::assign(&d, r).await },
+    );
+    // D26 shim for apps released before chat projects.
+    register_internal(
+        iii,
+        deps,
+        projects::UPSERT_ID,
+        projects::UPSERT_DESC,
+        |d, r| async move { projects::upsert_shim(&d, r).await },
+    );
+
+    // The context pane and the Chat settings — console and app control-plane.
+    register_internal(
+        iii,
+        deps,
+        crate::context_items::CONTEXT_ITEMS_ID,
+        crate::context_items::CONTEXT_ITEMS_DESC,
+        |d, r| async move { crate::context_items::handle(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        chat_settings::GET_ID,
+        chat_settings::GET_DESC,
+        |d, r| async move { chat_settings::get(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        chat_settings::SET_ID,
+        chat_settings::SET_DESC,
+        |d, r| async move { chat_settings::set(&d, r).await },
     );
 
     // Internal cron target — registered, but kept off the public catalog.

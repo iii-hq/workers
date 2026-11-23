@@ -220,7 +220,10 @@ max_result_bytes: 262144         # function-result byte cap at capture; oversize
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
 co_author: true                  # tell agents to end git commit messages with "Co-authored-by: iii harness (<model>) <noreply@iii.dev>"
 call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
-projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
+projects_file_path: ~/.iii/data/harness/projects.json  # chat projects store, harness::projects (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
+folders_file_path: ~/.iii/data/harness/folders.json    # saved-folder catalogue, harness::folders (default: data/harness-folders.json)
+descriptions:
+  agent_writes: true             # offer harness::set-description to agents (harness::chat-settings::set changes it)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
 
@@ -659,6 +662,91 @@ too. The session moving to a later turn does not settle a card: a reply
 typed in the composer may have been about something else, so the card says
 the chat moved on and still takes an answer, or a dismissal.
 
+## Chat projects, saved folders and descriptions
+
+**Saved folders** (`harness::folders::list | upsert | delete`) are the
+folders the IDE's recent folders, the Chat's folder selector and the
+console's folder pickers list: `{ path, name, last_used_at }`, most recently
+used first, in the JSON file at `folders_file_path`. Until chat projects this
+catalogue was `harness::projects::*`, in the file at `projects_file_path`; at
+start the harness moves such a file to `folders_file_path` once (an
+operator's `projects_file_path` is honoured for that move and logged as
+deprecated). For apps released before projects, `harness::projects::list`
+without `version: 2` still answers the folders as `{ projects: [...] }` (the
+deprecation is logged once per connection), `harness::projects::upsert
+{ path, name? }` forwards to `harness::folders::upsert`, and
+`harness::projects::delete { path }` without an `id` to
+`harness::folders::delete`.
+
+**Projects** (`harness::projects::*`) group folders and the conversations
+started in them: `{ id: "prj_<ULID>", name, color, folders, account,
+autocompact, created_at_ms, updated_at_ms }`. A name has 1-40 characters and
+is unique without regard to case; the colour is one of `blue`, `purple`,
+`teal`, `green`, `amber`, `rose`; a project has 1-20 absolute folders (`~` is
+expanded) and a folder sits in one project only (a folder nested in another
+project's folder is allowed). A path belongs to the project whose folder is
+the longest prefix of it, equal or followed by `/`. The store is
+`{ version: 2, revision, projects }` at `projects_file_path`, replaced
+atomically; `revision` goes up on every change, and a write keeps the fields
+it does not know.
+
+| Function | Request | Response |
+|---|---|---|
+| `harness::projects::list` | `{ version: 2 }` | `{ version: 2, revision, projects }` |
+| `harness::projects::create` | `{ name, color, folders, bring_existing? }` | `{ project, moved }` |
+| `harness::projects::update` | `{ id, name?, color?, folders?, account?, autocompact?, bring_existing? }` | `{ project, moved }` |
+| `harness::projects::delete` | `{ id }` | `{ released }` |
+| `harness::projects::assign` | `{ session_ids, project: <id> \| "none" }` | `{ updated }` |
+
+A conversation belongs to a project through `metadata.project_id`; `"none"`
+keeps it out on purpose. `bring_existing` stamps the root conversations whose
+`metadata.fs_scope.root` falls in the project's folders (only the folders an
+`update` adds) and whose `project_id` is missing or `"none"`; `delete` removes
+`project_id` from its conversations; `assign` moves each conversation with its
+sub-agents (`parent_session_id`) and side chats (`side_chat_of`).
+`harness::send` stamps `project_id` on a conversation that has none when its
+working folder belongs to a project, and a sub-agent copies its parent's.
+Every write goes through `session::patch-meta`. A refusal is one JSON object
+in the error message, `{ code, message, ... }`: `name_taken`, `folder_taken`
+(with `project_id`, `project_name`), `bad_name`, `bad_color`, `no_folders`,
+`too_many_folders`, `folder_not_absolute`, `not_found`, `bad_request`.
+
+**Descriptions.** `harness::set-description { description, title? }` is a
+tool the model gets in every turn (with its own description, in the cached
+tools block) while `descriptions.agent_writes` is on and the dispatch policy
+allows it. The turn loop answers it for the turn's own session, next to
+`harness::ask`; a direct call fails. The description is trimmed, its
+whitespace collapsed and cut at 140 characters; one `session::patch-meta`
+writes `description`, `description_by: "agent"`, `description_at_ms` and
+`description_history` (the previous one pushed in, newest first, five kept).
+`title` is written once, while `title_manual` is not set and the agent never
+named the conversation (`title_by: "agent"`), else the result carries
+`title_ignored: true`. A description the user wrote (`description_manual`)
+is refused with `The user wrote this description; leave it.`, an empty one
+with `empty`, and the same text is a no-op. A step whose only calls are
+`harness::set-description`, in a reply that already has text, ends the turn
+without another model request.
+
+**Chat settings.** `harness::chat-settings::get {}` answers `{ descriptions:
+{ agent_writes } }`; `harness::chat-settings::set { patch }` merges the patch
+into the stored `harness` configuration on the server.
+
+**Context pane.** `harness::context-items { session_id }` answers what a
+conversation gathered, newest first: `subagents` (direct children, with
+`status` running / done / failed, the `display` label and a `descendants`
+count), `pull_requests` (GitHub PR URLs in user and assistant text and in
+function results, `source: created` for `github::pr::create`; `state` and
+`checks` read through `github::exec` when the github worker is present,
+cached 120 s, at most 3 s per call; `context_dismissed_prs` left out), `links`
+(http(s) URLs in user and assistant text, with a `count` and the Markdown link
+text as `title`), `attachments` and `images` (`direction: sent` in a user
+message, `received` otherwise; files the agent wrote outside its working
+folder count as received), and `side_chats` (empty until side chats). Links,
+attachments and images stop at 200 / 100 / 200 and `truncated` says so. The
+transcript is read in pages through `session::messages-range` and indexed in
+memory per session (the 64 most recent), so a later call scans only the new
+entries.
+
 ## Observable functions
 
 The harness hosts these functions. Every one is private: observers observe it,
@@ -676,6 +764,8 @@ observes only `harness::on-timer` and its own post-turn validator.
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
 | `harness::on-session-tree-deletion` | none | `input.session_id`, `input.operation_id` | `{ operation_id, attempt, session_id, status, deleted_session_ids, error? }`: a subtree deletion changed status; terminal statuses are `completed` and `failed`. |
+| `harness::projects::on-changed` | none | `input.project_id`, `input.change` | `{ revision, project_id, change }`: a chat project was `created`, `updated` or `deleted`; refetch `harness::projects::list { version: 2 }`. |
+| `harness::chat-settings::on-changed` | none | — | `{ settings }`: the Chat settings changed, from a device or the configuration entry. |
 | `harness::on-timer` | `{ at }` (epoch ms) | — | `{ scheduled_at, actual_at }`: called once at `at`; an observer receives the call for its own `at`. `at` more than 7 days out is refused (`CONFIG_ERROR`). An `at` already past (an observer added again after the harness was down) is called once, as soon as the observers of that instant added together are active. |
 
 An observer whose target is `harness::spawn` is refused (`FORBIDDEN`) on the

@@ -1,0 +1,56 @@
+{
+  "function_id": "harness::chat-settings::set",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "patch": {
+        "additionalProperties": true,
+        "description": "The settings to change; keys not named keep their value.",
+        "type": "object"
+      }
+    },
+    "required": [
+      "patch"
+    ],
+    "title": "ChatSettingsSetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ChatSettings": {
+        "properties": {
+          "descriptions": {
+            "$ref": "#/definitions/DescriptionsSettings"
+          }
+        },
+        "required": [
+          "descriptions"
+        ],
+        "type": "object"
+      },
+      "DescriptionsSettings": {
+        "properties": {
+          "agent_writes": {
+            "description": "Agents keep conversation descriptions up to date (`harness::set-description` is offered to the model).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent_writes"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "settings": {
+        "$ref": "#/definitions/ChatSettings"
+      }
+    },
+    "required": [
+      "settings"
+    ],
+    "title": "ChatSettingsSetResponse",
+    "type": "object"
+  }
+}

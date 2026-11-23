@@ -292,9 +292,22 @@ impl TurnEvents {
              `message`). Filter on input.session_id or input.compaction_id.",
             schema_value::<CompactionEvent>(),
         );
+        register_event(
+            iii,
+            crate::functions::projects::ON_CHANGED_FN,
+            crate::functions::projects::ON_CHANGED_DESC,
+            schema_value::<crate::functions::projects::ProjectsChangedEvent>(),
+        );
+        register_event(
+            iii,
+            crate::functions::chat_settings::ON_CHANGED_FN,
+            crate::functions::chat_settings::ON_CHANGED_DESC,
+            schema_value::<crate::functions::chat_settings::ChatSettingsChangedEvent>(),
+        );
         tracing::info!(
             "registered harness::on-ready / on-turn-started / on-turn-completed / \
-             on-message-queued / on-observers-changed / on-session-tree-deletion / on-compaction"
+             on-message-queued / on-observers-changed / on-session-tree-deletion / on-compaction / \
+             projects::on-changed / chat-settings::on-changed"
         );
 
         Self {
@@ -347,6 +360,13 @@ impl TurnEvents {
     /// track the operation itself.
     pub async fn emit_compaction(&self, _session_id: &str, payload: Value) {
         self.emit(ON_COMPACTION_FN, payload).await;
+    }
+
+    /// A chat project was created, updated or deleted
+    /// (`harness::projects::on-changed`).
+    pub async fn emit_projects_changed(&self, payload: Value) {
+        self.emit(crate::functions::projects::ON_CHANGED_FN, payload)
+            .await;
     }
 
     /// `message_preview` is the first characters of the user message that
@@ -450,6 +470,22 @@ impl TurnEvents {
         if let Err(error) = self.iii.call(request).await {
             tracing::warn!(function_id, %error, "harness event call failed");
         }
+    }
+}
+
+/// Call an event function fire-and-forget, when something observes it.
+pub async fn emit_void(iii: &IIIClient, function_id: &str, payload: Value) {
+    if !iii.is_observed(function_id) {
+        return;
+    }
+    let request = CallRequest {
+        function_id: function_id.to_string(),
+        payload,
+        action: Some(CallAction::Void),
+        timeout_ms: None,
+    };
+    if let Err(error) = iii.call(request).await {
+        tracing::warn!(function_id, %error, "harness event call failed");
     }
 }
 

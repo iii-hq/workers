@@ -36,9 +36,21 @@ pub enum HarnessError {
     #[error("harness/state: {0}")]
     State(String),
 
-    /// The harness-owned project catalog could not be read or written.
+    /// The harness-owned projects store could not be read or written.
     #[error("harness/project_store: {0}")]
     ProjectStore(String),
+
+    /// The harness-owned saved-folder catalogue could not be read or written.
+    #[error("harness/folder_store: {0}")]
+    FolderStore(String),
+
+    /// A request the projects API refuses with a code a client acts on
+    /// (`name_taken`, `folder_taken`, `not_found`, ...). The message is ONE
+    /// JSON object, `{"code", "message", ...}`, as tmux gives its errors, so
+    /// a client parses it from the handler error. Build it with
+    /// [`HarnessError::rejected`].
+    #[error("{0}")]
+    Rejected(String),
 
     /// An unexpected internal failure inside a loop step.
     #[error("harness/internal: {0}")]
@@ -57,7 +69,33 @@ impl HarnessError {
             HarnessError::ContextOverflow(_) => "harness/context_overflow",
             HarnessError::State(_) => "harness/state",
             HarnessError::ProjectStore(_) => "harness/project_store",
+            HarnessError::FolderStore(_) => "harness/folder_store",
+            HarnessError::Rejected(_) => "harness/rejected",
             HarnessError::Internal(_) => "harness/internal",
+        }
+    }
+}
+
+impl HarnessError {
+    /// A [`HarnessError::Rejected`]: `{"code": code, "message": message}`
+    /// plus every field of `extra` (an object).
+    pub fn rejected(code: &str, message: impl Into<String>, extra: serde_json::Value) -> Self {
+        let mut body = serde_json::json!({ "code": code, "message": message.into() });
+        if let (Some(body), serde_json::Value::Object(extra)) = (body.as_object_mut(), extra) {
+            body.extend(extra);
+        }
+        HarnessError::Rejected(body.to_string())
+    }
+
+    /// The client-facing code of a [`HarnessError::Rejected`] (`name_taken`, ...).
+    pub fn rejected_code(&self) -> Option<String> {
+        match self {
+            HarnessError::Rejected(wire) => serde_json::from_str::<serde_json::Value>(wire)
+                .ok()?
+                .get("code")?
+                .as_str()
+                .map(str::to_string),
+            _ => None,
         }
     }
 }
@@ -83,6 +121,7 @@ mod tests {
             HarnessError::ContextOverflow("m".into()),
             HarnessError::State("m".into()),
             HarnessError::ProjectStore("m".into()),
+            HarnessError::FolderStore("m".into()),
             HarnessError::Internal("m".into()),
         ];
         for v in variants {
@@ -92,6 +131,22 @@ mod tests {
                 v.code()
             );
         }
+    }
+
+    /// A rejection is one JSON object, as tmux's errors are, so clients read
+    /// its `code` from the handler error.
+    #[test]
+    fn a_rejection_is_one_json_object_with_its_code() {
+        let error = HarnessError::rejected(
+            "folder_taken",
+            "/w/api is already in “billing”",
+            serde_json::json!({ "project_id": "prj_1", "project_name": "billing" }),
+        );
+        let wire: serde_json::Value = serde_json::from_str(&error.to_string()).unwrap();
+        assert_eq!(wire["code"], "folder_taken");
+        assert_eq!(wire["project_name"], "billing");
+        assert_eq!(error.rejected_code().as_deref(), Some("folder_taken"));
+        assert_eq!(error.code(), "harness/rejected");
     }
 
     #[test]

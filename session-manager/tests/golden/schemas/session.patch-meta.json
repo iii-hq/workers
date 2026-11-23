@@ -1,0 +1,223 @@
+{
+  "function_id": "session::patch-meta",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "description": {
+        "description": "New description (omit to keep the current one).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "set": {
+        "additionalProperties": true,
+        "description": "Top-level metadata keys to write; each value replaces that key whole. Keys not named here or in `unset` are left as stored.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "title": {
+        "description": "New title (omit to keep the current one).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "unset": {
+        "description": "Top-level metadata keys to remove. A key named in both `set` and `unset` is refused (`session/invalid_request`).",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "PatchMetaRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AttachmentMeta": {
+        "description": "Metadata of one stored attachment. The bytes live in the session's attachment store (`session::get-attachment`), never inline in the transcript: a message references them through a [`ContentBlock::File`] block carrying the same `attachment_id`.",
+        "properties": {
+          "attachment_id": {
+            "description": "Store-generated id (`a_<uuid>`), unique within the session.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mime": {
+            "description": "MIME type, as uploaded (`application/octet-stream` when unknown).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Original filename, as uploaded.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the bytes.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Decoded byte length.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "created_at",
+          "mime",
+          "name",
+          "session_id",
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      },
+      "SessionKind": {
+        "description": "Who a session is for. `user` (the default) is a human-facing chat — what the console lists by default; `automation` is a machine-driven run; `e2e` is a session created by an end-to-end suite (harness-e2e). Consumers filter on it (`session::list` `kinds`); the store never changes behaviour on it.",
+        "enum": [
+          "user",
+          "automation",
+          "e2e"
+        ],
+        "type": "string"
+      },
+      "SessionMeta": {
+        "description": "A session's metadata record.",
+        "properties": {
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "draft": {
+            "description": "Unsent composer input parked on the session (`session::set-draft`), so a client reload restores what the user was typing. Never set by `session::set-meta`; absent when nothing is parked.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "draft_attachments": {
+            "description": "Attachments parked with the draft (`session::set-draft` `attachment_ids`), resolved to their stored metadata so a client can rebuild the composer's chips and fetch the bytes back. Absent when none are parked; never copied by `session::fork`.",
+            "items": {
+              "$ref": "#/definitions/AttachmentMeta"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "forked_from": {
+            "description": "Source session id when created by `session::fork`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SessionKind"
+              }
+            ],
+            "default": "user",
+            "description": "Who the session is for (`user` by default, `automation`, `e2e`). Fixed at creation — `session::set-meta` never changes it. Records written before this field existed read back as `user`."
+          },
+          "message_count": {
+            "description": "Number of `kind: \"message\"` entries (custom entries are bookkeeping and not counted).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` filters on and every session event carries as `session_metadata`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/SessionStatus"
+          },
+          "status_reason": {
+            "description": "Short lifecycle detail retained on `working`, `done`, and `error`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "description",
+          "message_count",
+          "session_id",
+          "status",
+          "title",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "meta": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SessionMeta"
+          }
+        ],
+        "description": "The session after the merge."
+      }
+    },
+    "required": [
+      "meta"
+    ],
+    "title": "PatchMetaResponse",
+    "type": "object"
+  }
+}

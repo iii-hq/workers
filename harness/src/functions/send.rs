@@ -662,6 +662,41 @@ async fn start_with_delivery_lock(
     )?;
 
     drop(topology);
+    // Membership on send (D8): a conversation without `project_id` whose
+    // working folder belongs to a project joins it before its turn, through
+    // session::patch-meta. `"none"` (kept out on purpose) is never stamped.
+    let stamp_root = options
+        .filesystem_root()
+        .map(str::to_string)
+        .or_else(|| {
+            prev.as_ref()
+                .and_then(|record| record.options.filesystem_root())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            existing_metadata
+                .as_ref()
+                .and_then(|m| m.get(crate::types::turn::FS_SCOPE_KEY))
+                .and_then(|scope| scope.get("root"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            prev.is_none()
+                .then(|| cfg.resolved_default_filesystem_root())
+                .flatten()
+        });
+    let known_metadata = existing_metadata
+        .as_ref()
+        .or(metadata.as_ref().and_then(Value::as_object));
+    super::projects::stamp_on_send(
+        deps,
+        &session,
+        &session_id,
+        known_metadata,
+        stamp_root.as_deref(),
+    )
+    .await;
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
         .idempotency_key

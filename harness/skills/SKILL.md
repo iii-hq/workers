@@ -103,6 +103,29 @@ Consumer-facing:
   `Header: answer` line per question (`(skipped)` for a question the user
   passed on; a dismissed card sends a notice instead). Refused in
   sub-agents, structured-output turns, and for a second ask in one step.
+- `harness::set-description` — keep the conversation's one-line description
+  (and, once, its name) up to date. Offered as a tool of its own in every turn
+  while the Chat setting `descriptions.agent_writes` is on; answered by the
+  turn loop for the turn's own session, so a direct call fails. Call it with
+  other calls or after the reply text: a step whose only call it is, beside
+  reply text, ends the turn without another model request. A description the
+  user wrote is never replaced (`The user wrote this description; leave it.`).
+- `harness::projects::list { version: 2 }` — the chat projects: named,
+  coloured groups of folders; a conversation's `metadata.project_id` names
+  its project (`"none"` = kept out on purpose). Always send `version: 2`;
+  without it the call answers the saved folders for apps released before
+  projects.
+
+Console and app control-plane (internal, list them with
+`engine::functions::list { include_internal: true }`): `harness::folders::list`
+/ `upsert` / `delete` (the saved-folder catalogue, formerly
+`harness::projects::*`), `harness::projects::create` / `update` / `delete` /
+`assign` (refusals are one JSON object in the error: `{code, message}` with
+`name_taken`, `folder_taken`, `bad_name`, `bad_color`, `no_folders`,
+`too_many_folders`, `folder_not_absolute`, `not_found`), `harness::context-items`
+(the context pane: subagents, pull requests, links, attachments and images of a
+conversation, newest first) and `harness::chat-settings::get` / `set`. Agents
+are denied the writes.
 
 Internal — the harness drives these; never call them directly:
 `harness::turn` (the durable loop step), `harness::function::call` /
@@ -186,6 +209,11 @@ them (see [Agent observers](#agent-observers)).
 - `harness::on-message-queued`, `harness::on-observers-changed`,
   `harness::on-compaction`, `harness::on-session-tree-deletion` and
   `harness::on-ready` — see the worker README for their events.
+- `harness::projects::on-changed` — a chat project was created, updated or
+  deleted (`{ revision, project_id, change }`); refetch
+  `harness::projects::list { version: 2 }`.
+- `harness::chat-settings::on-changed` — the Chat settings changed
+  (`{ settings }`).
 
 None takes args: filter on `input.session_id`, or on
 `input.parent_session_id` / `input.parent.session_id` to watch the children a
