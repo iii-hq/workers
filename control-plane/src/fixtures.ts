@@ -15,7 +15,6 @@ const ago = (minutes: number) => now - minutes * 60_000
 const iso = (minutes: number) => new Date(ago(minutes)).toISOString()
 
 export const controlPlaneSummaryFixture: ControlPlaneSummary = {
-  direction: [],
   checked_at: iso(4),
   unchanged: false,
   brief: {
@@ -344,7 +343,7 @@ const releases: ControlPlaneRelease[] = [
 ]
 export const controlPlaneFixture: Omit<
   ControlPlaneData,
-  'as_of' | 'sourceHash' | 'direction' | 'exceptions' | 'median_decision_wait_ms' | 'items'
+  'as_of' | 'sourceHash' | 'median_decision_wait_ms' | 'items'
 > & { refresh: () => void; items: NeedsYouItem[] } = {
   projects: [
     {

@@ -62,6 +62,7 @@ export function AskAboutButton({
   active,
   available = false,
   tokens = null,
+  compact = false,
 }: {
   item: NeedsYouItem
   onClick: () => void
@@ -69,6 +70,8 @@ export function AskAboutButton({
   active?: boolean
   available?: boolean
   tokens?: number | null
+  /** The Overview shows the action alone, as the canvas does; the detail shows the context size. */
+  compact?: boolean
 }) {
   if (!available) return null
   return (
@@ -86,7 +89,7 @@ export function AskAboutButton({
     >
       <MessageSquare className="control-plane-size-4" />
       Ask about this
-      {tokens !== null ? (
+      {compact ? null : tokens !== null ? (
         <span className="control-plane-meta">{formatTokenCount(tokens)}</span>
       ) : (
         <span className="control-plane-meta">

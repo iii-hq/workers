@@ -24,7 +24,7 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import { RadioTower, RefreshCw } from 'lucide-react'
+import { RadioTower, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useControlPlaneOverview, type ControlPlaneOverviewData as ControlPlaneData } from './useControlPlaneOverview'
 import { ControlPlaneHost, useControlPlaneHost } from './host'
@@ -76,12 +76,7 @@ function ScopedControlPlane({
   PageRenderProps,
   'paneId' | 'tabId' | 'onRequestClose'
 >) {
-  const [lastVisit, setLastVisit] = usePaneState<string | null>(`control-plane:last-visit:${scope}`, null)
-  const [since] = useState(lastVisit ?? undefined)
-  useEffect(() => {
-    setLastVisit(new Date().toISOString())
-  }, [setLastVisit])
-  const data = useControlPlaneOverview(host, scope, since)
+  const data = useControlPlaneOverview(host, scope)
   return (
     <ControlPlaneScreen
       host={host}
@@ -210,9 +205,21 @@ function ControlPlaneScreenContent({
         title="Control plane"
         onClose={onRequestClose}
         actions={
-          <IconButton label="Refresh Control plane" onClick={refresh}>
-            <RefreshCw className="control-plane-size-4" />
-          </IconButton>
+          <>
+            <IconButton label="Refresh Control plane" onClick={refresh}>
+              <RefreshCw className="control-plane-size-4" />
+            </IconButton>
+            {configurationId ? (
+              <IconButton
+                label="Control plane settings"
+                onClick={() => {
+                  window.location.hash = `#/configuration/workers/${encodeURIComponent(configurationId)}`
+                }}
+              >
+                <SlidersHorizontal className="control-plane-size-4" />
+              </IconButton>
+            ) : null}
+          </>
         }
       >
         <span className="control-plane-header-description control-plane-muted">
@@ -227,11 +234,20 @@ function ControlPlaneScreenContent({
             {VIEWS.map((tab) => (
               <TabsTrigger key={tab.value} value={tab.value} icon={false}>
                 {tab.label}
-                {tab.value === 'needs-you'
-                  ? ` · ${data.items.length}`
-                  : tab.value === 'runs'
-                    ? ` · ${data.runs.length}`
-                    : ''}
+                {tab.value === 'overview' ? null : (
+                  <span className="control-plane-tab-count">
+                    {
+                      {
+                        'needs-you': data.items.length,
+                        assumptions: data.questions.filter((row) => row.recordedBy).length,
+                        decided: data.questions.filter(
+                          (row) => !row.recordedBy && !['open', 'expired', 'answering'].includes(row.state),
+                        ).length,
+                        runs: data.runs.length,
+                      }[tab.value]
+                    }
+                  </span>
+                )}
               </TabsTrigger>
             ))}
           </TabsList>
@@ -249,21 +265,6 @@ function ControlPlaneScreenContent({
           }))}
         />
       </div>
-      {summary?.error ? (
-        <StatusPanel
-          className="control-plane-summary-banner"
-          variant="warn"
-          headline={configurationId && summary.error === 'set the summary model in the Control plane settings' ? (
-            <a className="control-plane-link" href={`#/configuration/workers/${encodeURIComponent(configurationId)}`}>
-              {summary.error}
-            </a>
-          ) : summary.error}
-          detail={summary.result ? `Last valid summary ${formatAge(summary.result.checked_at)}` : undefined}
-        />
-      ) : null}
-      {summary?.throttled_until ? (
-        <StatusPanel headline={`Refresh available ${new Date(summary.throttled_until).toLocaleTimeString()}`} />
-      ) : null}
       <PageBody>
         <PageMain>
           <div ref={ref} className={`control-plane-content${view === 'needs-you' ? ' control-plane-inbox-content' : ''}`}>
@@ -314,6 +315,8 @@ function ControlPlaneScreenContent({
                 summary={freshSummary}
                 summaryLoading={summary?.loading}
                 summaryError={summary?.error}
+                summaryThrottledUntil={summary?.throttled_until}
+                configurationId={configurationId}
                 refreshSummary={summary?.refresh ?? data.refresh}
                 canAsk={!!chat?.openDecisionChat}
               />
@@ -338,7 +341,7 @@ function ControlPlaneScreenContent({
             <span className="control-plane-truncate">
               {view === 'runs'
                 ? `${data.runs.length} runs · ${data.runs.filter((run) => run.state === 'working').length} working · ${data.runs.filter((run) => run.state === 'stalled').length} stalled`
-                : 'Counts and states from harness, kanban and GitHub'}
+                : 'Counts and states read live from harness, kanban and GitHub · lines marked agent are written by the control-plane agent'}
             </span>
           </StatusBar>
         </PageMain>
@@ -349,26 +352,21 @@ function ControlPlaneScreenContent({
 
 function Section({
   title,
+  subtitle,
   aside,
   children,
-  folded = false,
 }: {
   title: string
+  subtitle?: ReactNode
   aside?: ReactNode
   children: ReactNode
-  folded?: boolean
 }) {
-  if (folded)
-    return (
-      <details className="control-plane-folded">
-        <summary>{title}</summary>
-        <div className="control-plane-folded-body">{children}</div>
-      </details>
-    )
   return (
-    <Card>
+    <Card className="control-plane-section">
       <PanelHeader className="control-plane-section-title">
         <h2>{title}</h2>
+        {subtitle ? <span className="control-plane-section-subtitle">{subtitle}</span> : null}
+        <span className="control-plane-spacer" />
         {aside}
       </PanelHeader>
       {children}
@@ -409,19 +407,51 @@ export function ControlPlaneLoading({ runs = false }: { runs?: boolean }) {
     </div>
   )
 }
+const MODEL_MISSING = 'set the summary model in the Control plane settings'
+const PROFILE_MISSING = 'writer profile missing: apply the control plane kit'
+
 function SummarySlot({
   checkedAt,
   refresh,
   diary = false,
   loading,
   error,
+  throttledUntil,
+  configurationId,
 }: {
   checkedAt?: number
   refresh: () => void
   diary?: boolean
   loading?: boolean
   error?: string | null
+  throttledUntil?: string
+  configurationId?: string
 }) {
+  if (!diary && (error === MODEL_MISSING || error === PROFILE_MISSING))
+    return (
+      <StatusPanel
+        className="control-plane-summary-panel"
+        headline="No summary for this project"
+        detail={
+          error === MODEL_MISSING
+            ? 'Choose the model that writes it in the Control plane settings. The Overview shows only live facts: sessions show their last message, pull requests a reason from GitHub.'
+            : 'The control-plane writer profile is not installed: apply the control-plane kit. The Overview shows only live facts meanwhile.'
+        }
+        action={
+          error === MODEL_MISSING && configurationId ? (
+            <Button
+              variant="pill"
+              size="sm"
+              onClick={() => {
+                window.location.hash = `#/configuration/workers/${encodeURIComponent(configurationId)}`
+              }}
+            >
+              Open settings
+            </Button>
+          ) : undefined
+        }
+      />
+    )
   return (
     <div className="control-plane-summary-state">
       <span className="control-plane-muted" role="status" title={error ?? undefined}>
@@ -435,9 +465,13 @@ function SummarySlot({
                 ? 'No diary for this project yet.'
                 : 'No summary for this project. Live facts are shown below.'}
       </span>
-      <Button variant="ghost" size="sm" onClick={refresh}>
-        Refresh
-      </Button>
+      {throttledUntil ? (
+        <span className="control-plane-meta">Refresh available {new Date(throttledUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+      ) : (
+        <Button variant="ghost" size="sm" onClick={refresh}>
+          Refresh
+        </Button>
+      )}
     </div>
   )
 }
@@ -475,6 +509,20 @@ function SummaryRefs({ refs, data }: { refs: string[]; data: ControlPlaneData })
   )
 }
 
+/** The writer's prose with each reference it cites rendered as a link in place. */
+function LinkedText({ text, refs, data }: { text: string; refs: string[]; data: ControlPlaneData }) {
+  const cited = refs.filter((ref) => text.includes(ref)).sort((a, b) => b.length - a.length)
+  if (!cited.length) return <>{text}</>
+  const parts = text.split(new RegExp(`(${cited.map((ref) => ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`))
+  return (
+    <>
+      {parts.map((part, index) =>
+        cited.includes(part) ? <SummaryRefs key={`${part}:${index}`} refs={[part]} data={data} /> : part,
+      )}
+    </>
+  )
+}
+
 function Doing({ run, summary }: { run: ControlPlaneRun; summary: ControlPlaneSummary | null }) {
   const note = summary?.now[`session:${run.session.session_id}`]
   return (
@@ -490,6 +538,18 @@ function Doing({ run, summary }: { run: ControlPlaneRun; summary: ControlPlaneSu
     </span>
   )
 }
+function Recommended({ item }: { item: NeedsYouItem }) {
+  if (item.kind !== 'question') return null
+  const option = item.entry.questions[0]?.options.find((candidate) => candidate.recommended)
+  const text = option?.label ?? item.why
+  if (!text) return null
+  return (
+    <p className="control-plane-muted">
+      {option ? <span className="control-plane-text-ink">Recommended:</span> : null} {text}
+    </p>
+  )
+}
+
 function NeedLabel({ item }: { item: NeedsYouItem }) {
   return <span className="control-plane-status">{needLabel(item)}</span>
 }
@@ -584,6 +644,8 @@ function Overview({
   summary,
   summaryLoading,
   summaryError,
+  summaryThrottledUntil,
+  configurationId,
   refreshSummary,
   canAsk,
 }: {
@@ -597,6 +659,8 @@ function Overview({
   summary: ControlPlaneSummary | null
   summaryLoading?: boolean
   summaryError?: string | null
+  summaryThrottledUntil?: string
+  configurationId?: string
   refreshSummary: () => void
   canAsk: boolean
 }) {
@@ -620,20 +684,20 @@ function Overview({
       label: 'Working',
       value:
         data.loading.sessions || data.errors.sessions ? '—' : data.runs.filter((run) => run.state === 'working').length,
-      detail: 'a turn running in the tree',
+      detail: 'a turn running',
       tone: 'accent' as const,
     },
     {
       label: 'Waiting',
       value:
         data.loading.sessions || data.errors.sessions || data.loading.needsYou || data.errors.needsYou ? '—' : waiting,
-      detail: 'on an answer or stall',
+      detail: `${data.runs.filter((run) => run.state === 'waiting').length} on you, ${data.runs.filter((run) => run.state === 'stalled').length} stalled`,
       tone: 'ghost' as const,
     },
     {
       label: 'Open PRs',
       value: data.loading.prs || data.errors.prs ? '—' : data.prs.length,
-      detail: `${data.prs.filter((pr) => pr.checks === 'failing').length} with CI failing`,
+      detail: `CI failing in ${data.prs.filter((pr) => pr.checks === 'failing').length}`,
       tone: 'ghost' as const,
     },
     {
@@ -643,234 +707,51 @@ function Overview({
       tone: 'ghost' as const,
     },
   ]
+  const noRush = data.items.length - nowItems.length
   return (
-    <div className="control-plane-stack">
-      <Section title="Direction">
-        <CardBody>
-          {data.errors.board ? (
-            <SourceError title="Direction is unavailable" error={data.errors.board} refresh={data.refresh} />
-          ) : data.loading.board ? (
-            <Skeleton className="control-plane-h-20 control-plane-w-full" />
-          ) : data.direction.length ? (
-            <div className="control-plane-releases">
-              {data.direction.map(({ release, state, reasons }) => (
-                <div key={release.id} className="control-plane-release">
-                  <div className="control-plane-row-head">
-                    <StatusDot tone={state === 'at-risk' ? 'warn' : 'ok'} />
-                    <span>{state === 'at-risk' ? 'At risk' : 'On track'}</span>
-                    <time className="control-plane-meta">{release.target_at?.slice(0, 10)}</time>
-                  </div>
-                  <button
-                    type="button"
-                    className="control-plane-subject"
-                    onClick={() => host.panels?.open({ pageId: 'kanban-releases', context: { id: release.id } })}
-                  >
-                    {release.name}
-                  </button>
-                  <ProgressBar done={release.done} total={release.total} label={release.name} />
-                  {reasons.map((reason) => (
-                    <p key={reason} className="control-plane-muted">
-                      {
-                        {
-                          'past-target': 'Target date has passed',
-                          'open-cards': 'Open cards near the target date',
-                          'escalated-question': 'An escalated question is open',
-                        }[reason]
-                      }
-                    </p>
-                  ))}
-                  {summary?.direction
-                    .filter((line) => line.release_id === release.id)
-                    .map((line) => (
-                      <div key={line.text} className="control-plane-prose-line">
-                        <p>{line.text}</p>
-                        <SummaryRefs refs={line.refs} data={data} />
-                        <AgentSource checkedAt={summary.checked_at} />
-                      </div>
-                    ))}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <EmptyState compact title="No dated releases" description="Releases with a target date appear here." />
-          )}
-          {summary?.brief.headline ? (
-            <div className="control-plane-summary">
-              <h3>{summary.brief.headline}</h3>
-              <p className="control-plane-muted">{summary.brief.text}</p>
-              <div className="control-plane-row-head">
-                <SummaryRefs refs={summary.brief.refs} data={data} />
-                <AgentSource checkedAt={summary.checked_at} />
-              </div>
-            </div>
-          ) : (
-            <SummarySlot
-              checkedAt={summaryCheckedAt}
-              refresh={refreshSummary}
-              loading={summaryLoading}
-              error={summaryError}
-            />
-          )}
-        </CardBody>
-      </Section>
-      <Section
-        title="Needs you"
-        aside={
-          <Button variant="ghost" size="sm" onClick={() => openNeed()}>
-            All {data.items.length}
-          </Button>
-        }
-      >
-        {data.errors.needsYou ? (
-          <SourceError
-            title="Some Needs you sources are unavailable"
-            error={data.errors.needsYou}
-            refresh={data.refresh}
-          />
-        ) : null}
-        {data.loading.needsYou && !data.items.length ? (
-          <CardBody>
-            <Skeleton className="control-plane-h-32 control-plane-w-full" />
-          </CardBody>
-        ) : (
-          <div className="control-plane-needs-groups">
-            {(['now', 'no-rush'] as const).map((group) => (
-              <div key={group} data-urgency={group}>
-                <PanelHeader>
-                  <h3>{group === 'now' ? 'Now' : 'No rush'}</h3>
-                  <span className="control-plane-meta">{data.items.filter((item) => item.urgency === group).length}</span>
-                </PanelHeader>
-                {data.items
-                  .filter((item) => item.urgency === group)
-                  .slice(0, 3)
-                  .map((item) => (
-                    <div key={item.id} className="control-plane-row">
-                      <div className="control-plane-row-head">
-                        <NeedLabel item={item} />
-                        {item.card ? <CardLink card={item.card} /> : null}
-                        <time className="control-plane-meta">{formatRelative(item.createdAt)}</time>
-                      </div>
-                      <p className="control-plane-need-title">{item.title}</p>
-                      {item.kind === 'question' && item.why ? <p className="control-plane-muted">{item.why}</p> : null}
-                      <div className="control-plane-row-head">
-                        <Button size="sm" variant="pill" onClick={() => openNeed(item)}>
-                          Open
-                        </Button>
-                        <AskAboutButton
-                          item={item}
-                          tokens={
-                            data.runs.find((run) => run.session.session_id === item.sessionId)?.context_size ?? null
-                          }
-                          available={canAsk && item.kind !== 'stalled'}
-                          onClick={() => openNeed(item, true)}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                {!data.items.some((item) => item.urgency === group) ? (
-                  <CardBody>
-                    <p className="control-plane-muted">
-                      {group === 'now' ? 'Nothing needs you now.' : 'No questions without urgency.'}
-                    </p>
-                  </CardBody>
-                ) : null}
-              </div>
-            ))}
+    <>
+      {summaryError !== MODEL_MISSING && summaryError !== PROFILE_MISSING && summary?.brief.headline ? (
+        <div className="control-plane-summary">
+          <div className="control-plane-row-head">
+            <Eyebrow as="h2">Summary</Eyebrow>
+            <AgentSource checkedAt={summary.checked_at} />
           </div>
-        )}
-      </Section>
-      <Section title="Exceptions">
-        <CardBody>
-          {data.exceptions.stalled.map((run) => (
-            <button
-              key={run.session.session_id}
-              type="button"
-              className="control-plane-exception"
-              onClick={() =>
-                openNeed(
-                  data.items.find((item) => item.kind === 'stalled' && item.sessionId === run.session.session_id),
-                )
-              }
-            >
-              <StatusDot tone="warn" />
-              Stalled run · {run.session.title}
-            </button>
-          ))}
-          {data.exceptions.failing_prs.map((pr) => (
-            <a key={pr.url} href={pr.url} target="_blank" rel="noreferrer" className="control-plane-exception">
-              <StatusDot tone="alert" />
-              CI failing · {pr.repo}#{pr.number} · {pr.title}
-            </a>
-          ))}
-          {data.exceptions.blocked_cards.map((card) => (
-            <button
-              key={card.id}
-              type="button"
-              className="control-plane-exception"
-              onClick={() => host.panels?.open({ pageId: 'kanban-ticket', context: { id: card.key } })}
-            >
-              <StatusDot tone="warn" />
-              Blocked · {card.key} · {card.title}
-            </button>
-          ))}
-          {data.exceptions.old_questions.map((question) => (
-            <button
-              key={question.key}
-              type="button"
-              className="control-plane-exception"
-              onClick={() =>
-                openNeed(
-                  data.items.find(
-                    (item) =>
-                      item.kind === 'question' &&
-                      item.questionId === question.questionId &&
-                      item.sessionId === question.sessionId,
-                  ),
-                )
-              }
-            >
-              <StatusDot tone="warn" />
-              Open more than a day · {question.questions[0]?.question}
-            </button>
-          ))}
-          {!Object.values(data.exceptions).some((rows) => rows.length) ? (
-            <p className="control-plane-muted">No exceptions in this project.</p>
+          <h3>{summary.brief.headline}</h3>
+          <p className="control-plane-summary-text">
+            <LinkedText text={summary.brief.text} refs={summary.brief.refs} data={data} />
+          </p>
+          <div className="control-plane-row-head">
+            <SummaryRefs refs={summary.brief.refs.filter((ref) => !summary.brief.text.includes(ref))} data={data} />
+            {summaryThrottledUntil ? (
+              <span className="control-plane-meta">
+                Refresh available{' '}
+                {new Date(summaryThrottledUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            ) : null}
+          </div>
+          {summaryError === 'update failed' ? (
+            <p className="control-plane-meta">
+              The last update failed; this is the last valid summary, {formatAge(summary.checked_at)}.
+            </p>
           ) : null}
-        </CardBody>
-      </Section>
-      <Section title="Decided for you" aside={<span className="control-plane-meta">Since your last visit</span>}>
-        <CardBody>
-          {data.assumptionsSinceVisit.length ? (
-            data.assumptionsSinceVisit.map((row) => (
-              <div key={row.key} className="control-plane-log-row">
-                <h3>{row.questions.map((question) => question.question).join(' · ')}</h3>
-                <p>{row.answerText}</p>
-                <div className="control-plane-row-head">
-                  <span className="control-plane-meta">{row.recordedBy}</span>
-                  <time className="control-plane-meta">{formatRelative(row.askedAt)}</time>
-                  {row.ticketId ? (
-                    <button
-                      type="button"
-                      className="control-plane-link control-plane-meta"
-                      onClick={() =>
-                        host.panels?.open({ pageId: 'kanban-ticket', context: { id: row.ticketId ?? '' } })
-                      }
-                    >
-                      {row.ticketId}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="control-plane-muted">No new assumptions since your last visit.</p>
-          )}
-        </CardBody>
-      </Section>
+        </div>
+      ) : (
+        <>
+          <Eyebrow as="h2">Summary</Eyebrow>
+          <SummarySlot
+            checkedAt={summaryCheckedAt}
+            refresh={refreshSummary}
+            loading={summaryLoading}
+            error={summaryError}
+            throttledUntil={summaryThrottledUntil}
+            configurationId={configurationId}
+          />
+        </>
+      )}
       <div className="control-plane-tiles">
         {tiles.map((tile) => (
           <div key={tile.label} className="control-plane-tile">
-            <span className="control-plane-muted">
+            <span className="control-plane-muted control-plane-inline-status">
               <StatusDot tone={tile.tone} /> {tile.label}
             </span>
             <strong>{tile.value}</strong>
@@ -880,150 +761,218 @@ function Overview({
       </div>
       {!data.loading.board &&
       !data.loading.sessions &&
+      !data.loading.prs &&
       !data.errors.board &&
       !data.errors.sessions &&
+      !data.errors.prs &&
       !data.tickets.length &&
       !data.runs.length &&
+      !data.prs.length &&
       !data.items.length ? (
         <EmptyState
           title={`Nothing is happening in ${scopeLabel} yet`}
           description="Runs, pull requests and decisions show up here once a session works on one of its cards."
         />
       ) : null}
-      <Section title="Releases" folded aside={<span className="control-plane-muted">done, now and next, from the board</span>}>
-        <CardBody>
-          {data.errors.board ? (
-            <SourceError title="Board could not be listed" error={data.errors.board} refresh={data.refresh} />
-          ) : data.loading.board ? (
-            <Skeleton className="control-plane-h-28 control-plane-w-full" />
-          ) : data.releases.length ? (
-            <div className="control-plane-releases">
-              {data.releases.map((release) => {
-                const blocker = data.items.find(
-                  (item) => item.card?.release_id === release.id && 'urgency' in item && item.urgency === 'now',
-                )
-                return (
-                  <div key={release.id} className="control-plane-release">
-                    <div className="control-plane-row-head">
-                      <span className="control-plane-inline-status">
-                        <StatusDot
-                          tone={release.status === 'released' ? 'ok' : release.status === 'active' ? 'ink' : 'ghost'}
-                        />
-                        {release.status === 'released' ? 'Released' : release.status === 'active' ? 'Now' : 'Next'}
-                      </span>
-                      <span className="control-plane-meta control-plane-ml-auto">
-                        {release.done}/{release.total}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="control-plane-text-left control-plane-font-semibold"
-                      onClick={() =>
-                        host.panels?.open({
-                          pageId: 'kanban-releases',
-                          context: { id: release.id },
-                        })
-                      }
-                    >
-                      {release.name}
-                    </button>
-                    <ProgressBar done={release.done} total={release.total} label={release.name} />
-                    <span className="control-plane-muted">
-                      {release.open_questions ? `${release.open_questions} need you` : 'Nothing waits on you'}
-                      {release.target_at ? ` · target ${release.target_at.slice(0, 10)}` : ''}
-                    </span>
-                    {blocker ? (
-                      <button
-                        type="button"
-                        className="control-plane-link control-plane-muted control-plane-text-left"
-                        onClick={() => openNeed(blocker)}
-                      >
-                        Waits on {blocker.card?.key}
-                      </button>
-                    ) : null}
+      <div className="control-plane-columns">
+        <div className="control-plane-stack">
+          <Section
+            title="Needs you"
+            aside={
+              <>
+                {nowItems.length ? (
+                  <span className="control-plane-now-chip">
+                    <StatusDot tone="warn" /> {nowItems.length} now
+                  </span>
+                ) : null}
+                <button type="button" className="control-plane-link control-plane-header-link" onClick={() => openNeed()}>
+                  All {data.items.length}
+                </button>
+              </>
+            }
+          >
+            {data.errors.needsYou ? (
+              <SourceError
+                title="Some Needs you sources are unavailable"
+                error={data.errors.needsYou}
+                refresh={data.refresh}
+              />
+            ) : null}
+            {data.loading.needsYou && !data.items.length ? (
+              <CardBody>
+                <Skeleton className="control-plane-h-32 control-plane-w-full" />
+              </CardBody>
+            ) : nowItems.length ? (
+              <div data-urgency="now">
+              {nowItems.slice(0, 3).map((item) => (
+                <div key={item.id} className="control-plane-row">
+                  <div className="control-plane-row-head">
+                    <NeedLabel item={item} />
+                    {item.card ? <CardLink card={item.card} /> : null}
+                    <time className="control-plane-meta" dateTime={new Date(item.createdAt).toISOString()}>
+                      {formatRelative(item.createdAt)}
+                    </time>
                   </div>
-                )
-              })}
-            </div>
-          ) : (
-            <EmptyState compact title="No releases yet" description="The project's releases will appear here." />
-          )}
-        </CardBody>
-      </Section>
-      <Section
-        title="Runs in full"
-        folded
-        aside={
-          <Button variant="ghost" size="sm" onClick={openRuns}>
-            All runs
-          </Button>
-        }
-      >
-        {data.errors.sessions ? (
-          <SourceError title="Sessions could not be listed" error={data.errors.sessions} refresh={data.refresh} />
-        ) : data.loading.sessions ? (
-          <CardBody>
-            <Skeleton className="control-plane-h-32 control-plane-w-full" />
-          </CardBody>
-        ) : data.runs.length ? (
-          data.runs.map((run) => (
-            <div key={run.session.session_id} className="control-plane-row">
-              <div className="control-plane-row-head">
-                <button type="button" className="control-plane-subject" onClick={openRuns}>
-                  {run.session.title || run.session.session_id}
-                </button>
-                {run.card ? <CardLink card={run.card} /> : null}
-                <RunState run={run} />
-                <time className="control-plane-meta">{formatRelative(run.session.updated_at)}</time>
+                  <p className="control-plane-need-title">{item.title}</p>
+                  <Recommended item={item} />
+                  <div className="control-plane-row-head">
+                    <Button size="sm" variant="pill" onClick={() => openNeed(item)}>
+                      Open
+                    </Button>
+                    <AskAboutButton
+                      item={item}
+                      compact
+                      available={canAsk && item.kind !== 'stalled'}
+                      onClick={() => openNeed(item, true)}
+                    />
+                  </div>
+                </div>
+              ))}
               </div>
-              <p className="control-plane-muted control-plane-mt-1">
-                <Doing run={run} summary={summary} />
-              </p>
-              {run.needsYou.length ? (
-                <button type="button" className="control-plane-link control-plane-muted" onClick={() => openNeed(run.needsYou[0])}>
-                  {run.needsYou.filter((item) => item.kind === 'question').length} questions open ·{' '}
-                  {run.needsYou.length} open items
-                </button>
-              ) : null}
-            </div>
-          ))
-        ) : (
-          <CardBody>
-            <EmptyState compact title="No runs in progress" description="Root sessions doing work will appear here." />
-          </CardBody>
-        )}
-      </Section>
-
-      <PullRequests data={data} scope={scope} summary={summary} />
-      <Board data={data} scope={scope} scopeLabel={scopeLabel} />
-      <Section title="Diary" folded>
-        <CardBody>
-          {summary && diary.length ? (
-            diary.map((entry) => (
-              <div key={`${entry.at}:${entry.text}`} className="control-plane-diary-line">
-                <time className="control-plane-meta" dateTime={entry.at}>
-                  {new Date(entry.at).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
+            ) : data.errors.needsYou ? null : (
+              <CardBody>
+                <EmptyState
+                  compact
+                  title="Nothing needs you now"
+                  description="Work can keep going. No urgent questions or stalled runs."
+                />
+              </CardBody>
+            )}
+            <button
+              type="button"
+              className="control-plane-fold-row"
+              onClick={() => openNeed(data.items.find((item) => item.urgency === 'no-rush'))}
+            >
+              <span>No rush</span>
+              <span className="control-plane-meta">{noRush}</span>
+            </button>
+          </Section>
+          <Section
+            title="Diary"
+            subtitle="today's milestones"
+            aside={summary ? <AgentSource checkedAt={summary.checked_at} /> : null}
+          >
+            <CardBody>
+              {summary && diary.length ? (
+                diary.map((entry) => (
+                  <div key={`${entry.at}:${entry.text}`} className="control-plane-diary-line">
+                    <time className="control-plane-meta" dateTime={entry.at}>
+                      {new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </time>
+                    <p>{entry.text}</p>
+                    <SummaryRefs refs={entry.refs} data={data} />
+                  </div>
+                ))
+              ) : (
+                <SummarySlot
+                  checkedAt={summaryCheckedAt}
+                  refresh={refreshSummary}
+                  diary
+                  loading={summaryLoading}
+                  error={summaryError}
+                />
+              )}
+            </CardBody>
+          </Section>
+        </div>
+        <div className="control-plane-stack">
+          <Section title="Releases" subtitle="done, now and next, from the board">
+            <CardBody>
+              {data.errors.board ? (
+                <SourceError title="Board could not be listed" error={data.errors.board} refresh={data.refresh} />
+              ) : data.loading.board ? (
+                <Skeleton className="control-plane-h-28 control-plane-w-full" />
+              ) : data.releases.length ? (
+                <div className="control-plane-releases">
+                  {data.releases.map((release) => {
+                    const blocker = data.items.find(
+                      (item) => item.card?.release_id === release.id && item.urgency === 'now',
+                    )
+                    return (
+                      <div key={release.id} className="control-plane-release">
+                        <div className="control-plane-row-head">
+                          <span className="control-plane-inline-status">
+                            <StatusDot
+                              tone={release.status === 'released' ? 'ok' : release.status === 'active' ? 'ink' : 'ghost'}
+                            />
+                            {release.status === 'released' ? 'Released' : release.status === 'active' ? 'Now' : 'Next'}
+                          </span>
+                          <span className="control-plane-meta control-plane-ml-auto">
+                            {release.done}/{release.total}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="control-plane-text-left control-plane-font-semibold"
+                          onClick={() => host.panels?.open({ pageId: 'kanban-releases', context: { id: release.id } })}
+                        >
+                          {release.name}
+                        </button>
+                        <ProgressBar done={release.done} total={release.total} label={release.name} />
+                        {blocker ? (
+                          <button
+                            type="button"
+                            className="control-plane-link control-plane-muted control-plane-text-left"
+                            onClick={() => openNeed(blocker)}
+                          >
+                            Waits on {blocker.card?.key} · {release.open_questions || 1} needs you
+                          </button>
+                        ) : (
+                          <span className="control-plane-muted">
+                            {release.open_questions ? `${release.open_questions} need you` : 'Nothing waits on you'}
+                          </span>
+                        )}
+                      </div>
+                    )
                   })}
-                </time>
-                <p>{entry.text}</p>
-                <SummaryRefs refs={entry.refs} data={data} />
-                <AgentSource checkedAt={summary.checked_at} />
-              </div>
-            ))
-          ) : (
-            <SummarySlot
-              checkedAt={summaryCheckedAt}
-              refresh={refreshSummary}
-              diary
-              loading={summaryLoading}
-              error={summaryError}
-            />
-          )}
-        </CardBody>
-      </Section>
-    </div>
+                </div>
+              ) : (
+                <EmptyState compact title="No releases yet" description="The project's releases will appear here." />
+              )}
+            </CardBody>
+          </Section>
+          <Section
+            title="In progress"
+            subtitle="root sessions, on the board or not"
+            aside={
+              <button type="button" className="control-plane-link control-plane-header-link" onClick={openRuns}>
+                All runs
+              </button>
+            }
+          >
+            {data.errors.sessions ? (
+              <SourceError title="Sessions could not be listed" error={data.errors.sessions} refresh={data.refresh} />
+            ) : data.loading.sessions ? (
+              <CardBody>
+                <Skeleton className="control-plane-h-32 control-plane-w-full" />
+              </CardBody>
+            ) : data.runs.length ? (
+              data.runs.map((run) => (
+                <div key={run.session.session_id} className="control-plane-row">
+                  <div className="control-plane-row-head">
+                    <button type="button" className="control-plane-subject" onClick={openRuns}>
+                      {run.session.title || run.session.session_id}
+                    </button>
+                    {run.card ? <CardLink card={run.card} /> : null}
+                    <RunState run={run} />
+                    <time className="control-plane-meta">{formatRelative(run.session.updated_at)}</time>
+                  </div>
+                  <p className="control-plane-muted control-plane-mt-1">
+                    <Doing run={run} summary={summary} />
+                  </p>
+                </div>
+              ))
+            ) : (
+              <CardBody>
+                <EmptyState compact title="No runs in progress" description="Root sessions doing work will appear here." />
+              </CardBody>
+            )}
+          </Section>
+          <PullRequests data={data} scope={scope} summary={summary} />
+          <Board data={data} scope={scope} scopeLabel={scopeLabel} />
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -1032,8 +981,8 @@ function PullRequests({ data, scope, summary }: { data: ControlPlaneData; scope:
   return (
     <Section
       title="Pull requests"
-      folded
-      aside={<span className="control-plane-meta">{data.errors.prs ? '—' : data.prs.length} open</span>}
+      subtitle="open, with why each one waits"
+      aside={<span className="control-plane-count-chip">{data.errors.prs ? '—' : data.prs.length} open</span>}
     >
       {data.errors.prs || (!data.loading.prs && !data.availability.github) ? (
         <CardBody>
@@ -1120,6 +1069,11 @@ function PullRequests({ data, scope, summary }: { data: ControlPlaneData; scope:
 
 function Board({ data, scope, scopeLabel }: { data: ControlPlaneData; scope: string; scopeLabel: string }) {
   const host = useControlPlaneHost()
+  const done = data.tickets.filter((ticket) => ticket.status === data.board?.doneStatus).length
+  const columns = data.board?.columns ?? []
+  const isFolded = (id: string, index: number) => id === data.board?.doneStatus || index === 0
+  const open = columns.filter((column, index) => !isFolded(column.id, index))
+  const folded = columns.filter((column, index) => isFolded(column.id, index))
   const renderRows = (tickets: ControlPlaneTicket[], limit = 5) => (
     <>
       {tickets.slice(0, limit).map((ticket) => (
@@ -1156,7 +1110,20 @@ function Board({ data, scope, scopeLabel }: { data: ControlPlaneData; scope: str
     </>
   )
   return (
-    <Section title="Board" folded aside={<span className="control-plane-muted">{scopeLabel}</span>}>
+    <Section
+      title="Board"
+      subtitle={`the whole board · ${scopeLabel.toLowerCase()}`}
+      aside={
+        data.loading.board || data.errors.board ? null : (
+          <span className="control-plane-board-progress">
+            <span className="control-plane-meta">
+              {done} of {data.tickets.length} done
+            </span>
+            <ProgressBar done={done} total={data.tickets.length} label="Board" />
+          </span>
+        )
+      }
+    >
       {data.errors.board ? (
         <SourceError title="Board could not be listed" error={data.errors.board} refresh={data.refresh} />
       ) : data.loading.board ? (
@@ -1165,43 +1132,25 @@ function Board({ data, scope, scopeLabel }: { data: ControlPlaneData; scope: str
         </CardBody>
       ) : (
         <div className="control-plane-board">
-          <div className="control-plane-board-heading">
-            <span>
-              {data.tickets.filter((ticket) => ticket.status === data.board?.doneStatus).length} of{' '}
-              {data.tickets.length} done
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() =>
-                host.panels?.open({
-                  pageId: 'kanban-board',
-                  context: scope === ALL_PROJECTS ? { layout: 'list' } : { project: scope, layout: 'list' },
-                })
-              }
-            >
-              Open board
-            </Button>
-          </div>
-          {data.board?.columns.map((column, index) =>
-            column.id === data.board?.doneStatus || index === 0 ? (
-              <details key={column.id}>
-                <summary>
-                  {column.label} <span className="control-plane-meta">{column.total}</span>
-                </summary>
-                {renderRows(column.tickets)}
-              </details>
-            ) : (
-              <div key={column.id}>
-                <div className="control-plane-board-heading">
-                  <StatusDot tone="ink" />
-                  {column.label}
-                  <span className="control-plane-meta">{column.total}</span>
-                </div>
-                {renderRows(column.tickets, column.id === 'todo' ? 2 : 5)}
+          {open.map((column) => (
+            <div key={column.id} className="control-plane-board-column">
+              <div className="control-plane-board-heading">
+                <StatusDot tone={column.id === 'in_review' ? 'warn' : 'ink'} />
+                {column.label}
+                <span className="control-plane-meta control-plane-ml-auto">{column.total}</span>
               </div>
-            ),
-          )}
+              {renderRows(column.tickets, column.id === 'todo' ? 2 : 5)}
+            </div>
+          ))}
+          {folded.map((column) => (
+            <details key={column.id} className="control-plane-board-column">
+              <summary className="control-plane-board-heading">
+                {column.label}
+                <span className="control-plane-meta control-plane-ml-auto">{column.total}</span>
+              </summary>
+              {renderRows(column.tickets)}
+            </details>
+          ))}
         </div>
       )}
     </Section>

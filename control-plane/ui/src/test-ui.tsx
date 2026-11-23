@@ -79,6 +79,21 @@ export const mockUi = {
   SearchField: ({ onChange, ...props }: Props) => (
     <input {...props} onChange={(event) => onChange(event.target.value)} />
   ),
+  ModelPicker: ({ value, options, onChange, automatic, loading }: Props) => (
+    <select
+      data-model-picker
+      aria-busy={loading}
+      value={value ?? ''}
+      onChange={(event) => (event.target.value ? onChange(event.target.value) : automatic?.onSelect())}
+    >
+      {automatic ? <option value="">{automatic.label}</option> : null}
+      {options.map((option: { id: string; label: string }) => (
+        <option key={option.id} value={option.id}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  ),
   Select: ({ options, value, onChange, ...props }: Props) => (
     <select value={value} onChange={(event) => onChange(event.target.value)} {...props}>
       {options.map((option: Props) => (

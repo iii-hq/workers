@@ -7,7 +7,6 @@ const ago = (minutes: number) => now - minutes * 60_000
 const iso = (minutes: number) => new Date(ago(minutes)).toISOString()
 
 export const controlPlaneSummaryFixture: ControlPlaneSummary = {
-  direction: [{ release_id: 'r2', text: 'KAN-597 holds the release on build isolation.', refs: ['KAN-597'] }],
   checked_at: iso(4),
   unchanged: false,
   brief: {
@@ -324,15 +323,7 @@ export const controlPlaneFixture: ControlPlaneData = {
   scope: 'all',
   as_of: iso(0),
   sourceHash: 'fixture',
-  direction: [{ release: releases[4], state: 'at-risk', reasons: ['open-cards', 'escalated-question'] }],
-  exceptions: {
-    stalled: [run('dispatch-flaky', 'deepwork: flaky tests', 'stalled', flaky)],
-    failing_prs: [],
-    blocked_cards: [],
-    old_questions: [],
-  },
   median_decision_wait_ms: 90 * 60_000,
-  assumptionsSinceVisit: [],
   prs_interval_min: 5,
   availability: { github: true },
   loadMoreDecided: () => {},
@@ -536,5 +527,3 @@ export const controlPlaneFixture: ControlPlaneData = {
   refresh: () => {},
 }
 
-controlPlaneFixture.assumptionsSinceVisit = controlPlaneFixture.questions.filter((row) => row.state === 'recorded')
-controlPlaneFixture.exceptions.failing_prs = controlPlaneFixture.prs.filter((pr) => pr.checks === 'failing')

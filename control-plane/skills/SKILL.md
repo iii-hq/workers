@@ -28,7 +28,7 @@ request data is unavailable when the GitHub worker is absent.
 
 ## Functions
 
-- `control-plane::overview` — read direction, exceptions, live work and summary freshness for a scope.
+- `control-plane::overview` — read the Overview facts, live work and summary freshness for a scope.
 - `control-plane::needs-you::list` — list urgent and non-urgent questions plus stalled roots.
 - `control-plane::runs::list` — list scoped root runs with state and context size.
 - `control-plane::prs::list` — list cached pull requests from configured project repositories.

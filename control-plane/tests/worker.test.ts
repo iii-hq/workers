@@ -336,7 +336,6 @@ describe('worker functions without an engine', () => {
       checked_at: new Date(started).toISOString(),
       unchanged: false,
       brief: { headline: 'Recovered', text: 'The writer finished.', refs: ['KAN-1'] },
-      direction: [],
       diary: [],
       now: {},
       pr_waits: {},
@@ -407,7 +406,6 @@ describe('worker functions without an engine', () => {
         diary: [],
         now: {},
         pr_waits: {},
-        direction: [],
       },
     })
     controlPlanes.push(await registerControlPlane(f.iii))

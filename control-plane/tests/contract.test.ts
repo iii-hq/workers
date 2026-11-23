@@ -11,13 +11,6 @@ const result = {
     text: 'KAN-635 is verified; iii-hq/workers#1834 waits on CI.',
     refs: ['KAN-635', 'iii-hq/workers#1834'],
   },
-  direction: [
-    {
-      release_id: 'r1',
-      text: 'R1 remains on track after KAN-635 verification.',
-      refs: ['KAN-635'],
-    },
-  ],
   diary: [
     {
       at: '2026-11-21T18:40:00Z',
@@ -55,7 +48,7 @@ describe('Control plane writer contract', () => {
     expect(frontmatter).not.toMatch(/^model:/m)
   })
 
-  it('accepts changed, unchanged and empty results with direction', () => {
+  it('accepts changed, unchanged and empty results', () => {
     const now = Date.parse(result.checked_at)
     expect(acceptSummary(result, null, now)).toEqual(result)
     expect(acceptSummary({ ...result, unchanged: true }, null, now)).toEqual({
@@ -67,7 +60,6 @@ describe('Control plane writer contract', () => {
         {
           ...result,
           brief: { headline: '', text: '', refs: [] },
-          direction: [],
           diary: [],
           now: {},
           pr_waits: {},
@@ -76,14 +68,12 @@ describe('Control plane writer contract', () => {
         now,
       ),
     ).not.toBeNull()
-    expect(SUMMARY_SCHEMA.required).toContain('direction')
+    expect(SUMMARY_SCHEMA.required).not.toContain('direction')
   })
 
   it('rejects missing references, invalid subjects and extra fields', () => {
     const now = Date.parse(result.checked_at)
-    expect(
-      acceptSummary({ ...result, direction: [{ ...result.direction[0], refs: [] }] }, null, now),
-    ).toBeNull()
+    expect(acceptSummary({ ...result, brief: { ...result.brief, refs: [] } }, null, now)).toBeNull()
     expect(
       acceptSummary(
         { ...result, now: { 'KAN-635': result.now['session:dispatch-kan635'] } },
@@ -107,8 +97,8 @@ describe('Control plane writer contract', () => {
         now,
       ),
     ).toBeNull()
-    const { direction: _direction, ...withoutDirection } = result
-    expect(acceptSummary(withoutDirection, null, now)).toBeNull()
+    const { diary: _diary, ...withoutDiary } = result
+    expect(acceptSummary(withoutDiary, null, now)).toBeNull()
   })
 
   it('requires every top-level field and nonempty references on every prose object', () => {
@@ -118,12 +108,11 @@ describe('Control plane writer contract', () => {
       Reflect.deleteProperty(draft, field)
       expect(acceptSummary(draft, null, now)).toBeNull()
     }
-    for (let index = 0; index < 5; index += 1)
+    for (let index = 0; index < 4; index += 1)
       for (const missing of [false, true]) {
         const draft = structuredClone(result)
         const notes = [
           draft.brief,
-          draft.direction[0],
           draft.diary[0],
           draft.now['session:dispatch-kan635'],
           draft.pr_waits['iii-hq/workers#1834'],
@@ -132,16 +121,6 @@ describe('Control plane writer contract', () => {
         else notes[index].refs = []
         expect(acceptSummary(draft, null, now)).toBeNull()
       }
-  })
-
-  it('keeps direction to one referenced line per release', () => {
-    expect(
-      acceptSummary(
-        { ...result, direction: [...result.direction, ...result.direction] },
-        null,
-        Date.parse(result.checked_at),
-      ),
-    ).toBeNull()
   })
 
   it('permits digits in names', () => {

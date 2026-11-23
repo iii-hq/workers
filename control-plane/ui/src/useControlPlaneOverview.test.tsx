@@ -23,7 +23,6 @@ afterEach(async () => {
 })
 
 function fake() {
-  let recent: ControlPlaneQuestion[] = []
   const data: ControlPlaneData = {
     ...controlPlaneFixture,
     as_of: new Date().toISOString(),
@@ -37,8 +36,6 @@ function fake() {
     })),
     runs: controlPlaneFixture.runs.map((run) => ({ ...run, context_size: 1234 })),
     prs: controlPlaneFixture.prs.map((pr) => ({ ...pr, as_of: new Date().toISOString() })),
-    direction: [],
-    exceptions: { stalled: [], failing_prs: [], blocked_cards: [], old_questions: [] },
     median_decision_wait_ms: 9000,
   }
   const handlers = new Map<string, (payload: unknown) => void>()
@@ -63,7 +60,7 @@ function fake() {
     if (id === 'control-plane::prs::list') return { prs: data.prs, error: null }
     if (id === 'control-plane::decided::list') return { questions: [], median_decision_wait_ms: 9000 }
     if (id === 'control-plane::assumptions::list')
-      return { questions: input.since ? recent : data.questions.filter((row) => row.state === 'recorded') }
+      return { questions: data.questions.filter((row) => row.state === 'recorded') }
     if (id === 'control-plane::watch') return { watched_until: new Date(Date.now() + 120_000).toISOString() }
     if (id === 'control-plane::summary::refresh')
       return {
@@ -96,8 +93,8 @@ function fake() {
   } as unknown as Host['iii']
   const host = { iii } as Host
   let result: ControlPlaneOverviewData
-  function Probe({ scope = 'all', since }: { scope?: string; since?: string }) {
-    result = useControlPlaneOverview(host, scope, since)
+  function Probe({ scope = 'all' }: { scope?: string }) {
+    result = useControlPlaneOverview(host, scope)
     return null
   }
   return {
@@ -109,9 +106,6 @@ function fake() {
     connections,
     Probe,
     result: () => result!,
-    setRecent: (rows: ControlPlaneQuestion[]) => {
-      recent = rows
-    },
   }
 }
 async function flush() {
@@ -157,14 +151,11 @@ describe('useControlPlaneOverview console boundary and live parts', () => {
     await act(() => vi.advanceTimersByTime(120_000))
     expect(f.call).not.toHaveBeenCalled()
   })
-  it('passes the last visit to the worker and exposes throttled_until from summary refresh', async () => {
+  it('reads every assumption and exposes throttled_until from summary refresh', async () => {
     const f = fake()
-    const recent = f.data.questions.find((row) => row.state === 'recorded')!
-    f.setRecent([recent])
-    const since = new Date(Date.now() - 3600_000).toISOString()
-    await act(() => root.render(<f.Probe since={since} />))
-    expect(f.call).toHaveBeenCalledWith('control-plane::assumptions::list', { scope: 'all', since })
-    expect(f.result().assumptionsSinceVisit).toEqual([recent])
+    await act(() => root.render(<f.Probe />))
+    expect(f.call).toHaveBeenCalledWith('control-plane::assumptions::list', { scope: 'all' })
+    expect(f.call.mock.calls.some(([id, payload]) => id === 'control-plane::assumptions::list' && 'since' in (payload as object))).toBe(false)
     await act(() => f.result().summary.refresh())
     expect(f.call).toHaveBeenCalledWith('control-plane::summary::refresh', { scope: 'all' })
     expect(f.result().summary.throttled_until).toBe('2026-11-22T18:00:00Z')

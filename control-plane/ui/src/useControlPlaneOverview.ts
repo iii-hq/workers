@@ -19,7 +19,6 @@ export interface ControlPlaneOverviewData extends ControlPlaneData {
   refresh(): void
   summary: SummaryState
   availability: { github: boolean }
-  assumptionsSinceVisit: ControlPlaneQuestion[]
   prs_interval_min: number
   decidedCursor?: string
   loadMoreDecided(): void
@@ -53,15 +52,13 @@ function emptyData(): ControlPlaneData {
     questions: [],
     prs: [],
     repositories: [],
-    direction: [],
     median_decision_wait_ms: null,
-    exceptions: { stalled: [], failing_prs: [], blocked_cards: [], old_questions: [] },
     loading: { board: true, sessions: true, needsYou: true, questions: true, prs: true },
     errors: { board: null, sessions: null, needsYou: null, questions: null, prs: null },
   }
 }
 
-export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?: string): ControlPlaneOverviewData {
+export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS): ControlPlaneOverviewData {
   const iii = host.iii
   const id = useId().replace(/[^a-z0-9]/gi, '')
   const refetchAll = useRef<() => void>(() => {})
@@ -81,7 +78,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
   const [sourceErrors, setSourceErrors] = useState<Partial<Record<Part, string | null>>>({})
   const [assumptions, setAssumptions] = useState<ControlPlaneQuestion[]>([])
   const [decided, setDecided] = useState<ControlPlaneQuestion[]>([])
-  const [assumptionsSinceVisit, setAssumptionsSinceVisit] = useState<ControlPlaneQuestion[]>([])
   const [decidedCursor, setDecidedCursor] = useState<string>()
   const [refreshing, setRefreshing] = useState(false)
   const [throttled, setThrottled] = useState<string>()
@@ -102,7 +98,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
     setSourceErrors({})
     setAssumptions([])
     setDecided([])
-    setAssumptionsSinceVisit([])
     setDecidedCursor(undefined)
     setThrottled(undefined)
     const update = (patch: Partial<ControlPlaneData>) =>
@@ -177,15 +172,11 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
           })
           update({ median_decision_wait_ms: next.median_decision_wait_ms })
         } else if (part === 'assumptions') {
-          const [all, recent] = await Promise.all([
-            iii.call<{ questions: ControlPlaneQuestion[] }>('control-plane::assumptions::list', { scope }),
-            since
-              ? iii.call<{ questions: ControlPlaneQuestion[] }>('control-plane::assumptions::list', { scope, since })
-              : Promise.resolve({ questions: [] as ControlPlaneQuestion[] }),
-          ])
+          const all = await iii.call<{ questions: ControlPlaneQuestion[] }>('control-plane::assumptions::list', {
+            scope,
+          })
           if (!current()) return
           setAssumptions(all.questions)
-          setAssumptionsSinceVisit(since ? recent.questions : all.questions)
         }
         if (current()) setSourceErrors((previous) => ({ ...previous, [part]: null }))
       } catch (error) {
@@ -251,7 +242,7 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
       unobserve()
       off()
     }
-  }, [iii, scope, since, id])
+  }, [iii, scope, id])
 
   const refreshSummary = useCallback(() => {
     setRefreshing(true)
@@ -309,7 +300,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
         now,
       },
       availability: snapshot.availability,
-      assumptionsSinceVisit,
       prs_interval_min: snapshot.interval,
       decidedCursor,
       loadMoreDecided: loadNext,
@@ -320,7 +310,6 @@ export function useControlPlaneOverview(host: Host, scope = ALL_PROJECTS, since?
     sourceErrors,
     assumptions,
     decided,
-    assumptionsSinceVisit,
     decidedCursor,
     loadNext,
     refresh,

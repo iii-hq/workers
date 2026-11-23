@@ -1,7 +1,7 @@
 # control-plane
 
 This kit installs the hidden `control-plane-writer` profile used by the `control-plane`
-worker. The profile produces referenced plain-text direction, summary, diary,
+worker. The profile produces referenced plain-text summary, diary,
 run and pull-request notes. Live facts, counts and durations remain the
 worker's responsibility.
 

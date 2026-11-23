@@ -12,8 +12,8 @@ It moves the control plane out of the ADE shell into a `control-plane` worker, w
 - a read model;
 - the schedule of the summary writer.
 
-It also orders the Overview for management by exception (the CEO view,
-§7).
+The page follows the design canvas (§7). An earlier "CEO view" order of the
+Overview was withdrawn on 2026-11-23, at the person's request.
 
 The project controller is a separate spec, `controller.md`, which builds on
 this one.
@@ -124,12 +124,11 @@ Configuration, under id `control-plane` in the configuration worker:
 | Key | Default | Meaning |
 |---|---|---|
 | `stall_after_min` | 30 | `README.md` §7 |
-| `summary.model` | none | `provider::model` of the writer; without it the summary is off |
+| `summary.model` | none | `provider::model` of the writer, chosen in the settings with the chat's model picker; without it the summary is off |
 | `summary.interval_min` | 10 | the writer's schedule, and the Refresh rate limit |
 | `summary.language` | English | the writer's prose language |
 | `prs.watched_interval_min`, `prs.idle_interval_min` | 5, 30 | GitHub cadence for a repository (§2) |
 | `escalate` | `{}` | per project id, the question classes that reach the person as Now (§7); unset means `[security, publish, external_cost, data]` |
-| `at_risk_days` | 3 | §7 |
 
 ### 2. The read model
 
@@ -361,41 +360,39 @@ tab, beside the caller. On a phone, full screen.
 - `DecisionSideChat` and the host part of `side-chat.ts` move under
   `ade/web/src/components/chat/decision/` and back §5.
 
-### 7. The CEO view
+### 7. The Overview follows the canvas
 
-The Overview is ordered for management by exception:
+The design canvas is the source of truth for the page. The Overview has:
+- **Summary:** the eyebrow with the writer's age, the headline, and the
+  paragraph with its references linked in place. Without a model or the
+  writer profile, the canvas no-summary panel, with Open settings.
+- **Five tiles:** Needs you (now / no rush), Working, Waiting (on you /
+  stalled), Open PRs (CI failing in N), Active releases.
+- **Left column:**
+  - Needs you: the Now items with their class, card, age, question,
+    "Recommended:" option, Open and Ask about this, then No rush in one row;
+  - Diary: today's milestones.
+- **Right column:**
+  - Releases (released, now and next, with what waits on you);
+  - In progress (root sessions);
+  - Pull requests (why each one waits);
+  - Board (open columns, then Backlog and Done folded).
 
-1. **Direction.** Releases with a `target_at`, each on track or at risk.
-   - A release is at risk when:
-     - its date has passed;
-     - its date falls within `at_risk_days` with cards still open
-       (`kanban::release::list` `done`/`total`);
-     - one of its questions of an escalated class is open.
-   - The class comes from the open entries of `harness::ask::list`
-     (`about.class`), which the read model already holds.
-     `kanban::release::list` `open_questions` is a count without class.
-   - The writer's result gains `direction`: one line per release, with
-     references, under `README.md` §3's prose rules.
-2. **Needs you.**
-   - Now includes stalled runs and questions of a class in the project's
-     `escalate` list.
-   - Everything else is No rush.
-3. **Exceptions:**
-   - stalled runs;
-   - PRs with CI failing;
-   - cards labelled `blocked`;
-   - questions open for more than a day.
-4. **Decided for you.** Assumptions recorded since the viewer's last visit
-   (`control-plane::assumptions::list {since}`).
-   - The last visit is kept per browser (`usePaneState`).
-   - `ponytail:` per browser, not per person; the ADE has no viewer
-     identity.
-5. **The rest, folded:** releases and runs in full, PRs, the board, the
-   diary.
+Now holds stalled runs and questions of a class in the project's
+`escalate` list; everything else is No rush.
 
-The Decided header shows the median time a decision waited over the last 7
-days, from `asked_at` to `settled_at` of closed entries
-(`harness/src/ask_store.rs`). If it grows, the `escalate` list is too wide.
+**Withdrawn (2026-11-23):**
+- the Direction block and the at-risk rule (release dates are not
+  monitored; `at_risk_days` and the writer's `direction` are gone);
+- the Exceptions block;
+- "Decided for you since your last visit" and its per-browser last visit.
+
+**Kept:** the Decided tab's header shows the median time a decision waited
+over the last 7 days, from `asked_at` to `settled_at` of closed entries
+(`harness/src/ask_store.rs`).
+
+**Settings:** `summary.model` is chosen with the chat's `ModelPicker`, over
+the same `router::models::list` catalog, stored as `provider::id`.
 
 ## Migration (new commits on #1855)
 
@@ -404,7 +401,7 @@ days, from `asked_at` to `settled_at` of closed entries
    - the writer and the bundled schema;
    - the tests from `kits/control-plane`, which is cut down (D6).
 2. **Page:** `control-plane/ui/`, with the moved components, `useControlPlaneOverview`,
-   direct console actions and the CEO order.
+   direct console actions and the canvas layout.
 3. **ADE:** the built-in screen is removed, `openDecisionChat` and
    `rebindDecisionChat` are added, and old bookmarks redirect to
    `ext:control-plane`.
@@ -456,11 +453,11 @@ days, from `asked_at` to `settled_at` of closed entries
    - A closed chat stays closed.
    - `detach` disables "Use this answer" until a rebind.
    - An older ADE hides the button.
-8. **CEO view.**
-   - A release past its date with open cards is at risk.
-   - So is a release with an open question of an escalated class.
+8. **Canvas.**
+   - The Overview lays out as §7, with no Direction, Exceptions or release
+     dates.
    - An escalated class is Now, and others are No rush.
-   - Decided for you lists only assumptions after the last visit.
+   - The settings pick `summary.model` from the chat's catalog.
 9. **Regression.**
    - The harness direct integration suite stays at 41 of 41.
    - The ade/web and kanban suites pass.

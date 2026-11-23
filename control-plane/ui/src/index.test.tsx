@@ -35,7 +35,9 @@ async function render(props: Partial<ComponentProps<typeof ControlPlaneScreen>> 
   )
 }
 async function click(label: string) {
-  const button = Array.from(container.querySelectorAll('button')).find((node) => node.textContent?.trim() === label)
+  const button = Array.from(container.querySelectorAll('button')).find(
+    (node) => node.textContent?.trim() === label || node.childNodes[0]?.textContent?.trim() === label,
+  )
   expect(button, label).toBeDefined()
   await act(() => button?.click())
 }
@@ -53,7 +55,7 @@ function writer(result: ControlPlaneSummary = controlPlaneSummaryFixture) {
 }
 
 describe('Control plane views', () => {
-  it('registers the page, form and banner for the Compose configuration id', async () => {
+  it('registers the page and a settings form that picks the summary model from the chat catalog', async () => {
     const id = 'workers-qa-qa-control-plane'
     const unregisterPage = vi.fn()
     const unregisterCommands = vi.fn()
@@ -61,7 +63,16 @@ describe('Control plane views', () => {
     const registerPage = vi.fn<Host['pages']['register']>(() => unregisterPage)
     const registerCommands = vi.fn<NonNullable<Host['commands']>['register']>(() => unregisterCommands)
     const registerForm = vi.fn<Host['configForms']['register']>(() => unregisterForm)
-    const call = vi.fn().mockResolvedValue({ id })
+    const call = vi.fn(async (fn: string): Promise<any> =>
+      fn === 'router::models::list'
+        ? {
+            models: [
+              { id: 'claude-code/claude-sonnet-5-5', provider: 'claude-code', display_name: 'Claude Sonnet 5.5' },
+              { id: 'codex/gpt-6-luna', provider: 'openai-codex', display_name: 'GPT-6-Luna (Codex)' },
+            ],
+          }
+        : { id },
+    )
     const dispose = await setup({
       ...host,
       iii: { ...host.iii, call },
@@ -84,9 +95,9 @@ describe('Control plane views', () => {
     try {
       const Page = registerPage.mock.calls[0][0].render
       await act(() => root.render(<Page tabId="" panelSide="left" />))
-      expect(container.querySelector('.control-plane-summary-banner a')?.getAttribute('href')).toBe(
-        `#/configuration/workers/${id}`,
-      )
+      expect(container.textContent).toContain('No summary for this project')
+      await click('Open settings')
+      expect(window.location.hash).toBe(`#/configuration/workers/${id}`)
     } finally {
       hook.mockRestore()
     }
@@ -94,6 +105,7 @@ describe('Control plane views', () => {
     const onChange = vi.fn()
     const value = { stall_after_min: 30, summary: { model: 'provider::model', interval_min: 10 } }
     await act(() => root.render(<Form id={id} schema={null} value={value} onChange={onChange} />))
+    await act(async () => {})
     const change = async (field: string, text: string) => {
       const input = container.querySelector<HTMLInputElement>(`input[data-field="${field}"]`)!
       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
@@ -102,7 +114,24 @@ describe('Control plane views', () => {
         input.dispatchEvent(new Event('input', { bubbles: true }))
       })
     }
-    await change('summary.model', '')
+    expect(call).toHaveBeenCalledWith('router::models::list', {})
+    const picker = container.querySelector<HTMLSelectElement>('select[data-model-picker]')!
+    expect([...picker.options].map((option) => option.value)).toEqual([
+      '',
+      'claude-code::claude-code/claude-sonnet-5-5',
+      'openai-codex::codex/gpt-6-luna',
+    ])
+    const pick = async (model: string) =>
+      act(() => {
+        picker.value = model
+        picker.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    await pick('claude-code::claude-code/claude-sonnet-5-5')
+    expect(onChange).toHaveBeenLastCalledWith({
+      ...value,
+      summary: { model: 'claude-code::claude-code/claude-sonnet-5-5', interval_min: 10 },
+    })
+    await pick('')
     expect(onChange).toHaveBeenLastCalledWith({ ...value, summary: { interval_min: 10 } })
     await change('stall_after_min', '45')
     expect(onChange).toHaveBeenLastCalledWith({ ...value, stall_after_min: 45 })
@@ -401,42 +430,35 @@ describe('Control plane views', () => {
   })
 })
 
-describe('CEO overview', () => {
-  it('orders direction, urgency, exceptions and new assumptions before the folded details', async () => {
+describe('canvas overview', () => {
+  it('lays the Overview out as the canvas: summary, tiles, then Needs you and Diary beside releases, runs, PRs and board', async () => {
     await render({ summary: writer() })
-    const headings = [...container.querySelectorAll('h2')].map((node) => node.textContent)
-    expect(headings.slice(0, 4)).toEqual(['Direction', 'Needs you', 'Exceptions', 'Decided for you'])
-    expect(container.textContent).toContain('At risk')
-    expect(container.textContent).toContain('Open cards near the target date')
-    expect(container.textContent).toContain('An escalated question is open')
-    expect(container.textContent).toContain('KAN-597 holds the release on build isolation.')
-    expect(container.querySelector('[data-urgency="now"]')?.textContent).toContain('build machine')
-    expect(container.querySelector('[data-urgency="no-rush"]')?.textContent).toContain('Verify timed out twice')
-    expect(container.querySelector('[data-urgency="now"]')?.textContent).not.toContain('Verify timed out twice')
-    expect(
-      [...container.querySelectorAll('details.control-plane-folded')].map((node) => node.querySelector('summary')?.textContent),
-    ).toEqual(['Releases', 'Runs in full', 'Pull requests', 'Board', 'Diary'])
-    expect(container.querySelector('details[open]')).toBeNull()
+    const columns = [...container.querySelectorAll('.control-plane-columns > .control-plane-stack')].map((column) =>
+      [...column.querySelectorAll('h2')].map((node) => node.textContent),
+    )
+    expect(columns).toEqual([
+      ['Needs you', 'Diary'],
+      ['Releases', 'In progress', 'Pull requests', 'Board'],
+    ])
+    expect(container.querySelectorAll('.control-plane-tile')).toHaveLength(5)
+    expect(container.querySelector('details.control-plane-folded')).toBeNull()
+    for (const gone of ['Direction', 'Exceptions', 'Decided for you', 'At risk', 'Target date has passed', 'target 20'])
+      expect(container.textContent).not.toContain(gone)
   })
 
-  it('shows past-target and on-track facts from the read model', async () => {
-    await render({
-      data: {
-        ...controlPlaneFixture,
-        direction: [
-          { release: controlPlaneFixture.releases[1], state: 'at-risk', reasons: ['past-target'] },
-          { release: controlPlaneFixture.releases[2], state: 'on-track', reasons: [] },
-        ],
-      },
-    })
-    expect(container.textContent).toContain('Target date has passed')
-    expect(container.textContent).toContain('On track')
+  it('lists the Now items with their count chip and folds No rush into one row', async () => {
+    await render({ summary: writer() })
+    const needs = [...container.querySelectorAll('.control-plane-columns h2')]
+      .find((node) => node.textContent === 'Needs you')
+      ?.closest('.control-plane-columns > .control-plane-stack > *')
+    expect(needs?.querySelector('.control-plane-now-chip')?.textContent).toMatch(/\d+ now/)
+    expect(needs?.textContent).toContain('build machine')
+    expect(needs?.textContent).not.toContain('Verify timed out twice')
+    expect(needs?.querySelector('.control-plane-fold-row')?.textContent).toMatch(/No rush\s*\d+/)
   })
 
-  it('shows only assumptions returned since the last visit and the decision wait median', async () => {
-    await render({ data: { ...controlPlaneFixture, assumptionsSinceVisit: [] } })
-    expect(container.textContent).toContain('No new assumptions since your last visit')
-    expect(container.textContent).not.toContain('Cache artifacts between builds?')
+  it('shows the decision wait median on Decided', async () => {
+    await render({})
     await click('Decided')
     expect(container.textContent).toContain('Median decision wait · 90 min over the last 7 days')
   })
@@ -450,22 +472,23 @@ describe('CEO overview', () => {
         throttled_until: new Date(Date.now() + 60_000).toISOString(),
       },
     })
-    expect(container.textContent).toContain('update failed')
-    expect(container.textContent).toContain('Last valid summary')
+    expect(container.textContent).toContain('The last update failed; this is the last valid summary')
     expect(container.textContent).toContain(controlPlaneSummaryFixture.brief.headline)
     expect(container.textContent).toContain('Refresh available')
     expect(container.querySelector('.control-plane-freshness .bg-warn')).not.toBeNull()
   })
 
   it.each([
-    'writer profile missing: apply the control plane kit',
-    'set the summary model in the Control plane settings',
-  ])('shows %s', async (error) => {
-    await render({ summary: { ...writer(), result: null, error, fresh: false, unavailable: true } })
-    expect(container.textContent).toContain(error)
+    ['writer profile missing: apply the control plane kit', 'writer profile is not installed'],
+    ['set the summary model in the Control plane settings', 'Choose the model that writes it'],
+  ])('shows "%s" as the canvas no-summary panel', async (error, detail) => {
+    await render({ summary: { ...writer(), error, fresh: false, unavailable: true } })
+    expect(container.textContent).toContain('No summary for this project')
+    expect(container.textContent).toContain(detail)
+    expect(container.textContent).not.toContain(controlPlaneSummaryFixture.brief.headline)
   })
 
-  it('keeps a phone summary gutter and hides the empty detail column at split-pane widths', () => {
+  it('hides the empty detail column at split-pane widths', () => {
     const stylesheet = new CSSStyleSheet()
     stylesheet.replaceSync(readFileSync('src/control-plane.css', 'utf8'))
     const scope = [...stylesheet.cssRules].find(
@@ -479,34 +502,14 @@ describe('CEO overview', () => {
         (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === `& ${selector}`,
       )?.style
     }
-    expect(stylesAt(639, '.control-plane-summary-banner')?.getPropertyValue('margin-inline')).toBe('16px')
     expect(stylesAt(760, '.control-plane-inbox:not([data-detail-open]) .control-plane-decision-layout')?.display).toBe('none')
   })
 
   it('shows stale PR checks and omits subtree usage metrics', async () => {
     await render({ initialView: 'overview' })
     expect(container.textContent).toContain('Checked 12m ago')
-    await click('Runs · 4')
+    await click('Runs')
     expect(container.textContent).not.toContain('Usage')
     expect(container.textContent).not.toContain('17M')
-  })
-})
-
-describe('last visit per browser', () => {
-  it('passes the previous visit to the hook, stores this visit and keeps the read cutoff stable', async () => {
-    const previous = new Date(Date.now() - 60 * 60_000).toISOString()
-    localStorage.setItem('control-plane:last-visit:all', JSON.stringify(previous))
-    const hook = vi.spyOn(overviewHook, 'useControlPlaneOverview').mockReturnValue(controlPlaneFixture)
-    try {
-      await act(() => root.render(<ControlPlane host={host} paneId="visit-test" tabId="test" panelSide="left" />))
-      expect(hook).toHaveBeenLastCalledWith(host, 'all', previous)
-      const stored = JSON.parse(localStorage.getItem('control-plane:last-visit:all') ?? 'null')
-      expect(Date.parse(stored)).toBeGreaterThan(Date.parse(previous))
-      await act(() => root.render(<ControlPlane host={host} paneId="visit-test" tabId="test" panelSide="left" />))
-      expect(hook).toHaveBeenLastCalledWith(host, 'all', previous)
-      await act(() => root.render(null))
-    } finally {
-      hook.mockRestore()
-    }
   })
 })

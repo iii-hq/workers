@@ -34,8 +34,6 @@ const resultContract = z.strictObject({
         ? brief.refs.length > 0
         : brief.headline === '' && brief.text === '' && brief.refs.length === 0,
     ),
-  direction: z.array(line.extend({ release_id: z.string().min(1) }))
-    .refine((lines) => new Set(lines.map((entry) => entry.release_id)).size === lines.length),
   diary: z
     .array(line.extend({ at: timestamp }))
     .max(schema.properties.diary.maxItems),
@@ -115,7 +113,6 @@ export function resolveSummary(
   return {
     ...summary,
     brief: resolved(summary.brief),
-    direction: summary.direction.map(resolved),
     diary: summary.diary.map(resolved),
     now: Object.fromEntries(
       Object.entries(summary.now)

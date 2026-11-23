@@ -3,7 +3,7 @@
   "title": "Control plane writer result",
   "type": "object",
   "additionalProperties": false,
-  "required": ["checked_at", "unchanged", "brief", "diary", "now", "pr_waits", "direction"],
+  "required": ["checked_at", "unchanged", "brief", "diary", "now", "pr_waits"],
   "properties": {
     "checked_at": {
       "$ref": "#/definitions/timestamp"
@@ -96,32 +96,6 @@
       "patternProperties": {
         "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$": {
           "$ref": "#/definitions/line"
-        }
-      }
-    },
-    "direction": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["release_id", "text", "refs"],
-        "properties": {
-          "release_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "text": {
-            "type": "string",
-            "minLength": 1
-          },
-          "refs": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/refs"
-              }
-            ],
-            "minItems": 1
-          }
         }
       }
     }

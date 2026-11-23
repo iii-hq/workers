@@ -509,8 +509,8 @@ describe('fallback cache', () => {
   })
 })
 
-describe('CEO view', () => {
-  it('applies all three risk rules, project escalation, exceptions, and a seven-day median', async () => {
+describe('Needs you urgency and decision wait', () => {
+  it('applies project escalation and a seven-day median', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(at)
     const asks = [
@@ -527,25 +527,8 @@ describe('CEO view', () => {
     ]
     const config = defaultConfig()
     config.escalate.p = ['routine']
-    const { read } = model(
-      fake({
-        asks,
-        releases: [
-          release,
-          { ...release, id: 'past', target_at: new Date(at - 1).toISOString() },
-          { ...release, id: 'soon', target_at: new Date(at + 86400000).toISOString() },
-          { ...release, id: 'fine' },
-        ],
-      }).iii,
-      config,
-    )
+    const { read } = model(fake({ asks }).iii, config)
     const data = await read.read('p')
-    expect(data.direction.map((item) => [item.release.id, item.reasons])).toEqual([
-      ['r', ['escalated-question']],
-      ['past', ['past-target']],
-      ['soon', ['open-cards']],
-      ['fine', []],
-    ])
     expect(
       data.items.map((item) => [
         item.kind === 'question' ? item.questionClass : item.kind,
@@ -555,8 +538,8 @@ describe('CEO view', () => {
       ['routine', 'now'],
       ['scope', 'no-rush'],
     ])
-    expect(data.exceptions.blocked_cards).toEqual([card])
-    expect(data.exceptions.old_questions).toHaveLength(2)
+    expect(data).not.toHaveProperty('direction')
+    expect(data).not.toHaveProperty('exceptions')
     expect(data.median_decision_wait_ms).toBe(5000)
   })
 })

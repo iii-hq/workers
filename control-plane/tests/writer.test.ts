@@ -16,7 +16,6 @@ function result(checkedAt = new Date().toISOString()): ControlPlaneSummary {
     checked_at: checkedAt,
     unchanged: false,
     brief: { headline: 'KAN-1 is moving.', text: 'KAN-1 remains the focus.', refs: ['KAN-1'] },
-    direction: [{ release_id: 'r1', text: 'R1 follows KAN-1.', refs: ['KAN-1'] }],
     diary: [],
     now: {},
     pr_waits: {},
@@ -39,7 +38,6 @@ function config(model: string | undefined = 'openai::gpt-5'): ControlPlaneConfig
     summary: { model, interval_min: 10, language: 'English' },
     prs: { watched_interval_min: 5, idle_interval_min: 30 },
     escalate: {},
-    at_risk_days: 3,
   }
 }
 
@@ -177,7 +175,7 @@ describe('ControlPlaneWriter', () => {
       session_ids: ['run-1'],
       args: 'language=English',
     })
-    expect(first.options.output.schema.properties.direction).toBeDefined()
+    expect(first.options.output.schema.properties).not.toHaveProperty('direction')
 
     await iii.finish(writer, { turn_id: 'turn-1', status: 'failed' })
     vi.setSystemTime(clockStart + 600_000)

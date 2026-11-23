@@ -215,11 +215,10 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     },
     {
       description:
-        'Read the project portrait: direction, factual tiles, questions, runs, PRs, board and last valid summary.',
+        'Read the project portrait: factual tiles, questions, runs, PRs, releases, board and last valid summary.',
       request_format: request(scopeInput),
       response_format: object({
         as_of: { type: 'string' },
-        direction: array,
         tiles: { type: 'object' },
         items: array,
         runs: array,

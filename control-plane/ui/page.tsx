@@ -4,7 +4,9 @@ import { ControlPlane } from './src/index'
 
 export default async function setup(host: Host) {
   const { id: configurationId } = await host.iii.call<{ id: string }>('control-plane::configuration-id', {})
-  const unregisterForm = host.configForms.register(configurationId, ControlPlaneConfigForm)
+  const unregisterForm = host.configForms.register(configurationId, (props) => (
+    <ControlPlaneConfigForm {...props} host={host} />
+  ))
   const unregister = host.pages.register({
     id: 'control-plane',
     title: 'Control plane',

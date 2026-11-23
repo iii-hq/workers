@@ -25,7 +25,6 @@ summary model and stall timeout.
 | `prs.watched_interval_min` | `5` |
 | `prs.idle_interval_min` | `30` |
 | `escalate` | `{}` |
-| `at_risk_days` | `3` |
 
 An unset project escalation list means `security`, `publish`, `external_cost`
 and `data`. To enable the summary, apply the `control-plane` kit so iii-directory
@@ -34,7 +33,7 @@ available `provider::model`.
 
 ## Functions and event
 
-- `control-plane::overview {scope}` returns the CEO view, latest valid summary and
+- `control-plane::overview {scope}` returns the Overview facts (tiles, Needs you, releases, runs, PRs, board), the latest valid summary and
   `prs_interval_min` (the watched PR interval used by the page freshness label).
 - `control-plane::needs-you::list {scope}` returns questions and stalled roots.
 - `control-plane::runs::list {scope}` returns scoped roots and context sizes.
@@ -57,9 +56,7 @@ The read model does not call `session::get` or `harness::metrics`: revision 5's
 explicit source allowance omits both, so run usage metrics remain absent.
 
 The current GitHub wrappers expose `headRefName` and `updatedAt`, not a head
-SHA. The source hash uses those fields plus check state. Releases without an
-observed card, session or PR reference retain factual direction but omit
-writer prose rather than inventing a reference.
+SHA. The source hash uses those fields plus check state.
 
 Writer state uses scope `control-plane`, key `summary:<scope>`. Alongside `result`,
 `valid_hash` and `checked_at`, it persists `pending_turn`, `send_order`,
@@ -98,7 +95,7 @@ Actions are console calls to the target workers.
 Decision side chats use the optional host capabilities, and are hidden when the
 host lacks them. Browsers sharing an engine can create duplicate copies if they
 open the same decision concurrently, since the creation lock is browser-local.
-Overview keeps the last visit per browser via `usePaneState`.
+The Overview follows the design canvas; the summary model is chosen with the chat's model picker.
 Run usage metrics were removed because the read model does not supply them.
 The worker UI has no Storybook setup; fixture tests and captures replace the
 old ADE-only stories.

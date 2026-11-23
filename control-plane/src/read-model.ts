@@ -5,7 +5,6 @@ import type {
   TranscriptItem,
   ControlPlaneData,
   ControlPlaneConfig,
-  Direction,
 } from './types.js'
 import {
   ALL_PROJECTS,
@@ -694,35 +693,6 @@ export function projectSnapshot(
         run.descendantSessionIds.includes(item.sessionId) ||
         Boolean(item.card && item.card.id === run.card?.id),
     )
-  const direction: Direction[] = board.releaseCatalog
-    .filter((release) => release.target_at)
-    .map((release) => {
-      const target = Date.parse(release.target_at ?? '')
-      const reasons: Direction['reasons'] = []
-      if (target < now) reasons.push('past-target')
-      if (
-        target >= now &&
-        target <= now + config.at_risk_days * 86400000 &&
-        release.done < release.total
-      )
-        reasons.push('open-cards')
-      if (
-        asks.some((ask) => {
-          const card = findCard(ask.about.ticket ?? linkedTicket(rootFor(ask.session_id)?.session))
-          return (
-            open(ask.state) &&
-            card?.release_id === release.id &&
-            escalates(card.project_id).includes(ask.about.class ?? 'scope')
-          )
-        })
-      )
-        reasons.push('escalated-question')
-      return {
-        release,
-        state: reasons.length ? ('at-risk' as const) : ('on-track' as const),
-        reasons,
-      }
-    })
   const waits = questions
     .flatMap((question) => (question.harness ? [question.harness] : []))
     .filter(
@@ -753,15 +723,6 @@ export function projectSnapshot(
     questions,
     prs,
     repositories: [...new Set(selected.flatMap((project) => project.repos ?? []))].sort(),
-    direction,
-    exceptions: {
-      stalled: runs.filter((run) => run.state === 'stalled'),
-      failing_prs: prs.filter((pr) => pr.checks === 'failing'),
-      blocked_cards: cards.filter((card) => card.labels.includes('blocked')),
-      old_questions: questions.filter(
-        (question) => open(question.state) && now - question.askedAt > 86400000,
-      ),
-    },
     median_decision_wait_ms: waits.length
       ? (waits[Math.floor((waits.length - 1) / 2)] + waits[Math.floor(waits.length / 2)]) / 2
       : null,
@@ -1021,7 +982,6 @@ export class ControlPlaneReadModel {
       .flatMap((cache) => (cache?.error ? [] : (cache?.prs ?? [])))
       .map((pr) => ({ ...pr, card: linkedCard(pr.title, pr.headRefName, data.tickets) }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    data.exceptions.failing_prs = data.prs.filter((pr) => pr.checks === 'failing')
     data.sourceHash = sourceHash(data)
   }
 
@@ -1036,14 +996,12 @@ export class ControlPlaneReadModel {
       'releaseCatalog',
       'repositories',
       'completed_root_turns',
-      'direction',
       'runs',
       'items',
       'questions',
       'prs',
       'board',
       'releases',
-      'exceptions',
       'errors',
       'median_decision_wait_ms',
     ].filter(

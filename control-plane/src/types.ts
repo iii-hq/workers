@@ -46,13 +46,6 @@ export interface ControlPlaneConfig {
   summary: { model?: string; interval_min: number; language: string }
   prs: { watched_interval_min: number; idle_interval_min: number }
   escalate: Record<string, AskClass[]>
-  at_risk_days: number
-}
-
-export interface Direction {
-  release: ControlPlaneRelease
-  state: 'on-track' | 'at-risk'
-  reasons: Array<'past-target' | 'open-cards' | 'escalated-question'>
 }
 
 export interface ControlPlaneData {
@@ -69,13 +62,6 @@ export interface ControlPlaneData {
   questions: ControlPlaneQuestion[]
   prs: ControlPlanePullRequest[]
   repositories: string[]
-  direction: Direction[]
-  exceptions: {
-    stalled: ControlPlaneRun[]
-    failing_prs: ControlPlanePullRequest[]
-    blocked_cards: ControlPlaneTicket[]
-    old_questions: ControlPlaneQuestion[]
-  }
   median_decision_wait_ms: number | null
   loading: {
     board: boolean

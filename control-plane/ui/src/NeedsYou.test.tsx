@@ -43,7 +43,9 @@ async function render(props: Partial<ControlPlaneScreenProps> = {}) {
 }
 function button(label: string) {
   const found = [...container.querySelectorAll('button')].find((node) =>
-    label === 'Ask about this' ? node.textContent?.startsWith(label) : node.textContent?.trim() === label,
+    label === 'Ask about this'
+      ? node.textContent?.startsWith(label)
+      : node.textContent?.trim() === label || node.childNodes[0]?.textContent?.trim() === label,
   )
   expect(found, label).toBeDefined()
   return found as HTMLButtonElement

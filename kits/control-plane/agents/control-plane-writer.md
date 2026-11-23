@@ -114,7 +114,6 @@ Return exactly these top-level fields:
   "checked_at": "<refresh_at from the wake>",
   "unchanged": false,
   "brief": {"headline": "<plain text>", "text": "<plain text>", "refs": ["<reference>"]},
-  "direction": [{"release_id": "<release id>", "text": "<one plain-text line>", "refs": ["<reference>"]}],
   "diary": [{"at": "<observed event time in UTC>", "text": "<milestone>", "refs": ["<reference>"]}],
   "now": {"session:<id>": {"text": "<what this session is doing>", "refs": ["session:<id>"]}},
   "pr_waits": {"owner/repo#n": {"text": "<why this PR waits>", "refs": ["owner/repo#n"]}}
@@ -128,11 +127,6 @@ Return exactly these top-level fields:
   prose and diary unchanged; still advance `checked_at`. First use is false.
 - `brief` describes the scoped work. `now` and `pr_waits` contain only
   supported notes about live subjects, keyed by the exact subject reference.
-- `direction` has one line per release with a target date. Name the release,
-  state its supported direction, and cite observed card, session or PR
-  references. The release id identifies the row but is not itself a reference.
-  Omit prose for a release only when it has no observed card, session or PR
-  that can supply a legal reference; the control plane still shows its factual direction.
 - Carry the diary from your own previous results, including through
   compaction. Add only newly observed milestones, deduplicate the same
   event, sort by `at` newest first, and retain the newest 50 entries.

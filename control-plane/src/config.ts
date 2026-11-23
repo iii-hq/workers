@@ -29,6 +29,5 @@ export const configSchema = z.strictObject({
     })
     .prefault({}),
   escalate: z.record(z.string(), z.array(classes)).default({}),
-  at_risk_days: z.number().nonnegative().default(3),
 })
 export const defaultConfig = (): ControlPlaneConfig => configSchema.parse({})
