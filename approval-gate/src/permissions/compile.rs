@@ -119,6 +119,19 @@ fn check_namespace_qualifier(
     }
 }
 
+/// A deny in the old form would silently match nothing.
+fn check_old_mesh_prefix(id: &str, index: usize) -> Result<(), CompileError> {
+    if !id.starts_with("hub::") && !id.starts_with("peer::") {
+        return Ok(());
+    }
+    Err(CompileError::Rule {
+        index,
+        message: format!(
+            "`{id}` uses a mesh id prefix that no longer exists. A mesh function keeps its id and lives in the namespace of its machine: write `<namespace>/<function id>`. `peer::laptop::shell::exec` becomes `laptop/shell::exec`, `hub::shell::exec` becomes `hub/shell::exec`, and `peer::*` becomes one rule per machine, such as `laptop/*`"
+        ),
+    })
+}
+
 pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, CompileError> {
     match spec {
         RuleSpec::Shorthand(raw) => {
@@ -136,6 +149,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
             };
             let (namespace, id) = split_namespace_pattern(pattern);
             check_namespace_qualifier(pattern, namespace, index)?;
+            check_old_mesh_prefix(id, index)?;
             // A bare empty allow `""` compiles as it always did.
             if id.is_empty() && (namespace.is_some() || action == Action::Deny) {
                 return Err(CompileError::Rule {
@@ -163,6 +177,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
         } => {
             let (namespace, id) = split_namespace_pattern(function);
             check_namespace_qualifier(function, namespace, index)?;
+            check_old_mesh_prefix(id, index)?;
             if id.is_empty() {
                 return Err(CompileError::Rule {
                     index,

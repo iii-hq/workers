@@ -67,8 +67,9 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
 
     // 6. Config rules fallback — evaluate the inline permission rules
     //    (first match wins; no match → hold for human approval).
-    match cfg.permissions().check_in(
+    match cfg.permissions().check_call(
         call.namespace.as_deref(),
+        call.implicit_namespace.as_deref(),
         &call.function_id,
         &call.arguments,
         effective.mode,
