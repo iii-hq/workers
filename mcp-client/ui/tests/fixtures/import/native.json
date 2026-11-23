@@ -1,0 +1,4 @@
+{ "mcpServers": { "linear": { "type": "http", "url": "https://mcp.linear.app/mcp", "auth": { "type": "bearer", "token": "@@FAKE@@" } },
+"linear-app": { "type": "http", "url": "https://mcp.linear.app/mcp", "auth": { "type": "client_credentials", "token_url": "https://api.linear.app/oauth/token", "client_id": "abc123", "client_secret": "secret://LINEAR_CLIENT_SECRET", "scope": "read,write" } },
+"search": { "type": "http", "url": "https://mcp.example.com/mcp", "headers": { "X-API-Key": "@@FAKE@@", "X-Workspace": "acme" } },
+"playwright": { "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.41"], "env": { "HTTPS_PROXY": "env://HTTPS_PROXY" }, "cwd": "/srv/project", "disabled": true } } }

@@ -32,8 +32,8 @@ use clap::Parser;
 use iii_sdk::protocol::observe_codes;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
-    RegisterFunction, Source, register_worker,
+    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverOptions, Source,
+    register_worker,
 };
 use serde_json::json;
 use tokio::sync::RwLock;
@@ -42,7 +42,6 @@ use memory::configuration::{self, ConfigCell, StoreCell};
 use memory::deps::Deps;
 use memory::events::{self, Emitter};
 use memory::functions::rest;
-use memory::observed::{Delivered, delivered_event};
 use memory::store::Store;
 use memory::{config, functions, hooks, manifest};
 
@@ -134,25 +133,6 @@ fn seam_observers(extraction_id: String) -> Vec<(Source, &'static str, ObserverO
     ]
 }
 
-/// Observes `source` now, in the worker's observer order, and keeps the
-/// observer from a task of its own ([`keep_observed`]).
-fn observe_seam(
-    iii: &Arc<IIIClient>,
-    source: Source,
-    target: &'static str,
-    options: ObserverOptions,
-) {
-    let observer = observe_logged(iii, &source, target, &options);
-    tokio::spawn(keep_observed(
-        iii.clone(),
-        observer,
-        source,
-        target,
-        options,
-        None,
-    ));
-}
-
 fn observe_logged(
     iii: &IIIClient,
     source: &Source,
@@ -183,7 +163,7 @@ async fn keep_observed(
     source: Source,
     target: &'static str,
     options: ObserverOptions,
-    binding: Option<Arc<memory::hook_binding::HookBinding>>,
+    binding: Arc<memory::hook_binding::HookBinding>,
 ) {
     let mut waits = reobserve_waits();
     loop {
@@ -223,9 +203,7 @@ async fn keep_observed(
             tokio::time::sleep(wait)
         );
         observer = observe_logged(&iii, &source, target, &options);
-        if let Some(binding) = &binding {
-            binding.install(observer.clone());
-        }
+        binding.install(target, observer.clone());
     }
 }
 
@@ -338,7 +316,7 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
     rest::register(&iii, &deps);
-    register_hook_functions(&iii, &deps);
+    memory::hook_binding::register(&iii, &deps);
 
     // Injectable console UI — after the memory::* functions so the console can
     // attribute the assets. `iii` is already Arc-wrapped (the console-ui crate
@@ -357,21 +335,18 @@ async fn main() -> Result<()> {
         &hooks::worker_name(),
         hooks::EXTRACTION_QUEUE,
     );
+    // Each seam refuses a call its observer did not deliver.
     for (source, target, options) in seam_observers(extraction_id) {
-        if target == hooks::PRE_GENERATE_FN {
-            let observer = observe_logged(&iii, &source, target, &options);
-            deps.hook_binding.install(observer.clone());
-            tokio::spawn(keep_observed(
-                iii.clone(),
-                observer,
-                source,
-                target,
-                options,
-                Some(deps.hook_binding.clone()),
-            ));
-        } else {
-            observe_seam(&iii, source, target, options);
-        }
+        let observer = observe_logged(&iii, &source, target, &options);
+        deps.hook_binding.install(target, observer.clone());
+        tokio::spawn(keep_observed(
+            iii.clone(),
+            observer,
+            source,
+            target,
+            options,
+            deps.hook_binding.clone(),
+        ));
     }
     ensure_extraction_queue(iii.clone());
 
@@ -404,47 +379,6 @@ async fn main() -> Result<()> {
     tracing::info!("memory shutting down (all writes already fsynced)");
     iii.shutdown_async().await;
     Ok(())
-}
-
-/// The two internal harness-facing handlers. Registered like every other
-/// function so hook invocations show up in traces, but marked internal.
-fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    memory::hook_binding::register_pre_generate(iii, deps);
-
-    let d = deps.clone();
-    iii.register_function(
-        hooks::TURN_COMPLETED_FN,
-        RegisterFunction::new_async(move |delivered: Delivered<hooks::TurnCompletedInput>| {
-            let d = d.clone();
-            let input = delivered_event(delivered).unwrap_or_default();
-            async move { hooks::turn_completed(&d, input).await }
-        })
-        .description(hooks::TURN_COMPLETED_DESC)
-        .metadata(json!({ "internal": true })),
-    );
-
-    let d = deps.clone();
-    iii.register_function(
-        hooks::EXTRACT_JOB_FN,
-        RegisterFunction::new_async(move |input: hooks::ExtractJobInput| {
-            let d = d.clone();
-            async move { hooks::extract_job(&d, input).await }
-        })
-        .description(hooks::EXTRACT_JOB_DESC)
-        .metadata(json!({ "internal": true })),
-    );
-
-    let d = deps.clone();
-    iii.register_function(
-        hooks::SESSION_DELETED_FN,
-        RegisterFunction::new_async(move |delivered: Delivered<hooks::SessionDeletedInput>| {
-            let d = d.clone();
-            let input = delivered_event(delivered).unwrap_or_default();
-            async move { hooks::session_deleted(&d, input).await }
-        })
-        .description(hooks::SESSION_DELETED_DESC)
-        .metadata(json!({ "internal": true, "trace_hidden": true })),
-    );
 }
 
 #[cfg(test)]

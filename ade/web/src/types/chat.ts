@@ -223,6 +223,8 @@ export interface FunctionCallMessage extends BaseMessage {
   functionCallId?: string
   /** iii session_id owning this call — paired with functionCallId for approval::resolve. */
   sessionId?: string
+  /** Engine namespace of a held call — shown in the prompt and echoed on approval::resolve. */
+  namespace?: string
   /**
    * Present when this pending call is a filesystem-access grant request rather
    * than a plain function-call approval — renders `FilesystemAccessPrompt`
@@ -232,6 +234,7 @@ export interface FunctionCallMessage extends BaseMessage {
     requestedRoot: string
     attemptedPath?: string
     errorCode?: string
+    onceOnly?: boolean
   }
   /**
    * A placeholder from a paged transcript read: the call's arguments and
@@ -387,12 +390,13 @@ export interface SystemNoticeFailure {
  * A session working-directory change. `path: null` means the session is now
  * unscoped. `cause` says why the scope moved: the user picked a folder, the
  * console recovered to the harness default because the saved folder vanished,
- * or the saved folder vanished with nothing to fall back to.
+ * the saved folder vanished with nothing to fall back to, or the agent moved
+ * the session's work to another folder during its turn.
  */
 export interface WorkingDirScope {
   path: string | null
   previousPath?: string | null
-  cause: 'selected' | 'recovered' | 'unavailable'
+  cause: 'selected' | 'recovered' | 'unavailable' | 'moved'
 }
 
 /**
@@ -454,10 +458,12 @@ export interface MessagePatch {
   /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
   functionCallId?: string
   sessionId?: string
+  namespace?: string
   filesystemAccess?: {
     requestedRoot: string
     attemptedPath?: string
     errorCode?: string
+    onceOnly?: boolean
   }
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'

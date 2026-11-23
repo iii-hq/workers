@@ -563,6 +563,32 @@ export interface ContextSectionRegistration {
   render: React.ComponentType<ContextSectionProps>
 }
 
+/** One `<tag …>` block the console cut out of a user message for its renderer. */
+export interface MessageBlockProps {
+  /** The block's tag, as registered. */
+  tag: string
+  /** The opening tag's `name="value"` attributes, values as written. */
+  attributes: Readonly<Record<string, string>>
+  /** The text between the tags, without the newlines that frame it. */
+  body: string
+  /** The chat session the message belongs to, when the console knows it. */
+  sessionId?: string
+}
+
+/**
+ * A worker's renderer for a block it writes into a user message: a
+ * `<tag attr="…">`, its body and `</tag>`, each on its own line, standing as
+ * its own paragraph (a workflow node's `<workflow_input>`). The console cuts
+ * every block of a registered tag out of the bubble and renders it below,
+ * in order; the bubble keeps the rest of the text. A tag nobody registered,
+ * or one inside code, stays text. Duplicate `tag`: last registration wins.
+ */
+export interface MessageBlockRendererRegistration {
+  /** The tag name the worker writes; matches `^[a-z][a-z0-9_-]*$`. */
+  tag: string
+  render: React.ComponentType<MessageBlockProps>
+}
+
 /**
  * Props a composer action receives. The host supplies the active session
  * and its live turn state; the action owns everything else and hands text
@@ -870,6 +896,9 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     registerContextSection(section: ContextSectionRegistration): () => void
+    registerMessageBlockRenderer(
+      renderer: MessageBlockRendererRegistration,
+    ): () => void
     registerComposerAction(action: ComposerActionRegistration): () => void
     registerComposerControl(control: ComposerControlRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */

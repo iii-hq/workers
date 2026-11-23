@@ -538,6 +538,31 @@ async fn a_step_ending_the_turn_writes_no_live_phase_after_its_projection() {
     );
 }
 
+/// A `shell::fs::read` result is a stream handle: the turn records it with its
+/// `access_key` withheld, in its place a note naming the call that reads text
+/// (MOT-5827).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_handle_result_is_recorded_with_its_access_key_withheld() {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["arguments"] =
+        json!({"function": "shell::fs::read", "payload": {"path": "MARKER.txt"}});
+    let read = json!({"content": {"channel_id": "c", "access_key": "secret-key",
+        "direction": "read"}, "size": 16});
+    let (result, calls, _) = generate_observed(reply, json!({"shell::fs::read": read})).await;
+    assert_eq!(result.expect("the step advances").next_step, Some(2));
+    assert!(
+        calls.iter().any(|(f, _)| f == "shell::fs::read"),
+        "dispatched"
+    );
+    let recorded = calls
+        .iter()
+        .find(|(f, d)| f == "session::append" && d.to_string().contains("function_result"))
+        .map(|(_, d)| d.to_string())
+        .expect("the result is appended");
+    assert!(!recorded.contains("secret-key"), "{recorded}");
+    assert!(recorded.contains("coder::read-file"), "{recorded}");
+}
+
 /// Recall provenance is read only when the step calls Memory's pre_generate
 /// hook: a stack without Memory reads no ledger, neither per step nor when the
 /// turn ends, even with another pre_generate observer called every step.
@@ -672,6 +697,22 @@ async fn a_released_call_held_again_stops_claiming_to_run_tools() {
     );
 }
 
+/// A person approved the call for one namespace: the release must run it there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_runs_in_the_namespace_it_was_held_for() {
+    let mut held = held_call();
+    held["namespace"] = json!("zz-a");
+    let hooks =
+        json!({"harness::hook::on-post-call": {"decision": "hold", "held_by": "test::gate"}});
+    let (_, calls, _) = release(json!({"call_hold": held}), hooks).await;
+    let post = calls
+        .iter()
+        .find(|(function, _)| function == "harness::hook::on-post-call")
+        .expect("post_call ran");
+    assert_eq!(post.1["call"]["namespace"], "zz-a");
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
+}
+
 /// The hooks after the holder see the wrapper's description on release, as
 /// they would have without the hold: it lives only in the transcript.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -719,6 +760,219 @@ async fn a_released_call_with_a_held_sibling_stops_claiming_to_run_tools() {
     assert_eq!(
         phases(&calls),
         ["running tools", "test::hold", "waiting for pending calls"]
+    );
+}
+
+/// The namespace the invoke frame of `function` named.
+fn sent_namespace<'a>(calls: &'a [(String, Value)], function: &str) -> &'a Value {
+    let key = format!("namespace of {function}");
+    &calls
+        .iter()
+        .find(|(f, _)| *f == key)
+        .unwrap_or_else(|| panic!("{function} was not invoked: {calls:?}"))
+        .1
+}
+
+fn hold_reply_in(namespace: &str) -> Value {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["arguments"]["namespace"] = json!(namespace);
+    reply
+}
+
+/// Whether this harness answered `function`, named in namespace `zz-a`, with
+/// the refusal its own controls get there, and sent no frame for it.
+fn refused_in_zz_a(calls: &[(String, Value)], function: &str) -> bool {
+    let refusal = format!("{function} was called in namespace zz-a");
+    !calls.iter().any(|(f, _)| f == function)
+        && calls
+            .iter()
+            .any(|(f, data)| f == "session::append" && data.to_string().contains(&refusal))
+}
+
+/// The model named a namespace: the call goes out in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_runs_in_the_namespace_the_model_named() {
+    let (_, calls, _) = generate(hold_reply_in("zz-a")).await;
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
+}
+
+fn hold_in(namespace: &str) -> crate::clients::engine::FunctionDescriptor {
+    crate::clients::engine::FunctionDescriptor {
+        function_id: "test::hold".into(),
+        namespace: namespace.into(),
+        description: None,
+        parameters: None,
+    }
+}
+
+/// The stored turn switched to native exposure, with `native_names` set.
+async fn go_native(deps: &Deps, native_names: Value) -> Result<(), HarnessError> {
+    let record = crate::state::get_turn_unhydrated(&deps.iii, "s", 2_000).await?;
+    let mut record = serde_json::to_value(record.expect("the turn is stored")).unwrap();
+    record["options"]["functions"]["expose"] = json!("native");
+    record["native_names"] = native_names;
+    let record = serde_json::from_value(record).unwrap();
+    crate::state::put_turn(&deps.iii, &record, 2_000).await
+}
+
+/// The model's native call `zz-a::test::hold` named the `zz_a` copy, the only
+/// one when the request went out. `zz-a` registering meanwhile sorts first
+/// and takes that name in a newer table: the call must still run in `zz_a`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_call_runs_where_its_generation_named_it() {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["function_id"] = json!("zz-a::test::hold");
+    reply["content"][0]["arguments"] = json!({});
+    for joins in [false, true] {
+        let (_, calls, _) = run_on_fake_engine(
+            json!({}),
+            json!([]),
+            Some(reply.clone()),
+            json!({}),
+            |deps| async move {
+                go_native(&deps, json!({})).await?;
+                crate::discovery::apply(&deps.functions, vec![hold_in("zz_a")]).await;
+                let payload =
+                    serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 1}))
+                        .unwrap();
+                let PreparedStep::Generated(generated) =
+                    Box::pin(generate_step(&deps, payload)).await?
+                else {
+                    panic!("the step generates");
+                };
+                if joins {
+                    let both = vec![hold_in("zz-a"), hold_in("zz_a")];
+                    crate::discovery::apply(&deps.functions, both).await;
+                }
+                Box::pin(finish_step(&deps, generated)).await
+            },
+        )
+        .await;
+        assert_eq!(
+            sent_namespace(&calls, "test::hold"),
+            "zz_a",
+            "joins: {joins}"
+        );
+    }
+}
+
+/// A redelivered step replays its stored reply with the table its generation
+/// stored, whatever registered since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replayed_native_call_runs_where_its_generation_named_it() {
+    let mut stored = hold_reply();
+    let mut next = stored["message"]["content"][0].clone();
+    next["id"] = json!("call_next");
+    stored["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(next);
+    for call in stored["message"]["content"].as_array_mut().unwrap() {
+        call["function_id"] = json!("zz-a::test::hold");
+        call["arguments"] = json!({});
+    }
+    let dispatched = json!({"call_hold": {"state": "dispatched", "function_id": "test::hold",
+        "namespace": "zz_a"}});
+    let (_, calls, _) = run_on_fake_engine(
+        dispatched,
+        json!([stored]),
+        None,
+        json!({}),
+        |deps| async move {
+            go_native(&deps, json!({"zz-a::test::hold": ["zz_a", "test::hold"]})).await?;
+            let both = vec![hold_in("zz-a"), hold_in("zz_a")];
+            crate::discovery::apply(&deps.functions, both).await;
+            step_one(deps).await
+        },
+    )
+    .await;
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz_a");
+}
+
+/// A deny qualified with the namespace the model named stops the call there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_denied_in_the_namespace_it_named_is_not_dispatched() {
+    let (_, calls, turn) = generate(hold_reply_in("zz-denied")).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert_eq!(turn["calls"]["call_hold"]["state"], "done", "{turn}");
+}
+
+/// A held call is released later, from its checkpoint: the namespace must be
+/// on it, or an approval for another namespace runs in the implicit one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_call_keeps_the_namespace_the_model_named() {
+    let (_, _, turn) = generate_observed(
+        hold_reply_in("zz-a"),
+        json!({"harness::hook::on-pre-call": {"decision": "hold", "held_by": "test::gate"}}),
+    )
+    .await;
+    assert_eq!(turn["calls"]["call_hold"]["namespace"], "zz-a");
+}
+
+/// An old approval gate cannot show a namespace: the call is refused before it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_in_another_namespace_is_refused_under_an_old_gate() {
+    let hooks =
+        json!({"harness::hook::on-pre-call": {"decision": "continue", "target": "approval::gate"}});
+    let (_, calls, _) = generate_observed(hold_reply_in("zz-a"), hooks).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert!(
+        calls.iter().any(|(f, data)| f == "session::append"
+            && data.to_string().contains("approval_gate_too_old")),
+        "{calls:?}"
+    );
+}
+
+/// A call held for another namespace before a gate rollback: the old gate
+/// releases it unseen, so the release refuses it before it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_in_another_namespace_is_refused_under_an_old_gate() {
+    let mut held = held_call();
+    held["namespace"] = json!("zz-a");
+    held["held_by"] = json!("approval::gate");
+    let hooks =
+        json!({"harness::hook::on-pre-call": {"decision": "continue", "target": "approval::gate"}});
+    let (_, calls, _) = release(json!({"call_hold": held}), hooks).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert!(
+        calls.iter().any(|(f, data)| f == "session::append"
+            && data.to_string().contains("approval_gate_too_old")),
+        "{calls:?}"
+    );
+}
+
+/// A control this harness answers itself, named in another namespace, is
+/// refused: neither answered here nor dispatched to that namespace's harness.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_control_the_model_named_in_another_namespace_is_refused() {
+    for control in [crate::functions::ASK_ID, crate::functions::SPAWN_ID] {
+        let mut reply = hold_reply_in("zz-a");
+        reply["content"][0]["arguments"]["function"] = json!(control);
+        let (_, calls, turn) = generate(reply).await;
+        assert!(refused_in_zz_a(&calls, control), "{control}: {calls:?}");
+        assert!(
+            turn["calls"]["call_hold"]["child_session_id"].is_null(),
+            "{turn}"
+        );
+    }
+}
+
+/// A spawn approved for another namespace is refused: the generic release
+/// path would dispatch it to that namespace's harness, which seeds a child
+/// with none of this turn's guards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_spawn_named_in_another_namespace_is_refused() {
+    let mut held = held_call();
+    held["function_id"] = json!(crate::functions::SPAWN_ID);
+    held["namespace"] = json!("zz-a");
+    let (_, calls, turn) = release(json!({"call_hold": held}), json!({})).await;
+    assert!(
+        refused_in_zz_a(&calls, crate::functions::SPAWN_ID),
+        "{calls:?}"
+    );
+    assert!(
+        turn["calls"]["call_hold"]["child_session_id"].is_null(),
+        "{turn}"
     );
 }
 
@@ -1784,6 +2038,237 @@ async fn status_expects_a_wake_on_a_finished_turn_that_continues() {
     assert_eq!(expects, [true, false], "no binding is stored");
 }
 
+/// The ide's post_call answer after a `git worktree add`: move the session to
+/// `root`.
+fn moves_to(root: &str) -> Value {
+    json!({"harness::hook::on-post-call": {"decision": "continue",
+        "target": "shell::turns::on-post-call",
+        "mutations": {"fs_scope": {"root": root}}}})
+}
+
+/// A reply calling `shell::exec` (`call_wt`) then `coder::read-file`
+/// (`call_next`), after a `call_held` already held when `held`.
+fn worktree_reply(held: bool) -> Value {
+    let call = |id: &str, function: &str| {
+        json!({"type": "function_call", "id": id, "function_id": "agent_call",
+            "arguments": {"function": function, "payload": {}}})
+    };
+    let mut content = vec![
+        call("call_wt", "shell::exec"),
+        call("call_next", "coder::read-file"),
+    ];
+    if held {
+        content.insert(0, call("call_held", "shell::exec"));
+    }
+    json!({"role": "assistant", "stop_reason": "function_call",
+        "model": "fake", "provider": "fake", "timestamp": 2,
+        "usage": {"input": 10, "output": 2, "cost_usd": 0.1}, "content": content})
+}
+
+/// Store `t1` rooted at `root` (unscoped when `None`).
+async fn root_turn(deps: &Deps, root: Option<&str>) {
+    let cfg = deps.cfg().await;
+    let mut record = crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+        .await
+        .unwrap()
+        .unwrap();
+    if let Some(root) = root {
+        record.options.set_filesystem_root(root);
+    }
+    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+        .await
+        .unwrap();
+}
+
+/// Run step 1 of `t1` rooted at `root` under `boundary`.
+async fn step_rooted(
+    root: Option<&'static str>,
+    boundary: crate::filesystem_scope::BoundaryMode,
+    checkpoints: Value,
+    reply: Value,
+    hooks: Value,
+) -> (
+    Result<TurnStepResult, HarnessError>,
+    Vec<(String, Value)>,
+    Value,
+) {
+    run_on_fake_engine(
+        checkpoints,
+        json!([]),
+        Some(reply),
+        hooks,
+        |deps| async move {
+            let cfg = deps.cfg().await;
+            *deps.config.write().await = Arc::new(crate::config::WorkerConfig {
+                filesystem_boundary: boundary,
+                ..(*cfg).clone()
+            });
+            root_turn(&deps, root).await;
+            step_one(deps).await
+        },
+    )
+    .await
+}
+
+/// The `fs_scope` stamped on the first call to `function`.
+fn stamped<'a>(calls: &'a [(String, Value)], function: &str) -> &'a Value {
+    let (_, data) = calls.iter().find(|(f, _)| f == function).unwrap();
+    &data["fs_scope"]
+}
+
+/// The `session::set-meta` writes, in order.
+fn meta_writes(calls: &[(String, Value)]) -> Vec<&Value> {
+    calls
+        .iter()
+        .filter(|(f, _)| f == "session::set-meta")
+        .map(|(_, data)| data)
+        .collect()
+}
+
+/// A root the ide reports re-stamps the step's next call and the record, and
+/// reaches the session metadata with the root it left once the record is
+/// stored, merged into what the ADE stored there. Under `workspace` a
+/// worktree outside the root and grants is followed too: the exec that
+/// created it could already write there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worktree_the_ide_reports_moves_the_session() {
+    use crate::filesystem_scope::BoundaryMode;
+    for (mode, boundary) in [
+        (BoundaryMode::ConfiguredRoots, "configured_roots"),
+        (BoundaryMode::Workspace, "workspace"),
+    ] {
+        // The ADE's own metadata (`metadataFor`): every other key survives.
+        let mut hooks = moves_to("/repo.feat");
+        hooks["session::get"] = json!({"meta": {"session_id": "s", "metadata": {
+            "surface": "console", "model": "fake", "fs_scope": {"root": "/repo"}}}});
+        let (result, calls, turn) =
+            step_rooted(Some("/repo"), mode, json!({}), worktree_reply(false), hooks).await;
+        assert_eq!(result.unwrap().next_step, Some(2));
+        let scope = |root: &str| json!({"root": root, "grants": [], "boundary": boundary});
+        assert_eq!(stamped(&calls, "shell::exec"), &scope("/repo"));
+        assert_eq!(stamped(&calls, "coder::read-file"), &scope("/repo.feat"));
+        assert_eq!(
+            turn["options"]["metadata"]["fs_scope"],
+            json!({"root": "/repo.feat"})
+        );
+        assert_eq!(
+            meta_writes(&calls),
+            [
+                &json!({"session_id": "s", "metadata": {"surface": "console", "model": "fake",
+                "fs_scope": {"root": "/repo.feat", "moved_from": "/repo"}}})
+            ],
+            "one mirror: the next call's equal root moves nothing"
+        );
+        let stored = calls.iter().position(|(f, data)| {
+            f == "state::set"
+                && data["value"]["options"]["metadata"]["fs_scope"]["root"] == "/repo.feat"
+        });
+        let mirrored = calls.iter().position(|(f, _)| f == "session::set-meta");
+        assert!(
+            stored.unwrap() < mirrored.unwrap(),
+            "record first, mirror second"
+        );
+    }
+}
+
+/// No move on a failed call, on an unscoped session, or while another call of
+/// the turn awaits approval; the last one tells the model why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worktree_report_moves_nothing_on_a_failure_an_unscoped_session_or_a_held_sibling() {
+    let mut failed = moves_to("/repo.feat");
+    failed["harness::hook::on-post-call"]["mutations"]["is_error"] = json!(true);
+    let held = json!({"call_held": {"state": "pending", "function_id": "shell::exec",
+        "held_by": "test::gate", "held_arguments": {}}});
+    for (root, checkpoints, hooks) in [
+        (Some("/repo"), json!({}), failed),
+        (None, json!({}), moves_to("/repo.feat")),
+        (Some("/repo"), held, moves_to("/repo.feat")),
+    ] {
+        let sibling_held = !checkpoints.as_object().unwrap().is_empty();
+        let (_, calls, turn) = step_rooted(
+            root,
+            crate::filesystem_scope::BoundaryMode::ConfiguredRoots,
+            checkpoints,
+            worktree_reply(sibling_held),
+            hooks,
+        )
+        .await;
+        let root = root.map_or(Value::Null, |root| json!(root));
+        assert_eq!(turn["options"]["metadata"]["fs_scope"]["root"], root);
+        assert_eq!(stamped(&calls, "coder::read-file")["root"], root);
+        assert!(meta_writes(&calls).is_empty(), "{calls:?}");
+        let told = calls.iter().any(|(f, data)| {
+            f == "session::append"
+                && data.to_string().contains("call_wt")
+                && data
+                    .to_string()
+                    .contains("did not move to /repo.feat: another call of this turn")
+        });
+        assert_eq!(told, sibling_held, "{calls:?}");
+    }
+}
+
+/// An approved `git worktree add` follows on release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_worktree_add_moves_the_session() {
+    let held = json!({"call_wt": {"state": "pending", "function_id": "shell::exec",
+        "held_by": "test::gate", "held_arguments": {}}});
+    let (result, calls, turn) = run_on_fake_engine(
+        held,
+        json!([]),
+        None,
+        moves_to("/repo.feat"),
+        |deps| async move {
+            root_turn(&deps, Some("/repo")).await;
+            crate::deferred::resolve(&deps, resolve_request("call_wt", "execute")).await
+        },
+    )
+    .await;
+    assert!(result.unwrap().turn_resumed);
+    assert_eq!(stamped(&calls, "shell::exec")["root"], "/repo");
+    assert_eq!(
+        turn["options"]["metadata"]["fs_scope"]["root"],
+        "/repo.feat"
+    );
+    assert_eq!(
+        meta_writes(&calls),
+        [&json!({"session_id": "s",
+            "metadata": {"fs_scope": {"root": "/repo.feat", "moved_from": "/repo"}}})]
+    );
+}
+
+/// A released move is mirrored even when its next step cannot be queued: the
+/// record already holds the new root and a retried resolve finds the call
+/// settled, so nothing else would mirror it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_move_is_mirrored_when_the_next_step_cannot_be_queued() {
+    let held = json!({"call_wt": {"state": "pending", "function_id": "shell::exec",
+        "held_by": "test::gate", "held_arguments": {}}});
+    let (result, calls, turn) = run_on_faulty_engine(
+        held,
+        json!([]),
+        None,
+        moves_to("/repo.feat"),
+        |f, _| f == "harness::turn",
+        |deps| async move {
+            root_turn(&deps, Some("/repo")).await;
+            crate::deferred::resolve(&deps, resolve_request("call_wt", "execute")).await
+        },
+    )
+    .await;
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(
+        turn["options"]["metadata"]["fs_scope"]["root"],
+        "/repo.feat"
+    );
+    assert_eq!(turn["calls"]["call_wt"]["state"], "done");
+    assert_eq!(
+        meta_writes(&calls),
+        [&json!({"session_id": "s",
+            "metadata": {"fs_scope": {"root": "/repo.feat", "moved_from": "/repo"}}})]
+    );
+}
+
 fn held_call() -> Value {
     json!({"state": "pending", "function_id": "test::hold",
         "held_by": "test::gate", "held_arguments": {}})
@@ -1919,6 +2404,20 @@ async fn run_on_faulty_engine<T, F: std::future::Future<Output = T>>(
     .await
 }
 
+/// The hook points a test's `hooks` map observes. Any other key
+/// (`session::get`) only answers that function. Kept out of
+/// `run_on_misleading_engine`, whose debug poll frame sits near the 2 MiB
+/// test-thread stack.
+fn observed_hook_points(hooks: &Value) -> Vec<String> {
+    hooks
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|id| id.starts_with("harness::hook::"))
+        .cloned()
+        .collect()
+}
+
 /// [`run_on_faulty_engine`], storing a refused turn write that `lands` matches all
 /// the same: the error does not tell whether the write happened.
 async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
@@ -1939,12 +2438,12 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
         "session_id": "s", "turn_id": "t1", "status": "running",
         "step": 1, "turn_count": 2, "depth": 0,
         "options": {"model": "fake", "max_turns": 16,
-            "functions": {"allow": ["*"], "deny": [], "expose": "agent_call"}},
+            "functions": {"allow": ["*"], "deny": ["zz-denied/test::hold"], "expose": "agent_call"}},
         "calls": checkpoints,
         "created_at": 1, "updated_at": 1
     })));
     let stored_turn = turn.clone();
-    let observed_hooks: Vec<String> = hooks.as_object().unwrap().keys().cloned().collect();
+    let observed_hooks = observed_hook_points(&hooks);
     let server = tokio::spawn(async move {
         let mut queue = serde_json::Map::new();
         let mut prompts = serde_json::Map::new();
@@ -2012,10 +2511,14 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 .and_then(|id| id.split('#').next())
                 .map_or(function, str::to_string);
             let data = message["data"].clone();
-            observed
-                .lock()
-                .unwrap()
-                .push((function.clone(), data.clone()));
+            {
+                let mut observed = observed.lock().unwrap();
+                observed.push((function.clone(), data.clone()));
+                observed.push((
+                    format!("namespace of {function}"),
+                    message["namespace"].clone(),
+                ));
+            }
             if refuse(&function, &data) {
                 if lands(&function, &data) {
                     *stored_turn.lock().unwrap() = data["value"].clone();

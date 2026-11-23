@@ -1,0 +1,47 @@
+{
+  "linear": {
+    "type": "http",
+    "url": "https://mcp.linear.app/mcp",
+    "auth": { "type": "bearer", "token": "secret://LINEAR_API_KEY" }
+  },
+  "linear-app": {
+    "type": "http",
+    "url": "https://mcp.linear.app/mcp",
+    "auth": {
+      "type": "client_credentials",
+      "token_url": "https://api.linear.app/oauth/token",
+      "client_id": "abc123",
+      "client_secret": "secret://LINEAR_CLIENT_SECRET",
+      "scope": "read,write"
+    }
+  },
+  "linear-me": {
+    "type": "http",
+    "url": "https://mcp.linear.app/mcp",
+    "auth": { "type": "oauth", "scopes": ["read", "write"] }
+  },
+  "linear-auto": {
+    "type": "http",
+    "url": "https://mcp.linear.app/mcp"
+  },
+  "search": {
+    "type": "http",
+    "url": "https://mcp.example.com/mcp",
+    "headers": {
+      "X-API-Key": "secret://SEARCH_X_API_KEY",
+      "X-Workspace": "acme"
+    }
+  },
+  "playwright": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@0.0.41"],
+    "env": {
+      "PLAYWRIGHT_BROWSERS_PATH": "/opt/pw-browsers",
+      "GITHUB_TOKEN": "secret://PLAYWRIGHT_GITHUB_TOKEN",
+      "HTTPS_PROXY": "env://HTTPS_PROXY"
+    },
+    "cwd": "/home/me/project",
+    "disabled": false
+  }
+}

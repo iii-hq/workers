@@ -324,6 +324,9 @@ pub struct CallCheckpoint {
     pub pending_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_at: Option<i64>,
+    /// The call's explicit `agent_call` namespace; absent: today's routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 /// Sub-agent linkage recorded on a child turn (harness.md § Sub-agents).
@@ -451,13 +454,16 @@ pub struct TurnRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions_acknowledged: Option<Vec<u32>>,
     /// Function contracts whose exact full source result was retained in the
-    /// most recently assembled model context for this session.
+    /// most recently assembled model context for this session, keyed by
+    /// `call::contract_key(namespace, id)`; rows from engines without
+    /// namespaced info keep the bare id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
     /// Identical failures this turn, keyed by the digest of
-    /// `[function_id, arguments]`: an entry that reaches the repeat limit makes
-    /// the next identical call fail locally instead of re-running the target.
-    /// A success clears its entry; every new turn starts empty.
+    /// `[namespace, function_id, arguments]`: an entry that reaches the repeat limit
+    /// makes the next identical call fail locally instead of re-running the target.
+    /// A success clears its entry, a root move clears all; every new turn starts
+    /// empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub failed_calls: BTreeMap<String, FailedCall>,
     /// Last effective names-only skill view admitted to the transcript.
@@ -495,6 +501,12 @@ pub struct TurnRecord {
     /// tools, so a narrowed child's toolset stays exactly its work functions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatch_only_functions: Vec<String>,
+    /// The native tool names of the step's last generate request. Its reply,
+    /// replayed too, is resolved through these, never through a newer registry.
+    /// shortcut: one row per tool not named by its bare id, written on every
+    /// turn write; keep only the names the reply used if that grows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_names: crate::policy::NativeNames,
     #[serde(default)]
     pub validation_retries: u32,
     #[serde(default)]
@@ -676,6 +688,7 @@ pub(crate) mod tests {
             stop_reason: None,
             failure: None,
             dispatch_only_functions: Vec::new(),
+            native_names: Default::default(),
             validation_retries: 0,
             transient_resumes: 0,
             ask_step: None,
@@ -817,7 +830,24 @@ pub(crate) mod tests {
             reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
+            namespace: None,
         }
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_the_call_namespace_and_old_records_have_none() {
+        let mut held = cp(CallState::Pending, None, false);
+        held.namespace = Some("laptop".into());
+        let stored = serde_json::to_value(&held).unwrap();
+        assert_eq!(stored["namespace"], "laptop");
+        assert_eq!(
+            serde_json::from_value::<CallCheckpoint>(stored).unwrap(),
+            held
+        );
+        let old: CallCheckpoint =
+            serde_json::from_value(json!({ "state": "pending", "function_id": "shell::exec" }))
+                .unwrap();
+        assert_eq!(old.namespace, None);
     }
 
     #[test]

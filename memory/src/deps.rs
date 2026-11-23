@@ -31,3 +31,18 @@ impl Deps {
         self.config.read().await.clone()
     }
 }
+
+/// Deps over a store in `dir` and no engine: with embeddings off in `cfg`,
+/// nothing reaches the client.
+#[cfg(test)]
+pub(crate) fn offline_deps(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
+    let iii = Arc::new(IIIClient::new("ws://127.0.0.1:1"));
+    let store = Store::open(dir.to_path_buf()).unwrap();
+    Deps {
+        hook_binding: Arc::default(),
+        emitter: Arc::new(Emitter::new(iii.clone())),
+        iii,
+        store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
+        config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),
+    }
+}

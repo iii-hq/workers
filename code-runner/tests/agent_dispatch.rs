@@ -23,6 +23,8 @@ const FORBIDDEN: &[&str] = &[
     "harness::state::compare-and-set",
     "state::claim-namespace",
     "engine::observers::dispose",
+    "mcp-client::servers::approve",
+    "mcp-client::login::start",
 ];
 
 async fn denied<T: std::fmt::Debug>(

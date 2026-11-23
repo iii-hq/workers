@@ -139,6 +139,7 @@ fp::batch { calls: [
   per request (`max_calls`; more still runs, with a warning that the
   response may be too large to deliver; hard ceiling 64).
 - Same refusals as pipe steps, plus no nested batch and no pipe as a call. A batch is not a pipe step, and a pipe is not a batch call.
+- While the approval gate runs, a call naming another namespace is refused; call it directly with `namespace`.
 - Every refusal lists all the problems of the request, not only the first; fix them all in one resend.
 - `completed` and `failed` count the outcomes; `ok` is true only when `failed` is 0.
   Same approval surface: the batch runs with this worker's authority.
@@ -172,5 +173,6 @@ fp::batch { calls: [
   surface — pulling an attachment out of the session and threading it on is
   exactly what a pipe is for. `state::*` is the deliberate exception on the
   write side: persisting the threaded value is the pipe's purpose.
-  `state::claim-namespace` and `provider-openai-codex::state::*` remain
-  operator-only and cannot be pipe steps, even when the pipe itself is approved.
+  `state::claim-namespace`, `provider-openai-codex::state::*` and
+  `mcp-client::*` remain operator-only and cannot be pipe steps, even when the
+  pipe itself is approved.

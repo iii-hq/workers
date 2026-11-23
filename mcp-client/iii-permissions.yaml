@@ -1,0 +1,13 @@
+# Documentation only: no code reads this file. The MCP client page writes its own allow rules, one per read
+# function by exact id, into the approval gate's entry (mcp-client/README.md, Agent access). These lines show the
+# intended split for a server named `linear`. `mcp-client::*` is refused by the harness, fp and code-runner whatever
+# a policy says.
+version: 1
+rules:
+  - '!mcp-client::*'
+  - 'mcp::linear::list_*'
+  - 'mcp::linear::get_*'
+  - mcp::linear::search_documentation
+  - mcp::linear::whoami
+  - mcp::linear::extract_images
+  - mcp::linear::instructions

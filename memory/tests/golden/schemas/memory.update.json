@@ -1,5 +1,5 @@
 {
-  "description": "Revise a memory's text, entities, or pin flag in place (same id, bumped revision; the prior revision stays in the on-disk log).",
+  "description": "Revise a memory's text, entities, or pin flag in place (same id, bumped revision; the prior revision stays in the on-disk log). A retired memory is refused with `memory_retired`, naming the memory that replaced it. From a turn: only a note saved from a turn, in the turn's own bank, never a pinned one, never the pin flag.",
   "function_id": "memory::update",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -78,7 +78,7 @@
             "type": "string"
           },
           {
-            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "description": "Saved explicitly through `memory::save`: by a human (console, REST, CLI), or by an agent from a turn: then `source.turn_id` is set and it is that agent's note, not a fact the user stated.",
             "enum": [
               "stated"
             ],

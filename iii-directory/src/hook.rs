@@ -62,6 +62,9 @@ pub struct PreGenerateHookRequest {
     pub step: u64,
     pub depth: u32,
     pub generate: GeneratePayload,
+    /// The calling harness's own namespace. Only namespace-aware harnesses send it; without it the hint stays as before.
+    #[serde(default)]
+    pub own_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -277,8 +280,40 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
     })
 }
 
+/// The hint's namespace sentence: the caller's own namespace and every other
+/// namespace the catalog holds. `None` when the catalog holds no other one.
+/// Only `agent_call` exposure says to pass `namespace`: a native call has no
+/// envelope, so a `namespace` argument would land in the function's payload.
+fn namespace_line(own: &str, catalog: &[ToolSchema], expose: ExposeKind) -> Option<String> {
+    let others: std::collections::BTreeSet<&str> = catalog
+        .iter()
+        .flat_map(|tool| tool.namespaces.iter().map(String::as_str))
+        .filter(|namespace| *namespace != own)
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let others = others
+        .iter()
+        .map(|namespace| format!("`{namespace}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(match expose {
+        ExposeKind::AgentCall => format!(
+            "Your namespace: `{own}`. A call without `namespace` runs there. Other namespaces: {others}. Pass `namespace` to use a function in one of them.\n"
+        ),
+        ExposeKind::Native | ExposeKind::Other => {
+            format!("Your namespace: `{own}`. Other namespaces: {others}.\n")
+        }
+    })
+}
+
 /// The exact `<discovery_assist>` block one generation receives.
-fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
+fn hint_block(
+    functions_generation: u64,
+    expose: ExposeKind,
+    namespace_line: Option<&str>,
+) -> String {
     let call_instruction = match expose {
         ExposeKind::AgentCall => {
             "Invoke it through agent_call with this call envelope: { \"function\": \"directory::search_functions\", \"description\": \"<short user-facing search description in the response language>\", \"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
@@ -287,9 +322,10 @@ fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
             "Call directory::search_functions directly with its required `capabilities` request field.\n"
         }
     };
+    let namespace_line = namespace_line.unwrap_or("");
     format!(
         "<discovery_assist functions_generation={functions_generation}>\n\
-Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities in this ONE call — usually one to six, at most eighteen. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. A call marked pre-verified by a Harness runtime block or update is already verified; use its exact payload directly and do not search for it or fetch its contract. {call_instruction}\
+Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities in this ONE call — usually one to six, at most eighteen. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. A call marked pre-verified by a Harness runtime block or update is already verified; use its exact payload directly and do not search for it or fetch its contract. {call_instruction}{namespace_line}\
 </discovery_assist>"
     )
 }
@@ -297,10 +333,14 @@ Before calling any task function whose ID has not already been verified in this 
 /// The hint as an ephemeral tail user message. `timestamp` is mandatory —
 /// the router's message types have no serde default for it — and never
 /// reaches the provider wire.
-fn hint_message(functions_generation: u64, expose: ExposeKind) -> Value {
+fn hint_message(
+    functions_generation: u64,
+    expose: ExposeKind,
+    namespace_line: Option<&str>,
+) -> Value {
     serde_json::json!({
         "role": "user",
-        "content": [{ "type": "text", "text": hint_block(functions_generation, expose) }],
+        "content": [{ "type": "text", "text": hint_block(functions_generation, expose, namespace_line) }],
         "timestamp": now_ms(),
     })
 }
@@ -326,15 +366,16 @@ pub struct HintPreviewResponse {
 
 pub fn hint_preview() -> HintPreviewResponse {
     HintPreviewResponse {
-        agent_call: hint_block(0, ExposeKind::AgentCall),
-        native: hint_block(0, ExposeKind::Native),
+        agent_call: hint_block(0, ExposeKind::AgentCall, None),
+        native: hint_block(0, ExposeKind::Native, None),
     }
 }
 
 /// One hook pass: inject the hint when every gate clears, otherwise skip
 /// with a stable reason. Pure over the payload's own messages and tools
 /// (except the once-per-turn record), so replays and compaction
-/// re-derive the right outcome on their own.
+/// re-derive the right outcome on their own. The hint's namespace sentence
+/// reads the live catalog.
 pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGenerateHookResponse {
     let config = deps.config.load_full();
     let GeneratePayload {
@@ -417,10 +458,14 @@ pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGe
             functions_generation,
         );
     }
+    let line = match request.own_namespace.as_deref() {
+        Some(own) => namespace_line(own, &deps.catalog.read().await, expose),
+        None => None,
+    };
     PreGenerateHookResponse {
         decision: "continue".to_string(),
         mutations: Some(PreGenerateMutations {
-            append_messages: vec![hint_message(functions_generation, expose)],
+            append_messages: vec![hint_message(functions_generation, expose, line.as_deref())],
         }),
         annotations: annotation(DiscoveryPassV1 {
             outcome: DiscoveryOutcome::HintInjected,
@@ -447,6 +492,7 @@ mod tests {
             name: name.into(),
             description: format!("{name} description"),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         }
     }
 
@@ -487,6 +533,7 @@ mod tests {
                 tools,
                 expose: ExposeKind::AgentCall,
             },
+            own_namespace: None,
         }
     }
 
@@ -560,6 +607,80 @@ mod tests {
             response.annotations.directory.summary,
             "directory · hint injected"
         );
+    }
+
+    #[tokio::test]
+    async fn hint_names_own_and_other_namespaces_for_a_namespace_aware_harness() {
+        let deps = deps();
+        *deps.catalog.write().await = Arc::new(vec![
+            ToolSchema {
+                namespaces: vec!["default".into(), "hub".into()],
+                ..tool("shell::exec")
+            },
+            ToolSchema {
+                namespaces: vec!["laptop".into()],
+                ..tool("state::set")
+            },
+        ]);
+        let mut request = request_for("find the stars", wide_tools());
+        request.own_namespace = Some("default".into());
+        let prompt = hint_text(&pre_generate(&deps, request).await);
+        assert!(prompt.ends_with(
+            "Your namespace: `default`. A call without `namespace` runs there. Other namespaces: \
+`hub`, `laptop`. Pass `namespace` to use a function in one of them.\n</discovery_assist>"
+        ));
+        assert_eq!(
+            namespace_line(
+                "default",
+                &[ToolSchema {
+                    namespaces: vec!["default".into()],
+                    ..tool("a::b")
+                }],
+                ExposeKind::AgentCall
+            ),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn native_hint_names_namespaces_without_a_namespace_argument() {
+        let deps = deps();
+        *deps.catalog.write().await = Arc::new(vec![
+            ToolSchema {
+                namespaces: vec!["laptop".into()],
+                ..tool("state::set")
+            },
+            ToolSchema {
+                namespaces: vec!["hub".into(), "default".into()],
+                ..tool("shell::exec")
+            },
+            ToolSchema {
+                namespaces: vec!["hub".into()],
+                ..tool("github::repo::view")
+            },
+        ]);
+        let mut request = request_for("find the stars", wide_tools());
+        request.generate.expose = ExposeKind::Native;
+        request.own_namespace = Some("default".into());
+        let prompt = hint_text(&pre_generate(&deps, request).await);
+        assert!(prompt.ends_with(
+            "Your namespace: `default`. Other namespaces: `hub`, `laptop`.\n</discovery_assist>"
+        ));
+    }
+
+    #[tokio::test]
+    async fn old_harness_hint_is_unchanged() {
+        let deps = deps();
+        *deps.catalog.write().await = Arc::new(vec![ToolSchema {
+            namespaces: vec!["default".into(), "hub".into()],
+            ..tool("shell::exec")
+        }]);
+        let prompt =
+            hint_text(&pre_generate(&deps, request_for("find the stars", wide_tools())).await);
+        assert!(prompt.ends_with(
+            "\"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n</discovery_assist>"
+        ));
+        assert!(!prompt.contains("Your namespace"));
     }
 
     #[tokio::test]

@@ -73,7 +73,7 @@ mod startup_tests {
         let yaml: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(include_str!("../iii.worker.yaml")).unwrap();
         let deps = yaml["dependencies"].as_mapping().expect("dependencies");
-        for dep in ["http", "rbac-proxy", "secrets"] {
+        for dep in ["http", "rbac-proxy", "secrets", "iii-directory"] {
             assert!(
                 deps.contains_key(serde_yaml_ng::Value::String(dep.into())),
                 "{dep} missing"

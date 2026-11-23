@@ -142,6 +142,9 @@ pub struct Bank {
 struct BankInner {
     memories: HashMap<String, Memory>,
     index: Bm25Index,
+    /// Superseded records, searched on behalf of the live memory that
+    /// replaced them.
+    retired: Bm25Index,
     /// Memory id -> (embedding model, embedding), loaded from the
     /// `vectors.jsonl` sidecar. Like the BM25 index this is a derived
     /// cache: rebuildable, never authoritative, and absent vectors just
@@ -150,6 +153,70 @@ struct BankInner {
     /// Extraction receipts this bank's log holds, replayed at open.
     receipts: HashSet<String>,
 }
+
+impl BankInner {
+    /// The live record at the end of `id`'s `superseded_by` chain, if any.
+    fn live_successor(&self, id: &str) -> Option<&Memory> {
+        let mut next = self.memories.get(id)?.superseded_by.as_deref();
+        // shortcut: 8 hops stop a cycle and also end a chain of more than 8
+        // changes of one fact, whose oldest lines then reach nothing; walk
+        // with a visited set if such chains show up.
+        for _ in 0..8 {
+            let m = self.memories.get(next?)?;
+            if m.is_live() {
+                return Some(m);
+            }
+            next = m.superseded_by.as_deref();
+        }
+        None
+    }
+
+    /// Put `memory` in the map and in the caches its state belongs to: a
+    /// live one in the index, a superseded one in `retired`, neither with a
+    /// vector unless live.
+    fn publish(&mut self, memory: Memory) {
+        if memory.is_live() {
+            self.index.add(&memory);
+            self.retired.remove(&memory.id);
+        } else {
+            self.index.remove(&memory.id);
+            self.vectors.remove(&memory.id);
+            if memory.superseded_by.is_some() {
+                self.retired.add(&memory);
+            } else {
+                self.retired.remove(&memory.id);
+            }
+        }
+        self.memories.insert(memory.id.clone(), memory);
+    }
+
+    /// Live BM25 scores, plus, per live memory, the superseded records whose
+    /// chain ends at it that the query matched (`via`), with their scores:
+    /// only where `keep` accepts both, so a line the reader may not read
+    /// routes nothing.
+    fn bm25(
+        &self,
+        tokens: &[String],
+        keep: impl Fn(&Memory) -> bool,
+    ) -> (HashMap<String, f32>, Via<'_>) {
+        let mut via: Via = HashMap::new();
+        // shortcut: retired lines are reached by words only, no vector is
+        // kept; keep retired vectors if a linked-update eval shows misses.
+        for (id, s) in self.index.score_of(&self.retired, tokens) {
+            let Some(retired) = self.memories.get(&id).filter(|m| keep(m)) else {
+                continue;
+            };
+            if let Some(live) = self.live_successor(&id).filter(|m| keep(m)) {
+                via.entry(live.id.clone()).or_default().push((retired, s));
+            }
+        }
+        (self.index.score(tokens), via)
+    }
+}
+
+/// Live memory id -> the superseded records a query reached it through,
+/// with their raw BM25 ([`BankInner::bm25`]).
+type Via<'a> = HashMap<String, Vec<(&'a Memory, f32)>>;
 
 /// A source receipt line in `memories.jsonl`: one extraction effect was
 /// published, or skipped because its expected snapshot conflicted.
@@ -675,6 +742,12 @@ fn dismissed_key(session: &str) -> String {
     serde_json::json!(["dismissed-history-v1", session]).to_string()
 }
 
+/// The whole job is the key: a job differing in any field is not held.
+fn job_key(job: &crate::hooks::ExtractJobInput) -> Result<String, MemoryError> {
+    extraction_identifier(&job.session_id)?;
+    Ok(serde_json::json!(["queued-job", job.session_id, job]).to_string())
+}
+
 fn extraction_identifier(id: &str) -> Result<(), MemoryError> {
     if !crate::extraction_proof::bounded(id) {
         return Err(MemoryError::InvalidInput(
@@ -932,6 +1005,35 @@ impl Store {
     pub fn delete_extraction_plan(&self, source: &str) -> Result<(), MemoryError> {
         let _lock = extraction_lock();
         remove_if_exists(&self.extraction_plan_path(source))
+    }
+
+    /// Hold a job this worker puts on the extraction queue: the queue runs
+    /// whatever job a caller enqueues, so only a held job may run. Released
+    /// when it succeeds, it outlives its session like its queue message (a
+    /// redriven dead letter still runs).
+    pub fn hold_extraction_job(
+        &self,
+        job: &crate::hooks::ExtractJobInput,
+    ) -> Result<(), MemoryError> {
+        let key = job_key(job)?;
+        let _lock = extraction_lock();
+        self.write_extraction_record(&key, serde_json::json!({"source":key,"plan":true}))
+    }
+
+    pub fn holds_extraction_job(
+        &self,
+        job: &crate::hooks::ExtractJobInput,
+    ) -> Result<bool, MemoryError> {
+        Ok(self.extraction_plan(&job_key(job)?)?.is_some())
+    }
+
+    pub fn release_extraction_job(
+        &self,
+        job: &crate::hooks::ExtractJobInput,
+    ) -> Result<(), MemoryError> {
+        let key = job_key(job)?;
+        let _lock = extraction_lock();
+        remove_if_exists(&self.extraction_plan_path(&key))
     }
 
     /// Banks whose learned-rule merge this run already settled.
@@ -1414,9 +1516,13 @@ impl Bank {
             }
         }
 
-        let mut index = Bm25Index::default();
-        for memory in memories.values().filter(|f| f.is_live()) {
-            index.add(memory);
+        let (mut index, mut retired) = (Bm25Index::default(), Bm25Index::default());
+        for memory in memories.values() {
+            if memory.is_live() {
+                index.add(memory);
+            } else if memory.superseded_by.is_some() {
+                retired.add(memory);
+            }
         }
 
         // Vector sidecar: last-wins by id; entries of retired or unknown
@@ -1465,6 +1571,7 @@ impl Bank {
             inner: RwLock::new(BankInner {
                 memories,
                 index,
+                retired,
                 vectors,
                 receipts,
             }),
@@ -1596,22 +1703,16 @@ impl Bank {
         } else {
             CommitKind::Created
         };
-        if memory.is_live() {
-            inner.index.add(&memory);
-        } else {
-            inner.index.remove(&memory.id);
-        }
         // The text changed under this id: any stored vector embeds the old
         // text. Drop it so unembedded() re-lists the record for backfill.
-        let stale_vector = !memory.is_live()
-            || inner
-                .memories
-                .get(&memory.id)
-                .is_some_and(|prev| prev.text != memory.text);
-        if stale_vector {
+        if inner
+            .memories
+            .get(&memory.id)
+            .is_some_and(|prev| prev.text != memory.text)
+        {
             inner.vectors.remove(&memory.id);
         }
-        inner.memories.insert(memory.id.clone(), memory);
+        inner.publish(memory);
         Ok(Some(kind))
     }
 
@@ -1703,12 +1804,9 @@ impl Bank {
         {
             inner.vectors.remove(&replacement.id);
         }
-        inner.index.add(&replacement);
-        inner.memories.insert(replacement.id.clone(), replacement);
+        inner.publish(replacement);
         if let Some(retired) = &retired {
-            inner.index.remove(&retired.id);
-            inner.vectors.remove(&retired.id);
-            inner.memories.insert(retired.id.clone(), retired.clone());
+            inner.publish(retired.clone());
         }
         Ok(Some(retired))
     }
@@ -1772,19 +1870,18 @@ impl Bank {
         let path = self.dir.join(MEMORIES_FILE);
         run_blocking(move || append_log(&path, &lines)).await?;
         for memory in std::iter::once(&retired).chain(survivor.iter()) {
-            if memory.is_live() {
-                inner.index.add(memory);
-            } else {
-                inner.index.remove(&memory.id);
-                inner.vectors.remove(&memory.id);
-            }
-            inner.memories.insert(memory.id.clone(), memory.clone());
+            inner.publish(memory.clone());
         }
         Ok((retired, survivor))
     }
 
     pub async fn get(&self, id: &str) -> Option<Memory> {
         self.inner.read().await.memories.get(id).cloned()
+    }
+
+    /// The live record at the end of `id`'s `superseded_by` chain, if any.
+    pub async fn live_successor(&self, id: &str) -> Option<Memory> {
+        self.inner.read().await.live_successor(id).cloned()
     }
 
     /// Newest-first page. `include_superseded` also returns tombstoned /
@@ -1839,6 +1936,21 @@ impl Bank {
             .collect()
     }
 
+    /// Memories saved or brought back from `turn_id` (`source.turn_id`),
+    /// retired ones included.
+    pub async fn saved_in_turn(&self, turn_id: &str) -> usize {
+        let inner = self.inner.read().await;
+        inner
+            .memories
+            .values()
+            .filter(|m| {
+                m.source
+                    .as_ref()
+                    .is_some_and(|s| s.turn_id.as_deref() == Some(turn_id))
+            })
+            .count()
+    }
+
     pub async fn counts(&self) -> (usize, usize) {
         let inner = self.inner.read().await;
         let live = inner.memories.values().filter(|f| f.is_live()).count();
@@ -1858,7 +1970,9 @@ impl Bank {
     /// to the `user` entity handle so identity questions reach the memories
     /// phrased third-person about the user; the injection hook counts that
     /// `user` as a match only in a question of pronouns alone ("who am I"),
-    /// or with `MEMORY_VERBS` ("what do you know about me").
+    /// or with `MEMORY_VERBS` ("what do you know about me"). A query matching
+    /// a superseded memory's words reaches the live memory that replaced it;
+    /// the retired one ranks only in the history view.
     ///
     /// `embedding_model` is the model the provider REPORTED for `query_vec`;
     /// vectors are tagged the same way, so ones from any other model (an
@@ -1890,13 +2004,12 @@ impl Bank {
     /// (only what the caller can rank sets the scale): what a caller
     /// merging several banks into one ranking passes to
     /// [`Bank::recall_scaled`] (the maximum over all of them), so every bank's
-    /// lexical arm divides by the same number.
+    /// lexical arm divides by the same number. A retired line that reaches
+    /// a live memory counts, as it did while live.
     pub async fn bm25_max(&self, query: &str, keep: impl Fn(&Memory) -> bool) -> f32 {
         let inner = self.inner.read().await;
-        inner
-            .index
-            .score(&query_tokens(query).0)
-            .into_iter()
+        let (live, via) = inner.bm25(&query_tokens(query).0, &keep);
+        live.into_iter()
             .filter(|(id, _)| {
                 inner
                     .memories
@@ -1904,6 +2017,7 @@ impl Bank {
                     .is_some_and(|m| m.is_live() && keep(m))
             })
             .map(|(_, s)| s)
+            .chain(via.values().flatten().map(|(_, s)| *s))
             .fold(0.0, f32::max)
     }
 
@@ -1929,14 +2043,17 @@ impl Bank {
             half_life_days,
             include_superseded,
             bm25_max,
+            |_| true,
         )
         .await
         .0
     }
 
-    /// [`Bank::recall_scaled`] plus, for every candidate it ranked (also
-    /// those `limit` cut), the [`Evidence`] of why it matched. The ranking
-    /// is the same arithmetic; the evidence only reads it.
+    /// [`Bank::recall_scaled`] over the memories `keep` accepts, reached
+    /// through superseded records it accepts (what a layer is read for),
+    /// plus, for every candidate it ranked (also those `limit` cut), the
+    /// [`Evidence`] of why it matched. The ranking is the same arithmetic;
+    /// the evidence only reads it.
     #[allow(clippy::too_many_arguments)]
     pub async fn recall_evidence(
         &self,
@@ -1947,6 +2064,7 @@ impl Bank {
         half_life_days: u64,
         include_superseded: bool,
         bm25_max: f32,
+        keep: impl Fn(&Memory) -> bool,
     ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
         let (query_tokens, expanded) = query_tokens(query);
         if query_tokens.is_empty() && query_vec.is_none() {
@@ -1990,7 +2108,17 @@ impl Bank {
             None => Vec::new(),
         };
         let inner = self.inner.read().await;
-        let mut bm25 = inner.index.score(&query_tokens);
+        let (mut bm25, via) = inner.bm25(&query_tokens, &keep);
+        for id in via.keys() {
+            bm25.entry(id.clone()).or_insert(0.0);
+        }
+        // Its own indexed text, or a predecessor's the query matched.
+        let holds = |t: &str, id: &str| {
+            inner.index.has(t, id)
+                || via
+                    .get(id)
+                    .is_some_and(|rs| rs.iter().any(|(r, _)| inner.retired.has(t, &r.id)))
+        };
         // The BM25 index only holds LIVE records, so a history query must
         // seed non-live candidates itself (score 0.0: entity, pin,
         // corroboration, and recency fusion still rank them).
@@ -2026,7 +2154,8 @@ impl Bank {
             .into_iter()
             .filter_map(|(id, s)| {
                 let f = inner.memories.get(&id)?;
-                (include_superseded || f.is_live()).then(|| (f.clone(), s, sem.get(&id).copied()))
+                ((include_superseded || f.is_live()) && keep(f))
+                    .then(|| (f.clone(), s, sem.get(&id).copied()))
             })
             .collect();
         // BM25 over the caller's shared maximum (computed over what it can
@@ -2035,7 +2164,11 @@ impl Bank {
         let max_bm25 = if bm25_max > 0.0 {
             bm25_max
         } else {
-            candidates.iter().map(|c| c.1).fold(f32::EPSILON, f32::max)
+            candidates
+                .iter()
+                .map(|c| c.1)
+                .chain(via.values().flatten().map(|(_, s)| *s))
+                .fold(f32::EPSILON, f32::max)
         };
         // Population mean and sd of the query's cosine over the pool; a
         // z-score needs a pool big enough to mean anything and some spread.
@@ -2050,27 +2183,38 @@ impl Bank {
             // Semantic joins lexical BEFORE fusion so recency decays
             // both alike.
             let sem = ((cos.unwrap_or(0.0) - anchor) / (1.0 - anchor)).max(0.0);
-            let relevance = s / max_bm25 + weight * sem;
-            let fused =
+            let mut lexical = s / max_bm25;
+            let mut relevance = lexical + weight * sem;
+            let mut fused =
                 crate::index::fused_score(relevance, &f, &query_tokens, now, half_life_days);
+            // Reached through a predecessor's words, it ranks as that line
+            // stood (its age and boosts), never higher: the successor's
+            // freshness would lift a stray word of an old line.
+            for &(r, rs) in via.get(&f.id).into_iter().flatten() {
+                let lex = rs / max_bm25;
+                let as_r = crate::index::fused_score(lex, r, &query_tokens, now, half_life_days);
+                fused = fused.max(as_r);
+                lexical = lexical.max(lex);
+                relevance = relevance.max(lex);
+            }
             evidence.insert(
                 f.id.clone(),
                 Evidence {
                     matched: content
                         .iter()
-                        .filter(|t| inner.index.has(t, &f.id))
+                        .filter(|t| holds(t, &f.id))
                         .map(|t| t.to_string())
                         .collect(),
                     relation_matched: relation
                         .iter()
-                        .filter(|t| inner.index.has(t, &f.id))
+                        .filter(|t| holds(t, &f.id))
                         .map(|t| t.to_string())
                         .collect(),
                     relation_terms: relation.len(),
                     requested_slot: slot.clone(),
                     terms: content.len(),
                     of_me: expanded && of_me,
-                    lexical: s / max_bm25,
+                    lexical,
                     relevance,
                     cosine: cos,
                     z: cos.and_then(z_of),
@@ -3190,7 +3334,7 @@ mod tests {
         bank: &Bank,
         query: &str,
     ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
-        bank.recall_evidence(query, None, "", 10, 30, false, 0.0)
+        bank.recall_evidence(query, None, "", 10, 30, false, 0.0, |_| true)
             .await
     }
 
@@ -3398,7 +3542,7 @@ mod tests {
         let q = [1.0, 0.0];
 
         let (_, ev) = bank
-            .recall_evidence("kiwi", Some(&q), "m", 50, 30, false, 0.0)
+            .recall_evidence("kiwi", Some(&q), "m", 50, 30, false, 0.0, |_| true)
             .await;
         assert!((ev[&near.id].cosine.unwrap() - 1.0).abs() < 1e-6);
         assert!(ev[&near.id].vector);
@@ -3420,7 +3564,7 @@ mod tests {
             .await
             .unwrap();
         let (_, ev) = bank
-            .recall_evidence("kiwi", Some(&q), "m", 50, 30, false, 0.0)
+            .recall_evidence("kiwi", Some(&q), "m", 50, 30, false, 0.0, |_| true)
             .await;
         // mean 0.055, population sd 0.2179 over [1.0, 0.1, 0 x 18].
         let z = ev[&near.id].z.expect("20 vectors make a pool");
@@ -3467,7 +3611,16 @@ mod tests {
                 q[target] = 0.8;
                 q[texts.len()] = 0.6;
                 let (hits, ev) = bank
-                    .recall_evidence(question, Some(&q), model, usize::MAX, 30, false, 0.0)
+                    .recall_evidence(
+                        question,
+                        Some(&q),
+                        model,
+                        usize::MAX,
+                        30,
+                        false,
+                        0.0,
+                        |_| true,
+                    )
                     .await;
                 assert_eq!(ev[&texts[target].id].z, None, "{question}");
                 let picked = crate::hooks::select(hits, &ev, &std::collections::HashSet::new(), 6);
@@ -3648,6 +3801,231 @@ mod tests {
             "history mode must reach non-live records with no query vector"
         );
         assert_eq!(hits[0].0.id, m.id);
+    }
+
+    fn ids(hits: &[(Memory, f32)]) -> Vec<&str> {
+        hits.iter().map(|(m, _)| m.id.as_str()).collect()
+    }
+
+    /// `memory` retired with `superseded_by`, written by a plain commit.
+    fn retired_to(text: &str, successor: &str) -> Memory {
+        Memory {
+            invalid_at: Some(now_ms()),
+            superseded_by: Some(successor.into()),
+            ..memory(text)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_query_matching_only_a_retired_line_recalls_its_live_successor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let old = memory("dana is the on-call engineer for payments-api");
+        let new = memory("dana left the company");
+        for m in [&old, &new, &memory("the nightly backup runs at two")] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.supersede(&old.id, &new.id, false, (None, None))
+            .await
+            .unwrap();
+        let q = "on-call payments-api";
+        let (hits, evidence) = bank
+            .recall_evidence(q, None, "", 5, 30, false, 0.0, |_| true)
+            .await;
+        assert_eq!(ids(&hits), [new.id.as_str()]);
+        assert!(
+            evidence[&new.id].matched.contains(&"payments".to_string()),
+            "{:?}",
+            evidence[&new.id]
+        );
+        // The history view still lists the retired line, below the live one.
+        let history = bank.recall(q, None, "", 5, 30, true).await;
+        assert_eq!(ids(&history), [new.id.as_str(), old.id.as_str()]);
+
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank = reopened.bank("main").await.unwrap();
+        let (hits, evidence) = bank
+            .recall_evidence(q, None, "", 5, 30, false, 0.0, |_| true)
+            .await;
+        assert_eq!(ids(&hits), [new.id.as_str()], "rebuilt at open");
+        assert!(evidence[&new.id].matched.contains(&"payments".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_successor_that_matches_too_is_recalled_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let (twin, _) = store.ensure_bank("twin", None).await.unwrap();
+        let (old, new) = (memory("kiwi mango smoothie"), memory("kiwi tart"));
+        let filler = memory("quarterly budget review meeting notes");
+        for m in [&old, &new, &filler] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.supersede(&old.id, &new.id, false, (None, None))
+            .await
+            .unwrap();
+        for m in [&new, &filler] {
+            twin.commit(m.clone()).await.unwrap();
+        }
+        let q = "kiwi mango";
+        let (hits, evidence) = bank
+            .recall_evidence(q, None, "", 5, 30, false, 100.0, |_| true)
+            .await;
+        assert_eq!(ids(&hits), [new.id.as_str()]);
+        let matched = &evidence[&new.id].matched;
+        assert!(matched.contains(&"kiwi".to_string()) && matched.contains(&"mango".to_string()));
+        // The better of its own words and its predecessor's.
+        let (_, alone) = twin
+            .recall_evidence(q, None, "", 5, 30, false, 100.0, |_| true)
+            .await;
+        assert!(
+            evidence[&new.id].lexical > alone[&new.id].lexical,
+            "{} vs {}",
+            evidence[&new.id].lexical,
+            alone[&new.id].lexical
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successor_ranks_no_higher_than_its_predecessor_stood() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let aged = |text: &str, days: u64| {
+            let at = now_ms() - days * 86_400_000;
+            Memory {
+                created_at: at,
+                updated_at: at,
+                stated_at: Some(at),
+                ..memory(text)
+            }
+        };
+        // One BM25 for both: only their age tells them apart.
+        let (old, rival) = (aged("kiwi tart one", 400), aged("kiwi tart two", 100));
+        let new = memory("ana moved to the berlin office");
+        for m in [&old, &rival, &new] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.supersede(&old.id, &new.id, false, (None, None))
+            .await
+            .unwrap();
+        let hits = bank.recall("kiwi", None, "", 5, 30, false).await;
+        assert_eq!(ids(&hits), [rival.id.as_str(), new.id.as_str()]);
+    }
+
+    #[tokio::test]
+    async fn a_chain_ends_at_its_live_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let a = memory("dana is on call for payments-api");
+        let b = memory("marco covers the pager this week");
+        let c = memory("priya owns incident response now");
+        for m in [&a, &b, &c] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.supersede(&a.id, &b.id, false, (None, None))
+            .await
+            .unwrap();
+        bank.supersede(&b.id, &c.id, false, (None, None))
+            .await
+            .unwrap();
+        for q in ["payments-api", "marco pager"] {
+            let hits = bank.recall(q, None, "", 5, 30, false).await;
+            assert_eq!(ids(&hits), [c.id.as_str()], "{q}");
+        }
+        assert_eq!(bank.live_successor(&a.id).await.map(|m| m.id), Some(c.id));
+    }
+
+    #[tokio::test]
+    async fn a_chain_ending_deleted_or_in_a_loop_recalls_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        // A live record, so the retired lines are searched at all.
+        bank.commit(memory("quarterly budget review meeting notes"))
+            .await
+            .unwrap();
+        let (a, mut b) = (
+            memory("dana is on call for payments-api"),
+            memory("dana left"),
+        );
+        for m in [&a, &b] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.supersede(&a.id, &b.id, false, (None, None))
+            .await
+            .unwrap();
+        b.invalid_at = Some(now_ms());
+        b.revision += 1;
+        bank.commit(b).await.unwrap();
+        assert!(
+            bank.recall("payments-api", None, "", 5, 30, false)
+                .await
+                .is_empty()
+        );
+        assert!(bank.live_successor(&a.id).await.is_none());
+
+        let x = retired_to("zanzibar ferry schedule", "fp-y");
+        let y = Memory {
+            id: "fp-y".into(),
+            ..retired_to("zanzibar ferry tickets", &x.id)
+        };
+        for m in [&x, &y] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        assert!(bank.live_successor(&x.id).await.is_none());
+        assert!(bank.live_successor(&y.id).await.is_none());
+        assert!(
+            bank.recall("zanzibar ferry", None, "", 5, 30, false)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_shared_scale_counts_a_retired_lines_score_for_its_successor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let (old, new) = (
+            memory("dana is on call for payments-api"),
+            memory("dana left"),
+        );
+        for m in [&old, &new, &memory("quarterly budget review meeting notes")] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.supersede(&old.id, &new.id, false, (None, None))
+            .await
+            .unwrap();
+        let q = "payments-api";
+        let max = bank.bm25_max(q, |_| true).await;
+        assert!(max > 0.0);
+        assert_eq!(bank.bm25_max(q, |m| m.id != new.id).await, 0.0);
+        let (_, evidence) = bank
+            .recall_evidence(q, None, "", 5, 30, false, max, |_| true)
+            .await;
+        assert!(evidence[&new.id].lexical <= 1.0);
+    }
+
+    #[tokio::test]
+    async fn the_raw_arms_do_not_follow_a_retired_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let (old, new) = (
+            memory("dana is on call for payments-api"),
+            memory("dana left"),
+        );
+        for m in [&old, &new] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.supersede(&old.id, &new.id, false, (None, None))
+            .await
+            .unwrap();
+        assert!(bank.lexical("payments-api", 5, false).await.is_empty());
     }
 
     #[tokio::test]

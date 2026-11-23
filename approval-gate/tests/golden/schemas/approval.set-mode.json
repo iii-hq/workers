@@ -43,6 +43,13 @@
           },
           "granted_by": {
             "$ref": "#/definitions/GrantedBy"
+          },
+          "namespace": {
+            "description": "Engine namespace the grant covers. Absent on grants stored before namespaces: those cover only the call's implicit namespace.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

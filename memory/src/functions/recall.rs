@@ -1,6 +1,8 @@
 //! `memory::recall` — the read path. Zero LLM; the same scorer the
 //! pre-generate hook uses. The hook then keeps only the hits with
 //! evidence, one line per fact; `memory::preview` shows what a turn is given.
+//! `hybrid` answers a query matching a superseded memory with the live memory
+//! that replaced it; the raw `lexical` and `semantic` arms do not.
 
 use std::collections::HashMap;
 
@@ -193,9 +195,11 @@ async fn rank(
         limit
     };
     let include = req.include_superseded.unwrap_or(false);
+    let keeps =
+        |m: &Memory| layer.is_none_or(|l| crate::scope::layer_keeps(l, &cfg.default_bank, m));
     let hits = match req.mode {
         RecallMode::Hybrid => {
-            bank.recall_scaled(
+            bank.recall_evidence(
                 &req.query,
                 query_vec,
                 query_model,
@@ -203,8 +207,10 @@ async fn rank(
                 cfg.decay_half_life_days,
                 include,
                 bm25_max,
+                keeps,
             )
             .await
+            .0
         }
         RecallMode::Lexical => bank.lexical(&req.query, fetch, include).await,
         RecallMode::Semantic => match query_vec {
@@ -218,7 +224,7 @@ async fn rank(
                 .as_deref()
                 .is_none_or(|t| m.tags.iter().any(|x| x == t))
         })
-        .filter(|(m, _)| layer.is_none_or(|l| crate::scope::layer_keeps(l, &cfg.default_bank, m)))
+        .filter(|(m, _)| keeps(m))
         .take(limit)
         .collect()
 }
@@ -347,5 +353,48 @@ mod tests {
             "bm25-entity-semantic"
         );
         assert_eq!(retrieval_label(RecallMode::Hybrid, false), "bm25-entity");
+    }
+
+    #[tokio::test]
+    async fn recall_returns_the_successor_and_stays_inside_its_bank() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = WorkerConfig {
+            embeddings_enabled: false,
+            ..WorkerConfig::default()
+        };
+        let deps = crate::deps::offline_deps(dir.path(), cfg);
+        let store = deps.store().await;
+        let (x, _) = store.ensure_bank("x", None).await.unwrap();
+        let (y, _) = store.ensure_bank("y", None).await.unwrap();
+        let old = memory("dana is the on-call engineer for payments-api", &[], 0);
+        let new = Memory {
+            entities: vec!["user".into()],
+            ..memory("dana left the company", &[], 0)
+        };
+        for m in [&old, &new] {
+            x.commit(m.clone()).await.unwrap();
+        }
+        x.supersede(&old.id, &new.id, false, (None, None))
+            .await
+            .unwrap();
+        y.commit(new.clone()).await.unwrap();
+        let ask = |bank: &str, mode: &str| {
+            request(
+                serde_json::json!({"bank": bank, "query": "on-call payments-api", "mode": mode}),
+            )
+        };
+        let found = recall(&deps, ask("x", "hybrid")).await.unwrap().memories;
+        let ids: Vec<&str> = found.iter().map(|s| s.memory.id.as_str()).collect();
+        assert_eq!(ids, [new.id.as_str()]);
+        for (bank, mode) in [("y", "hybrid"), ("x", "lexical")] {
+            let found = recall(&deps, ask(bank, mode)).await.unwrap().memories;
+            assert!(found.is_empty(), "{bank} {mode}: {found:?}");
+        }
+        // Read as the default-bank layer, a line not about the user routes
+        // nothing, though its successor is about the user.
+        let cfg = deps.config().await;
+        let layer = Some(cfg.default_bank.as_str());
+        let hits = rank(&x, &ask("x", "hybrid"), None, "", &cfg, layer, 0.0).await;
+        assert!(hits.is_empty(), "{hits:?}");
     }
 }

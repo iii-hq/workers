@@ -520,6 +520,32 @@ export interface ContextSectionRegistration {
   render: React.ComponentType<ContextSectionProps>
 }
 
+/** One `<tag …>` block the console cut out of a user message for its renderer. */
+export interface MessageBlockProps {
+  /** The block's tag, as registered. */
+  tag: string
+  /** The opening tag's `name="value"` attributes, values as written. */
+  attributes: Readonly<Record<string, string>>
+  /** The text between the tags, without the newlines that frame it. */
+  body: string
+  /** The chat session the message belongs to, when the console knows it. */
+  sessionId?: string
+}
+
+/**
+ * A worker's renderer for a block it writes into a user message: a
+ * `<tag attr="…">`, its body and `</tag>`, each on its own line, standing as
+ * its own paragraph (a workflow node's `<workflow_input>`). The console cuts
+ * every block of a registered tag out of the bubble and renders it below,
+ * in order; the bubble keeps the rest of the text. A tag nobody registered,
+ * or one inside code, stays text. Duplicate `tag`: last registration wins.
+ */
+export interface MessageBlockRendererRegistration {
+  /** The tag name the worker writes; matches `^[a-z][a-z0-9_-]*$`. */
+  tag: string
+  render: React.ComponentType<MessageBlockProps>
+}
+
 /** Props a composer toolbar action receives. */
 export interface ComposerActionProps {
   /** Active session id, or `null` while the conversation has none yet. */
@@ -843,6 +869,8 @@ export interface Host {
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
     /** Optional on consoles that predate the chat's Context panel sections. */
     registerContextSection?(section: ContextSectionRegistration): () => void
+    /** Optional on consoles that predate message blocks in the chat. */
+    registerMessageBlockRenderer?(renderer: MessageBlockRendererRegistration): () => void
     /** Optional on consoles that predate the composer toolbar slot. */
     registerComposerAction?(action: ComposerActionRegistration): () => void
     /** Optional on consoles that predate the composer footer control slot. */

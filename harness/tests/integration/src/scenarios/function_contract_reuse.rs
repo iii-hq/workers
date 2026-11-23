@@ -11,8 +11,9 @@ use crate::fixtures::ScenarioFixture;
 const INFO: &str = "engine::functions::info";
 // The MODEL-VISIBLE first result: the raw engine contract compacted by
 // prepare_info_result — no response-side schema, no registry envelope
-// (`worker_name`, `observer_count`). The raw contract stays in `details`.
-const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"}}"#;
+// (`worker_name`, `observer_count`), but the engine namespace is kept. The raw
+// contract stays in `details`.
+const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","namespace":"default","request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"}}"#;
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-025";
@@ -115,7 +116,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                             "is_error": false,
                             "content": [{
                                 "type": "text",
-                                "text": "{\"contract_status\":\"unchanged_in_context\",\"function_id\":\"{{run_id}}::record\",\"source_function_call_id\":\"call-info-1\"}"
+                                "text": "{\"contract_status\":\"unchanged_in_context\",\"function_id\":\"{{run_id}}::record\",\"namespace\":\"default\",\"source_function_call_id\":\"call-info-1\"}"
                             }],
                             "details": { "function_id": "{{run_id}}::record" }
                         }),

@@ -7,6 +7,8 @@ const isDestructiveFunction = (id: string) => !isAutoAcceptable(id)
 
 interface AlwaysAllowButtonProps {
   functionId: string
+  /** Engine namespace of the held call; the grant covers only that namespace. */
+  namespace?: string
   onConfirm: () => void | Promise<void>
   disabled?: boolean
   submitting?: boolean
@@ -24,12 +26,17 @@ interface AlwaysAllowButtonProps {
  */
 export function AlwaysAllowButton({
   functionId,
+  namespace,
   onConfirm,
   disabled,
   submitting,
 }: AlwaysAllowButtonProps) {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const destructive = isDestructiveFunction(functionId)
+  const target = namespace
+    ? `${functionId} in namespace ${namespace}`
+    : functionId
+  const scope = namespace ? ` in namespace ${namespace}` : ''
 
   function handleClick() {
     if (destructive) {
@@ -50,7 +57,7 @@ export function AlwaysAllowButton({
         title={
           destructive
             ? 'potentially destructive function — confirmation required'
-            : 'approve and stop asking for this function this session'
+            : `approve and stop asking for this function${scope} this session`
         }
       >
         {submitting
@@ -63,7 +70,7 @@ export function AlwaysAllowButton({
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         title="Always approve this function?"
-        description={`The agent can run ${functionId} for the rest of this conversation without asking. It matches the destructive-action policy (write, delete, exec, send, credentials), so approve once if you only need it now.`}
+        description={`The agent can run ${target} for the rest of this conversation without asking. It matches the destructive-action policy (write, delete, exec, send, credentials), so approve once if you only need it now.`}
         confirmLabel="Approve always"
         tone="danger"
         onConfirm={() => {

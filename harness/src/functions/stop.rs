@@ -97,19 +97,43 @@ async fn kill_session_jobs(deps: &Deps, session_ids: Vec<String>) {
     if session_ids.is_empty() {
         return;
     }
-    if let Err(error) = deps
-        .iii
-        .call(iii_sdk::protocol::CallRequest {
-            function_id: "shell::kill-session-jobs".into(),
-            payload: serde_json::json!({ "session_ids": session_ids }),
-            action: None,
-            timeout_ms: Some(KILL_SESSION_JOBS_TIMEOUT_MS),
-        })
+    let payload = serde_json::json!({ "session_ids": session_ids });
+    // A job started with `namespace` runs under that namespace's shell. The
+    // kill id is internal (never listed), so the exec_bg rows name the shells.
+    // shortcut: a shell that no longer lists exec_bg at stop time is not swept.
+    let own = crate::clients::engine::resolve_namespace(KILL_SESSION_JOBS, None);
+    let others: std::collections::BTreeSet<String> = deps
+        .functions()
         .await
-    {
-        tracing::warn!(%error, "shell::kill-session-jobs failed");
+        .functions
+        .iter()
+        .filter(|f| f.function_id == "shell::exec_bg" && f.namespace != own)
+        .map(|f| f.namespace.clone())
+        .collect();
+    let sweeps = std::iter::once(None)
+        .chain(others.into_iter().map(Some))
+        .map(|namespace| kill_jobs_in(deps, namespace, payload.clone()));
+    futures_util::future::join_all(sweeps).await;
+}
+
+async fn kill_jobs_in(deps: &Deps, namespace: Option<String>, payload: serde_json::Value) {
+    let request: iii_sdk::protocol::CallRequestWithMetadata = iii_sdk::protocol::CallRequest {
+        function_id: KILL_SESSION_JOBS.into(),
+        payload,
+        action: None,
+        timeout_ms: Some(KILL_SESSION_JOBS_TIMEOUT_MS),
+    }
+    .into();
+    let request = match &namespace {
+        Some(ns) => request.namespace(ns.clone()),
+        None => request,
+    };
+    if let Err(error) = deps.iii.call(request).await {
+        tracing::warn!(%error, ?namespace, "shell::kill-session-jobs failed");
     }
 }
+
+const KILL_SESSION_JOBS: &str = "shell::kill-session-jobs";
 
 /// The kill only flags jobs and notifies their drain tasks; it never waits on
 /// process exit, so a slow answer means the shell worker is unhealthy.

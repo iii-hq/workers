@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "iii-state"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "anyhow",
  "async-trait",

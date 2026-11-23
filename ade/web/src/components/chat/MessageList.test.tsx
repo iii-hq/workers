@@ -142,7 +142,7 @@ describe('MessageList function-call groups', () => {
     expect(html).toContain('show all')
   })
 
-  it('groups calls separated only by completed, hidden thoughts', () => {
+  it('groups calls across finished thoughts and keeps the thoughts as rows', () => {
     const completedThought = (id: string): ThoughtMessage => ({
       id,
       role: 'thought',
@@ -169,6 +169,9 @@ describe('MessageList function-call groups', () => {
     expect(html).toContain('data-function-call-count="4"')
     expect(html).toContain('Agent called 4 functions')
     expect(html).not.toContain('Agent called 2 functions')
+    expect(html).toContain('reasoning t1')
+    expect(html).toContain('reasoning t2')
+    expect(html.match(/data-state="done"/g)).toHaveLength(2)
   })
 
   it('reveals a hidden wake pair when the landing targets its notification', () => {
@@ -222,6 +225,34 @@ describe('MessageList function-call groups', () => {
     expect(html).toContain('aria-label="action required for shell::run"')
     expect(html).toContain('tabindex="-1"')
     expect(html).toContain('data-approval-actions=""')
+  })
+
+  it('names the namespace of a pending call held in another namespace', () => {
+    const pending: FunctionCallMessage = {
+      ...call('approval'),
+      functionId: 'state::list',
+      pendingApproval: true,
+      sessionId: 'session-1',
+      functionCallId: 'function-call-1',
+      namespace: 'laptop',
+    }
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[pending]}
+        onResolveApproval={async () => {}}
+        onAlwaysAllow={async () => {}}
+      />,
+    )
+
+    expect(html).toContain(
+      'aria-label="action required for state::list in namespace laptop"',
+    )
+    expect(html).toContain(
+      'Execution is paused until you approve or deny this call in namespace laptop.',
+    )
+    expect(html).toContain(
+      'title="approve and stop asking for this function in namespace laptop this session"',
+    )
   })
 
   it('renders the branded waiting indicator while the model is pending', () => {

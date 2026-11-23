@@ -27,11 +27,16 @@ const ESCAPED_SEP: &str = "\\037";
 /// address, name and compose paths. A tmux server started by one of the
 /// worker's commands copies that client's environment into its global one,
 /// and every pane inherits it; an `iii compose --up` there then takes
-/// `III_URL` for a running engine and starts none.
+/// `III_URL` for a running engine and starts none. `III_TELEMETRY_*` stay:
+/// they are the user's telemetry opt-out, which an engine started in a pane
+/// must still see.
 pub fn iii_vars(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<OsString> {
     vars.into_iter()
         .map(|(name, _)| name)
-        .filter(|name| name.as_encoded_bytes().starts_with(b"III_"))
+        .filter(|name| {
+            let name = name.as_encoded_bytes();
+            name.starts_with(b"III_") && !name.starts_with(b"III_TELEMETRY_")
+        })
         .collect()
 }
 
@@ -182,7 +187,7 @@ pub struct Tmux {
 impl Tmux {
     /// The binary plus socket arguments. `TMUX` is removed so a worker
     /// started from inside tmux neither talks to a different server than
-    /// configured nor makes `attach` refuse to nest; every `III_*` so a
+    /// configured nor makes `attach` refuse to nest; every `III_*` but the telemetry opt-outs so a
     /// server this command starts does not hand them to its panes
     /// ([`iii_vars`]). `-u` because a daemon often has no UTF-8 locale, and
     /// then tmux prints [`SEP`] as `_` and no listing parses
@@ -869,11 +874,13 @@ mod tests {
     }
 
     #[test]
-    fn iii_vars_names_only_the_iii_prefixed_ones() {
+    fn iii_vars_names_the_iii_prefixed_ones_but_the_telemetry_opt_outs() {
         let vars = [
             "III_URL",
             "III_WORKER_NAME",
             "III_COMPOSE_FILE",
+            "III_TELEMETRY_ENABLED",
+            "III_TELEMETRY_DEV",
             "PATH",
             "XIII_URL",
             "iii_url",

@@ -1,0 +1,1 @@
+{ "type": "http", "url": "https://api.weather.com/mcp", "headers": { "Authorization": "Bearer your-token" } }

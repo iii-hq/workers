@@ -93,6 +93,10 @@ async fn main() -> Result<()> {
             ..InitOptions::default()
         },
     ));
+    debug_assert_eq!(
+        iii.namespace().unwrap_or_else(|| "default".into()),
+        harness::clients::engine::own_namespace()
+    );
 
     // A `--config` file only SEEDS the first registration; a failed parse
     // WARNS and falls through to None (the authoritative value comes from the

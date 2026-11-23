@@ -361,6 +361,7 @@ pub(crate) fn contract_digest(
 /// public inventory hides but the registry knows (`snapshot.internal_ids`,
 /// e.g. `engine::functions::info`) is present without a schema. The catalog
 /// never grants permission. A contract without a schema remains unjudged.
+/// The listed copy is the one a bare call reaches (its implicit namespace).
 pub(crate) fn effective_contract(
     id: &str,
     policy: &crate::policy::CompiledPolicy,
@@ -372,12 +373,22 @@ pub(crate) fn effective_contract(
     if let Some((description, schema)) = crate::functions::observe::control_contract(id) {
         return Some(PreloadedContract::new(id, Some(description), Some(schema)));
     }
-    if let Some(descriptor) = snapshot.functions.iter().find(|d| d.function_id == id) {
+    let implicit = crate::clients::engine::resolve_namespace(id, None);
+    if let Some(descriptor) = snapshot
+        .functions
+        .iter()
+        .find(|d| d.function_id == id && d.namespace == implicit)
+    {
         return Some(PreloadedContract::new(
             id,
             descriptor.description.as_deref(),
             descriptor.parameters.clone(),
         ));
+    }
+    // internal_ids holds bare ids from every namespace: a copy listed only
+    // elsewhere leaves the implicit one unvouched, so the caller asks info.
+    if snapshot.functions.iter().any(|d| d.function_id == id) {
+        return None;
     }
     // ponytail: an internal-only id is presence without a schema, so a frozen
     // internal contract that later changes is never reported `changed` (and
@@ -432,8 +443,8 @@ async fn attach_preloaded_functions(
 }
 
 /// The current contracts of `ids`, in order: from the cached registry
-/// snapshot, then one `engine::functions::info` batch per 32 ids the snapshot
-/// cannot vouch for. Returns the contracts found, the ids the engine does not
+/// snapshot, then one `engine::functions::info` batch per 32 ids per implicit
+/// namespace that the snapshot cannot vouch for. Returns the contracts found, the ids the engine does not
 /// know, and every id's digest (`None` when unavailable).
 pub(crate) async fn preload_contracts(
     deps: &Deps,
@@ -476,12 +487,12 @@ pub(crate) async fn lookup_contracts(
     }
     let cfg = deps.cfg().await;
     let mut failed = Vec::new();
-    for chunk in pending.chunks(INFO_BATCH_MAX) {
+    for (namespace, chunk) in info_batches(&pending) {
         let response = deps
             .iii
             .call(CallRequest {
                 function_id: FUNCTIONS_INFO_ID.into(),
-                payload: json!({ "function_ids": chunk }),
+                payload: json!({ "function_ids": chunk, "namespace": namespace }),
                 action: None,
                 timeout_ms: Some(cfg.dispatch_timeout_ms),
             })
@@ -520,6 +531,33 @@ pub(crate) async fn lookup_contracts(
         }
     }
     (ordered, unavailable, digests, failed)
+}
+
+/// `ids` grouped by the namespace a bare call reaches (request order kept
+/// inside a group), each group cut into `engine::functions::info` batches of
+/// at most [`INFO_BATCH_MAX`].
+pub(crate) fn info_batches(ids: &[String]) -> Vec<(String, Vec<String>)> {
+    info_batches_by(ids, |id| {
+        crate::clients::engine::resolve_namespace(id, None)
+    })
+}
+
+/// [`info_batches`] with the id-to-namespace rule given, so a test can make
+/// the namespaces differ whatever the environment.
+fn info_batches_by(ids: &[String], resolve: impl Fn(&str) -> String) -> Vec<(String, Vec<String>)> {
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in ids {
+        groups.entry(resolve(id)).or_default().push(id.clone());
+    }
+    groups
+        .into_iter()
+        .flat_map(|(namespace, group)| {
+            group
+                .chunks(INFO_BATCH_MAX)
+                .map(|chunk| (namespace.clone(), chunk.to_vec()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// The contracts one `engine::functions::info { function_ids }` batch
@@ -1178,6 +1216,7 @@ mod tests {
                             ids.iter()
                                 .map(|id| crate::clients::FunctionDescriptor {
                                     function_id: id.clone(),
+                                    namespace: "default".into(),
                                     description: Some("native".into()),
                                     parameters: Some(
                                         json!({"type":"object", "required":["function_id"]}),
@@ -1253,5 +1292,54 @@ mod tests {
                 .contains("NOT available in this session — do not call: `harness::unobserve`")
         );
         assert_eq!(agent.contract_digests["harness::unobserve"], None);
+    }
+
+    fn d(ns: &str, id: &str) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: Some("d".into()),
+            parameters: Some(json!({ "type": "object" })),
+        }
+    }
+
+    #[test]
+    fn the_effective_contract_is_the_copy_a_bare_call_reaches() {
+        use crate::{policy::CompiledPolicy, types::turn::FunctionPolicy};
+        let own = crate::clients::engine::own_namespace();
+        let all = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let mut here = d(&own, "shell::exec");
+        here.description = Some("here".into());
+        let snapshot = crate::discovery::snapshot_of(vec![d("zz-a", "shell::exec"), here]);
+        assert_eq!(
+            effective_contract("shell::exec", &all, &snapshot)
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("here")
+        );
+        let mut elsewhere = crate::discovery::snapshot_of(vec![d("zz-a", "shell::exec")]);
+        // As in production: internal_ids holds bare ids from every namespace.
+        elsewhere.internal_ids.insert("shell::exec".into());
+        assert!(effective_contract("shell::exec", &all, &elsewhere).is_none());
+    }
+
+    #[test]
+    fn info_batches_group_ids_by_resolved_namespace() {
+        let mut ids: Vec<String> = (0..40).map(|i| format!("a::f{i}")).collect();
+        ids.push("b::g".into());
+        // Each id's namespace is the text before `::`, whatever the environment.
+        let batches = info_batches_by(&ids, |id| id.split("::").next().unwrap().to_string());
+        assert_eq!(
+            batches,
+            vec![
+                ("a".to_string(), ids[..32].to_vec()),
+                ("a".to_string(), ids[32..40].to_vec()),
+                ("b".to_string(), vec!["b::g".to_string()]),
+            ]
+        );
     }
 }

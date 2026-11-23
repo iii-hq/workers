@@ -52,7 +52,12 @@ pub async fn handle(deps: &Deps, req: EvaluateRequest) -> Result<EvaluateRespons
     let stored = settings::read_tolerant(deps.iii.as_ref(), &req.session_id).await;
     let (effective, _) = settings::effective(stored, &cfg);
 
-    if decision::pre_policy_allow(&effective, &req.function_id) {
+    if decision::pre_policy_allow(
+        &effective,
+        req.namespace.as_deref(),
+        req.implicit_namespace.as_deref(),
+        &req.function_id,
+    ) {
         return Ok(EvaluateResponse {
             verdict: EvaluateVerdict::Allow,
             reason: None,
@@ -63,10 +68,12 @@ pub async fn handle(deps: &Deps, req: EvaluateRequest) -> Result<EvaluateRespons
         .arguments
         .clone()
         .unwrap_or_else(|| serde_json::json!({}));
-    let verdict = match cfg
-        .permissions()
-        .check(&req.function_id, &arguments, effective.mode)
-    {
+    let verdict = match cfg.permissions().check_in(
+        req.namespace.as_deref(),
+        &req.function_id,
+        &arguments,
+        effective.mode,
+    ) {
         Decision::Allow { .. } => EvaluateResponse {
             verdict: EvaluateVerdict::Allow,
             reason: None,
@@ -103,6 +110,8 @@ mod tests {
         EvaluateRequest {
             session_id: "s_1".into(),
             function_id: function_id.into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments: None,
         }
     }
@@ -129,6 +138,7 @@ mod tests {
                 &stack.deps,
                 AlwaysAllowMutationRequest {
                     session_id: "s_1".into(),
+                    namespace: None,
                     function_id: "fp::pipe".into(),
                 },
             )
@@ -145,6 +155,7 @@ mod tests {
                 &stack.deps,
                 ApproveAlwaysRequest {
                     session_id: "s_1".into(),
+                    namespace: None,
                     function_id: "fp::pipe".into(),
                 },
             )
@@ -188,9 +199,45 @@ mod tests {
             let bad_session = EvaluateRequest {
                 session_id: String::new(),
                 function_id: "fp::pipe".into(),
+                namespace: None,
+                implicit_namespace: None,
                 arguments: None,
             };
             assert!(handle(&stack.deps, bad_session).await.is_err());
+        })
+        .await;
+    }
+
+    /// `namespace` (the call's) and `implicit_namespace` (the caller's) are
+    /// different fields: a grant for the implicit one must not release a call
+    /// in the explicit one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_grant_is_matched_on_the_call_namespace_not_the_implicit_one() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            let grant = |ns: &str| ApproveAlwaysRequest {
+                session_id: "s_1".into(),
+                namespace: Some(ns.into()),
+                function_id: "fp::pipe".into(),
+            };
+            let probe = || EvaluateRequest {
+                namespace: Some("zz-a".into()),
+                implicit_namespace: Some("default".into()),
+                ..req("fp::pipe")
+            };
+            approve_always::handle(&stack.deps, grant("default"))
+                .await
+                .unwrap();
+            assert_eq!(
+                handle(&stack.deps, probe()).await.unwrap().verdict,
+                EvaluateVerdict::NeedsApproval
+            );
+            approve_always::handle(&stack.deps, grant("zz-a"))
+                .await
+                .unwrap();
+            assert_eq!(
+                handle(&stack.deps, probe()).await.unwrap().verdict,
+                EvaluateVerdict::Allow
+            );
         })
         .await;
     }

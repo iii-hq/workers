@@ -534,6 +534,7 @@ mod tests {
         ids.iter()
             .map(|id| FunctionDescriptor {
                 function_id: (*id).to_string(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             })

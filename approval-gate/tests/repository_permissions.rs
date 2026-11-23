@@ -382,3 +382,34 @@ fn gantry_registration_hooks_are_denied() {
         );
     }
 }
+
+/// The MCP client page writes one allow rule per read function: the exact
+/// function id, no modes, and a rule id that starts with `mcp-client:`. A
+/// function with no rule is held. This pins the syntax the page depends on.
+#[test]
+fn page_written_rules_compile_allow_reads_and_hold_writes() {
+    let rules = json!([
+        "!approval::*",
+        { "function": "mcp::linear::list_issues", "action": "allow", "rule_id": "mcp-client:mcp::linear::list_issues" },
+        { "function": "mcp::linear::get_issue", "action": "allow", "rule_id": "mcp-client:mcp::linear::get_issue" }
+    ]);
+    let specs = parse_rules_from_config(&rules);
+    assert_eq!(specs.len(), 3, "the parser must keep every rule");
+    let permissions = Permissions::compile(&specs).expect("page-written rules should compile");
+    for mode in [PermissionMode::Manual, PermissionMode::Auto] {
+        for id in ["mcp::linear::list_issues", "mcp::linear::get_issue"] {
+            assert_eq!(
+                permissions.check(id, &json!({}), mode),
+                Decision::Allow {
+                    rule_id: format!("mcp-client:{id}")
+                },
+                "{id} should be allowed in {mode:?}"
+            );
+        }
+        assert_eq!(
+            permissions.check("mcp::linear::save_issue", &json!({}), mode),
+            Decision::NeedsApproval,
+            "a write should wait for a person in {mode:?}"
+        );
+    }
+}

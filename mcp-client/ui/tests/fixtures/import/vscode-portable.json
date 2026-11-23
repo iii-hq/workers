@@ -1,0 +1,2 @@
+{ "mcpServers": { "playwright": { "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@latest"], "tools": ["*"] },
+"context7": { "type": "http", "url": "https://mcp.context7.com/mcp", "tools": ["*"], "oauthClientId": "portable-client", "headers": { "X-Api-Version": "${API_VERSION:-2}" } } } }

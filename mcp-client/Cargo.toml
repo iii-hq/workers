@@ -1,0 +1,63 @@
+[workspace]
+
+[package]
+name = "mcp-client"
+version = "0.2.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "mcp-client"
+path = "src/main.rs"
+
+[[bin]]
+name = "fake-mcp-stdio"
+path = "tests/fixtures/fake_mcp_stdio.rs"
+required-features = ["test-fixtures"]
+
+[lib]
+name = "mcp_client"
+path = "src/lib.rs"
+
+[features]
+# Builds the fake stdio MCP server used by tests. Never on in a release build.
+test-fixtures = ["rmcp/server", "rmcp/transport-io"]
+
+[dependencies]
+iii-sdk = "=0.26.0"
+iii-config-client = { path = "../crates/config-client" }
+# Worker-side injectable console UI (content function + one ade::ui::asset
+# observer per asset + hot-reload watcher) — direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
+rmcp = { version = "=3.11.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider", "transport-child-process", "auth"] }
+# ring, not aws-lc-rs: no C build on musl, armv7 and Windows.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+process-wrap = { version = "10", features = ["tokio1"] }
+async-trait = "0.1"
+sha2 = "0.10"
+url = "2"
+http = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+anyhow = "1"
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"
+# `start_paused` for the timing tests.
+tokio = { version = "1", features = ["test-util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
