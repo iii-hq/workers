@@ -289,6 +289,137 @@ mod tests {
         assert!(b.contains("`harness::*`"));
     }
 
+    /// MCP agents start with three skills: `iii-directory/for-mcp-agents`,
+    /// the general rules for agents that reach the engine through mcp-server
+    /// (settings, observing, credentials, addresses, ids), then the ADE's
+    /// two: `ade` itself and `ade/for-mcp-agents` (pages as injectable UI,
+    /// the page URL to give).
+    #[test]
+    fn default_mcp_preloads_the_mcp_rules_and_the_ade_skills() {
+        let mcp = bundled_agents()
+            .into_iter()
+            .find(|a| a.name == "default-mcp")
+            .expect("bundled");
+        assert_eq!(
+            mcp.skills,
+            vec!["iii-directory/for-mcp-agents", "ade", "ade/for-mcp-agents"]
+        );
+        let default = bundled_agents()
+            .into_iter()
+            .find(|a| a.name == "default")
+            .expect("bundled");
+        assert!(default.skills.is_empty(), "only default-mcp preloads them");
+    }
+
+    /// Every `iii-directory/...` skill default-mcp preloads ships with this
+    /// worker: the id is the worker name, then the path under `skills/`
+    /// without `.md` (`skills/for-mcp-agents.md` → `iii-directory/for-mcp-agents`).
+    #[test]
+    fn default_mcp_preloads_skills_this_worker_ships() {
+        let mcp = bundled_agents()
+            .into_iter()
+            .find(|a| a.name == "default-mcp")
+            .expect("bundled");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ours: Vec<_> = mcp
+            .skills
+            .iter()
+            .filter_map(|id| id.strip_prefix("iii-directory/"))
+            .collect();
+        assert!(
+            !ours.is_empty(),
+            "default-mcp preloads no iii-directory skill"
+        );
+        for rest in ours {
+            let file = root.join("skills").join(format!("{rest}.md"));
+            assert!(file.is_file(), "{} is not shipped", file.display());
+        }
+    }
+
+    /// The general MCP rules: frontmatter like the other shipped skills, and
+    /// each rule with the functions it points to.
+    #[test]
+    fn the_mcp_rules_skill_names_each_rule() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/for-mcp-agents.md");
+        let raw =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let (fm, body) = fs_source::split_frontmatter(&raw);
+        let fm = fm.expect("frontmatter");
+        assert!(fm.contains("name: iii-directory-for-mcp-agents"), "{fm}");
+        assert!(fm.contains("description:"), "{fm}");
+        for needle in [
+            "configuration::set",
+            "compose::add",
+            "ade::compose::edit",
+            "worker-compose.yaml",
+            "iii_observe",
+            "cron::on-tick",
+            "iii_secret_store",
+            "secret://",
+            "observable: false",
+            "ade::status",
+            "http::status",
+            "III_URL",
+            "directory::search_functions",
+            "engine::functions::info",
+        ] {
+            assert!(body.contains(needle), "{needle} missing");
+        }
+        // `harness::on-timer` is the harness's; an MCP agent does not have it.
+        assert!(!body.contains("harness::on-timer"));
+        let flat = body.replace('\n', " ");
+        // iii_observations_sse creates its own observer; it does not stream
+        // an existing iii_observe observer's observations.
+        assert!(
+            !flat.contains("or stream them with"),
+            "SSE described as a reader"
+        );
+        assert!(
+            flat.contains("`iii_observations_sse` instead of `iii_observe`"),
+            "{flat}"
+        );
+        // Session observers end with the MCP session; a lasting schedule
+        // belongs to a worker.
+        assert!(flat.contains("removed when the MCP session ends"), "{flat}");
+        assert!(flat.contains("a worker you control"), "{flat}");
+    }
+
+    /// Agents without the iii Claude plugin read the preloaded skills
+    /// themselves: the profile tells them to, before the first task.
+    #[test]
+    fn default_mcp_reads_its_preloaded_skills() {
+        let b = body("default-mcp").replace('\n', " ");
+        assert!(
+            b.contains("read each skill your profile preloads"),
+            "no read-preloaded-skills sentence"
+        );
+        assert!(b.contains("iii_call directory::skills::get { id }"));
+        // A missing skill does not prove its worker is absent: an installed
+        // worker at a version without that skill answers D110 with close ids.
+        assert!(!b.contains("a missing one means its worker is not installed"));
+        assert!(
+            b.contains("engine::workers::list"),
+            "no worker-presence check"
+        );
+        assert!(
+            b.contains("already connected"),
+            "no rule for an installed worker"
+        );
+    }
+
+    /// A skill or function the task needs whose worker is not installed is
+    /// not a dead end: the agent installs that worker with compose::add.
+    #[test]
+    fn default_mcp_installs_a_missing_worker() {
+        let b = body("default-mcp").replace('\n', " ");
+        assert!(b.contains("compose::add"), "no install rule");
+        assert!(
+            b.contains("If that worker is not there, install it"),
+            "no install rule"
+        );
+    }
+
     /// Everything that is not about the harness stays `default`'s, byte for
     /// byte: the two cannot drift without this failing.
     #[test]
