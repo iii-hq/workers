@@ -104,6 +104,11 @@ const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
 export const ASIDE_STORAGE_KEY = 'console:chat:aside'
 /** Show / Hide context pane (§1.3.6): ⌘⌥0 on a Mac, Ctrl+Alt+0 elsewhere. */
 export const CONTEXT_PANE_SHORTCUT = 'Mod+Alt+0'
+/** How long a phone drawer's close may take before a pending "Show in
+ * conversation" lands anyway (the slide is --motion-duration-panel). */
+const DRAWER_CLOSE_FALLBACK_MS = 600
+/** Where "Show in conversation" lands: an entry, or a loaded message. */
+type ShowTarget = { entryId?: string; messageId?: string }
 /** The chat's header height beside the pane (PageHeader at sm and up). */
 const CHAT_HEADER_PX = 44
 /** How often auto-fix reads a watched PR while the chat is open. */
@@ -241,6 +246,31 @@ export function ChatAside({
   const visible = phone ? sheetOpen : expanded
   const onVisibleChangeRef = useRef(onVisibleChange)
   onVisibleChangeRef.current = onVisibleChange
+
+  // "Show in conversation" from the phone drawer: the drawer closes first
+  // and the transcript lands once it has gone (§1.3.6), so the row's 1.2 s
+  // flash is all in sight, not under the drawer sliding out. The fallback
+  // timer lands it should the close never report its end.
+  const onShowInConversationRef = useRef(onShowInConversation)
+  onShowInConversationRef.current = onShowInConversation
+  const pendingShowRef = useRef<ShowTarget | null>(null)
+  const pendingShowTimerRef = useRef<number | null>(null)
+  const landPendingShow = useCallback(() => {
+    if (pendingShowTimerRef.current !== null) {
+      window.clearTimeout(pendingShowTimerRef.current)
+      pendingShowTimerRef.current = null
+    }
+    const target = pendingShowRef.current
+    pendingShowRef.current = null
+    if (target) onShowInConversationRef.current?.(target)
+  }, [])
+  useEffect(
+    () => () => {
+      if (pendingShowTimerRef.current !== null)
+        window.clearTimeout(pendingShowTimerRef.current)
+    },
+    [],
+  )
   useEffect(() => {
     onVisibleChangeRef.current?.(visible)
   }, [visible])
@@ -661,9 +691,19 @@ export function ChatAside({
         onShowInConversation={
           onShowInConversation
             ? (target) => {
+                if (!phone || !sheetOpen) {
+                  onShowInConversation(target)
+                  return
+                }
                 // On a phone the drawer closes first (§1.3.6).
-                if (phone) onSheetOpenChange(false)
-                onShowInConversation(target)
+                pendingShowRef.current = target
+                if (pendingShowTimerRef.current !== null)
+                  window.clearTimeout(pendingShowTimerRef.current)
+                pendingShowTimerRef.current = window.setTimeout(
+                  landPendingShow,
+                  DRAWER_CLOSE_FALLBACK_MS,
+                )
+                onSheetOpenChange(false)
               }
             : undefined
         }
@@ -792,6 +832,7 @@ export function ChatAside({
       <PhonePanel
         open={sheetOpen}
         onOpenChange={onSheetOpenChange}
+        onClosed={landPendingShow}
         title={conversation.title}
         tabs={tabs}
         options={
@@ -1265,6 +1306,7 @@ export function SelectionToolbar({
 function PhonePanel({
   open,
   onOpenChange,
+  onClosed,
   title,
   tabs,
   options,
@@ -1272,13 +1314,21 @@ function PhonePanel({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** The close has finished: its slide out is over, the drawer is gone. */
+  onClosed?: () => void
   title: string
   tabs: ReactNode
   options: ReactNode
   children: ReactNode
 }) {
   return (
-    <Sheet open={open} onOpenChange={(next) => onOpenChange(next)}>
+    <Sheet
+      open={open}
+      onOpenChange={(next) => onOpenChange(next)}
+      onOpenChangeComplete={(next) => {
+        if (!next) onClosed?.()
+      }}
+    >
       <SheetPortal>
         <PortalScope>
           <SheetOverlay className="bg-black/30" />

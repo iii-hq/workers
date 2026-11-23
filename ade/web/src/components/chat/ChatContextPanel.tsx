@@ -1582,6 +1582,10 @@ export function ChatContextPanel({
           <div
             role="toolbar"
             aria-label="Show"
+            // The chip pressed now, for tests and reviewers: all, subagents,
+            // prs, links, attachments or images (each chip says it too, with
+            // aria-pressed; each section is a region named by its label).
+            data-context-filter={filter}
             className="-mx-2 flex shrink-0 gap-1.5 overflow-x-auto px-2 pb-1"
           >
             {(['all', ...COMMON_SECTIONS] as const).map((id) => {
@@ -1592,6 +1596,9 @@ export function ChatContextPanel({
                 <button
                   key={id}
                   type="button"
+                  // Not the section's own header, which also reads "Links 2"
+                  // and folds the section: chips sit in the "Show" toolbar.
+                  data-context-chip={id}
                   aria-pressed={selected}
                   onClick={() => setFilter(id)}
                   className={cn(

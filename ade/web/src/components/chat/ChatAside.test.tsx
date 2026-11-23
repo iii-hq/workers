@@ -59,8 +59,21 @@ vi.mock('./ChatView', () => ({
   ),
 }))
 vi.mock('./ChatContextPanel', () => ({
-  ChatContextPanel: ({ active }: { active?: boolean }) => (
-    <div data-context-panel data-active={String(active)} />
+  ChatContextPanel: ({
+    active,
+    onShowInConversation,
+  }: {
+    active?: boolean
+    onShowInConversation?: (target: { entryId?: string }) => void
+  }) => (
+    <div data-context-panel data-active={String(active)}>
+      <button
+        type="button"
+        onClick={() => onShowInConversation?.({ entryId: 'e-482' })}
+      >
+        show target
+      </button>
+    </div>
   ),
 }))
 
@@ -432,6 +445,25 @@ describe('ChatAside on a phone', () => {
     expect(document.body.textContent).toContain('Deleted after')
     act(() => button('Discard side chat…')?.click())
     expect(ctx.remove).toHaveBeenCalledWith('fork-1')
+  })
+
+  it('lands Show in conversation only once the drawer has closed', async () => {
+    mocks.ctx = makeCtx([main])
+    window.localStorage.setItem('iii-chat-aside-tab', 'context')
+    const onSheetOpenChange = vi.fn()
+    const shown = vi.fn()
+    extra = { onSheetOpenChange, onShowInConversation: shown }
+    render()
+    act(() => button('show target')?.click())
+    // The drawer is asked to close; nothing lands while it is on screen.
+    expect(onSheetOpenChange).toHaveBeenCalledWith(false)
+    expect(shown).not.toHaveBeenCalled()
+    extra = { onSheetOpenChange, onShowInConversation: shown, sheetOpen: false }
+    render()
+    await vi.waitFor(() =>
+      expect(shown).toHaveBeenCalledWith({ entryId: 'e-482' }),
+    )
+    expect(shown).toHaveBeenCalledTimes(1)
   })
 
   it('closes on its shortcut, though portaled out of the chat pane', () => {
