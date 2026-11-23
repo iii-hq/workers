@@ -21,6 +21,28 @@ import type { DecisionChatRequest } from '@/types/injectable-ui'
 import { useDecisionChatBinding } from './host'
 import './decision-chat.css'
 import { formatTokenCount } from '@/lib/token-estimate'
+
+export function answerProposal(
+  reply: { content: string; stopReason?: string } | undefined,
+): string | undefined {
+  if (
+    !reply ||
+    reply.stopReason === 'aborted' ||
+    reply.stopReason === 'error' ||
+    reply.stopReason === 'function_call'
+  )
+    return undefined
+  const text = reply.content.trim()
+  if (
+    !text ||
+    /^(?:(?:failed|error|refused)\s*[:—-]|i(?:\s+can(?:not|['’]t)|\s+could(?:\s+not|n['’]t)|(?:['’]m|\s+am)\s+unable to)\s+(?:answer|choose|act|help|comply|do (?:that|this)|provide)\b|i\s+must decline\b|sorry\b.{0,80}\b(?:can(?:not|['’]t)|could(?:\s+not|n['’]t)|unable to)\s+(?:answer|choose|act|help|comply|do (?:that|this)|provide)\b)|\b(?:denied|not permitted|not allowed) by policy\b/i.test(
+      text,
+    )
+  )
+    return undefined
+  return text
+}
+
 export function DecisionSideChat({
   sessionId,
   onClose,
@@ -64,8 +86,10 @@ export function DecisionSideChat({
   const own = conversation
     ? sideChatMessages(conversation.messages, since, from)
     : []
+  const lastUser = own.map((message) => message.role).lastIndexOf('user')
   const reply = own
-    .filter((message) => message.role === 'assistant' && message.content.trim())
+    .slice(lastUser + 1)
+    .filter((message) => message.role === 'assistant')
     .at(-1)
   const keep = async () => {
     if (keeping) return
@@ -101,7 +125,7 @@ export function DecisionSideChat({
       keeping={keeping}
       onKeep={() => void keep()}
       onClose={onClose}
-      proposal={reply?.role === 'assistant' ? reply.content : undefined}
+      proposal={reply?.role === 'assistant' ? answerProposal(reply) : undefined}
       questions={request?.questions}
       held={request?.kind === 'held'}
       onUseAnswer={
@@ -204,20 +228,26 @@ export function DecisionSideChatPanel({
       aria-label="Decision side chat"
     >
       <div className="decision-side-chat-header">
-        <h2>Side chat</h2>
-        <span className="decision-meta">read-only copy of {title}</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!canKeep || kept || keeping}
-          aria-pressed={kept}
-          onClick={onKeep}
-        >
-          {kept ? 'Kept' : keeping ? 'Keeping…' : 'Keep this side chat'}
-        </Button>
-        <IconButton label="Close the side chat" onClick={onClose}>
-          <X className="size-4" />
-        </IconButton>
+        <div className="decision-side-chat-heading">
+          <h2>Side chat</h2>
+          <span className="decision-meta" title={`read-only copy of ${title}`}>
+            read-only copy of {title}
+          </span>
+        </div>
+        <div className="decision-side-chat-actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!canKeep || kept || keeping}
+            aria-pressed={kept}
+            onClick={onKeep}
+          >
+            {kept ? 'Kept' : keeping ? 'Keeping…' : 'Keep this side chat'}
+          </Button>
+          <IconButton label="Close the side chat" onClick={onClose}>
+            <X className="size-4" />
+          </IconButton>
+        </div>
       </div>
       <p className="decision-side-chat-note decision-inline-note">
         <Lock className="size-4" />
@@ -274,7 +304,10 @@ export function DecisionSideChatPanel({
                   : ''
               if (held) onUseAnswer?.(0, { option: heldChoice })
               else {
-                const text = selected || proposal || ''
+                const text = selected
+                  ? answerProposal({ content: selected })
+                  : proposal
+                if (!text) return
                 const option = questions[Number(target)]?.options.find(
                   (option) => option.label === text.trim(),
                 )

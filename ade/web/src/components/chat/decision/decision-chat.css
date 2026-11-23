@@ -19,18 +19,35 @@
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 8px;
   padding: 4px 12px;
+  overflow: hidden;
   background: var(--color-surface);
 }
+.decision-side-chat-heading,
+.decision-side-chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.decision-side-chat-heading {
+  flex: 1;
+  min-width: 0;
+}
+.decision-side-chat-actions {
+  flex-shrink: 0;
+}
 .decision-side-chat-header h2 {
+  flex-shrink: 0;
   font-size: 13px;
   font-weight: 600;
 }
-.decision-side-chat-header > .decision-meta {
+.decision-side-chat-heading > .decision-meta {
   flex: 1;
-  min-width: 80px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .decision-side-chat-note,
 .decision-use-answer {

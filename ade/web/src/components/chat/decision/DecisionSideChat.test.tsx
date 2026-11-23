@@ -3,7 +3,11 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
-import { DecisionSideChat, DecisionSideChatPanel } from './DecisionSideChat'
+import {
+  answerProposal,
+  DecisionSideChat,
+  DecisionSideChatPanel,
+} from './DecisionSideChat'
 import { decisionChatCapabilities, registerDecisionChatWorkspace } from './host'
 
 const mocks = vi.hoisted(() => ({
@@ -157,6 +161,84 @@ const click = async (label: string) => {
 }
 
 describe('DecisionSideChat', () => {
+  it.each([
+    ['FAILED: the call was rejected', 'end', undefined],
+    ['Error - provider unavailable', 'end', undefined],
+    ["I can't answer that.", 'end', undefined],
+    ['I can’t answer that.', 'end', undefined],
+    ["I'm unable to choose for you.", 'end', undefined],
+    ['I’m unable to act on that.', 'end', undefined],
+    ["Sorry, I can't choose for you.", 'end', undefined],
+    ['The call was denied by policy.', 'end', undefined],
+    ['', 'error', undefined],
+    ['Postgres', 'end', 'Postgres'],
+    ["I won't deploy this.", 'end', "I won't deploy this."],
+    ['Error budget should be 5%.', 'end', 'Error budget should be 5%.'],
+  ])(
+    'accepts only answer proposals from a completed reply: %s',
+    (content, stopReason, expected) => {
+      expect(answerProposal({ content, stopReason })).toBe(expected)
+    },
+  )
+
+  it.each([
+    [
+      'policy refusal',
+      'FAILED: @fn(harness::ask) and @fn(coder::create-file) are denied by policy.',
+      'end',
+    ],
+    ['empty failed reply', '', 'error'],
+  ])(
+    'does not offer an answer proposal after a %s',
+    async (_label, content, stopReason) => {
+      const conversations = mocks.ctx.conversations as Array<{
+        messages: Array<Record<string, unknown>>
+      }>
+      conversations[0].messages = [
+        {
+          id: 'request',
+          role: 'user',
+          content: 'Answer this and create a file.',
+          createdAt: 2,
+        },
+        {
+          id: 'proposal',
+          role: 'assistant',
+          content: 'Use a dedicated build machine',
+          createdAt: 3,
+        },
+        {
+          id: 'failed',
+          role: 'assistant',
+          content,
+          createdAt: 4,
+          stopReason,
+        },
+      ]
+      const capabilities = decisionChatCapabilities(mocks.client)
+      await capabilities.openDecisionChat?.({
+        key: `${question.sessionId}/${question.questionId}`,
+        sessionId: question.sessionId,
+        kind: 'question',
+        title: question.title,
+        createdAt: new Date(question.createdAt).toISOString(),
+        questionId: question.questionId,
+        questions: question.entry.questions,
+        onUseAnswer: vi.fn(),
+      })
+
+      await act(() =>
+        root.render(
+          <TooltipProvider>
+            <DecisionSideChat sessionId="copy" onClose={() => {}} />
+          </TooltipProvider>,
+        ),
+      )
+
+      expect(container.textContent).not.toContain('Use this answer')
+    },
+  )
+
   it('uses a question proposal at its requested index, disables it after detach, and reenables after rebind', async () => {
     const answer = vi.fn()
     const onClose = vi.fn()
@@ -264,6 +346,44 @@ describe('DecisionSideChat', () => {
       [0, { option: 'Allow once' }],
       [0, { option: 'Always allow' }],
     ])
+    expect(
+      container.querySelector('.decision-side-chat-heading'),
+    ).not.toBeNull()
+    expect(
+      container.querySelector('.decision-side-chat-actions'),
+    ).not.toBeNull()
+  })
+
+  it('does not use selected refusal text or fall back to the latest reply', async () => {
+    const answer = vi.fn()
+    await act(() =>
+      root.render(
+        <TooltipProvider>
+          <DecisionSideChatPanel
+            title="run"
+            kept={false}
+            onKeep={() => {}}
+            onClose={() => {}}
+            proposal="Postgres"
+            questions={question.entry.questions}
+            onUseAnswer={answer}
+          >
+            <span>Selected reply</span>
+          </DecisionSideChatPanel>
+        </TooltipProvider>,
+      ),
+    )
+    const selected = container.querySelector('span')?.firstChild
+    expect(selected).toBeDefined()
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      anchorNode: selected,
+      focusNode: selected,
+      toString: () => "I can't answer that.",
+    } as Selection)
+
+    await click('Use this answer')
+
+    expect(answer).not.toHaveBeenCalled()
   })
 
   it('serializes Keep and preserves the decision copy metadata', async () => {

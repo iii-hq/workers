@@ -78,8 +78,8 @@ export function ExtPage({
         />
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
-            title="Extension page not loaded"
-            description={`No worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`}
+            title="Waiting for worker page"
+            description={`This page will open when the worker registers '${pageId}'.`}
           />
         </div>
       </PageShell>
