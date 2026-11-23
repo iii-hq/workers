@@ -440,7 +440,10 @@ Two machines can share the same id: each lives in its own namespace. An owner
 whose name is a namespace already in use on a machine's engine, such as the
 machine's own project namespace or one where another project's mesh client
 on that engine already mirrors, is not mirrored there, and that machine's
-`mesh::status` says so under `remote[].skipped`. On the hub, `mesh::auth`
+`mesh::status` says so under `remote[].skipped`. The client checks this when
+the hub sends it a catalog, so a project that starts later under the name of
+an owner already mirrored shares that namespace until the next catalog; give
+local projects names no machine uses. On the hub, `mesh::auth`
 refuses a machine named `default`, like the hub's namespace or like a namespace
 another worker uses on the hub's engine, and asks for another `client.name`.
 

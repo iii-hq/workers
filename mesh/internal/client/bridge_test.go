@@ -755,7 +755,11 @@ func TestCatalogReadAcrossAChangeIsNotInstalled(t *testing.T) {
 			go func() {
 				done <- b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "desk"}}})
 			}()
-			<-reading
+			select {
+			case <-reading:
+			case err := <-done:
+				t.Fatalf("the catalog read no namespaces: %v", err)
+			}
 			change(b)
 			close(resume)
 			if err := <-done; err == nil || b.CatalogRev() != "" || len(conns) != 0 {
