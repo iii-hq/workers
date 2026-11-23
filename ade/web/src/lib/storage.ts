@@ -86,18 +86,19 @@ export function saveActiveId(id: string | null): void {
 }
 
 /**
- * What a new chat starts on. The first slot of the quick menu once the
- * person has arranged it (it is badged "default" there); until then, the
- * model used last.
+ * What a new chat starts on: the model of the chat the person started (or
+ * switched) last, so a provider they chose sticks across new chats. Before
+ * there is one, the first slot of the quick menu once they have arranged it
+ * (it is badged "default" there).
  */
 export function loadLastModel(): string | null {
-  const pinned = pinnedDefaultModel()
-  if (pinned) return pinned.id
   try {
-    return localStorage.getItem(LAST_MODEL_KEY)
+    const last = localStorage.getItem(LAST_MODEL_KEY)
+    if (last) return last
   } catch {
-    return null
+    /* fall through to the pinned default */
   }
+  return pinnedDefaultModel()?.id ?? null
 }
 
 export function saveLastModel(id: string | null): void {
@@ -109,15 +110,15 @@ export function saveLastModel(id: string | null): void {
   }
 }
 
+/** The effort that goes with `loadLastModel`: the last chat's, else the pinned default's. */
 export function loadLastThinkingLevel(): string | null {
-  const pinned = pinnedDefaultModel()
-  if (pinned) return pinned.effort
   try {
     const level = localStorage.getItem(LAST_THINKING_LEVEL_KEY)
-    return level && level.length > 0 ? level : null
+    if (level && level.length > 0) return level
   } catch {
-    return null
+    /* fall through to the pinned default */
   }
+  return pinnedDefaultModel()?.effort ?? null
 }
 
 export function saveLastThinkingLevel(level: string): void {
