@@ -54,6 +54,47 @@ describe('writer digest', () => {
     expect(digest.scope).toBe('Assistente')
   })
 
+  it('carries a marked card description and newest comments as its evidence', () => {
+    const card = base.tickets[0]
+    const item = {
+      id: `card:${card.key}`,
+      kind: 'card' as const,
+      sessionId: '',
+      title: card.title,
+      marks: ['decisão'],
+      card,
+      blockedCards: 0,
+      createdAt: 0,
+      urgency: 'no-rush' as const,
+    }
+    const digest = writerDigest(
+      { ...base, items: [item] },
+      {
+        scopeName: 'All',
+        since: null,
+        activity: [],
+        evidence: {
+          [item.id]: {
+            description: `Pick the table.\n\n${'detail '.repeat(200)}`,
+            comments: [
+              { author: 'a', body: 'old' },
+              { author: 'b', body: 'Owner: go with usage.' },
+              { author: 'c', body: 'Agreed.' },
+            ],
+          },
+        },
+      },
+    )
+    const [candidate] = digest.needs_you
+    expect(candidate).toMatchObject({ id: item.id, marks: ['decisão'] })
+    expect(candidate.description?.startsWith('Pick the table. detail')).toBe(true)
+    expect(candidate.description?.length).toBeLessThanOrEqual(700)
+    expect(candidate.recent_comments?.map((comment) => comment.text)).toEqual([
+      'Owner: go with usage.',
+      'Agreed.',
+    ])
+  })
+
   it('marks pull requests unread instead of empty when no repository was read', () => {
     const unread = writerDigest(
       { ...base, repositories: [], prs: [] },

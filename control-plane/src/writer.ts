@@ -1,4 +1,4 @@
-import { type ActivityRow, writerDigest } from './digest.js'
+import { type ActivityRow, type CardDetail, writerDigest } from './digest.js'
 import { acceptSummary, SUMMARY_SCHEMA, type ControlPlaneSummary, WRITER_READS } from './summary.js'
 import type { ControlPlaneClient, ControlPlaneConfig, ControlPlaneData } from './types.js'
 
@@ -95,6 +95,8 @@ export function writerTargetHash(
   const { model, reasoning, language, guidance } = summary
   return `${sourceHash}|${JSON.stringify([model ?? null, reasoning ?? null, language, guidance?.trim() ?? ''])}`
 }
+
+const CARD_EVIDENCE = 15
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
@@ -424,7 +426,23 @@ export class ControlPlaneWriter {
       })
       .then((result) => result?.activity ?? [])
       .catch(() => [])
+    // Evidence for the marked cards, so the writer can check and recommend
+    // without spending its own reads: description and the newest comments.
+    const evidence = Object.fromEntries(
+      await Promise.all(
+        (data.items ?? [])
+          .filter((item) => item.kind === 'card' && item.card)
+          .slice(0, CARD_EVIDENCE)
+          .map(async (item) => {
+            const ticket = await this.iii
+              .call<CardDetail>('kanban::ticket::get', { id: item.card?.key })
+              .catch(() => null)
+            return [item.id, ticket] as const
+          }),
+      ),
+    )
     const digest = writerDigest(data, {
+      evidence,
       scopeName:
         scope === 'all'
           ? 'All projects'

@@ -9,6 +9,12 @@ export interface ActivityRow {
   changes?: Array<{ field: string; from?: unknown; to?: unknown }> | null
 }
 
+/** What `kanban::ticket::get` returns that the digest uses as a card's evidence. */
+export interface CardDetail {
+  description?: string | null
+  comments?: Array<{ author?: string; body?: string; created_at?: string }> | null
+}
+
 const CARDS = 40
 const ACTIVITY = 60
 const RUNS = 20
@@ -22,6 +28,11 @@ const clip = (text: string, max: number) => {
       .find((part) => part.trim())
       ?.trim() ?? ''
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
+}
+/** Whitespace collapsed and clipped, keeping every line (unlike clip, which keeps the first). */
+const excerpt = (text: string, max: number) => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
 }
 const short = (value: unknown) =>
   value === null || value === undefined
@@ -39,7 +50,13 @@ export function writerDigest(
     scopeName,
     since,
     activity,
-  }: { scopeName: string; since: string | null; activity: ActivityRow[] },
+    evidence = {},
+  }: {
+    scopeName: string
+    since: string | null
+    activity: ActivityRow[]
+    evidence?: Record<string, CardDetail | null>
+  },
 ) {
   const sinceMs = since ? Date.parse(since) : 0
   const tickets = data.tickets ?? []
@@ -116,7 +133,24 @@ export function writerDigest(
       urgency: item.urgency,
       class: item.kind === 'question' ? item.questionClass : undefined,
       question: item.kind === 'question' ? clip(item.question ?? '', 300) : undefined,
+      why: item.kind === 'question' && item.why ? clip(item.why, 300) : undefined,
       marks: item.kind === 'card' ? item.marks : undefined,
+      options:
+        item.kind === 'question'
+          ? item.entry.questions[0]?.options.map(
+              (option) => option.label + (option.recommended ? ' (recommended)' : ''),
+            )
+          : undefined,
+      description: evidence[item.id]?.description
+        ? excerpt(evidence[item.id]?.description ?? '', 700)
+        : undefined,
+      recent_comments: evidence[item.id]?.comments?.length
+        ? (evidence[item.id]?.comments ?? []).slice(-2).map((comment) => ({
+            author: comment.author,
+            at: comment.created_at,
+            text: excerpt(comment.body ?? '', 300),
+          }))
+        : undefined,
       // The end of the message, where the question is.
       last_message: item.kind === 'reply' ? item.lastMessage.slice(-400) : undefined,
       card: item.card?.key ?? null,

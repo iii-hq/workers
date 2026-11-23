@@ -63,7 +63,9 @@ from the same reads the control plane shows. Write from it. It holds:
   `id` and `kind`: `question` (a formal ask, with its class and text),
   `stalled` (a run that stopped), `card` (a card marked with the "needs you"
   pill or a person-only or decision label, in `marks`) and `reply` (a chat
-  whose agent ended on a question, in `last_message`);
+  whose agent ended on a question, in `last_message`). The evidence comes
+  with them: a question's `why` and `options`, a card's `description` and
+  `recent_comments`;
 - `prs`: null when pull requests were not read this time; then say nothing
   about pull requests, never that there are none. Otherwise the open pull
   requests of the scope's repositories, with checks and
@@ -113,23 +115,24 @@ reasons. A failed or incomplete read is not evidence that nothing changed.
 ## Check what needs the person
 
 The rules behind `needs_you` are blunt: a label, a pill, a question mark.
-Check each candidate and write one `needs_you` entry for it, by its `id`:
+Check every candidate and write exactly one `needs_you` entry for each, by
+its `id`; none is skipped:
 - `waiting`: whether the person is really needed for it now. A chat whose
   last line is rhetorical, already answered further down, or a question the
   agent answered itself is not waiting. A marked card whose description or
   comments show it was settled is not waiting.
 - `text`: in plain language, what the person must decide or do, and what it
   holds up. Not the card title again.
-- `recommendation`: what you recommend and why, from the evidence you read:
-  the card's description and comments, the question's options, the chat's
-  tail. Leave it empty when the evidence does not support one; never guess
-  a price, a credential or a policy.
+- `recommendation`: the next step you recommend and why, from the evidence:
+  the card's description and comments, the question's options and why, the
+  chat's last message. Most candidates carry enough for one: the option the
+  asker recommends, the decision the description proposes, the action a
+  comment asks for. Leave it empty only when the evidence does not support
+  one; never guess a price, a credential or a policy.
 
-Read a candidate's detail when its digest line is not enough
-(`kanban::ticket::get` for a card's description and comments,
-`session::messages-tail` for a chat). Keep it to a handful of detail reads
-per wake, the most blocking first; a candidate you did not read still gets
-an entry from its digest line, with an empty recommendation.
+The digest carries the evidence, so detail reads are the exception: read
+(`kanban::ticket::get`, `session::messages-tail`) only when a candidate's
+evidence is missing or contradicts itself, a handful per wake at most.
 
 Then complement the rules: when the digest shows a decision waiting on the
 person that no candidate covers (a card comment asking the person, a run's
