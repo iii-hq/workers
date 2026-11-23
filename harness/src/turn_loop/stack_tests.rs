@@ -2269,6 +2269,64 @@ async fn a_released_move_is_mirrored_when_the_next_step_cannot_be_queued() {
     );
 }
 
+/// A folder granted for the session is stamped only on a call in the implicit
+/// namespace; the root goes with every call, and a release in another
+/// namespace carries only the grants of that release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_in_another_namespace_carries_no_session_folder_grant() {
+    let granted = json!({"harness_filesystem_grants": {"roots": ["/granted"]}});
+    let call = |id: &str, namespace: Option<&str>| {
+        let mut call = json!({"type": "function_call", "id": id, "function_id": "agent_call",
+            "arguments": {"function": "shell::exec", "payload": {}}});
+        if let Some(namespace) = namespace {
+            call["arguments"]["namespace"] = json!(namespace);
+        }
+        call
+    };
+    let mut reply = worktree_reply(false);
+    reply["content"] = json!([call("call_own", None), call("call_zz", Some("zz-a"))]);
+    let (_, calls, _) = step_rooted(
+        Some("/repo"),
+        crate::filesystem_scope::BoundaryMode::Auto,
+        json!({}),
+        reply,
+        granted.clone(),
+    )
+    .await;
+    let stamps: Vec<&Value> = calls
+        .iter()
+        .filter(|(f, _)| f == "shell::exec")
+        .map(|(_, data)| &data["fs_scope"])
+        .collect();
+    assert_eq!(stamps.len(), 2, "{calls:?}");
+    assert_eq!(stamps[0]["grants"], json!(["/granted"]));
+    assert_eq!(stamps[1]["grants"], json!([]));
+    assert!(
+        stamps.iter().all(|stamp| stamp["root"] == "/repo"),
+        "{stamps:?}"
+    );
+
+    let mut held = held_call();
+    held["function_id"] = json!("shell::exec");
+    held["namespace"] = json!("zz-a");
+    let (_, calls, _) = run_on_fake_engine(
+        json!({"call_hold": held}),
+        json!([]),
+        None,
+        granted,
+        |deps| async move {
+            root_turn(&deps, Some("/repo")).await;
+            let mut req = resolve_request("call_hold", "execute");
+            req.fs_scope = Some(crate::functions::function_resolve::ResolveFsScope {
+                grants: vec!["/once".into()],
+            });
+            crate::deferred::resolve(&deps, req).await
+        },
+    )
+    .await;
+    assert_eq!(stamped(&calls, "shell::exec")["grants"], json!(["/once"]));
+}
+
 fn held_call() -> Value {
     json!({"state": "pending", "function_id": "test::hold",
         "held_by": "test::gate", "held_arguments": {}})
@@ -2405,7 +2463,8 @@ async fn run_on_faulty_engine<T, F: std::future::Future<Output = T>>(
 }
 
 /// The hook points a test's `hooks` map observes. Any other key
-/// (`session::get`) only answers that function. Kept out of
+/// (`session::get`) only answers that function, and the key
+/// `harness_filesystem_grants` holds the session's stored folder grants. Kept out of
 /// `run_on_misleading_engine`, whose debug poll frame sits near the 2 MiB
 /// test-thread stack.
 fn observed_hook_points(hooks: &Value) -> Vec<String> {
@@ -2539,6 +2598,11 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 "engine::workers::register" => json!({"success": true}),
                 "state::get" | "harness::state::get" if data["scope"] == "harness_turn" => {
                     stored_turn.lock().unwrap().clone()
+                }
+                "state::get"
+                    if data["scope"] == crate::filesystem_grants::FILESYSTEM_GRANTS_SCOPE =>
+                {
+                    hooks[crate::filesystem_grants::FILESYSTEM_GRANTS_SCOPE].clone()
                 }
                 "state::set" if data["scope"] == "harness_turn" => {
                     *stored_turn.lock().unwrap() = data["value"].clone();
