@@ -185,6 +185,15 @@ mod tests {
     }
 
     #[test]
+    fn a_reserved_attempt_is_live_and_a_replaced_one_is_not() {
+        let d = def();
+        let r = record(&[("j", NodeState::Pending, "wf_r_1_j@r1")]);
+        // The first generation may run before the send is acknowledged.
+        assert!(submitting_node(&r, &d, "wf_r_1_j@r1").is_ok());
+        assert!(submitting_node(&r, &d, "wf_r_1_j@r0").is_err());
+    }
+
+    #[test]
     fn text_nodes_strangers_and_finished_runs_are_refused() {
         let d = def();
         let r = record(&[("t", NodeState::Running, "wf_r_1_t@r0")]);
