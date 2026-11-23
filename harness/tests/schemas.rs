@@ -68,6 +68,19 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::metrics",
             "harness::observers::list",
             "harness::observers::dispose",
+            "harness::set-description",
+            "harness::folders::list",
+            "harness::folders::upsert",
+            "harness::folders::delete",
+            "harness::projects::list",
+            "harness::projects::create",
+            "harness::projects::update",
+            "harness::projects::delete",
+            "harness::projects::assign",
+            "harness::projects::upsert",
+            "harness::context-items",
+            "harness::chat-settings::get",
+            "harness::chat-settings::set",
         ]
     );
 }

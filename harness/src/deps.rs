@@ -12,9 +12,10 @@ use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
 use crate::discovery::{FunctionsCell, FunctionsSnapshot};
 use crate::events::TurnEvents;
+use crate::folders::FolderStore;
 use crate::hooks::HookRegistry;
 use crate::locks::{SessionLocks, TurnCancels};
-use crate::projects::ProjectStore;
+use crate::projects::ProjectsStore;
 use crate::skills::{SkillsCell, SkillsSnapshot};
 
 #[derive(Clone)]
@@ -40,9 +41,15 @@ pub struct Deps {
     /// Bindings, by id, whose delivery runs in this process from its claim to
     /// its retirement; the binding pass leaves those records to the delivery.
     pub deliveries: crate::inflight::InflightSteps,
-    /// Harness-owned JSON project catalog, serialized across concurrent
-    /// console requests while allowing its configured file path to hot-reload.
-    pub projects: ProjectStore,
+    /// Harness-owned JSON saved-folder catalogue (`harness::folders`),
+    /// serialized across concurrent console requests while allowing its
+    /// configured file path to hot-reload.
+    pub folders: FolderStore,
+    /// Harness-owned JSON chat-projects store (`harness::projects`).
+    pub projects: ProjectsStore,
+    /// The context pane's per-session transcript indexes
+    /// (`harness::context-items`).
+    pub context_items: crate::context_items::ContextIndex,
     /// Handles of the binding observers this process created; see
     /// [`crate::bindings::ObserverHandles`].
     pub observer_handles: crate::bindings::ObserverHandles,
@@ -87,7 +94,9 @@ impl Deps {
             cancels: TurnCancels::new(),
             inflight: crate::inflight::InflightSteps::new(),
             deliveries: crate::inflight::InflightSteps::new(),
-            projects: ProjectStore::default(),
+            folders: FolderStore::default(),
+            projects: ProjectsStore::default(),
+            context_items: crate::context_items::ContextIndex::default(),
             observer_handles: crate::bindings::ObserverHandles::default(),
             observing_again: crate::bindings::ObservingAgain::default(),
             expiry_timers: crate::timer::OneShots::new(),

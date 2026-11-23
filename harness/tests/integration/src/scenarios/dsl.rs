@@ -939,6 +939,12 @@ enum ResponseKind {
     FunctionCalls {
         calls: Vec<(String, String, Value)>,
     },
+    TextAndFunctionCall {
+        text: String,
+        call_id: String,
+        function_id: String,
+        arguments: Value,
+    },
     TerminalError {
         text: String,
         chunks: Vec<String>,
@@ -1076,6 +1082,27 @@ impl Response {
         }
     }
 
+    /// One assistant message with reply text and then one call, the shape
+    /// of a reply that also updates the conversation's description.
+    pub(super) fn text_and_function_call_raw(
+        text: &str,
+        call_id: &str,
+        function_id: &str,
+        arguments: Value,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        Self {
+            kind: ResponseKind::TextAndFunctionCall {
+                text: text.to_string(),
+                call_id: call_id.to_string(),
+                function_id: function_id.to_string(),
+                arguments,
+            },
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
     /// Compile one assistant message containing several function calls. This
     /// is used by the stop-cascade fixture so both child checkpoints exist
     /// before the root enters its held generation.
@@ -1159,6 +1186,32 @@ impl Response {
                                 arguments,
                             })
                             .collect(),
+                        StopReason::FunctionCall,
+                        Some(usage.clone()),
+                        model,
+                        timestamp,
+                    ),
+                }],
+                StopReason::FunctionCall,
+                true,
+                None,
+            ),
+            ResponseKind::TextAndFunctionCall {
+                text,
+                call_id,
+                function_id,
+                arguments,
+            } => (
+                vec![AssistantMessageEvent::Done {
+                    message: assistant_message(
+                        vec![
+                            ContentBlock::Text { text },
+                            ContentBlock::FunctionCall {
+                                id: call_id,
+                                function_id,
+                                arguments,
+                            },
+                        ],
                         StopReason::FunctionCall,
                         Some(usage.clone()),
                         model,

@@ -12,6 +12,7 @@ use crate::functions::{
     ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_CALL_ID, FUNCTION_RESOLVE_ID, METRICS_ID,
     SEND_ID, SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
+use crate::functions::{chat_settings, folders, projects};
 use crate::functions::{
     compact::CompactRequest,
     context_policy::{ContextPolicyRequest, ContextPolicyResponse},
@@ -96,5 +97,31 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<SessionMetricsRequestV1, SessionMetricsResponseV1>(METRICS_ID),
         spec::<ObserversListRequest, ObserversListResponse>(OBSERVERS_LIST_ID),
         spec::<ObserversDisposeRequest, ObserversDisposeResponse>(OBSERVERS_DISPOSE_ID),
+        // chat-projects phase 1
+        spec::<crate::description::SetDescriptionRequest, crate::description::SetDescriptionResponse>(
+            crate::description::SET_DESCRIPTION_ID,
+        ),
+        spec::<folders::FoldersListRequest, folders::FoldersListResponse>(folders::LIST_ID),
+        spec::<folders::FolderUpsertRequest, folders::FolderUpsertResponse>(folders::UPSERT_ID),
+        spec::<folders::FolderDeleteRequest, folders::FolderDeleteResponse>(folders::DELETE_ID),
+        spec::<projects::ProjectsListRequest, projects::ProjectsListResponse>(projects::LIST_ID),
+        spec::<projects::ProjectCreateRequest, projects::ProjectWriteResponse>(projects::CREATE_ID),
+        spec::<projects::ProjectUpdateRequest, projects::ProjectWriteResponse>(projects::UPDATE_ID),
+        spec::<projects::ProjectDeleteRequest, projects::ProjectDeleteResponse>(
+            projects::DELETE_ID,
+        ),
+        spec::<projects::ProjectAssignRequest, projects::ProjectAssignResponse>(
+            projects::ASSIGN_ID,
+        ),
+        spec::<folders::FolderUpsertRequest, folders::FolderUpsertResponse>(projects::UPSERT_ID),
+        spec::<crate::context_items::ContextItemsRequest, crate::context_items::ContextItemsResponse>(
+            crate::context_items::CONTEXT_ITEMS_ID,
+        ),
+        spec::<chat_settings::ChatSettingsGetRequest, chat_settings::ChatSettings>(
+            chat_settings::GET_ID,
+        ),
+        spec::<chat_settings::ChatSettingsSetRequest, chat_settings::ChatSettingsSetResponse>(
+            chat_settings::SET_ID,
+        ),
     ]
 }

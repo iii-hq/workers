@@ -1,0 +1,65 @@
+{
+  "function_id": "harness::folders::upsert",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "default": null,
+        "description": "A custom display name. Omit to keep the current name (or use the folder name for a new folder); pass blank to reset to the folder name.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "FolderUpsertRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SavedFolder": {
+        "description": "One saved folder.",
+        "properties": {
+          "last_used_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "last_used_at",
+          "name",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "`project` is the key the catalogue answered with before the rename; the shape stays the same (D25). `folder` carries the same record under its new name.",
+    "properties": {
+      "folder": {
+        "$ref": "#/definitions/SavedFolder"
+      },
+      "project": {
+        "$ref": "#/definitions/SavedFolder"
+      }
+    },
+    "required": [
+      "folder",
+      "project"
+    ],
+    "title": "FolderUpsertResponse",
+    "type": "object"
+  }
+}

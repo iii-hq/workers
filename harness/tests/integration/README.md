@@ -52,6 +52,7 @@ No provider key or network access is required.
 | INT-042 | `stop-parked-next-wake` | direct | an agent's stop on a parked session leaves it to end on its next wake, the deadline notice included |
 | INT-043 | `harness-crash-recovery` | direct | SIGKILL the harness while a controlled function is in flight and start a new harness process; the queue delivers the interrupted step again, the call closes as `interrupted`, and the turn completes inside the orphan redrive window |
 | INT-044 | `provider-recovery-exhausted` | direct | A stream breaks after partial output, then every reconnect fails before any output. The turn keeps the partial result and reports exhaustion after three retries. |
+| INT-045 | `set-description-ends-turn` | direct | a step whose only call is `harness::set-description`, beside reply text, is answered by the turn loop for the turn's own session (one `session::patch-meta`), `session::on-meta-updated` carries the description, and the turn completes without another model call |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |

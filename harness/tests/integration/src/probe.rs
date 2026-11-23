@@ -17,6 +17,10 @@ use crate::types::trace::strip_engine_fields;
 pub(crate) const LIFECYCLE_FUNCTION_ID: &str = "integration-probe::turn-completed";
 const READY_FUNCTION_ID: &str = "integration-probe::harness-ready";
 const TRACES_FUNCTION_ID: &str = "integration-probe::traces-changed";
+const META_FUNCTION_ID: &str = "integration-probe::meta-updated";
+
+/// session-manager's metadata event, filtered per session.
+const ON_META_UPDATED_FN: &str = "session::on-meta-updated";
 
 /// The harness's turn-completion event, filtered per session.
 const ON_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
@@ -56,6 +60,8 @@ pub struct ScenarioProbe {
     target_notify: Arc<tokio::sync::Notify>,
     target_response_released: Arc<AtomicBool>,
     target_response_notify: Arc<tokio::sync::Notify>,
+    /// Every `session::on-meta-updated` event of the run's session.
+    meta_updates: Arc<Mutex<Vec<Value>>>,
 }
 
 impl ScenarioProbe {
@@ -73,6 +79,7 @@ impl ScenarioProbe {
             target_notify: Arc::new(tokio::sync::Notify::new()),
             target_response_released: Arc::new(AtomicBool::new(false)),
             target_response_notify: Arc::new(tokio::sync::Notify::new()),
+            meta_updates: Arc::new(Mutex::new(Vec::new())),
         };
         probe.register_sinks();
         Ok(probe)
@@ -82,6 +89,33 @@ impl ScenarioProbe {
         self.register_completion_sink();
         self.register_ready_sink();
         self.register_trace_sink();
+        self.register_meta_sink();
+    }
+
+    fn register_meta_sink(&self) {
+        let meta_updates = Arc::clone(&self.meta_updates);
+        self.client.inner().register_function(
+            META_FUNCTION_ID,
+            RegisterFunction::new_async(move |payload: Value| {
+                let meta_updates = Arc::clone(&meta_updates);
+                async move {
+                    meta_updates
+                        .lock()
+                        .map_err(|_| Error::Handler("integration/meta_lock_poisoned".into()))?
+                        .push(observed_output(payload));
+                    Ok::<Value, Error>(json!({ "accepted": true }))
+                }
+            })
+            .description("Session metadata updates for harness integration scenarios."),
+        );
+    }
+
+    /// The `session::on-meta-updated` events received so far, in order.
+    pub fn meta_updates(&self) -> Vec<Value> {
+        self.meta_updates
+            .lock()
+            .map(|updates| updates.clone())
+            .unwrap_or_default()
     }
 
     fn register_completion_sink(&self) {
@@ -253,6 +287,12 @@ impl ScenarioProbe {
             ON_READY_FN,
             READY_FUNCTION_ID,
         )?;
+        self.observe(
+            Source::function(ON_META_UPDATED_FN)
+                .filters(json!({ "input.session_id": { "$eq": session_id } })),
+            ON_META_UPDATED_FN,
+            META_FUNCTION_ID,
+        )?;
         Ok(())
     }
 
@@ -290,7 +330,10 @@ impl ScenarioProbe {
             .lock()
             .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?
             .iter()
-            .filter(|binding| binding.function_id == ON_TURN_COMPLETED_FN)
+            .filter(|binding| {
+                binding.function_id == ON_TURN_COMPLETED_FN
+                    || binding.function_id == ON_META_UPDATED_FN
+            })
             .map(|binding| binding.handle.clone())
             .collect::<Vec<_>>();
         for handle in completions {

@@ -1,0 +1,65 @@
+{
+  "function_id": "harness::projects::delete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "id": {
+        "default": null,
+        "description": "The project to delete.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Deprecated: without `id`, forget this saved folder (harness::folders::delete).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ProjectDeleteRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/ProjectDeleted"
+      },
+      {
+        "$ref": "#/definitions/FolderDeleted"
+      }
+    ],
+    "definitions": {
+      "FolderDeleted": {
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "ProjectDeleted": {
+        "properties": {
+          "released": {
+            "description": "Conversations that left the project (now under No project).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "released"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "ProjectDeleteResponse"
+  }
+}
