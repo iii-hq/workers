@@ -705,6 +705,11 @@ it does not know.
 | `harness::projects::delete` | `{ id }` | `{ released }` |
 | `harness::projects::assign` | `{ session_ids, project: <id> \| "none" }` | `{ updated }` |
 
+Like every harness control-plane function these are internal: they stay
+off the default `engine::functions::list` (list them with
+`include_internal: true`). Agents may call `harness::projects::list` by id;
+the writes are denied to them.
+
 A conversation belongs to a project through `metadata.project_id`; `"none"`
 keeps it out on purpose. `bring_existing` stamps the root conversations whose
 `metadata.fs_scope.root` falls in the project's folders (only the folders an

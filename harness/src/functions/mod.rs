@@ -501,9 +501,11 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, r| async move { folders::delete(&d, r).await },
     );
 
-    // Chat projects. `list` is the one agents read (its description asks for
-    // `version: 2`); the writes are the console's and the apps'.
-    register(
+    // Chat projects — control-plane like the rest (D54), off the default
+    // catalog. Agents may still call `list` by id (iii-permissions.yaml
+    // allows it; its description asks for `version: 2`); the writes are the
+    // console's and the apps'.
+    register_internal(
         iii,
         deps,
         projects::LIST_ID,
@@ -594,6 +596,116 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 #[cfg(test)]
 mod tests {
     use super::SPAWN_DESC;
+
+    /// What `register_all` registers, by id: `true` when the function is on
+    /// the default catalog (neither `metadata.internal` nor private).
+    async fn registered_visibility() -> std::collections::BTreeMap<String, bool> {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (frames_tx, mut frames) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let hello = serde_json::json!({"type": "workerregistered", "worker_id": "w",
+                "features": ["observe.v2"]});
+            socket
+                .send(Message::Text(hello.to_string().into()))
+                .await
+                .unwrap();
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(text) = frame.to_text() else { continue };
+                if let Ok(message) = serde_json::from_str::<serde_json::Value>(text)
+                    && message["type"] == "registerfunction"
+                {
+                    let _ = frames_tx.send(message);
+                }
+            }
+        });
+        let iii = std::sync::Arc::new(iii_sdk::register_worker(
+            &url,
+            iii_sdk::InitOptions::default(),
+        ));
+        let deps = std::sync::Arc::new(crate::deps::Deps::new(
+            iii.clone(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(
+                crate::config::WorkerConfig::default(),
+            ))),
+            crate::discovery::new_cell(),
+            crate::skills::new_cell(),
+            crate::events::TurnEvents::register(&iii),
+            crate::hooks::HookRegistry::register(&iii),
+        ));
+        super::register_all(&iii, &deps);
+        let mut seen = std::collections::BTreeMap::new();
+        let last = crate::functions::chat_settings::SET_ID;
+        while !seen.contains_key(last) {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), frames.recv())
+                .await
+                .expect("every registration reaches the engine")
+                .expect("the fake engine is up");
+            let id = frame["id"].as_str().unwrap_or_default().to_string();
+            let internal = frame["metadata"]["internal"] == serde_json::json!(true);
+            let private = frame["private"] == serde_json::json!(true);
+            seen.insert(id, !internal && !private);
+        }
+        iii.shutdown();
+        server.abort();
+        seen
+    }
+
+    /// D54: `harness::projects::list` is internal again, like every harness
+    /// control-plane function (agents still call it by id). The default
+    /// catalog of `register_all` is the one of origin/main plus
+    /// `harness::set-description`, which the model must find.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_model_facing_functions_are_on_the_default_catalog() {
+        let seen = registered_visibility().await;
+        assert_eq!(seen.get("harness::projects::list"), Some(&false));
+        for id in [
+            "harness::projects::create",
+            "harness::projects::update",
+            "harness::projects::delete",
+            "harness::projects::assign",
+            "harness::projects::upsert",
+            "harness::folders::list",
+            "harness::folders::upsert",
+            "harness::folders::delete",
+            "harness::context-items",
+            "harness::chat-settings::get",
+            "harness::chat-settings::set",
+            "harness::projects::on-changed",
+            "harness::chat-settings::on-changed",
+        ] {
+            assert_eq!(
+                seen.get(id),
+                Some(&false),
+                "{id} must stay off the default catalog"
+            );
+        }
+        let public: Vec<&str> = seen
+            .iter()
+            .filter(|(_, public)| **public)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(
+            public,
+            [
+                "harness::ask",
+                "harness::metrics",
+                "harness::observe",
+                "harness::observers::dispose",
+                "harness::observers::list",
+                "harness::session-tree",
+                "harness::set-description",
+                "harness::spawn",
+                "harness::status",
+                "harness::unobserve",
+            ]
+        );
+    }
 
     #[test]
     fn spawn_tool_description_includes_a_one_shot_child_health_cue() {

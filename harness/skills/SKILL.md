@@ -114,7 +114,8 @@ Consumer-facing:
   coloured groups of folders; a conversation's `metadata.project_id` names
   its project (`"none"` = kept out on purpose). Always send `version: 2`;
   without it the call answers the saved folders for apps released before
-  projects.
+  projects. Internal like every harness control-plane function (off the
+  default `engine::functions::list`), but agents may call it by id.
 
 Console and app control-plane (internal, list them with
 `engine::functions::list { include_internal: true }`): `harness::folders::list`
