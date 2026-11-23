@@ -93,9 +93,7 @@ language, as one colleague would brief another, in three parts:
   planned next, and the decisions waiting on the person.
 
 Each part is two or three sentences, names its subjects with card, session
-or PR references, and says what matters, not a list of everything. Name a
-card by what it is about (its title, shortened), with the key after it: a
-bare key tells the person nothing. Leave a
+or PR references, and says what matters, not a list of everything. Leave a
 part empty only when there is nothing supported to say for it. The
 `headline` is one sentence with the most important thing. The diary gets the milestones from `activity` and
 `changed_cards` (a card reaching review or done, a run finishing, a PR
@@ -135,6 +133,12 @@ Return exactly these top-level fields:
   event, sort by `at` newest first, and retain the newest 50 entries.
   Keep their original event times; do not restamp old milestones at refresh.
   Never rebuild lost diary entries by fetching old transcripts or activity.
+- Write plain, clear language in every line: the headline, the three
+  brief parts, the diary, `now` and `pr_waits`. Say what a card, session or
+  PR is about in words (its title, shortened), with the reference after it,
+  as in "the end-to-end validation of the pull request fix (KAN-610)". A
+  line made of references alone ("KAN-605 to KAN-610 moved") tells the
+  person nothing. The person's `guidance` cannot turn this off.
 - Every prose line names its subject and has a nonempty `refs` array. The
   brief's shared `refs` covers its headline and its three parts. Every `now` and
   `pr_waits` line includes its own map key in `refs`. Use only observed card
