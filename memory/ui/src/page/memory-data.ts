@@ -146,6 +146,13 @@ export async function updateMemory(
   await host.iii.call('memory::update', { bank, id, text })
 }
 
+/** What the pin control does, said on the control itself. */
+export function pinTitle(pinned: boolean): string {
+  return pinned
+    ? 'unpin (shown only when recalled; automatic consolidation allowed again)'
+    : 'pin (always shown to the agent, newest pins first under a small cap; untouchable by every automatic path)'
+}
+
 export async function pinMemory(
   host: Host,
   bank: string,

@@ -2,8 +2,9 @@
 //! ranks memories, preview composes the ENTIRE memory payload a turn on
 //! this bank would receive: the rules section exactly as it lands in the
 //! system prompt (same budget, same truncation markers, same on/off
-//! switches), the recalled memories AFTER the relevance cut and token
-//! budget, and the appended `<memory>` message verbatim. Built by the
+//! switches), the pinned memories every turn opens with and the recalled
+//! ones AFTER the relevance cut and token budget, and the appended
+//! `<memory>` message verbatim. Built by the
 //! pre-generate hook's own [`hooks::injection`] — it cannot drift.
 
 use schemars::JsonSchema;
@@ -29,7 +30,7 @@ pub struct PreviewRequest {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PreviewMemory {
     pub memory: Memory,
-    /// Recall score.
+    /// Recall score; 0 for a pinned line, shown whatever the message asks.
     pub score: f32,
     /// The bank holding it, when not `bank`: the default bank, read under
     /// a bank the session's directory chose, or its agent profile's bank.
@@ -47,9 +48,12 @@ pub struct PreviewResponse {
     /// Rules included, and whether any were cut by `max_rule_chars`.
     pub rules: usize,
     pub rules_truncated: bool,
-    /// Memories the turn would be handed, past the relevance cut and token
-    /// budget, in injection order.
+    /// Memories the turn would be handed, in injection order: the pinned
+    /// ones first (`pinned_limit`, `pinned_max_chars`), then the recalled
+    /// ones past the relevance cut and token budget.
     pub memories: Vec<PreviewMemory>,
+    /// Pinned memories past the cap, by id: the least recently updated.
+    pub pinned_skipped: Vec<String>,
     /// The appended `<memory>` message body, verbatim. With rules it can hold
     /// only the rules reminder while `memories` is empty; absent when neither
     /// a memory fits the budget nor a reminder applies.
@@ -110,6 +114,7 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
                 bank: (held != bank_name).then_some(held),
             })
             .collect(),
+        pinned_skipped: injected.pinned_skipped,
         message: injected.message,
         retrieval: injected.retrieval.into(),
     })
