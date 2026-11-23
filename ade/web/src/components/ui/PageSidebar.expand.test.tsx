@@ -64,6 +64,78 @@ describe('PageSidebar expandRequest', () => {
   })
 })
 
+describe('PageSidebar collapseRequest', () => {
+  it('ignores its first value and folds the column on each new one', () => {
+    const props: PageSidebarProps = { collapsible: true, collapseRequest: 0 }
+    const { render, aside } = mount(props)
+    expect(aside().hasAttribute('data-collapsed')).toBe(false)
+    render({ ...props, collapseRequest: 1 })
+    expect(aside().hasAttribute('data-collapsed')).toBe(true)
+    render({ ...props, collapseRequest: 1, expandRequest: 1 })
+    expect(aside().hasAttribute('data-collapsed')).toBe(false)
+  })
+
+  it('closes the drawer when the pane is narrow, open and closed again', () => {
+    const props: PageSidebarProps = {
+      narrow: true,
+      narrowMode: 'drawer',
+      expandRequest: 0,
+      collapseRequest: 0,
+    }
+    const { render, aside } = mount(props)
+    render({ ...props, expandRequest: 1 })
+    expect(aside().getAttribute('data-drawer')).toBe('open')
+    render({ ...props, expandRequest: 1, collapseRequest: 1 })
+    expect(aside().getAttribute('data-drawer')).toBe('closed')
+    expect(aside().hasAttribute('data-collapsed')).toBe(true)
+    render({ ...props, expandRequest: 2, collapseRequest: 1 })
+    expect(aside().getAttribute('data-drawer')).toBe('open')
+    render({ ...props, expandRequest: 2, collapseRequest: 2 })
+    expect(aside().getAttribute('data-drawer')).toBe('closed')
+  })
+
+  it('opens the drawer below a header it must not cover', () => {
+    const props: PageSidebarProps = {
+      narrow: true,
+      narrowMode: 'drawer',
+      expandRequest: 0,
+      drawerOffsetTop: 44,
+    }
+    const { render, aside } = mount(props)
+    render({ ...props, expandRequest: 1 })
+    const scrim = aside().querySelector<HTMLElement>(
+      'button[aria-label="close side"]',
+    )
+    const panel = aside().querySelector<HTMLElement>('[tabindex="-1"][id]')
+    const toggle = aside().querySelector<HTMLElement>(
+      'button[aria-label="collapse side"]',
+    )
+    expect(scrim?.style.top).toBe('44px')
+    expect(panel?.style.top).toBe('44px')
+    expect(toggle?.style.top).toBe('52px')
+  })
+
+  it('leaves the caret where it was when the shortcut came from outside', () => {
+    const outside = document.createElement('input')
+    document.body.appendChild(outside)
+    try {
+      const props: PageSidebarProps = {
+        narrow: true,
+        narrowMode: 'drawer',
+        expandRequest: 0,
+        collapseRequest: 0,
+      }
+      const { render } = mount(props)
+      render({ ...props, expandRequest: 1 })
+      outside.focus()
+      render({ ...props, expandRequest: 1, collapseRequest: 1 })
+      expect(document.activeElement).toBe(outside)
+    } finally {
+      outside.remove()
+    }
+  })
+})
+
 describe('PageSidebar closeDrawerOnSelect', () => {
   const open = (closeDrawerOnSelect?: boolean) => {
     const props: PageSidebarProps = {

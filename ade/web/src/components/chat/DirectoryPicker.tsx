@@ -823,7 +823,7 @@ export function DirectoryPicker({
 
             {projectsLoading ? (
               <div className="rounded-md bg-surface px-3 py-4 font-inter text-base text-ink-faint md:text-xs">
-                Loading projects…
+                Loading folders…
               </div>
             ) : null}
 
@@ -961,7 +961,7 @@ function DirectoryPickerSurface({
       // biome-ignore lint/a11y/useSemanticElements: this flex surface owns scroll layout and cannot use fieldset's rendering semantics
       <div
         role="group"
-        aria-label="select working directory"
+        aria-label="Choose a folder"
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent"
       >
         {children}
@@ -973,7 +973,7 @@ function DirectoryPickerSurface({
     return (
       <BottomSheet open={open} onOpenChange={onOpenChange}>
         <BottomSheetContent
-          heading="Folders"
+          heading="Choose a folder"
           closeLabel="Close folder picker"
           className="h-[min(36rem,calc(100dvh-1.5rem))]"
         >
@@ -995,9 +995,14 @@ function DirectoryPickerSurface({
         collisionPadding={12}
         sticky
         role="dialog"
-        aria-label="select working directory"
+        aria-label="Choose a folder"
         className="iii-ui-motion-dropdown max-h-(--available-height) w-[min(320px,calc(100vw-24px))] gap-0 overflow-y-auto overscroll-contain p-1"
       >
+        {/* The picker's title (D27): the saved folders follow, then Add
+ folder to browse for a new one. */}
+        <div className="px-2 pt-1.5 pb-1 font-inter text-xs font-medium text-ink-faint">
+          Choose a folder
+        </div>
         <PortalScope>{children}</PortalScope>
       </PopoverContent>
     </Popover>

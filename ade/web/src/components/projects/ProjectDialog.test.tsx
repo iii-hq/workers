@@ -153,7 +153,7 @@ describe('New project / Edit project (§1.3.2)', () => {
       button('Create project')?.click()
     })
     expect(dialog().textContent).toContain(
-      'A project named “Billing-API” already exists',
+      'A project named “billing-api” already exists',
     )
     pickNext.path = '/home/u/work/billing'
     act(() => button('Add folder…')?.click())
@@ -181,6 +181,28 @@ describe('New project / Edit project (§1.3.2)', () => {
       }),
     )
     expect(onSaved).toHaveBeenCalled()
+  })
+
+  it("shows the engine's name_taken copy, naming the existing project", async () => {
+    const failing = vi.fn(() =>
+      Promise.reject({
+        code: 'invocation_failed',
+        message: `handler error: ${JSON.stringify({
+          code: 'name_taken',
+          message: 'A project named “acme-web” already exists',
+          project_id: 'prj_acme',
+          project_name: 'acme-web',
+        })}`,
+      }),
+    )
+    render({ save: failing as never })
+    typeName('ACME-WEB')
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    const text = dialog().textContent ?? ''
+    expect(text).toContain('A project named “acme-web” already exists')
+    expect(text).not.toContain('“ACME-WEB”')
   })
 
   it("puts the engine's JSON error under its field", async () => {

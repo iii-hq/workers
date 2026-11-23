@@ -175,9 +175,13 @@ export function ProjectDialog({
   const validate = (): Errors => {
     const next: Errors = {}
     const trimmed = name.trim()
+    const taken = trimmed
+      ? others.find((p) => p.name.toLowerCase() === trimmed.toLowerCase())
+      : undefined
     if (!trimmed) next.name = 'Name is required'
-    else if (others.some((p) => p.name.toLowerCase() === trimmed.toLowerCase()))
-      next.name = `A project named “${trimmed}” already exists`
+    // The engine's copy: the name the existing project has, whatever case
+    // was typed (§1.3.2, harness `name_taken`).
+    else if (taken) next.name = `A project named “${taken.name}” already exists`
     if (folders.length === 0) next.folders = 'Add at least one folder'
     return next
   }
@@ -333,6 +337,7 @@ export function ProjectDialog({
                     className="size-4 shrink-0 text-ink-faint"
                   />
                   <span
+                    data-keep-mono=""
                     className="min-w-0 flex-1 truncate font-mono text-xs text-ink"
                     title={folder}
                   >

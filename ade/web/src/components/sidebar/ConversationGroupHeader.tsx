@@ -214,7 +214,10 @@ function ChatProjectHeader({
                   onClick={() => onCreateIn(folder)}
                 >
                   <Folder aria-hidden className="text-ink-faint" />
-                  <span className="truncate font-mono text-xs">
+                  <span
+                    data-keep-mono=""
+                    className="truncate font-mono text-xs"
+                  >
                     {tildePath(folder)}
                   </span>
                 </DropdownMenuItem>

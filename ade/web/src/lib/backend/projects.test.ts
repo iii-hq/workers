@@ -213,7 +213,25 @@ describe('project errors', () => {
   it('maps codes to the dialog copy', () => {
     const context = { name: ' acme-web ', folders: ['/home/u/work/acme/api'] }
     expect(
-      describeProjectError(wire({ code: 'name_taken', message: 'x' }), context),
+      describeProjectError(
+        wire({
+          code: 'name_taken',
+          message: 'A project named “acme-web” already exists',
+          project_id: 'prj_acme',
+          project_name: 'acme-web',
+        }),
+        { ...context, name: 'ACME-WEB' },
+      ),
+    ).toEqual({
+      field: 'name',
+      message: 'A project named “acme-web” already exists',
+    })
+    // Only the code and the project's name survived: the name it has.
+    expect(
+      describeProjectError(
+        { code: 'name_taken', project_name: 'acme-web' },
+        { ...context, name: 'ACME-WEB' },
+      ),
     ).toEqual({
       field: 'name',
       message: 'A project named “acme-web” already exists',

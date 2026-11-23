@@ -60,6 +60,8 @@ interface Row {
   git: boolean
   /** Show the parent folder beside the name (rows from outside the listing). */
   showWhere?: boolean
+  /** A saved folder (`harness::folders`): a destination, a click adds it. */
+  saved?: boolean
   ranges?: Array<[number, number]>
 }
 
@@ -95,7 +97,10 @@ const CAP =
  *  opens on click and offers Add, the way Vercel's Import repository
  *  list does. A name that isn't in the folder is looked up across the
  *  background index (`lib/project-index`) under "Elsewhere".
- * - Recent projects sit as chips above the listing: one click adds.
+ * - It opens on the saved folders (`harness::folders`), most recent first:
+ *  one click adds. Typing `~/` or `/` browses, a name searches; with no
+ *  saved folder it opens at home. While browsing, the saved folders sit
+ *  as chips above the listing.
  * - The footer always names the folder Add folder will add.
  *
  * Adding validates the folder with the shell worker and remembers it as a
@@ -110,6 +115,7 @@ export function OpenFolderPicker({
   const [text, setText] = useState('')
   const [index, setIndex] = useState<ProjectIndex | null>(cachedProjectIndex)
   const [recent, setRecent] = useState<SavedFolder[]>([])
+  const [savedLoaded, setSavedLoaded] = useState(false)
   const [listings, setListings] = useState<
     Record<string, FolderListing | { error: string }>
   >({})
@@ -129,27 +135,46 @@ export function OpenFolderPicker({
     [index],
   )
 
-  // Each open starts at home with fresh projects and index; a cached index
-  // paints at once and a stale one is swapped in when its crawl lands.
+  // Each open starts on the saved folders, fresh from the engine; with none
+  // it starts at home. A cached index paints at once and a stale one is
+  // swapped in when its crawl lands.
   useEffect(() => {
     if (!open) return
-    const startHome = cachedProjectIndex()?.home ?? null
-    setText(startHome ? '~/' : '')
+    setText('')
     setActive(0)
     setError(null)
     setListings({})
     setNewFolder(null)
+    setSavedLoaded(false)
     let live = true
+    let home = cachedProjectIndex()?.home ?? null
+    let saved: SavedFolder[] | null = null
+    // Untouched and nothing saved: browse home, as before folders existed.
+    const settle = () => {
+      if (!live || saved === null || saved.length > 0 || !home) return
+      setText((t) => (t === '' ? '~/' : t))
+    }
     listSavedFolders().then(
-      (projects) => live && setRecent(projects),
-      () => undefined,
+      (folders) => {
+        if (!live) return
+        saved = folders
+        setRecent(folders)
+        setSavedLoaded(true)
+        settle()
+      },
+      () => {
+        if (!live) return
+        saved = []
+        setSavedLoaded(true)
+        settle()
+      },
     )
     loadProjectIndex().then(
       (next) => {
         if (!live) return
         setIndex(next)
-        // The first open has no cached home yet: start there once known.
-        if (!startHome && next.home) setText((t) => (t === '' ? '~/' : t))
+        if (next.home) home = next.home
+        settle()
       },
       () => undefined,
     )
@@ -201,7 +226,23 @@ export function OpenFolderPicker({
       if (!pool.has(f.path)) pool.set(f.path, f)
 
     if (!pathMode) {
-      if (!s) return []
+      // Nothing typed: the saved folders, the picker's top level.
+      if (!s)
+        return recent.length
+          ? [
+              {
+                id: 'saved',
+                label: null,
+                rows: recent.map((p) => ({
+                  path: p.path,
+                  name: p.name || basename(p.path),
+                  git: known.get(p.path)?.git ?? false,
+                  showWhere: true,
+                  saved: true,
+                })),
+              },
+            ]
+          : []
       const matches = rankFolders([...pool.values()], s).slice(0, SEARCH_LIMIT)
       return [
         {
@@ -407,7 +448,7 @@ export function OpenFolderPicker({
       event.preventDefault()
       // A repository is a destination; any other folder is a way through.
       if (activeRow) {
-        if (activeRow.git) void add(activeRow.path)
+        if (activeRow.git || activeRow.saved) void add(activeRow.path)
         else go(activeRow.path)
       } else if (pathMode && !segment) void add(dir)
     } else if (
@@ -433,8 +474,11 @@ export function OpenFolderPicker({
   }
 
   const crumbs = dir ? crumbsOf(dir, home) : []
-  const loading = pathMode && listing === undefined
-  const recentChips = recent.slice(0, RECENT_CHIPS)
+  const onSaved = !pathMode && !segment
+  const loading = pathMode ? listing === undefined : onSaved && !savedLoaded
+  // The saved folders are the list itself at the top level; browsing keeps
+  // the most recent ones a click away.
+  const recentChips = pathMode ? recent.slice(0, RECENT_CHIPS) : []
 
   let note: ReactNode = null
   if (!loading && rows.length === 0) {
@@ -493,8 +537,8 @@ export function OpenFolderPicker({
             Add folder
           </DialogTitle>
           <DialogDescription className="text-sm text-muted-foreground">
-            Choose the folder a chat works in. Type a path, or pick a
-            repository.
+            Choose the folder a chat works in: a saved folder, or type a path to
+            browse.
           </DialogDescription>
         </div>
 
@@ -632,7 +676,7 @@ export function OpenFolderPicker({
             </nav>
           ) : (
             <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-              {segment ? `Folders named “${segment}”` : 'Search'}
+              {segment ? `Folders named “${segment}”` : 'Saved folders'}
             </span>
           )}
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
@@ -640,8 +684,23 @@ export function OpenFolderPicker({
               ? countLabel(folderListing.folders)
               : !pathMode && segment
                 ? `${rows.length} found`
-                : null}
+                : onSaved && recent.length
+                  ? `${recent.length} folder${recent.length === 1 ? '' : 's'}`
+                  : null}
           </span>
+          {onSaved && home ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-mr-2 h-7 shrink-0 gap-1.5 px-2 text-muted-foreground hover:text-foreground"
+              disabled={busyPath !== null}
+              onClick={() => go(home)}
+            >
+              <FolderOpen className="size-4" aria-hidden />
+              Browse
+            </Button>
+          ) : null}
           {pathMode && dir ? (
             <Button
               type="button"
@@ -764,7 +823,9 @@ export function OpenFolderPicker({
                       busy={busyPath === row.path}
                       disabled={busyPath !== null}
                       onHover={() => setActive(i)}
-                      onOpen={() => go(row.path)}
+                      onOpen={() =>
+                        row.saved ? void add(row.path) : go(row.path)
+                      }
                       onAdd={() => void add(row.path)}
                     />
                   )

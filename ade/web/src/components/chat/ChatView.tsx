@@ -24,7 +24,6 @@ import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
-import { setPageSidebarCollapsed } from '@/components/ui/PageSidebar'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
@@ -187,10 +186,10 @@ import {
 } from './approval-announcements'
 import { ByAgentPill } from './ByAgentPill'
 import {
-  ASIDE_STORAGE_KEY,
   type AsideRequest,
   type AsideTab,
   ChatAside,
+  CONTEXT_PANE_SHORTCUT,
   QuoteChip,
   SelectionToolbar,
 } from './ChatAside'
@@ -461,9 +460,14 @@ export function ChatView({
           (project) => project.id === conversation.projectId,
         ) ?? null)
       : null
+  // Putting the pane away is a request the pane carries out itself: it
+  // knows whether it is the column (fold it) or the drawer beside a narrow
+  // chat (close it). Writing the column's stored state alone left the
+  // drawer open.
+  const [asideHideSeq, setAsideHideSeq] = useState(0)
   const hideAside = useCallback(() => {
     if (phoneViewport) setAsideSheetOpen(false)
-    else setPageSidebarCollapsed(ASIDE_STORAGE_KEY, true)
+    else setAsideHideSeq((seq) => seq + 1)
   }, [phoneViewport])
   // The name and the description open Conversation details (§1.3.5).
   const canEditDetails =
@@ -3242,7 +3246,7 @@ export function ChatView({
               detail: 'Subagents, pull requests, links, files and images',
               keywords: ['side panel', 'branch', 'changes', 'subagents'],
               // ⌘⌥0 on a Mac, Ctrl+Alt+0 elsewhere (§1.3.6).
-              shortcut: 'Mod+Alt+0',
+              shortcut: CONTEXT_PANE_SHORTCUT,
               firesWhileTyping: true,
               enabled: () => !asideVisible,
               run: () => showAside('context'),
@@ -3252,7 +3256,7 @@ export function ChatView({
               title: 'Hide context pane',
               detail: 'Close the context pane',
               keywords: ['side panel', 'close'],
-              shortcut: 'Mod+Alt+0',
+              shortcut: CONTEXT_PANE_SHORTCUT,
               firesWhileTyping: true,
               enabled: () => asideVisible,
               run: hideAside,
@@ -3372,24 +3376,23 @@ export function ChatView({
                      opens the drawer and carries the item count. */
                   <IconButton
                     label={
-                      asideVisible && !phoneViewport
-                        ? 'Hide context pane'
-                        : 'Show context pane'
+                      asideVisible ? 'Hide context pane' : 'Show context pane'
                     }
+                    aria-expanded={asideVisible}
                     data-context-pane-button=""
                     className={cn(
                       'relative',
                       phoneViewport ? 'size-12' : 'size-8',
                     )}
                     onClick={() =>
-                      phoneViewport
-                        ? setAsideSheetOpen(true)
-                        : asideVisible
-                          ? hideAside()
+                      asideVisible
+                        ? hideAside()
+                        : phoneViewport
+                          ? setAsideSheetOpen(true)
                           : showAside('context')
                     }
                   >
-                    {asideVisible && !phoneViewport ? (
+                    {asideVisible ? (
                       <PanelRightClose aria-hidden />
                     ) : (
                       <PanelRight aria-hidden />
@@ -3397,6 +3400,7 @@ export function ChatView({
                     {phoneViewport && contextCount > 0 ? (
                       <span
                         data-context-badge=""
+                        data-keep-mono=""
                         className="absolute top-1 right-0.5 min-w-4 rounded-full bg-ink px-1 font-mono text-meta leading-4 text-background tabular-nums"
                       >
                         {badgeCount(contextCount)}
@@ -3540,6 +3544,7 @@ export function ChatView({
               {conversation.workingDir ? (
                 <span
                   data-folder-chip=""
+                  data-keep-mono=""
                   title={conversation.workingDir}
                   className="inline-flex h-6 max-w-56 items-center gap-1.5 rounded-md bg-surface px-2 font-mono text-meta text-ink-faint"
                 >
@@ -3895,6 +3900,7 @@ export function ChatView({
             sheetOpen={asideSheetOpen}
             onSheetOpenChange={setAsideSheetOpen}
             request={asideRequest}
+            hideRequest={asideHideSeq}
             observers={mergedObservers}
             observerEvents={observerEvents}
             observersListed={observersSnapshotSessionId === conversation.id}

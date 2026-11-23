@@ -346,9 +346,13 @@ export function describeProjectError(
   const said = parsed?.message
   switch (parsed?.code) {
     case 'name_taken':
+      // Names compare without case: the engine names the project that
+      // already has it ("acme-web" when "ACME-WEB" was typed).
       return {
         field: 'name',
-        message: `A project named “${context.name.trim()}” already exists`,
+        message:
+          said ??
+          `A project named “${parsed.project_name ?? context.name.trim()}” already exists`,
       }
     case 'bad_name':
       return {

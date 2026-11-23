@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test'
 import { expect, expectPassingResult, openSession, test } from './harness-stack'
 
 /*
@@ -34,6 +35,13 @@ test.describe('the agent keeps the description up to date', () => {
       DESCRIPTION,
     )
     await expect(header.locator('[data-by-agent]')).toContainText('by agent')
+    // A mono Faint pill (§1.3.4): Geist Mono, though the chat sets its
+    // font-mono in Inter.
+    const monoFont = (pill: Locator) =>
+      pill.evaluate((el) => getComputedStyle(el).fontFamily)
+    expect(await monoFont(header.locator('[data-by-agent]'))).toMatch(
+      /^"?Geist Mono/,
+    )
 
     // Line 2 of the sidebar row.
     const row = page.getByRole('button', {
@@ -61,6 +69,9 @@ test.describe('the agent keeps the description up to date', () => {
     await expect(
       details.getByRole('switch', { name: 'Let the agent keep it up to date' }),
     ).toBeChecked()
+    expect(await monoFont(details.locator('[data-by-agent]'))).toMatch(
+      /^"?Geist Mono/,
+    )
     await page.keyboard.press('Escape')
 
     expectPassingResult(await stack.finish())

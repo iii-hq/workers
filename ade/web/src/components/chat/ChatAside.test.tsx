@@ -118,6 +118,7 @@ let container: HTMLElement | null = null
 const pending = vi.fn()
 let pendingQuote: SideChatQuote | null = null
 let phone = false
+let extra: Partial<Parameters<typeof ChatAside>[0]> = {}
 
 function render(
   request: AsideRequest | null = null,
@@ -145,6 +146,7 @@ function render(
           onPendingQuoteChange={pending}
           onJumpToMessage={() => {}}
           onAskAgent={onAskAgent}
+          {...extra}
         />
       </TooltipProvider>,
     ),
@@ -199,6 +201,7 @@ beforeEach(() => {
   pending.mockReset()
   pendingQuote = null
   phone = false
+  extra = {}
   window.localStorage.clear()
   resetFoldedGroups()
   sideChatsMadeHere.clear()
@@ -404,7 +407,12 @@ describe('ChatAside on a phone', () => {
     // A drawer (chat-projects §0.5), not the whole screen.
     expect(panel?.hasAttribute('data-side-panel-drawer')).toBe(true)
     expect(panel?.className).toContain('right-0')
-    expect(button('Close the side panel')).toBeDefined()
+    // Named "Context" for assistive tech; nothing above the conversation's
+    // name reads "Side panel" (§1.3.6).
+    expect(panel?.getAttribute('aria-label')).toBe('Context')
+    expect(panel?.textContent).not.toContain('Side panel')
+    expect(panel?.textContent?.startsWith('Main')).toBe(true)
+    expect(button('Close the context pane')).toBeDefined()
     expect(button('Side chat options')).toBeDefined()
     expect(
       panel
@@ -426,11 +434,35 @@ describe('ChatAside on a phone', () => {
     expect(ctx.remove).toHaveBeenCalledWith('fork-1')
   })
 
+  it('closes on its shortcut, though portaled out of the chat pane', () => {
+    mocks.ctx = makeCtx([main])
+    const onSheetOpenChange = vi.fn()
+    extra = { onSheetOpenChange }
+    render()
+    const panel = document.querySelector(
+      '[data-side-panel-phone]',
+    ) as HTMLElement
+    const event = new KeyboardEvent('keydown', {
+      key: '0',
+      code: 'Digit0',
+      ctrlKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    act(() => {
+      panel.dispatchEvent(event)
+    })
+    expect(onSheetOpenChange).toHaveBeenCalledWith(false)
+    // Handled: the window's dispatcher stands down on it.
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   it('has no options while there is no side chat', () => {
     mocks.ctx = makeCtx([main])
     window.localStorage.setItem('iii-chat-aside-tab', 'context')
     render()
-    expect(button('Close the side panel')).toBeDefined()
+    expect(button('Close the context pane')).toBeDefined()
     expect(button('Side chat options')).toBeUndefined()
   })
 })
@@ -503,10 +535,62 @@ describe('ChatAside context', () => {
     await settle()
     const panel = () => view.querySelector('[data-context-panel]')
     expect(panel()?.getAttribute('data-active')).toBe('true')
-    act(() => button('collapse Side panel')?.click())
+    act(() => button('collapse Context pane')?.click())
     await settle()
     expect(panel()?.getAttribute('data-active')).not.toBe('true')
   })
+  it('folds the column on a hide request and opens it on the next show', async () => {
+    mocks.ctx = makeCtx([main])
+    const visible = vi.fn()
+    extra = { hideRequest: 0, onVisibleChange: visible }
+    const view = render()
+    await settle()
+    const aside = () => view.querySelector('aside') as HTMLElement
+    expect(aside().hasAttribute('data-collapsed')).toBe(false)
+    extra = { hideRequest: 1, onVisibleChange: visible }
+    render()
+    await settle()
+    expect(aside().hasAttribute('data-collapsed')).toBe(true)
+    expect(visible).toHaveBeenLastCalledWith(false)
+    render({ seq: 1, tab: 'context' })
+    await settle()
+    expect(aside().hasAttribute('data-collapsed')).toBe(false)
+    expect(visible).toHaveBeenLastCalledWith(true)
+  })
+
+  it('closes the drawer beside a narrow chat on a hide request', async () => {
+    // The chat beside the traces pane: the frame is under the pane's
+    // 900px, so the pane is the overlay drawer (D48).
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width: 600, height: 800 } as DOMRect)
+    try {
+      mocks.ctx = makeCtx([main])
+      const visible = vi.fn()
+      extra = { hideRequest: 0, onVisibleChange: visible }
+      const view = render()
+      await settle()
+      const aside = () => view.querySelector('aside') as HTMLElement
+      expect(aside().getAttribute('data-drawer')).toBe('closed')
+      render({ seq: 1, tab: 'context' })
+      await settle()
+      expect(aside().getAttribute('data-drawer')).toBe('open')
+      expect(visible).toHaveBeenLastCalledWith(true)
+      extra = { hideRequest: 1, onVisibleChange: visible }
+      render({ seq: 1, tab: 'context' })
+      await settle()
+      expect(aside().getAttribute('data-drawer')).toBe('closed')
+      expect(aside().hasAttribute('data-collapsed')).toBe(true)
+      expect(visible).toHaveBeenLastCalledWith(false)
+      // And opens again on the next show.
+      render({ seq: 2, tab: 'context' })
+      await settle()
+      expect(aside().getAttribute('data-drawer')).toBe('open')
+    } finally {
+      rect.mockRestore()
+    }
+  })
+
   it('folds and unfolds every Context group', () => {
     mocks.ctx = makeCtx([main])
     render()

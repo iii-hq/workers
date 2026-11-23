@@ -99,6 +99,18 @@ export interface PageSidebarProps
    */
   expandRequest?: number
   /**
+   * Each new value collapses the sidebar, or closes the drawer when narrow,
+   * so a header button or a shortcut outside it can put it away in either
+   * presentation. The first value is the baseline and does nothing.
+   */
+  collapseRequest?: number
+  /**
+   * How far below its container's top the drawer opens: its panel, scrim
+   * and toggle start there, so a header above it stays in reach (the chat's
+   * pane button that opened the drawer also closes it). 0 by default.
+   */
+  drawerOffsetTop?: number
+  /**
    * Whether picking a button, link or tab inside the open drawer closes it
    * (default). Turn it off for a panel people keep working in.
    */
@@ -211,6 +223,8 @@ export function PageSidebar({
   narrowBelow,
   narrowMode = 'inline',
   expandRequest,
+  collapseRequest,
+  drawerOffsetTop = 0,
   closeDrawerOnSelect = true,
   className,
   style,
@@ -535,7 +549,7 @@ export function PageSidebar({
     if (controlledCollapsed === undefined) persist({ collapsed: next })
   }, [controlledCollapsed, onCollapsedChange, persist, preferredCollapsed])
 
-  const setDrawer = React.useCallback((next: boolean) => {
+  const setDrawer = React.useCallback((next: boolean, refocus = true) => {
     setAnimateToggle(true)
     if (motionTimerRef.current !== null)
       window.clearTimeout(motionTimerRef.current)
@@ -544,7 +558,7 @@ export function PageSidebar({
       setAnimateToggle(false)
     }, MOTION_CLEANUP_MS)
     setDrawerOpen(next)
-    if (!next) toggleRef.current?.focus({ preventScroll: true })
+    if (!next && refocus) toggleRef.current?.focus({ preventScroll: true })
   }, [])
 
   const expandRequestRef = React.useRef(expandRequest)
@@ -554,6 +568,31 @@ export function PageSidebar({
     if (hostDrawer) setDrawer(true)
     else if (effectiveCollapsed) toggle()
   }, [expandRequest, hostDrawer, effectiveCollapsed, setDrawer, toggle])
+
+  const collapseRequestRef = React.useRef(collapseRequest)
+  React.useEffect(() => {
+    if (collapseRequestRef.current === collapseRequest) return
+    collapseRequestRef.current = collapseRequest
+    if (effectiveCollapsed) return
+    if (hostDrawer) {
+      // Focus follows only when it was inside the drawer that is closing;
+      // a shortcut from the composer leaves the caret where it was.
+      const active = document.activeElement
+      setDrawer(
+        false,
+        active instanceof Node &&
+          Boolean(expandedRef.current?.contains(active)),
+      )
+    } else if (collapsible && !effectiveNarrow) toggle()
+  }, [
+    collapseRequest,
+    hostDrawer,
+    effectiveCollapsed,
+    effectiveNarrow,
+    collapsible,
+    setDrawer,
+    toggle,
+  ])
 
   // Preserve the original zero-behavior primitive for existing consumers.
   if (!managed) {
@@ -641,7 +680,10 @@ export function PageSidebar({
             'absolute inset-y-0 z-10 cursor-default bg-ink/25',
             side === 'left' ? 'left-0' : 'right-0',
           )}
-          style={{ width: containerWidth > 0 ? containerWidth : '100vw' }}
+          style={{
+            width: containerWidth > 0 ? containerWidth : '100vw',
+            top: drawerOffsetTop,
+          }}
           onClick={() => setDrawer(false)}
         />
       ) : null}
@@ -651,7 +693,10 @@ export function PageSidebar({
         tabIndex={-1}
         inert={effectiveCollapsed || undefined}
         aria-hidden={effectiveCollapsed || undefined}
-        style={{ width: panelWidth }}
+        style={{
+          width: panelWidth,
+          ...(hostDrawer ? { top: drawerOffsetTop } : {}),
+        }}
         className={cn(
           'absolute inset-y-0 flex min-h-0 flex-col overflow-hidden',
           side === 'left' ? 'left-0' : 'right-0',
@@ -739,8 +784,8 @@ export function PageSidebar({
             drawerToggleOffset === undefined
               ? undefined
               : side === 'left'
-                ? { left: drawerToggleOffset + 4 }
-                : { right: drawerToggleOffset + 4 }
+                ? { left: drawerToggleOffset + 4, top: drawerOffsetTop + 8 }
+                : { right: drawerToggleOffset + 4, top: drawerOffsetTop + 8 }
           }
           className={cn(
             'absolute top-2 z-30 size-7',
