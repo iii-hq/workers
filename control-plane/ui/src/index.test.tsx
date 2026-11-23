@@ -220,8 +220,9 @@ describe('Control plane views', () => {
     expect(container.textContent).toContain('agent ·')
     expect(container.textContent).not.toContain('KAN-99999')
     const session = [...container.querySelectorAll<HTMLButtonElement>('.control-plane-summary-refs button')].find(
-      (node) => node.textContent === 'session:dispatch-r1',
+      (node) => node.textContent === 'Run · deepwork: Assistente · R1',
     )
+    expect(container.textContent).not.toContain('session:dispatch-r1')
     await act(() => session?.click())
     expect(host.chat?.openConversation).toHaveBeenCalledWith('dispatch-r1')
     expect(container.querySelector('.control-plane-summary-refs a')?.getAttribute('href')).toBe(controlPlaneFixture.prs[0].url)

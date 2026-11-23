@@ -254,7 +254,9 @@ function newestProgress(
   subtasks: ControlPlaneTicket[] = [],
 ): number {
   if (!card && subtasks.length === 0) return session.updated_at
+  // A run that just started on an older card has progressed since its start.
   return Math.max(
+    session.created_at,
     card ? Date.parse(card.updated_at) : 0,
     ...subtasks.map((task) => Date.parse(task.updated_at)),
   )

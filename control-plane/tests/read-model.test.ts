@@ -32,7 +32,7 @@ const session: SessionMeta = {
   description: '',
   kind: 'automation',
   status: 'done',
-  created_at: at - 60000,
+  created_at: at - 29 * 60000,
   updated_at: at - 29 * 60000,
   message_count: 1,
   metadata: { kanban_ticket: 'KAN-1' },
@@ -197,6 +197,15 @@ describe('server read model', () => {
     expect(call.mock.calls.filter(([id]) => id === 'github::pr::checks')).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(60000)
     expect(call.mock.calls.filter(([id]) => id === 'github::pr::checks')).toHaveLength(3)
+  })
+
+  it('dates a new run on an older card from its start, not from the card', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(at)
+    const fresh: SessionMeta = { ...session, created_at: at - 60000, updated_at: at - 60000 }
+    const data = await model(fake({ sessions: [fresh] }).iii).read.read('p')
+    expect(data.runs[0].lastProgress).toBe(at - 60000)
+    expect(data.runs[0].state).not.toBe('stalled')
   })
 
   it('lists cards marked for a person and chats that ended on a question', async () => {

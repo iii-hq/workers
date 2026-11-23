@@ -789,7 +789,11 @@ export function NeedDetail({
         <Eyebrow className="control-plane-kind">{needLabel(item)}</Eyebrow>
         <h2 ref={headingRef} tabIndex={-1}>{item.title}</h2>
         <p className="control-plane-meta">
-          {item.kind === 'question' ? `asked by ${entry?.asked_by ?? run?.profile ?? 'unknown profile'} · ` : ''}
+          {item.kind === 'question'
+            ? entry?.asked_by || run?.profile
+              ? `asked by ${entry?.asked_by || run?.profile} · `
+              : 'asked in '
+            : ''}
           {item.kind === 'question'
             ? (item.sessionTitle ?? run?.session.title ?? item.sessionId)
             : (run?.session.title ?? (item.sessionId || 'No session works on it'))}{' '}

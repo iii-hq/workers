@@ -191,6 +191,20 @@ describe('Control plane Needs you interactions', () => {
     expect(container.textContent).toContain('Sending your answer')
     expect(container.querySelector('.control-plane-options')).toBeNull()
   })
+  it('says where a question was asked when the asker has no profile', async () => {
+    const anonymous = {
+      ...question,
+      entry: { ...question.entry, asked_by: undefined },
+      sessionTitle: 'Needs you · R3',
+      urgency: 'now' as const,
+    }
+    await render({ data: { ...controlPlaneFixture, items: [anonymous], runs: [], questions: [] } })
+    await act(() => container.querySelector<HTMLButtonElement>('.control-plane-need-row')?.click())
+    const meta = container.querySelector('.control-plane-decision-scroll .control-plane-meta')?.textContent ?? ''
+    expect(meta).toContain('asked in Needs you · R3')
+    expect(container.textContent).not.toContain('unknown profile')
+  })
+
   it('shows marked cards and chats waiting on a reply with the agent check and their open action', async () => {
     const card = controlPlaneFixture.tickets[0]
     const agent = {

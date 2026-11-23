@@ -480,17 +480,20 @@ function SummaryRefs({ refs, data }: { refs: string[]; data: ControlPlaneData })
       {refs.map((ref) => {
         const card = data.tickets.find((ticket) => ticket.key === ref)
         if (card) return <CardLink key={ref} card={card} />
-        if (ref.startsWith('session:'))
-          return (
+        if (ref.startsWith('session:')) {
+          // A run by its title; a session the page does not know is not shown as a raw id.
+          const run = data.runs.find((row) => row.session.session_id === ref.slice(8))
+          return run ? (
             <button
               key={ref}
               type="button"
               className="control-plane-link control-plane-meta"
-              onClick={() => host.chat?.openConversation?.(ref.slice(8))}
+              onClick={() => host.chat?.openConversation?.(run.session.session_id)}
             >
-              {ref}
+              Run · {run.session.title || 'Untitled'}
             </button>
-          )
+          ) : null
+        }
         const pr = data.prs.find((pr) => `${pr.repo}#${pr.number}` === ref)
         return pr ? (
           <a key={ref} href={pr.url} target="_blank" rel="noreferrer" className="control-plane-link control-plane-meta">

@@ -7,6 +7,7 @@ import { IconButton } from '@/components/ui/IconButton'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import { startingModel } from '@/hooks/use-conversations'
 import {
   SIDE_CHAT_KEEP_KEY,
   sideChatFrom,
@@ -20,6 +21,7 @@ import type { SessionMeta } from '@/lib/sessions/types'
 import type { DecisionChatRequest } from '@/types/injectable-ui'
 import { useDecisionChatBinding } from './host'
 import './decision-chat.css'
+import { loadLastModel } from '@/lib/storage'
 import { formatTokenCount } from '@/lib/token-estimate'
 
 export function answerProposal(
@@ -74,6 +76,23 @@ export function DecisionSideChat({
   const watch = ctx?.watchConversation
   useEffect(() => watch?.(sessionId), [sessionId, watch])
   const conversation = ctx?.conversations.find((row) => row.id === sessionId)
+  // A side chat is created by session::fork or session::create, so it starts
+  // without a model and would open on "Choose model". It takes the asker's
+  // model, else the model a new chat would start on.
+  const sourceModel =
+    ctx?.conversations.find((row) => row.id === sourceId)?.model ?? null
+  const options = ctx?.modelOptions
+  const setModel = ctx?.setModel
+  const needsModel = Boolean(conversation && !conversation.model)
+  useEffect(() => {
+    if (!needsModel || !setModel || !options?.length) return
+    const ids = options.map((option) => option.id)
+    const model =
+      sourceModel && ids.includes(sourceModel)
+        ? sourceModel
+        : startingModel(loadLastModel(), new Set(ids), null, ids[0] ?? null)
+    if (model) setModel(sessionId, model)
+  }, [needsModel, setModel, options, sourceModel, sessionId])
   const metadata = conversation?.sessionMetadata ?? binding?.copy.metadata
   const isKept = kept || metadata?.[SIDE_CHAT_KEEP_KEY] === true
   const closed = binding?.closed ?? false

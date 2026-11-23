@@ -239,6 +239,54 @@ describe('DecisionSideChat', () => {
     },
   )
 
+  it('gives a new side chat the asker model, or a new chat default', async () => {
+    const setModel = vi.fn()
+    const conversations = mocks.ctx.conversations as Array<
+      Record<string, unknown>
+    >
+    mocks.ctx.setModel = setModel
+    mocks.ctx.modelOptions = [
+      { id: 'openai::gpt-5' },
+      { id: 'anthropic::sonnet' },
+    ]
+    conversations.push({
+      id: question.sessionId,
+      title: 'Asker',
+      messages: [],
+      model: 'anthropic::sonnet',
+    })
+    const capabilities = decisionChatCapabilities(mocks.client)
+    await capabilities.openDecisionChat?.({
+      key: `${question.sessionId}/${question.questionId}`,
+      sessionId: question.sessionId,
+      kind: 'question',
+      title: question.title,
+      createdAt: new Date(question.createdAt).toISOString(),
+      questionId: question.questionId,
+      questions: question.entry.questions,
+      onUseAnswer: vi.fn(),
+    })
+    const view = (
+      <TooltipProvider>
+        <DecisionSideChat sessionId="copy" onClose={() => {}} />
+      </TooltipProvider>
+    )
+    await act(() => root.render(view))
+    expect(setModel).toHaveBeenCalledWith('copy', 'anthropic::sonnet')
+
+    setModel.mockClear()
+    conversations.pop()
+    mocks.ctx.conversations = [...conversations]
+    await act(() =>
+      root.render(
+        <TooltipProvider>
+          <DecisionSideChat sessionId="copy" onClose={() => {}} />
+        </TooltipProvider>,
+      ),
+    )
+    expect(setModel).toHaveBeenCalledWith('copy', 'openai::gpt-5')
+  })
+
   it('uses a question proposal at its requested index, disables it after detach, and reenables after rebind', async () => {
     const answer = vi.fn()
     const onClose = vi.fn()
