@@ -2347,6 +2347,8 @@ workers:
       include:
       - dist/bundle/index.mjs
       - dist/bundle/result.schema.json
+      - dist/bundle/page.js
+      - dist/bundle/styles.css
       - dist/SKILL.md
       - iii.worker.yaml
     publish: true

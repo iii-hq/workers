@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFile, mkdir, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
@@ -57,11 +57,5 @@ await Promise.all([
 ])
 
 for (const file of ['page.js', 'styles.css']) {
-  const target = join(bundleDir, file)
-  await rm(target, { force: true })
-  try {
-    await copyFile(join(root, 'ui', 'dist', file), target)
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
-  }
+  await copyFile(join(root, 'ui', 'dist', file), join(bundleDir, file))
 }

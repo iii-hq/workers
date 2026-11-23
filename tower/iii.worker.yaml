@@ -12,6 +12,7 @@ runtime:
   kind: javascript
 
 scripts:
+  install: if [ -f src/index.ts ]; then pnpm install --frozen-lockfile && pnpm run build:bundle; fi
   start: node ./dist/bundle/index.mjs
 
 dependencies:

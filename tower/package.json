@@ -11,7 +11,8 @@
   "packageManager": "pnpm@11.13.1",
   "scripts": {
     "build": "pnpm run build:bundle",
-    "build:bundle": "node scripts/build-bundle.mjs",
+    "build:bundle": "pnpm run build:ui && node scripts/build-bundle.mjs",
+    "build:ui": "pnpm --dir ui run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

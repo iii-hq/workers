@@ -131,6 +131,7 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
           result: current.result ? resolveSummary(current.result, data) : null,
         },
         availability,
+        prs_interval_min: config.prs.watched_interval_min,
         tiles: {
           needs_you: data.items.length,
           now: now.length,
@@ -162,6 +163,7 @@ export async function registerTower(iii: IIIClient, uiDirs: string[] = []) {
         board: { type: ['object', 'null'] },
         summary: { type: 'object' },
         availability: { type: 'object' },
+        prs_interval_min: { type: 'number' },
       }),
     },
   )

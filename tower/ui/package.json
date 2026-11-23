@@ -1,0 +1,26 @@
+{
+  "name": "@iii-workers/tower-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "@iii-dev/console-ui": "file:../../packages/console-ui"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.25.0",
+    "jsdom": "^30.0.1",
+    "lucide-react": "^1.16.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

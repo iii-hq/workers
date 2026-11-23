@@ -1,6 +1,7 @@
 # tower
 
-The tower worker owns the control tower read model and summary schedule. It
+The tower worker owns the control tower page, read model and summary schedule.
+Open the page at `#/worker/tower` or from the console navigation. It
 aggregates harness roots and asks, kanban projects, cards, releases and
 questions, and pull requests from repositories declared on projects. All
 public tower reads are read-only; approval holds remain a console concern.
@@ -26,7 +27,8 @@ and `data`. Without `summary.model`, the writer is disabled. The model uses
 
 ## Functions and event
 
-- `tower::overview {scope}` returns the CEO view and latest valid summary.
+- `tower::overview {scope}` returns the CEO view, latest valid summary and
+  `prs_interval_min` (the watched PR interval used by the page freshness label).
 - `tower::needs-you::list {scope}` returns questions and stalled roots.
 - `tower::runs::list {scope}` returns scoped roots and context sizes.
 - `tower::prs::list {scope}` returns cached open pull requests.
@@ -69,7 +71,26 @@ TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm test
 TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm build:bundle
 ```
 
-The backend deploy includes the worker bundle, schema and skill. The build also
-copies `ui/dist/page.js` and `ui/dist/styles.css` when they exist, after removing
-stale copies. A UI delivery must add its build and explicit deploy includes in
-the UI stage; these optional assets are not part of the backend artifact.
+The worker and `ui/` share this directory's pnpm workspace and lockfile. The UI
+uses the local `packages/console-ui` package without changing the repository UI
+workspace. `build:bundle` builds the UI with strict design lint, then copies
+`page.js` and `styles.css` into `dist/bundle/` beside the worker. All assets have
+explicit deploy includes. A source install in the monorepo builds them; a
+published artifact starts its existing bundle directly. Like onboarding, a
+source-only copy of `tower/` cannot build the UI without the repository's
+`packages/console-ui` directory. Use the published artifact for that layout.
+
+Run UI checks from `ui/` with the same environment:
+
+```sh
+TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm build
+TMPDIR=/home/layon/tmp/control-tower/tmp CARGO_BUILD_JOBS=4 pnpm test
+```
+
+The page reads held calls directly through `approval::list-pending`; they never
+enter a `tower::*` response. Actions are console calls to the target workers.
+Decision side chats use the optional host capabilities, and are hidden when the
+host lacks them. Overview keeps the last visit per browser via `usePaneState`.
+Run usage metrics were removed because the read model does not supply them.
+The worker UI has no Storybook setup; fixture tests and captures replace the
+old ADE-only stories.

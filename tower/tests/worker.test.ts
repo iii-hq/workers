@@ -164,6 +164,7 @@ describe('worker functions without an engine', () => {
       runs: [],
       prs: [],
       availability: { github: false, approval_gate: false },
+      prs_interval_min: 5,
       summary: { result: null, fresh: false, error: 'set the summary model in the tower settings' },
     })
     expect(f.handlers.has('tower::ui-content')).toBe(false)

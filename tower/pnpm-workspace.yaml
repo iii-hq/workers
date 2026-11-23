@@ -1,5 +1,7 @@
-# Keep this worker independent from the repository UI workspace. Its UI is
-# built separately and copied from ui/dist when present.
+# Keep the worker and its UI independent from the repository UI workspace.
+packages:
+  - ui
+
 minimumReleaseAgeExclude:
   - iii-sdk@0.26.0
 
