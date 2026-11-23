@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkProviderKey,
   composeEventProgress,
-  judgeFunctionsSignature,
   projectFileFor,
   runStep,
   SignInRequiredError,
@@ -662,86 +661,6 @@ describe('runStep wait-models', () => {
       op: 'register',
     })
     await expect(done).resolves.toEqual({ note: '2 models' })
-  })
-})
-
-describe('runStep check-judge', () => {
-  let answer: unknown
-
-  beforeEach(() => {
-    vi.useFakeTimers()
-    resetBus()
-    call.mockImplementation(async (fn: string) => {
-      order.push(fn)
-      if (fn === 'judge::models::list') {
-        if (answer instanceof Error) throw answer
-        return answer
-      }
-      return null
-    })
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  const step: PlanStep = { kind: 'check-judge', title: 'Laya', hosted: false }
-  const functions = (...ids: string[]) => ({
-    event: 'functions_changed',
-    functions: ids.map((function_id) => ({ function_id })),
-  })
-
-  it('asks again only when new judge functions register', async () => {
-    answer = { status: 'error', code: 'provider_unavailable' }
-    const done = runStep(step, context)
-    await settle()
-    expect(calls('judge::models::list')).toBe(1)
-    // The long wait lets a local provider finish loading inside the call.
-    expect(call).toHaveBeenCalledWith(
-      'judge::models::list',
-      { timeout_ms: 300_000 },
-      { timeoutMs: 310_000 },
-    )
-    emit('engine::on-functions-changed', functions('judge::evaluate', 'x::y'))
-    await settle()
-    expect(calls('judge::models::list')).toBe(2)
-    // The same judge functions again (another worker changed): no new ask.
-    emit('engine::on-functions-changed', functions('judge::evaluate', 'z::w'))
-    await settle()
-    expect(calls('judge::models::list')).toBe(2)
-    answer = { models: [{ name: 'laya' }] }
-    emit(
-      'engine::on-functions-changed',
-      functions('judge::evaluate', 'judge-laya::models::list'),
-    )
-    await expect(done).resolves.toEqual({ note: 'answering' })
-  })
-
-  it('falls back to the default wait when the provider refuses the long one', async () => {
-    answer = { status: 'error', code: 'invalid_request' }
-    call.mockImplementation(
-      async (fn: string, payload: Record<string, unknown>) => {
-        if (fn !== 'judge::models::list') return null
-        return 'timeout_ms' in payload ? answer : { models: [] }
-      },
-    )
-    await expect(runStep(step, context)).resolves.toEqual({ note: 'answering' })
-  })
-
-  it('fails at once on a rejected hosted key', async () => {
-    answer = { status: 'error', http_status: 401 }
-    await expect(
-      runStep({ kind: 'check-judge', title: 'Jev', hosted: true }, context),
-    ).rejects.toThrow('Jev rejected this key')
-  })
-
-  it('reads the judge functions out of a registry event', () => {
-    expect(
-      judgeFunctionsSignature(
-        functions('state::get', 'judge-laya::evaluate', 'judge::evaluate'),
-      ),
-    ).toBe('judge-laya::evaluate,judge::evaluate')
-    expect(judgeFunctionsSignature({ event: 'other' })).toBeNull()
   })
 })
 

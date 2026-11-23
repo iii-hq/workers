@@ -31,7 +31,7 @@ export interface ExtensionIii {
   call<T = unknown>(
     functionId: string,
     payload?: Record<string, unknown>,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; namespace?: string },
   ): Promise<T>
   /** @deprecated the same function as `call` */
   trigger: ExtensionIii['call']

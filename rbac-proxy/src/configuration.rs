@@ -202,6 +202,9 @@ pub struct OnConfigChangeResponse {
     pub bound_port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// This build pins a session to the auth result's `registration_namespace`.
+    /// A caller that needs the pin refuses a proxy whose answer lacks it.
+    pub registration_namespace: bool,
 }
 
 /// Selects the `configuration:updated` events of this worker's entry.
@@ -290,6 +293,7 @@ async fn on_config_change(
         bound_host,
         bound_port,
         error: result.err(),
+        registration_namespace: true,
     }
 }
 
@@ -504,6 +508,7 @@ mod tests {
             cfg.rbac.auth_function_id = Some("mesh::auth".to_string());
         }
         let failed = on_config_change(&iii, &cell, &server, &url).await;
+        assert!(failed.registration_namespace);
         assert!(!failed.ok);
         assert!(failed.error.is_some());
         assert_eq!(failed.applied_config, initial);
@@ -516,6 +521,7 @@ mod tests {
             .unwrap();
         desired.write().await.host = "127.0.0.1".to_string();
         let applied = on_config_change(&iii, &cell, &server, &url).await;
+        assert!(applied.registration_namespace);
         assert!(applied.ok, "{:?}", applied.error);
         assert_eq!(
             applied.applied_config.rbac.auth_function_id.as_deref(),

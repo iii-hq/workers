@@ -87,7 +87,7 @@ describe('ExploreStep focus', () => {
     expect(document.activeElement).toBe(button(/^Back$/))
   })
 
-  it('highlights no row on arrival, and the first arrow key picks the first', async () => {
+  it('ticks Explore on my own on arrival and leaves the focus to the primary button', async () => {
     const noop = () => undefined
     act(() =>
       root.render(
@@ -104,16 +104,46 @@ describe('ExploreStep focus', () => {
       ),
     )
     await frames()
-    const focused = document.activeElement as HTMLElement
-    expect(focused.getAttribute('role')).toBe('radiogroup')
+    const own = button(/Explore on my own/)
+    expect(own.getAttribute('aria-checked')).toBe('true')
+    expect(button(/Take the learn-iii tour/).getAttribute('aria-checked')).toBe(
+      'false',
+    )
+    // The ticked row does not pull the focus in: setup's own move to the
+    // footer button stands, so Enter closes setup into a chat.
+    expect(document.activeElement).not.toBe(own)
+    expect(
+      (document.activeElement as HTMLElement).getAttribute('role'),
+    ).not.toBe('radiogroup')
+  })
+
+  it('moves the pick from the ticked row with the arrow keys', async () => {
+    const noop = () => undefined
+    act(() =>
+      root.render(
+        <ExploreStep
+          connected
+          prompts={PROMPTS}
+          onPrompt={noop}
+          tour={{ kind: 'idle' }}
+          onTour={noop}
+          onOwn={noop}
+          onFinish={noop}
+          onBack={noop}
+        />,
+      ),
+    )
+    await frames()
+    const own = button(/Explore on my own/)
+    act(() => own.focus())
     act(() => {
-      focused.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+      own.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
       )
     })
-    const first = button(/Build an example project/)
-    expect(document.activeElement).toBe(first)
-    expect(first.getAttribute('aria-checked')).toBe('true')
+    const tour = button(/Take the learn-iii tour/)
+    expect(document.activeElement).toBe(tour)
+    expect(tour.getAttribute('aria-checked')).toBe('true')
   })
 
   // QA 2026-11-16 F5: with nothing picked the button read Finish beside a
@@ -138,8 +168,9 @@ describe('ExploreStep focus', () => {
     await frames()
     const footer = () =>
       [...container.querySelectorAll('footer button')].at(-1) as HTMLElement
-    expect(footer().textContent).toBe('Close setup')
-    expect(footer().querySelector('svg')).toBeNull()
+    // Explore on my own starts out ticked, so the button closes setup into
+    // a chat; picking the tour renames it.
+    expect(footer().textContent).toBe('Explore on my own')
     act(() => button(/Take the learn-iii tour/).click())
     expect(footer().textContent).toBe('Start the tour')
     act(() => button(/Explore on my own/).click())

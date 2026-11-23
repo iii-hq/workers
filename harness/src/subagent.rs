@@ -593,6 +593,7 @@ async fn seed_child(
         }
         _ => None,
     };
+    let child_scope = child_filesystem_scope(explicit_root, parent_record, confine_to.as_deref())?;
     let mut options = TurnOptions {
         model,
         provider,
@@ -630,7 +631,7 @@ async fn seed_child(
             .and_then(|o| o.output.clone())
             .unwrap_or_default(),
         functions,
-        metadata: child_filesystem_scope(explicit_root, parent_record, confine_to.as_deref())?,
+        metadata: child_scope.clone(),
         // The child's own resolved identity: the profile the spawn named, or
         // the parent's when it named none.
         agent: agent.as_ref().map(|a| a.identity.clone()),
@@ -666,16 +667,22 @@ async fn seed_child(
         Some(parent_id) => crate::functions::projects::session_project(&session, parent_id).await,
         None => None,
     };
-    let linkage = send::session_metadata_with_agent(
-        child_session_metadata(
-            parent,
-            req.parent_session_id.as_deref(),
-            depth,
-            display.as_ref(),
-            crate::judge::current_provider().as_deref(),
-            parent_project.as_deref(),
+    // The child's folder is mirrored into the session metadata too: the turn
+    // record alone runs the child in it, but clients (the ADE composer's
+    // project chip) read the session's `fs_scope.root`.
+    let linkage = session_metadata_with_scope(
+        send::session_metadata_with_agent(
+            child_session_metadata(
+                parent,
+                req.parent_session_id.as_deref(),
+                depth,
+                display.as_ref(),
+                crate::judge::current_provider().as_deref(),
+                parent_project.as_deref(),
+            ),
+            agent.as_ref(),
         ),
-        agent.as_ref(),
+        child_scope.as_ref(),
     );
     let topology = deps.topology.lock().await;
     if let Some(parent_id) = parent
@@ -836,6 +843,37 @@ async fn seed_child(
     )
     .await?;
 
+    // A reused session's project follows the root only once a turn really
+    // runs there: after every fallible step above, and only for a freshly
+    // seeded turn (a merge, queue or duplicate leaves the running turn in its
+    // old root). Re-read under the topology lock, like `send`'s mirrors, so
+    // a concurrent metadata write is not lost. The turn record already holds
+    // the root; a failed display write is logged and the spawn stands.
+    if reused && !outcome.merged && !outcome.queued && !outcome.deduplicated {
+        let _topology = deps.topology.lock().await;
+        let stored = match session.metadata_of(&child_session_id).await {
+            Ok(stored) => stored,
+            Err(error) => {
+                tracing::warn!(
+                    child_session_id = %child_session_id,
+                    error = %error,
+                    "could not read the reused session's metadata to store the spawn's filesystem root"
+                );
+                None
+            }
+        };
+        if let Some(merged) =
+            stored.and_then(|stored| rescoped_session_metadata(stored, child_scope.as_ref()))
+            && let Err(error) = session.set_metadata(&child_session_id, merged).await
+        {
+            tracing::warn!(
+                child_session_id = %child_session_id,
+                error = %error,
+                "could not store the spawn's filesystem root in the reused session's metadata"
+            );
+        }
+    }
+
     Ok(ChildIds {
         session_id: outcome.session_id,
         turn_id: outcome.turn_id,
@@ -902,6 +940,38 @@ fn normalize_display(
         icon: display.icon,
         color: display.color,
     }))
+}
+
+/// Merge the child's `fs_scope` into its session metadata (see the linkage
+/// in `seed_child`). No scope leaves the metadata as it is.
+fn session_metadata_with_scope(metadata: Option<Value>, scope: Option<&Value>) -> Option<Value> {
+    let Some(scope) = scope.and_then(Value::as_object) else {
+        return metadata;
+    };
+    let mut object = metadata
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    object.extend(scope.clone());
+    Some(Value::Object(object))
+}
+
+/// A reused child session's metadata with its `fs_scope` moved to the root
+/// this spawn runs it in, or `None` when it already matches (or the spawn has
+/// no root): `session::ensure` never rewrites a reused session's metadata.
+fn rescoped_session_metadata(
+    stored: serde_json::Map<String, Value>,
+    scope: Option<&Value>,
+) -> Option<serde_json::Map<String, Value>> {
+    let scope = scope?.as_object()?;
+    if scope
+        .iter()
+        .all(|(key, value)| stored.get(key) == Some(value))
+    {
+        return None;
+    }
+    let mut merged = stored;
+    merged.extend(scope.clone());
+    Some(merged)
 }
 
 /// `judge_provider` is the spawning turn's (its baggage): a sub-agent keeps
@@ -1526,6 +1596,55 @@ mod tests {
         assert_eq!(
             inherit_filesystem_scope(Some(&parent)),
             Some(json!({ "fs_scope": { "root": "/work/project" } }))
+        );
+    }
+
+    #[test]
+    fn child_session_metadata_carries_the_child_project() {
+        // The ADE reads a session's project from its own metadata, not from
+        // the turn record: without this every sub-agent showed "Choose project".
+        let scope = fs_scope_metadata("/work/project");
+        let linkage = json!({ "parent_session_id": "s_parent", "depth": 1 });
+        assert_eq!(
+            session_metadata_with_scope(Some(linkage), Some(&scope)),
+            Some(json!({
+                "parent_session_id": "s_parent",
+                "depth": 1,
+                "fs_scope": { "root": "/work/project" },
+            }))
+        );
+        assert_eq!(
+            session_metadata_with_scope(None, Some(&scope)),
+            Some(json!({ "fs_scope": { "root": "/work/project" } }))
+        );
+        assert_eq!(session_metadata_with_scope(None, None), None);
+    }
+
+    #[test]
+    fn reused_child_session_follows_the_spawn_root() {
+        let stored = |root: &str| {
+            json!({ "parent_session_id": "s_parent", "fs_scope": { "root": root } })
+                .as_object()
+                .cloned()
+                .unwrap()
+        };
+        let scope = fs_scope_metadata("/work/wt_2");
+        assert_eq!(
+            rescoped_session_metadata(stored("/work/wt_1"), Some(&scope)),
+            Some(stored("/work/wt_2"))
+        );
+        assert_eq!(
+            rescoped_session_metadata(stored("/work/wt_2"), Some(&scope)),
+            None
+        );
+        assert_eq!(rescoped_session_metadata(stored("/work/wt_1"), None), None);
+        let unscoped = json!({ "parent_session_id": "s_parent" })
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            rescoped_session_metadata(unscoped, Some(&scope)),
+            Some(stored("/work/wt_2"))
         );
     }
 

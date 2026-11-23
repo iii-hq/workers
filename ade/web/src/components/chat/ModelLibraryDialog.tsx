@@ -102,7 +102,8 @@ function providerColumns(
 
 /**
  * The library behind the quick menu's All models: the five pinned slots
- * across the top (the first is the default a new chat starts on; they stay
+ * across the top (the first is the default; putting a model there makes the
+ * next chat start on it, then new chats follow the last chat's model; they stay
  * stuck to the top while the catalog scrolls, so every drag ends on screen),
  * every provider's catalog in columns below. Drag a model onto a slot to pin it there, drag
  * a slot onto another to reorder, drag a slot down into the library (or
@@ -231,8 +232,9 @@ export function ModelLibraryDialog({
             <DialogHeader className="shrink-0 px-6 pt-5 pb-2">
               <DialogTitle>Models</DialogTitle>
               <DialogDescription className="">
-                Pin up to five models for the quick menu. Drag to arrange them;
-                the first is the default for a new chat.
+                Pin up to five models for the quick menu. Drag to arrange them.
+                A new chat starts on your last chat&apos;s model, or the first
+                one here.
               </DialogDescription>
             </DialogHeader>
             <div

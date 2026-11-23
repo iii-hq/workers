@@ -236,6 +236,7 @@ impl From<LoopbackAuth> for AuthResult {
             context: grants.context,
             function_registration_prefix: grants.function_registration_prefix,
             worker_names: grants.worker_names,
+            registration_namespace: None,
         }
     }
 }
@@ -856,10 +857,11 @@ pub fn is_function_allowed(
 pub struct ProxySession {
     pub session_id: Uuid,
     pub ip_address: String,
-    /// Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. The
-    /// keys are also the namespaces the connection may declare on
-    /// `engine::workers::register`; an empty map leaves it free to declare
-    /// any (the engine's pre-namespace behaviour).
+    /// Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. For a
+    /// session with no `registration_namespace`, the keys are also the
+    /// namespaces the connection may declare on `engine::workers::register`;
+    /// an empty map leaves it free to declare any (the engine's
+    /// pre-namespace behaviour).
     pub namespaces: HashMap<String, Vec<String>>,
     /// Grants that name no namespace. They apply in `default` only.
     pub allowed_functions: Vec<String>,
@@ -875,6 +877,9 @@ pub struct ProxySession {
     /// Worker names this session may declare unchanged, matched exactly
     /// ([`ProxySession::proxied_worker_name`]).
     pub worker_names: Vec<String>,
+    /// The namespace this session registers in, whatever it declares.
+    /// Separate from `namespaces`, the call grants.
+    pub registration_namespace: Option<String>,
 }
 
 impl ProxySession {
@@ -892,28 +897,26 @@ impl ProxySession {
             context: json!({}),
             function_registration_prefix: None,
             worker_names: vec![],
+            registration_namespace: None,
         }
-    }
-
-    /// Does this session's prefix own `candidate` (`{prefix}::…`)?
-    pub fn has_prefix(&self) -> bool {
-        self.function_registration_prefix.is_some()
     }
 
     /// The worker name the engine knows this session's connection by, for
     /// the name it declared on `engine::workers::register`:
+    /// `rbac-proxy:<pin>::<declared>` under a `registration_namespace`,
     /// `rbac-proxy:<prefix>::<declared>` under a `function_registration_prefix`,
-    /// `rbac-proxy:<session id>:<declared>` without one. The engine admits one
-    /// live worker per name and namespace, and an `observe` from a connection
-    /// under the same name and namespace replaces that worker's suspended
-    /// observer (decision 51); the proxy's connections all reach it as one
-    /// principal. The prefix scopes a worker's name as it scopes the worker's
-    /// function ids: sessions under one prefix share their workers'
+    /// `rbac-proxy:<session id>:<declared>` without either. The engine admits
+    /// one live worker per name and namespace, and an `observe` from a
+    /// connection under the same name and namespace replaces that worker's
+    /// suspended observer (decision 51); the proxy's connections all reach it
+    /// as one principal. The prefix scopes a worker's name as it scopes the
+    /// worker's function ids: sessions under one prefix share their workers'
     /// identities, and a session under another prefix declaring the same
-    /// name is another worker. Nothing else tells two unprefixed sessions
-    /// apart, so each one's connection is a worker of its own: another
-    /// session declaring the same name neither shuts it out nor takes its
-    /// suspended observers. The `rbac-proxy:` start keeps proxied workers off
+    /// name is another worker. A pin scopes the name the same way: sessions
+    /// pinned to one namespace share their workers' identities. Nothing else
+    /// tells two sessions with neither apart, so each one's connection is a
+    /// worker of its own: another session declaring the same name neither
+    /// shuts it out nor takes its suspended observers. The `rbac-proxy:` start keeps proxied workers off
     /// the names of workers connected to the engine directly.
     ///
     /// A name the auth function listed in `worker_names` is the exception:
@@ -928,6 +931,9 @@ impl ProxySession {
             && claim_worker_name(declared, self.session_id)
         {
             return declared.to_string();
+        }
+        if let Some(pin) = &self.registration_namespace {
+            return format!("{WORKER_NAME_PREFIX}{pin}::{declared}");
         }
         match &self.function_registration_prefix {
             Some(prefix) => format!("{WORKER_NAME_PREFIX}{prefix}::{declared}"),
@@ -1003,9 +1009,39 @@ pub struct AuthResult {
     /// `AuthResult`: the engine never renames a worker.
     #[serde(default)]
     pub worker_names: Vec<String>,
+    /// The one namespace the session registers in (its pin). Not in the
+    /// engine's `AuthResult`.
+    #[serde(default)]
+    pub registration_namespace: Option<String>,
 }
 
 impl AuthResult {
+    /// Why the proxy cannot isolate this result's `registration_namespace`,
+    /// for a proxy whose control connection is in `own_namespace`.
+    pub fn pin_error(&self, own_namespace: Option<&str>) -> Option<String> {
+        let pin = self.registration_namespace.as_deref()?;
+        // The proxy's own namespace is where the auth function and the hooks
+        // resolve, so a session pinned there could register over them. A blank
+        // pin is refused here, before the upgrade is admitted: the engine would
+        // answer its declaration with INVALID_NAMESPACE only after the dial,
+        // and the proxy would then close the session with 1011.
+        let own = own_namespace.unwrap_or(DEFAULT_NAMESPACE);
+        if pin.trim().is_empty() {
+            Some("registration_namespace is blank".to_string())
+        } else if pin == DEFAULT_NAMESPACE || pin == own {
+            Some(format!(
+                "registration_namespace '{pin}' is `default` or the proxy's own namespace"
+            ))
+        } else if self.function_registration_prefix.is_some() {
+            Some(
+                "registration_namespace cannot be combined with function_registration_prefix"
+                    .to_string(),
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn into_session(self, ip_address: String) -> ProxySession {
         ProxySession {
             session_id: Uuid::new_v4(),
@@ -1017,6 +1053,7 @@ impl AuthResult {
             context: self.context,
             function_registration_prefix: self.function_registration_prefix,
             worker_names: granted_worker_names(self.worker_names),
+            registration_namespace: self.registration_namespace,
         }
     }
 }
@@ -1111,6 +1148,10 @@ pub async fn resolve_session(
         "query_params": query_params,
         "ip_address": ip_address,
         "endpoint": endpoint,
+        // Tells the auth function this proxy enforces a
+        // `registration_namespace`; a function that needs the pin refuses a
+        // proxy that does not say so.
+        "registration_namespace": true,
     });
 
     let result = iii.call(CallRequest::new(auth_fn, input)).await;
@@ -1127,7 +1168,15 @@ pub async fn resolve_session(
         Ok(v) => {
             warn_removed_auth_fields(&v);
             match serde_json::from_value::<AuthResult>(v) {
-                Ok(r) => Ok(r.into_session(ip_address)),
+                Ok(r) => {
+                    if let Some(message) = r.pin_error(iii.namespace().as_deref()) {
+                        return Err(AuthRejection {
+                            code: "AUTH_ERROR".to_string(),
+                            message,
+                        });
+                    }
+                    Ok(r.into_session(ip_address))
+                }
                 Err(e) => Err(AuthRejection {
                     code: "AUTH_ERROR".to_string(),
                     message: e.to_string(),
@@ -1183,6 +1232,64 @@ pub fn forbidden_message(function_id: &str, remediation: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_auth_result_carries_the_registration_namespace_into_the_session() {
+        let pinned: AuthResult =
+            serde_json::from_value(json!({ "registration_namespace": "laptop" })).unwrap();
+        assert_eq!(pinned.pin_error(Some("hub")), None);
+        assert_eq!(
+            pinned
+                .into_session("1.2.3.4".into())
+                .registration_namespace
+                .as_deref(),
+            Some("laptop")
+        );
+        let plain: AuthResult = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(plain.pin_error(Some("hub")), None);
+        assert_eq!(
+            plain.into_session("1.2.3.4".into()).registration_namespace,
+            None
+        );
+    }
+
+    #[test]
+    fn a_pin_the_proxy_cannot_isolate_is_refused_at_auth() {
+        let result = |v: Value| serde_json::from_value::<AuthResult>(v).unwrap();
+        for (v, own) in [
+            (json!({ "registration_namespace": "" }), Some("hub")),
+            (json!({ "registration_namespace": "  " }), Some("hub")),
+            (json!({ "registration_namespace": "default" }), Some("hub")),
+            (json!({ "registration_namespace": "hub" }), Some("hub")), // the proxy's own namespace
+            (json!({ "registration_namespace": "default" }), None),    // a proxy in `default`
+            (
+                json!({ "registration_namespace": "laptop", "function_registration_prefix": "laptop" }),
+                Some("hub"),
+            ),
+        ] {
+            assert!(
+                result(v.clone()).pin_error(own).is_some(),
+                "{v} with own namespace {own:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pinned_session_names_its_workers_after_the_pin() {
+        let session = || ProxySession {
+            registration_namespace: Some("laptop".into()),
+            ..ProxySession::permissive("1.2.3.4".into())
+        };
+        assert_eq!(
+            session().proxied_worker_name("mesh-bridge"),
+            "rbac-proxy:laptop::mesh-bridge"
+        );
+        // Two sessions of one pin are one worker to the engine, as two sessions of one prefix are.
+        assert_eq!(
+            session().proxied_worker_name("mesh-bridge"),
+            session().proxied_worker_name("mesh-bridge")
+        );
+    }
 
     #[test]
     fn a_malformed_match_rule_is_a_config_error_not_a_panic() {

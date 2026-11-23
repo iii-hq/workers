@@ -15,10 +15,10 @@
           "unmeasured": 41
         },
         "positives": {
-          "duplicate_queries": 1,
-          "expected_injected": 0.7714,
+          "duplicate_queries": 0,
+          "expected_injected": 0.7857,
           "injection_loss": [],
-          "irrelevant_injected": 197,
+          "irrelevant_injected": 182,
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
@@ -27,7 +27,7 @@
       },
       "category:dated-event": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 0.8571,
           "injection_loss": [],
           "irrelevant_injected": 22,
@@ -52,9 +52,9 @@
       "category:identity": {
         "positives": {
           "duplicate_queries": 0,
-          "expected_injected": 0.5,
+          "expected_injected": 0.5625,
           "injection_loss": [],
-          "irrelevant_injected": 41,
+          "irrelevant_injected": 40,
           "needed": 16,
           "queries": 12,
           "stale_alone": 0,
@@ -66,7 +66,7 @@
           "duplicate_queries": 0,
           "expected_injected": 1.0,
           "injection_loss": [],
-          "irrelevant_injected": 44,
+          "irrelevant_injected": 31,
           "needed": 14,
           "queries": 14,
           "stale_alone": 0,
@@ -90,7 +90,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.9091,
           "injection_loss": [],
-          "irrelevant_injected": 23,
+          "irrelevant_injected": 22,
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
@@ -145,10 +145,10 @@
           "unmeasured": 41
         },
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 0.9167,
           "injection_loss": [],
-          "irrelevant_injected": 49,
+          "irrelevant_injected": 45,
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
@@ -158,9 +158,9 @@
       "lang:pt": {
         "positives": {
           "duplicate_queries": 0,
-          "expected_injected": 0.6176,
+          "expected_injected": 0.6471,
           "injection_loss": [],
-          "irrelevant_injected": 148,
+          "irrelevant_injected": 137,
           "needed": 34,
           "queries": 31,
           "stale_alone": 0,
@@ -175,10 +175,10 @@
           "unmeasured": 26
         },
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 0.76,
           "injection_loss": [],
-          "irrelevant_injected": 127,
+          "irrelevant_injected": 116,
           "needed": 50,
           "queries": 43,
           "stale_alone": 0,
@@ -194,9 +194,9 @@
         },
         "positives": {
           "duplicate_queries": 0,
-          "expected_injected": 0.8,
+          "expected_injected": 0.85,
           "injection_loss": [],
-          "irrelevant_injected": 70,
+          "irrelevant_injected": 66,
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
@@ -216,7 +216,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.7857,
           "injection_loss": [],
-          "irrelevant_injected": 201,
+          "irrelevant_injected": 187,
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
@@ -228,7 +228,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.8571,
           "injection_loss": [],
-          "irrelevant_injected": 25,
+          "irrelevant_injected": 23,
           "needed": 7,
           "queries": 6,
           "stale_alone": 0,
@@ -264,7 +264,7 @@
           "duplicate_queries": 0,
           "expected_injected": 1.0,
           "injection_loss": [],
-          "irrelevant_injected": 42,
+          "irrelevant_injected": 31,
           "needed": 14,
           "queries": 14,
           "stale_alone": 0,
@@ -288,7 +288,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.9091,
           "injection_loss": [],
-          "irrelevant_injected": 30,
+          "irrelevant_injected": 29,
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
@@ -346,7 +346,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.9167,
           "injection_loss": [],
-          "irrelevant_injected": 48,
+          "irrelevant_injected": 43,
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
@@ -358,7 +358,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.6471,
           "injection_loss": [],
-          "irrelevant_injected": 153,
+          "irrelevant_injected": 144,
           "needed": 34,
           "queries": 31,
           "stale_alone": 0,
@@ -376,7 +376,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.76,
           "injection_loss": [],
-          "irrelevant_injected": 130,
+          "irrelevant_injected": 118,
           "needed": 50,
           "queries": 43,
           "stale_alone": 0,
@@ -394,7 +394,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.85,
           "injection_loss": [],
-          "irrelevant_injected": 71,
+          "irrelevant_injected": 69,
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
@@ -406,7 +406,7 @@
       "all": {
         "negatives": {
           "negative_clean_rate": 0.7561,
-          "negative_injected": 11,
+          "negative_injected": 10,
           "negatives": 41,
           "unmeasured": 0
         },
@@ -537,7 +537,7 @@
       "kind:near-topic": {
         "negatives": {
           "negative_clean_rate": 0.875,
-          "negative_injected": 2,
+          "negative_injected": 1,
           "negatives": 8,
           "unmeasured": 0
         }
@@ -545,7 +545,7 @@
       "lang:en": {
         "negatives": {
           "negative_clean_rate": 0.7561,
-          "negative_injected": 11,
+          "negative_injected": 10,
           "negatives": 41,
           "unmeasured": 0
         },
@@ -579,7 +579,7 @@
       "split:dev": {
         "negatives": {
           "negative_clean_rate": 0.7308,
-          "negative_injected": 8,
+          "negative_injected": 7,
           "negatives": 26,
           "unmeasured": 0
         },

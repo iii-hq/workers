@@ -1072,9 +1072,24 @@ export function applyCatalogModelFallback(
   /** The catalog pick drafts received before a provider default was known;
       untouched drafts still on it move to `fallbackModel`. */
   interimModel: ModelId | null = null,
+  /** The model a new chat starts on now (`startingModel`); untouched drafts
+      follow it, so one seated on a fallback while the person's last model
+      was still loading moves back once that model is offered again. */
+  draftModel: ModelId | null = null,
 ): Conversation[] {
   let changed = false
   const next = conversations.map((c) => {
+    if (
+      draftModel &&
+      validModels.has(draftModel) &&
+      c.draft &&
+      c.messages.length === 0 &&
+      !c.agentProfile?.model
+    ) {
+      if (c.model === draftModel) return c
+      changed = true
+      return { ...c, model: draftModel }
+    }
     if (c.model && validModels.has(c.model)) {
       if (
         interimModel &&
@@ -2850,12 +2865,21 @@ export function useConversations(
     // pick so drafts still on it follow the provider default when it arrives.
     const interim = interimModelRef.current
     interimModelRef.current = preferred ? null : fallback
+    const last = loadLastModel()
+    const draftModel = last && valid.has(last) ? last : fallback
     setConversations((prev) => {
-      return applyCatalogModelFallback(prev, valid, fallback, interim)
+      return applyCatalogModelFallback(
+        prev,
+        valid,
+        fallback,
+        interim,
+        draftModel,
+      )
     })
-    // The person's last pick is kept even when this read lacks it (a provider
-    // restarting, a key being re-entered): new chats skip it while it is
-    // missing (`startingModel`) and use it again once it is back.
+    // The person's last model is kept even when this read lacks it (a
+    // provider still starting, a key being re-entered): new chats and the
+    // open unsent draft skip it while it is missing and return to it once
+    // it is back.
   }, [catalogSig, catalogReady, preferredModel, firstCatalogKey])
 
   useEffect(() => {
@@ -3590,6 +3614,10 @@ export function useConversations(
           // the e2e suite name their own kind when they create theirs.
           kind: 'user',
         })
+        // The chat the person started last is what the next one starts on,
+        // so a provider they chose sticks instead of falling back to a default.
+        if (conv.model) saveLastModel(conv.model)
+        if (conv.thinkingLevel) saveLastThinkingLevel(conv.thinkingLevel)
         // Sent: the session holds its draft now, not the new chat's slot (nor the layout's seed).
         forgetNewChatDraft(id)
         retireChatDraftSeed(id)

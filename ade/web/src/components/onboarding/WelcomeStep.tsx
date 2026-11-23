@@ -1,24 +1,6 @@
-import type { LucideIcon } from 'lucide-react'
-import {
-  Activity,
-  ArrowRight,
-  Boxes,
-  Puzzle,
-  ScanSearch,
-  Zap,
-} from 'lucide-react'
-import { PILLARS, type PillarId } from '@/lib/onboarding/catalog'
+import { ArrowRight } from 'lucide-react'
 import { Button } from './controls'
-import { Rows, StepLayout } from './parts'
-
-export const PILLAR_ICONS: Record<PillarId, LucideIcon> = {
-  extensible: Puzzle,
-  discoverable: ScanSearch,
-  observable: Activity,
-  composable: Boxes,
-  reactive: Zap,
-}
-
+import { StepLayout } from './parts'
 export function WelcomeStep({
   onStart,
   onSkip,
@@ -42,44 +24,31 @@ export function WelcomeStep({
     >
       <header className="flex flex-col gap-1.5 -mt-2">
         <h2 className="text-balance text-xl font-semibold leading-7 tracking-[-0.01em] text-ink">
-          Welcome to the{' '}
+          Welcome to{' '}
           <abbr
             title="Agentic Development Environment"
             className="no-underline"
           >
-            ADE
+            iii's Agentic Development Environment (ADE)
           </abbr>
         </h2>
-        <p className="max-w-[56ch] text-pretty text-sm leading-5 text-muted-foreground">
-          Your agentic development environment. Connect a model and give your
-          agent access to everything your backend can do.
-        </p>
+        <div className="flex max-w-[56ch] flex-col gap-2.5 text-pretty text-sm leading-5 text-muted-foreground">
+          <p>
+            iii makes software easy to compose, observe, discover, extend, and
+            react to.
+          </p>
+          <p>
+            Everything you build is made of one primitive, the Function, so
+            there's no line between a plugin, an extension, a service, or an
+            API. Your agent fits into your projects as naturally as their own
+            code.
+          </p>
+          <p>
+            To see what we mean, connect your AI provider on the next screen,
+            then start your own project or one of our examples.
+          </p>
+        </div>
       </header>
-      <Rows as="ul">
-        {PILLARS.map((pillar) => {
-          const Icon = PILLAR_ICONS[pillar.id]
-          return (
-            <li
-              key={pillar.id}
-              className="flex items-start gap-3 px-3.5 py-2.5"
-            >
-              <Icon
-                className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                strokeWidth={1.75}
-                aria-hidden
-              />
-              <span className="flex min-w-0 flex-col gap-px">
-                <span className="text-sm font-medium leading-5 text-ink">
-                  {pillar.title}
-                </span>
-                <span className="text-pretty text-body leading-5 text-muted-foreground">
-                  {pillar.line}
-                </span>
-              </span>
-            </li>
-          )
-        })}
-      </Rows>
     </StepLayout>
   )
 }

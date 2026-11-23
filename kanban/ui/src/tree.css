@@ -189,7 +189,7 @@
       transform var(--motion-duration-control) var(--kb-ease-out);
   }
 
-  [data-iii-ui="kanban"] .kb-node:active {
+  [data-iii-ui="kanban"] .kb-chart__item:is([role="treeitem"] *) > .kb-chart__card > .kb-node:active:not(:has(button:active)) {
     transform: scale(0.985);
   }
 }
@@ -274,6 +274,11 @@
   -webkit-line-clamp: 2;
 }
 
+/* Two lines are always kept, so a one-line title does not make its card shorter than its neighbours. */
+[data-iii-ui="kanban"] .kb-node__desc {
+  min-height: 36px;
+}
+
 [data-iii-ui="kanban"] .kb-node__desc:is([data-theme="dark"] *) {
   color: color-mix(in srgb, var(--color-ink) 82%, transparent);
 }
@@ -291,38 +296,123 @@
   min-height: 22px;
 }
 
+/* One line as a rule; beside the buttons a long one ("3/11 subtasks · 3 agents · 20d") wraps to a second rather
+   than cutting a word. */
 [data-iii-ui="kanban"] .kb-node__facts {
-  display: flex;
+  display: -webkit-box;
   flex: 1;
-  align-items: center;
-  gap: 5px;
   min-width: 0;
   overflow: hidden;
   color: var(--color-ink-faint);
   font-size: var(--kb-text-sm);
-  white-space: nowrap;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-[data-iii-ui="kanban"] .kb-node__toggle {
-  height: 22px;
+[data-iii-ui="kanban"] .kb-node__facts > span + span {
+  margin-left: 5px;
+}
+
+/* The disclosure: the card itself folds and unfolds, so this only says which way it is (and how many are under
+   it). Pointing right when folded, down when open, as a native tree's chevron. */
+[data-iii-ui="kanban"] .kb-node__fold {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
   gap: 2px;
-  margin-right: -6px;
-  padding: 0 6px;
+  height: 22px;
+  margin-left: -3px;
   color: var(--color-ink-faint);
   font-size: var(--kb-text-sm);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
+  transition: color var(--motion-duration-fast) ease;
 }
 
-[data-iii-ui="kanban"] .kb-node__toggle svg {
+[data-iii-ui="kanban"] .kb-node__fold svg {
   width: 14px;
   height: 14px;
   transform: rotate(-90deg);
-  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+  transition: transform var(--motion-duration-control) var(--kb-ease-out);
 }
 
-[data-iii-ui="kanban"] .kb-node__toggle[data-open="true"] svg {
+[data-iii-ui="kanban"] .kb-node__fold[data-open="true"] svg {
   transform: none;
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kb-node:hover .kb-node__fold {
+    color: var(--color-ink);
+  }
+}
+
+/* The card's own actions (details, chat), bottom right: always there, drawn as small bordered buttons so a first
+   visit reads them as buttons (the tooltip says which is which), and never part of the card's click. */
+[data-iii-ui="kanban"] .kb-node__actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin-right: -2px;
+}
+
+[data-iii-ui="kanban"] .kb-node__actions .kb-node__action {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--color-card-edge);
+  color: var(--color-ink-faint);
+  background: transparent;
+  transition:
+    color var(--motion-duration-fast) ease,
+    border-color var(--motion-duration-fast) ease,
+    background-color var(--motion-duration-fast) ease;
+}
+
+[data-iii-ui="kanban"] .kb-node__actions .kb-node__action svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-iii-ui="kanban"] .kb-node__actions .kb-node__action:is([data-theme="dark"] *) {
+  border-color: color-mix(in srgb, var(--color-ink) 16%, transparent);
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kb-node__actions .kb-node__action:hover {
+    border-color: color-mix(in srgb, var(--color-ink) 30%, transparent);
+    color: var(--color-ink);
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui="kanban"] .kb-node__actions .kb-node__action:active {
+  background: var(--color-surface-selected);
+}
+
+/* A folded card with children under it: a sheet peeks out below, the way a stack of cards reads. */
+[data-iii-ui="kanban"] .kb-chart__item[data-fold="closed"] > .kb-chart__card::after {
+  position: absolute;
+  right: 6px;
+  bottom: -4px;
+  left: 6px;
+  z-index: -1;
+  height: 12px;
+  border: 1px solid var(--color-card-edge);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: var(--color-panel-raised);
+  content: "";
+}
+
+[data-iii-ui="kanban"] .kb-chart__item[data-fold="closed"] > .kb-chart__card:is([data-theme="dark"] *)::after {
+  border-color: color-mix(in srgb, var(--color-ink) 12%, transparent);
+  background: color-mix(in srgb, var(--color-ink) 3%, black);
+}
+
+/* The chart's root folds nothing and opens nothing on a click: no hand, no press. */
+[data-iii-ui="kanban"] .kb-chart__item:not([role="treeitem"] *) > .kb-chart__card > .kb-node {
+  cursor: default;
 }
 
 /* --- the state badge: Running / Pending / Done / Failed, or a column ------- */
@@ -514,13 +604,6 @@
   background: var(--color-surface-hover);
 }
 
-/* The last fact gives way with an ellipsis, never a clipped word. */
-[data-iii-ui="kanban"] .kb-node__facts > span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* --- live work: what agents are doing, visible without opening anything --------------------------------- */
 
 /* The line under a card's description: a beating dot and the phase ("Thinking · 12s", "2 agents working"). */
@@ -606,19 +689,4 @@
 [data-iii-ui="kanban"] .kb-chart__item[data-selected="true"] > .kb-chart__card > .kb-node {
   border-color: color-mix(in srgb, var(--color-ink) 45%, transparent);
   background: var(--color-surface-selected);
-}
-
-/* The details action stays quiet until the card is hovered, focused or selected (its chat is open beside). */
-@media (hover: hover) and (pointer: fine) {
-  [data-iii-ui="kanban"] .kb-node .kb-node__action {
-    opacity: 0;
-    transition: opacity var(--motion-duration-fast) ease;
-  }
-
-  [data-iii-ui="kanban"] .kb-node:hover .kb-node__action,
-  [data-iii-ui="kanban"] .kb-chart__item[data-selected="true"] > .kb-chart__card .kb-node__action,
-  [data-iii-ui="kanban"] .kb-chart__item:focus-visible > .kb-chart__card .kb-node__action,
-  [data-iii-ui="kanban"] .kb-node .kb-node__action:focus-visible {
-    opacity: 1;
-  }
 }

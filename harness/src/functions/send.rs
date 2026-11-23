@@ -1342,8 +1342,18 @@ fn resolve_model_route(
     provider_default_model: Option<String>,
 ) -> Result<(String, Option<String>), HarnessError> {
     Ok(match (agent_route, req.model.clone(), prev) {
-        (Some((model, profile_provider)), _, _) => {
-            (model, profile_provider.or_else(|| req.provider.clone()))
+        // A profile that names a plain router id leaves routing to the
+        // router. The request's provider rides along only when the request
+        // names that same model (a coherent pair, as in `spawn`): a provider
+        // sent with another model, or guessed by a client, would pin the
+        // profile's model to a provider that may not serve it.
+        (Some((model, profile_provider)), req_model, _) => {
+            let provider = profile_provider.or_else(|| {
+                req.provider
+                    .clone()
+                    .filter(|_| req_model.as_deref() == Some(model.as_str()))
+            });
+            (model, provider)
         }
         (None, Some(model), _) => (model, req.provider.clone()),
         (None, None, Some(prev)) => (
@@ -3637,6 +3647,31 @@ mod tests {
             ("codex/gpt-6.1-sol".into(), Some("openai-codex".into())),
             "a profile's provider wins over the request's"
         );
+    }
+
+    #[test]
+    fn a_plain_profile_model_takes_the_request_provider_only_with_its_own_model() {
+        let profile = || Some(("claude-code/claude-haiku-5-5".to_string(), None));
+        // The client names the profile's model with its catalog provider.
+        let mut req = provider_only_request(None);
+        req.provider = Some("claude-code".into());
+        req.model = Some("claude-code/claude-haiku-5-5".into());
+        let route = resolve_model_route(profile(), &req, None, None).unwrap();
+        assert_eq!(route.1.as_deref(), Some("claude-code"));
+        // A provider sent with another model (a stale pick) would pin the
+        // profile's model to a provider that may not serve it: the router
+        // routes it instead.
+        req.model = Some("claude-sonnet-5-5".into());
+        req.provider = Some("anthropic".into());
+        let route = resolve_model_route(profile(), &req, None, None).unwrap();
+        assert_eq!(
+            route,
+            ("claude-code/claude-haiku-5-5".into(), None),
+            "a provider never rides with a model it was not sent for"
+        );
+        req.model = None;
+        let route = resolve_model_route(profile(), &req, None, None).unwrap();
+        assert_eq!(route.1, None);
     }
 
     #[test]

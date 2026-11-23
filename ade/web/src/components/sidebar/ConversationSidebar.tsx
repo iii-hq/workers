@@ -5,7 +5,7 @@ import {
   CircleQuestionMark,
   Download,
   FolderKanban,
-  FolderPlus,
+  Plus,
   Search,
   Settings,
   SquarePen,
@@ -843,7 +843,7 @@ export function ConversationSidebar({
             title={hoverTitle('Add folder', 'project.add')}
             className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-sm')}
           >
-            <FolderPlus className="size-4 shrink-0" aria-hidden />
+            <Plus className="size-4 shrink-0" aria-hidden />
             <span className="min-w-0 flex-1 truncate">Add folder</span>
             {narrow ? null : <ShortcutHint id="project.add" />}
           </button>

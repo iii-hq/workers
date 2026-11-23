@@ -23,13 +23,15 @@ listener, while at the boundary it:
   exchanges about the observers of its own functions pass for those functions
   only ([Observers](#observers)),
 - **namespaces** a session's registrations behind `function_registration_prefix`,
+  or pins them to one engine namespace (`registration_namespace`),
 - runs **middleware** and the two **registration hooks** (functions and
   observers), and
 - **rewrites the results of the six `engine::*` discovery functions** so a
   caller only ever sees the surface it is allowed to invoke,
 - **pins identities**: a proxied worker registers as
-  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
-  name>` for a session without `function_registration_prefix`), unless the
+  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<namespace>::<declared
+  name>` for a session pinned to a namespace, `rbac-proxy:<session id>:<declared
+  name>` for a session with neither), unless the
   auth function (or `loopback_auth`) granted that name in `worker_names` (one live session at a
   time, never an `rbac-proxy:` name), and an
   `engine::*` call is
@@ -156,12 +158,26 @@ rbac:
 Namespaces work as in the engine's RBAC: a rule answers in the namespace it
 names, `default` when it names none. The auth function may return scoped
 grants (`namespaces: { orders: ["svc::*"] }`); their keys are then the only
-namespaces a connection may declare, and `allowed_functions` applies in
-`default` only.
+namespaces a connection with no `registration_namespace` may declare, and
+`allowed_functions` applies in `default` only.
 
-The auth function receives `{ headers, query_params, ip_address, endpoint }`,
-`endpoint` being the path being opened (`"/"` or `"/otel"`), so it can grant
-an endpoint per credential.
+The auth function may return `registration_namespace: "laptop"`: the one
+namespace the session registers in. The proxy declares it to the engine and
+waits for the engine's answer before it forwards the session's first frame
+(no answer within 10 s, or a refusal, closes the session with 1011), closes a
+session that declares another one
+(`NAMESPACE_FORBIDDEN`, grant keys included), names its workers
+`rbac-proxy:<namespace>::<name>`, and refuses to register the middleware,
+auth and hook ids there. It is never `default`, never the proxy's own
+namespace and never set together with `function_registration_prefix`: such a
+result fails the authentication. A call or an observe that names no namespace
+is in `default` for a pinned session too, never in its pin.
+
+The auth function receives `{ headers, query_params, ip_address, endpoint,
+registration_namespace: true }`, `endpoint` being the path being opened
+(`"/"` or `"/otel"`), so it can grant an endpoint per credential;
+`registration_namespace: true` says this proxy pins a session to the
+namespace its result names.
 
 The auth function may also return `worker_names: ["mcp-server"]`, which rbac-proxy
 adds on top of the engine's auth result. A worker that declares one of these
@@ -220,8 +236,8 @@ rbac:
     - match("api::*")
 ```
 
-It takes the fields an auth function may return, with the same defaults
-except one: `namespaces`, `allowed_functions`, `forbidden_functions`,
+It takes the fields an auth function may return but
+`registration_namespace`, with the same defaults except one: `namespaces`, `allowed_functions`, `forbidden_functions`,
 `allow_function_registration`, `context` (default `{}`),
 `function_registration_prefix` and `worker_names`.
 `allow_function_registration` defaults to `false` here (an auth function's
@@ -304,7 +320,10 @@ does not finish its upgrade headers within 10 s is closed.
 Hot reload: a `host`/`port` change rebinds the public listener (last-good on
 bind failure — the previous listener *and* config are kept); everything else
 (`engine_url`, `rbac.*`, `middleware_function_id`, `expose_worker_internals`)
-takes effect on the next connection.
+takes effect on the next connection. One exception: a reload that makes the
+proxy call a new middleware, auth or hook id closes the open sessions pinned
+to a namespace (close 1012), which may hold that id there; they reconnect
+under the new ids.
 
 ## Observers
 
@@ -361,12 +380,12 @@ connection with no RBAC session, so the proxy gates every observe frame:
 - **Back on a new connection.** An `observe` that names the id of a
   suspended observer replaces it when it comes from a connection under the
   same worker name in the same namespace (the observe v2 rule for a worker
-  that restarts). The worker name carries the session prefix, so a restarted
-  worker under the same prefix takes its observers back (a queue consumer
-  keeps its backlog), and an `observe` of the id from a session under another
-  prefix gets `OBSERVER_ID_CONFLICT` until the grace period ends. A session
-  without a prefix declares `rbac-proxy:<session id>:<declared name>`, with
-  the id the proxy gives each connection: nothing else tells two such
+  that restarts). The worker name carries the session prefix or pin, so a
+  restarted worker under the same prefix or pin takes its observers back (a
+  queue consumer keeps its backlog), and an `observe` of the id from a session
+  under another prefix or pin gets `OBSERVER_ID_CONFLICT` until the grace
+  period ends. A session with neither declares
+  `rbac-proxy:<session id>:<declared name>`, with the id the proxy gives each connection: nothing else tells two such
   sessions apart, so a session declaring another's name neither shuts it out
   (one live worker per name) nor takes its suspended observers. Its own
   reconnect keeps them by `Reattach`; an `observe` under its id from a new
@@ -437,6 +456,9 @@ targets of its own observers; both are never agent-callable (denied in
 | `rbac-proxy::on-config-change` | `configuration::on-updated`, filters `{ "input.id": { "$eq": <config id> }, "input.event_type": { "$eq": "configuration:updated" } }`, `capture: [output]` | the `Observed` envelope, the `ConfigurationEvent` at `output` | re-reads the entry with `configuration::get` (the event itself is ignored) and applies it; the proxy also reloads once when the observer becomes active, for an update made during boot |
 | `rbac-proxy::on-functions-changed` | `engine::on-functions-changed`, `capture: []` | the `Observed` envelope, without payloads | invalidates the discovery catalog cache (a 5 s TTL bounds staleness either way) |
 
+`rbac-proxy::on-config-change` also answers `registration_namespace: true`,
+so a caller that needs the pin can refuse a proxy whose answer lacks it.
+
 The config id is `rbac-proxy`, or `III_CONFIG_NAME` when set.
 
 ## Local development & testing
@@ -450,7 +472,8 @@ UPDATE_GOLDENS=1 cargo test  # regenerate tests/golden/ after an intentional sur
 downstream worker through the proxy port (exposed call, forbidden call, an
 observer with a forbidden target, channel round-trip, filtered discovery, a
 call in another namespace, an accepted observer, an engine event that cannot
-be observed). The engine is `III_BIN` or the `iii` on `PATH`,
+be observed; for a pinned session the grace window, a re-declaration, the
+middleware id and an SDK worker). The engine is `III_BIN` or the `iii` on `PATH`,
 started from a temporary directory with a private `HOME`, on free ports picked
 at boot, never the default 49134. It **self-skips** when there is no `iii`
 binary or the proxy does not come up (e.g. the

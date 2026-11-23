@@ -62,6 +62,20 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
 
     let iii = deps.iii.as_ref();
 
+    // Read the held record first: a post_call that omits the namespace keeps
+    // the one the user was shown, and steps 5-8 judge the call there.
+    let held = pending::get(iii, &input.session_id, &call.id).await;
+    if let Ok(Some(record)) = &held
+        && record.turn_id == input.turn_id
+        && record.function_id == call.function_id
+    {
+        call.namespace = call.namespace.take().or_else(|| record.namespace.clone());
+        call.implicit_namespace = call
+            .implicit_namespace
+            .take()
+            .or_else(|| record.implicit_namespace.clone());
+    }
+
     // 5. Already granted: an existing durable grant covering `hint.requested_root`
     // means shell/coder still rejected it — a store/stamp skew, not
     // something a re-ask fixes. Deliver the error, don't loop. A harness
@@ -69,9 +83,13 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
     // here: fail-open, standing the watch down entirely.
     match harness::filesystem_grants(iii, &input.session_id).await {
         Ok(roots) => {
-            if roots
-                .iter()
-                .any(|root| filesystem_access::dir_contains(root, &hint.requested_root))
+            // A stored grant is stamped only on calls in the implicit namespace, so in another
+            // one this rejection is a real request. Its grant lasts one call.
+            let in_implicit = call.namespace.is_none() || call.namespace == call.implicit_namespace;
+            if in_implicit
+                && roots
+                    .iter()
+                    .any(|root| filesystem_access::dir_contains(root, &hint.requested_root))
             {
                 return HookOutput::Continue;
             }
@@ -107,7 +125,7 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
     // redelivery either: it goes the stale way, so a record held without
     // one (older harness) costs one extra attempt and pending_created, and
     // at the re-ask cap the watch stands down with the record gone.
-    match pending::get(iii, &input.session_id, &call.id).await {
+    match held {
         Ok(Some(existing))
             if existing.access_request.as_ref() == Some(&hint)
                 && (call.namespace.is_none() || existing.namespace == call.namespace)
@@ -124,21 +142,11 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
             // The generic approval currently being resolved is allowed to
             // transition atomically into a filesystem approval for the same
             // call. Keeping it until put() avoids a blind gap in the inbox.
-            // Keep the namespace the user was shown if this post_call omits it.
-            call.namespace = call.namespace.take().or(existing.namespace);
-            call.implicit_namespace = call
-                .implicit_namespace
-                .take()
-                .or(existing.implicit_namespace);
+            // Its namespace was taken above when this post_call omits it.
         }
-        Ok(Some(stale)) => {
-            // A second failure of the same call keeps the namespace the user
-            // was shown when this post_call omits it.
-            if stale.turn_id == input.turn_id && stale.function_id == call.function_id {
-                call.namespace = call.namespace.take().or(stale.namespace);
-                call.implicit_namespace =
-                    call.implicit_namespace.take().or(stale.implicit_namespace);
-            }
+        Ok(Some(_)) => {
+            // A second failure of the same call took the namespace the user
+            // was shown above when this post_call omits it.
             // Clear the stale record so the write below (step 8) is a clean
             // insert rather than racing `hold`'s own duplicate-write
             // detection, which would otherwise suppress the re-emit this
@@ -863,6 +871,50 @@ mod tests {
                     "{call_id}: {out:?}"
                 );
             }
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stored_grant_does_not_silence_a_folder_request_from_another_namespace() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec!["/work".to_string()]);
+            let in_namespace = |call_id: &str, namespace: &str| {
+                let mut input = jail_input("s_1", call_id, "/work/x");
+                let call = input.call.as_mut().unwrap();
+                call.namespace = Some(namespace.into());
+                call.implicit_namespace = Some("default".into());
+                input
+            };
+
+            let out = handle(&stack.deps, in_namespace("c_1", "zz-a")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+            let held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(held["kind"], json!("filesystem_access"));
+            assert_eq!(held["namespace"], json!("zz-a"));
+
+            let out = handle(&stack.deps, in_namespace("c_2", "default")).await;
+            assert_eq!(out.unwrap(), HookOutput::Continue);
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_2")
+                    .await
+                    .is_null()
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stored_grant_does_not_silence_a_held_call_from_another_namespace() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec!["/work".to_string()]);
+            // Held for laptop by an approval prompt; the post_call names no namespace.
+            seed_laptop_generic(&stack).await;
+            let out = handle(&stack.deps, jail_input("s_1", "c_1", "/work/x")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+            let held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(held["kind"], json!("filesystem_access"));
+            assert_eq!(held["namespace"], json!("laptop"));
         })
         .await;
     }

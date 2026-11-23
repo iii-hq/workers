@@ -601,7 +601,7 @@ export function ChatView({
   const workingDirActivationRef = useRef<{
     path: string
     token: symbol
-    promise: Promise<string | null>
+    promise: Promise<string | null | undefined>
   } | null>(null)
   const [workingDirResolving, setWorkingDirResolving] = useState(false)
   const harnessBlocked = conversationsCtx
@@ -1158,8 +1158,14 @@ export function ChatView({
   // choice — `conversation.model` is null. Fall back to the model the latest
   // assistant reply actually used (transcript entries carry it), resolved
   // against the catalog's composite ids so the picker preselects when it can.
+  // An agent profile may name a plain router id (`claude-opus-5-5`) rather
+  // than a catalog key; it resolves the same way, or the picker shows
+  // "Choose model" for a model the session is running.
   const effectiveModel = useMemo(() => {
-    if (conversation.model) return conversation.model
+    const toCatalog = (model: string) =>
+      modelOptions.find((o) => o.id === model || o.id.endsWith(`::${model}`))
+        ?.id ?? model
+    if (conversation.model) return toCatalog(conversation.model)
     if (imported) return null
     const last = [...conversation.messages]
       .reverse()
@@ -1168,10 +1174,7 @@ export function ChatView({
           m.role === 'assistant' && Boolean(m.model),
       )
     if (!last?.model) return null
-    const catalog = modelOptions.find(
-      (o) => o.id === last.model || o.id.endsWith(`::${last.model}`),
-    )
-    return catalog?.id ?? last.model
+    return toCatalog(last.model)
   }, [conversation.model, conversation.messages, modelOptions, imported])
 
   const modelSwitch = useModelSwitch({
@@ -1533,8 +1536,12 @@ export function ChatView({
     conversation.id,
   ])
 
+  // A sub-agent's folder is the one its spawn chose (often a run worktree):
+  // when it is gone, the chat is never moved to the default project behind
+  // the person's back. `undefined` tells the caller the folder is missing.
+  const keepMissingWorkingDir = Boolean(conversation.parentId)
   const reconcileWorkingDir = useCallback(
-    (dir: string): Promise<string | null> => {
+    (dir: string): Promise<string | null | undefined> => {
       const active = workingDirActivationRef.current
       if (active?.path === dir) return active.promise
 
@@ -1544,6 +1551,15 @@ export function ChatView({
         .then((result) => {
           if (workingDirRef.current !== dir) return workingDirRef.current
 
+          // Confirmed gone, whether or not a fallback resolved: a
+          // sub-agent's send stops here.
+          if (
+            keepMissingWorkingDir &&
+            (result.status === 'recovered' ||
+              (result.status === 'unavailable' && result.missing))
+          ) {
+            return undefined
+          }
           const next = result.path
           if (result.status === 'unavailable') return next
           if (result.status === 'recovered') setDefaultWorkingDir(next)
@@ -1576,20 +1592,31 @@ export function ChatView({
       workingDirActivationRef.current = { path: dir, token, promise }
       return promise
     },
-    [conversation.draft, conversation.id, onAppendMessage, onUpdateWorkingDir],
+    [
+      conversation.draft,
+      conversation.id,
+      keepMissingWorkingDir,
+      onAppendMessage,
+      onUpdateWorkingDir,
+    ],
   )
 
   // Temporary Harness projects can disappear between turns. Reconcile only
   // the conversation's current scope; per-turn filesystem metadata remains
   // bound to the original path for historical review.
+  // A sub-agent's folder is its spawn's (often a run worktree removed when
+  // the run ends): opening the chat only shows it, never moves it to the
+  // default project. A send still reconciles, like any chat.
   useEffect(() => {
     if (!workingDirEnabled || conversation.draft || streamingIndicator) return
+    if (conversation.parentId) return
     const dir = conversation.workingDir
     if (!dir) return
     void reconcileWorkingDir(dir)
   }, [
     workingDirEnabled,
     conversation.draft,
+    conversation.parentId,
     conversation.workingDir,
     streamingIndicator,
     reconcileWorkingDir,
@@ -1831,8 +1858,11 @@ export function ChatView({
       }
 
       // Steering a discovered/sub-agent session: inherit the model the
-      // transcript shows when the conversation carries none of its own.
-      const model = conversation.model ?? effectiveModel
+      // transcript shows when the conversation carries none of its own. The
+      // catalog-resolved id goes first: a profile's plain router id
+      // (`claude-code/claude-haiku-5-5`) would otherwise reach the backend
+      // without its provider, which then guesses one from the name.
+      const model = effectiveModel ?? conversation.model
       if (!model) {
         onAppendMessage(
           conversationId,
@@ -1863,7 +1893,21 @@ export function ChatView({
 
       let workingDirForSend = conversation.workingDir
       if (workingDirEnabled && workingDirForSend) {
-        workingDirForSend = await reconcileWorkingDir(workingDirForSend)
+        const reconciled = await reconcileWorkingDir(workingDirForSend)
+        if (reconciled === undefined) {
+          // A sub-agent's folder is gone: nothing is sent, the text goes
+          // back into the composer, and the person picks where it runs.
+          restoreDraft(payload)
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `this sub-agent's folder no longer exists (${workingDirForSend}). Pick a folder in the composer to continue.`,
+              'warn',
+            ),
+          )
+          return
+        }
+        workingDirForSend = reconciled
       }
 
       // `harness::send` carries `idempotency_key: messageId`, so the harness
@@ -3296,9 +3340,25 @@ export function ChatView({
   ])
 
   const conversationBodyRef = useRef<HTMLDivElement>(null)
+  // The welcome is for a chat that has nothing in it yet: a draft, or a
+  // session the person opened that never started. A sub-agent's session
+  // is never that, and neither is one whose transcript failed to load
+  // (a read that times out leaves it "hydrated" and empty): both would
+  // otherwise read as a blank new chat, inviting a message into a session
+  // that is someone else's work.
+  const transcriptLoadFailed = Boolean(
+    conversationsCtx?.conversationLoadErrors?.[conversation.id],
+  )
+  const freshChat =
+    conversation.draft === true ||
+    (conversation.started !== true &&
+      !conversation.parentId &&
+      !conversation.spawnedBy)
   const welcome =
     !side &&
     !readOnly &&
+    freshChat &&
+    !transcriptLoadFailed &&
     shownMessages.length === 0 &&
     !isThinking &&
     !streamingIndicator &&

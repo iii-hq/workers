@@ -91,6 +91,9 @@ pub(crate) fn is_scoped_function(function_id: &str) -> bool {
         || function_id.starts_with("coder::")
 }
 
+// shortcut: mesh ids carry no machine prefix since machines are namespaces, so this strip matches
+// only in front of a mesh older than that; delete it and `remote_carrier` one release after the
+// mesh release (follow-up ticket).
 fn remote_scoped(function_id: &str) -> bool {
     !is_scoped_function(function_id)
         && function_id
@@ -111,6 +114,19 @@ fn remote_carrier(function_id: &str) -> bool {
 /// fp::pipe and fp::batch, which carry the stamp on behalf of their steps.
 fn is_stamped_function(function_id: &str) -> bool {
     is_scoped_function(function_id) || carries_scoped_steps(function_id)
+}
+
+/// The session's stored folder grants a call in `namespace` may carry: all of
+/// them in the implicit namespace, none in another one.
+// A folder grant is approved under a prompt that names one namespace. Stamping it on a call in
+// another one would let that approval stand for a place the person did not see. The root still
+// goes with the call: without it the call would run un-scoped.
+pub fn session_grants_in<'a>(
+    namespace: &str,
+    implicit: &str,
+    session: &'a [String],
+) -> &'a [String] {
+    if namespace == implicit { session } else { &[] }
 }
 
 /// Stamp the trusted filesystem scope onto a scoped call's arguments.
@@ -157,6 +173,16 @@ mod tests {
 
     fn workspace() -> FilesystemBoundary {
         FilesystemBoundary::Workspace
+    }
+
+    #[test]
+    fn session_grants_stay_in_the_implicit_namespace() {
+        let grants = vec!["/granted".to_string()];
+        assert_eq!(
+            session_grants_in("proj", "proj", &grants),
+            grants.as_slice()
+        );
+        assert!(session_grants_in("laptop", "proj", &grants).is_empty());
     }
 
     #[test]

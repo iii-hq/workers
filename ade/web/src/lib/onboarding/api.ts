@@ -15,7 +15,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { isMissingFunction, storeKey } from '@/lib/secrets'
 import { fetchEngineWorkersList } from '@/pages/Workers/api/workers'
-import { JUDGE_HUB_WORKER, workerSource } from './catalog'
+import { workerSource } from './catalog'
 import { type Done, type WakeSource, waitForEvents } from './event-wait'
 import type { PlanStep, ProviderState, ToolScan } from './plan'
 import { setPath } from './plan'
@@ -55,10 +55,6 @@ const WORKER_START_TIMEOUT_MS = 600_000
 /** How long a removed worker may take to disconnect. */
 const WORKER_STOP_TIMEOUT_MS = 60_000
 const MODELS_TIMEOUT_MS = 90_000
-/** A local judge may download its model on first start. */
-const JUDGE_TIMEOUT_MS = 600_000
-/** The longest a judge provider waits for its model to load in one call. */
-const JUDGE_LOAD_WAIT_MS = 300_000
 const CONFIGURATION_TIMEOUT_MS = 30_000
 
 /**
@@ -69,15 +65,12 @@ const CONFIGURATION_TIMEOUT_MS = 30_000
 const COMPOSE_SILENCE_MS = 30_000
 const WORKERS_SILENCE_MS = 30_000
 const MODELS_SILENCE_MS = 15_000
-const JUDGE_SILENCE_MS = 30_000
 const CONFIGURATION_SILENCE_MS = 10_000
 
 /** Compose calls this with each progress event of an add. */
 const COMPOSE_OPERATION_PROGRESS_FN = 'compose::on-operation-progress'
 /** The engine calls this when a worker connects, updates, or leaves. */
 const WORKERS_CHANGED_FN = 'engine::on-workers-changed'
-/** ...and this when the function registry changes. */
-const FUNCTIONS_CHANGED_FN = 'engine::on-functions-changed'
 const CONFIGURATION_UPDATED_FN = 'configuration::on-updated'
 const ROUTER_MODELS_CHANGED_FN = 'router::models::on-changed'
 const ROUTER_PROVIDER_CHANGED_FN = 'router::provider::on-changed'
@@ -203,21 +196,6 @@ export async function readConsoleConfig(): Promise<Record<
   }
 }
 
-/** The `provider` the judge hub answers with, or null when it is not set up or unreadable. */
-export async function readJudgeProvider(): Promise<string | null> {
-  try {
-    const id = await configurationId(JUDGE_HUB_WORKER)
-    if (!id) return null
-    const client = await getIiiClient()
-    const entry = await client.call<{ value?: unknown }>('configuration::get', {
-      id,
-    })
-    return asString(asRecord(entry?.value)?.provider) ?? null
-  } catch {
-    return null
-  }
-}
-
 interface ConfigurationListing {
   configurations?: { id: string; metadata?: unknown }[]
 }
@@ -268,8 +246,6 @@ export async function runStep(
       )
     case 'wait-models':
       return waitForModels(step.providerId, step.title, context)
-    case 'check-judge':
-      return checkJudge(step.title, step.hosted, context)
   }
 }
 
@@ -809,133 +785,6 @@ async function waitForModels(
     silenceMs: MODELS_SILENCE_MS,
     signal,
   })
-}
-
-/** The hub's error for a provider that answered, as `judge::*` returns it. */
-interface JudgeFailure {
-  code?: string
-  http_status?: number
-  provider_error?: { detail?: { message?: string; error_type?: string } }
-}
-
-type JudgeAnswer = JudgeFailure & { models?: unknown[]; status?: string }
-
-/**
- * The judge functions an `engine::on-functions-changed` event lists, as one
- * comparable string — the hub's and every `judge-<provider>`'s. A provider
- * registers its functions once it is ready (a local one after downloading
- * its model), which is the event worth re-asking on; every other registry
- * change (a console tab's handlers) is not.
- */
-export function judgeFunctionsSignature(payload: unknown): string | null {
-  const functions = asRecord(payload)?.functions
-  if (!Array.isArray(functions)) return null
-  return functions
-    .map((row) => asString(asRecord(row)?.function_id))
-    .filter((id): id is string => id?.startsWith('judge') === true)
-    .sort()
-    .join(',')
-}
-
-/**
- * Ask the judge hub for its models. A success proves the strategy is up and,
- * for a hosted judge, that its key works; a 401/403 is the key, said plainly.
- * The call itself waits for a local provider's model to load (up to the
- * provider's 5-minute cap); anything else (the provider not registered yet)
- * is asked again when the registry announces new judge functions.
- */
-async function checkJudge(
-  title: string,
-  hosted: boolean,
-  { report, signal }: RunContext,
-): Promise<StepResult> {
-  const client = await getIiiClient()
-  const deadlineAt = Date.now() + JUDGE_TIMEOUT_MS
-  let last = ''
-  let seen: string | null = null
-  // A provider whose operator lowered its timeout cap refuses the long
-  // wait as `invalid_request`; ask with the hub's default from then on.
-  let longWait = true
-  const ask = async (): Promise<JudgeAnswer | null> => {
-    const waitMs = Math.min(
-      JUDGE_LOAD_WAIT_MS,
-      Math.max(1_000, deadlineAt - Date.now()),
-    )
-    try {
-      return await client.call<JudgeAnswer>(
-        'judge::models::list',
-        longWait ? { timeout_ms: waitMs } : {},
-        { timeoutMs: (longWait ? waitMs : 30_000) + 10_000 },
-      )
-    } catch (error) {
-      last = readableError(error)
-      return error && typeof error === 'object' ? (error as JudgeAnswer) : null
-    }
-  }
-  return waitForEvents<StepResult>({
-    handler: 'iii::console::onboarding::judge',
-    sources: [{ function_id: FUNCTIONS_CHANGED_FN }],
-    onEvent: (payload) => {
-      const signature = judgeFunctionsSignature(payload)
-      if (signature === null || signature === seen) return 'ignore'
-      seen = signature
-      return 'check'
-    },
-    check: async () => {
-      report({ note: `Waiting on response from ${title}` })
-      last = ''
-      // The hub answers a provider failure as a result with `status:
-      // "error"`, and the bus rejects with the same shape; read both alike.
-      let answer = await ask()
-      if (longWait && answer?.code === 'invalid_request') {
-        longWait = false
-        last = ''
-        answer = await ask()
-      }
-      // An auth failure is final: say so now instead of waiting it out.
-      const failure = judgeFailure(answer, title, hosted)
-      if (failure) throw new Error(failure)
-      if (!last && answer?.status !== 'error') {
-        return {
-          value: {
-            note: 'answering',
-          },
-        }
-      }
-      last = answer?.provider_error?.detail?.message ?? last
-      report({
-        note: last
-          ? `Waiting on ${title}: ${last}`
-          : `Waiting on response from ${title}`,
-      })
-      return null
-    },
-    timeoutMs: JUDGE_TIMEOUT_MS,
-    onTimeout: () => {
-      throw new Error(
-        `${title} did not answer in time${last ? `: ${last}` : ''}`,
-      )
-    },
-    silenceMs: JUDGE_SILENCE_MS,
-    signal,
-  })
-}
-
-export function judgeFailure(
-  value: unknown,
-  title: string,
-  hosted: boolean,
-): string | null {
-  if (!value || typeof value !== 'object') return null
-  const { code, http_status, provider_error } = value as JudgeFailure
-  const message = provider_error?.detail?.message?.trim().replace(/\.+$/, '')
-  if (hosted && (http_status === 401 || http_status === 403)) {
-    return `${title} rejected this key${message ? ` — ${message}` : ''}. Paste a different key and set up again.`
-  }
-  if (code === 'missing_key') {
-    return message ?? `${title} has no key to use`
-  }
-  return null
 }
 
 /**

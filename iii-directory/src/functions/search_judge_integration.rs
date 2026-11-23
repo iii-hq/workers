@@ -181,7 +181,7 @@ async fn judge_finds_nonlexical_candidates_without_a_local_model() {
 }
 
 #[tokio::test]
-async fn search_calls_the_judge_in_the_namespace_that_hosts_it() {
+async fn search_never_calls_a_judge_held_only_in_another_namespace() {
     use opentelemetry::baggage::BaggageExt;
     let routes: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
     let seen = routes.clone();
@@ -190,7 +190,8 @@ async fn search_calls_the_judge_in_the_namespace_that_hosts_it() {
         let result = Ok(reply(&request, 0.9));
         async move { result }
     });
-    // This worker runs in `default`; only `hub` hosts the judge.
+    // This worker runs in `default`; only `hub` hosts the judge, and `hub` can
+    // be another machine: rank locally instead.
     let catalog: Vec<ToolSchema> = tools()
         .into_iter()
         .map(|mut tool| {
@@ -212,8 +213,8 @@ async fn search_calls_the_judge_in_the_namespace_that_hosts_it() {
         .with_baggage([opentelemetry::KeyValue::new("iii.own_namespace", "default")])
         .attach();
     let response = ask(&deps, &["dispatch correspondence"]).await;
-    assert_eq!(response.search_mode, FunctionSearchMode::Judge);
-    assert_eq!(*routes.lock().unwrap(), [Some("hub".to_string())]);
+    assert_ne!(response.search_mode, FunctionSearchMode::Judge);
+    assert!(routes.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

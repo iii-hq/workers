@@ -1,7 +1,7 @@
 import { Badge, Button, Card, EmptyState, Input } from '@iii-dev/console-ui'
 import { Pin, PinOff, Trash2, X } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
-import type { MemoryItem } from './memory-data'
+import { type MemoryItem, pinTitle } from './memory-data'
 
 /**
  * The bank as a schematic constellation, built to stay readable at 10k+
@@ -696,6 +696,7 @@ export function MemoryGraph({
                 size="sm"
                 onClick={() => onPin(selected)}
                 disabled={busy}
+                title={pinTitle(selected.pinned)}
               >
                 {selected.pinned ? (
                   <>

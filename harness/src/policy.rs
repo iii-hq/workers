@@ -132,6 +132,27 @@ pub(crate) fn sandbox_op_aliases(function_id: &str) -> Vec<String> {
     }
 }
 
+/// How a call to `function_id` in `namespace` was spelled before machines were
+/// namespaces: `<namespace>::<id>`, and `peer::<namespace>::<id>` unless the
+/// namespace is `hub`. Empty in the id's implicit namespace.
+// Before machines were namespaces a call to another machine carried the machine in its id:
+// `laptop::shell::exec` on the hub, `hub::…` and `peer::laptop::…` on a machine. A deny or a
+// hook filter written for that id must not stop matching in silence.
+// shortcut: reads any other namespace as a possible old prefix, so a deny such as `shell::*` also
+// denies every call in a namespace called `shell`; delete with the prefix strips, one release
+// after the mesh release (follow-up ticket).
+pub(crate) fn old_mesh_spellings(namespace: &str, function_id: &str) -> Vec<String> {
+    if namespace == crate::clients::engine::resolve_namespace(function_id, None) {
+        return Vec::new();
+    }
+    let mut spellings = vec![format!("{namespace}::{function_id}")];
+    // On a machine the hub was `hub::<id>`, never `peer::hub::<id>`.
+    if namespace != "hub" {
+        spellings.push(format!("peer::{namespace}::{function_id}"));
+    }
+    spellings
+}
+
 /// Splits a policy pattern into its engine namespace and id parts:
 /// `laptop/shell::*` → `(Some("laptop"), "shell::*")`. Only a non-empty prefix
 /// without `:` counts, so an id that holds a `/` (`api::get/x`) stays whole.
@@ -209,8 +230,9 @@ impl CompiledPolicy {
         hit(&self.allow, &self.allow_ns, function_id)
             && !hit(&self.deny, &self.deny_ns, function_id)
             && !sandbox_op_aliases(function_id)
-                .iter()
-                .any(|alias| hit(&self.deny, &self.deny_ns, alias))
+                .into_iter()
+                .chain(old_mesh_spellings(namespace, function_id))
+                .any(|alias| hit(&self.deny, &self.deny_ns, &alias))
     }
 }
 
@@ -288,6 +310,14 @@ fn build_set(patterns: &[String]) -> Option<(GlobSet, Vec<Option<String>>)> {
             tracing::warn!(
                 pattern = %p,
                 "rejecting policy: pattern {p} must name a function id right after the namespace qualifier"
+            );
+            return None;
+        }
+        // A deny in the old form would silently match nothing.
+        if id.starts_with("hub::") || id.starts_with("peer::") {
+            tracing::warn!(
+                pattern = %p,
+                "rejecting policy: `{id}` uses a mesh id prefix that no longer exists. A mesh function keeps its id and lives in the namespace of its machine: write `<namespace>/<function id>`. `peer::laptop::shell::exec` becomes `laptop/shell::exec`, `hub::shell::exec` becomes `hub/shell::exec`, and `peer::*` becomes one rule per machine, such as `laptop/*`"
             );
             return None;
         }
@@ -818,6 +848,43 @@ mod tests {
     fn a_glob_namespace_qualifier_denies_everything() {
         let p = CompiledPolicy::from(Some(&policy(&["*", "lap*/shell::*"], &[])));
         assert!(!p.allows_in("laptop", "shell::exec") && !p.allows_in("desk", "state::get"));
+    }
+
+    #[test]
+    fn an_old_mesh_id_prefix_denies_everything() {
+        let own = crate::clients::engine::resolve_namespace("state::get", None);
+        for p in [
+            CompiledPolicy::from(Some(&policy(&["*"], &["peer::*"]))),
+            CompiledPolicy::from(Some(&policy(&["hub::shell::exec", "state::get"], &[]))),
+        ] {
+            for ns in ["laptop", "hub", own.as_str()] {
+                assert!(!p.allows_in(ns, "state::get"), "{ns}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_deny_in_the_old_mesh_spelling_still_denies_in_another_namespace() {
+        let own = crate::clients::engine::resolve_namespace("shell::exec", None);
+        let p = CompiledPolicy::from(Some(&policy(
+            &["*"],
+            &["laptop::shell::exec", "desk::*", "*::shell::pty::*"],
+        )));
+        assert!(!p.allows_in("laptop", "shell::exec"));
+        assert!(!p.allows_in("desk", "state::get"));
+        assert!(!p.allows_in("laptop", "shell::pty::open"));
+        assert!(p.allows_in("laptop", "state::get"));
+        assert!(p.allows_in(&own, "shell::exec"));
+        assert!(p.allows_in(&own, "shell::pty::open"));
+        assert_eq!(
+            old_mesh_spellings("desk", "shell::exec"),
+            ["desk::shell::exec", "peer::desk::shell::exec"]
+        );
+        assert_eq!(
+            old_mesh_spellings("hub", "shell::exec"),
+            ["hub::shell::exec"]
+        );
+        assert!(old_mesh_spellings(&own, "shell::exec").is_empty());
     }
 
     #[test]

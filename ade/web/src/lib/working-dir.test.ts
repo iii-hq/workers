@@ -239,9 +239,12 @@ describe('activateWorkingDir', () => {
       .mockRejectedValueOnce({ code: 'S211', message: 'not found' })
       .mockRejectedValueOnce({ message: 'harness disconnected' })
 
+    // The folder is confirmed gone even though no fallback resolved, unlike
+    // a validation outage (no `missing`).
     await expect(activateWorkingDir('/private/tmp/deleted')).resolves.toEqual({
       status: 'unavailable',
       path: '/private/tmp/deleted',
+      missing: true,
     })
   })
 

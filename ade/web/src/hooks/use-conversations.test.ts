@@ -148,6 +148,43 @@ describe('applyCatalogModelFallback', () => {
     )
   })
 
+  it('returns an untouched draft to the last model once its provider is offered again', () => {
+    const anthropic = 'anthropic::claude-opus'
+    const claudeCode = 'claude-code::opus'
+    const sessions = [
+      // Seated on the provider default while the last model was still loading.
+      conversation({ id: 'fresh-draft', model: anthropic, draft: true }),
+      conversation({
+        id: 'typed-draft',
+        model: anthropic,
+        draft: true,
+        messages: [{ id: 'm1', role: 'user', content: 'hi' } as never],
+      }),
+      conversation({ id: 'session', model: anthropic, draft: false }),
+    ]
+    const valid = new Set([anthropic, claudeCode])
+
+    const next = applyCatalogModelFallback(
+      sessions,
+      valid,
+      anthropic,
+      null,
+      claudeCode,
+    )
+
+    expect(next.map((c) => c.model)).toEqual([claudeCode, anthropic, anthropic])
+    // Still missing from the catalog: the draft stays where it is.
+    expect(
+      applyCatalogModelFallback(
+        sessions,
+        new Set([anthropic]),
+        anthropic,
+        null,
+        claudeCode,
+      ),
+    ).toBe(sessions)
+  })
+
   it('never invents a model for a discovered session (sub-agents)', () => {
     const fallback = 'provider::current-model'
     const sessions = [
