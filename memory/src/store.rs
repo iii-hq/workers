@@ -1935,6 +1935,21 @@ impl Bank {
         out
     }
 
+    /// Distinct entities across the live memories `keep` accepts, with usage
+    /// counts, most used first, ties by name (the handles extraction lists).
+    pub async fn entities(&self, keep: impl Fn(&Memory) -> bool) -> Vec<(String, usize)> {
+        let inner = self.inner.read().await;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for m in inner.memories.values().filter(|m| m.is_live() && keep(m)) {
+            for entity in &m.entities {
+                *counts.entry(entity.clone()).or_default() += 1;
+            }
+        }
+        let mut out: Vec<(String, usize)> = counts.into_iter().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        out
+    }
+
     /// Live memories tagged with any of `entities`, exactly.
     pub async fn tagged(&self, entities: &HashSet<String>) -> Vec<Memory> {
         if entities.is_empty() {
@@ -4115,6 +4130,46 @@ mod tests {
         assert_eq!(
             bank.tags().await,
             vec![("iii".to_string(), 2), ("workers".to_string(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn entities_count_live_memories_most_used_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let tagged = |text: &str, entities: &[&str]| {
+            let mut m = memory(text);
+            m.entities = entities.iter().map(|e| e.to_string()).collect();
+            m
+        };
+        for m in [
+            tagged("the user sees a dentist in porto", &["user", "dentist"]),
+            tagged("the dentist opens at nine", &["dentist"]),
+            tagged("payments-api runs on kotlin", &["payments-api"]),
+            tagged("the old tool is retired", &["old-tool"]),
+            tagged("the new tool replaced it", &["new-tool"]),
+        ] {
+            bank.commit(m).await.unwrap();
+        }
+        let old = fingerprint("the old tool is retired");
+        let new = fingerprint("the new tool replaced it");
+        bank.supersede(&old, &new, false, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            bank.entities(|_| true).await,
+            [
+                ("dentist".to_string(), 2),
+                ("new-tool".to_string(), 1),
+                ("payments-api".to_string(), 1),
+                ("user".to_string(), 1),
+            ],
+            "a superseded memory's handle is not counted"
+        );
+        assert_eq!(
+            bank.entities(crate::scope::in_layer).await,
+            [("dentist".to_string(), 1), ("user".to_string(), 1)]
         );
     }
 

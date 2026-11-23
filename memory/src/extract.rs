@@ -81,8 +81,14 @@ already carries its own date.\n\
 Write facts about the person you are talking with as \"The user …\", never by their name or \
 in the first person; when they state their name, write \"The user's name is <name>.\" Other \
 people keep their names.\n\
-- entities: short lowercase handles for the people/projects/tools the memory is about; \
-include \"user\" in every memory about the user.\n\
+- entities: short lowercase handles for the people/projects/tools the memory is about, one \
+handle per thing and the same handle every time. The person you are talking with is always \
+the handle \"user\": write it exactly so, in English, whatever language the text is in, never \
+their name and never a translation of the word, and include it in every memory about them. \
+The input may list entity handles this bank already uses: when a memory is about one of \
+those things, use that handle exactly as listed, even when the excerpt names the thing in \
+another spelling, form or language. Write a new handle only for a thing no listed handle \
+names, and never put a listed handle on a memory that is not about that thing.\n\
 - tags: 0-3 short lowercase topical labels for filtering within the bank (e.g. \"billing\", \
 \"deploy\"); omit when nothing fits.\n\
 - confidence: \"extracted\" when stated directly, \"inferred\" when derived.\n\
@@ -320,16 +326,71 @@ async fn listed(
     out
 }
 
+/// Entity handles the extraction input lists, about 150 tokens at most.
+const MAX_HANDLES: usize = 24;
+
+/// The entity handles a bank already uses, in the order extraction lists
+/// them: the `known` memories' (what the bank recalled for the excerpt), then
+/// the bank's `own` and the `layer`'s, most used first ([`Bank::entities`]).
+/// Never `user`, which the prompt fixes, nor a repeat, nor one over 48
+/// characters or holding a control character: stored text shown to the model.
+fn handles(
+    known: &[Memory],
+    own: Vec<(String, usize)>,
+    layer: Vec<(String, usize)>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    known
+        .iter()
+        .flat_map(|m| m.entities.iter().cloned())
+        .chain(own.into_iter().chain(layer).map(|(handle, _)| handle))
+        .filter(|h| {
+            h != crate::scope::LAYER_ENTITY
+                && h.chars().count() <= 48
+                && !h.chars().any(char::is_control)
+                && seen.insert(h.clone())
+        })
+        .collect()
+}
+
+/// A handle without its separators (spaces, `-`, `_`), lowercased: `build
+/// cache`, `Build-Cache` and `build_cache` spell the same thing; `c++` and
+/// `c#` do not.
+fn spelling(handle: &str) -> impl Iterator<Item = char> + '_ {
+    handle
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
+        .flat_map(char::to_lowercase)
+}
+
+/// `entities` with each one that spells one of `handles` another way written
+/// as that handle (the first listed, when two spell alike), then no repeat:
+/// one thing keeps one handle, whatever separators the model wrote.
+fn snap(entities: &mut Vec<String>, handles: &[String]) {
+    for entity in entities.iter_mut() {
+        if spelling(entity).next().is_none() {
+            continue;
+        }
+        if let Some(handle) = handles.iter().find(|h| spelling(h).eq(spelling(entity))) {
+            entity.clone_from(handle);
+        }
+    }
+    let mut seen = HashSet::new();
+    entities.retain(|e| seen.insert(e.clone()));
+}
+
 /// The extraction model's input: the user's own instructions for the bank
 /// ([`instructions`]), the agents an item may be for (`own`: the first is
 /// the assistant's own profile, the rest its sub-agents'), the numbered
-/// known memories, the learned lines numbered after them, then the excerpt.
+/// known memories, the learned lines numbered after them, the first
+/// [`MAX_HANDLES`] entity handles in use, then the excerpt.
 fn extraction_input(
     agents: &[String],
     own: bool,
     instructions: &str,
     known: &[Memory],
     learned: &[(String, bool)],
+    handles: &[String],
     transcript: &str,
 ) -> String {
     let mut input = String::new();
@@ -360,6 +421,13 @@ fn extraction_input(
         input.push_str("Learned rules:\n");
         for (i, (line, _)) in learned.iter().enumerate() {
             input.push_str(&format!("[{}] {line}\n", known.len() + i + 1));
+        }
+        input.push('\n');
+    }
+    if !handles.is_empty() {
+        input.push_str("Entity handles in use:\n");
+        for handle in handles.iter().take(MAX_HANDLES) {
+            input.push_str(&format!("- {handle}\n"));
         }
         input.push('\n');
     }
@@ -1980,6 +2048,22 @@ async fn execute_run(
                 "a user message over {USER_CHARS} chars was read as its head and tail"
             );
         }
+        // Read once per run, as `known` was: a replayed plan reads none.
+        let handles = {
+            let store = deps.store().await;
+            let in_bank = match store.bank(bank_name).await {
+                Ok(bank) => bank.entities(|_| true).await,
+                Err(_) => Vec::new(),
+            };
+            let in_layer = match layer_name {
+                Some(name) => match store.bank(name).await {
+                    Ok(bank) => bank.entities(crate::scope::in_layer).await,
+                    Err(_) => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            handles(&known, in_bank, in_layer)
+        };
         // Every piece sees the same known and learned lines, so `replaces`
         // holds across them; items keep piece order in the one plan.
         // shortcut: a failed piece re-asks every piece of its message (up to
@@ -1992,7 +2076,15 @@ async fn execute_run(
                 &model,
                 cfg.max_memories_per_turn,
                 cfg.extraction_timeout_ms,
-                extraction_input(&agents, own, &instructions, &known, &learned, piece),
+                extraction_input(
+                    &agents,
+                    own,
+                    &instructions,
+                    &known,
+                    &learned,
+                    &handles,
+                    piece,
+                ),
                 !agents.is_empty(),
                 session_id,
                 layer_name.is_some(),
@@ -2043,6 +2135,8 @@ async fn execute_run(
         for item in &mut items {
             item.text = crate::redact::redact(item.text.trim()).text;
             crate::redact::drop_secrets(&mut item.entities);
+            // Before the plan is saved, so a replay writes the same handle.
+            snap(&mut item.entities, &handles);
             crate::redact::drop_secrets(&mut item.tags);
             for value in [
                 &mut item.confidence,
@@ -4528,28 +4622,28 @@ mod tests {
             known("ledger-sync uses pnpm."),
         ];
         assert_eq!(
-            extraction_input(&[], false, "", &ms, &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &ms, &[], &[], "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n[2] ledger-sync uses pnpm.\n\n\
              Conversation excerpt:\nuser [d]: hi"
         );
         assert_eq!(
-            extraction_input(&[], false, "", &[], &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &[], &[], &[], "user [d]: hi"),
             "Conversation excerpt:\nuser [d]: hi"
         );
         let learned = [("Never use emoji.".to_string(), true)];
         assert_eq!(
-            extraction_input(&[], false, "", &ms[..1], &learned, "user [d]: hi"),
+            extraction_input(&[], false, "", &ms[..1], &learned, &[], "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n\n\
              Learned rules:\n[2] Never use emoji.\n\nConversation excerpt:\nuser [d]: hi"
         );
         let agents = ["tech-lead".to_string(), "reviewer".to_string()];
         assert_eq!(
-            extraction_input(&agents, true, "", &[], &[], "user [d]: hi"),
+            extraction_input(&agents, true, "", &[], &[], &[], "user [d]: hi"),
             "Agents in this conversation:\n- tech-lead: the assistant\n\
              - reviewer: a sub-agent the assistant started\n\nConversation excerpt:\nuser [d]: hi"
         );
         assert!(
-            extraction_input(&agents[1..], false, "", &[], &[], "")
+            extraction_input(&agents[1..], false, "", &[], &[], &[], "")
                 .starts_with("Agents in this conversation:\n- reviewer: a sub-agent"),
             "a session with no profile of its own lists only its sub-agents"
         );
@@ -4566,12 +4660,118 @@ mod tests {
                 rules,
                 &[known("ledger-sync uses pnpm.")],
                 &[],
+                &[],
                 "user [d]: hi"
             ),
             "The user's instructions for this bank:\n\
              ## privacy\nNever remember anything about my health.\n\n\
              Agents in this conversation:\n- tech-lead: the assistant\n\n\
              Already remembered:\n[1] ledger-sync uses pnpm.\n\nConversation excerpt:\nuser [d]: hi"
+        );
+    }
+
+    #[test]
+    fn the_extraction_input_lists_handles_before_the_excerpt() {
+        let learned = [("Never use emoji.".to_string(), true)];
+        let handles = ["dentist".to_string(), "payments-api".to_string()];
+        let ms = [known("ledger-sync uses pnpm.")];
+        assert_eq!(
+            extraction_input(&[], false, "", &ms, &learned, &handles, "user [d]: hi"),
+            "Already remembered:\n[1] ledger-sync uses pnpm.\n\n\
+             Learned rules:\n[2] Never use emoji.\n\n\
+             Entity handles in use:\n- dentist\n- payments-api\n\n\
+             Conversation excerpt:\nuser [d]: hi"
+        );
+        assert_eq!(
+            extraction_input(&[], false, "", &ms, &learned, &[], "user [d]: hi"),
+            "Already remembered:\n[1] ledger-sync uses pnpm.\n\n\
+             Learned rules:\n[2] Never use emoji.\n\nConversation excerpt:\nuser [d]: hi",
+            "no handles, no section"
+        );
+        let many: Vec<String> = (0..30).map(|n| format!("tool-{n:02}")).collect();
+        let input = extraction_input(&[], false, "", &[], &[], &many, "");
+        assert!(
+            input.contains("- tool-23\n\nConversation excerpt:"),
+            "{input}"
+        );
+        assert!(!input.contains("tool-24"), "capped at {MAX_HANDLES}");
+    }
+
+    #[test]
+    fn handles_lead_with_the_known_memories_then_the_most_used() {
+        let tagged = |text: &str, entities: &[&str]| Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..known(text)
+        };
+        let ms = [
+            tagged("The user sees a dentist.", &["user", "dentist"]),
+            tagged("ledger-api pages kai.", &["ledger-api", "kai", "dentist"]),
+        ];
+        let counted = |all: &[&str]| -> Vec<(String, usize)> {
+            all.iter().map(|h| (h.to_string(), 1)).collect()
+        };
+        let (long, longest) = ("x".repeat(49), "y".repeat(48));
+        let own = counted(&["payments-api", "user", "kai", &long, "two\nlines", &longest]);
+        let got = handles(&ms, own, counted(&["porto", "payments-api"]));
+        assert_eq!(
+            got,
+            [
+                "dentist",
+                "ledger-api",
+                "kai",
+                "payments-api",
+                &longest,
+                "porto"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_prompt_fixes_the_speaker_handle_and_asks_for_listed_handles() {
+        let speaker = "The person you are talking with is always the handle \"user\": write it \
+                       exactly so, in English, whatever language the text is in, never their name \
+                       and never a translation of the word, and include it in every memory about \
+                       them.";
+        let listed = "The input may list entity handles this bank already uses: when a memory \
+                      is about one of those things, use that handle exactly as listed, even when \
+                      the excerpt names the thing in another spelling, form or language.";
+        for variant in 0..8 {
+            let (repository, agents, instructions) =
+                (variant & 1 > 0, variant & 2 > 0, variant & 4 > 0);
+            let prompt = system_prompt(repository, agents, instructions, 8);
+            for sentence in [speaker, listed] {
+                assert_eq!(prompt.matches(sentence).count(), 1, "{variant}: {sentence}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_separator_variant_is_written_as_the_banks_handle() {
+        let handles = ["build-cache".to_string(), "us-east-1".to_string()];
+        let mut entities: Vec<String> = ["Build Cache", "build_cache", "us east 1", "user"]
+            .map(String::from)
+            .into();
+        snap(&mut entities, &handles);
+        assert_eq!(entities, ["build-cache", "us-east-1", "user"]);
+    }
+
+    #[test]
+    fn a_different_handle_is_left_alone() {
+        // `payments-api` is never snapped to `ledger-api`, nor a near
+        // spelling to it, nor `c#` to `c++`; a handle of separators alone
+        // spells nothing.
+        let handles = [
+            "payments-api".to_string(),
+            "c++".to_string(),
+            "-".to_string(),
+        ];
+        let mut entities: Vec<String> = ["ledger-api", "payment-api", "c#", "_", "payments"]
+            .map(String::from)
+            .into();
+        snap(&mut entities, &handles);
+        assert_eq!(
+            entities,
+            ["ledger-api", "payment-api", "c#", "_", "payments"]
         );
     }
 
@@ -4678,7 +4878,8 @@ mod tests {
         for rule in [
             "\"The user …\"",
             "\"The user's name is <name>.\"",
-            "include \"user\"",
+            "the handle \"user\"",
+            "include it in every memory about them",
             "already remembered",
             "\"replaces\"",
             "direct instruction to the assistant",

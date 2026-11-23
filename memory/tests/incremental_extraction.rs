@@ -2934,6 +2934,171 @@ mod productive {
         );
     }
 
+    /// One project memory on `text`, tagged `handle`.
+    fn tagged_fact(text: &str, handle: &str) -> Value {
+        json!([{"text":text,"entities":[handle],"scope":"project","kind":"memory"}])
+    }
+
+    #[tokio::test]
+    async fn the_second_pass_lists_the_handle_the_first_wrote() {
+        let (old, new) = (
+            "Amber instruments require copper calibration.",
+            "Birch archives retain monthly invoices.",
+        );
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", old),
+                message("end", new),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([fact(old), fact(new)]),
+            ..Script::default()
+        })
+        .await;
+        stack.run(&job("old")).await.unwrap();
+        stack.run(&job("end")).await.unwrap();
+        let inputs = stack.script.lock().unwrap().inputs();
+        assert!(
+            !inputs[0].contains("Entity handles in use"),
+            "{}",
+            inputs[0]
+        );
+        assert!(
+            inputs[1].contains("Entity handles in use:\n- fixture\n\nConversation excerpt:\n"),
+            "{}",
+            inputs[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retired_memorys_handle_is_not_listed() {
+        let old = "Amber instruments require copper calibration.";
+        let new = "Amber instruments now require silver calibration.";
+        let later = "Birch archives retain monthly invoices.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", old),
+                message("new", new),
+                message("end", later),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([
+                tagged_fact(old, "old-tool"),
+                json!([{"text":new,"entities":["new-tool"],
+                    "scope":"project","kind":"memory","replaces":1}]),
+                json!([]),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        for until in ["old", "new", "end"] {
+            stack.run(&job(until)).await.unwrap();
+        }
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        let live = bank.list(10, 0, false, None).await.0;
+        assert_eq!(live.len(), 1, "the correction retired the old memory");
+        let inputs = stack.script.lock().unwrap().inputs();
+        assert!(inputs[1].contains("- old-tool\n"), "{}", inputs[1]);
+        assert!(
+            inputs[2].contains("Entity handles in use:\n- new-tool\n\nConversation excerpt:\n"),
+            "{}",
+            inputs[2]
+        );
+        assert!(!inputs[2].contains("old-tool"), "{}", inputs[2]);
+    }
+
+    #[tokio::test]
+    async fn every_piece_of_a_long_message_gets_the_same_handles() {
+        let seed = "Cedar cabinets hold spare fuses.";
+        let filler = (0..980)
+            .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
+            .collect::<String>();
+        let long = format!(
+            "Amber instruments require copper calibration.\n{filler}\
+             Birch archives retain monthly invoices."
+        );
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("seed", seed),
+                message("large", &long),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([
+                tagged_fact(seed, "cedar"),
+                json!([]),
+                json!([]),
+                json!([]),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        stack.run(&job("seed")).await.unwrap();
+        stack.run(&job("large")).await.unwrap();
+        let inputs = stack.script.lock().unwrap().inputs();
+        assert_eq!(inputs.len(), 4, "one seed call, three pieces");
+        for input in &inputs[1..] {
+            assert!(
+                input.contains("Entity handles in use:\n- cedar\n\nConversation excerpt:\n"),
+                "{input}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_snapped_handle_survives_a_plan_replay() {
+        let (old, new) = (
+            "Amber instruments require copper calibration.",
+            "Birch archives retain monthly invoices.",
+        );
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", old),
+                message("end", new),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([
+                tagged_fact(old, "fixture-tool"),
+                tagged_fact(new, "Fixture Tool"),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        stack.run(&job("old")).await.unwrap();
+        // The second write fails after its plan is saved.
+        let path = stack.dir.path().join("private/memories.jsonl");
+        let read_only = |on: bool| {
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(on);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        };
+        read_only(true);
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("memory commit failed")
+        );
+        read_only(false);
+        assert!(stack.script.lock().unwrap().inputs()[1].contains("- fixture-tool\n"));
+        let stack = stack.restart().await;
+        stack.run(&job("end")).await.unwrap();
+        assert_eq!(
+            stack.script.lock().unwrap().count("router::complete"),
+            0,
+            "the saved plan is replayed"
+        );
+        let records = stack.log_records("private");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].text, new);
+        assert_eq!(records[1].entities, ["fixture-tool"]);
+    }
+
     #[tokio::test]
     async fn a_later_piece_correcting_the_same_memory_is_the_one_kept() {
         let old = "Amber instruments require copper calibration.";
