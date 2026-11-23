@@ -670,7 +670,7 @@ export function AgentProfilePicker({
         <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-t border-popover-edge px-1.5">
           <button
             type="button"
-            className="flex h-8 min-w-0 items-center gap-2 rounded-md px-2.5 text-sm text-ink-faint transition-[background-color,color,scale] duration-150 ease-out hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none motion-safe:enabled:active:scale-[0.96]"
+            className="flex h-8 min-w-0 items-center gap-2 rounded-md px-2.5 text-sm text-ink-faint transition duration-150 ease-out hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none motion-safe:enabled:active:scale-[0.96]"
             onClick={() => {
               setOpen(false)
               requestPanelOpen({
@@ -685,7 +685,7 @@ export function AgentProfilePicker({
           <button
             type="button"
             title="Choose instructions, a model, and skills."
-            className="flex h-8 min-w-0 items-center gap-2 rounded-md px-2.5 text-sm text-ink-faint transition-[background-color,color,scale] duration-150 ease-out hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none motion-safe:enabled:active:scale-[0.96]"
+            className="flex h-8 min-w-0 items-center gap-2 rounded-md px-2.5 text-sm text-ink-faint transition duration-150 ease-out hover:bg-surface-hover/60 hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none motion-safe:enabled:active:scale-[0.96]"
             onClick={() => {
               setOpen(false)
               requestPanelOpen({
