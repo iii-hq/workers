@@ -11,6 +11,7 @@
 //! the classes that must never ride on worker authority. Database writes are
 //! refused only when the approval gate is present.
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -21,7 +22,7 @@ use iii_sdk::protocol::CallRequest;
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, mcp-client::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -168,6 +169,12 @@ fn forbidden_unprefixed_step(
         || function_id.starts_with("provider-openai-codex::state::")
     {
         return Some("operator-only state functions are not supported in a pipe");
+    }
+    if function_id.starts_with("mcp-client::") {
+        return Some(
+            "operator-only MCP client functions are not supported in a pipe — steps run with \
+             worker authority, which would bypass the agent-level deny on them",
+        );
     }
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
@@ -412,13 +419,19 @@ pub(crate) async fn approval_gate_running(iii: &IIIClient) -> Result<bool, Strin
     }
 }
 
-/// NOT_FOUND is the ONLY answer that unlocks database writes. FORBIDDEN —
-/// the id RBAC-hidden, or the info call itself denied — means presence is
-/// unknowable from here: treat the gate as present (fail closed). Anything
-/// else is infrastructure trouble, surfaced rather than converted to policy.
+/// The engine's "no namespace holds it" answer is the ONLY one that unlocks
+/// database writes. Every other NOT_FOUND (the bare id held by two or more
+/// non-default namespaces and not by `default`: "is ambiguous ...") means a
+/// gate runs somewhere, and fp cannot see its caller's namespace: present.
+/// FORBIDDEN — the id RBAC-hidden, or the info call itself denied — means
+/// presence is unknowable from here: treat the gate as present (fail closed).
+/// Anything else is infrastructure trouble, surfaced rather than converted to
+/// policy.
 fn gate_presence_from_error(error: &iii_sdk::Error) -> Result<bool, String> {
     match error {
-        iii_sdk::Error::Remote { code, .. } if code == "NOT_FOUND" => Ok(false),
+        iii_sdk::Error::Remote { code, message, .. } if code == "NOT_FOUND" => {
+            Ok(message != "Function 'approval::gate' is not registered.")
+        }
         iii_sdk::Error::Remote { code, .. } if code == "FORBIDDEN" => Ok(true),
         e => Err(format!("could not inspect approval-gate availability: {e}")),
     }
@@ -513,11 +526,57 @@ pub(crate) fn chars_of(value: &Value) -> usize {
     }
 }
 
-fn preview_of(value: &Value, max_chars: usize) -> String {
+/// What a stream channel handle's `access_key` becomes in text fp returns
+/// (the harness's note for the handle objects it withholds, MOT-5827).
+const WITHHELD_ACCESS_KEY: &str = "<withheld: a turn cannot read a stream channel. For a file's \
+     text call coder::read-file, or in a sandbox cat it with sandbox::exec>";
+
+/// Push the `access_key` of each stream channel handle (an object with string
+/// `channel_id` and `access_key`, as `StreamChannelRef`) in `value`.
+pub(crate) fn stream_access_keys(value: &Value, keys: &mut Vec<String>) {
+    if value.get("channel_id").is_some_and(Value::is_string)
+        && let Some(Value::String(key)) = value.get("access_key")
+        && !key.is_empty()
+    {
+        keys.push(key.clone());
+    }
+    match value {
+        Value::Object(map) => map.values().for_each(|v| stream_access_keys(v, keys)),
+        Value::Array(items) => items.iter().for_each(|v| stream_access_keys(v, keys)),
+        _ => {}
+    }
+}
+
+/// `text` with each of `keys` replaced by [`WITHHELD_ACCESS_KEY`]. Run before
+/// a value's text leaves fp: the harness withholds handle objects but cannot
+/// look inside a string (MOT-5833). Matching the key's text, not the handle's
+/// shape, also catches a key a step moved out of its handle (fp::get, omit).
+/// shortcut: only the whole key is matched (engine keys are UUIDs, which JSON
+/// never escapes), so a step that cuts a key (fp::take, fp::split) shows its
+/// parts; withhold in those transforms if a pipe ever needs to cut one.
+pub(crate) fn withhold_access_keys(text: String, keys: &[String]) -> String {
+    if keys.is_empty() {
+        return text;
+    }
+    // One pass, longest key first: a key that holds another is never cut into
+    // pieces, and the inserted notes are never scanned again.
+    match AhoCorasick::builder()
+        .match_kind(MatchKind::LeftmostLongest)
+        .build(keys)
+    {
+        Ok(keys) => keys.replace_all(&text, &vec![WITHHELD_ACCESS_KEY; keys.patterns_len()]),
+        // Fail closed: text that could not be searched never leaves fp.
+        Err(_) => WITHHELD_ACCESS_KEY.to_string(),
+    }
+}
+
+fn preview_of(value: &Value, max_chars: usize, access_keys: &[String]) -> String {
     let s = match value {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
+    // Before the cut, so a cut never shows part of a key.
+    let s = withhold_access_keys(s, access_keys);
     match s.char_indices().nth(max_chars) {
         Some((byte_idx, _)) => format!("{}…", &s[..byte_idx]),
         None => s,
@@ -576,6 +635,9 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
     let mut receipts: Vec<StepReceipt> = Vec::with_capacity(req.through.len());
     let mut piped: Option<Value> = None;
     let mut short_circuited = false;
+    // Every handle key a step returned, so the preview withholds it however
+    // later steps reshape the handle.
+    let mut access_keys = Vec::new();
 
     for (i, step) in req.through.iter().enumerate() {
         let mut args = step.payload.clone().unwrap_or_else(|| json!({}));
@@ -615,6 +677,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
                 chars: chars_of(&value),
                 note: clobber_note,
             });
+            stream_access_keys(&value, &mut access_keys);
             piped = Some(value);
             if !passed {
                 short_circuited = true;
@@ -647,6 +710,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
             chars: chars_of(&value),
             note: clobber_note,
         });
+        stream_access_keys(&value, &mut access_keys);
         piped = Some(value);
     }
 
@@ -655,7 +719,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
     // (e.g. state::set echoing the stored value) must never ride along, or
     // the receipt grows to the size of the value it exists to avoid.
     Ok(PipeResponse {
-        value_preview: Some(preview_of(&final_value, preview_chars)),
+        value_preview: Some(preview_of(&final_value, preview_chars, &access_keys)),
         steps: receipts,
         short_circuited,
     })
@@ -790,6 +854,9 @@ mod tests {
             ("database::transactionExecute", "read-only"),
             ("database::beginTransaction", "read-only"),
             ("database::runStatement", "read-only"),
+            ("mcp-client::servers::approve", "operator-only"),
+            ("mcp-client::login::start", "operator-only"),
+            ("laptop::mcp-client::servers::approve", "operator-only"),
         ] {
             let req = parse(json!({ "through": [{ "function": function }] })).unwrap();
             assert!(validate(&req).unwrap_err().contains(needle), "{function}");
@@ -801,6 +868,14 @@ mod tests {
         ]}))
         .unwrap();
         assert!(validate(&ok).is_ok());
+
+        // Only the operator namespace is refused: the tools are ordinary steps,
+        // approved together with the pipe call that carries them.
+        let mcp = parse(json!({ "through": [
+            { "function": "mcp::linear::list_issues", "payload": {} },
+        ]}))
+        .unwrap();
+        assert!(validate(&mcp).is_ok());
 
         // Only workflow::start is refused: reading or stopping a run is harmless.
         let wf = parse(json!({ "through": [
@@ -847,19 +922,28 @@ mod tests {
         assert!(validate_with_approval_gate(&query_only, true).is_ok());
         assert!(validate_with_approval_gate(&query_only, false).is_ok());
 
-        // Only a trustworthy NOT_FOUND unlocks writes; FORBIDDEN (RBAC hides
-        // the gate, or the info call itself) fails closed as "present", and
-        // infrastructure errors surface instead of deciding policy.
-        let remote = |code: &str| iii_sdk::Error::Remote {
+        // Only the engine's "registered nowhere" NOT_FOUND unlocks writes; a
+        // NOT_FOUND naming the namespaces that hold the gate (two non-default
+        // gates, none in `default`) and FORBIDDEN (RBAC hides the gate, or the
+        // info call itself) fail closed as "present", and infrastructure
+        // errors surface instead of deciding policy.
+        let remote = |code: &str, message: &str| iii_sdk::Error::Remote {
             code: code.into(),
-            message: String::new(),
+            message: message.into(),
             stacktrace: None,
         };
-        assert!(!gate_presence_from_error(&remote("NOT_FOUND")).unwrap());
-        assert!(gate_presence_from_error(&remote("FORBIDDEN")).unwrap());
+        let not_found = |message| gate_presence_from_error(&remote("NOT_FOUND", message));
+        assert!(!not_found("Function 'approval::gate' is not registered.").unwrap());
+        assert!(not_found(
+            "Function 'approval::gate' is ambiguous: it is registered in namespace(s): proj, proj2. \
+             Pass `namespace` to select one."
+        )
+        .unwrap());
+        assert!(not_found("").unwrap());
+        assert!(gate_presence_from_error(&remote("FORBIDDEN", "")).unwrap());
         // invoke-layer "target function missing" (old engine) is its own,
         // lowercase code — it must NOT read as gate absence
-        assert!(gate_presence_from_error(&remote("function_not_found")).is_err());
+        assert!(gate_presence_from_error(&remote("function_not_found", "")).is_err());
         assert!(gate_presence_from_error(&iii_sdk::Error::Timeout).is_err());
     }
 
@@ -1159,8 +1243,8 @@ mod tests {
 
     #[test]
     fn previews_and_errors_stay_small() {
-        assert_eq!(preview_of(&json!("abcdef"), 3), "abc…");
-        assert_eq!(preview_of(&json!("ab"), 3), "ab");
+        assert_eq!(preview_of(&json!("abcdef"), 3, &[]), "abc…");
+        assert_eq!(preview_of(&json!("ab"), 3, &[]), "ab");
 
         // an unbounded preview would defeat the receipt design — clamp it
         assert_eq!(preview_len(None), DEFAULT_PREVIEW_CHARS);
@@ -1266,5 +1350,85 @@ mod tests {
         let with = validate_with_approval_gate(&req, true).unwrap_err();
         assert!(with.starts_with("pipe refused, 2 problem(s)"), "{with}");
         assert!(with.contains("database::execute"), "{with}");
+    }
+
+    #[tokio::test]
+    async fn a_pipe_ending_in_a_stream_handle_withholds_its_key_in_the_preview() {
+        // Transforms never touch the bus, so a disconnected client is fine.
+        let iii = IIIClient::new("ws://127.0.0.1:1");
+        // What `shell::fs::read` returns: a handle to the file, not its text.
+        let read = json!({
+            "content": { "channel_id": "c1", "access_key": "secret-key", "direction": "read" },
+            "size": 16,
+        });
+        let req = parse(json!({ "through": [
+            { "function": "fp::get", "payload": { "value": read, "path": "" } },
+        ]}))
+        .unwrap();
+        let preview = run(&iii, req).await.unwrap().value_preview.unwrap();
+        assert!(!preview.contains("secret-key"), "{preview}");
+        assert!(preview.contains("coder::read-file"), "{preview}");
+        assert!(preview.contains(r#""channel_id":"c1""#), "{preview}");
+        assert!(preview.contains(r#""direction":"read""#), "{preview}");
+    }
+
+    #[tokio::test]
+    async fn a_pipe_that_reshapes_a_stream_handle_still_withholds_its_key() {
+        let iii = IIIClient::new("ws://127.0.0.1:1");
+        let read = json!({
+            "content": { "channel_id": "c1", "access_key": "secret-key", "direction": "read" },
+            "size": 16,
+        });
+        let first = json!({ "function": "fp::get", "payload": { "value": read, "path": "" } });
+        // Each tail leaves no handle shape behind: the bare key, a handle
+        // without its channel_id, and the key behind a default.
+        for tail in [
+            json!([{ "function": "fp::get", "payload": { "path": "/content/access_key" } }]),
+            json!([
+                { "function": "fp::get", "payload": { "path": "/content" } },
+                { "function": "fp::omit", "payload": { "paths": ["channel_id"] } },
+            ]),
+            json!([{ "function": "fp::getOr",
+                     "payload": { "path": "/content/access_key", "default": "none" } }]),
+        ] {
+            let mut through = vec![first.clone()];
+            through.extend(tail.as_array().unwrap().iter().cloned());
+            let req = parse(json!({ "through": through })).unwrap();
+            let preview = run(&iii, req).await.unwrap().value_preview.unwrap();
+            assert!(!preview.contains("secret-key"), "{tail}: {preview}");
+            assert!(preview.contains("coder::read-file"), "{tail}: {preview}");
+        }
+    }
+
+    #[test]
+    fn a_preview_withholds_nested_handle_keys_before_the_cut() {
+        let handle = json!({ "channel_id": "c1", "access_key": "secret-key", "direction": "read" });
+        let nested = json!([{ "reader": handle }, handle]);
+        let mut keys = Vec::new();
+        stream_access_keys(&nested, &mut keys);
+        let whole = preview_of(&nested, 1_000, &keys);
+        assert!(!whole.contains("secret-key"), "{whole}");
+        assert_eq!(whole.matches("coder::read-file").count(), 2, "{whole}");
+        // Keys sort, so `access_key` leads a handle: a cut at 30 chars lands in it.
+        let cut = preview_of(&nested, 30, &keys);
+        assert!(!cut.contains("secr"), "{cut}");
+        // Without a string channel_id it is the caller's data, not a handle;
+        // an empty key would otherwise match between every char.
+        let mut none = Vec::new();
+        stream_access_keys(&json!({ "access_key": "kept", "channel": "c1" }), &mut none);
+        stream_access_keys(&json!({ "channel_id": "c1", "access_key": "" }), &mut none);
+        assert!(none.is_empty(), "{none:?}");
+    }
+
+    #[test]
+    fn keys_are_withheld_longest_first_in_one_pass() {
+        // The short key is listed first; a key-by-key pass would leave "def".
+        let keys = ["abc".to_string(), "abcdef".to_string()];
+        let out = withhold_access_keys("x abcdef y abc abcdef".into(), &keys);
+        assert_eq!(out.matches(WITHHELD_ACCESS_KEY).count(), 3, "{out}");
+        assert!(!out.contains("abc") && !out.contains("def"), "{out}");
+        // A key that also occurs inside the note leaves the note whole.
+        let out = withhold_access_keys("k=read".into(), &["read".to_string()]);
+        assert_eq!(out, format!("k={WITHHELD_ACCESS_KEY}"));
     }
 }

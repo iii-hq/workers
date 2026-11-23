@@ -516,6 +516,7 @@ async fn resolve_callback(
             &deps.iii,
             &data.session_id,
             &data.function_id,
+            data.namespace.as_deref(),
             cfg.timeout_ms,
         )
         .await?;
@@ -532,6 +533,7 @@ async fn resolve_callback(
             function_call_id: data.function_call_id,
             decision,
             reason,
+            namespace: data.namespace,
         },
         cfg.timeout_ms,
     )

@@ -33,7 +33,7 @@ const output = {
   guidance: 'Choose the smallest candidate set.',
   workers: [
     {
-      namespace: 'browser',
+      worker: 'browser',
       functions: [
         {
           function_id: 'browser::fetch',
@@ -166,7 +166,7 @@ describe('search call renderer', () => {
       input: { capabilities: ['x'] },
       output: {
         guidance: 'g',
-        workers: [{ namespace: 'browser', functions: [{ function_id: 'browser::fetch', description: 'Fetch.' }] }],
+        workers: [{ worker: 'browser', functions: [{ function_id: 'browser::fetch', description: 'Fetch.' }] }],
         search_mode: 'judge',
         latency_ms: 10,
       },

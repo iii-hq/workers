@@ -520,21 +520,17 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
                 skip: false,
                 until: Some(a.entry_id.clone()),
             };
-            deps.iii
-                .call(
-                    iii_sdk::CallRequest::new(
-                        "engine::queue::enqueue",
-                        json!({
-                            "queue":crate::hooks::EXTRACTION_QUEUE,
-                            "function_id":crate::hooks::EXTRACT_JOB_FN,"data":job,
-                            "messageReceiptId":format!("memx-history-{}",a.turn_id)
-                        }),
-                    )
-                    .metadata(json!({}))
-                    .timeout(std::time::Duration::from_millis(400)),
-                )
+            crate::store::run_blocking(|| store.hold_extraction_job(&job))
                 .await
                 .map_err(|_| "history recovery scheduling failed")?;
+            crate::hooks::enqueue_extraction(
+                &deps.iii,
+                &job,
+                format!("memx-history-{}", a.turn_id),
+                400,
+            )
+            .await
+            .map_err(|_| "history recovery scheduling failed")?;
         }
     }
     Ok(())

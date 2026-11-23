@@ -1,0 +1,3 @@
+{ "mcpServers": [ { "name": "filesystem", "command": "/path/to/mcp-server", "args": ["--stdio"], "env": [{ "name": "API_KEY", "value": "@@FAKE@@" }] },
+{ "type": "http", "name": "api-server", "url": "https://api.example.com/mcp", "headers": [{ "name": "Authorization", "value": "Bearer @@FAKE@@" }, { "name": "Content-Type", "value": "application/json" }] },
+{ "type": "sse", "name": "events", "url": "https://api.example.com/sse", "headers": [] } ] }

@@ -11,7 +11,9 @@ pub enum Confidence {
     Extracted,
     /// Derived by the extraction model rather than stated verbatim.
     Inferred,
-    /// Saved explicitly by an agent or a human (highest trust).
+    /// Saved explicitly through `memory::save`: by a human (console, REST,
+    /// CLI), or by an agent from a turn: then `source.turn_id` is set and it
+    /// is that agent's note, not a fact the user stated.
     Stated,
 }
 
@@ -96,6 +98,13 @@ pub struct Memory {
 impl Memory {
     pub fn is_live(&self) -> bool {
         self.invalid_at.is_none()
+    }
+
+    /// A note an agent saved from inside a turn: its own words, not a fact
+    /// the user stated or extraction read.
+    pub fn is_agent_note(&self) -> bool {
+        self.confidence == Confidence::Stated
+            && self.source.as_ref().is_some_and(|s| s.turn_id.is_some())
     }
 
     /// When the fact was last stated, even when its record was written later
@@ -259,5 +268,40 @@ mod tests {
         let s = serde_json::to_string(&from_turn).unwrap();
         let back: Memory = serde_json::from_str(&s).unwrap();
         assert_eq!(from_turn, back);
+    }
+
+    #[test]
+    fn an_agent_note_is_a_stated_save_with_a_turn() {
+        let with = |confidence, turn_id: Option<&str>| Memory {
+            id: fingerprint("x"),
+            text: "x".into(),
+            entities: vec![],
+            tags: vec![],
+            confidence,
+            corroboration: 0,
+            pinned: false,
+            source: Some(Provenance {
+                session_id: Some("s_1".into()),
+                turn_id: turn_id.map(str::to_string),
+                ..Provenance::default()
+            }),
+            created_at: 1,
+            updated_at: 1,
+            invalid_at: None,
+            superseded_by: None,
+            revision: 0,
+            stated_at: Some(1),
+        };
+        assert!(with(Confidence::Stated, Some("t_1")).is_agent_note());
+        assert!(
+            !with(Confidence::Stated, None).is_agent_note(),
+            "a save on behalf of a session, outside a turn"
+        );
+        assert!(!with(Confidence::Extracted, Some("t_1")).is_agent_note());
+        let human = Memory {
+            source: None,
+            ..with(Confidence::Stated, None)
+        };
+        assert!(!human.is_agent_note());
     }
 }

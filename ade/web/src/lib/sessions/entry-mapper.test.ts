@@ -1623,6 +1623,38 @@ describe('applyEntryUpsert', () => {
     })
   })
 
+  it('keeps the approval namespace when the transcript entry replaces the pending row', () => {
+    const local: Message = {
+      id: 'local-1',
+      role: 'function-call',
+      functionId: 'shell::exec',
+      input: {},
+      running: false,
+      pendingApproval: true,
+      functionCallId: 'fc-1',
+      sessionId: 'sess-a',
+      namespace: 'laptop',
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::exec',
+          arguments: {},
+        },
+      ]),
+    )
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e-a:0',
+      pendingApproval: true,
+      namespace: 'laptop',
+    })
+  })
+
   it('infers running for unpaired calls while the session is working', () => {
     const messages = applyEntryUpsert(
       [],

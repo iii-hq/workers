@@ -34,20 +34,12 @@
     var(--chat-entry-delay, 0ms);
 }
 
-.chat-message-stack > .chat-thought-row-settling:not(:first-child) {
-  margin-top: calc(var(--chat-stack-gap) * -1);
-}
-
 .chat-message-stack
   > .chat-thought-row:not(:first-child):has(
     .chat-thought[data-state="streaming"]
   ) {
   animation: chat-thought-row-gap-enter var(--chat-row-enter)
     var(--chat-motion-ease) both;
-}
-
-.chat-message-stack > .chat-thought-row-settling:first-child:not(:last-child) {
-  margin-bottom: calc(var(--chat-stack-gap) * -1);
 }
 
 @keyframes chat-thought-row-gap-enter {

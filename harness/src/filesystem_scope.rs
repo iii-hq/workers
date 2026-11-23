@@ -86,7 +86,7 @@ pub fn release_boundary(
 
 /// True when `function_id` names a filesystem-scoped worker call whose paths
 /// must be constrained by the harness-owned scope.
-fn is_scoped_function(function_id: &str) -> bool {
+pub(crate) fn is_scoped_function(function_id: &str) -> bool {
     (function_id.starts_with("shell::") && !function_id.starts_with("shell::filesystem::"))
         || function_id.starts_with("coder::")
 }

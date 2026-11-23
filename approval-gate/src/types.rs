@@ -69,6 +69,10 @@ pub enum GrantedBy {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AlwaysAllowEntry {
+    /// Engine namespace the grant covers. Absent on grants stored before
+    /// namespaces: those cover only the call's implicit namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     pub function_id: String,
     /// ms epoch
     pub granted_at: i64,
@@ -173,6 +177,12 @@ pub struct PendingApprovalRecord {
     pub turn_id: String,
     pub function_call_id: String,
     pub function_id: String,
+    /// Engine namespace the held call targets. Absent from an older harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Where a call to `function_id` without `namespace` runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_namespace: Option<String>,
     /// Redacted — safe to forward to notification channels.
     #[serde(default)]
     pub arguments_excerpt: Value,
@@ -269,6 +279,12 @@ pub struct PendingResolvedEvent {
 pub struct HookCall {
     pub id: String,
     pub function_id: String,
+    /// Resolved target namespace. Absent from an older harness.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Where a call to `function_id` without `namespace` runs.
+    #[serde(default)]
+    pub implicit_namespace: Option<String>,
     #[serde(default)]
     pub arguments: Value,
 }
@@ -370,6 +386,7 @@ pub enum ResolveDecision {
 /// How far an `allow` on a `filesystem_access` pending record should apply.
 /// Ignored (logged) when the target record's `kind` is not
 /// `"filesystem_access"`. Defaults to `once` when omitted.
+/// For a call held in another namespace, `session` and `always` act as `once`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessDuration {
@@ -394,6 +411,10 @@ pub struct ResolveRequest {
     /// and `decision: "allow"`. Defaults to `once`.
     #[serde(default)]
     pub access_duration: Option<AccessDuration>,
+    /// The namespace the surface showed for this call. Required to allow a
+    /// call held in another namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -452,12 +473,18 @@ pub struct SetModeRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct AlwaysAllowMutationRequest {
     pub session_id: String,
+    /// Namespace the entry covers; absent = the implicit namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
     pub function_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ApproveAlwaysRequest {
     pub session_id: String,
+    /// Namespace the grant covers; absent = the implicit namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
     pub function_id: String,
 }
 
@@ -478,6 +505,13 @@ pub struct EvaluateRequest {
     pub session_id: String,
     /// The function id to evaluate.
     pub function_id: String,
+    /// Resolved target namespace of the call. Absent from an older harness: a
+    /// namespaced grant or allow rule then does not match.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Where a call to `function_id` without `namespace` runs.
+    #[serde(default)]
+    pub implicit_namespace: Option<String>,
     /// Call arguments, for deployments whose rules carry argument
     /// constraints. Defaults to `{}`.
     #[serde(default)]
@@ -570,9 +604,18 @@ mod tests {
             "step": 3,
             "depth": 1,
             "unknown_future_field": { "x": 1 },
-            "call": { "id": "c_1", "function_id": "shell::run", "arguments": { "cmd": "ls" } }
+            "call": {
+                "id": "c_1",
+                "function_id": "shell::run",
+                "namespace": "laptop",
+                "implicit_namespace": "default",
+                "arguments": { "cmd": "ls" }
+            }
         }))
         .unwrap();
+        let call = input.call.as_ref().unwrap();
+        assert_eq!(call.namespace.as_deref(), Some("laptop"));
+        assert_eq!(call.implicit_namespace.as_deref(), Some("default"));
         assert_eq!(input.call.unwrap().function_id, "shell::run");
 
         let bare: HookInput = serde_json::from_value(json!({
@@ -628,6 +671,8 @@ mod tests {
             turn_id: "t_1".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::run".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 100,
             session_title: None,
@@ -664,6 +709,8 @@ mod tests {
             turn_id: "t_1".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::fs::read".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "path": "/a/b/x" }),
             pending_at: 100,
             session_title: None,

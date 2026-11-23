@@ -92,7 +92,7 @@ pub struct WorkerConfig {
     pub extraction_timeout_ms: u64,
 
     /// Cap on memories accepted from a single extraction call (a long span
-    /// is read in several).
+    /// is read in several), and on the new notes one turn may save.
     #[serde(default = "default_max_memories_per_turn")]
     pub max_memories_per_turn: usize,
 

@@ -79,7 +79,7 @@ max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
 env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
   # with inherit: false, git over SSH needs SSH_AUTH_SOCK in allow, which gives every child command the agent's keys: add it only if that is intended
-  allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; has no effect on per-call `env` (deny-only — dangerous keys never settable)
+  allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false, along with the engine's telemetry opt-outs (III_TELEMETRY_ENABLED, III_TELEMETRY_DEV, CI markers); has no effect on per-call `env` (deny-only — dangerous keys never settable)
 
 # Command policy is deny-only: allow/ask policy lives in the approval-gate.
 # denylist_patterns are advisory regex over argv.join(" "), a tripwire for
@@ -147,6 +147,15 @@ The harness stamps a trusted `fs_scope { root, grants, boundary }` on every `she
 - `configured_roots`: `root` only anchors relative paths and is the default exec `cwd`; `fs.host_roots` is the jail.
 
 What a host `shell::exec`/`exec_bg` process writes is a separate switch: with `fs.exec_confinement: landlock`, a scoped exec may write only under `root`, `grants`, the root's git dir and `fs.exec_writable`, in either mode. Reads stay open, and setuid binaries do not work in a confined exec. Without Landlock the exec fails closed with `S222`. Unscoped execs (the console terminal, other workers) and sandbox targets are never confined.
+
+### The session follows a worktree it creates
+
+When a session's host `shell::exec` runs `git worktree add`, git registers a new worktree, and that directory's name appears on the command line, the session moves there: `shell::turns::on-post-call` answers the harness with `mutations.fs_scope.root`, and the rest of the turn and later turns run in the new worktree (in the same subdirectory when the root was one and it exists there). The proof is git's worktree list before and after the call, not the exit code or argv parsing, so `-C`, `sh -c` and relative paths work; a directory named only through a shell variable or a script, or whose name has whitespace, does not move the session.
+
+- Run the `git worktree add` as the only call of its step. Use relative paths in the new worktree only after the session-context note confirms the move; calls already written in the same step are re-anchored to it.
+- Under `workspace` the old checkout leaves the session's scope and the new worktree needs no grant. With `fs.exec_confinement: landlock` the worktree must be where the exec could write (the root, a grant or `fs.exec_writable`); under `configured_roots` it must be inside `fs.host_roots`. A denylisted directory is never adopted.
+- `git worktree remove` of the worktree the session is rooted in returns it to the repository's main checkout, and `git worktree move` of it takes the session along; moving any other worktree does not move the session. With `fs.exec_confinement: landlock` that way back needs the worktree's parent and the main checkout writable for the exec (a grant or `fs.exec_writable`); otherwise the exec cannot delete its own root, so git empties the worktree, drops its registration and then fails, and the session stays in that empty directory.
+- For a worktree meant for a child or a side look, use `worktree::create`: it does not move the caller.
 
 ## Quick start
 

@@ -277,18 +277,19 @@ async fn sessions_and_windows_lifecycle() {
 }
 
 #[tokio::test]
-async fn a_server_the_worker_starts_gets_none_of_its_iii_variables() {
+async fn a_server_the_worker_starts_gets_only_its_telemetry_iii_variables() {
     if !tmux_installed() {
         eprintln!("tmux not installed; skipping");
         return;
     }
     // What compose puts in the worker's environment. Set on a copy of this
     // test in its own process: `set_var` here would race the tests beside it.
-    const NAME: &str = "a_server_the_worker_starts_gets_none_of_its_iii_variables";
+    const NAME: &str = "a_server_the_worker_starts_gets_only_its_telemetry_iii_variables";
     if std::env::var_os("III_TMUX_LEAK_TEST").is_none() {
         let run = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--nocapture"])
             .env("III_TMUX_LEAK_TEST", "ws://127.0.0.1:1")
+            .env("III_TELEMETRY_ENABLED", "false")
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&run.stdout);
@@ -324,10 +325,19 @@ async fn a_server_the_worker_starts_gets_none_of_its_iii_variables() {
         String::from_utf8_lossy(&shown.stderr)
     );
     let shown = String::from_utf8_lossy(&shown.stdout);
-    let leaked: Vec<&str> = shown.lines().filter(|l| l.starts_with("III_")).collect();
+    let leaked: Vec<&str> = shown
+        .lines()
+        .filter(|l| l.starts_with("III_") && !l.starts_with("III_TELEMETRY_"))
+        .collect();
     assert!(
         leaked.is_empty(),
         "tmux's global environment holds {leaked:?}"
+    );
+    // The opt-out is the user's, not the worker's: an engine a pane starts
+    // must still see it.
+    assert!(
+        shown.lines().any(|l| l == "III_TELEMETRY_ENABLED=false"),
+        "tmux's global environment lost the telemetry opt-out: {shown}"
     );
 }
 

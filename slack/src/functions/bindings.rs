@@ -141,6 +141,14 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
 }
 
+/// Prompt label: the function id, plus the namespace the call is held for when known.
+fn approval_label(rec: &PendingApprovalRecord) -> String {
+    match &rec.namespace {
+        Some(ns) => format!("`{}` in namespace `{ns}`", rec.function_id),
+        None => format!("`{}`", rec.function_id),
+    }
+}
+
 async fn post_approval(deps: &Deps, rec: &PendingApprovalRecord) -> Result<(), Error> {
     let Some(target) = kv::session_target(deps, &rec.session_id).await else {
         return Ok(());
@@ -148,7 +156,7 @@ async fn post_approval(deps: &Deps, rec: &PendingApprovalRecord) -> Result<(), E
     let token = &rec.function_call_id;
     let blocks = json!([
         { "type": "section", "text": { "type": "mrkdwn",
-            "text": format!("*Approve tool call* `{}`?", rec.function_id) } },
+            "text": format!("*Approve tool call* {}?", approval_label(rec)) } },
         { "type": "actions", "elements": [
             { "type": "button", "text": { "type": "plain_text", "text": "Approve" },
               "style": "primary", "action_id": "slack_approve", "value": token },
@@ -162,7 +170,7 @@ async fn post_approval(deps: &Deps, rec: &PendingApprovalRecord) -> Result<(), E
         deps,
         "chat.postMessage",
         json!({ "channel": target.channel, "thread_ts": target.thread_ts,
-            "text": format!("Approve tool call {}?", rec.function_id), "blocks": blocks }),
+            "text": format!("Approve tool call {}?", approval_label(rec)), "blocks": blocks }),
     )
     .await?;
     let message_ts = resp
@@ -176,6 +184,7 @@ async fn post_approval(deps: &Deps, rec: &PendingApprovalRecord) -> Result<(), E
         function_id: rec.function_id.clone(),
         channel: target.channel,
         message_ts,
+        namespace: rec.namespace.clone(),
     };
     kv::store_approval_cb(deps, token, &cb).await
 }
@@ -243,6 +252,16 @@ mod tests {
     use super::*;
     use crate::functions::{event_source, observed_output};
     use iii_sdk::{Capture, Observed, Source};
+
+    #[test]
+    fn approval_label_names_the_namespace_when_present() {
+        let mut rec: PendingApprovalRecord = serde_json::from_value(json!({
+            "session_id": "s1", "function_call_id": "c1", "function_id": "shell::exec" }))
+        .unwrap();
+        assert_eq!(approval_label(&rec), "`shell::exec`");
+        rec.namespace = Some("laptop".into());
+        assert_eq!(approval_label(&rec), "`shell::exec` in namespace `laptop`");
+    }
 
     /// What a `capture: [output]` observer target receives.
     fn envelope(function_id: &str, output: Value) -> Value {

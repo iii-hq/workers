@@ -1292,6 +1292,38 @@ workers:
       - armv7-unknown-linux-gnueabihf
       windows_exception: not published to the Registry yet; no Windows build to restore
     publish: true
+  mcp-client:
+    source:
+      path: mcp-client
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: mcp-client
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: mcp-client/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
   mcp-server:
     source:
       path: mcp-server

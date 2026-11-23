@@ -74,6 +74,11 @@ contract stays valid all session. Batch several with `{ function_ids: [...] }`. 
 `unchanged_in_context` result names the earlier call already holding the exact full contract;
 reuse it.
 
+If a search candidate lists `namespaces`, its id exists in each of them, and a call without
+`namespace` runs in your own. To use another one, add `namespace: "<namespace>"` to the
+`engine::functions::info` payload when you read the contract, and set `namespace` next to
+`function`, never inside `payload`, when you call. Read a contract once per namespace.
+
 Step 3. Call the function. Set `description` to a concise action label in the response
 language. `payload` is a JSON OBJECT, never a JSON-encoded string, and every
 argument goes INSIDE `payload`, matching the contract exactly.

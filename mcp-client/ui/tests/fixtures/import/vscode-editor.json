@@ -1,0 +1,5 @@
+{ "servers": { "github": { "type": "http", "url": "https://api.githubcopilot.com/mcp", "headers": { "Authorization": "Bearer ${input:api-token}" } },
+"perplexity": { "type": "stdio", "command": "npx", "args": ["-y", "server-perplexity-ask"], "env": { "PERPLEXITY_API_KEY": "${input:perplexity-key}", "REGION": "${input:region}", "BUILD": "${input:build-id}", "RETRIES": 3, "UNUSED": null }, "cwd": "${workspaceFolder}", "envFile": "${workspaceFolder}/.env", "dev": { "watch": "src/**/*.ts" } },
+"oauthed": { "type": "http", "url": "https://mcp.example.com/mcp", "oauth": { "clientId": "vscode-client" } } },
+"inputs": [ { "type": "promptString", "id": "api-token", "description": "GitHub Personal Access Token", "password": true }, { "type": "promptString", "id": "perplexity-key", "description": "Perplexity API Key", "password": true },
+{ "type": "pickString", "id": "region", "description": "Service region", "options": ["us", "eu"] }, { "type": "command", "id": "build-id", "command": "extension.getBuildId" } ] }

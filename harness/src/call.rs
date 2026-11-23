@@ -7,7 +7,7 @@
 //! P1 covers the glob policy + target + normalisation. The `pre_call` /
 //! `post_call` hook chain and `pending` deferral layer on in later phases.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use jsonschema::JSONSchema;
 use serde_json::{Value, json};
@@ -119,6 +119,11 @@ fn unique_visible_result<'a>(
     found
 }
 
+/// The contract ledger key of `function_id` in `namespace`.
+pub(crate) fn contract_key(namespace: &str, function_id: &str) -> String {
+    format!("{namespace}/{function_id}")
+}
+
 /// Prepare an `engine::functions::info` result for the model: every
 /// contract in the model-visible copy is compacted (see [`compact_contract`])
 /// and an unchanged, successful contract already in context is replaced by
@@ -174,7 +179,7 @@ pub(crate) fn prepare_info_result(
         }
     }
 
-    // `(function_id, digest, repeats)` sent in full this time, and the rows
+    // `(ledger key, digest, repeats)` sent in full this time, and the rows
     // whose repeat was answered from the ledger.
     let mut full = Vec::new();
     let mut counted = Vec::new();
@@ -187,7 +192,18 @@ pub(crate) fn prepare_info_result(
         let Some(contract_digest) = digest_value(contract) else {
             continue;
         };
-        match ledger.get(&function_id) {
+        // An engine without namespaced info leaves the bare id as the key.
+        let namespace = contract.get("namespace").and_then(Value::as_str);
+        let key =
+            namespace.map_or_else(|| function_id.clone(), |ns| contract_key(ns, &function_id));
+        // A bare call reaches the implicit copy: name any other namespace.
+        let target = match namespace {
+            Some(ns) if ns != crate::clients::engine::resolve_namespace(&function_id, None) => {
+                format!("{function_id} in namespace `{ns}`")
+            }
+            _ => function_id.clone(),
+        };
+        match ledger.get(&key) {
             Some(source)
                 if source.eligible
                     && source.contract_digest == contract_digest
@@ -205,26 +221,29 @@ pub(crate) fn prepare_info_result(
                     item["note"] = json!(format!(
                         "This contract was already in your context (call {source_id}) and is \
                          sent again in full because it was requested again. Call \
-                         {function_id} now instead of fetching its contract."
+                         {target} now instead of fetching its contract."
                     ));
-                    full.push((function_id, contract_digest, 2));
+                    full.push((key, contract_digest, 2));
                 } else {
                     let mut marker = json!({
                         "function_id": function_id,
                         "contract_status": "unchanged_in_context",
                         "source_function_call_id": source_id,
                     });
+                    if let Some(namespace) = namespace {
+                        marker["namespace"] = json!(namespace);
+                    }
                     // Past the re-send, the bare status did not stop the
                     // loop (MOT-4928): say what to do instead.
                     if source.repeats >= 2 {
                         marker["note"] = json!(format!(
                             "This contract was already sent in full (call {source_id}). Do \
-                             not fetch it again: call {function_id} now."
+                             not fetch it again: call {target} now."
                         ));
                     }
                     *item = marker;
                     counted.push((
-                        function_id,
+                        key,
                         FunctionContractLedgerEntry {
                             repeats: source.repeats + 1,
                             ..source.clone()
@@ -238,10 +257,10 @@ pub(crate) fn prepare_info_result(
             // confirmed visible) is still a repeat: keep its count.
             _ => {
                 let repeats = ledger
-                    .get(&function_id)
+                    .get(&key)
                     .filter(|source| source.contract_digest == contract_digest)
                     .map_or(0, |source| source.repeats);
-                full.push((function_id, contract_digest, repeats));
+                full.push((key, contract_digest, repeats));
             }
         }
     }
@@ -267,9 +286,9 @@ pub(crate) fn prepare_info_result(
     };
     let updates = full
         .into_iter()
-        .map(|(function_id, contract_digest, repeats)| {
+        .map(|(key, contract_digest, repeats)| {
             (
-                function_id,
+                key,
                 FunctionContractLedgerEntry {
                     contract_digest,
                     source_function_call_id: call_id.to_string(),
@@ -297,11 +316,12 @@ fn content_json(content: &[ContentBlock]) -> Option<Value> {
 
 /// Compact one model-visible contract item in place, dropping what carries
 /// no calling contract: response-side schemas (the model reads results, it
-/// never constructs them), the registry envelope, and JSON-Schema boilerplate
+/// never constructs them), the registry bookkeeping (`metadata`,
+/// `observer_count`, `worker_name`), and JSON-Schema boilerplate
 /// inside the request schema (`$schema`, `title`, `default: null`, and
 /// `definitions` referenced exactly once, which are inlined at their `$ref`).
-/// Property names, types, `required`, `enum`, real defaults and every
-/// description survive. A dedupe marker or error item has none of these keys
+/// The id, `namespace`, property names, types, `required`, `enum`, real
+/// defaults and every description survive. A dedupe marker or error item has none of these keys
 /// — the call is a no-op there.
 fn compact_contract(item: &mut Value) -> bool {
     let Some(object) = item.as_object_mut() else {
@@ -314,7 +334,6 @@ fn compact_contract(item: &mut Value) -> bool {
         "metadata",
         "observer_count",
         "worker_name",
-        "namespace",
         "$schema",
         "title",
     ] {
@@ -590,9 +609,10 @@ fn digest_value(value: &Value) -> Option<String> {
 /// answered locally instead of re-running the target.
 pub(crate) const REPEATED_FAILURE_LIMIT: u32 = 2;
 
-/// The repeated-failure key of a call: its target and model-authored arguments.
-pub(crate) fn call_digest(function_id: &str, arguments: &Value) -> Option<String> {
-    digest_value(&json!([function_id, arguments]))
+/// The repeated-failure key of a call: its target namespace and id, and the
+/// model-authored arguments.
+pub(crate) fn call_digest(namespace: &str, function_id: &str, arguments: &Value) -> Option<String> {
+    digest_value(&json!([namespace, function_id, arguments]))
 }
 
 /// Track a target result: an error identical to the previous one for this
@@ -701,7 +721,7 @@ pub async fn invoke_target(
     function_id: &str,
     arguments: &Value,
 ) -> ResultData {
-    invoke_target_classified(engine, policy, function_id, arguments)
+    invoke_target_classified(engine, policy, function_id, None, arguments)
         .await
         .0
 }
@@ -715,17 +735,27 @@ pub(crate) async fn invoke_target_classified(
     engine: &EngineClient,
     policy: &CompiledPolicy,
     function_id: &str,
+    namespace: Option<&str>,
     arguments: &Value,
 ) -> (ResultData, bool) {
-    let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
-        StartGate::Pass => (arguments.clone(), None),
-        StartGate::Deny(denied) => return (denied, false),
-        StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
-    };
+    let (arguments, start_note) =
+        match scaffold_start_gate(function_id, namespace, arguments, policy) {
+            StartGate::Pass => (arguments.clone(), None),
+            StartGate::Deny(denied) => return (denied, false),
+            StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+        };
     if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
-    match engine.dispatch(function_id, arguments).await {
+    let requests = match namespace {
+        None if function_id == "engine::functions::info" => info_requests(&arguments),
+        _ => None,
+    };
+    let dispatched = match requests {
+        Some(requests) => dispatch_info(engine, requests).await,
+        None => engine.dispatch(function_id, namespace, arguments).await,
+    };
+    match dispatched {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);
@@ -745,6 +775,82 @@ pub(crate) async fn invoke_target_classified(
     }
 }
 
+/// The `engine::functions::info` payloads that look every id of `payload` up
+/// where a bare call to it runs: the single-id form as one payload, a
+/// `function_ids` batch as one payload per implicit namespace, each group
+/// whole so the engine's batch cap still answers. `None` when the payload
+/// names a namespace or does not hold only string ids: it is sent as given.
+pub(crate) fn info_requests(payload: &Value) -> Option<Vec<Value>> {
+    info_requests_with(payload, |id| {
+        crate::clients::engine::resolve_namespace(id, None)
+    })
+}
+
+/// [`info_requests`] with the id-to-namespace rule given, so a test can make
+/// the namespaces differ whatever the environment.
+fn info_requests_with(payload: &Value, resolve: impl Fn(&str) -> String) -> Option<Vec<Value>> {
+    if payload.get("namespace").is_some_and(|ns| !ns.is_null()) {
+        return None;
+    }
+    if let Some(id) = payload.get("function_id").and_then(Value::as_str) {
+        let mut request = payload.clone();
+        request["namespace"] = json!(resolve(id));
+        return Some(vec![request]);
+    }
+    let ids = payload
+        .get("function_ids")?
+        .as_array()?
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()?;
+    let mut groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for id in ids {
+        groups.entry(resolve(id)).or_default().push(id);
+    }
+    let requests: Vec<Value> = groups
+        .into_iter()
+        .map(|(namespace, ids)| {
+            let mut request = payload.clone();
+            request["function_ids"] = json!(ids);
+            request["namespace"] = json!(namespace);
+            request
+        })
+        .collect();
+    (!requests.is_empty()).then_some(requests)
+}
+
+/// Send each of `requests` to `engine::functions::info` and merge the
+/// answers; the first failure is the answer.
+async fn dispatch_info(
+    engine: &EngineClient,
+    requests: Vec<Value>,
+) -> Result<Value, crate::clients::engine::DispatchError> {
+    let mut answers = Vec::with_capacity(requests.len());
+    for request in requests {
+        answers.push(
+            engine
+                .dispatch("engine::functions::info", None, request)
+                .await?,
+        );
+    }
+    Ok(merged_info(answers))
+}
+
+/// The first answer with every later answer's `functions` appended.
+fn merged_info(answers: Vec<Value>) -> Value {
+    let mut answers = answers.into_iter();
+    let mut first = answers.next().unwrap_or_default();
+    for mut later in answers {
+        if let (Some(all), Some(more)) = (
+            first.get_mut("functions").and_then(Value::as_array_mut),
+            later.get_mut("functions").and_then(Value::as_array_mut),
+        ) {
+            all.append(more);
+        }
+    }
+    first
+}
+
 /// Apply the same function-result normalization to a locally intercepted call
 /// as [`invoke_target`] applies to an engine-dispatched return value.
 pub(crate) fn normalized_result(value: Value) -> ResultData {
@@ -756,13 +862,31 @@ pub(crate) fn normalized_result(value: Value) -> ResultData {
     }
 }
 
+/// What a stream channel handle's `access_key` becomes in a captured result.
+const WITHHELD_ACCESS_KEY: &str = "<withheld: a turn cannot read a stream channel. For a file's \
+     text call coder::read-file, or in a sandbox cat it with sandbox::exec>";
+
 /// Bound a captured function result BEFORE it is written to the session or
-/// echoed to the provider: past `max_bytes` (0 disables) `content` + `details`
-/// are replaced by an elision marker, `is_error` kept. Applied once at the
-/// exit of `observe::invoke` and on the `function::resolve` deliver path.
-/// An oversized frame resets the engine connection and the SDK re-flushes it
-/// forever, wedging the worker (MOT-4498).
-pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
+/// echoed to the provider. The `access_key` of every stream channel handle
+/// object in it is withheld first: a secret the model cannot use, and a model
+/// took the handle of `shell::fs::read` for the file's text (MOT-5827). Then past
+/// `max_bytes` (0 disables) `content` + `details` are replaced by an elision
+/// marker, `is_error` kept. Applied once at the exit of `observe::invoke` and
+/// on the `function::resolve` deliver path. An oversized frame resets the
+/// engine connection and the SDK re-flushes it forever, wedging the worker
+/// (MOT-4498).
+pub(crate) fn cap_result(mut result: ResultData, max_bytes: usize) -> ResultData {
+    withhold_stream_handles(&mut result.details);
+    for block in &mut result.content {
+        // `normalize` renders a result without content blocks as JSON text.
+        if let ContentBlock::Text { text } = block
+            && text.contains("access_key")
+            && let Ok(mut value) = serde_json::from_str::<Value>(text)
+            && withhold_stream_handles(&mut value)
+        {
+            *text = value.to_string();
+        }
+    }
     if max_bytes == 0 {
         return result;
     }
@@ -781,6 +905,31 @@ pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
         content: vec![ContentBlock::text(marker)],
         is_error: result.is_error,
         details: json!({ "result_capped": { "original_bytes": total, "max_bytes": max_bytes } }),
+    }
+}
+
+/// Set the `access_key` of each stream channel handle (an object with string
+/// `channel_id` and `access_key`, as `StreamChannelRef`) in `value` to
+/// [`WITHHELD_ACCESS_KEY`], keeping the handle's shape for the UIs that render
+/// it. Whether it withheld any.
+/// shortcut: a handle serialized inside a string (fp::pipe's `value_preview`)
+/// is not seen; withhold it where that string is made if one shows up.
+fn withhold_stream_handles(value: &mut Value) -> bool {
+    if value.get("channel_id").is_some_and(Value::is_string)
+        && let Some(key) = value.get_mut("access_key")
+        && key.is_string()
+    {
+        *key = json!(WITHHELD_ACCESS_KEY);
+        return true;
+    }
+    match value {
+        Value::Object(map) => map
+            .values_mut()
+            .fold(false, |any, v| withhold_stream_handles(v) | any),
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |any, v| withhold_stream_handles(v) | any),
+        _ => false,
     }
 }
 
@@ -857,10 +1006,25 @@ pub(crate) enum StartGate {
 /// the same III_COMPOSE_FILE / III_COMPOSE_NAMESPACE.)
 pub(crate) fn scaffold_start_gate(
     function_id: &str,
+    namespace: Option<&str>,
     arguments: &Value,
     policy: &CompiledPolicy,
 ) -> StartGate {
-    if function_id != crate::clients::engine::SCAFFOLD_WORKER || policy.allows("compose::add") {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER {
+        return StartGate::Pass;
+    }
+    // That namespace's coder adds to its own stack, which this session's
+    // policy and grants for compose::add were not judged for.
+    if namespace
+        .is_some_and(|ns| ns != crate::clients::engine::resolve_namespace(function_id, None))
+    {
+        return start_refused(
+            arguments,
+            "a scaffold named in another namespace cannot start its worker from this session",
+            "Call it without `namespace` to start it in this harness's stack.",
+        );
+    }
+    if policy.allows("compose::add") {
         return StartGate::Pass;
     }
     start_refused(
@@ -918,9 +1082,10 @@ pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> 
 /// masked to the same `{ function_id, error: "not available" }` stub the
 /// engine uses for unknown ids — denied stays indistinguishable from
 /// nonexistent, and (unlike the list filter) entries are never dropped, so
-/// the model can pair every requested id with an outcome.
+/// the model can pair every requested id with an outcome. Each entry is
+/// judged in the namespace it names.
 fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
-    let keep = |id: &str| policy.allows(id);
+    let keep = |item: &Value, id: &str| policy.allows_in(row_namespace(item), id);
     if let Some(items) = value.get_mut("functions").and_then(Value::as_array_mut) {
         for item in items.iter_mut() {
             let id = item
@@ -929,7 +1094,7 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            if !keep(&id) {
+            if !keep(item, &id) {
                 *item = json!({ "function_id": id, "error": "not available" });
             } else {
                 overlay_control_contract(item, &id);
@@ -941,7 +1106,7 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
         .and_then(Value::as_str)
     {
         let id = id.to_string();
-        if !keep(&id) {
+        if !keep(value, &id) {
             *value = Value::Null;
         } else {
             overlay_control_contract(value, &id);
@@ -967,6 +1132,10 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
     let Some((description, schema)) = crate::functions::observe::control_contract(id) else {
         return;
     };
+    // Only the copy a bare call reaches is intercepted.
+    if row_namespace(item) != crate::clients::engine::resolve_namespace(id, None) {
+        return;
+    }
     if let Some(map) = item.as_object_mut() {
         map.insert("description".into(), Value::String(description.into()));
         for key in ["request_schema", "parameters", "request_format"] {
@@ -986,20 +1155,33 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
 
 /// The `is_error` result for a policy denial (no allow match or a deny match).
 pub fn denied_result(function_id: &str) -> ResultData {
-    denied_result_with_hint(function_id, None)
+    denied_result_with_hint(function_id, None, &[])
 }
 
 /// [`denied_result`] naming the permitted id the model most likely meant
 /// (see [`closest_permitted`]): a mistyped id is denied like a forbidden one,
-/// and without the hint the model reads it as a policy problem.
-pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) -> ResultData {
+/// and without the hint the model reads it as a policy problem. `namespaces`
+/// (see [`permitted_namespaces`]) are where the same id may run.
+pub fn denied_result_with_hint(
+    function_id: &str,
+    did_you_mean: Option<&str>,
+    namespaces: &[String],
+) -> ResultData {
     let hint = did_you_mean
         .map(|id| format!(" No registered function has this id; did you mean {id}?"))
         .unwrap_or_default();
+    let elsewhere = if namespaces.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " It is permitted in namespace {}: pass `namespace` to call it there.",
+            namespaces.join(", ")
+        )
+    };
     let msg = format!(
         "function {function_id} is not permitted by this agent's dispatch policy (no allow-glob \
-         match or a deny-glob match).{hint} Calling it again will be denied again: use a \
-         permitted function or report the blocker."
+         match or a deny-glob match).{hint}{elsewhere} Calling it again will be denied again: \
+         use a permitted function or report the blocker."
     );
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
@@ -1008,12 +1190,34 @@ pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) ->
     }
 }
 
-/// The permitted, registered id closest to `function_id` when `function_id`
-/// itself is not registered at all — a model retyping a long id (a hashed
-/// worker name) corrupts it. `None` for a real function the policy denies, or
-/// when nothing permitted is within an eighth of the id's length (at least 2)
-/// edits.
+/// The refusal of a call in another namespace than its implicit one while the
+/// bound approval gate (`gate`: `Some` when bound, `true` when it can show a
+/// namespace) is too old to show where the call runs.
+pub(crate) fn old_gate_refusal(
+    function_id: &str,
+    namespace: &str,
+    implicit: &str,
+    gate: Option<bool>,
+) -> Option<ResultData> {
+    (namespace != implicit && gate == Some(false)).then(|| {
+        invocation_error_result(
+            Some("approval_gate_too_old".into()),
+            format!(
+                "{function_id} was not called in namespace {namespace}: the approval gate is too \
+                 old to approve calls in another namespace. Upgrade approval-gate, or call it \
+                 without `namespace` to run it in {implicit}."
+            ),
+        )
+    })
+}
+
+/// The id permitted in `namespace` and registered there closest to
+/// `function_id` when `function_id` itself is not registered at all (in any
+/// namespace) — a model retyping a long id (a hashed worker name) corrupts it.
+/// `None` for a real function the policy denies, or when nothing permitted is
+/// within an eighth of the id's length (at least 2) edits.
 pub fn closest_permitted(
+    namespace: &str,
     function_id: &str,
     policy: &CompiledPolicy,
     snapshot: &crate::discovery::FunctionsSnapshot,
@@ -1030,12 +1234,28 @@ pub fn closest_permitted(
     snapshot
         .functions
         .iter()
+        .filter(|f| f.namespace == namespace)
         .map(|f| f.function_id.as_str())
-        .filter(|id| policy.allows(id))
+        .filter(|id| policy.allows_in(namespace, id))
         .map(|id| (edit_distance(function_id, id), id))
         .filter(|(distance, _)| *distance <= limit)
         .min()
         .map(|(_, id)| id.to_string())
+}
+
+/// The namespaces, sorted, where `function_id` is registered and permitted.
+pub fn permitted_namespaces(
+    function_id: &str,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Vec<String> {
+    let namespaces: BTreeSet<&str> = snapshot
+        .functions
+        .iter()
+        .filter(|f| f.function_id == function_id && policy.allows_in(&f.namespace, function_id))
+        .map(|f| f.namespace.as_str())
+        .collect();
+    namespaces.into_iter().map(str::to_string).collect()
 }
 
 /// Levenshtein distance over chars; ids are short and this runs only on a
@@ -1242,15 +1462,13 @@ fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
 /// filtered view — dropping is correct there; info results go through
 /// [`post_filter_info`] instead, which masks rather than drops).
 fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
-    let keep = |id: &str| policy.allows(id);
     if let Some(arr) = value.get_mut("functions").and_then(Value::as_array_mut) {
         arr.retain(|f| {
             f.get("function_id")
                 .or_else(|| f.get("id"))
                 .or_else(|| f.get("name"))
                 .and_then(Value::as_str)
-                .map(keep)
-                .unwrap_or(false)
+                .is_some_and(|id| policy.allows_in(row_namespace(f), id))
         });
         for item in arr.iter_mut() {
             let id = item
@@ -1263,6 +1481,14 @@ fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
             overlay_control_contract(item, &id);
         }
     }
+}
+
+/// The namespace an engine row says it is in; a row without one is in
+/// `default`.
+fn row_namespace(item: &Value) -> &str {
+    item.get("namespace")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
 }
 
 #[cfg(test)]
@@ -1294,6 +1520,35 @@ mod tests {
         assert_eq!(capped.details["result_capped"]["max_bytes"], 1024);
     }
 
+    #[test]
+    fn cap_result_withholds_stream_handles() {
+        let handle = json!({ "channel_id": "c1", "access_key": "secret-key", "direction": "read" });
+        // A `shell::fs::read` return, and a nested pair a resolver could deliver.
+        let read = cap_result(
+            normalized_result(json!({ "content": handle, "size": 16 })),
+            262_144,
+        );
+        let delivered = cap_result(
+            ResultData {
+                content: vec![ContentBlock::text(
+                    json!({ "writer": handle, "reader": handle }).to_string(),
+                )],
+                is_error: false,
+                details: json!([{ "reader": handle }]),
+            },
+            0,
+        );
+        for result in [read, delivered] {
+            let wire = serde_json::to_string(&(&result.content, &result.details)).unwrap();
+            assert!(!wire.contains("secret-key"), "{wire}");
+            assert!(wire.contains("coder::read-file"), "{wire}");
+        }
+        // The UIs still parse it as a handle.
+        let read = cap_result(normalized_result(json!({ "content": handle })), 0);
+        assert_eq!(read.details["content"]["channel_id"], "c1");
+        assert_eq!(read.details["content"]["direction"], "read");
+    }
+
     fn pol(allow: &[&str]) -> CompiledPolicy {
         CompiledPolicy::from(Some(&FunctionPolicy {
             allow: allow.iter().map(|s| s.to_string()).collect(),
@@ -1313,12 +1568,12 @@ mod tests {
         let coder_only = pol(&["coder::*"]);
         let allowed = pol(&["coder::*", "compose::add"]);
 
-        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only) else {
+        let StartGate::Deny(denied) = scaffold_start_gate(id, None, &explicit, &coder_only) else {
             panic!("an explicit start without compose::add must be refused");
         };
         assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
         // The default start degrades to the files only, with a note.
-        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, &default, &coder_only)
+        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, None, &default, &coder_only)
         else {
             panic!("a defaulted start without compose::add must go files-only");
         };
@@ -1331,10 +1586,42 @@ mod tests {
                 &allowed
             };
             assert!(
-                matches!(scaffold_start_gate(id, args, policy), StartGate::Pass),
+                matches!(scaffold_start_gate(id, None, args, policy), StartGate::Pass),
                 "{args}"
             );
         }
+    }
+
+    /// Prevents: a scaffold named in another namespace starting its worker on
+    /// this session's compose::add policy and grants.
+    #[test]
+    fn a_scaffold_named_in_another_namespace_never_starts() {
+        let id = "coder::scaffold-worker";
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let opt_out = json!({ "template": "worker-node-ade", "name": "orders", "start": false });
+        let allowed = pol(&["coder::*", "compose::add"]);
+        let elsewhere = Some("zz-a");
+
+        let StartGate::Deny(denied) = scaffold_start_gate(id, elsewhere, &explicit, &allowed)
+        else {
+            panic!("an explicit start in another namespace must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        let StartGate::FilesOnly(sent, _) = scaffold_start_gate(id, elsewhere, &default, &allowed)
+        else {
+            panic!("a defaulted start in another namespace must go files-only");
+        };
+        assert_eq!(sent, opt_out);
+        assert!(matches!(
+            scaffold_start_gate(id, elsewhere, &opt_out, &allowed),
+            StartGate::Pass
+        ));
+        let implicit = crate::clients::engine::resolve_namespace(id, None);
+        assert!(matches!(
+            scaffold_start_gate(id, Some(&implicit), &default, &allowed),
+            StartGate::Pass
+        ));
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
@@ -1433,6 +1720,13 @@ mod tests {
             list["functions"][1]["description"],
             "Get a value from state"
         );
+
+        // Another namespace's copy is not this harness's intercept.
+        let mut elsewhere = serde_json::json!({ "functions": [
+            { "function_id": "harness::observe", "namespace": "zz-other", "description": "raw" }
+        ]});
+        post_filter_discovery(&mut elsewhere, &policy);
+        assert_eq!(elsewhere["functions"][0]["description"], "raw");
     }
 
     #[test]
@@ -1648,6 +1942,47 @@ mod tests {
             rendered["functions"][0]["contract_status"],
             "unchanged_in_context"
         );
+    }
+
+    #[test]
+    fn the_contract_ledger_keeps_each_namespace_apart() {
+        let details = json!({ "function_id": "worker::function", "namespace": "b", "description": "Does work",
+            "request_schema": { "type": "object" }, "response_schema": { "type": "object" } });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let entry = FunctionContractLedgerEntry {
+            contract_digest: digest_value(&details).unwrap(),
+            source_function_call_id: "call_0".into(),
+            source_content_digest: "source".into(),
+            eligible: true,
+            repeats: 0,
+        };
+        let args = json!({ "function_id": "worker::function", "namespace": "b" });
+        let shown = |r: &ResultData| {
+            serde_json::from_str::<Value>(&ContentBlock::join_text(&r.content)).unwrap()
+        };
+        let in_a = BTreeMap::from([(contract_key("a", "worker::function"), entry.clone())]);
+        let (first, updates) = prepare_info_result("call_1", &args, &data, &in_a, true);
+        assert_eq!(shown(&first)["request_schema"], json!({ "type": "object" }));
+        assert_eq!(updates[0].0, "b/worker::function");
+        let in_b = BTreeMap::from([(contract_key("b", "worker::function"), entry.clone())]);
+        let (again, _) = prepare_info_result("call_2", &args, &data, &in_b, true);
+        assert_eq!(shown(&again)["contract_status"], "unchanged_in_context");
+        assert_eq!(shown(&again)["namespace"], "b");
+        // The escalation notes name the namespace a bare call would miss.
+        for repeats in [1, 2] {
+            let row = FunctionContractLedgerEntry {
+                repeats,
+                ..entry.clone()
+            };
+            let ledger = BTreeMap::from([(contract_key("b", "worker::function"), row)]);
+            let (noted, _) = prepare_info_result("call_3", &args, &data, &ledger, true);
+            let note = shown(&noted)["note"].as_str().unwrap().to_string();
+            assert!(note.contains("worker::function in namespace `b`"), "{note}");
+        }
     }
 
     #[test]
@@ -2391,6 +2726,96 @@ mod tests {
         post_filter_info(&mut denied, &policy);
         assert!(denied.is_null());
     }
+
+    #[test]
+    fn a_contract_lookup_without_namespace_asks_each_namespace_its_calls_use() {
+        use crate::clients::engine::resolve_namespace;
+        let requests = info_requests(
+            &json!({ "function_ids": ["shell::exec", "configuration::get", "compose::add"] }),
+        )
+        .unwrap();
+        let mut seen = 0;
+        for request in &requests {
+            for id in request["function_ids"].as_array().unwrap() {
+                assert_eq!(
+                    request["namespace"],
+                    json!(resolve_namespace(id.as_str().unwrap(), None))
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 3);
+        assert_eq!(
+            info_requests(&json!({ "function_id": "shell::exec" })).unwrap(),
+            vec![
+                json!({ "function_id": "shell::exec", "namespace": resolve_namespace("shell::exec", None) })
+            ]
+        );
+        assert_eq!(
+            info_requests(&json!({ "function_id": "shell::exec", "namespace": "laptop" })),
+            None
+        );
+        // Two namespaces whatever the environment: the grouping must hold.
+        let resolve = |id: &str| {
+            if id == "configuration::get" {
+                "default".to_string()
+            } else {
+                "zz-own".to_string()
+            }
+        };
+        assert_eq!(
+            info_requests_with(
+                &json!({ "function_ids": ["shell::exec", "configuration::get", "fs::read"] }),
+                resolve
+            ),
+            Some(vec![
+                json!({ "function_ids": ["configuration::get"], "namespace": "default" }),
+                json!({ "function_ids": ["shell::exec", "fs::read"], "namespace": "zz-own" }),
+            ])
+        );
+    }
+
+    #[test]
+    fn discovery_filters_read_each_row_namespace() {
+        let policy = pol(&["laptop/shell::*"]);
+        let mut list = json!({ "functions": [
+            { "function_id": "shell::exec", "namespace": "laptop" }, { "function_id": "shell::exec", "namespace": "hub" } ]});
+        post_filter_discovery(&mut list, &policy);
+        assert_eq!(
+            list["functions"],
+            json!([{ "function_id": "shell::exec", "namespace": "laptop" }])
+        );
+        let mut info = json!({ "functions": [{ "function_id": "shell::exec", "namespace": "hub", "request_schema": {} }] });
+        post_filter_info(&mut info, &policy);
+        assert_eq!(
+            info["functions"][0],
+            json!({ "function_id": "shell::exec", "error": "not available" })
+        );
+    }
+
+    /// Each namespace group is answered whole and in order; a later answer's
+    /// entries join the first one's.
+    #[test]
+    fn split_contract_lookup_answers_merge_into_one_batch() {
+        let merged = merged_info(vec![
+            json!({ "functions": [{ "function_id": "a" }] }),
+            json!({ "functions": [{ "function_id": "b" }, { "function_id": "c" }] }),
+        ]);
+        assert_eq!(
+            merged,
+            json!({ "functions": [{ "function_id": "a" }, { "function_id": "b" }, { "function_id": "c" }] })
+        );
+        let ids: Vec<String> = (0..40).map(|i| format!("w::f{i}")).collect();
+        let requests = info_requests(&json!({ "function_ids": ids })).unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "one request per namespace group: {requests:?}"
+        );
+        assert_eq!(requests[0]["function_ids"], json!(ids));
+        assert_eq!(info_requests(&json!({ "function_ids": [] })), None);
+        assert_eq!(info_requests(&json!({ "function_ids": ["a::b", 5] })), None);
+    }
     fn content_value(content: &[ContentBlock]) -> Value {
         let [ContentBlock::Text { text }] = content else {
             panic!("expected one text block, got {content:?}");
@@ -2431,6 +2856,7 @@ mod tests {
         let expected = serde_json::json!({
             "function_id": "worker::function",
             "description": "Does the thing.",
+            "namespace": "default",
             "request_schema": {
                 "type": "object",
                 "properties": {
@@ -2593,7 +3019,6 @@ mod tests {
                 "response_schema",
                 "worker_name",
                 "observer_count",
-                "namespace",
                 "metadata",
             ] {
                 assert!(compacted.get(key).is_none(), "{id}: `{key}` survived");
@@ -2647,7 +3072,7 @@ mod tests {
 
     #[test]
     fn identical_failures_trip_the_breaker_at_the_limit() {
-        let key = call_digest("shell::exec", &json!({ "command": "make" })).unwrap();
+        let key = call_digest("default", "shell::exec", &json!({ "command": "make" })).unwrap();
         let mut failed = BTreeMap::new();
 
         note_call_result(&mut failed, &key, &failure("exit 2: no rule"));
@@ -2666,7 +3091,7 @@ mod tests {
 
     #[test]
     fn a_success_clears_the_count_and_the_next_failure_restarts_it() {
-        let key = call_digest("state::get", &json!({ "key": "k" })).unwrap();
+        let key = call_digest("default", "state::get", &json!({ "key": "k" })).unwrap();
         let mut failed = BTreeMap::new();
 
         note_call_result(&mut failed, &key, &failure("not found"));
@@ -2680,7 +3105,7 @@ mod tests {
 
     #[test]
     fn a_different_error_restarts_the_count() {
-        let key = call_digest("http::fetch", &json!({ "url": "https://x" })).unwrap();
+        let key = call_digest("default", "http::fetch", &json!({ "url": "https://x" })).unwrap();
         let mut failed = BTreeMap::new();
 
         note_call_result(&mut failed, &key, &failure("timeout request_id=1"));
@@ -2693,7 +3118,7 @@ mod tests {
 
     #[test]
     fn successful_repeats_never_create_an_entry() {
-        let key = call_digest("harness::status", &json!({})).unwrap();
+        let key = call_digest("default", "harness::status", &json!({})).unwrap();
         let mut failed = BTreeMap::new();
 
         for _ in 0..5 {
@@ -2705,17 +3130,20 @@ mod tests {
 
     #[test]
     fn the_call_digest_distinguishes_function_and_arguments() {
-        let base = call_digest("coder::read-file", &json!({ "path": "a" }));
+        let base = call_digest("default", "coder::read-file", &json!({ "path": "a" }));
 
         assert_eq!(
             base,
-            call_digest("coder::read-file", &json!({ "path": "a" }))
+            call_digest("default", "coder::read-file", &json!({ "path": "a" }))
         );
         assert_ne!(
             base,
-            call_digest("coder::read-file", &json!({ "path": "b" }))
+            call_digest("default", "coder::read-file", &json!({ "path": "b" }))
         );
-        assert_ne!(base, call_digest("coder::search", &json!({ "path": "a" })));
+        assert_ne!(
+            base,
+            call_digest("default", "coder::search", &json!({ "path": "a" }))
+        );
     }
 
     #[test]
@@ -2799,7 +3227,7 @@ mod tests {
         );
     }
 
-    /// The production gate is `turn_loop`'s `if !policy.allows(&call.function_id)`,
+    /// The production gate is `turn_loop`'s `if !policy.allows_in(&namespace, &call.function_id)`,
     /// which answers `denied_result` before `observe::invoke` can intercept:
     /// both exposures must plan the control under its own id, and that id must
     /// fail the gate. (End to end, AC3 of MOT-4861 was observed live.)
@@ -2863,11 +3291,12 @@ mod tests {
         }));
         let snapshot = crate::discovery::snapshot_of(vec![crate::clients::FunctionDescriptor {
             function_id: "sandbox-libkrun::fs::rm".into(),
+            namespace: "default".into(),
             description: None,
             parameters: None,
         }]);
         assert_eq!(
-            closest_permitted("sandbox-libkrun::fs::rn", &policy, &snapshot),
+            closest_permitted("default", "sandbox-libkrun::fs::rn", &policy, &snapshot),
             None
         );
 
@@ -2893,15 +3322,16 @@ mod tests {
         }));
         let descriptor = |id: &str| crate::clients::FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: None,
             parameters: None,
         };
         let snapshot =
             crate::discovery::snapshot_of(vec![descriptor(exec), descriptor("auth::browser")]);
 
-        let hint = closest_permitted(typo, &policy, &snapshot);
+        let hint = closest_permitted("default", typo, &policy, &snapshot);
         assert_eq!(hint.as_deref(), Some(exec));
-        let denied = denied_result_with_hint(typo, hint.as_deref());
+        let denied = denied_result_with_hint(typo, hint.as_deref(), &[]);
         let text = denied.details["message"].as_str().unwrap();
         assert!(
             text.contains("not permitted by this agent's dispatch policy"),
@@ -2915,13 +3345,94 @@ mod tests {
 
         // A real function the policy denies gets no suggestion, nor does an
         // id nothing permitted resembles.
-        assert_eq!(closest_permitted("auth::browser", &policy, &snapshot), None);
-        assert_eq!(closest_permitted("web::fetch", &policy, &snapshot), None);
+        assert_eq!(
+            closest_permitted("default", "auth::browser", &policy, &snapshot),
+            None
+        );
+        assert_eq!(
+            closest_permitted("default", "web::fetch", &policy, &snapshot),
+            None
+        );
         assert!(
             !denied_result("web::fetch").details["message"]
                 .as_str()
                 .unwrap()
                 .contains("did you mean")
+        );
+    }
+
+    fn d(ns: &str, id: &str) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: None,
+            parameters: None,
+        }
+    }
+
+    #[test]
+    fn the_breaker_keys_each_namespace_apart() {
+        let args = json!({ "command": "make" });
+        assert_ne!(
+            call_digest("a", "shell::exec", &args),
+            call_digest("b", "shell::exec", &args)
+        );
+        assert_eq!(
+            call_digest("a", "shell::exec", &args),
+            call_digest("a", "shell::exec", &args)
+        );
+    }
+
+    #[test]
+    fn a_denied_call_names_the_permitted_namespaces_that_hold_the_id() {
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["laptop/shell::*".into(), "desk/shell::*".into()],
+            ..Default::default()
+        }));
+        let snapshot = crate::discovery::snapshot_of(vec![
+            d("proj", "shell::exec"),
+            d("laptop", "shell::exec"),
+            d("desk", "shell::exec"),
+            d("hub", "shell::exec"),
+        ]);
+        assert_eq!(
+            permitted_namespaces("shell::exec", &policy, &snapshot),
+            vec!["desk", "laptop"]
+        );
+        assert_eq!(
+            closest_permitted("proj", "shell::exec", &policy, &snapshot),
+            None
+        );
+        let denied =
+            denied_result_with_hint("shell::exec", None, &["desk".into(), "laptop".into()]);
+        let text = denied.details["message"].as_str().unwrap();
+        assert!(
+            text.contains(
+                " It is permitted in namespace desk, laptop: pass `namespace` to call it there."
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn no_gate_or_a_namespace_aware_gate_lets_another_namespace_through() {
+        assert!(old_gate_refusal("shell::exec", "laptop", "proj", None).is_none());
+        assert!(old_gate_refusal("shell::exec", "laptop", "proj", Some(true)).is_none());
+    }
+
+    #[test]
+    fn an_old_gate_refuses_another_namespace_but_not_the_implicit_one() {
+        assert!(
+            old_gate_refusal("configuration::get", "default", "default", Some(false)).is_none()
+        );
+        let refused = old_gate_refusal("shell::exec", "laptop", "proj", Some(false)).unwrap();
+        assert!(refused.is_error);
+        assert_eq!(refused.details["error"]["code"], "approval_gate_too_old");
+        assert_eq!(
+            refused.details["error"]["message"],
+            "shell::exec was not called in namespace laptop: the \
+        approval gate is too old to approve calls in another namespace. Upgrade approval-gate, or call \
+        it without `namespace` to run it in proj."
         );
     }
 }

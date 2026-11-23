@@ -48,7 +48,7 @@
 //! [`Deps::functions`](crate::deps::Deps::functions).
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -80,7 +80,7 @@ impl FunctionsSnapshot {
         let mut digests: Vec<u32> = self
             .functions
             .iter()
-            .filter(|f| policy.allows(&f.function_id))
+            .filter(|f| policy.allows_in(&f.namespace, &f.function_id))
             .map(|f| fingerprint_of(std::iter::once(f)) as u32)
             .collect();
         digests.sort_unstable();
@@ -122,14 +122,15 @@ pub fn snapshot_of(functions: Vec<FunctionDescriptor>) -> FunctionsSnapshot {
     }
 }
 
-/// Content fingerprint over the sorted (id, description, serialized schema)
-/// tuples — stable across reloads of an unchanged registry, so a re-apply of
-/// the same set is a no-op.
+/// Content fingerprint over the sorted (namespace, id, description,
+/// serialized schema) tuples — stable across reloads of an unchanged
+/// registry, so a re-apply of the same set is a no-op.
 fn fingerprint_of<'a>(functions: impl IntoIterator<Item = &'a FunctionDescriptor>) -> u64 {
-    let mut tuples: Vec<(&str, &str, String)> = functions
+    let mut tuples: Vec<(&str, &str, &str, String)> = functions
         .into_iter()
         .map(|f| {
             (
+                f.namespace.as_str(),
                 f.function_id.as_str(),
                 f.description.as_deref().unwrap_or(""),
                 f.parameters
@@ -201,15 +202,21 @@ pub async fn apply_with_internal(
     });
 }
 
-/// The already-hydrated `id -> parameters` map from the current snapshot,
-/// used to carry schemas forward across a reload without re-fetching.
-async fn prev_params(cell: &FunctionsCell) -> HashMap<String, Value> {
+/// The already-hydrated `(namespace, id) -> parameters` map from the current
+/// snapshot, used to carry schemas forward across a reload without re-fetching.
+async fn prev_params(cell: &FunctionsCell) -> HashMap<(String, String), Value> {
     cell.read()
         .await
         .functions
         .iter()
-        .filter_map(|d| d.parameters.clone().map(|p| (d.function_id.clone(), p)))
+        .filter_map(|d| d.parameters.clone().map(|p| (key_of(d), p)))
         .collect()
+}
+
+/// A function's identity in the registry: the same id in two namespaces is
+/// two functions.
+fn key_of(d: &FunctionDescriptor) -> (String, String) {
+    (d.namespace.clone(), d.function_id.clone())
 }
 
 /// Which schemas a reload re-reads from `engine::functions::info`.
@@ -244,8 +251,8 @@ fn change_hydration(
     let Some(ids) = internal_ids.filter(|ids| !ids.is_empty()) else {
         return Hydration::Missing;
     };
-    let public = |fs: &[FunctionDescriptor]| -> BTreeSet<String> {
-        fs.iter().map(|d| d.function_id.clone()).collect()
+    let public = |fs: &[FunctionDescriptor]| -> BTreeSet<(String, String)> {
+        fs.iter().map(key_of).collect()
     };
     if *ids == cached.internal_ids && public(functions) == public(&cached.functions) {
         Hydration::All
@@ -254,27 +261,29 @@ fn change_hydration(
     }
 }
 
-/// Carry a prior `parameters` forward for any id still `None`; report the ids
-/// that need an `engine::functions::info` fan-out. Every descriptor is retained
-/// in the output — a still-`None` one is flagged for fetch, never dropped.
+/// Carry a prior `parameters` forward for any `(namespace, id)` still `None`;
+/// report the pairs that need an `engine::functions::info` fan-out. Every
+/// descriptor is retained in the output — a still-`None` one is flagged for
+/// fetch, never dropped.
 fn plan_hydration(
     functions: Vec<FunctionDescriptor>,
-    prev: &HashMap<String, Value>,
+    prev: &HashMap<(String, String), Value>,
     mode: Hydration,
-) -> (Vec<FunctionDescriptor>, Vec<String>) {
+) -> (Vec<FunctionDescriptor>, Vec<(String, String)>) {
     let mut needs_fetch = Vec::new();
     let carried = functions
         .into_iter()
         .map(|mut d| {
             if d.parameters.is_none() {
-                match prev.get(&d.function_id) {
+                let key = key_of(&d);
+                match prev.get(&key) {
                     Some(p) => {
                         d.parameters = Some(p.clone());
                         if mode == Hydration::All {
-                            needs_fetch.push(d.function_id.clone());
+                            needs_fetch.push(key);
                         }
                     }
-                    None => needs_fetch.push(d.function_id.clone()),
+                    None => needs_fetch.push(key),
                 }
             }
             d
@@ -288,9 +297,9 @@ const INFO_BATCH_MAX: usize = 32;
 
 /// Fill each descriptor's `parameters`, carrying already-hydrated schemas
 /// forward and fetching only new/unresolved ids — one `engine::functions::info`
-/// `function_ids` batch per 32 ids, with a per-id fallback for engines that
-/// predate batch support. A per-id failure keeps the descriptor with
-/// `parameters: None`.
+/// `function_ids` batch per namespace and 32 ids, with a per-id fallback for
+/// engines that predate batch support. A per-id failure keeps the descriptor
+/// with `parameters: None`.
 // ponytail: engine include_schemas-on-list would replace this with the one list call reload already makes
 async fn hydrate(
     engine: &EngineClient,
@@ -305,27 +314,34 @@ async fn hydrate(
     }
     // A fetched schema-less descriptor is an answer too (its schema went
     // away); only a failed read keeps what the descriptor already carries.
-    let mut fetched: HashMap<String, Option<Value>> = HashMap::new();
+    let mut by_namespace: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (ns, id) in needs_fetch {
+        by_namespace.entry(ns).or_default().push(id);
+    }
+    let mut fetched: HashMap<(String, String), Option<Value>> = HashMap::new();
     let mut batch_supported = true;
-    for chunk in needs_fetch.chunks(INFO_BATCH_MAX) {
-        if batch_supported {
-            match engine.functions_info_batch(chunk).await {
-                Some(descriptors) => {
-                    for d in descriptors {
-                        fetched.insert(d.function_id, d.parameters);
+    for (ns, ids) in &by_namespace {
+        for chunk in ids.chunks(INFO_BATCH_MAX) {
+            if batch_supported {
+                match engine.functions_info_batch(ns, chunk).await {
+                    Some(descriptors) => {
+                        // Keyed by the namespace asked, whatever the row says.
+                        for d in descriptors {
+                            fetched.insert((ns.clone(), d.function_id), d.parameters);
+                        }
+                        continue;
                     }
-                    continue;
+                    // Old engine (single-id only): fall through to per-id calls
+                    // for this and every later chunk.
+                    None => batch_supported = false,
                 }
-                // Old engine (single-id only): fall through to per-id calls
-                // for this and every later chunk.
-                None => batch_supported = false,
             }
-        }
-        for id in chunk {
-            if let Some(d) = engine.functions_info(id).await {
-                fetched.insert(id.clone(), d.parameters);
+            for id in chunk {
+                if let Some(d) = engine.functions_info(ns, id).await {
+                    fetched.insert((ns.clone(), id.clone()), d.parameters);
+                }
+                // failure: keep the carried value below (never dropped).
             }
-            // failure: keep the carried value below (never dropped).
         }
     }
     apply_fetched(&mut carried, &fetched);
@@ -333,10 +349,14 @@ async fn hydrate(
 }
 
 /// Overlay what `engine::functions::info` answered onto the carried
-/// descriptors; an id it did not answer for keeps its carried schema.
-fn apply_fetched(carried: &mut [FunctionDescriptor], fetched: &HashMap<String, Option<Value>>) {
+/// descriptors; a `(namespace, id)` it did not answer for keeps its carried
+/// schema.
+fn apply_fetched(
+    carried: &mut [FunctionDescriptor],
+    fetched: &HashMap<(String, String), Option<Value>>,
+) {
     for d in carried.iter_mut() {
-        if let Some(p) = fetched.get(&d.function_id) {
+        if let Some(p) = fetched.get(&key_of(d)) {
             d.parameters = p.clone();
         }
     }
@@ -458,12 +478,17 @@ pub fn observe_function_changes(iii: &Arc<IIIClient>, cell: FunctionsCell, timeo
 mod tests {
     use super::*;
 
-    fn desc(id: &str, parameters: Option<Value>) -> FunctionDescriptor {
+    fn desc_in(ns: &str, id: &str, parameters: Option<Value>) -> FunctionDescriptor {
         FunctionDescriptor {
             function_id: id.into(),
+            namespace: ns.into(),
             description: None,
             parameters,
         }
+    }
+
+    fn desc(id: &str, parameters: Option<Value>) -> FunctionDescriptor {
+        desc_in("default", id, parameters)
     }
 
     #[tokio::test]
@@ -581,37 +606,53 @@ mod tests {
     /// only the id set never reports. The cached schema stays as the fallback.
     #[test]
     fn an_announce_refetches_every_schema_and_keeps_the_cache_as_fallback() {
-        let prev: HashMap<String, Value> = [("a::b".to_string(), json!({ "type": "object" }))]
-            .into_iter()
-            .collect();
+        let prev: HashMap<(String, String), Value> = [(
+            ("default".to_string(), "a::b".to_string()),
+            json!({ "type": "object" }),
+        )]
+        .into_iter()
+        .collect();
         let (mut carried, needs_fetch) = plan_hydration(
             vec![desc("a::b", None), desc("c::d", None)],
             &prev,
             Hydration::All,
         );
-        assert_eq!(needs_fetch, vec!["a::b".to_string(), "c::d".to_string()]);
+        assert_eq!(
+            needs_fetch,
+            vec![
+                ("default".to_string(), "a::b".to_string()),
+                ("default".to_string(), "c::d".to_string())
+            ]
+        );
         // Only c::d answered: a::b keeps its cached schema, never `None`.
-        let fetched: HashMap<String, Option<Value>> =
-            [("c::d".to_string(), Some(json!({ "type": "string" })))]
-                .into_iter()
-                .collect();
+        let fetched: HashMap<(String, String), Option<Value>> = [(
+            ("default".to_string(), "c::d".to_string()),
+            Some(json!({ "type": "string" })),
+        )]
+        .into_iter()
+        .collect();
         apply_fetched(&mut carried, &fetched);
         assert_eq!(carried[0].parameters, Some(json!({ "type": "object" })));
         assert_eq!(carried[1].parameters, Some(json!({ "type": "string" })));
         // An answered changed schema replaces the cached one.
-        let changed: HashMap<String, Option<Value>> =
-            [("a::b".to_string(), Some(json!({ "type": "array" })))]
-                .into_iter()
-                .collect();
+        let changed: HashMap<(String, String), Option<Value>> = [(
+            ("default".to_string(), "a::b".to_string()),
+            Some(json!({ "type": "array" })),
+        )]
+        .into_iter()
+        .collect();
         apply_fetched(&mut carried, &changed);
         assert_eq!(carried[0].parameters, Some(json!({ "type": "array" })));
     }
 
     #[test]
     fn plan_hydration_carries_forward_and_retains_unresolved() {
-        let prev: HashMap<String, Value> = [("a::b".to_string(), json!({ "type": "object" }))]
-            .into_iter()
-            .collect();
+        let prev: HashMap<(String, String), Value> = [(
+            ("default".to_string(), "a::b".to_string()),
+            json!({ "type": "object" }),
+        )]
+        .into_iter()
+        .collect();
         let (carried, needs_fetch) = plan_hydration(
             vec![desc("a::b", None), desc("c::d", None)],
             &prev,
@@ -625,7 +666,10 @@ mod tests {
         // functions_info leaves it exactly here — the descriptor is never dropped).
         let c = carried.iter().find(|d| d.function_id == "c::d").unwrap();
         assert_eq!(c.parameters, None);
-        assert_eq!(needs_fetch, vec!["c::d".to_string()]);
+        assert_eq!(
+            needs_fetch,
+            vec![("default".to_string(), "c::d".to_string())]
+        );
     }
 
     #[test]
@@ -658,6 +702,45 @@ mod tests {
         assert_eq!(
             change_hydration(&cached, &listed, Some(&BTreeSet::new())),
             Hydration::Missing
+        );
+        assert_eq!(
+            change_hydration(&cached, &[desc_in("laptop", "a::b", None)], Some(&same)),
+            Hydration::Missing
+        );
+    }
+
+    #[test]
+    fn the_same_id_in_two_namespaces_hydrates_and_fingerprints_apart() {
+        let prev: HashMap<(String, String), Value> = [(
+            ("hub".into(), "shell::exec".into()),
+            json!({ "type": "object" }),
+        )]
+        .into_iter()
+        .collect();
+        let (mut carried, needs_fetch) = plan_hydration(
+            vec![
+                desc_in("hub", "shell::exec", None),
+                desc_in("laptop", "shell::exec", None),
+            ],
+            &prev,
+            Hydration::Missing,
+        );
+        assert_eq!(
+            needs_fetch,
+            vec![("laptop".to_string(), "shell::exec".to_string())]
+        );
+        let fetched: HashMap<(String, String), Option<Value>> = [(
+            ("laptop".into(), "shell::exec".into()),
+            Some(json!({ "type": "string" })),
+        )]
+        .into_iter()
+        .collect();
+        apply_fetched(&mut carried, &fetched);
+        assert_eq!(carried[0].parameters, Some(json!({ "type": "object" })));
+        assert_eq!(carried[1].parameters, Some(json!({ "type": "string" })));
+        assert_ne!(
+            fingerprint_of(&[desc_in("hub", "a::b", None)]),
+            fingerprint_of(&[desc_in("laptop", "a::b", None)])
         );
     }
 }

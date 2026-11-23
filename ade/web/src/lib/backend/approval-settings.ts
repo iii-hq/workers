@@ -10,6 +10,8 @@ import { getIiiClient } from '@/lib/iii-client'
 export type PermissionMode = 'manual' | 'auto' | 'full'
 
 export interface AlwaysAllowEntry {
+  /** Namespace the grant covers; absent = the call's implicit namespace. */
+  namespace?: string
   function_id: string
   granted_at: number
   granted_by: 'user_click' | 'seed'
@@ -38,6 +40,9 @@ function coerceEntries(raw: unknown): AlwaysAllowEntry[] {
     )
     .map(
       (entry): AlwaysAllowEntry => ({
+        ...(typeof entry.namespace === 'string' && entry.namespace.length > 0
+          ? { namespace: entry.namespace }
+          : {}),
         function_id: String(entry.function_id ?? ''),
         granted_at: Number(entry.granted_at ?? 0),
         granted_by: entry.granted_by === 'seed' ? 'seed' : 'user_click',
@@ -115,11 +120,13 @@ export async function removeAlwaysAllow(
 export async function approveAlways(
   sessionId: string,
   functionId: string,
+  namespace?: string,
 ): Promise<ApprovalSettings> {
   const client = await getIiiClient()
   const raw = await client.call('approval::approve-always', {
     session_id: sessionId,
     function_id: functionId,
+    ...(namespace !== undefined ? { namespace } : {}),
   })
   return coerceSettings(raw)
 }

@@ -181,6 +181,7 @@ pub async fn process_interaction(deps: &Deps, payload: InteractionPayload) {
                     &cb.session_id,
                     &cb.function_call_id,
                     true,
+                    cb.namespace.as_deref(),
                     cfg.timeout_ms,
                 )
                 .await
@@ -191,6 +192,7 @@ pub async fn process_interaction(deps: &Deps, payload: InteractionPayload) {
                     &cb.session_id,
                     &cb.function_call_id,
                     false,
+                    cb.namespace.as_deref(),
                     cfg.timeout_ms,
                 )
                 .await
@@ -201,11 +203,18 @@ pub async fn process_interaction(deps: &Deps, payload: InteractionPayload) {
                     &cb.session_id,
                     &cb.function_call_id,
                     true,
+                    cb.namespace.as_deref(),
                     cfg.timeout_ms,
                 )
                 .await;
-                approval::approve_always(&deps.iii, &cb.session_id, &cb.function_id, cfg.timeout_ms)
-                    .await
+                approval::approve_always(
+                    &deps.iii,
+                    &cb.session_id,
+                    &cb.function_id,
+                    cb.namespace.as_deref(),
+                    cfg.timeout_ms,
+                )
+                .await
             }
             _ => continue,
         };

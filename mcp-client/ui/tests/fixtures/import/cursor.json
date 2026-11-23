@@ -1,0 +1,4 @@
+{ "mcpServers": { "local-server": { "command": "python", "args": ["${workspaceFolder}/tools/mcp_server.py"], "env": { "API_KEY": "${env:API_KEY}" }, "envFile": "${workspaceFolder}/.env" },
+"remote-server": { "url": "https://api.example.com/mcp", "headers": { "Authorization": "Bearer ${env:MY_SERVICE_TOKEN}" } },
+"oauth-server": { "url": "https://api.example.com/mcp", "auth": { "CLIENT_ID": "cursor-client", "CLIENT_SECRET": "@@FAKE@@", "scopes": ["read", "write"] } },
+"keyed": { "url": "https://api.example.com/mcp", "headers": { "API_KEY": "@@FAKE@@", "X-Workspace": "acme" } } } }

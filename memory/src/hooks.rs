@@ -16,6 +16,7 @@
 //! turn. Handlers are idempotent: redelivered steps re-run them safely.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use schemars::JsonSchema;
@@ -41,14 +42,15 @@ pub const PRE_GENERATE_DESC: &str = "Internal: target of the harness::hook::on-p
      Never denies.";
 pub const TURN_COMPLETED_DESC: &str = "Internal: target of the harness::on-turn-completed observer — enqueues one durable \
      extraction job (a single router::complete call) for the finished turn; inline fallback \
-     without a queue.";
-pub const EXTRACT_JOB_DESC: &str = "Internal: target of the queue::on-message observer on the memory-extraction topic — \
-     runs one extraction job; errors propagate so the queue retries and dead-letters instead \
-     of losing the pass.";
+     without a queue. A direct call is refused.";
+pub const EXTRACT_JOB_DESC: &str = "Internal: target of the queue::on-message observer on the memory-extraction topic and \
+     of the memory-extraction function queue — runs one extraction job; errors propagate so \
+     the queue retries and dead-letters instead of losing the pass. A job this worker did not \
+     queue is refused, whoever calls it.";
 pub const SESSION_DELETED_DESC: &str = "Internal: target of the session::on-deleted observer — drops the session's extraction \
-     cursor and state.";
-/// Durable queue (iii-queue builtin or the queue worker) carrying one
-/// extraction job per completed turn: retries + DLQ instead of a lost
+     cursor and state. A direct call is refused.";
+/// Durable queue (the queue worker, in this worker's namespace) carrying
+/// one extraction job per completed turn: retries + DLQ instead of a lost
 /// pass when this worker restarts mid-extraction.
 pub const EXTRACTION_QUEUE: &str = "memory-extraction";
 
@@ -295,10 +297,13 @@ pub struct AckResponse {
 
 /// Inject the bank's rules + recalled memories for one turn. Every failure
 /// path degrades to a plain `continue` — never an error, never a
-/// cross-bank fallback.
+/// cross-bank fallback. Only an `observed` delivery (the harness's, through
+/// this worker's observer) records the turn's bank: a direct call, an
+/// agent's from its own turn included, would rebind the bank its writes go to.
 pub async fn pre_generate(
     deps: &Arc<Deps>,
     input: PreGenerateInput,
+    observed: bool,
 ) -> Result<HookResponse, Error> {
     let cfg = deps.config().await;
     if input.session_id.is_empty() {
@@ -320,7 +325,7 @@ pub async fn pre_generate(
         None => {
             let resolved =
                 crate::scope::resolve(deps, &input.session_id, input.metadata.as_ref()).await;
-            if let (Ok(bank), Some(turn_id)) = (&resolved, turn_id) {
+            if let (true, Ok(bank), Some(turn_id)) = (observed, &resolved, turn_id) {
                 crate::scope::remember_turn(turn_id, bank.clone());
             }
             resolved
@@ -699,9 +704,9 @@ pub(crate) async fn injection(
                 cfg.decay_half_life_days,
                 false,
                 bm25_max,
+                keep,
             )
             .await;
-        let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
         for (m, s) in &found {
             // A tie keeps the earlier source, as `merge_ranked` keeps the first copy.
             let at = best.entry(m.id.clone()).or_insert((i, *s));
@@ -1191,6 +1196,25 @@ pub(crate) fn remember_session(session_id: &str, meta: &Value) -> Capture {
     capture
 }
 
+/// The session's [`Capture`] with extraction on: cached, else from its record.
+pub(crate) async fn session_capture_of(deps: &Deps, session_id: &str) -> Result<Capture, String> {
+    let cached = SESSION_CAPTURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session_id)
+        .copied();
+    Ok(match cached {
+        Some(capture) => capture,
+        // Only when the resolver did not walk this session (a turn naming
+        // `memory_bank`). One that does not exist (yet) is not cached: it
+        // is told nothing is captured until its record says otherwise.
+        None => match crate::scope::session_meta(&deps.iii, session_id.to_string()).await? {
+            Some(meta) => remember_session(session_id, &meta),
+            None => Capture::Scripted,
+        },
+    })
+}
+
 /// This turn's [`Capture`]: its session's, with extraction off or a parent
 /// on the turn (`sub_agent`: what turn-end skips) turning the user's own
 /// session into one that saves.
@@ -1200,22 +1224,7 @@ async fn turn_capture(
     session_id: &str,
     sub_agent: bool,
 ) -> Result<Capture, String> {
-    let cached = SESSION_CAPTURE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(session_id)
-        .copied();
-    let session = match cached {
-        Some(capture) => capture,
-        // Only when the resolver did not walk this session (a turn naming
-        // `memory_bank`). One that does not exist (yet) is not cached: it
-        // is told nothing is captured until its record says otherwise.
-        None => match crate::scope::session_meta(&deps.iii, session_id.to_string()).await? {
-            Some(meta) => remember_session(session_id, &meta),
-            None => Capture::Scripted,
-        },
-    };
-    Ok(match session {
+    Ok(match session_capture_of(deps, session_id).await? {
         Capture::Extracted if !cfg.extraction_enabled || sub_agent => Capture::Save,
         capture => capture,
     })
@@ -1349,9 +1358,65 @@ fn keep_told_section(input: &PreGenerateInput) -> HookResponse {
     }
 }
 
+/// One `engine::queue::*` call in this worker's own namespace.
+pub(crate) async fn queue_call(
+    iii: &iii_sdk::IIIClient,
+    function_id: &str,
+    payload: Value,
+    timeout_ms: u64,
+) -> Result<Value, Error> {
+    // The queue worker registers these ids in the namespace it runs in, and
+    // the SDK sends an implicit `engine::*` call to `default`.
+    let namespace = iii.namespace().unwrap_or_else(|| "default".into());
+    iii.call(
+        CallRequest {
+            function_id: function_id.into(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }
+        .namespace(namespace),
+    )
+    .await
+}
+
+/// Queue `job` for [`EXTRACT_JOB_FN`] on [`EXTRACTION_QUEUE`].
+pub(crate) async fn enqueue_extraction(
+    iii: &iii_sdk::IIIClient,
+    job: &ExtractJobInput,
+    receipt: String,
+    timeout_ms: u64,
+) -> Result<(), Error> {
+    let mut payload = json!({
+        "queue": EXTRACTION_QUEUE,
+        "function_id": EXTRACT_JOB_FN,
+        "data": job,
+        "messageReceiptId": receipt,
+    });
+    // The queue worker calls a job's function in `default` unless the job
+    // names its namespace.
+    if let Some(namespace) = iii.namespace().filter(|ns| ns != "default") {
+        payload["namespace"] = json!(namespace);
+    }
+    queue_call(iii, "engine::queue::enqueue", payload, timeout_ms)
+        .await
+        .map(drop)
+}
+
+/// Set while extraction jobs fail to queue.
+static QUEUE_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Records whether a job was `queued`; true only for the first failure since
+/// boot or since the last queued job.
+fn opens_outage(down: &AtomicBool, queued: bool) -> bool {
+    let was_down = down.swap(!queued, Ordering::Relaxed);
+    !queued && !was_down
+}
+
 /// Ack fast; hand the extraction pass to the durable queue (retries +
-/// DLQ, receipt-id deduped by turn), falling back to an inline spawn when
-/// no queue surface is installed. Redelivery is safe either way: memory
+/// DLQ, receipt-id deduped by turn) in this worker's own namespace, falling
+/// back to an inline spawn when no queue answers there (one WARN per
+/// outage, DEBUG for repeats). Redelivery is safe either way: memory
 /// effects carry durable source-bound receipts. The model call and event
 /// delivery are not exactly-once.
 pub async fn turn_completed(
@@ -1383,22 +1448,21 @@ pub async fn turn_completed(
         .turn_id
         .clone()
         .unwrap_or_else(|| format!("t{}", now_ms()));
-    let enqueued = deps
-        .iii
-        .call(CallRequest {
-            function_id: "engine::queue::enqueue".into(),
-            payload: json!({
-                "queue": EXTRACTION_QUEUE,
-                "function_id": EXTRACT_JOB_FN,
-                "data": job,
-                "messageReceiptId": format!("memx-{receipt}"),
-            }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
+    let store = deps.store().await;
+    let enqueued = match crate::store::run_blocking(|| store.hold_extraction_job(&job)).await {
+        Ok(()) => enqueue_extraction(&deps.iii, &job, format!("memx-{receipt}"), 5_000)
+            .await
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    let new_outage = opens_outage(&QUEUE_DOWN, enqueued.is_ok());
     if let Err(e) = enqueued {
-        tracing::debug!(error = %e, "queue surface unavailable; extracting inline");
+        if new_outage {
+            tracing::warn!(error = %e, "extraction job not queued; extracting inline");
+        } else {
+            tracing::debug!(error = %e, "extraction job not queued; extracting inline");
+        }
+        let _ = crate::store::run_blocking(|| store.release_extraction_job(&job)).await;
         let deps = deps.clone();
         tokio::spawn(async move { extract::run(deps, job).await });
     }
@@ -1449,13 +1513,24 @@ pub(crate) fn plan_extraction(
     })
 }
 
-/// Queue-delivered extraction job. Returns the error to the queue so a
+/// Queue-delivered extraction job: only one this worker queued and still
+/// holds, never a job another caller put on the queue (its bank, agent or
+/// `skip` would be the caller's). Returns the error to the queue so a
 /// failed pass retries and eventually lands in the DLQ instead of
 /// vanishing.
 pub async fn extract_job(deps: &Arc<Deps>, input: ExtractJobInput) -> Result<AckResponse, Error> {
+    let store = deps.store().await;
+    if !crate::store::run_blocking(|| store.holds_extraction_job(&input)).await? {
+        tracing::warn!(session_id = %input.session_id, "extraction job refused: not one this worker queued");
+        return Err(crate::error::MemoryError::Forbidden(format!(
+            "`{EXTRACT_JOB_FN}` runs only an extraction job this worker queued"
+        ))
+        .into());
+    }
     extract::try_run(deps, &input)
         .await
         .map_err(Error::Handler)?;
+    crate::store::run_blocking(|| store.release_extraction_job(&input)).await?;
     Ok(AckResponse { ok: true })
 }
 
@@ -1821,6 +1896,16 @@ fn last_user_text(messages: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deps::offline_deps;
+
+    #[test]
+    fn an_outage_warns_once_until_a_job_is_queued() {
+        let down = AtomicBool::new(false);
+        assert!(opens_outage(&down, false));
+        assert!(!opens_outage(&down, false));
+        assert!(!opens_outage(&down, true));
+        assert!(opens_outage(&down, false));
+    }
 
     #[test]
     fn the_extraction_observer_id_is_the_worker_and_its_topic() {
@@ -2193,6 +2278,7 @@ mod tests {
                     step: 1,
                     ..PreGenerateInput::default()
                 },
+                true,
             )
             .await
             .unwrap();
@@ -2238,6 +2324,41 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn only_the_observed_hook_records_the_bank_a_turn_writes_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(3)));
+        remember_session("s-rebind", &json!({ "kind": "user" }));
+        crate::scope::remember_turn("t-rebind", Some(crate::scope::Resolved::named("repo-a")));
+        let opening = |observed| {
+            let input = PreGenerateInput {
+                session_id: "s-rebind".into(),
+                turn_id: Some("t-rebind".into()),
+                metadata: Some(json!({ "memory_bank": "agent-reviewer" })),
+                ..PreGenerateInput::default()
+            };
+            crate::scope::in_turn("s-rebind", "t-rebind", pre_generate(&deps, input, observed))
+        };
+        let writes_to = || {
+            crate::scope::in_turn("s-rebind", "t-rebind", async {
+                let caller = crate::scope::Caller::from_baggage();
+                crate::scope::write_bank(&deps, &caller, None, false)
+                    .await
+                    .unwrap()
+                    .0
+            })
+        };
+        // The agent calling the internal hook from its own turn.
+        opening(false).await.unwrap();
+        assert_eq!(writes_to().await, "repo-a");
+        opening(true).await.unwrap();
+        assert_eq!(
+            writes_to().await,
+            "agent-reviewer",
+            "the harness's delivery"
+        );
+    }
+
     /// A turn the harness reports with a parent is one turn-end skips, so
     /// its header asks for a save even when its session's record has none.
     #[tokio::test]
@@ -2255,7 +2376,11 @@ mod tests {
             let deps = deps.clone();
             async move {
                 let input: PreGenerateInput = serde_json::from_value(input).unwrap();
-                pre_generate(&deps, input).await.unwrap().mutations.unwrap()
+                pre_generate(&deps, input, true)
+                    .await
+                    .unwrap()
+                    .mutations
+                    .unwrap()
             }
         };
         let link = json!({ "session_id": "p", "turn_id": "pt", "function_call_id": "fc" });
@@ -2376,29 +2501,37 @@ mod tests {
             pinned: false,
             session_id: None,
         };
-        let noted = iii_helpers::observability::run_with_baggage(
-            &[("iii.session.id", "s-1"), ("iii.message.id", "t-1")],
+        remember_session("s-note", &json!({ "kind": "user" }));
+        crate::scope::remember_turn("t-note", Some(crate::scope::Resolved::named(bank.clone())));
+        let noted = crate::scope::in_turn(
+            "s-note",
+            "t-note",
             crate::functions::items::save(&deps, request("The deploy script lives in ops/.")),
         )
         .await
         .unwrap()
         .memory;
-        let source = noted.source.expect("a save from a turn records its source");
+        let source = noted
+            .source
+            .clone()
+            .expect("a save from a turn records its source");
         assert_eq!(
             (source.session_id.as_deref(), source.turn_id.as_deref()),
-            (Some("s-1"), Some("t-1"))
+            (Some("s-note"), Some("t-note"))
         );
         assert!(
             !noted.entities.iter().any(|e| e == "user"),
             "{:?}",
             noted.entities
         );
+        assert!(noted.is_agent_note());
         let typed = crate::functions::items::save(&deps, request("The user prefers tea."))
             .await
             .unwrap()
             .memory;
         assert_eq!(typed.entities, ["user"], "the memory page's add field");
         assert_eq!(typed.source, None);
+        assert!(!typed.is_agent_note());
     }
 
     #[test]
@@ -2675,20 +2808,6 @@ Formal."
             (at_max / at_double - 2.0).abs() < 1e-3,
             "the caller's scale divides: {at_max} vs {at_double}"
         );
-    }
-
-    /// Deps over a store in `dir` and no engine: embeddings off, so
-    /// nothing in `injection` reaches the client.
-    fn offline_deps(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
-        let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
-        let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
-        Deps {
-            hook_binding: Arc::default(),
-            emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
-            iii,
-            store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
-            config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),
-        }
     }
 
     fn offline_cfg(recall_limit: usize) -> WorkerConfig {
@@ -3534,6 +3653,96 @@ Formal."
     }
 
     const PAGE: &str = "Who should I page for a payments-api incident right now?";
+
+    #[tokio::test]
+    async fn a_question_matching_only_a_retired_line_is_told_its_successor_once() {
+        // The linked update consolidation leaves: the departure retired the
+        // on-call line, and only the on-call line shares words with the question.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(6);
+        let deps = offline_deps(dir.path(), cfg.clone());
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        for m in [
+            on_dana("fp-hired", "dana-7f3a joined our company in 2023.", 1),
+            on_call(2),
+            tagged(
+                "fp-backup",
+                "Unanswered payments-api pages escalate to marco-1c2d after 15 minutes.",
+                3,
+                &["marco", "payments-api"],
+            ),
+            on_dana(
+                "fp-left",
+                "dana-7f3a left our company last week and her accounts were deactivated.",
+                4,
+            ),
+        ] {
+            repo.commit(m).await.unwrap();
+        }
+        repo.supersede("fp-oncall", "fp-left", false, (None, None))
+            .await
+            .unwrap();
+        let out = injection(
+            &deps,
+            &cfg,
+            "w-abc123",
+            &[],
+            true,
+            Capture::Extracted,
+            Some(PAGE),
+            &HashSet::new(),
+        )
+        .await;
+        let mut ids: Vec<&str> = out.memories.iter().map(|(m, _, _)| m.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["fp-backup", "fp-left"]);
+        let message = out.message.expect("the memory lines");
+        assert_eq!(message.matches("left our company").count(), 1, "{message}");
+        assert!(
+            !message.contains("primary on-call engineer for payments-api"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_layer_successor_is_told_only_when_the_turn_reads_both_lines() {
+        let (user, none) = (&["user"][..], &[][..]);
+        for (old_entities, entities, told_to) in [
+            (user, none, vec![]),
+            (none, user, vec![]),
+            (user, user, vec!["main"]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let deps = offline_deps(dir.path(), offline_cfg(6));
+            let store = deps.store().await;
+            store.ensure_bank("w-abc123", None).await.unwrap();
+            let (main, _) = store.ensure_bank("main", None).await.unwrap();
+            let old = tagged(
+                "fp-old",
+                "The user orders oat milk lattes.",
+                1,
+                old_entities,
+            );
+            let new = tagged("fp-new", "Switched to black coffee.", 2, entities);
+            for m in [old, new] {
+                main.commit(m).await.unwrap();
+            }
+            main.supersede("fp-old", "fp-new", false, (None, None))
+                .await
+                .unwrap();
+            let told = told(&deps, &["main"], "oat milk lattes").await;
+            let expected: Vec<(String, String)> = told_to
+                .into_iter()
+                .map(|bank| ("fp-new".to_string(), bank.to_string()))
+                .collect();
+            assert_eq!(told, expected, "{old_entities:?} -> {entities:?}");
+        }
+    }
 
     /// dana on call for payments-api, said at `at`.
     fn on_call(at: u64) -> Memory {

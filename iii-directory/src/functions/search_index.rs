@@ -65,6 +65,9 @@ pub struct ToolSchema {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// Engine namespaces holding this id, sorted; empty outside the live catalog.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<String>,
 }
 
 const BM25_STOPWORDS: [&str; 22] = [
@@ -432,6 +435,10 @@ pub(crate) fn canonical_tools(tools: &[ToolSchema]) -> Vec<ToolSchema> {
             name: tool.name.clone(),
             description: slim_description(&tool.description),
             parameters: canonical_value(&slim_parameters(&tool.parameters)),
+            // shortcut: namespaces join the fingerprint, so a namespace-only change also
+            // re-encodes the semantic index; keep a namespace-free fingerprint for it if
+            // mesh membership churns.
+            namespaces: tool.namespaces.clone(),
         })
         .collect::<Vec<_>>();
     tools.sort_by(|left, right| {

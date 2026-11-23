@@ -76,6 +76,7 @@ pub struct RuleSetResponse {
 }
 
 pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, MemoryError> {
+    crate::scope::human_only(super::RULE_SET_ID)?;
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     // A shape within a line the stored rule already holds is spared: one

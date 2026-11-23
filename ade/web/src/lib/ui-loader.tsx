@@ -27,6 +27,7 @@ import {
   requestComposerFocus,
 } from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
+import { MESSAGE_BLOCK_TAG } from '@/lib/message-blocks'
 import { registerPageCommands } from '@/lib/page-commands'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { registerPaletteSource } from '@/lib/palette/providers'
@@ -42,6 +43,7 @@ import {
   registerExtConfigForm,
   registerExtContextSection,
   registerExtMentionRenderer,
+  registerExtMessageBlockRenderer,
   registerExtObserverActivityRenderer,
   registerExtOverlay,
   registerExtPage,
@@ -60,6 +62,7 @@ import type {
   ConsoleApi,
   ContextSectionProps,
   Host,
+  MessageBlockProps,
   ProviderConfigFormProps,
   SessionChipProps,
   SessionTurnSummaryProps,
@@ -424,6 +427,30 @@ function makeHost(
             render: (props: ContextSectionProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Body {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      registerMessageBlockRenderer(renderer) {
+        if (
+          !renderer?.render ||
+          typeof renderer.tag !== 'string' ||
+          !MESSAGE_BLOCK_TAG.test(renderer.tag)
+        ) {
+          throw new Error(
+            'chat.registerMessageBlockRenderer: render and a tag matching ^[a-z][a-z0-9_-]*$ are required',
+          )
+        }
+        const Block = renderer.render
+        return track(
+          registerExtMessageBlockRenderer({
+            tag: renderer.tag,
+            scope,
+            path,
+            render: (props: MessageBlockProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Block {...props} />
               </ScopedExtension>
             ),
           }),

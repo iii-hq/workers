@@ -14,6 +14,22 @@
           },
           "id": {
             "type": "string"
+          },
+          "implicit_namespace": {
+            "default": null,
+            "description": "Where a call to `function_id` without `namespace` runs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namespace": {
+            "default": null,
+            "description": "Resolved target namespace. Absent from an older harness.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

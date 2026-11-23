@@ -323,6 +323,28 @@ mod tests {
         assert_eq!(body, include_str!("../../harness/prompts/default.txt"));
     }
 
+    #[test]
+    fn bundled_prompts_teach_namespaces() {
+        for id in ["default", "iii"] {
+            let (_, body) = fs_source::split_frontmatter(bundled_agent_raw(id).unwrap());
+            let normalized = body.replace('\n', " ");
+            assert!(
+                normalized.contains(
+                    "If a search candidate lists `namespaces`, its id exists in each of them"
+                ),
+                "{id}"
+            );
+            assert!(
+                normalized.contains("next to `function`, never inside `payload`"),
+                "{id}"
+            );
+            assert!(
+                !normalized.contains("Do not add `namespace` or `file` yourself."),
+                "{id}"
+            );
+        }
+    }
+
     /// A decision with discrete options goes through `harness::ask` (a card
     /// the user clicks), never a question or numbered list written in text;
     /// the turn ends on it and the answer is the user's next message. Every

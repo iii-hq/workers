@@ -1,7 +1,8 @@
 @engine @prompts
 Feature: the server offers no MCP prompts
   No prompts capability is advertised, so prompts methods are unknown.
-  Agent profiles are reached through iii_list_agents / iii_get_agent.
+  Agent profiles are loaded with iii_get_agent and listed with iii_call
+  (directory::agents::list).
 
   Background:
     Given the iii engine is reachable

@@ -1,0 +1,75 @@
+{
+  "oneOf": [
+    {
+      "type": "string",
+      "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\". Prefix `<namespace>/` to match one engine namespace (`laptop/shell::*`); a bare pattern matches every namespace."
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "action"
+      ],
+      "properties": {
+        "function": {
+          "type": "string",
+          "description": "Function id or glob to match. Prefix `<namespace>/` to match one engine namespace (`laptop/shell::*`); a bare pattern matches every namespace."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny"
+          ]
+        },
+        "rule_id": {
+          "type": "string",
+          "description": "Optional stable identifier included in decisions."
+        },
+        "modes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "auto",
+              "full"
+            ]
+          }
+        },
+        "args": {
+          "type": "object",
+          "description": "Argument constraints keyed by payload field.",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "equals"
+                ],
+                "properties": {
+                  "equals": {}
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "matches"
+                ],
+                "properties": {
+                  "matches": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

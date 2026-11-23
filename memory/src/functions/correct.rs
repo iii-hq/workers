@@ -1,7 +1,7 @@
 //! `memory::transcript` and `memory::correct` — the internal seams of
 //! consolidation's verify tier: read a note's source transcript (redacted
 //! and cut, never raw), and replace a note that transcript contradicts.
-//! Both are agent-denied and have no REST route.
+//! Both refuse a call from inside an agent turn and have no REST route.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,7 @@ pub async fn transcript(
     deps: &Deps,
     req: TranscriptRequest,
 ) -> Result<TranscriptResponse, MemoryError> {
+    crate::scope::human_only(TRANSCRIPT_ID)?;
     let bank_name = crate::scope::request_bank(deps, req.bank).await?;
     let bank = deps.store().await.bank(&bank_name).await?;
     let missing = |missing: &str| TranscriptResponse {
@@ -108,6 +109,7 @@ fn skipped(why: &str) -> CorrectResponse {
 }
 
 pub async fn correct(deps: &Deps, req: CorrectRequest) -> Result<CorrectResponse, MemoryError> {
+    crate::scope::human_only(CORRECT_ID)?;
     let bank_name = crate::scope::request_bank(deps, req.bank).await?;
     let bank = deps.store().await.bank(&bank_name).await?;
     let Some(old) = bank.get(&req.id).await.filter(Memory::is_live) else {

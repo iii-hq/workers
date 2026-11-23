@@ -94,6 +94,24 @@ When the configuration entry omits `rules`, the gate denies only this
 worker's own `approval::*` surface; every other call **holds**. On startup the
 worker seeds/backfills the stored entry so `rules` are editable in the console.
 
+Rule patterns may name an engine namespace: prefix `<namespace>/` to match
+one namespace (`laptop/shell::*`); a bare pattern matches every namespace.
+The qualifier must be a plain, non-empty namespace: `*/shell::exec` or
+`/shell::exec` is a compile error, as is a doubled slash (`laptop//shell::exec`), and the whole rule list is then dropped
+(an empty policy): every deny becomes a hold a person can approve, and nothing
+becomes an automatic allow.
+For a call that names no namespace (an older harness), a qualified `deny`
+still matches and a qualified `allow` does not, so it fails closed.
+"Approve always" grants take no `<namespace>/` qualifier: the namespace is a
+separate field and is compared exactly, so a grant never covers another
+namespace. The grant's `function_id` is compared exactly too: an approval
+prompt stores the held call's own id, and a `*` in it is a plain character (a
+grant for `shell::*` allows a call to `shell::*`, never `shell::exec`). A glob
+belongs in an `allow` rule or an auto-mode `add-always-allow` entry, both
+written by an operator. A grant stored before namespaces existed
+covers only the namespace a call without `namespace` runs in. Modes are
+unchanged.
+
 ## Event functions
 
 Both are private functions: only this worker calls them, anyone may observe
@@ -171,6 +189,8 @@ Resolving a `filesystem_access` record's `allow` decision takes an additional
 | `once` | The release carries `extra_roots: [dir]` — trusted for just this one call. |
 | `session` | `harness::filesystem::grant` first (durable for the rest of the session), THEN release with no `extra_roots` — the harness stamps the grant on every subsequent call itself. Falls back to `once`-style `extra_roots` if the grant call fails, so the user's click still works. |
 | `always` | Same as `session`, PLUS a best-effort append of `dir` to the `shell` deployment configuration's `fs.host_roots` (`configuration::get`/`configuration::set {id: "shell"}`). A persist failure is logged and never blocks the release. |
+
+For a call held in another namespace, session and always last one call: the folder grant never reaches this namespace's shell or session roots.
 
 `deny` records the dir in `approval_filesystem_access_denied/<session_id>` (so the same
 session won't be re-asked about it again) before delivering a denial whose

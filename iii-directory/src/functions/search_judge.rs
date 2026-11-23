@@ -12,7 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use iii_sdk::{CallRequest, IIIClient};
+use iii_sdk::{CallRequest, CallRequestWithMetadata, IIIClient};
 use judge_contract::{Content, EvaluateRequest, Evaluation, Question, Stats};
 use serde::Serialize;
 use serde_json::Value;
@@ -147,8 +147,12 @@ enum Transport {
     #[cfg(test)]
     None,
     #[cfg(test)]
-    Mock(Arc<dyn Fn(EvaluateRequest) -> ReplyFuture + Send + Sync>),
+    Mock(Arc<dyn Fn(Option<String>, EvaluateRequest) -> ReplyFuture + Send + Sync>),
 }
+
+/// Judge namespace (`None` = this worker's own) and provider (`""` = the
+/// hub's default).
+type Route = (Option<String>, String);
 
 #[derive(Clone)]
 pub struct JudgeSearch {
@@ -156,9 +160,12 @@ pub struct JudgeSearch {
     /// Pause end per judge provider (`""` = the hub's default): one
     /// session's failing provider never pauses another session's searches.
     paused_until: Arc<Mutex<HashMap<String, Instant>>>,
-    /// Advertised limits per judge provider (`""` = the hub's default), each
-    /// with the instant it was read.
-    window: Arc<Mutex<HashMap<String, (Instant, Limits)>>>,
+    /// Advertised limits per judge route, each with the instant it was read.
+    window: Arc<Mutex<HashMap<Route, (Instant, Limits)>>>,
+    /// Namespace hosting the judge when this worker's own does not (`None`:
+    /// call it unqualified). Bound per search, so a concurrent search never
+    /// reroutes another's calls.
+    namespace: Option<String>,
 }
 
 /// What the judge's models advertise, read at the paired instant: the
@@ -246,16 +253,17 @@ impl JudgeSearch {
         Self::with_transport(Transport::Bus(iii))
     }
 
-    /// Inject the bus boundary: the closure receives each `judge::evaluate`
-    /// payload and answers with the raw reply value or a transport failure.
+    /// Inject the bus boundary: the closure receives the namespace each
+    /// `judge::evaluate` call is routed to (`None`: this worker's own) and its
+    /// payload, and answers with the raw reply value or a transport failure.
     #[cfg(test)]
     pub(crate) fn from_evaluator<F, Fut>(evaluator: F) -> Self
     where
-        F: Fn(EvaluateRequest) -> Fut + Send + Sync + 'static,
+        F: Fn(Option<String>, EvaluateRequest) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Value, JudgeError>> + Send + 'static,
     {
-        Self::with_transport(Transport::Mock(Arc::new(move |request| {
-            Box::pin(evaluator(request))
+        Self::with_transport(Transport::Mock(Arc::new(move |namespace, request| {
+            Box::pin(evaluator(namespace, request))
         })))
     }
 
@@ -264,6 +272,24 @@ impl JudgeSearch {
             transport,
             paused_until: Arc::default(),
             window: Arc::default(),
+            namespace: None,
+        }
+    }
+
+    /// This judge with its calls routed to `namespace` (`None`: this worker's
+    /// own); pauses and cached limits stay shared.
+    pub fn in_namespace(&self, namespace: Option<String>) -> Self {
+        Self {
+            namespace,
+            ..self.clone()
+        }
+    }
+
+    /// `request`, sent to the judge's namespace when one is set.
+    fn routed(&self, request: CallRequest) -> CallRequestWithMetadata {
+        match self.namespace.clone() {
+            Some(namespace) => request.namespace(namespace),
+            None => request.into(),
         }
     }
 
@@ -287,17 +313,17 @@ impl JudgeSearch {
         self.window
             .lock()
             .expect("judge window")
-            .insert(String::new(), (Instant::now(), limits));
+            .insert((None, String::new()), (Instant::now(), limits));
         self
     }
 
     /// The judge's advertised limits, read through `judge::models::list` for
     /// the provider `judge::evaluate` uses (the calling session's, else the
-    /// hub's default) and cached per provider for `WINDOW_TTL`; a failed read
-    /// means none and is retried next time.
+    /// hub's default) and cached per judge namespace and provider for
+    /// `WINDOW_TTL`; a failed read means none and is retried next time.
     async fn limits(&self, deadline: Instant) -> Limits {
         let provider = session_provider();
-        let key = provider.clone().unwrap_or_default();
+        let key = (self.namespace.clone(), provider.clone().unwrap_or_default());
         let cached = self.window.lock().expect("judge window").get(&key).copied();
         match cached {
             Some((read, limits)) if read.elapsed() < WINDOW_TTL => limits,
@@ -339,12 +365,12 @@ impl JudgeSearch {
         }
         let reply = match &self.transport {
             Transport::Bus(iii) => iii
-                .call(CallRequest {
+                .call(self.routed(CallRequest {
                     function_id: judge_contract::MODELS_FUNCTION_ID.into(),
                     payload,
                     action: None,
                     timeout_ms: Some(budget),
-                })
+                }))
                 .await
                 .ok()?,
             #[cfg(test)]
@@ -576,19 +602,23 @@ impl JudgeSearch {
         };
         let reply = match &self.transport {
             Transport::Bus(iii) => iii
-                .call(CallRequest {
-                    function_id: judge_contract::FUNCTION_ID.into(),
-                    payload: request_payload(&request, session_provider().as_deref())
-                        .ok_or_else(|| fail(JudgeError::PayloadTooLarge))?,
-                    action: None,
-                    timeout_ms: Some(remaining),
-                })
+                .call(
+                    self.routed(CallRequest {
+                        function_id: judge_contract::FUNCTION_ID.into(),
+                        payload: request_payload(&request, session_provider().as_deref())
+                            .ok_or_else(|| fail(JudgeError::PayloadTooLarge))?,
+                        action: None,
+                        timeout_ms: Some(remaining),
+                    }),
+                )
                 .await
                 .map_err(|error| fail(bus_error(error)))?,
             #[cfg(test)]
             Transport::None => return Err(fail(JudgeError::Unavailable("not registered"))),
             #[cfg(test)]
-            Transport::Mock(evaluator) => evaluator(request).await.map_err(fail)?,
+            Transport::Mock(evaluator) => evaluator(self.namespace.clone(), request)
+                .await
+                .map_err(fail)?,
         };
         parse_reply(&reply, &blocks, lanes.len(), options)
     }
@@ -1066,6 +1096,7 @@ mod tests {
                 "subject": {"type":"string", "description":"private schema detail"},
                 "body": {"type":"string"}
             }}),
+            namespaces: Vec::new(),
         }
     }
 
@@ -1123,7 +1154,7 @@ mod tests {
     {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = requests.clone();
-        let client = JudgeSearch::from_evaluator(move |request| {
+        let client = JudgeSearch::from_evaluator(move |_, request| {
             let result = reply(&request);
             seen.lock().unwrap().push(request);
             async move { result }
@@ -1133,6 +1164,23 @@ mod tests {
 
     fn one_reply(body: Value) -> (JudgeSearch, Requests) {
         recorder(move |_| Ok(body.clone()))
+    }
+
+    #[test]
+    fn each_judge_handle_keeps_the_namespace_bound_to_it() {
+        let shared = JudgeSearch::default();
+        let request = || CallRequest {
+            function_id: judge_contract::FUNCTION_ID.into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        };
+        // Two concurrent searches bind their own routes.
+        let a = shared.in_namespace(Some("z-hub".into()));
+        let b = shared.in_namespace(Some("a-hub".into()));
+        assert!(format!("{:?}", a.routed(request())).contains("namespace: Some(\"z-hub\")"));
+        assert!(format!("{:?}", b.routed(request())).contains("namespace: Some(\"a-hub\")"));
+        assert!(format!("{:?}", shared.routed(request())).contains("namespace: None"));
     }
 
     #[test]
@@ -1146,6 +1194,7 @@ mod tests {
                         "cron::on-tick observer runs harness::sweep-pending with args expression"
                             .into(),
                     parameters: json!({}),
+                    namespaces: Vec::new(),
                 }],
                 &JudgeOptions {
                     corpus: JudgeCorpus::Observers,
@@ -1781,6 +1830,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn limits_read_in_one_judge_namespace_never_serve_another() {
+        let own = JudgeSearch::default().with_window(Some(512));
+        assert!(own.small_window(deadline()).await);
+        let hub = own.in_namespace(Some("a-hub".into()));
+        assert!(!hub.small_window(deadline()).await);
+    }
+
+    #[tokio::test]
     async fn a_session_provider_pauses_only_itself_and_routes_the_request() {
         use opentelemetry::baggage::BaggageExt;
         use opentelemetry::context::FutureExt;
@@ -1961,7 +2018,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let slow = || {
             let seen = calls.clone();
-            JudgeSearch::from_evaluator(move |request| {
+            JudgeSearch::from_evaluator(move |_, request| {
                 seen.fetch_add(1, Ordering::SeqCst);
                 async move {
                     tokio::time::sleep(Duration::from_millis(400)).await;

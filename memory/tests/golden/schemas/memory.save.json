@@ -1,12 +1,12 @@
 {
-  "description": "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces the existing memory instead of duplicating it. Called from a turn, it records that session and turn as the source. Needed where the `# Memory` header asks for it (a sub-agent, extraction off): save what a later session would need.",
+  "description": "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces the existing memory instead of duplicating it. A text a newer memory superseded is refused with `memory_retired`, naming that memory. Called from a turn it is the agent's note: 3 to 500 characters, in the turn's own bank, at most `max_memories_per_turn` new notes per turn, with that session and turn as its source; a pin, another bank, the `user` entity and the `demoted-rule` tag are refused there, and so is a save from an automation or test session. From a turn a repeat adds no corroboration: it restates the turn's own note and leaves any other memory as it is. Needed where the `# Memory` header asks for it (a sub-agent, extraction off): save what a later session would need.",
   "function_id": "memory::save",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "bank": {
         "default": null,
-        "description": "Target bank; omitted: the calling session's bank, else the configured default.",
+        "description": "Target bank; omitted: the calling session's bank, else the configured default. From a turn only the turn's own bank.",
         "type": [
           "string",
           "null"
@@ -14,7 +14,7 @@
       },
       "entities": {
         "default": [],
-        "description": "Entity handles (people/projects/tools) used as a retrieval signal. None into the default bank from outside a turn (the memory page, the CLI): `user`, read under every repository's bank; a save from a turn names `user` itself for a fact about the user.",
+        "description": "Entity handles (people/projects/tools) used as a retrieval signal. None into the default bank from outside a turn (the memory page, the CLI): `user`, read under every repository's bank. From a turn `user` is refused.",
         "items": {
           "type": "string"
         },
@@ -22,6 +22,7 @@
       },
       "pinned": {
         "default": false,
+        "description": "Refused from a turn.",
         "type": "boolean"
       },
       "session_id": {
@@ -72,7 +73,7 @@
             "type": "string"
           },
           {
-            "description": "Saved explicitly by an agent or a human (highest trust).",
+            "description": "Saved explicitly through `memory::save`: by a human (console, REST, CLI), or by an agent from a turn: then `source.turn_id` is set and it is that agent's note, not a fact the user stated.",
             "enum": [
               "stated"
             ],
@@ -233,7 +234,7 @@
     },
     "properties": {
       "created": {
-        "description": "False when the text fingerprint matched an existing memory (it was reinforced instead).",
+        "description": "False when the text fingerprint matched an existing memory (it was reinforced instead, or, from a turn, left as it was).",
         "type": "boolean"
       },
       "memory": {

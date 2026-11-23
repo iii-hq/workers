@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import * as store from './store.mjs';
 import { searchPages } from './search.mjs';
 import { extractAssistantText } from './generate.mjs';
-import { awaitTurn } from './harness.mjs';
+import { awaitTurn, sendTurn } from './harness.mjs';
 
 const ASK_SYSTEM =
   'You are OpenWiki answering a question about a repository using its wiki pages. ' +
@@ -122,28 +122,24 @@ function deepAskMessage(id, q, blocks) {
   );
 }
 
-async function askDeep(worker, { id, q, model, blocks }) {
-  const { session_id } = await worker.call({
-    function_id: 'harness::send',
-    payload: {
-      message: deepAskMessage(id, q, blocks),
-      model,
-      options: {
-        system_prompt: ASK_SYSTEM,
-        functions: {
-          allow: [
-            'openwiki::page',
-            'openwiki::pages',
-            'openwiki::search',
-            'openwiki::src::read',
-            'openwiki::src::list',
-            'openwiki::src::grep',
-          ],
-        },
-        max_turns: 12,
+export async function askDeep(worker, { id, q, model, blocks }) {
+  const { session_id } = await sendTurn(worker, {
+    message: deepAskMessage(id, q, blocks),
+    model,
+    options: {
+      system_prompt: ASK_SYSTEM,
+      functions: {
+        allow: [
+          'openwiki::page',
+          'openwiki::pages',
+          'openwiki::search',
+          'openwiki::src::read',
+          'openwiki::src::list',
+          'openwiki::src::grep',
+        ],
       },
+      max_turns: 12,
     },
-    timeoutMs: 30_000,
   });
   if (!session_id) throw new Error('harness::send returned no session_id');
   const result = await awaitTurn(worker, session_id, { timeoutMs: 240_000 });

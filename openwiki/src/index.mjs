@@ -11,7 +11,7 @@ import { inventoryRepo, readSourceFile } from './lib/inventory.mjs';
 import * as store from './lib/store.mjs';
 import { searchPages } from './lib/search.mjs';
 import { planWiki } from './lib/generate.mjs';
-import { generatePageAny, planViaHarness, runOrchestrator, wikiParentSession, citationUrl } from './lib/harness.mjs';
+import { generatePageAny, planViaHarness, runOrchestrator, newRootSession, citationUrl } from './lib/harness.mjs';
 import { slugify } from './lib/ask.mjs';
 import { resolveModel, listModels } from './lib/model.mjs';
 import * as turnbus from './lib/turnbus.mjs';
@@ -327,7 +327,7 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     // Live progress: writers store pages via openwiki::write-page (which streams
     // the page + advances the bar). Spawns are only visible on turn-started, so
     // subscribe that to stream the "spawned a writer" feed as the lead delegates.
-    const orchRoot = wikiParentSession(name, wikiId);
+    const orchRoot = newRootSession(name, wikiId);
     const offLive = turnbus.register(orchRoot, {
       onSpawn: (childId) => {
         pushProgress(wikiId, { kind: 'spawn', slug: String(childId).split('/').pop() || 'page' });
@@ -341,7 +341,14 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
         message: 'Agent researching and spawning writers',
         updated_at: now(),
       });
-      orch = await runOrchestrator(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
+      orch = await runOrchestrator(worker, {
+        rootSessionId: orchRoot,
+        wikiId,
+        repoName: name,
+        repoUrl,
+        model,
+        docsHint: dHint,
+      });
     } catch (e) {
       await store.appendLog(wikiId, `lead did not finish cleanly (${e?.message || e})`);
     } finally {
@@ -389,7 +396,14 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
       // orchestrator failed). Keeps openwiki working without the agentic path.
       let planned = null;
       try {
-        planned = await planViaHarness(worker, { wikiId, repoName: name, repoUrl, model, docsHint: dHint });
+        planned = await planViaHarness(worker, {
+          rootSessionId: orchRoot,
+          wikiId,
+          repoName: name,
+          repoUrl,
+          model,
+          docsHint: dHint,
+        });
       } catch (e) {
         await store.appendLog(wikiId, `harness plan fallback (${e?.message || e})`);
       }

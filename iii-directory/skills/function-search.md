@@ -31,6 +31,11 @@ ids, then fetch their contracts in one batched `engine::functions::info` call.
   Choose the smallest needed id set and call `engine::functions::info` once with
   `{ "function_ids": [...] }` before using them. Repeat queries in one
   session omit candidates already delivered.
+- When the harness sends its namespace, each candidate lists the `namespaces` that
+  hold its id, and the request takes an optional `namespace` that keeps only
+  functions present there. Read contracts with
+  `engine::functions::info { "function_ids": [...], "namespace": "<ns>" }` once per
+  namespace and call with `namespace` next to `function`; omit it to use your own.
 - The response may also carry an `installable` section: workers from the
   public registry (verified authors only) whose functions match but are NOT
   installed. Those functions are not callable yet — confirm with the user,
@@ -91,7 +96,7 @@ Read `compose::operation { operation_id: "<operation-id>" }` once for race recov
 If terminal, dispose the wake with `harness::unobserve { id: "<observer_id>" }` and inspect
 the result; otherwise end the turn with the wake armed. Do not poll. Acceptance is not readiness, and a terminal event can
 report failure. Search again and fetch function contracts only after terminal success.
-Under the harness, omit `namespace` and `file`; it supplies the Compose scope.
+Under the harness, omit `namespace` and `file` from the Compose payload; it supplies the Compose scope.
 
 `directory::pre-generate`, `directory::on-functions-change`, and
 `directory::hint-preview` are internal handlers, not direct tools.

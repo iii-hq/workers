@@ -80,8 +80,7 @@ const messageRow = (
 
 const flat = (
   rows: Parameters<typeof flattenTimelineRows>[0],
-  settling: string[] = [],
-): FlatTimelineRow[] => flattenTimelineRows(rows, new Set(settling))
+): FlatTimelineRow[] => flattenTimelineRows(rows)
 
 describe('flattenTimelineRows', () => {
   it('gives a batch and its summary one row each, in stack order', () => {
@@ -112,7 +111,7 @@ describe('flattenTimelineRows', () => {
       call('older', { functionCallId: 'fc_older' }),
       call('head', { functionCallId: 'fc_head' }),
     ])
-    const [row] = flattenTimelineRows([merged], new Set(), new Set(['fc_head']))
+    const [row] = flattenTimelineRows([merged], new Set(['fc_head']))
     expect(row.key).toBe('fc_head')
   })
 
@@ -121,16 +120,12 @@ describe('flattenTimelineRows', () => {
     expect(row.key).toBe('g')
   })
 
-  it('drops a finished thought unless it is still settling', () => {
-    const rows = flat(
-      [
-        messageRow(thought('gone', false)),
-        messageRow(thought('settling', false)),
-        messageRow(thought('live', true)),
-      ],
-      ['settling'],
-    )
-    expect(rows.map((row) => row.key)).toEqual(['settling', 'live'])
+  it('keeps finished thoughts as rows beside the live one', () => {
+    const rows = flat([
+      messageRow(thought('done', false)),
+      messageRow(thought('live', true)),
+    ])
+    expect(rows.map((row) => row.key)).toEqual(['done', 'live'])
   })
 })
 

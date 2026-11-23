@@ -99,17 +99,15 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
     checks.push(model_check(model));
 
     // 8. Advisory: jobs the queue gave up on after its retries.
-    let stats = deps
-        .iii
-        .call(CallRequest {
-            function_id: "engine::queue::topic_stats".into(),
-            payload: json!({ "topic": EXTRACTION_QUEUE }),
-            action: None,
-            timeout_ms: Some(3_000),
-        })
-        .await
-        .ok();
-    checks.push(queue_check(stats.as_ref()));
+    let stats = crate::hooks::queue_call(
+        &deps.iii,
+        "engine::queue::topic_stats",
+        json!({ "topic": EXTRACTION_QUEUE }),
+        3_000,
+    )
+    .await
+    .ok();
+    checks.push(queue_check(stats.as_ref(), deps.iii.namespace().as_deref()));
 
     Ok(DoctorResponse {
         ok: roundtrip_ok,
@@ -187,8 +185,12 @@ fn model_check(resolved: Option<Result<(String, ModelReason), String>>) -> Docto
 }
 
 /// `None` when the queue's stats could not be read: advisory, never a
-/// failure.
-fn queue_check(stats: Option<&Value>) -> DoctorCheck {
+/// failure. `namespace` is this worker's, where the queue runs.
+fn queue_check(stats: Option<&Value>, namespace: Option<&str>) -> DoctorCheck {
+    // An `engine::queue::*` call that names no namespace resolves in `default`.
+    let place = namespace
+        .filter(|ns| *ns != "default")
+        .map_or(String::new(), |ns| format!(", namespace {ns}"));
     let (ok, detail) = match stats.map(|s| s["dlq_depth"].as_u64()) {
         None | Some(None) => (true, "queue stats unavailable".to_string()),
         Some(Some(0)) => (true, "no dead-lettered jobs reported".to_string()),
@@ -204,7 +206,7 @@ fn queue_check(stats: Option<&Value>) -> DoctorCheck {
                     "{n} extraction {jobs} failed every retry and {wait} in the dead-letter \
                      queue. List the queue with engine::queue::dlq_messages, then retry with \
                      iii::queue::redrive or drop one entry with iii::queue::discard_message \
-                     (topic {EXTRACTION_QUEUE}). A dead-lettered entry holds the job only. \
+                     (topic {EXTRACTION_QUEUE}{place}). A dead-lettered entry holds the job only. \
                      Each failure is in the `extraction pass failed` WARN, with the model \
                      when the pass reached the model call; the extraction-passes check \
                      keeps only the latest error."
@@ -324,6 +326,7 @@ pub struct ReloadResponse {
 }
 
 pub async fn reload(deps: &Deps, _req: ReloadRequest) -> Result<ReloadResponse, MemoryError> {
+    crate::scope::human_only(super::RELOAD_ID)?;
     let store = deps.store().await;
     let banks = store.reload().await?;
     Ok(ReloadResponse { ok: true, banks })
@@ -404,7 +407,7 @@ mod tests {
 
     #[test]
     fn dead_lettered_jobs_fail_the_queue_check() {
-        let check = queue_check(Some(&json!({ "depth": 0, "dlq_depth": 2 })));
+        let check = queue_check(Some(&json!({ "depth": 0, "dlq_depth": 2 })), None);
         assert!(!check.ok);
         assert_eq!(check.name, "extraction-queue");
         assert!(
@@ -423,12 +426,20 @@ mod tests {
         ] {
             assert!(check.detail.contains(function), "{}", check.detail);
         }
-        let one = queue_check(Some(&json!({ "dlq_depth": 1 }))).detail;
+        assert!(!check.detail.contains("namespace"), "{}", check.detail);
+        let one = queue_check(Some(&json!({ "dlq_depth": 1 })), Some("default")).detail;
         assert!(
             one.starts_with("1 extraction job failed every retry and waits"),
             "{one}"
         );
-        let empty = queue_check(Some(&json!({ "depth": 3, "dlq_depth": 0 })));
+        assert!(!one.contains("namespace"), "{one}");
+        // Outside `default`, the hint names where the queue functions run.
+        let namespaced = queue_check(Some(&json!({ "dlq_depth": 1 })), Some("ops")).detail;
+        assert!(
+            namespaced.contains("(topic memory-extraction, namespace ops)"),
+            "{namespaced}"
+        );
+        let empty = queue_check(Some(&json!({ "depth": 3, "dlq_depth": 0 })), None);
         assert!(empty.ok);
         assert_eq!(empty.detail, "no dead-lettered jobs reported");
     }
@@ -436,7 +447,7 @@ mod tests {
     #[test]
     fn unreadable_queue_stats_do_not_fail_doctor() {
         for stats in [None, Some(json!({})), Some(json!({ "dlq_depth": "two" }))] {
-            let check = queue_check(stats.as_ref());
+            let check = queue_check(stats.as_ref(), None);
             assert!(check.ok, "{stats:?}");
             assert_eq!(check.detail, "queue stats unavailable");
         }

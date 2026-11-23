@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::config::WorkerConfig;
 use crate::error::ApprovalError;
+use crate::permissions::split_namespace_pattern;
 use crate::state;
 use crate::types::{
     AlwaysAllowEntry, ApprovalSettings, GrantedBy, SettingsSource, now_ms, validate_id,
@@ -39,10 +40,14 @@ pub fn seeded_from(cfg: &WorkerConfig, granted_at: i64) -> ApprovalSettings {
         always_allow: cfg
             .auto_allow_seed()
             .iter()
-            .map(|function_id| AlwaysAllowEntry {
-                function_id: function_id.clone(),
-                granted_at,
-                granted_by: GrantedBy::Seed,
+            .map(|pattern| {
+                let (namespace, function_id) = split_namespace_pattern(pattern);
+                AlwaysAllowEntry {
+                    namespace: namespace.map(str::to_string),
+                    function_id: function_id.to_string(),
+                    granted_at,
+                    granted_by: GrantedBy::Seed,
+                }
             })
             .collect(),
         approved_always: Vec::new(),
@@ -127,18 +132,23 @@ pub async fn clear(iii: &IIIClient, session_id: &str) -> Result<bool, ApprovalEr
     Ok(!old.is_null())
 }
 
-/// Idempotent append keyed on exact `function_id` (prior art:
+/// Idempotent append keyed on exact `(namespace, function_id)` (prior art:
 /// add-always-allow.ts) — returns a new list, never mutates.
 pub fn with_grant(
     entries: &[AlwaysAllowEntry],
+    namespace: Option<&str>,
     function_id: &str,
     granted_at: i64,
 ) -> Vec<AlwaysAllowEntry> {
-    if entries.iter().any(|e| e.function_id == function_id) {
+    if entries
+        .iter()
+        .any(|e| (e.namespace.as_deref(), e.function_id.as_str()) == (namespace, function_id))
+    {
         return entries.to_vec();
     }
     let mut next = entries.to_vec();
     next.push(AlwaysAllowEntry {
+        namespace: namespace.map(str::to_string),
         function_id: function_id.to_string(),
         granted_at,
         granted_by: GrantedBy::UserClick,
@@ -146,13 +156,17 @@ pub fn with_grant(
     next
 }
 
-/// Remove by exact `function_id`; absent entries are a no-op. Seed
-/// entries are removable like any other — the stored record overrides
+/// Remove by exact `(namespace, function_id)`; absent entries are a no-op.
+/// Seed entries are removable like any other — the stored record overrides
 /// the deployment seed from first mutation on.
-pub fn without_grant(entries: &[AlwaysAllowEntry], function_id: &str) -> Vec<AlwaysAllowEntry> {
+pub fn without_grant(
+    entries: &[AlwaysAllowEntry],
+    namespace: Option<&str>,
+    function_id: &str,
+) -> Vec<AlwaysAllowEntry> {
     entries
         .iter()
-        .filter(|e| e.function_id != function_id)
+        .filter(|e| (e.namespace.as_deref(), e.function_id.as_str()) != (namespace, function_id))
         .cloned()
         .collect()
 }
@@ -213,8 +227,8 @@ mod tests {
 
     #[test]
     fn with_grant_is_idempotent_on_function_id() {
-        let one = with_grant(&[], "shell::run", 10);
-        let two = with_grant(&one, "shell::run", 20);
+        let one = with_grant(&[], None, "shell::run", 10);
+        let two = with_grant(&one, None, "shell::run", 20);
         assert_eq!(one, two);
         assert_eq!(two.len(), 1);
         assert_eq!(two[0].granted_at, 10);
@@ -223,8 +237,39 @@ mod tests {
 
     #[test]
     fn without_grant_removes_and_tolerates_absent() {
-        let list = with_grant(&[], "shell::run", 10);
-        assert!(without_grant(&list, "shell::run").is_empty());
-        assert_eq!(without_grant(&list, "other::fn"), list);
+        let list = with_grant(&[], None, "shell::run", 10);
+        assert!(without_grant(&list, None, "shell::run").is_empty());
+        assert_eq!(without_grant(&list, None, "other::fn"), list);
+    }
+
+    #[test]
+    fn grants_dedup_and_remove_by_namespace_and_id() {
+        let two = with_grant(
+            &with_grant(&[], Some("laptop"), "shell::run", 10),
+            None,
+            "shell::run",
+            20,
+        );
+        assert_eq!(two.len(), 2);
+        assert_eq!(with_grant(&two, Some("laptop"), "shell::run", 30), two);
+        assert_eq!(
+            without_grant(&two, Some("laptop"), "shell::run"),
+            vec![two[1].clone()]
+        );
+    }
+
+    #[test]
+    fn seeds_split_the_namespace_qualifier() {
+        let cfg = WorkerConfig {
+            rules: vec![
+                json!({ "function": "laptop/web::fetch", "action": "allow", "modes": ["auto"] }),
+            ],
+            ..defaults_with_seed()
+        };
+        let e = &seeded_from(&cfg, 0).always_allow[0];
+        assert_eq!(
+            (e.namespace.as_deref(), e.function_id.as_str()),
+            (Some("laptop"), "web::fetch")
+        );
     }
 }

@@ -1,0 +1,5 @@
+{ "mcpServers": { "api-server": { "type": "http", "url": "${API_BASE_URL:-https://api.example.com}/mcp", "headers": { "Authorization": "Bearer ${API_KEY}" }, "timeout": 30000 },
+"weather": { "type": "stdio", "command": "/opt/weather/weather-cli", "args": ["--api-key", "@@FAKE@@", "--region", "${REGION:-eu}"], "env": { "CACHE_DIR": "/tmp/weather", "LOG_LEVEL": "${LOG_LEVEL}" }, "alwaysLoad": true },
+"Slack_Team": { "type": "streamable-http", "url": "https://mcp.slack.com/mcp", "oauth": { "clientId": "slack-client", "callbackPort": 8080, "scopes": "channels:read chat:write", "authServerMetadataUrl": "https://auth.example.com/.well-known/openid-configuration" } },
+"asana": { "type": "sse", "url": "https://mcp.asana.com/sse" },
+"linear-server": { "type": "http", "url": "https://mcp.linear.app/mcp" } } }

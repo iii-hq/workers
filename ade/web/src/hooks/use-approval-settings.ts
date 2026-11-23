@@ -17,7 +17,7 @@ interface UseApprovalSettingsResult {
   setMode(mode: PermissionMode): Promise<void>
   addAlwaysAllow(functionId: string): Promise<void>
   removeAlwaysAllow(functionId: string): Promise<void>
-  approveAlways(functionId: string): Promise<void>
+  approveAlways(functionId: string, namespace?: string): Promise<void>
 }
 
 /**
@@ -176,17 +176,24 @@ export function useApprovalSettings(
   )
 
   const approveAlways = useCallback(
-    async (functionId: string) => {
+    async (functionId: string, namespace?: string) => {
       let previous: ApprovalSettings | null = null
       setSettings((s) => {
         previous = s
-        if (s.approved_always.some((e) => e.function_id === functionId))
+        if (
+          s.approved_always.some(
+            (e) =>
+              (e.namespace ?? null) === (namespace ?? null) &&
+              e.function_id === functionId,
+          )
+        )
           return s
         return {
           ...s,
           approved_always: [
             ...s.approved_always,
             {
+              ...(namespace !== undefined ? { namespace } : {}),
               function_id: functionId,
               granted_at: Date.now(),
               granted_by: 'user_click',
@@ -195,7 +202,7 @@ export function useApprovalSettings(
         }
       })
       try {
-        const next = await rpcApproveAlways(sessionId, functionId)
+        const next = await rpcApproveAlways(sessionId, functionId, namespace)
         if (activeRef.current === sessionId) setSettings(next)
       } catch (err) {
         console.error('[approval-settings] approve_always failed', err)

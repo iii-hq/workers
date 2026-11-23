@@ -9,6 +9,10 @@ interface FilesystemAccessPromptProps {
   requestedRoot: string
   /** The session's working directory, if any — shown as "always allowed". */
   workingDir?: string | null
+  /** Engine namespace of the held call, when it is not the gate's own. */
+  namespace?: string
+  /** The gate gives this call one call whatever is chosen: no session/always. */
+  onceOnly?: boolean
   onResolve: (action: FilesystemAccessAction) => void | Promise<void>
   /** Footer link to the grants management dialog (§5). */
   onManage?: () => void
@@ -27,6 +31,8 @@ interface FilesystemAccessPromptProps {
 export function FilesystemAccessPrompt({
   requestedRoot,
   workingDir,
+  namespace,
+  onceOnly,
   onResolve,
   onManage,
   disabled,
@@ -69,11 +75,14 @@ export function FilesystemAccessPrompt({
           aria-live="polite"
           className="font-mono text-meta text-ink-faint"
         >
-          the approved function reached this folder and paused before accessing
-          it.
+          {namespace
+            ? `the approved function reached this folder in namespace ${namespace} and paused before accessing it.`
+            : 'the approved function reached this folder and paused before accessing it.'}
         </p>
         <p className="font-mono text-meta text-ink-ghost">
-          choose how long to allow access; the function resumes automatically.
+          {onceOnly
+            ? 'folder access for a call in another namespace lasts one call; the function resumes automatically.'
+            : 'choose how long to allow access; the function resumes automatically.'}
         </p>
         {workingDir ? (
           <p className="font-mono text-meta text-ink-ghost">
@@ -94,22 +103,26 @@ export function FilesystemAccessPrompt({
         >
           {submitting === 'once' ? 'allowing…' : 'allow once'}
         </Button>
-        <Button
-          variant="pill"
-          size="sm"
-          onClick={() => void run('session')}
-          disabled={disabled || !!submitting}
-        >
-          {submitting === 'session' ? 'allowing…' : 'allow this session'}
-        </Button>
-        <Button
-          variant="pill"
-          size="sm"
-          onClick={() => setConfirmOpen(true)}
-          disabled={disabled || !!submitting}
-        >
-          {submitting === 'always' ? 'allowing…' : 'always allow…'}
-        </Button>
+        {onceOnly ? null : (
+          <>
+            <Button
+              variant="pill"
+              size="sm"
+              onClick={() => void run('session')}
+              disabled={disabled || !!submitting}
+            >
+              {submitting === 'session' ? 'allowing…' : 'allow this session'}
+            </Button>
+            <Button
+              variant="pill"
+              size="sm"
+              onClick={() => setConfirmOpen(true)}
+              disabled={disabled || !!submitting}
+            >
+              {submitting === 'always' ? 'allowing…' : 'always allow…'}
+            </Button>
+          </>
+        )}
         <Button
           variant="pill"
           size="sm"

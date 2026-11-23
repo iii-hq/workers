@@ -129,6 +129,63 @@ pub async fn resolve(
                 return Ok(not_resolved());
             };
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
+            let namespace = crate::clients::engine::resolve_namespace(
+                &function_id,
+                checkpoint.namespace.as_deref(),
+            );
+            let implicit = crate::clients::engine::resolve_namespace(&function_id, None);
+            // A bound approval gate too old to show a namespace could release a
+            // call in another one unseen: refuse it before any hook or dispatch.
+            let gate = if namespace != implicit
+                && deps
+                    .hooks
+                    .bindings(crate::hooks::HookPoint::PreCall)
+                    .iter()
+                    .any(|b| b.target == crate::hooks::APPROVAL_GATE_ID)
+            {
+                Some(deps.engine().await.approval_gate_calls_namespaces().await)
+            } else {
+                None
+            };
+            if let Some(data) =
+                crate::call::old_gate_refusal(&function_id, &namespace, &implicit, gate)
+            {
+                let entry_id =
+                    ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+                let message = AgentMessage::FunctionResult(FunctionResultMessage {
+                    role: FunctionResultRoleTag::FunctionResult,
+                    function_call_id: req.function_call_id.clone(),
+                    function_id,
+                    content: data.content,
+                    details: data.details,
+                    is_error: data.is_error,
+                    timestamp: AgentMessage::now_ms(),
+                });
+                let origin = json!({ "turn_id": record.turn_id });
+                session
+                    .append(
+                        &record.session_id,
+                        &message,
+                        Some(&entry_id),
+                        None,
+                        Some(&origin),
+                    )
+                    .await?;
+                apply_deferred_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &req.function_call_id,
+                    Vec::new(),
+                );
+                if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                    cp.state = CallState::Done;
+                    cp.entry_id = Some(entry_id);
+                }
+                let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+                return Ok(FunctionResolveResponse {
+                    resolved: true,
+                    turn_resumed,
+                });
+            }
             // The checkpoint carries the arguments as mutated by the chain up
             // to the hold (issue #506); transcript recovery — the model's
             // ORIGINAL arguments — is only the fallback for records written
@@ -148,6 +205,7 @@ pub async fn resolve(
                     record.step,
                     &req.function_call_id,
                     &function_id,
+                    &namespace,
                     &arguments,
                     description.as_deref(),
                     Some(&held_by),
@@ -235,8 +293,10 @@ pub async fn resolve(
             // turn loop — depth/fan-out guards, policy subsetting, ParentLink
             // — never the generic dispatcher (which would seed a parentless,
             // unguarded child). Fire-and-forget: the result is the child ids;
-            // post_call is skipped, mirroring the loop's spawn branch.
-            if function_id == crate::functions::SPAWN_ID {
+            // post_call is skipped, mirroring the loop's spawn branch. One
+            // approved for another namespace takes the generic path, which
+            // refuses it (`observe::invoke`).
+            if function_id == crate::functions::SPAWN_ID && namespace == implicit {
                 // Dispatched + persist BEFORE the spawn (mirrors the non-spawn
                 // path below): a crash or redelivered resolve between a
                 // successful spawn and the Done persist would otherwise still
@@ -266,9 +326,10 @@ pub async fn resolve(
                     &mut data,
                     &mut origin,
                     checkpoint.reconciled.as_deref(),
+                    &namespace,
                     &function_id,
                     &arguments,
-                    crate::reconcile::contract_in_context(&record, &function_id),
+                    crate::reconcile::contract_in_context(&record, &namespace, &function_id),
                 )
                 .await;
                 let entry_id =
@@ -355,6 +416,7 @@ pub async fn resolve(
                 &engine,
                 &policy,
                 &function_id,
+                checkpoint.namespace.as_deref(),
                 &arguments,
                 &record.session_id,
                 true, // resolve holds this session's lock
@@ -371,15 +433,17 @@ pub async fn resolve(
                     record.step,
                     &req.function_call_id,
                     &function_id,
+                    &namespace,
                     &arguments,
                     raw,
                 )
                 .await;
-            let (data, annotations) = match post_outcome {
+            let (data, annotations, moved_root) = match post_outcome {
                 crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
-                } => (result, annotations),
+                    fs_scope_root,
+                } => (result, annotations, fs_scope_root),
                 crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
@@ -438,11 +502,13 @@ pub async fn resolve(
                 &mut data,
                 &mut origin,
                 checkpoint.reconciled.as_deref(),
+                &namespace,
                 &function_id,
                 &unstamped,
-                crate::reconcile::contract_in_context(&record, &function_id),
+                crate::reconcile::contract_in_context(&record, &namespace, &function_id),
             )
             .await;
+            let moved_from = crate::turn_loop::adopt_moved_root(&mut record, &mut data, moved_root);
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
@@ -470,7 +536,13 @@ pub async fn resolve(
                 cp.state = CallState::Done;
                 cp.entry_id = Some(entry_id);
             }
-            let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+            // Mirror before the `?`: the result is already in the transcript,
+            // and a retried resolve skips a call that is no longer pending.
+            let resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await;
+            if let Some(from) = moved_from {
+                crate::turn_loop::mirror_moved_root(&session, &record, &from).await;
+            }
+            let turn_resumed = resumed?;
             Ok(FunctionResolveResponse {
                 resolved: true,
                 turn_resumed,
@@ -615,7 +687,9 @@ pub async fn resolve_parent(
         is_error: Some(is_error),
         details: Some(details),
     };
-    match resolve(deps, req).await {
+    // Boxed: every child finalize awaits this inline, and a debug build reserves
+    // `resolve`'s large state in each of their frames (`turn_loop::stack_tests`).
+    match Box::pin(resolve(deps, req)).await {
         Ok(resp) => resp.resolved,
         Err(e) => {
             tracing::warn!(
@@ -895,6 +969,7 @@ mod tests {
             reconciled: None,
             pending_timeout_ms: timeout_ms,
             pending_at: Some(pending_at),
+            namespace: None,
         }
     }
 

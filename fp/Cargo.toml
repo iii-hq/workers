@@ -2,7 +2,7 @@
 
 [package]
 name = "fp"
-version = "0.3.2"
+version = "0.3.4"
 edition = "2024"
 publish = false
 
@@ -30,6 +30,9 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
+# Already in the tree (regex-automata, via tracing-subscriber); withholds every
+# stream key in one pass.
+aho-corasick = "1"
 
 # Release profile for published binaries: thin LTO with one codegen unit runs
 # faster than Cargo's default, and strip drops the symbol table for a smaller

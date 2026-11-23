@@ -1,61 +1,51 @@
 import { ChevronRight } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Caret } from '@/components/ui/Caret'
-import { useMediaQuery } from '@/hooks/use-media-query'
+import { formatTurnDuration } from '@/lib/turn-summary'
+import { cn } from '@/lib/utils'
 import type { ThoughtMessage as ThoughtMessageType } from '@/types/chat'
 import './thinking-motion.css'
 
-export const THOUGHT_SETTLE_DURATION_MS = 150
-
 interface ThoughtMessageProps {
   message: ThoughtMessageType
-  /** Keep a completed thought around just long enough to crossfade its successor. */
-  settling?: boolean
-  /** Lets a parent presence manager remove the retained row after its exit. */
-  onSettled?: () => void
 }
 
-export function ThoughtMessage({
-  message,
-  settling = false,
-  onSettled,
-}: ThoughtMessageProps) {
-  const [retained, setRetained] = useState(() => message.streaming || settling)
+/** The fold's label: live while the model thinks, a record once it is done. */
+export function thoughtLabel(message: ThoughtMessageType): string {
+  if (message.streaming) return 'Thinking'
+  return message.durationMs > 0
+    ? `Thought for ${formatTurnDuration(message.durationMs)}`
+    : 'Thought'
+}
+
+/**
+ * The model's reasoning as a row of the transcript. While it streams the
+ * fold is open and shows the latest five lines with a live caret; when it
+ * finishes it folds to its label and stays in the chat, so the thinking
+ * behind an answer can be read back at any time (and after a reload).
+ */
+export function ThoughtMessage({ message }: ThoughtMessageProps) {
+  const streaming = message.streaming === true
+  // Open while live; a finished thought starts folded (one line), and the
+  // reader unfolds it. The fold is the person's once they touch it.
+  const [open, setOpen] = useState(streaming)
   const [expanded, setExpanded] = useState(false)
   const [hasOverflow, setHasOverflow] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
-  const wasStreamingRef = useRef(message.streaming)
-  const onSettledRef = useRef(onSettled)
+  const wasStreamingRef = useRef(streaming)
   const contentId = useId()
-  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const explicitLineCount = message.content.split('\n').length
-  onSettledRef.current = onSettled
 
+  // Streaming ended: fold the thought so the answer below it has the room.
   useEffect(() => {
-    const transitionedToSettling = wasStreamingRef.current && !message.streaming
-    wasStreamingRef.current = message.streaming
+    if (wasStreamingRef.current && !streaming) setOpen(false)
+    wasStreamingRef.current = streaming
+  }, [streaming])
 
-    if (message.streaming) {
-      setRetained(true)
-      return
-    }
-
-    if (!settling && !transitionedToSettling) {
-      setRetained(false)
-      return
-    }
-
-    setRetained(true)
-    const delay = reducedMotion ? 0 : THOUGHT_SETTLE_DURATION_MS
-    const timer = window.setTimeout(() => {
-      setRetained(false)
-      onSettledRef.current?.()
-    }, delay)
-
-    return () => window.clearTimeout(timer)
-  }, [message.streaming, reducedMotion, settling])
-
+  // The fold's content has no box while it is closed, so the measure runs
+  // again when the reader opens it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `open` re-measures a fold that had no layout while closed
   useLayoutEffect(() => {
     const viewport = viewportRef.current
     const content = contentRef.current
@@ -93,31 +83,32 @@ export function ThoughtMessage({
       observer.disconnect()
       if (frame !== null) cancelAnimationFrame(frame)
     }
-  }, [explicitLineCount])
+  }, [explicitLineCount, open])
 
-  if (!retained) return null
-
-  const state = message.streaming ? 'streaming' : 'settling'
+  const state = streaming ? 'streaming' : 'done'
 
   return (
-    <div
-      aria-hidden={state === 'settling'}
-      className="chat-thought"
-      data-state={state}
-      inert={state === 'settling'}
-    >
+    <div className="chat-thought" data-state={state}>
       <div className="chat-thought__presence-inner">
-        <details className="iii-details group/thought" open>
+        <details
+          className="iii-details group/thought"
+          open={open}
+          onToggle={(event) => setOpen(event.currentTarget.open)}
+        >
           <summary className="chat-thought__summary inline-flex items-center gap-1.5 select-none">
             <ChevronRight
               aria-hidden
               className="iii-chev size-4 shrink-0 text-ink-ghost"
             />
             <span className="flex items-center gap-1.5">
-              <span className="thinking-shimmer">Thinking</span>
-              {message.streaming ? (
-                <Caret className="h-[10px] w-[5px]" />
-              ) : null}
+              <span
+                className={cn(
+                  streaming ? 'thinking-shimmer' : 'text-ink-faint',
+                )}
+              >
+                {thoughtLabel(message)}
+              </span>
+              {streaming ? <Caret className="h-[10px] w-[5px]" /> : null}
             </span>
           </summary>
           <div className="chat-thought__body whitespace-pre-wrap break-words">

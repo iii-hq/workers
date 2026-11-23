@@ -683,10 +683,7 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
 /// publish gives its delta back to the baseline, so the next report carries
 /// it.
 async fn announce(deps: &Deps, before: &MachineRow, after: &MachineRow, timeout_ms: u64) {
-    let ns = deps
-        .iii
-        .namespace()
-        .unwrap_or_else(|| "default".to_string());
+    let ns = crate::clients::engine::own_namespace();
     if let Some(reached) = crossed(before.user_turns, after.user_turns) {
         let delta = after.tally().since(&before.user_turns_reported);
         let payload = user_turns_payload(&ns, reached, after, &delta);

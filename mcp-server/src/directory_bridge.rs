@@ -96,53 +96,9 @@ pub fn resource_templates() -> Value {
     }]})
 }
 
-/// Agent profiles; hidden helper profiles only when asked.
-pub async fn list_agents<B: Bus>(bus: &B, include_hidden: bool) -> Result<Value, BusError> {
-    let agents = rows(
-        bus.call("directory::agents::list", json!({}), None).await?,
-        "agents",
-    );
-    Ok(Value::Array(
-        agents
-            .into_iter()
-            .filter(|a| include_hidden || a.get("hidden").and_then(Value::as_bool) != Some(true))
-            .collect(),
-    ))
-}
-
 pub async fn get_agent<B: Bus>(bus: &B, id: &str) -> Result<Value, BusError> {
     bus.call("directory::agents::get", json!({ "id": id }), None)
         .await
-}
-
-pub async fn list_skills<B: Bus>(
-    bus: &B,
-    search: Option<&str>,
-    prefix: Option<&str>,
-) -> Result<Value, BusError> {
-    let mut filter = Map::new();
-    if let Some(s) = search {
-        filter.insert("search".into(), json!(s));
-    }
-    if let Some(p) = prefix {
-        filter.insert("prefix".into(), json!(p));
-    }
-    Ok(Value::Array(rows(
-        bus.call("directory::skills::list", Value::Object(filter), None)
-            .await?,
-        "skills",
-    )))
-}
-
-pub async fn get_skill_body<B: Bus>(bus: &B, id: &str) -> Result<String, BusError> {
-    let skill = bus
-        .call("directory::skills::get", json!({ "id": id }), None)
-        .await?;
-    Ok(skill
-        .get("body")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string())
 }
 
 #[cfg(test)]
@@ -241,50 +197,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agents_list_hides_hidden_profiles_unless_asked() {
-        let bus = FakeBus::new().on("directory::agents::list", |_| {
-            Ok(json!({ "agents": [{ "id": "writer" }, { "id": "helper", "hidden": true }] }))
+    async fn get_agent_passes_the_id() {
+        let bus = FakeBus::new().on("directory::agents::get", |p| {
+            Ok(json!({ "id": p["id"], "system_prompt": "Be." }))
         });
-        let ids = |v: Value| {
-            v.as_array()
-                .unwrap()
-                .iter()
-                .map(|a| a["id"].clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            ids(list_agents(&bus, false).await.unwrap()),
-            vec![json!("writer")]
-        );
-        assert_eq!(ids(list_agents(&bus, true).await.unwrap()).len(), 2);
-    }
-
-    #[tokio::test]
-    async fn get_agent_and_get_skill_pass_the_id() {
-        let bus = FakeBus::new()
-            .on("directory::agents::get", |p| {
-                Ok(json!({ "id": p["id"], "system_prompt": "Be." }))
-            })
-            .on("directory::skills::get", |p| {
-                Ok(json!({ "id": p["id"], "body": "Body" }))
-            });
         assert_eq!(
             get_agent(&bus, "writer").await.unwrap()["system_prompt"],
             "Be."
-        );
-        assert_eq!(get_skill_body(&bus, "kanban").await.unwrap(), "Body");
-    }
-
-    #[tokio::test]
-    async fn list_skills_forwards_search_and_prefix() {
-        let bus = FakeBus::new().on("directory::skills::list", |_| Ok(skills_rows()));
-        let rows = list_skills(&bus, Some("kan"), Some("kanban"))
-            .await
-            .unwrap();
-        assert_eq!(rows.as_array().unwrap().len(), 2);
-        assert_eq!(
-            bus.calls()[0].1,
-            json!({ "search": "kan", "prefix": "kanban" })
         );
     }
 }

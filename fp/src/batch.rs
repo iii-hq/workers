@@ -26,7 +26,7 @@ use crate::pipe;
 use crate::util;
 
 pub const BATCH_ID: &str = "fp::batch";
-pub const BATCH_DESC: &str = r#"Run several INDEPENDENT calls in one request and get every answer in place: { calls: [{ id?, function, payload?, namespace?, timeout_ms? }], concurrency?, stop_on_error?, timeout_ms? (default 10000 per call), max_entry_bytes? (default 16384), max_calls? (default 12; more only warns) } → { ok, completed, failed, results: [{ id, function, status: "ok", result, chars, truncated? } | { id, function, status: "error", code, message }], warnings }. Nothing is threaded between calls; for that use fp::pipe. A batch is not a pipe step and a pipe is not a batch call: fp::batch and fp::pipe cannot be calls, and the same refusals as pipe steps apply. ok is true only when every call answered; completed and failed count the outcomes. A refusal lists every problem in the request."#;
+pub const BATCH_DESC: &str = r#"Run several INDEPENDENT calls in one request and get every answer in place: { calls: [{ id?, function, payload?, namespace?, timeout_ms? }], concurrency?, stop_on_error?, timeout_ms? (default 10000 per call), max_entry_bytes? (default 16384), max_calls? (default 12; more only warns) } → { ok, completed, failed, results: [{ id, function, status: "ok", result, chars, truncated? } | { id, function, status: "error", code, message }], warnings }. Nothing is threaded between calls; for that use fp::pipe. A batch is not a pipe step and a pipe is not a batch call: fp::batch and fp::pipe cannot be calls, and the same refusals as pipe steps apply. While the approval gate runs, a call naming another namespace is refused; call it directly with namespace. ok is true only when every call answered; completed and failed count the outcomes. A refusal lists every problem in the request."#;
 
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_MAX_ENTRY_BYTES: usize = 16 * 1024;
@@ -132,9 +132,17 @@ fn call_args(call: &BatchCall, fs_scope: Option<&Value>) -> Result<Value, String
     pipe::bus_step_args(&call.function, args, fs_scope)
 }
 
+/// The namespace a call names when it is not `own` (a blank one is no namespace).
+fn other_namespace<'a>(call: &'a BatchCall, own: &str) -> Option<&'a str> {
+    call.namespace
+        .as_deref()
+        .filter(|ns| !ns.trim().is_empty() && *ns != own)
+}
+
 fn validate_with_approval_gate(
     req: &BatchRequest,
     approval_gate_running: bool,
+    own_namespace: &str,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     if req.calls.is_empty() || req.calls.len() > HARD_MAX_CALLS {
@@ -143,6 +151,16 @@ fn validate_with_approval_gate(
     for (i, call) in req.calls.iter().enumerate() {
         if let Some(reason) = forbidden_call(&call.function, approval_gate_running) {
             problems.push(format!("call {} ({}): {reason}", i + 1, call.function));
+        }
+        // The approver sees `fp::batch` in this worker's namespace only, so a
+        // call elsewhere would run unapproved there.
+        if approval_gate_running && let Some(ns) = other_namespace(call, own_namespace) {
+            problems.push(format!(
+                "call {} ({f}): a call in namespace {ns} must be approved in that namespace — \
+                 call {f} directly with \"namespace\": \"{ns}\" instead of through fp::batch",
+                i + 1,
+                f = call.function
+            ));
         }
         if pipe::is_scoped_step(&call.function) && req.fs_scope.is_none() {
             problems.push(format!(
@@ -171,7 +189,11 @@ fn validate_with_approval_gate(
 }
 
 pub fn validate(req: &BatchRequest) -> Result<Vec<String>, String> {
-    validate_with_approval_gate(req, true)
+    // What `register_worker` resolves when, as in main.rs, no namespace option is set.
+    let own = std::env::var("III_NAMESPACE")
+        .ok()
+        .filter(|ns| !ns.trim().is_empty());
+    validate_with_approval_gate(req, true, own.as_deref().unwrap_or("default"))
 }
 
 fn error_parts(error: &iii_sdk::Error) -> (String, String) {
@@ -195,6 +217,11 @@ fn capped(value: Value, max_bytes: usize) -> (Value, usize, bool) {
     if text.len() <= max_bytes {
         return (value, chars, false);
     }
+    // A whole value keeps its handles for the caller; this cut text is one the
+    // harness cannot look inside, so withhold the keys before the cut.
+    let mut keys = Vec::new();
+    pipe::stream_access_keys(&value, &mut keys);
+    let text = pipe::withhold_access_keys(text, &keys);
     let mut end = max_bytes;
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
@@ -250,27 +277,43 @@ async fn one(
     }
 }
 
+/// The gate state for a batch only the gate's answer splits. An unknown state
+/// refuses either way: a batch that passes without the gate (a call in another
+/// namespace) gets that call's refusal, while one that needs the gate (a
+/// database write) keeps the lookup error, so no write runs on a guess.
+fn split_gate(passes_without_gate: bool, lookup: Result<bool, String>) -> Result<bool, String> {
+    match lookup {
+        Err(_) if passes_without_gate => Ok(true),
+        lookup => lookup,
+    }
+}
+
 pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse, String> {
+    let own = iii.namespace().unwrap_or_else(|| "default".into());
     let warnings = match (
-        validate_with_approval_gate(&req, false),
-        validate_with_approval_gate(&req, true),
+        validate_with_approval_gate(&req, false, &own),
+        validate_with_approval_gate(&req, true, &own),
     ) {
         (Ok(w), Ok(_)) => w,
         (Err(_), Err(_)) => {
-            // The gate only decides database writes, so the complete list
-            // needs its real state when the batch holds one. Batches without
-            // one stay off the bus, and an unknown state fails closed.
-            let gate =
-                if req.calls.iter().any(|c| {
-                    c.function.starts_with("database::") && c.function != "database::query"
-                }) {
-                    pipe::approval_gate_running(&iii).await.unwrap_or(true)
-                } else {
-                    false
-                };
-            validate_with_approval_gate(&req, gate)?
+            // The gate only decides database writes and calls in another
+            // namespace, so the complete list needs its real state when the
+            // batch holds one. Batches without one stay off the bus, and an
+            // unknown state fails closed.
+            let gate = if req.calls.iter().any(|c| {
+                (c.function.starts_with("database::") && c.function != "database::query")
+                    || other_namespace(c, &own).is_some()
+            }) {
+                pipe::approval_gate_running(&iii).await.unwrap_or(true)
+            } else {
+                false
+            };
+            validate_with_approval_gate(&req, gate, &own)?
         }
-        _ => validate_with_approval_gate(&req, pipe::approval_gate_running(&iii).await?)?,
+        (off, _) => {
+            let gate = split_gate(off.is_ok(), pipe::approval_gate_running(&iii).await)?;
+            validate_with_approval_gate(&req, gate, &own)?
+        }
     };
     let default_timeout = req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
     let max_bytes = req
@@ -393,6 +436,55 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
+    fn call_in(namespace: Option<&str>) -> BatchRequest {
+        parse(json!({
+            "fs_scope": { "root": "/work/session-7" },
+            "calls": [{ "function": "shell::exec", "namespace": namespace }],
+        }))
+    }
+
+    #[test]
+    fn an_unknown_gate_state_refuses_a_split_batch() {
+        let lost = || Err("could not inspect approval-gate availability".to_string());
+        // A call in another namespace passes only without the gate: refuse it.
+        assert_eq!(split_gate(true, lost()), Ok(true));
+        let err = validate_with_approval_gate(&call_in(Some("other")), true, "own").unwrap_err();
+        assert!(err.contains("must be approved in that namespace"), "{err}");
+        // A database write passes only with the gate: keep the lookup error.
+        assert!(split_gate(false, lost()).is_err());
+        assert_eq!(split_gate(false, Ok(false)), Ok(false));
+        assert_eq!(split_gate(true, Ok(false)), Ok(false));
+    }
+
+    #[test]
+    fn a_call_in_another_namespace_is_refused_while_the_gate_runs() {
+        let err = validate_with_approval_gate(&call_in(Some("other")), true, "own").unwrap_err();
+        assert!(
+            err.contains(
+                "call 1 (shell::exec): a call in namespace other must be approved in that \
+                 namespace — call shell::exec directly with \"namespace\": \"other\" instead \
+                 of through fp::batch"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_call_in_its_own_namespace_or_without_one_still_runs_under_the_gate() {
+        for namespace in [None, Some("own"), Some(" ")] {
+            let req = call_in(namespace);
+            assert!(
+                validate_with_approval_gate(&req, true, "own").is_ok(),
+                "{namespace:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_gate_a_call_may_name_any_namespace() {
+        assert!(validate_with_approval_gate(&call_in(Some("other")), false, "own").is_ok());
+    }
+
     #[test]
     fn batch_refuses_mesh_node_calls() {
         for function in [
@@ -505,6 +597,38 @@ mod tests {
         let (obj, _, truncated) = capped(json!({ "k": "v" }), 2);
         assert!(truncated);
         assert_eq!(obj, json!("{\""));
+    }
+
+    #[tokio::test]
+    async fn a_capped_entry_withholds_stream_handle_keys() {
+        // Transforms never touch the bus, so a disconnected client is fine.
+        let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
+        let handle = json!({ "channel_id": "c1", "access_key": "secret-key", "direction": "read" });
+        // A `shell::fs::read` return, padded past the cap.
+        let read = json!({ "content": handle, "size": 16, "tail": "x".repeat(400) });
+        let req = parse(json!({ "max_entry_bytes": 400, "calls": [
+            { "function": "fp::get", "payload": { "value": read, "path": "" } },
+        ]}));
+        let response = run(iii, req).await.unwrap();
+        let BatchResult::Ok {
+            result: Value::String(text),
+            truncated: true,
+            ..
+        } = &response.results[0]
+        else {
+            panic!("expected a capped entry, got {:?}", response.results[0]);
+        };
+        assert!(!text.contains("secret-key"), "{text}");
+        assert!(text.contains("coder::read-file"), "{text}");
+        assert!(text.contains(r#""channel_id":"c1""#), "{text}");
+        assert!(text.contains(r#""direction":"read""#), "{text}");
+        // Keys sort, so `access_key` leads a handle: a cut at 30 bytes lands in it.
+        let (cut, _, _) = capped(json!({ "content": handle }), 30);
+        assert!(!cut.as_str().unwrap().contains("secr"), "{cut}");
+        // A whole result stays the value; the harness withholds its handles.
+        let (whole, _, truncated) = capped(json!({ "content": handle }), 16_384);
+        assert!(!truncated);
+        assert_eq!(whole["content"]["access_key"], "secret-key");
     }
 
     #[test]

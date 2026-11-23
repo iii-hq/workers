@@ -9,7 +9,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { useContext, useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import type { ObserverRegistration } from '@/components/observer-activity/model'
 import { ObserverActivityCard } from '@/components/observer-activity/ObserverActivityCard'
@@ -32,6 +32,7 @@ import {
 } from '@/lib/chat-aside'
 import { FileMessageContext, useOpenMessageFile } from '@/lib/file-navigation'
 import { Markdown } from '@/lib/markdown'
+import { splitMessageBlocks } from '@/lib/message-blocks'
 import { invocationCommand, parseSlashInvocations } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
 import {
@@ -39,6 +40,7 @@ import {
   formatReplyClock,
   formatTurnDuration,
 } from '@/lib/turn-summary'
+import { useExtMessageBlockRenderers } from '@/lib/ui-slots'
 import type {
   AssistantMessage as AssistantMessageType,
   Message as MessageType,
@@ -69,16 +71,19 @@ interface MessageProps {
     sessionId: string,
     functionCallId: string,
     decision: 'allow' | 'deny',
+    namespace?: string,
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
     functionCallId: string,
     functionId: string,
+    namespace?: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
     functionCallId: string,
     action: FilesystemAccessAction,
+    namespace?: string,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
@@ -200,16 +205,38 @@ function MessageBody({
         | ((action: FilesystemAccessAction) => Promise<void>)
         | undefined
       if (onResolveApproval && sessionId && functionCallId) {
-        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
-        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
+        onApprove = () =>
+          onResolveApproval(
+            sessionId,
+            functionCallId,
+            'allow',
+            message.namespace,
+          )
+        onDeny = () =>
+          onResolveApproval(
+            sessionId,
+            functionCallId,
+            'deny',
+            message.namespace,
+          )
       }
       if (onAlwaysAllow && sessionId && functionCallId) {
         onAlwaysAllowHandler = () =>
-          onAlwaysAllow(sessionId, functionCallId, message.functionId)
+          onAlwaysAllow(
+            sessionId,
+            functionCallId,
+            message.functionId,
+            message.namespace,
+          )
       }
       if (onResolveFilesystemAccess && sessionId && functionCallId) {
         onResolveFilesystemAccessHandler = (action) =>
-          onResolveFilesystemAccess(sessionId, functionCallId, action)
+          onResolveFilesystemAccess(
+            sessionId,
+            functionCallId,
+            action,
+            message.namespace,
+          )
       }
       return (
         <FunctionCallCard
@@ -471,7 +498,14 @@ function UserMessage({
   const quoted = sideQuotes
     ? splitQuotedMessage(message.content, sideQuotes.quotes)
     : null
-  const prose = quoted ? quoted.rest : message.content
+  const text = quoted ? quoted.rest : message.content
+  // Blocks a worker wrote into the message (a workflow node's input) are
+  // nobody's words: the bubble keeps the prose, its renderer draws each one.
+  const blockRenderers = useExtMessageBlockRenderers()
+  const { prose, blocks } = useMemo(
+    () => splitMessageBlocks(text, blockRenderers),
+    [text, blockRenderers],
+  )
   return (
     <article
       className="chat-message group flex flex-col items-end gap-2"
@@ -510,6 +544,34 @@ function UserMessage({
               />
             </Hint>
           </div>
+        </div>
+      ) : null}
+      {blocks.length > 0 ? (
+        <div
+          data-message-blocks=""
+          // No prose: room above the first block so the copy never covers its header.
+          className={cn(
+            'relative flex w-full flex-col gap-2',
+            !prose && 'pt-5',
+          )}
+        >
+          {blocks.map((block, index) => {
+            const Block = blockRenderers.get(block.tag)?.render
+            return Block ? (
+              // biome-ignore lint/suspicious/noArrayIndexKey: blocks are positional and never reorder
+              <Block key={index} {...block} sessionId={sessionId} />
+            ) : null
+          })}
+          {/* No bubble left to carry the copy: it rides above the first
+ block's top-right edge, in the room the padding leaves. */}
+          {prose ? null : (
+            <Hint label="Copy message" side="top">
+              <CopyMessageButton
+                text={message.content}
+                className="chat-user-copy"
+              />
+            </Hint>
+          )}
         </div>
       ) : null}
       {chips.length > 0 ? (

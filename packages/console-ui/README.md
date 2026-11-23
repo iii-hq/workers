@@ -124,6 +124,12 @@ Observer renderers (`host.observerRenderers?.register`) claim an observed
 function by id (`isMatch('cron::on-tick')`) and render its observers'
 registrations, fires and retirements from the observer's `args` and
 `filters`.
+Message-block renderers (`host.chat?.registerMessageBlockRenderer?.({ tag,
+render })`) draw a block the worker writes into a user message: a
+`<tag name="value">` line, the body and `</tag>`, as their own paragraph.
+The console cuts each block of a registered tag out of the bubble and renders
+it below with `{ tag, attributes, body, sessionId? }`; unregistered tags and
+tags inside code stay text, and the last registration of a tag wins.
 
 Renderers can also open their worker's registered page with contextual JSON:
 

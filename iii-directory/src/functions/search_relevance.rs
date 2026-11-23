@@ -44,6 +44,7 @@ fn fixture_catalog() -> Vec<ToolSchema> {
                 .unwrap_or_default()
                 .to_string(),
             parameters: entry["parameters"].clone(),
+            namespaces: Vec::new(),
         })
         .collect();
     assert_eq!(catalog.len(), 509, "fixture catalog count changed");
@@ -98,6 +99,7 @@ async fn ask_capabilities(deps: &Deps, capabilities: &[&str]) -> SearchFunctions
     search_functions(
         deps,
         SearchFunctionsRequest {
+            namespace: None,
             capabilities: capabilities.iter().map(|value| (*value).into()).collect(),
         },
     )
@@ -113,7 +115,7 @@ fn workers(response: &SearchFunctionsResponse) -> Vec<&str> {
     response
         .workers
         .iter()
-        .map(|worker| worker.namespace.as_str())
+        .map(|worker| worker.worker.as_str())
         .collect()
 }
 

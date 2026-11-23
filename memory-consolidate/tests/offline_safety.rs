@@ -2039,6 +2039,155 @@ async fn the_rule_is_read_again_after_the_judge_call() {
     );
 }
 
+/// A note an agent saved from inside a turn.
+fn agent_note(id: &str, text: &str, at: u64) -> Value {
+    let mut r = row(id, text, at);
+    r["confidence"] = json!("stated");
+    r["source"]["turn_id"] = json!("t-1");
+    r
+}
+
+/// A line the learned rule's cap moved back to memories.
+fn demoted(id: &str, text: &str, at: u64) -> Value {
+    let mut r = row(id, text, at);
+    r["tags"] = json!(["demoted-rule"]);
+    r
+}
+
+#[tokio::test]
+async fn an_agents_note_and_a_demoted_line_are_never_offered_for_promotion() {
+    let mut guess = agent_note("fp-guess", "User indents with tabs", 1);
+    guess["corroboration"] = json!(5);
+    let mut pushed_out = demoted("fp-demoted", "User wants emojis", 2);
+    pushed_out["corroboration"] = json!(5);
+    let boundary = Boundary::with_rows(vec![
+        guess.clone(),
+        pushed_out.clone(),
+        corroborated("fp-brief", "User wants brief answers", 3),
+    ]);
+    boundary.judge_reply(json!({"promotions":[
+        {"id":"fp-guess","rule":"Indent with tabs."},
+        {"id":"fp-demoted","rule":"Use emojis."},
+        {"id":"fp-brief","rule":"Keep answers brief."}
+    ]}));
+    let response = run(&boundary, promotion_only(), false).await;
+    assert_eq!(response.banks[0].promoted, 1, "{:?}", response.banks[0]);
+    let judged = payloads(&boundary, "offline::reorder-decision");
+    let prompt = judged[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("fp-brief"), "{prompt}");
+    assert!(!prompt.contains("fp-guess") && !prompt.contains("fp-demoted"));
+    assert!(boundary.learned().ends_with("\n- Keep answers brief.\n"));
+    assert!(!boundary.learned().contains("tabs") && !boundary.learned().contains("emojis"));
+
+    let ineligible = Boundary::with_rows(vec![guess, pushed_out]);
+    let response = run(&ineligible, promotion_only(), false).await;
+    let bank = &response.banks[0];
+    assert!(bank.errors.is_empty() && bank.notes.is_empty(), "{bank:?}");
+    assert!(payloads(&ineligible, "offline::reorder-decision").is_empty());
+}
+
+#[tokio::test]
+async fn a_demoted_line_merged_into_its_twin_adds_nothing_to_it() {
+    let mut twin = row("twin", "same fact.", 2);
+    twin["corroboration"] = json!(3);
+    let exact = Boundary::with_rows(vec![demoted("line", "Same fact", 1), twin]);
+    let exact_run = run(&exact, deterministic_only(), false).await;
+    let semantic = Boundary::with_rows(vec![
+        row("old", "User prefers tea", 1),
+        demoted("new", "Tea is the user's preferred drink", 2),
+    ]);
+    semantic.0.lock().unwrap().listed = Some(HashSet::from(["new".to_string()]));
+    semantic.decision(json!({"actions":[{"type":"merge","survivor":"c1","retired":"n1","reason":"Synthetic supplied equivalence."}]}));
+    let semantic_run = run(&semantic, semantic_only(), false).await;
+    for (boundary, response, retired) in [
+        (&exact, exact_run, "line"),
+        (&semantic, semantic_run, "new"),
+    ] {
+        assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+        let calls = supersedes(boundary);
+        assert_eq!(calls.len(), 1, "{retired}");
+        assert_eq!(calls[0]["id"], retired);
+        assert_eq!(calls[0]["reinforce"], false, "{retired}");
+        assert_eq!(response.banks[0].reinforced, 0, "{retired}");
+    }
+}
+
+/// A line the user stated: confidence `stated`, no turn behind it.
+fn user_stated(id: &str, text: &str, at: u64) -> Value {
+    let mut r = row(id, text, at);
+    r["confidence"] = json!("stated");
+    r
+}
+
+/// The user's line and an agent's note with the same meaning, the note new
+/// since the semantic cursor, and one supplied judge decision.
+fn users_line_and_agents_note(decision: Value) -> Boundary {
+    let boundary = Boundary::with_rows(vec![
+        user_stated("user", "User prefers tea", 1),
+        agent_note("note", "Tea is the user's preferred drink", 2),
+    ]);
+    {
+        let mut inner = boundary.0.lock().unwrap();
+        inner.guarded = true;
+        inner.listed = Some(HashSet::from(["note".to_string()]));
+    }
+    boundary.decision(json!({"actions":[decision]}));
+    boundary
+}
+
+#[tokio::test]
+async fn an_exact_merge_keeps_the_users_memory_over_an_agents_note() {
+    // Corroboration and age both favoured the note before.
+    let mut note = agent_note("note", "Same fact", 1);
+    note["corroboration"] = json!(3);
+    let boundary = Boundary::with_rows(vec![note, user_stated("user", "same fact.", 2)]);
+    boundary.0.lock().unwrap().guarded = true;
+    let response = run(&boundary, deterministic_only(), false).await;
+    assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+    let calls = supersedes(&boundary);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(guarded_id(&calls[0]), "note");
+    assert_eq!(calls[0]["superseded_by"], "user");
+    assert_eq!(calls[0]["reinforce"], false);
+    assert_eq!(response.banks[0].reinforced, 0);
+}
+
+#[tokio::test]
+async fn a_semantic_merge_retires_an_agents_note_into_the_users_memory() {
+    // Whichever side the judge keeps: a merge kept by the note is swapped.
+    for (survivor, retired) in [("c1", "n1"), ("n1", "c1")] {
+        let boundary = users_line_and_agents_note(
+            json!({"type":"merge","survivor":survivor,"retired":retired,"reason":"Synthetic supplied equivalence."}),
+        );
+        let response = run(&boundary, semantic_only(), false).await;
+        assert!(response.checkpointed, "{:?}", response.banks[0].errors);
+        let calls = supersedes(&boundary);
+        assert_eq!(calls.len(), 1, "{survivor}");
+        assert_eq!(guarded_id(&calls[0]), "note");
+        assert_eq!(calls[0]["superseded_by"], "user");
+        assert_eq!(calls[0]["reinforce"], false);
+        assert_eq!(response.banks[0].reinforced, 0);
+    }
+}
+
+#[tokio::test]
+async fn an_agents_note_never_supersedes_the_users_memory() {
+    let boundary = users_line_and_agents_note(
+        json!({"type":"supersede","old":"c1","new":"n1","reason":"Synthetic supplied update."}),
+    );
+    let response = run(&boundary, semantic_only(), false).await;
+    assert!(response.checkpointed);
+    assert!(supersedes(&boundary).is_empty());
+    assert_eq!(response.banks[0].semantic_rejected, 1);
+    assert!(
+        boundary.snapshot()["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["invalid_at"].is_null())
+    );
+}
+
 #[tokio::test]
 async fn an_older_memory_worker_still_takes_the_promotion() {
     let boundary = one_candidate("", false);
@@ -2293,6 +2442,21 @@ async fn verify_stops_with_one_note_on_an_older_memory_worker() {
         assert!(bank.errors.is_empty(), "{bank:?}");
         assert_eq!(bank.notes, [note]);
     }
+}
+
+#[tokio::test]
+async fn verify_refused_from_an_agent_turn_keeps_the_pass_due() {
+    let refused = "memory::transcript: remote error (invocation_failed): forbidden: calling \
+                   `memory::transcript` is not allowed from inside an agent turn; it is a \
+                   console, REST or CLI action";
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    boundary.0.lock().unwrap().transcript_error = Some(refused.into());
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(model_calls(&boundary), 0);
+    assert!(verify_cursor(&boundary).is_null());
+    assert_eq!(bank.errors, [format!("verify tier stopped: {refused}")]);
+    assert!(!response.checkpointed);
 }
 
 #[tokio::test]

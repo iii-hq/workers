@@ -1,0 +1,377 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "addLabels": {
+      "description": "Label names or IDs as a JSON array of strings (e.g. [\"Bug\", \"Urgent\"]) to add. Append-only; existing labels are never removed. Cannot be combined with a team change",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "addReleases": {
+      "description": "Release IDs or slugs to add. Append-only; existing releases are never removed",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "assignee": {
+      "description": "User ID, name, email, or \"me\". Null to remove",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockedBy": {
+      "description": "Issue IDs/identifiers blocking this. Append-only; existing relations are never removed",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "blocks": {
+      "description": "Issue IDs/identifiers this blocks. Append-only; existing relations are never removed",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "cycle": {
+      "description": "Cycle name, number, or ID. Null to remove",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "delegate": {
+      "description": "Agent name or ID. When the user asks to delegate to \"Linear\" or \"the Linear agent\", this refers to the \"Linear\" app user specifically. Null to remove",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "description": "Content as Markdown. Do not escape the string — use literal newlines and special characters, not escape sequences. To mention a user, use @displayName (e.g., @johndoe)",
+      "type": "string"
+    },
+    "dueDate": {
+      "description": "Due date (ISO format). On update, pass null to remove the due date",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "duplicateOf": {
+      "description": "Duplicate of issue ID/identifier. Null to remove",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "estimate": {
+      "description": "Issue estimate value. On create, pass null or omit for no estimate. On update, pass null to clear the estimate; omitting leaves it unchanged. 0 is a real estimate only on teams that allow zero estimates.",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "id": {
+      "description": "Only for updating an existing issue. Pass the issue ID or identifier (e.g., LIN-123). Do NOT pass this parameter when creating a new issue.",
+      "type": "string"
+    },
+    "labels": {
+      "description": "Label names or IDs as a JSON array of strings (e.g. [\"Bug\", \"Urgent\"]). Replaces the full label set; existing labels not included are removed. Omit to leave labels unchanged. Cannot be combined with addLabels/removeLabels; prefer those for incremental changes",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "links": {
+      "description": "Link attachments to add [{url, title}]. Append-only; existing links are never removed",
+      "items": {
+        "properties": {
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "title"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "milestone": {
+      "description": "Milestone name or ID",
+      "type": "string"
+    },
+    "parentId": {
+      "description": "Parent issue ID or identifier (e.g., LIN-123). Null to remove",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "patch": {
+      "description": "Partial edits applied to the current content, in order and atomically (one failing operation aborts the whole save). Every anchor string must match the current content exactly once. Only valid on update, in place of the full content/description field",
+      "items": {
+        "oneOf": [
+          {
+            "properties": {
+              "new_string": {
+                "description": "Replacement text. Empty string deletes the match",
+                "type": "string"
+              },
+              "old_string": {
+                "description": "Exact text to replace. Must match the current content exactly once",
+                "minLength": 1,
+                "type": "string"
+              },
+              "op": {
+                "const": "replace",
+                "type": "string"
+              },
+              "replace_all": {
+                "description": "Replace every occurrence instead of requiring a unique match",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "op",
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "anchor": {
+                "description": "Exact text to insert before. Must match the current content exactly once",
+                "minLength": 1,
+                "type": "string"
+              },
+              "op": {
+                "const": "insert_before",
+                "type": "string"
+              },
+              "text": {
+                "description": "Text to insert directly before the anchor. Include separators (e.g. \"\\n\\n\")",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "anchor",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "anchor": {
+                "description": "Exact text to insert after. Must match the current content exactly once",
+                "minLength": 1,
+                "type": "string"
+              },
+              "op": {
+                "const": "insert_after",
+                "type": "string"
+              },
+              "text": {
+                "description": "Text to insert directly after the anchor. Include separators (e.g. \"\\n\\n\")",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "anchor",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "op": {
+                "const": "prepend",
+                "type": "string"
+              },
+              "text": {
+                "description": "Text to insert at the very start of the content",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "op": {
+                "const": "append",
+                "type": "string"
+              },
+              "text": {
+                "description": "Text to insert at the very end of the content",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "from": {
+                "description": "Exact text where the range starts (inclusive). Must match exactly once",
+                "minLength": 1,
+                "type": "string"
+              },
+              "new_string": {
+                "description": "Text replacing the range. Empty string deletes it",
+                "type": "string"
+              },
+              "op": {
+                "const": "replace_range",
+                "type": "string"
+              },
+              "to": {
+                "description": "Exact text where the range ends (exclusive, stays in place). Must match exactly once after `from`",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "from",
+              "to",
+              "new_string"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "type": "array"
+    },
+    "priority": {
+      "description": "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
+      "type": "number"
+    },
+    "project": {
+      "description": "Project name, ID, identifier (e.g., P-ENG-123), or slug. Null to remove",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "relatedTo": {
+      "description": "Related issue IDs/identifiers. Append-only; existing relations are never removed",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "removeBlockedBy": {
+      "description": "Issue IDs/identifiers to remove as blockers of this issue",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "removeBlocks": {
+      "description": "Issue IDs/identifiers to stop blocking",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "removeLabels": {
+      "description": "Label names or IDs as a JSON array of strings (e.g. [\"Bug\", \"Urgent\"]) to remove. Only valid when updating an existing issue. Cannot be combined with a team change",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "removeRelatedTo": {
+      "description": "Related issue IDs/identifiers to remove",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "removeReleases": {
+      "description": "Release IDs or slugs to remove. Only valid when updating an existing issue",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "setReleases": {
+      "description": "Replace all releases on the issue with these. Cannot be combined with addReleases/removeReleases",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "slaBreachesAt": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ISO-8601 timestamp when the SLA will breach. On update, pass null to remove the SLA"
+    },
+    "slaType": {
+      "anyOf": [
+        {
+          "enum": [
+            "all",
+            "onlyBusinessDays"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "SLA day counting type: \"all\" or \"onlyBusinessDays\". Only use with slaBreachesAt; null means unset"
+    },
+    "state": {
+      "description": "State type, name, or ID",
+      "type": "string"
+    },
+    "team": {
+      "description": "Team name or ID (required when creating)",
+      "type": "string"
+    },
+    "template": {
+      "description": "Template name or ID. Applied on create only. The template fills in the content, fields, and sub-issues server-side. A `description` replaces the template body rather than merging with it, but an empty `description` keeps the template body. Labels merge with the template's own",
+      "type": "string"
+    },
+    "title": {
+      "description": "Issue title (required when creating, unless template is set)",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}

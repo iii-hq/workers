@@ -312,8 +312,10 @@ fn task_function_ids(task: &str) -> Vec<String> {
 /// Only ids the public registry lists, or the intercepted session controls,
 /// are resolved — an internal-only id (a config-change handler, a console
 /// watch), a Rust path, a harness-native id or a typo is dropped without a
-/// lookup, never seeded as "pre-verified". Best effort: nothing resolvable
-/// seeds nothing.
+/// lookup, never seeded as "pre-verified". An id listed in another namespace
+/// too is dropped as well: the seeded block names no namespace, so it must be
+/// the only copy, the one a bare call reaches. Best effort: nothing
+/// resolvable seeds nothing.
 async fn seed_contracts(
     deps: &Deps,
     ids: Vec<String>,
@@ -326,9 +328,16 @@ async fn seed_contracts(
     let listed: Vec<String> = ids
         .into_iter()
         .filter(|id| {
+            let implicit = crate::clients::engine::resolve_namespace(id, None);
+            let holders: Vec<&str> = snapshot
+                .functions
+                .iter()
+                .filter(|d| d.function_id == *id)
+                .map(|d| d.namespace.as_str())
+                .collect();
             policy.allows(id)
                 && (crate::functions::observe::control_contract(id).is_some()
-                    || snapshot.functions.iter().any(|d| d.function_id == *id))
+                    || holders == [implicit.as_str()])
         })
         .collect();
     if listed.is_empty() {
@@ -740,6 +749,11 @@ async fn seed_child(
     } else {
         None
     };
+    // A re-tasked child keeps its own working directory (it may have moved
+    // into a worktree it created): `send` inherits it from the child's turn.
+    if keeps_own_root(explicit_root, previous_child.as_ref()) {
+        options.metadata = None;
+    }
     // A sub-agent of a live turn keeps the folders its parent was granted, or
     // it could not reach them under a `workspace` boundary.
     if let Some(from) = grants_source(parent, previous_child.as_ref()) {
@@ -1003,7 +1017,8 @@ fn child_filesystem_scope(
             return Err(HarnessError::InvalidRequest(format!(
                 "spawn filesystem_root {root:?} is outside this session's folder and grants \
                  ({}); under the `workspace` filesystem boundary a child is rooted inside them — \
-                 pick a folder there, or omit filesystem_root to inherit the parent's root",
+                 pick a folder there, or omit filesystem_root (a new child inherits the \
+                 parent's root, a reused child keeps its own)",
                 allowed.join(", ")
             )));
         }
@@ -1043,6 +1058,14 @@ fn grants_source<'a>(
     parent
         .filter(|_| previous_child.is_none())
         .map(|p| p.session_id.as_str())
+}
+
+/// Whether a spawn leaves the child's root to the child: it named none, and
+/// the child already ran a scoped turn. The child's metadata holds only
+/// `fs_scope`, so dropping it is what keeps the root.
+fn keeps_own_root(explicit_root: Option<&str>, previous_child: Option<&TurnRecord>) -> bool {
+    explicit_root.is_none()
+        && previous_child.is_some_and(|child| child.options.filesystem_root().is_some())
 }
 
 /// Reuse guard for an in-turn spawn that named an EXISTING session. Reuse is
@@ -1145,6 +1168,7 @@ mod tests {
             stop_reason: None,
             failure: None,
             dispatch_only_functions: Vec::new(),
+            native_names: Default::default(),
             validation_retries: 0,
             transient_resumes: 0,
             ask_step: None,
@@ -1585,6 +1609,16 @@ mod tests {
         let ran = parent_record(None);
         assert_eq!(grants_source(Some(&parent), Some(&ran)), None);
         assert_eq!(grants_source(None, None), None);
+    }
+
+    #[test]
+    fn a_retasked_child_keeps_its_own_root_unless_the_spawn_names_one() {
+        let moved = parent_record(Some(json!({ "fs_scope": { "root": "/repo.feat" } })));
+        assert!(keeps_own_root(None, Some(&moved)));
+        assert!(!keeps_own_root(Some("/elsewhere"), Some(&moved)));
+        // A first spawn, or a child that never ran scoped, takes the parent's.
+        assert!(!keeps_own_root(None, None));
+        assert!(!keeps_own_root(None, Some(&parent_record(None))));
     }
 
     fn broad_policy() -> FunctionPolicy {
@@ -2151,5 +2185,45 @@ mod tests {
         .await
         .expect("an internal-only id is dropped without a lookup");
         assert_eq!(seeded, (None, BTreeMap::new()));
+    }
+
+    fn d(ns: &str, id: &str) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: Some("d".into()),
+            parameters: Some(json!({ "type": "object" })),
+        }
+    }
+
+    #[tokio::test]
+    async fn seeding_skips_ids_held_in_several_namespaces() {
+        let deps = crate::functions::observe::tests::disconnected_deps();
+        let own = crate::clients::engine::own_namespace();
+        crate::discovery::apply(
+            &deps.functions,
+            vec![
+                d(&own, "shell::exec"),
+                d("zz-a", "shell::exec"),
+                d(&own, "state::get"),
+                d("zz-a", "fs::read"),
+            ],
+        )
+        .await;
+        let all = crate::policy::CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let ids = vec!["shell::exec".into(), "state::get".into(), "fs::read".into()];
+        let (seed, digests) = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            seed_contracts(&deps, ids, &all),
+        )
+        .await
+        .expect("no engine lookup");
+        let seed = seed.unwrap();
+        assert!(seed.contains("### `state::get`"));
+        assert!(!seed.contains("### `shell::exec`") && !seed.contains("### `fs::read`"));
+        assert_eq!(digests.keys().collect::<Vec<_>>(), vec!["state::get"]);
     }
 }
