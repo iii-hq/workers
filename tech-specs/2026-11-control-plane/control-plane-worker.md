@@ -381,6 +381,15 @@ The design canvas is the source of truth for the page. The Overview has:
 Now holds stalled runs and questions of a class in the project's
 `escalate` list; everything else is No rush.
 
+The other tabs use the same panels:
+- **Needs you:** each row shows the asker, the card and what it blocks,
+  with the age and the kind as a pill on the right. Now is sorted by the
+  number of cards blocked. The Answer action follows the form.
+- **Runs:** one panel per run, with the panel header band and the
+  facts in the canvas's two columns. A stalled run's callout is red.
+- **Assumptions and Decided:** one panel with rows split by a line,
+  and the outcome as a pill.
+
 **Withdrawn (2026-11-23):**
 - the Direction block and the at-risk rule (release dates are not
   monitored; `at_risk_days` and the writer's `direction` are gone);

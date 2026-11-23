@@ -289,6 +289,13 @@
   .control-plane-attention > button {
     margin-left: auto;
   }
+  .control-plane-attention-text {
+    flex: 1 1 200px;
+    min-width: 0;
+  }
+  .control-plane-attention[data-tone="alert"] {
+    background: var(--color-alert-muted);
+  }
   @container (max-width: 900px) {
     .control-plane-columns,
     .control-plane-run-grid {
@@ -341,7 +348,9 @@
     min-height: 32px;
   }
   .control-plane-sources {
-    margin: 24px 8px;
+    margin: 16px 8px 0;
+    padding-top: 12px;
+    box-shadow: inset 0 1px 0 var(--color-edge);
     color: var(--color-ink-faint);
     font-size: 12px;
   }
@@ -411,11 +420,12 @@
     margin-left: auto;
   }
   .control-plane-decision-scroll {
-    padding: 24px;
+    padding: 24px 24px 12px;
     overflow: auto;
     overscroll-behavior: contain;
     min-height: 0;
-    flex: 1;
+    /* The actions follow the content and stay in view once it scrolls. */
+    flex: 0 1 auto;
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -425,6 +435,10 @@
     font-weight: 600;
     line-height: 1.4;
     overflow-wrap: anywhere;
+  }
+  /* Focus lands on the heading so a screen reader reads the new item; it is not a control. */
+  .control-plane-decision h2[tabindex="-1"]:focus {
+    outline: none;
   }
   .control-plane-decision h2 + .control-plane-meta {
     margin-top: -8px;
@@ -545,33 +559,39 @@
     display: none;
   }
   .control-plane-question-log {
-    max-width: 960px;
-    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
   }
-  .control-plane-question-log > h2 {
-    font-size: 16px;
-    font-weight: 600;
-  }
-  .control-plane-question-log > p {
-    margin: 8px 0 20px;
+  .control-plane-question-log > .control-plane-section {
+    align-self: stretch;
   }
   .control-plane-log-row {
-    padding: 16px;
-    margin-bottom: 12px;
-    background: var(--color-surface);
-    border-radius: var(--radius-md);
+    padding: 12px;
+    box-shadow: inset 0 1px 0 var(--color-edge);
   }
   .control-plane-log-row h3,
   .control-plane-log-row p {
-    margin: 8px 0;
+    max-width: 80ch;
+    margin: 6px 0 0;
+    font-size: 13px;
+  }
+  .control-plane-log-row .control-plane-status[data-outcome="not_delivered"] {
+    background: var(--color-alert-muted);
   }
   .control-plane-log-row h3 {
+    font-size: 13px;
     font-weight: 600;
   }
   .control-plane-log-actions {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .control-plane-section-pad {
+    margin: 12px;
   }
   @container (max-width: 1100px) {
     .control-plane-needs-rail {
@@ -1021,4 +1041,66 @@
   justify-content: center;
   min-width: 18px;
   height: 18px;
+}
+
+/* Needs you list: the kind as a pill under the age, a hint on the Now group, dots on the trail. */
+[data-iii-ui="control-plane"] .control-plane-group-hint {
+  margin-left: auto;
+}
+[data-iii-ui="control-plane"] .control-plane-need-end {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+[data-iii-ui="control-plane"] .control-plane-need-trailing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+[data-iii-ui="control-plane"] .control-plane-trail li {
+  align-items: center;
+}
+[data-iii-ui="control-plane"] .control-plane-trail li::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-ink-ghost);
+}
+[data-iii-ui="control-plane"] .control-plane-trail li:first-child::before {
+  background: var(--color-warn);
+}
+/* Run cards: the canvas panel header, links instead of buttons, compact facts and progress rows. */
+[data-iii-ui="control-plane"] .control-plane-run > .control-plane-section-title {
+  height: auto;
+  min-height: 40px;
+  flex-wrap: wrap;
+  padding-block: 4px;
+}
+[data-iii-ui="control-plane"] .control-plane-run > .control-plane-section-title h2 {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+[data-iii-ui="control-plane"] .control-plane-run .control-plane-facts {
+  gap: 10px;
+}
+[data-iii-ui="control-plane"] .control-plane-run .control-plane-facts dd {
+  margin-top: 2px;
+  font-size: 12px;
+}
+[data-iii-ui="control-plane"] .control-plane-run .control-plane-progress-row {
+  margin: 4px 0;
+  font-size: 12px;
+}
+[data-iii-ui="control-plane"] .control-plane-question-log .control-plane-section-title > .control-plane-meta {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@container (max-width: 640px) {
+  [data-iii-ui="control-plane"] .control-plane-question-log .control-plane-section-subtitle {
+    display: none;
+  }
 }

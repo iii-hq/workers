@@ -2,6 +2,7 @@ import {
   BottomSheet,
   BottomSheetContent,
   Button,
+  Card,
   EmptyState,
   Eyebrow,
   Input,
@@ -10,6 +11,7 @@ import {
   ListGroupLabel,
   ListItem,
   PageSidebar,
+  PanelHeader,
   SearchField,
   Skeleton,
   StatusDot,
@@ -514,7 +516,7 @@ export function NeedsYou({
           />
         </List>
         <div className="control-plane-sources">
-          <Eyebrow>Sources</Eyebrow>
+          <Eyebrow>From</Eyebrow>
           {(['question', 'stalled'] as const).map((kind) => (
             <p key={kind}>
               <span>{kind === 'question' ? 'Questions' : 'Stalled runs'}</span>
@@ -571,6 +573,9 @@ export function NeedsYou({
                     <StatusDot tone={group === 'now' ? 'warn' : 'ink'} />
                     {group === 'now' ? 'Now' : 'No rush'}
                     <span className="control-plane-meta">{rows.length}</span>
+                    {group === 'now' ? (
+                      <span className="control-plane-meta control-plane-group-hint">most cards blocked first</span>
+                    ) : null}
                   </ListGroupLabel>
                   {rows.map((item) => (
                     <ListItem
@@ -583,12 +588,21 @@ export function NeedsYou({
                         setFocused(item)
                       }}
                       label={item.title}
-                      description={`${needLabel(item)} · ${item.card?.key ?? 'not on the board'}${item.blockedCards ? ` · blocks ${item.blockedCards}` : ''}`}
+                      description={[
+                        item.kind === 'question' ? item.entry.asked_by : null,
+                        item.card?.key ?? 'not on the board',
+                        item.blockedCards ? `blocks ${item.blockedCards}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
                       trailing={
-                        <>
-                          <time className="control-plane-meta">{formatRelative(item.createdAt)}</time>
+                        <span className="control-plane-need-end">
+                          <span className="control-plane-need-trailing">
+                            <time className="control-plane-meta">{formatRelative(item.createdAt)}</time>
+                            <span className="control-plane-status">{needLabel(item)}</span>
+                          </span>
                           <ChevronRight className="control-plane-phone-chevron control-plane-size-4" />
-                        </>
+                        </span>
                       }
                     />
                   ))}
@@ -716,17 +730,21 @@ export function NeedDetail({
         <div className="control-plane-decision-links">
           {askAbout}
           {item.card ? (
-            <Button
-              variant="ghost"
-              size="sm"
+            <button
+              type="button"
+              className="control-plane-link control-plane-header-link"
               onClick={() => host.panels?.open({ pageId: 'kanban-ticket', context: { id: item.card?.key ?? '' } })}
             >
               Open card
-            </Button>
+            </button>
           ) : null}
-          <Button variant="ghost" size="sm" onClick={() => host.chat?.openConversation?.(item.sessionId)}>
+          <button
+            type="button"
+            className="control-plane-link control-plane-header-link"
+            onClick={() => host.chat?.openConversation?.(item.sessionId)}
+          >
             Open session
-          </Button>
+          </button>
         </div>
       </div>
       <div className="control-plane-decision-scroll">
@@ -998,22 +1016,27 @@ export function QuestionLog({
   }
   return (
     <div className="control-plane-question-log">
-      <h2>{view === 'assumptions' ? 'Assumptions' : 'Decided'}</h2>
-      {view === 'decided' ? (
-        <p className="control-plane-meta">
-          Median decision wait ·{' '}
-          {data.median_decision_wait_ms === null
-            ? 'No decisions in the last 7 days'
-            : `${Math.round(data.median_decision_wait_ms / 60_000)} min over the last 7 days`}
-        </p>
-      ) : null}
-      <p className="control-plane-muted">
-        {view === 'assumptions'
-          ? 'Material choices the agents recorded without asking you.'
-          : 'Questions that closed, with the answer and its outcome.'}
-      </p>
+      <Card className="control-plane-section">
+      <PanelHeader className="control-plane-section-title">
+        <h2>{view === 'assumptions' ? 'Assumptions' : 'Decided'}</h2>
+        <span className="control-plane-section-subtitle">
+          {view === 'assumptions'
+            ? 'Material choices the agents recorded without asking you.'
+            : 'Questions that closed, with the answer and its outcome.'}
+        </span>
+        <span className="control-plane-spacer" />
+        {view === 'decided' ? (
+          <span className="control-plane-meta">
+            Median decision wait ·{' '}
+            {data.median_decision_wait_ms === null
+              ? 'No decisions in the last 7 days'
+              : `${Math.round(data.median_decision_wait_ms / 60_000)} min over the last 7 days`}
+          </span>
+        ) : null}
+      </PanelHeader>
       {data.errors.questions ? (
         <StatusPanel
+          className="control-plane-section-pad"
           variant="warn"
           headline="The decision log could not be listed"
           detail={data.errors.questions}
@@ -1025,19 +1048,16 @@ export function QuestionLog({
         />
       ) : null}
       {data.loading.questions && !rows.length ? (
-        <div role="status" aria-label="Loading questions" className="control-plane-stack">
+        <div role="status" aria-label="Loading questions" className="control-plane-stack control-plane-section-pad">
           <Skeleton className="control-plane-h-24 control-plane-w-full" />
           <Skeleton className="control-plane-h-24 control-plane-w-full" />
         </div>
       ) : !rows.length ? (
-        <EmptyState
-          title={view === 'assumptions' ? 'No assumptions to review' : 'No decisions yet'}
-          description={
-            view === 'assumptions'
-              ? 'Recorded choices appear here when an agent makes a material decision alone.'
-              : 'Closed questions appear here with their answer.'
-          }
-        />
+        <p className="control-plane-empty-line">
+          {view === 'assumptions'
+            ? 'No assumptions to review. Recorded choices appear here when an agent makes a material decision alone.'
+            : 'No decisions yet. Closed questions appear here with their answer.'}
+        </p>
       ) : (
         rows.map((row) => {
           const card = data.tickets.find((ticket) => ticket.id === row.ticketId || ticket.key === row.ticketId)
@@ -1059,6 +1079,9 @@ export function QuestionLog({
                   {row.recordedBy ?? row.by?.user ?? row.by?.channel ?? 'unknown author'}
                   {row.by?.channel && row.by.user ? ` · ${row.by.channel}` : ''}
                 </span>
+                <span className="control-plane-status" data-outcome={row.outcome ?? row.state}>
+                  {(row.outcome ?? row.state).replaceAll('_', ' ')}
+                </span>
                 <time className="control-plane-meta">{formatAge(row.settledAt ?? row.askedAt)}</time>
               </div>
               <h3>{row.questions.map((question) => question.question).join(' · ')}</h3>
@@ -1067,7 +1090,6 @@ export function QuestionLog({
                   ? 'Left to the agent'
                   : row.answerText ?? (row.state === 'withdrawn' ? 'Withdrawn by the asker' : 'No answer recorded.')}
               </p>
-              <p className="control-plane-muted">{(row.outcome ?? row.state).replaceAll('_', ' ')}</p>
               {view === 'assumptions' ? (
                 <div className="control-plane-log-actions">
                   <Button variant="pill" size="sm" onClick={() => setKept((current) => [...current, row.key])}>
@@ -1119,6 +1141,7 @@ export function QuestionLog({
           )
         })
       )}
+      </Card>
       {view === 'decided' && data.decidedCursor ? (
         <Button variant="ghost" onClick={data.loadMoreDecided}>
           More decisions

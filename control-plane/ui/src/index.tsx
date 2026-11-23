@@ -331,7 +331,9 @@ function ControlPlaneScreenContent({
             <span className="control-plane-truncate">
               {view === 'runs'
                 ? `${data.runs.length} runs · ${data.runs.filter((run) => run.state === 'working').length} working · ${data.runs.filter((run) => run.state === 'stalled').length} stalled`
-                : 'Counts and states read live from harness, kanban and GitHub · lines marked agent are written by the control-plane agent'}
+                : view === 'needs-you'
+                  ? `${data.items.length} open${data.items.length ? ` · oldest ${formatRelative(Math.min(...data.items.map((item) => item.createdAt)))}` : ''} · ${data.runs.length} runs`
+                  : 'Counts and states read live from harness, kanban and GitHub · lines marked agent are written by the control-plane agent'}
             </span>
           </StatusBar>
         </PageMain>
@@ -1200,7 +1202,7 @@ function Runs({
       </div>
       <div className="control-plane-stack">
         {data.runs.map((run) => (
-          <Card key={run.session.session_id} className="control-plane-run">
+          <Card key={run.session.session_id} className="control-plane-section control-plane-run">
             <PanelHeader className="control-plane-section-title">
               <h2 className="control-plane-mr-auto">{run.session.title || run.session.session_id}</h2>
               {run.card ? <CardLink card={run.card} /> : <span className="control-plane-meta">Not on the board</span>}
@@ -1211,17 +1213,21 @@ function Runs({
                 </span>
               ))}
               {run.card ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
+                <button
+                  type="button"
+                  className="control-plane-link control-plane-header-link"
                   onClick={() => host.panels?.open({ pageId: 'kanban-ticket', context: { id: run.card?.key ?? '' } })}
                 >
                   Open card
-                </Button>
+                </button>
               ) : null}
-              <Button size="sm" variant="ghost" onClick={() => host.chat?.openConversation?.(run.session.session_id)}>
+              <button
+                type="button"
+                className="control-plane-link control-plane-header-link"
+                onClick={() => host.chat?.openConversation?.(run.session.session_id)}
+              >
                 Open session
-              </Button>
+              </button>
             </PanelHeader>
             <CardBody>
               <div className="control-plane-run-grid">
@@ -1314,9 +1320,12 @@ function Runs({
                 </dl>
               </div>
               {run.needsYou.length ? (
-                <div className="control-plane-attention">
-                  <StatusDot tone={run.state === 'stalled' ? 'alert' : 'warn'} />
-                  <span>
+                <div
+                  className="control-plane-attention"
+                  data-tone={run.needsYou[0].kind === 'stalled' ? 'alert' : undefined}
+                >
+                  <StatusDot tone={run.needsYou[0].kind === 'stalled' ? 'alert' : 'warn'} />
+                  <span className="control-plane-attention-text">
                     {run.needsYou[0].title}
                     {run.needsYou.length > 1 ? ` · ${run.needsYou.length - 1} more wait on you` : ''}
                   </span>
