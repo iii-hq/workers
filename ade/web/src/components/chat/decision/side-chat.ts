@@ -181,6 +181,16 @@ async function allowReads(
   iii: DecisionClient,
   sessionId: string,
 ): Promise<void> {
+  const catalog = await iii.call<{ functions?: { function_id?: string }[] }>(
+    'engine::functions::list',
+    {},
+  )
+  if (
+    !catalog.functions?.some(
+      (entry) => entry.function_id === 'approval::set-mode',
+    )
+  )
+    return
   await iii.call('approval::set-mode', { session_id: sessionId, mode: 'auto' })
   for (const functionId of SIDE_CHAT_FUNCTIONS) {
     await iii.call('approval::add-always-allow', {
@@ -323,6 +333,8 @@ export function createDecisionSideChat(
   if (current) return current
   const run = async () => {
     const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+    // Known limit: Web Locks coordinate tabs in one browser. Without a
+    // server-side claim, two browsers can still create copies concurrently.
     return locks
       ? locks.request(`iii-decision-side-chat:${request.key}`, () =>
           create(iii, request),

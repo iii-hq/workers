@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import type { IiiClient } from '@/lib/iii-client'
 import type { SessionMeta } from '@/lib/sessions/types'
+import { chatSessionScreen, parseWorkspaceTabs } from '@/lib/workspace-tabs'
 import type {
   DecisionChatHandle,
   DecisionChatRequest,
@@ -31,6 +32,20 @@ const bindings = new Map<string, Binding>()
 const listeners = new Set<() => void>()
 const pendingBindings = new Map<string, symbol>()
 const openingCopies = new Map<string, Promise<{ meta: SessionMeta }>>()
+
+async function copyHasColumn(
+  iii: Pick<IiiClient, 'call'>,
+  sessionId: string,
+): Promise<boolean> {
+  const layout = await iii.call<{ value?: Record<string, unknown> }>(
+    'ade::workspace::get',
+    {},
+  )
+  const screen = chatSessionScreen(sessionId)
+  return parseWorkspaceTabs(layout.value ?? {}).some((tab) =>
+    tab.screens.includes(screen),
+  )
+}
 function emit() {
   for (const listener of listeners) listener()
 }
@@ -108,14 +123,18 @@ export function decisionChatCapabilities(
       }
     },
     async rebindDecisionChat(request) {
+      if (!workspace) return null
+      const opening = openingCopies.get(request.key)
+      if (opening) await opening
       const token = Symbol()
       pendingBindings.set(request.key, token)
       try {
-        const opening = openingCopies.get(request.key)
         const copy = opening
           ? (await opening).meta
           : await findDecisionSideChat(iii, request.key)
-        return copy ? bind(copy, request, token) : null
+        return copy && (await copyHasColumn(iii, copy.session_id))
+          ? bind(copy, request, token)
+          : null
       } finally {
         if (pendingBindings.get(request.key) === token)
           pendingBindings.delete(request.key)

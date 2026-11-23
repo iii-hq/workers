@@ -99,9 +99,11 @@ beforeEach(() => {
     async (id: string, input: Record<string, unknown>) =>
       id === 'session::get'
         ? { meta }
-        : id === 'session::set-meta'
-          ? { meta: { ...meta, metadata: input.metadata } }
-          : {},
+        : id === 'ade::workspace::get'
+          ? { value: { tabs: [{ id: 'tower', screens: ['chat:copy'] }] } }
+          : id === 'session::set-meta'
+            ? { meta: { ...meta, metadata: input.metadata } }
+            : {},
   )
   mocks.ctx = {
     backend: {

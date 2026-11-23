@@ -178,6 +178,10 @@ describe('createDecisionSideChat', () => {
     const calls: Array<[string, Record<string, unknown>]> = []
     const call = vi.fn(async (id: string, input: Record<string, unknown>) => {
       calls.push([id, input])
+      if (id === 'engine::functions::list')
+        return {
+          functions: [{ function_id: 'approval::set-mode' }],
+        }
       if (id === 'session::list') return { sessions: [] }
       if (id === 'session::get')
         return { meta: meta(request.sessionId, { kanban_ticket: 'KAN-1' }) }
@@ -277,6 +281,8 @@ describe('createDecisionSideChat', () => {
 
   it('deletes a partial copy when approval setup fails', async () => {
     const call = vi.fn(async (id: string, input: Record<string, unknown>) => {
+      if (id === 'engine::functions::list')
+        return { functions: [{ function_id: 'approval::set-mode' }] }
       if (id === 'session::list') return { sessions: [] }
       if (id === 'session::get') return null
       if (id === 'session::create')
@@ -293,6 +299,29 @@ describe('createDecisionSideChat', () => {
     expect(call).toHaveBeenCalledWith('session::delete', {
       session_id: 'partial',
     })
+  })
+
+  it('keeps the copy when approval-gate is absent', async () => {
+    const call = vi.fn(async (id: string, input: Record<string, unknown>) => {
+      if (id === 'session::list') return { sessions: [] }
+      if (id === 'session::get') return null
+      if (id === 'session::create')
+        return {
+          session_id: 'without-gate',
+          meta: meta('without-gate', input.metadata as Record<string, unknown>),
+        }
+      if (id === 'engine::functions::list') return { functions: [] }
+      return {}
+    })
+
+    await expect(
+      createDecisionSideChat({ call: call as IiiClient['call'] }, request),
+    ).resolves.toMatchObject({ meta: { session_id: 'without-gate' } })
+    expect(call).not.toHaveBeenCalledWith(
+      'approval::set-mode',
+      expect.anything(),
+    )
+    expect(call).not.toHaveBeenCalledWith('session::delete', expect.anything())
   })
 
   it('forks a held call at the strictly previous transcript entry', async () => {
@@ -435,6 +464,8 @@ describe('createDecisionSideChat', () => {
     const existing = meta('copy', { [SIDE_CHAT_QUESTION_KEY]: request.key })
     const call = vi.fn(async (id: string, input: Record<string, unknown>) => {
       if (id === 'session::list') return { sessions: [existing] }
+      if (id === 'engine::functions::list')
+        return { functions: [{ function_id: 'approval::set-mode' }] }
       if (id === 'approval::add-always-allow') {
         grants.push(String(input.function_id))
         if (grants.length === 1) await firstGrant
@@ -445,10 +476,7 @@ describe('createDecisionSideChat', () => {
       { call: call as IiiClient['call'] },
       request,
     )
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(grants).toEqual([SIDE_CHAT_FUNCTIONS[0]])
+    await vi.waitFor(() => expect(grants).toEqual([SIDE_CHAT_FUNCTIONS[0]]))
     releaseFirstGrant()
     await opening
     expect(grants).toEqual(SIDE_CHAT_FUNCTIONS)

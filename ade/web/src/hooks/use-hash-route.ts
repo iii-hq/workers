@@ -15,7 +15,7 @@ import type { JsonValue } from '@/types/injectable-ui'
 // or `ade::workspace::open` and live in the tab store. `#/worker/<scope>`
 // and `#/traces` are standalone routes instead — Standalone.tsx renders that
 // one surface with no workspace at all.
-export type View = 'configuration' | 'traces' | 'workers'
+export type View = 'configuration' | 'traces' | 'workers' | 'ext:tower'
 
 export interface WorkersConfigurationRoute {
   /**
@@ -124,6 +124,7 @@ export function normalizeWorkersConfigurationHash(hash: string): string | null {
 }
 
 export function routeFromHash(hash: string): View | null {
+  if (hash === '#/workspace/tower') return 'ext:tower'
   if (hash === '' || hash === '#' || hash === '#/' || hash === '#/traces') {
     return 'traces'
   }
@@ -162,6 +163,8 @@ export function hashForView(view: View): string {
       return '#/workers'
     case 'configuration':
       return '#/configuration'
+    case 'ext:tower':
+      return '#/workspace/tower'
   }
 }
 
@@ -203,9 +206,9 @@ export function replaceHash(targetHash: string): void {
   )
 }
 
-/** The built-in Tower moved to the tower worker's injected page. */
+/** The built-in Tower moved to the tower worker's workspace page. */
 export function normalizeLegacyTowerHash(hash: string): string | null {
-  return hash === '#/tower' ? '#/worker/tower' : null
+  return hash === '#/tower' ? '#/workspace/tower' : null
 }
 
 const WORKER_HASH_PREFIX = '#/worker/'

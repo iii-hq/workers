@@ -89,7 +89,9 @@ describe('decision chat host capability', () => {
       close: vi.fn(),
     })
     const capabilities = decisionChatCapabilities({
-      call: vi.fn() as IiiClient['call'],
+      call: vi.fn(async () => ({
+        value: { tabs: [{ id: 'tower', screens: ['chat:copy'] }] },
+      })) as IiiClient['call'],
     })
     mocks.find.mockResolvedValueOnce(null).mockResolvedValueOnce(copy())
 
@@ -103,7 +105,7 @@ describe('decision chat host capability', () => {
     stop()
   })
 
-  it('rebinds a closed copy without reopening its workspace column', async () => {
+  it('does not rebind a copy without a workspace column', async () => {
     const open = vi.fn()
     const stop = registerDecisionChatWorkspace({
       caller: () => ({ tabId: 'tab', paneId: 'tower-pane' }),
@@ -112,11 +114,13 @@ describe('decision chat host capability', () => {
     })
     mocks.find.mockResolvedValue(copy())
     const capabilities = decisionChatCapabilities({
-      call: vi.fn() as IiiClient['call'],
+      call: vi.fn(async () => ({
+        value: { tabs: [{ id: 'tower', screens: ['ext:tower'] }] },
+      })) as IiiClient['call'],
     })
     const rebound = await capabilities.rebindDecisionChat?.(request())
 
-    expect(rebound).toBeTruthy()
+    expect(rebound).toBeNull()
     expect(open).not.toHaveBeenCalled()
     expect(mocks.create).not.toHaveBeenCalled()
     stop()
@@ -166,7 +170,9 @@ describe('decision chat host capability', () => {
       .mockImplementationOnce(() => old)
       .mockResolvedValueOnce(copy('newest'))
     const capabilities = decisionChatCapabilities({
-      call: vi.fn() as IiiClient['call'],
+      call: vi.fn(async () => ({
+        value: { tabs: [{ id: 'tower', screens: ['chat:newest'] }] },
+      })) as IiiClient['call'],
     })
     const older = capabilities.rebindDecisionChat({
       ...request(),
@@ -190,7 +196,7 @@ describe('decision chat host capability', () => {
     await act(() => root.unmount())
   })
 
-  it('rebinds a copy still opening without a second lookup or fork', async () => {
+  it('keeps an opening copy bound when its column is not persisted yet', async () => {
     const root = createRoot(document.createElement('div'))
     const seen = vi.fn()
     const Probe = () => {
@@ -214,7 +220,9 @@ describe('decision chat host capability', () => {
       }),
     )
     const capabilities = decisionChatCapabilities({
-      call: vi.fn() as IiiClient['call'],
+      call: vi.fn(async () => ({
+        value: { tabs: [{ id: 'tower', screens: ['ext:tower'] }] },
+      })) as IiiClient['call'],
     })
     const opening = capabilities.openDecisionChat({
       ...request(),
@@ -227,12 +235,12 @@ describe('decision chat host capability', () => {
     resolve({ meta: copy() })
 
     await expect(opening).resolves.toBeTruthy()
-    await expect(rebound).resolves.toBeTruthy()
+    await expect(rebound).resolves.toBeNull()
     await act(() => Promise.resolve())
     expect(mocks.find).not.toHaveBeenCalled()
     expect(mocks.create).toHaveBeenCalledOnce()
     expect(open).toHaveBeenCalledOnce()
-    expect(seen).toHaveBeenLastCalledWith('page after reload')
+    expect(seen).toHaveBeenLastCalledWith('open')
     stop()
     await act(() => root.unmount())
   })

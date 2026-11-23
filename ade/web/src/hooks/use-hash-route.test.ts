@@ -105,10 +105,11 @@ describe('workers configuration hash helpers', () => {
 })
 
 describe('isolated worker route', () => {
-  it('redirects the retired Tower hash to the worker page', () => {
-    expect(normalizeLegacyTowerHash('#/tower')).toBe('#/worker/tower')
+  it('redirects the retired Tower hash to its workspace page', () => {
+    expect(normalizeLegacyTowerHash('#/tower')).toBe('#/workspace/tower')
     expect(normalizeLegacyTowerHash('#/workers')).toBeNull()
     expect(routeFromHash('#/tower')).toBeNull()
+    expect(routeFromHash('#/workspace/tower')).toBe('ext:tower')
   })
 
   it('parses scope, page id and context', () => {
