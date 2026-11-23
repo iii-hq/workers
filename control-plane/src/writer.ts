@@ -16,6 +16,8 @@ interface StoredSummary {
   failures?: number
   last_attempt_at?: number
   last_send_at?: number
+  /** Bumped when the person deletes the writer session; the harness never reuses a deleted id. */
+  session_generation?: number
   // The previous format had separate clocks for scheduled checks and Refresh.
   last_refresh_at?: number
   pending_turns?: Record<string, { sent_at: number }>
@@ -34,6 +36,7 @@ interface WriterState extends StoredSummary {
   lastAttemptAt: number
   lastSendAt: number
   sendOrder: number
+  generation: number
   pending: PendingTurn | null
   booted: boolean
 }
@@ -78,6 +81,7 @@ function initialState(): WriterState {
     lastAttemptAt: 0,
     lastSendAt: 0,
     sendOrder: 0,
+    generation: 0,
     pending: null,
     booted: false,
   }
@@ -200,9 +204,10 @@ export class ControlPlaneWriter {
           await this.persist(scope, state)
           await this.changed(scope)
         } else if (refresh || !state.lastSendAt || Date.now() >= nextSend) {
-          await this.send(scope, state, data, refresh)
+          await this.sendFresh(scope, state, data, refresh)
         }
-      } catch {
+      } catch (error) {
+        console.error(`control-plane writer ${scope}: update failed`, error)
         await this.fail(scope, state)
       }
       return publicState(state)
@@ -221,7 +226,7 @@ export class ControlPlaneWriter {
     )
       return
 
-    const scope = hint.session_id.slice('control-plane-'.length)
+    const scope = hint.session_id.slice('control-plane-'.length).replace(/~\d+$/, '')
     // A callable sink cannot create scope state or supply a result.
     if (!this.states.has(scope)) return
     await this.lock(scope, async () => {
@@ -236,7 +241,7 @@ export class ControlPlaneWriter {
     const pending = state.pending
     if (!pending) return
     const matches =
-      status?.session_id === `control-plane-${scope}` && status.turn_id === pending.turn_id
+      status?.session_id === this.sessionId(scope) && status.turn_id === pending.turn_id
     if (matches && !terminal(status)) return
     state.pending = null
     const next =
@@ -264,8 +269,32 @@ export class ControlPlaneWriter {
     return this.config().summary.interval_min * 60_000
   }
 
+  private sessionId(scope: string): string {
+    const generation = this.state(scope).generation
+    return `control-plane-${scope}${generation ? `~${generation}` : ''}`
+  }
+
   private status(scope: string): Promise<SessionStatus | null> {
-    return this.iii.call('harness::status', { session_id: `control-plane-${scope}`, verbose: true })
+    return this.iii.call('harness::status', { session_id: this.sessionId(scope), verbose: true })
+  }
+
+  /**
+   * The harness never reuses a deleted session id. When the person deleted the
+   * writer session, the scope moves to the next one and the send runs again there.
+   */
+  private async sendFresh(
+    scope: string,
+    state: WriterState,
+    data: ControlPlaneData,
+    refresh: boolean,
+  ) {
+    try {
+      await this.send(scope, state, data, refresh)
+    } catch (error) {
+      if (!String(error).includes('is tombstoned by')) throw error
+      state.generation += 1
+      await this.send(scope, state, data, refresh)
+    }
   }
 
   dispose(): void {
@@ -296,6 +325,7 @@ export class ControlPlaneWriter {
       state.checked_at = stored.checked_at ?? null
       state.pending = stored.pending_turn ?? null
       state.sendOrder = stored.send_order ?? 0
+      state.generation = stored.session_generation ?? 0
       state.failures = stored.failures ?? 0
       if (state.failures > 0) state.error = UPDATE_ERROR
       state.lastAttemptAt = stored.last_attempt_at ?? 0
@@ -322,6 +352,7 @@ export class ControlPlaneWriter {
         checked_at: state.checked_at,
         pending_turn: state.pending,
         send_order: state.sendOrder,
+        session_generation: state.generation,
         failures: state.failures,
         last_attempt_at: state.lastAttemptAt,
         last_send_at: state.lastSendAt,
@@ -355,7 +386,7 @@ export class ControlPlaneWriter {
       return
     }
 
-    const sessionId = `control-plane-${scope}`
+    const sessionId = this.sessionId(scope)
     let ensured = await this.iii.call<SessionEnsure>('session::ensure', {
       session_id: sessionId,
       title: sessionId,
@@ -429,6 +460,7 @@ export class ControlPlaneWriter {
     // A merged, queued or deduplicated send ID does not identify a new turn
     // that covers this snapshot. The attempt still consumes the reservation.
     if (!sent.turn_id || sent.merged || sent.queued || sent.deduplicated) {
+      console.error(`control-plane writer ${scope}: the send did not start a turn`, sent)
       await this.fail(scope, state)
       return
     }

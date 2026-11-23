@@ -64,6 +64,7 @@ class FakeIii implements ControlPlaneClient {
   profileMissing = false
   raceAfterEnsure = false
   failOn: string | null = null
+  readonly tombstoned = new Set<string>()
   private ensured = 0
   private turn = 0
 
@@ -92,6 +93,10 @@ class FakeIii implements ControlPlaneClient {
     if (id === 'harness::status')
       return (this.status && { session_id: input.session_id, ...this.status }) as T
     if (id === 'harness::send') {
+      if (this.tombstoned.has(input.session_id))
+        throw new Error(
+          `harness/invalid_request: session ${input.session_id} is tombstoned by delete_1`,
+        )
       this.turn += 1
       this.status = { turn_id: `turn-${this.turn}`, status: 'running' }
       this.meta.metadata.agent_profile = { id: 'control-plane-writer' }
@@ -462,6 +467,29 @@ describe('ControlPlaneWriter', () => {
     const keys = iii.sent().map(({ input }) => input.idempotency_key)
     expect(new Set(keys).size).toBe(2)
     expect(keys[1]).toMatch(/^control-plane:all:\d+:refresh:\d+$/)
+  })
+
+  it('moves to a fresh writer session when the person deleted the old one', async () => {
+    const iii = new FakeIii()
+    const writer = new ControlPlaneWriter(
+      iii,
+      () => config(),
+      async () => data(),
+      vi.fn(),
+    )
+    await writer.check('all')
+    await iii.finish(writer, { turn_id: 'turn-1', status: 'completed', result: result() })
+
+    iii.tombstoned.add('control-plane-all')
+    iii.status = null
+    const snapshot = await writer.refresh('all')
+
+    expect(iii.sent().at(-1)?.input).toMatchObject({
+      session_id: 'control-plane-all~1',
+      options: { agent: 'control-plane-writer' },
+    })
+    expect(snapshot.writing).toBe(true)
+    expect(iii.state.get('control-plane/summary:all')).toMatchObject({ session_generation: 1 })
   })
 
   it('sends the settings guidance and rewrites on the next check when it changes', async () => {
