@@ -111,11 +111,6 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
 
 /** CSS files that may keep width media queries, with today's count. */
 const cssMediaAllowlist: Record<string, { max: number; reason: string }> = {
-  'pages/Tower/tower.css': {
-    max: 1,
-    reason:
-      'phone chrome: segmented Overview, Needs you and Runs navigation and touch targets below 640px',
-  },
   'index.css': {
     max: 4,
     reason:

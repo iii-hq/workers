@@ -121,7 +121,6 @@ import {
 import { Configuration } from '@/pages/Configuration'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import { ExtPage } from '@/pages/Ext'
-import { Tower } from '@/pages/Tower'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
@@ -134,7 +133,6 @@ function firstPartyPageTitle(screen: TabScreen): string {
   if (isChatScreen(screen)) return 'Chat'
   if (screen === 'workers') return 'Workers'
   if (screen === 'traces') return 'Traces'
-  if (screen === 'tower') return 'Control tower'
   return screen
 }
 
@@ -1899,7 +1897,6 @@ function ScreenBody({
         setDirty={setDirty}
       />
     )
-  if (screen === 'tower') return <Tower onRequestClose={onClose} />
   return <TracesV2 onRequestClose={onClose} commands={commands} />
 }
 

@@ -3,14 +3,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
-import type { IiiClient } from '@/lib/iii-client'
-import { TowerScreen } from '@/pages/Tower'
-import { towerFixture } from '@/pages/Tower/fixtures'
-import type { QuestionNeed } from '@/pages/Tower/model'
-import type {
-  DecisionChatHandle,
-  DecisionChatRequest,
-} from '@/types/injectable-ui'
 import { DecisionSideChat, DecisionSideChatPanel } from './DecisionSideChat'
 import { decisionChatCapabilities, registerDecisionChatWorkspace } from './host'
 
@@ -62,7 +54,24 @@ vi.mock('@/components/ui/Select', () => ({
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
-const question = towerFixture.items[0] as QuestionNeed
+const question = {
+  sessionId: 'source',
+  questionId: 'question-1',
+  title: 'Choose the build isolation',
+  createdAt: 1,
+  entry: {
+    questions: [
+      {
+        header: 'Builds',
+        question: 'How should builds be isolated?',
+        options: [
+          { label: 'Use the shared runner' },
+          { label: 'Use a dedicated build machine' },
+        ],
+      },
+    ],
+  },
+}
 const meta = {
   session_id: 'copy',
   title: 'Decision copy',
@@ -297,170 +306,5 @@ describe('DecisionSideChat', () => {
       metadata: { ...meta.metadata, side_chat_keep: true },
     })
     expect(container.textContent).toContain('Kept in your chat list')
-  })
-})
-
-describe('Tower decision capability', () => {
-  it('detaches a stale rebind that resolves after Ask about this opens the copy', async () => {
-    let resolve: (handle: DecisionChatHandle | null) => void = () => {}
-    const stale = new Promise<DecisionChatHandle | null>((done) => {
-      resolve = done
-    })
-    const opened: DecisionChatHandle = {
-      update: vi.fn(),
-      detach: vi.fn(),
-      close: vi.fn(),
-    }
-    const delayed: DecisionChatHandle = {
-      update: vi.fn(),
-      detach: vi.fn(),
-      close: vi.fn(),
-    }
-    const chat = {
-      openDecisionChat: vi.fn(async () => opened),
-      rebindDecisionChat: vi.fn(() => stale),
-    }
-    await act(() =>
-      root.render(
-        <TooltipProvider>
-          <TowerScreen
-            data={towerFixture}
-            scope="all"
-            onScopeChange={() => {}}
-            initialView="needs-you"
-            iii={{ call: vi.fn() as IiiClient['call'] }}
-            chat={chat}
-          />
-        </TooltipProvider>,
-      ),
-    )
-    expect(chat.rebindDecisionChat).toHaveBeenCalled()
-    await click('Ask about this')
-    expect(chat.openDecisionChat).toHaveBeenCalled()
-    await act(async () => {
-      resolve(delayed)
-      await stale
-    })
-    expect(delayed.detach).toHaveBeenCalled()
-    expect(opened.detach).not.toHaveBeenCalled()
-  })
-
-  it('rebinds every displayed decision, closes removed items, and detaches on unmount', async () => {
-    const bindings = [
-      { update: vi.fn(), detach: vi.fn(), close: vi.fn() },
-      { update: vi.fn(), detach: vi.fn(), close: vi.fn() },
-      { update: vi.fn(), detach: vi.fn(), close: vi.fn() },
-      { update: vi.fn(), detach: vi.fn(), close: vi.fn() },
-    ]
-    const handles = [...bindings]
-    const chat = {
-      openDecisionChat: vi.fn(),
-      rebindDecisionChat: vi.fn(async () => handles.shift() ?? null),
-    }
-    await act(() =>
-      root.render(
-        <TooltipProvider>
-          <TowerScreen
-            data={towerFixture}
-            scope="all"
-            onScopeChange={() => {}}
-            initialView="needs-you"
-            chat={chat}
-          />
-        </TooltipProvider>,
-      ),
-    )
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(chat.rebindDecisionChat).toHaveBeenCalledTimes(
-      towerFixture.items.filter((item) => item.kind !== 'stalled').length,
-    )
-    await act(() =>
-      root.render(
-        <TooltipProvider>
-          <TowerScreen
-            data={{ ...towerFixture, items: towerFixture.items.slice(0, 1) }}
-            scope="all"
-            onScopeChange={() => {}}
-            initialView="needs-you"
-            chat={chat}
-          />
-        </TooltipProvider>,
-      ),
-    )
-    expect(bindings[1].update).toHaveBeenCalledWith({
-      editable: false,
-      closed: true,
-    })
-    await act(() => root.unmount())
-    expect(bindings[0].detach).toHaveBeenCalled()
-    expect(bindings[1].detach).toHaveBeenCalled()
-  })
-
-  it.each(['option', 'text'])(
-    'fills a %s through the host request, then only Answer sends it',
-    async (kind) => {
-      let opened: DecisionChatRequest | undefined
-      const chat = {
-        openDecisionChat: vi.fn(async (request: DecisionChatRequest) => {
-          opened = request
-          return { update: vi.fn(), detach: vi.fn(), close: vi.fn() }
-        }),
-        rebindDecisionChat: vi.fn(async () => null),
-      }
-      const call = vi.fn(async () => ({ ...question.entry, state: 'answered' }))
-      await act(() =>
-        root.render(
-          <TooltipProvider>
-            <TowerScreen
-              data={towerFixture}
-              scope="all"
-              onScopeChange={() => {}}
-              initialView="needs-you"
-              iii={{ call: call as IiiClient['call'] }}
-              chat={chat}
-            />
-          </TooltipProvider>,
-        ),
-      )
-      await click('Ask about this')
-      const proposal =
-        kind === 'option'
-          ? { option: question.entry.questions[0].options[1].label }
-          : { text: 'Use a dedicated build machine.' }
-      await act(() => opened?.onUseAnswer(0, proposal))
-      await click('Answer')
-      expect(call).toHaveBeenCalledWith(
-        'harness::ask::answer',
-        expect.objectContaining({
-          answers: [
-            {
-              header: 'Builds',
-              ...(kind === 'option'
-                ? { choice: question.entry.questions[0].options[1].label }
-                : { other: 'Use a dedicated build machine.' }),
-            },
-          ],
-        }),
-      )
-    },
-  )
-
-  it('hides Ask about this without the capability', async () => {
-    await act(() =>
-      root.render(
-        <TooltipProvider>
-          <TowerScreen
-            data={towerFixture}
-            scope="all"
-            onScopeChange={() => {}}
-            initialView="needs-you"
-          />
-        </TooltipProvider>,
-      ),
-    )
-    expect(container.textContent).not.toContain('Ask about this')
   })
 })

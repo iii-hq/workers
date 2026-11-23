@@ -136,7 +136,7 @@ async function listBoardQuestions(client: Client): Promise<BoardQuestion[]> {
 }
 
 /**
- * Keep decision copies temporary across Tower unmounts. Settled events close
+ * Keep decision copies temporary across decision-page unmounts. Settled events close
  * them immediately; successful inbox reads catch up after reload/reconnect.
  */
 export function startDecisionSideChatLifetime(

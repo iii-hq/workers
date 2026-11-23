@@ -9,6 +9,5 @@ export function buildViewOptions(): { value: View; label: string }[] {
   return [
     { value: 'traces', label: 'traces' },
     { value: 'workers', label: 'workers' },
-    { value: 'tower', label: 'Control tower' },
   ]
 }

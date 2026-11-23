@@ -6,7 +6,6 @@ describe('buildViewOptions', () => {
     expect(buildViewOptions().map((o) => o.value)).toEqual([
       'traces',
       'workers',
-      'tower',
     ])
   })
 })

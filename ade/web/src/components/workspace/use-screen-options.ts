@@ -131,6 +131,11 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     icon: HardDrive,
     description: 'Shared runtime state.',
   },
+  tower: {
+    icon: RadioTower,
+    description: 'Project progress, runs, and what needs you.',
+    keywords: ['overview', 'runs', 'approvals'],
+  },
   'state-manager': {
     icon: HardDrive,
     description: 'Shared runtime state.',
@@ -170,14 +175,6 @@ export function useScreenOptions(): {
       keywords: ['assistant', 'agent'],
     },
     ...buildViewOptions().map((option): ScreenOption => {
-      if (option.value === 'tower') {
-        return {
-          ...option,
-          icon: RadioTower,
-          description: 'Project progress, runs, and what needs you.',
-          keywords: ['overview', 'runs', 'approvals'],
-        }
-      }
       if (option.value === 'traces') {
         return {
           ...option,

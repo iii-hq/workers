@@ -82,7 +82,7 @@ function bind(
   }
 }
 
-/** Shared by injected pages and the built-in Tower during its migration. */
+/** Host capability exposed to injected pages that own decision inboxes. */
 export function decisionChatCapabilities(
   iii: Pick<IiiClient, 'call'>,
   callerScreen?: string,

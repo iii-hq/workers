@@ -7,7 +7,12 @@ import * as ReactDOM from 'react-dom'
 import * as ReactDOMClient from 'react-dom/client'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/shadcn/tooltip'
-import { routeFromHash, standaloneRouteFromHash } from '@/hooks/use-hash-route'
+import {
+  normalizeLegacyTowerHash,
+  replaceHash,
+  routeFromHash,
+  standaloneRouteFromHash,
+} from '@/hooks/use-hash-route'
 import { sideChatsLeftByClosedTabs } from '@/lib/chat-aside'
 import { buildConsoleApi } from '@/lib/console-api'
 import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
@@ -83,9 +88,16 @@ if (!root) throw new Error('missing #root container')
 // no workspace — instead of the app. The two never share a document:
 // crossing that line by hash reloads into the other. Settings are the one
 // hash both shells own (`#/configuration…` opens the overlay in place).
+const migratedHash = normalizeLegacyTowerHash(window.location.hash)
+if (migratedHash) replaceHash(migratedHash)
 const standalone = standaloneRouteFromHash(window.location.hash) !== null
 window.addEventListener('hashchange', () => {
-  const hash = window.location.hash
+  let hash = window.location.hash
+  const migrated = normalizeLegacyTowerHash(hash)
+  if (migrated) {
+    replaceHash(migrated)
+    hash = migrated
+  }
   const now = standaloneRouteFromHash(hash) !== null
   const crosses = standalone
     ? !now && routeFromHash(hash) !== 'configuration'

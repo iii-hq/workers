@@ -4,6 +4,7 @@ import {
   hashForStandalone,
   hashForWorkerPage,
   hashForWorkersConfiguration,
+  normalizeLegacyTowerHash,
   normalizeWorkersConfigurationHash,
   routeFromHash,
   standaloneRouteFromHash,
@@ -104,6 +105,12 @@ describe('workers configuration hash helpers', () => {
 })
 
 describe('isolated worker route', () => {
+  it('redirects the retired Tower hash to the worker page', () => {
+    expect(normalizeLegacyTowerHash('#/tower')).toBe('#/worker/tower')
+    expect(normalizeLegacyTowerHash('#/workers')).toBeNull()
+    expect(routeFromHash('#/tower')).toBeNull()
+  })
+
   it('parses scope, page id and context', () => {
     expect(workerRouteFromHash('#/worker/state')).toEqual({
       scope: 'state',
