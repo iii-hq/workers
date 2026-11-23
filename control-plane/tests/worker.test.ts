@@ -132,6 +132,7 @@ function fake() {
 const controlPlanes: Array<Awaited<ReturnType<typeof registerControlPlane>>> = []
 afterEach(async () => {
   for (const controlPlane of controlPlanes.splice(0)) await controlPlane.dispose()
+  vi.unstubAllEnvs()
   vi.useRealTimers()
 })
 
@@ -157,6 +158,7 @@ function question(
 
 describe('worker functions without an engine', () => {
   it('registers all read contracts, the configuration, source events, and tolerates missing UI/optional workers', async () => {
+    vi.stubEnv('III_CONFIG_NAME', undefined)
     const f = fake()
     controlPlanes.push(await registerControlPlane(f.iii, ['/missing/control-plane-ui']))
     expect(
@@ -172,7 +174,9 @@ describe('worker functions without an engine', () => {
       'control-plane::assumptions::list',
       'control-plane::watch',
       'control-plane::summary::refresh',
+      'control-plane::configuration-id',
     ])
+    expect(f.invoke('control-plane::configuration-id', {})).toEqual({ id: 'control-plane' })
     const overview = await f.invoke('control-plane::overview', { scope: 'all' })
     expect(overview).toMatchObject({
       items: [],
@@ -209,11 +213,47 @@ describe('worker functions without an engine', () => {
     ).toBe(false)
   })
 
+  it('ensures, observes and reloads the Compose configuration id', async () => {
+    const id = 'workers-qa-qa-control-plane'
+    vi.stubEnv('III_CONFIG_NAME', ` ${id} `)
+    const f = fake()
+    controlPlanes.push(await registerControlPlane(f.iii))
+    expect(f.invoke('control-plane::configuration-id', {})).toEqual({ id })
+    expect(f.call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        function_id: 'configuration::ensure',
+        payload: expect.objectContaining({ id }),
+      }),
+    )
+    expect(f.observers).toContainEqual({
+      source: {
+        function_id: 'configuration::on-updated',
+        filters: { 'input.id': { $eq: id } },
+        capture: ['input'],
+      },
+      target: 'control-plane::config-updated',
+    })
+    const getConfig = { function_id: 'configuration::get', payload: { id } }
+    expect(f.call).toHaveBeenCalledWith(getConfig)
+    f.call.mockClear()
+    f.runtime.config.prs.watched_interval_min = 7
+    await f.invoke('control-plane::config-updated', {})
+    expect(f.call).toHaveBeenCalledWith(getConfig)
+    await expect(f.invoke('control-plane::overview', { scope: 'all' })).resolves.toMatchObject({
+      prs_interval_min: 7,
+    })
+  })
+
   it('accepts the Engine stamp on every public RPC while keeping strict requests', async () => {
     const f = fake()
     controlPlanes.push(await registerControlPlane(f.iii))
     for (const id of f.handlers.keys()) {
       if (f.registrations.get(id)?.metadata || id === 'control-plane::on-changed') continue
+      if (id === 'control-plane::configuration-id') {
+        expect(f.invoke(id, { _caller_worker_id: 'ade-9' })).toHaveProperty('id')
+        expect(() => f.invoke(id, { surprise: true })).toThrow()
+        continue
+      }
       await expect(
         f.invoke(id, { scope: 'all', _caller_worker_id: 'ade-9' }),
       ).resolves.toBeDefined()

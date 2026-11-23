@@ -10,6 +10,7 @@ import type { ControlPlaneClient } from './types.js'
 import { ControlPlaneWriter } from './writer.js'
 
 const scopeInput = z.strictObject({ scope: z.string().min(1) })
+const noInput = z.strictObject({})
 const decidedInput = scopeInput.extend({ cursor: z.string().optional() })
 const assumptionsInput = scopeInput.extend({ since: z.iso.datetime().optional() })
 const request = (schema: z.ZodType) => ({ ...z.toJSONSchema(schema), type: 'object' as const })
@@ -27,6 +28,7 @@ const object = (properties: Record<string, unknown>, required = Object.keys(prop
 })
 
 export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []) {
+  const configurationId = process.env.III_CONFIG_NAME?.trim() || 'control-plane'
   const client: ControlPlaneClient = {
     call: <T>(id: string, input?: unknown) =>
       iii.call<unknown, T>({ function_id: id, payload: input ?? {} }),
@@ -404,10 +406,22 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     { metadata: { internal: true } },
   )
   iii.registerFunction(
+    'control-plane::configuration-id',
+    (input: unknown) => {
+      parseRequest(noInput, input)
+      return { id: configurationId }
+    },
+    {
+      description: 'Read the configuration id for this Control plane worker.',
+      request_format: request(noInput),
+      response_format: object({ id: { type: 'string' } }),
+    },
+  )
+  iii.registerFunction(
     'control-plane::config-updated',
     async () => {
       const entry = await client.call<{ value: unknown }>('configuration::get', {
-        id: 'control-plane',
+        id: configurationId,
       })
       config = configSchema.parse(entry.value)
       armWriterTimer()
@@ -448,7 +462,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     [
       {
         function_id: 'configuration::on-updated',
-        filters: { 'input.id': { $eq: 'control-plane' } },
+        filters: { 'input.id': { $eq: configurationId } },
       },
       'control-plane::config-updated',
     ],
@@ -472,13 +486,13 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     }),
   )
   await client.call('configuration::ensure', {
-    id: 'control-plane',
+    id: configurationId,
     name: 'Control plane',
     description: 'Control plane read model and summary writer.',
     schema: z.toJSONSchema(configSchema),
     initial_value: defaultConfig(),
   })
-  const entry = await client.call<{ value: unknown }>('configuration::get', { id: 'control-plane' })
+  const entry = await client.call<{ value: unknown }>('configuration::get', { id: configurationId })
   config = configSchema.parse(entry.value)
   await refreshAvailability()
   await read.boot()

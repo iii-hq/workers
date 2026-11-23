@@ -374,6 +374,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .control-plane-need-row .iii-ui-list-item__description > .control-plane-truncate {
+    display: block;
+  }
   .control-plane-needs-detail {
     flex: 1;
     min-width: 0;
@@ -601,7 +604,7 @@
       flex: 1;
       min-width: 0;
     }
-    .control-plane-inbox:not([data-detail-open]) .control-plane-needs-detail {
+    .control-plane-inbox:not([data-detail-open]) .control-plane-decision-layout {
       display: none;
     }
     .control-plane-detail-back {
@@ -610,6 +613,9 @@
   }
 
   @container (max-width: 639px) {
+    .control-plane-summary-banner {
+      margin-inline: 16px;
+    }
     .control-plane-desktop-nav {
       display: none;
     }

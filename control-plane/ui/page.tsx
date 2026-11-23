@@ -1,12 +1,15 @@
 import type { Host } from '@iii-dev/console-ui'
+import { ControlPlaneConfigForm } from './src/config-form'
 import { ControlPlane } from './src/index'
 
-export default function setup(host: Host) {
+export default async function setup(host: Host) {
+  const { id: configurationId } = await host.iii.call<{ id: string }>('control-plane::configuration-id', {})
+  const unregisterForm = host.configForms.register(configurationId, ControlPlaneConfigForm)
   const unregister = host.pages.register({
     id: 'control-plane',
     title: 'Control plane',
-    configurationId: 'control-plane',
-    render: (props) => <ControlPlane host={host} {...props} />,
+    configurationId,
+    render: (props) => <ControlPlane host={host} configurationId={configurationId} {...props} />,
   })
   const unregisterCommands = host.commands?.register('control-plane', [
     {
@@ -19,5 +22,6 @@ export default function setup(host: Host) {
   return () => {
     unregisterCommands?.()
     unregister()
+    unregisterForm()
   }
 }

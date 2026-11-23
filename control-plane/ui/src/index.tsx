@@ -35,8 +35,9 @@ import {
   type ControlPlaneRun,
   type ControlPlaneTicket,
 } from '../../src/types'
-import { AskAboutButton, NeedsYou, needLabel, QuestionLog, stallVersion, type ControlPlaneActions } from './NeedsYou'
+import { AskAboutButton, NeedsYou, heldCallExcerpt, needLabel, QuestionLog, stallVersion, type ControlPlaneActions } from './NeedsYou'
 import { resolveSummary, summaryIsFresh, type ControlPlaneSummary } from '../../src/summary'
+import { formatAge } from './format'
 
 type ControlPlaneView = 'overview' | 'needs-you' | 'assumptions' | 'decided' | 'runs'
 const VIEWS: Array<{ value: ControlPlaneView; label: string }> = [
@@ -47,12 +48,13 @@ const VIEWS: Array<{ value: ControlPlaneView; label: string }> = [
   { value: 'runs', label: 'Runs' },
 ]
 
-export function ControlPlane({ host, paneId, tabId, onRequestClose }: { host: Host } & PageRenderProps) {
+export function ControlPlane({ host, paneId, tabId, onRequestClose, configurationId }: { host: Host; configurationId?: string } & PageRenderProps) {
   const [scope, setScope] = usePaneState(`control-plane:${paneId}:scope`, ALL_PROJECTS)
   return (
     <ScopedControlPlane
       key={scope}
       host={host}
+      configurationId={configurationId}
       paneId={paneId}
       tabId={tabId}
       onRequestClose={onRequestClose}
@@ -64,12 +66,13 @@ export function ControlPlane({ host, paneId, tabId, onRequestClose }: { host: Ho
 
 function ScopedControlPlane({
   host,
+  configurationId,
   paneId,
   tabId,
   onRequestClose,
   scope,
   onScopeChange,
-}: { host: Host; scope: string; onScopeChange: (scope: string) => void } & Pick<
+}: { host: Host; configurationId?: string; scope: string; onScopeChange: (scope: string) => void } & Pick<
   PageRenderProps,
   'paneId' | 'tabId' | 'onRequestClose'
 >) {
@@ -82,6 +85,7 @@ function ScopedControlPlane({
   return (
     <ControlPlaneScreen
       host={host}
+      configurationId={configurationId}
       paneId={paneId}
       data={data}
       summary={data.summary}
@@ -96,6 +100,7 @@ function ScopedControlPlane({
 
 export interface ControlPlaneScreenProps {
   host: Host
+  configurationId?: string
   paneId?: string
   data: ControlPlaneData
   scope: string
@@ -120,6 +125,7 @@ export function ControlPlaneScreen(props: ControlPlaneScreenProps) {
 
 function ControlPlaneScreenContent({
   paneId = 'control-plane',
+  configurationId,
   data: sourceData,
   scope,
   onScopeChange,
@@ -245,9 +251,14 @@ function ControlPlaneScreenContent({
       </div>
       {summary?.error ? (
         <StatusPanel
+          className="control-plane-summary-banner"
           variant="warn"
-          headline={summary.error}
-          detail={summary.result ? `Last valid summary ${formatRelative(summary.result.checked_at)} ago` : undefined}
+          headline={configurationId && summary.error === 'set the summary model in the Control plane settings' ? (
+            <a className="control-plane-link" href={`#/configuration/workers/${encodeURIComponent(configurationId)}`}>
+              {summary.error}
+            </a>
+          ) : summary.error}
+          detail={summary.result ? `Last valid summary ${formatAge(summary.result.checked_at)}` : undefined}
         />
       ) : null}
       {summary?.throttled_until ? (
@@ -747,6 +758,9 @@ function Overview({
                         <time className="control-plane-meta">{formatRelative(item.createdAt)}</time>
                       </div>
                       <p className="control-plane-need-title">{item.title}</p>
+                      {item.kind === 'held' ? (
+                        <p className="control-plane-muted">{item.sessionTitle || item.sessionId} · {heldCallExcerpt(item)}</p>
+                      ) : null}
                       {item.kind === 'question' && item.why ? <p className="control-plane-muted">{item.why}</p> : null}
                       <div className="control-plane-row-head">
                         <Button size="sm" variant="pill" onClick={() => openNeed(item)}>
@@ -1085,7 +1099,7 @@ function PullRequests({ data, scope, summary }: { data: ControlPlaneData; scope:
               <time className="control-plane-meta">{formatRelative(pr.createdAt)}</time>
               {Date.now() - Date.parse(pr.as_of) > data.prs_interval_min * 60_000 ? (
                 <time className="control-plane-meta" dateTime={pr.as_of}>
-                  Checked {formatRelative(pr.as_of)} ago
+                  Checked {formatAge(pr.as_of)}
                 </time>
               ) : null}
             </div>
@@ -1283,7 +1297,7 @@ function Runs({
                 <div>
                   <p className="control-plane-meta">
                     {run.profile || 'default profile'} · {run.startedBy} · started{' '}
-                    {formatRelative(run.session.created_at)} ago
+                    {formatAge(run.session.created_at)}
                   </p>
                   {run.progress.map((progress) => (
                     <div key={progress.releaseId ?? 'none'} className="control-plane-progress-row">
@@ -1344,7 +1358,11 @@ function Runs({
                   </div>
                   <div>
                     <Eyebrow as="dt">Last progress</Eyebrow>
-                    <dd>{formatRelative(run.lastProgress)} ago</dd>
+                    <dd>{formatAge(run.lastProgress)}</dd>
+                  </div>
+                  <div>
+                    <Eyebrow as="dt">Context size</Eyebrow>
+                    <dd>{run.context_size.toLocaleString()} tokens</dd>
                   </div>
                   <div>
                     <Eyebrow as="dt">Sessions</Eyebrow>

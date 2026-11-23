@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { act, type ComponentProps } from 'react'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 import { createRoot, type Root } from 'react-dom/client'
@@ -52,22 +53,59 @@ function writer(result: ControlPlaneSummary = controlPlaneSummaryFixture) {
 }
 
 describe('Control plane views', () => {
-  it('registers the page and opens it from the command palette', () => {
+  it('registers the page, form and banner for the Compose configuration id', async () => {
+    const id = 'workers-qa-qa-control-plane'
     const unregisterPage = vi.fn()
     const unregisterCommands = vi.fn()
+    const unregisterForm = vi.fn()
     const registerPage = vi.fn<Host['pages']['register']>(() => unregisterPage)
     const registerCommands = vi.fn<NonNullable<Host['commands']>['register']>(() => unregisterCommands)
-    const dispose = setup({
+    const registerForm = vi.fn<Host['configForms']['register']>(() => unregisterForm)
+    const call = vi.fn().mockResolvedValue({ id })
+    const dispose = await setup({
       ...host,
+      iii: { ...host.iii, call },
       pages: { register: registerPage },
       commands: { register: registerCommands },
+      configForms: { register: registerForm },
     })
 
+    expect(call).toHaveBeenCalledWith('control-plane::configuration-id', {})
     expect(registerPage).toHaveBeenCalledWith(expect.objectContaining({
       id: 'control-plane',
       title: 'Control plane',
-      configurationId: 'control-plane',
+      configurationId: id,
     }))
+    expect(registerForm).toHaveBeenCalledWith(id, expect.any(Function))
+    const hook = vi.spyOn(overviewHook, 'useControlPlaneOverview').mockReturnValue({
+      ...controlPlaneFixture,
+      summary: { ...controlPlaneFixture.summary, error: 'set the summary model in the Control plane settings' },
+    })
+    try {
+      const Page = registerPage.mock.calls[0][0].render
+      await act(() => root.render(<Page tabId="" panelSide="left" />))
+      expect(container.querySelector('.control-plane-summary-banner a')?.getAttribute('href')).toBe(
+        `#/configuration/workers/${id}`,
+      )
+    } finally {
+      hook.mockRestore()
+    }
+    const Form = registerForm.mock.calls[0][1]
+    const onChange = vi.fn()
+    const value = { stall_after_min: 30, summary: { model: 'provider::model', interval_min: 10 } }
+    await act(() => root.render(<Form id={id} schema={null} value={value} onChange={onChange} />))
+    const change = async (field: string, text: string) => {
+      const input = container.querySelector<HTMLInputElement>(`input[data-field="${field}"]`)!
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      await act(() => {
+        setValue?.call(input, text)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    }
+    await change('summary.model', '')
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, summary: { interval_min: 10 } })
+    await change('stall_after_min', '45')
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, stall_after_min: 45 })
     const [pageId, [command]] = registerCommands.mock.calls[0]
     expect(pageId).toBe('control-plane')
     expect(command).toMatchObject({ id: 'open', title: 'Open control plane' })
@@ -76,6 +114,7 @@ describe('Control plane views', () => {
     dispose()
     expect(unregisterCommands).toHaveBeenCalledOnce()
     expect(unregisterPage).toHaveBeenCalledOnce()
+    expect(unregisterForm).toHaveBeenCalledOnce()
   })
 
   it('offers and rebinds decision chats only within a workspace tab', async () => {
@@ -312,6 +351,24 @@ describe('Control plane views', () => {
     })
   })
 
+  it('renders each run’s context size and uses “just now” for a new run', async () => {
+    const now = Date.now()
+    const runs = controlPlaneFixture.runs.slice(0, 2).map((run, index) => ({
+      ...run,
+      session: { ...run.session, created_at: now },
+      lastProgress: now,
+      context_size: [8137, 8665][index],
+    }))
+    await render({ initialView: 'runs', data: { ...controlPlaneFixture, runs } })
+    const cards = [...container.querySelectorAll('.control-plane-run')]
+    expect(cards.map((card) => card.textContent)).toEqual([
+      expect.stringContaining(`Context size${(8137).toLocaleString()} tokens`),
+      expect.stringContaining(`Context size${(8665).toLocaleString()} tokens`),
+    ])
+    expect(cards[0].textContent).toContain('started just now')
+    expect(cards[0].textContent).not.toContain('just now ago')
+  })
+
   it('shows a failed progress read without claiming the card has no subtasks', async () => {
     await render({
       initialView: 'runs',
@@ -406,6 +463,24 @@ describe('CEO overview', () => {
   ])('shows %s', async (error) => {
     await render({ summary: { ...writer(), result: null, error, fresh: false, unavailable: true } })
     expect(container.textContent).toContain(error)
+  })
+
+  it('keeps a phone summary gutter and hides the empty detail column at split-pane widths', () => {
+    const stylesheet = new CSSStyleSheet()
+    stylesheet.replaceSync(readFileSync('src/control-plane.css', 'utf8'))
+    const scope = [...stylesheet.cssRules].find(
+      (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === '[data-iii-ui="control-plane"]',
+    )
+    const stylesAt = (width: number, selector: string) => {
+      const query = [...(scope?.cssRules ?? [])].find(
+        (rule): rule is CSSContainerRule => rule instanceof CSSContainerRule && rule.conditionText === `(max-width: ${width}px)`,
+      )
+      return [...(query?.cssRules ?? [])].find(
+        (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === `& ${selector}`,
+      )?.style
+    }
+    expect(stylesAt(639, '.control-plane-summary-banner')?.getPropertyValue('margin-inline')).toBe('16px')
+    expect(stylesAt(760, '.control-plane-inbox:not([data-detail-open]) .control-plane-decision-layout')?.display).toBe('none')
   })
 
   it('shows stale PR checks and omits subtree usage metrics', async () => {

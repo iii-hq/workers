@@ -21,8 +21,8 @@ import {
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { usePaneState } from '@iii-dev/console-ui/hooks'
 import { ChevronLeft, ChevronRight, Clock, Info, MessageSquare } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { formatTokenCount } from './format'
+import { type ReactNode, type Ref, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { formatAge, formatTokenCount } from './format'
 import { useControlPlaneHost } from './host'
 import {
   type AnswerState,
@@ -46,6 +46,12 @@ export const needLabel = (item: NeedsYouItem) =>
     : item.kind === 'held'
       ? 'Held call'
       : 'Stalled run'
+
+export function heldCallExcerpt(item: Extract<NeedsYouItem, { kind: 'held' }>): string {
+  const excerpt = typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments)
+  const text = excerpt?.replace(/\s+/g, ' ').trim() ?? ''
+  return text.length > 120 ? `${text.slice(0, 119)}…` : text
+}
 
 export function stallVersion(item: NeedsYouItem, runs: ControlPlaneData['runs']): string {
   const run = runs.find((row) => row.session.session_id === item.sessionId)
@@ -141,8 +147,8 @@ export function NeedsYou({
     () => data.items.find((item) => item.id === initialSelectedId) ?? (!phoneViewport ? data.items[0] : null) ?? null,
   )
   useEffect(() => {
-    if (initialSelectedId) setFocused(data.items.find((item) => item.id === initialSelectedId) ?? null)
-  }, [initialSelectedId])
+    if (visible && initialSelectedId) setFocused(data.items.find((item) => item.id === initialSelectedId) ?? null)
+  }, [initialSelectedId, visible])
   const [release, setRelease] = useState('all')
   const [query, setQuery] = useState('')
   const [drafts, setDrafts] = useState<Record<string, Selection[]>>({})
@@ -164,6 +170,23 @@ export function NeedsYou({
       : undefined
   const entry = record?.harness ?? (selected?.kind === 'question' ? selected.entry : undefined)
   const selectedKey = selected?.id
+  const inbox = useRef<HTMLDivElement>(null)
+  const detailHeading = useRef<HTMLHeadingElement>(null)
+  const returnFocusTo = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (!visible) return
+    if (selectedKey) {
+      detailHeading.current?.focus()
+    } else if (returnFocusTo.current) {
+      const rows = inbox.current?.querySelectorAll<HTMLButtonElement>('[data-need-id]')
+      Array.from(rows ?? []).find((row) => row.dataset.needId === returnFocusTo.current)?.focus()
+      returnFocusTo.current = null
+    }
+  }, [selectedKey, visible, phone])
+  const closeDetail = () => {
+    returnFocusTo.current = selectedKey ?? null
+    setFocused(null)
+  }
   useEffect(() => {
     active.current = true
     return () => {
@@ -448,6 +471,7 @@ export function NeedsYou({
   }
   const detail = selected ? (
     <NeedDetail
+      headingRef={detailHeading}
       item={selected}
       entry={entry}
       record={record}
@@ -498,12 +522,12 @@ export function NeedsYou({
       retry={() => {
         void retries.current.get(selected.id)?.()
       }}
-      onBack={() => setFocused(null)}
+      onBack={closeDetail}
     />
   ) : null
   if (!visible) return null
   return (
-    <div className="control-plane-inbox" data-phone={phone || undefined} data-detail-open={!!selected || undefined}>
+    <div ref={inbox} className="control-plane-inbox" data-phone={phone || undefined} data-detail-open={!!selected || undefined}>
       <PageSidebar label="Needs you releases" width={220} collapsible={false} className="control-plane-needs-rail">
         <List aria-label="Filter by release">
           <ListItem
@@ -595,11 +619,24 @@ export function NeedsYou({
                   {rows.map((item) => (
                     <ListItem
                       key={item.id}
+                      data-need-id={item.id}
                       className="control-plane-need-row"
                       selected={selected?.id === item.id}
-                      onClick={() => setFocused(item)}
+                      onClick={() => {
+                        if (item.id === selectedKey) detailHeading.current?.focus()
+                        setFocused(item)
+                      }}
                       label={item.title}
-                      description={`${needLabel(item)} · ${item.card?.key ?? 'not on the board'}${item.blockedCards ? ` · blocks ${item.blockedCards}` : ''}`}
+                      description={item.kind === 'held' ? (
+                        <>
+                          <span className="control-plane-truncate">{heldCallExcerpt(item)}</span>
+                          <span className="control-plane-truncate">
+                            Held call · {item.sessionTitle || item.sessionId}{item.card ? ` · ${item.card.key}` : ''}
+                          </span>
+                        </>
+                      ) : (
+                        `${needLabel(item)} · ${item.card?.key ?? 'not on the board'}${item.blockedCards ? ` · blocks ${item.blockedCards}` : ''}`
+                      )}
                       trailing={
                         <>
                           <time className="control-plane-meta">{formatRelative(item.createdAt)}</time>
@@ -618,7 +655,7 @@ export function NeedsYou({
         <BottomSheet
           open={!!selected}
           onOpenChange={(open) => {
-            if (!open) setFocused(null)
+            if (!open) closeDetail()
           }}
         >
           <BottomSheetContent
@@ -652,6 +689,7 @@ export function NeedsYou({
 }
 
 export function NeedDetail({
+  headingRef,
   item,
   entry,
   record,
@@ -670,6 +708,7 @@ export function NeedDetail({
   filledFromChat,
   heldProposal,
 }: {
+  headingRef: Ref<HTMLHeadingElement>
   item: NeedsYouItem
   entry?: AskEntry
   record?: ControlPlaneQuestion
@@ -710,7 +749,12 @@ export function NeedDetail({
     idle: '',
   }
   return (
-    <article className="control-plane-decision">
+    <article className="control-plane-decision" onKeyDown={(event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      event.stopPropagation()
+      onBack()
+    }}>
       <div className="control-plane-decision-toolbar">
         <Button variant="ghost" size="sm" className="control-plane-detail-back" onClick={onBack}>
           <ChevronLeft className="control-plane-size-4" />
@@ -745,7 +789,7 @@ export function NeedDetail({
       </div>
       <div className="control-plane-decision-scroll">
         <Eyebrow className="control-plane-kind">{needLabel(item)}</Eyebrow>
-        <h2 className={item.kind === 'held' ? 'control-plane-function' : undefined}>{item.title}</h2>
+        <h2 ref={headingRef} tabIndex={-1} className={item.kind === 'held' ? 'control-plane-function' : undefined}>{item.title}</h2>
         <p className="control-plane-meta">
           {item.kind === 'question' ? `asked by ${entry?.asked_by ?? run?.profile ?? 'unknown profile'} · ` : ''}
           {item.kind === 'held'
@@ -753,7 +797,7 @@ export function NeedDetail({
             : item.kind === 'question'
               ? (item.sessionTitle ?? run?.session.title ?? item.sessionId)
               : item.sessionId}{' '}
-          · {formatRelative(item.createdAt)} ago
+          · {formatAge(item.createdAt)}
         </p>
         {item.kind === 'question' ? (
           <>
@@ -875,13 +919,13 @@ export function NeedDetail({
                 </button>
               </p>
             ) : null}
-            <p className="control-plane-muted">Nothing is chosen for you. The call stays held until you pick one.</p>
+            {editable ? <p className="control-plane-muted">Nothing is chosen for you. The call stays held until you pick one.</p> : null}
           </>
         ) : (
           <dl className="control-plane-stall-facts">
             <div>
               <dt>Last progress</dt>
-              <dd>{formatRelative(item.lastProgress)} ago</dd>
+              <dd>{formatAge(item.lastProgress)}</dd>
             </div>
             <div>
               <dt>Root session</dt>
@@ -936,12 +980,12 @@ export function NeedDetail({
             <ol>
               <li>
                 Asked in {item.sessionId}
-                <time className="control-plane-meta">{formatRelative(item.createdAt)} ago</time>
+                <time className="control-plane-meta">{formatAge(item.createdAt)}</time>
               </li>
               {record?.board ? (
                 <li>
                   Put on {item.card?.key ?? record.ticketId} as a question
-                  <time className="control-plane-meta">{formatRelative(record.board.comment.created_at)} ago</time>
+                  <time className="control-plane-meta">{formatAge(record.board.comment.created_at)}</time>
                 </li>
               ) : null}
               {entry?.settled_at ? (
@@ -949,7 +993,7 @@ export function NeedDetail({
                   {entry.state === 'withdrawn'
                     ? 'Withdrawn by the asker'
                     : `${entry.outcome?.replaceAll('_', ' ')} · ${entry.by?.user ?? entry.by?.channel ?? ''}`}
-                  <time className="control-plane-meta">{formatRelative(entry.settled_at)} ago</time>
+                  <time className="control-plane-meta">{formatAge(entry.settled_at)}</time>
                 </li>
               ) : null}
             </ol>
@@ -1120,11 +1164,13 @@ export function QuestionLog({
                   {row.recordedBy ?? row.by?.user ?? row.by?.channel ?? 'unknown author'}
                   {row.by?.channel && row.by.user ? ` · ${row.by.channel}` : ''}
                 </span>
-                <time className="control-plane-meta">{formatRelative(row.settledAt ?? row.askedAt)} ago</time>
+                <time className="control-plane-meta">{formatAge(row.settledAt ?? row.askedAt)}</time>
               </div>
               <h3>{row.questions.map((question) => question.question).join(' · ')}</h3>
               <p className="control-plane-sent-summary">
-                {row.answerText ?? (row.state === 'withdrawn' ? 'Withdrawn by the asker' : 'No answer recorded.')}
+                {(row.outcome ?? row.state) === 'dismissed'
+                  ? 'Left to the agent'
+                  : row.answerText ?? (row.state === 'withdrawn' ? 'Withdrawn by the asker' : 'No answer recorded.')}
               </p>
               <p className="control-plane-muted">{(row.outcome ?? row.state).replaceAll('_', ' ')}</p>
               {view === 'assumptions' ? (

@@ -1,3 +1,10 @@
+import { formatRelative } from '@iii-dev/console-ui/format'
+
+export function formatAge(input: Parameters<typeof formatRelative>[0]): string {
+  const relative = formatRelative(input)
+  return relative && relative !== 'just now' ? `${relative} ago` : relative
+}
+
 export function formatTokenCount(n: number): string {
   if (n < 1_000) return String(n)
   if (n < 1_000_000) {

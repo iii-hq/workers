@@ -57,6 +57,19 @@ const client = (call: ReturnType<typeof vi.fn>) => ({
 })
 
 describe('Control plane Needs you interactions', () => {
+  it('moves focus from Open to the decision and back to its list row on Escape', async () => {
+    await render({ initialView: 'overview' })
+    const open = button('Open')
+    open.focus()
+    await act(() => open.click()) // Native Enter activation on a button is a click.
+    const heading = container.querySelector<HTMLHeadingElement>('.control-plane-decision h2')!
+    expect(document.activeElement).toBe(heading)
+    const row = container.querySelector<HTMLButtonElement>('.control-plane-need-row[aria-selected="true"]')
+    await act(() => heading.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(container.querySelector('.control-plane-decision')).toBeNull()
+    expect(document.activeElement).toBe(row)
+  })
+
   it('replaces choices with the exact sent summary and sends only once on two clicks', async () => {
     let deliver: (entry: AskEntry) => void = () => {}
     const call = vi.fn(
@@ -284,6 +297,21 @@ describe('Control plane Needs you interactions', () => {
       by: { channel: 'control-plane', user: 'user' },
     })
   })
+
+  it('shows a dismissed decision as left to the agent without the delivery instruction', async () => {
+    const instruction = 'I dismissed your questions without answering them. Go on with your best judgement.'
+    await render({
+      initialView: 'decided',
+      data: {
+        ...controlPlaneFixture,
+        questions: controlPlaneFixture.questions.map((row) =>
+          row.recordedBy ? row : { ...row, state: 'dismissed', outcome: 'dismissed', answerText: instruction },
+        ),
+      },
+    })
+    expect(container.textContent).toContain('Left to the agent')
+    expect(container.textContent).not.toContain(instruction)
+  })
   it('shows held arguments without preselection, and grants only after resolving always', async () => {
     const call = vi.fn().mockResolvedValue({ resolved: true })
     const held = controlPlaneFixture.items.find((item) => item.kind === 'held')
@@ -294,7 +322,7 @@ describe('Control plane Needs you interactions', () => {
       data: {
         ...controlPlaneFixture,
         items: controlPlaneFixture.items.map((item) =>
-          item.id === held.id ? { ...item, namespace: 'production', implicitNamespace: 'default' } : item,
+          item.id === held.id ? { ...item, sessionTitle: 'Release chat', namespace: 'production', implicitNamespace: 'default' } : item,
         ),
       },
     })
@@ -302,9 +330,17 @@ describe('Control plane Needs you interactions', () => {
     expect(container.textContent).not.toContain('Recommended')
     expect(container.textContent).not.toContain('Let the agent decide')
     expect(container.textContent).toContain('git push')
+    const row = container.querySelector('[data-need-id="hold"]')
+    expect(row?.textContent).toContain('shell::exec')
+    expect([...row!.querySelectorAll('.control-plane-truncate')].map((line) => line.textContent)).toEqual([
+      '{"command":"git push"}',
+      'Held call · Release chat · KAN-616',
+    ])
     expect(container.textContent).toContain('Namespace: production')
+    expect(container.textContent).toContain('The call stays held until you pick one.')
     expect(container.querySelector('.control-plane-decision button[data-variant="default"]')).toBeNull()
     await click('Always allow in this session')
+    expect(container.textContent).not.toContain('The call stays held until you pick one.')
     expect(call.mock.calls).toEqual([
       [
         'approval::resolve',

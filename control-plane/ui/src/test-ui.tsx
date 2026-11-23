@@ -33,12 +33,16 @@ export const mockUi = {
   ),
   Card: Box,
   CardBody: Box,
+  SettingsList: Box,
+  SettingsField: ({ label, field, renderControl }: Props) => (
+    <label>{label}{renderControl({ 'data-field': field })}</label>
+  ),
   PanelHeader: Box,
   List: Box,
   ListGroup: Box,
   ListGroupLabel: Box,
-  ListItem: ({ label, description, trailing, selected, className, onClick }: Props) => (
-    <button type="button" className={className} aria-selected={selected} onClick={onClick}>
+  ListItem: ({ label, description, trailing, selected, ...props }: Props) => (
+    <button type="button" aria-selected={selected} {...props}>
       {label}
       {description}
       {trailing}
@@ -51,8 +55,8 @@ export const mockUi = {
     </footer>
   ),
   StatusDot: ({ tone }: Props) => <i className={`bg-${tone}`} />,
-  StatusPanel: ({ headline, detail, action, role }: Props) => (
-    <div role={role ?? 'status'}>
+  StatusPanel: ({ headline, detail, action, role, className }: Props) => (
+    <div role={role ?? 'status'} className={className}>
       {headline}
       {detail}
       {action}

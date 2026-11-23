@@ -1,4 +1,4 @@
-# control-plane
+# control-plane 0.0.1
 
 The `control-plane` worker owns the Control plane page, read model and summary
 schedule. Open it from the console navigation, via `#/workspace/control-plane`,
@@ -6,9 +6,16 @@ or on its own at `#/worker/control-plane`. It aggregates harness roots and asks,
 kanban projects, cards, releases and questions, and pull requests from repositories
 declared on projects. The console reads approval holds directly.
 
+The worker requires configuration, harness, session-manager, kanban, state and
+iii-directory. ADE hosts its page. GitHub supplies pull requests for repositories
+set on a Kanban project's Overview. Approval-gate supplies held calls. GitHub
+and approval-gate are optional.
+
 ## Configuration
 
-The worker registers configuration id `control-plane` with these keys:
+The worker registers the id provided by Compose in `III_CONFIG_NAME`, with
+`control-plane` as the default. Open the gear in the Control plane page to set the
+summary model and stall timeout.
 
 | Key | Default |
 | --- | --- |
@@ -22,8 +29,9 @@ The worker registers configuration id `control-plane` with these keys:
 | `at_risk_days` | `3` |
 
 An unset project escalation list means `security`, `publish`, `external_cost`
-and `data`. Without `summary.model`, the writer is disabled. The model uses
-`provider::model` syntax.
+and `data`. To enable the summary, apply the `control-plane` kit so iii-directory
+can resolve its `control-plane-writer` profile, then set `summary.model` to an
+available `provider::model`.
 
 ## Functions and event
 
@@ -36,11 +44,12 @@ and `data`. Without `summary.model`, the writer is disabled. The model uses
 - `control-plane::assumptions::list {scope, since?}` filters recorded assumptions by comment time.
 - `control-plane::watch {scope}` watches the scope for two minutes.
 - `control-plane::summary::refresh {scope}` requests a rate-limited writer turn.
+- `control-plane::configuration-id {}` returns `{id}` for the worker's settings entry.
 - `control-plane::on-changed {scope, as_of, parts}` announces changed read-model parts.
 
-`scope` is `all` or a project id. GitHub and approval-gate are optional. When
-GitHub is unavailable, pull requests report unavailable; without approval-gate,
-writer sessions run without approval setup.
+`scope` is `all` or a project id. When GitHub is unavailable, pull requests
+report unavailable. Without approval-gate, writer sessions run without approval
+setup.
 
 ## Source boundaries
 
