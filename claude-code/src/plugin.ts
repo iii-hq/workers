@@ -18,7 +18,7 @@
  * copy.
  */
 
-import { approveHookEntry } from './iii-plugin/shared/mode.js';
+import { approveHookEntry, callApprovalHookEntry } from './iii-plugin/shared/mode.js';
 
 /** Where the plugin is materialised, relative to a workspace. */
 export const PLUGIN_DIR_NAME = '.iii-plugin';
@@ -82,8 +82,9 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
     const entry = { hooks: [{ type: 'command', command }] };
     hooks[event] = [shape === 'matcher' ? { matcher: '*', ...entry } : entry];
   }
-  // The read-only approvals for the iii tools, after the activity report.
-  hooks.PreToolUse.push(approveHookEntry());
+  // The plugin's approvals, after the activity report: the read-only iii
+  // tools, and iii_call for the read-only directory calls (approve-call).
+  hooks.PreToolUse.push(approveHookEntry(), callApprovalHookEntry());
 
   // The manifest and commands are the plugin folder fetched from
   // iii-hq/agent-plugins-claude at build (see `iii-plugin/install.ts`); these are the parts only a worker can write:

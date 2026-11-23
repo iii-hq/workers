@@ -10,7 +10,7 @@ import {
   pluginSourceLine,
   resolveWorkerMcp,
 } from '../src/iii-plugin/install.js';
-import { approveHookEntry } from '../src/iii-plugin/shared/mode.js';
+import { approveHookEntry, callApprovalHookEntry } from '../src/iii-plugin/shared/mode.js';
 import { pluginFiles } from '../src/plugin.js';
 
 function memoryOps() {
@@ -57,10 +57,21 @@ describe('worker plugin files', () => {
   const file = (mcpUrl: string, path: string) =>
     files(mcpUrl).find((f) => f.path === path)?.content ?? '';
 
-  it('carry the read-only approval hook after the activity hook', () => {
+  it('carry the approval hooks after the activity hook', () => {
     const hooks = JSON.parse(file('http://x/mcp', 'hooks/hooks.json') || '{}').hooks;
     expect(hooks.PreToolUse[0].hooks[0].command).toContain('claude::terminal::activity');
     expect(hooks.PreToolUse[1]).toEqual(approveHookEntry());
+    expect(hooks.PreToolUse[2]).toEqual(callApprovalHookEntry());
+  });
+
+  it('carry every approval hook the embedded plugin ships, so directory reads never prompt', () => {
+    const own = JSON.parse(file('http://x/mcp', 'hooks/hooks.json') || '{}').hooks;
+    const shipped = JSON.parse(
+      PLUGIN_STATIC_FILES.find((f) => f.path === 'hooks/hooks.json')?.content ?? '{}',
+    ).hooks;
+    // The worker replaces the plugin's hooks.json: its activity hook aside,
+    // the PreToolUse approvals must be the plugin's own.
+    expect(own.PreToolUse.slice(1)).toEqual(shipped.PreToolUse);
   });
 
   it('point the session at the mcp-server the worker found', () => {
