@@ -391,9 +391,53 @@ On an isolated stack:
    - After a spent budget, Renew records a new session and leaves cards
      running.
 
+## Open problems (review 4, 2026-11-22)
+
+This spec is not built in PR #1855. The fourth review found four blockers.
+They all need harness primitives before the controller can be built:
+
+1. **Forgeable lineage.**
+   - `harness::send` accepts `session.metadata.parent_session_id` from its
+     caller (`harness/src/functions/send.rs:695-719`), and the tree helpers
+     trust it (`session_tree.rs:46-88`).
+   - The stop target can come from the editable `Orchestrator session:`
+     text (`kanban/src/dispatch.rs:257-275`).
+   - Needed: lineage the harness records itself, and a claim owned by
+     dispatch, with an explicit adoption operation.
+2. **Missing baggage does not prove a person.**
+   - Approved calls run outside the turn with no session baggage
+     (`harness/src/deferred.rs:374-427`).
+   - `fp::batch` spawns without the invocation context
+     (`fp/src/batch.rs:247-257,367-378`).
+   - Needed: positive provenance on privileged writes, carried across
+     forwarding, and checked at the mutation.
+3. **The stop request is not durable.**
+   - A worker `harness::send` merges into an active turn, or starts a turn
+     on a parked session (`send.rs:1080-1140`).
+   - deepwork would read it as steering or as an answer.
+   - Needed: an authenticated, durable stop request that takes precedence
+     over ask handling. It must block new waves and be acknowledged after
+     the batch is cleaned up. A forced stop must also reach quiescence across
+     the whole tree and retire its wakes.
+4. **Reserved `dispatch-` ids break deepwork.**
+   - deepwork spawns `<own>-kan-12`, which starts with `dispatch-` under
+     dispatch (`kits/deepwork/agents/deepwork.md:233`).
+   - Needed: reserve only dispatcher root ids.
+
+Majors from the same review:
+- **Claims:** claim generation and capacity buckets are not persisted
+  together with the mutation, and project changes through reparenting or
+  `label::convert` are missed.
+- **Wakes:** the wake filter would drop dispatch parks sent as
+  `ticket.updated`.
+- **Profile:** `kits/workflow` needs `shell`, `state` and `workflow::start`,
+  so it does not fit the controller policy.
+- **Workflow nodes:** they can be launched or stopped through worker calls.
+
 ## Open decisions
 
-- **Default profile:** `kits/workflow` or a new `controller` profile.
+- **Default profile:** a new `controller` profile. `kits/workflow` needs
+  `shell`, `state` and `workflow::start`, which this policy leaves out.
 - **Answering for the person:** the controller could one day answer
   questions of non-escalated classes. That would need a delegated answer
   path, and is not in this spec.
