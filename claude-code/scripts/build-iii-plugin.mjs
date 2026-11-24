@@ -1,0 +1,165 @@
+#!/usr/bin/env node
+/**
+ * Fetch the iii Claude Code plugin and generate the worker's copy of it.
+ *
+ *   node scripts/build-iii-plugin.mjs
+ *   III_PLUGIN_SOURCE=/path/to/agent-plugins-claude node scripts/build-iii-plugin.mjs
+ *
+ * The plugin lives in https://github.com/iii-hq/agent-plugins-claude (a Claude
+ * Code marketplace). On every run this takes the LATEST commit of its default
+ * branch (a shallow clone; network required), or, with `III_PLUGIN_SOURCE`,
+ * a local checkout of it, and:
+ *
+ *   1. Embeds every file of `plugins/iii/` into
+ *      `src/iii-plugin/assets.generated.ts`, with `PLUGIN_SOURCE` (the repo
+ *      and the commit fetched, or `local:<path>`). `deploy: bundle` ships only
+ *      `dist/bundle/index.mjs`, so the worker carries the plugin inside
+ *      itself; CI's deploy build runs this step through `build:bundle`.
+ *   2. Copies the modules the worker shares with the plugin's CLI from the
+ *      repo's `src/` into `src/iii-plugin/shared/`.
+ *
+ * Both outputs are git-ignored. The plugin's committed CLI and its `--check`
+ * live in the plugin repository, not here.
+ */
+
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+
+export const PLUGIN_REPO = 'https://github.com/iii-hq/agent-plugins-claude';
+
+/** The files that make up the plugin, relative to `plugins/iii/`. */
+export const PLUGIN_FILES = [
+  '.claude-plugin/plugin.json',
+  '.mcp.json',
+  'README.md',
+  'agents/iii.md',
+  'commands/profile.md',
+  'commands/skills.md',
+  'hooks/hooks.json',
+  'cli/index.mjs',
+];
+
+/** The plugin repo's `src/` modules the worker uses too. */
+export const SHARED_MODULES = ['commands.ts', 'directory.ts', 'mcp.ts', 'session.ts', 'mode.ts'];
+
+const OFFLINE =
+  'set III_PLUGIN_SOURCE=/path/to/a/checkout/of/agent-plugins-claude to build from a local copy';
+
+/**
+ * Where the plugin comes from: `III_PLUGIN_SOURCE`, or a fresh shallow clone
+ * of `repoUrl` (removed by `cleanup`).
+ * @returns {Promise<{ dir: string, commit: string, cleanup?: () => Promise<void> }>}
+ */
+export async function resolveSource(env = process.env, repoUrl = PLUGIN_REPO) {
+  const local = env.III_PLUGIN_SOURCE;
+  if (local) {
+    const dir = resolve(local);
+    const ok = await stat(join(dir, 'plugins/iii')).then(
+      (s) => s.isDirectory(),
+      () => false,
+    );
+    if (!ok)
+      throw new Error(
+        `III_PLUGIN_SOURCE=${local} is not a checkout of agent-plugins-claude (no plugins/iii/)`,
+      );
+    return { dir, commit: `local:${dir}` };
+  }
+  const parent = await mkdtemp(join(tmpdir(), 'agent-plugins-claude-'));
+  const cleanup = () => rm(parent, { recursive: true, force: true });
+  const dir = join(parent, 'repo');
+  try {
+    await run('git', ['clone', '--quiet', '--depth', '1', repoUrl, dir], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    const { stdout } = await run('git', ['-C', dir, 'rev-parse', 'HEAD']);
+    return { dir, commit: stdout.trim(), cleanup };
+  } catch (err) {
+    await cleanup();
+    const why = (err?.stderr || err?.message || String(err)).trim();
+    throw new Error(`could not fetch the iii plugin from ${repoUrl} (${why}); ${OFFLINE}`);
+  }
+}
+
+/** `./name.js` imports and re-exports of one module, as source file names. */
+function localImports(content) {
+  const names = new Set();
+  for (const m of content.matchAll(/\bfrom\s+['"]\.\/([\w.-]+)\.js['"]/g)) names.add(`${m[1]}.ts`);
+  return [...names];
+}
+
+/**
+ * SHARED_MODULES and every module they import from `src/`, however deep: the
+ * plugin's modules import one another (mcp.ts imports troubleshoot.ts), and a
+ * list of names would miss the next one it adds. A missing import fails the
+ * build, naming it.
+ */
+async function sharedModules(dir) {
+  const shared = new Map();
+  const queue = [...SHARED_MODULES];
+  while (queue.length) {
+    const name = queue.shift();
+    if (shared.has(name)) continue;
+    const content = await read(dir, `src/${name}`);
+    shared.set(name, content);
+    queue.push(...localImports(content));
+  }
+  return [...shared];
+}
+
+const read = (dir, path) =>
+  readFile(join(dir, path), 'utf8').catch(() => {
+    throw new Error(`${path} is missing from the plugin source ${dir}`);
+  });
+
+/** Write the worker's generated copy of the plugin under `root`. */
+export async function generate({ dir, commit }, root) {
+  const files = [];
+  for (const path of PLUGIN_FILES)
+    files.push({ path, content: await read(dir, `plugins/iii/${path}`) });
+  const shared = await sharedModules(dir);
+
+  const source = { repo: PLUGIN_REPO, commit };
+  await mkdir(join(root, 'src/iii-plugin'), { recursive: true });
+  await writeFile(
+    join(root, 'src/iii-plugin/assets.generated.ts'),
+    `// Generated by scripts/build-iii-plugin.mjs from ${PLUGIN_REPO} — do not edit.
+/* biome-ignore-all lint: generated file */
+export const PLUGIN_SOURCE = ${JSON.stringify(source)};
+export const PLUGIN_STATIC_FILES: { path: string; content: string }[] = ${JSON.stringify(files)};
+`,
+  );
+
+  const sharedDir = join(root, 'src/iii-plugin/shared');
+  await rm(sharedDir, { recursive: true, force: true });
+  await mkdir(sharedDir, { recursive: true });
+  for (const [name, content] of shared) {
+    await writeFile(
+      join(sharedDir, name),
+      `// Generated by scripts/build-iii-plugin.mjs — do not edit; git-ignored.
+// Copied from ${PLUGIN_REPO} src/${name} (${commit}); change it there.
+${content}`,
+    );
+  }
+  return source;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  let source;
+  try {
+    source = await resolveSource();
+    await generate(source, root);
+    console.log(`iii-plugin: embedded ${PLUGIN_REPO} at ${source.commit}`);
+  } catch (err) {
+    console.error(`iii-plugin: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  } finally {
+    await source?.cleanup?.();
+  }
+}

@@ -3,10 +3,14 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"github.com/iii-hq/workers/mesh/internal/coordinator"
+	"github.com/iii-hq/workers/mesh/internal/gateway"
 )
 
 func TestJoinCodeNeedsPublicURL(t *testing.T) {
@@ -16,42 +20,118 @@ func TestJoinCodeNeedsPublicURL(t *testing.T) {
 	}
 }
 
-func TestTakenIncludesEngineFunctionPrefixes(t *testing.T) {
-	taken, err := functionPrefixes(json.RawMessage(`{"functions":[{"function_id":"shell::exec"},{"function_id":"analytics::report"}]}`))
+func TestTakenIsEveryNamespaceAnotherWorkerUses(t *testing.T) {
+	taken, err := workerNamespaces(json.RawMessage(`{"workers":[
+		{"id":"1","name":"state","namespace":"default"},
+		{"id":"2","name":"report","namespace":"analytics"},
+		{"id":"3","name":"rbac-proxy:laptop::mesh-bridge","namespace":"laptop"},
+		{"id":"4","name":"rbac-proxy:laptop::mesh-node","namespace":"laptop"},
+		{"id":"5","name":"rbac-proxy:desk::mesh-bridge","namespace":"desk"},
+		{"id":"6","name":"shell","namespace":"desk"},
+		{"id":"7","name":"rbac-proxy:desk::mesh-bridge","namespace":"other"},
+		{"id":"8","name":null,"namespace":"nameless"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for host, want := range map[string]string{"shell": "shell-2", "analytics": "analytics-2", "fresh": "fresh"} {
+	// A machine's own sessions do not reserve its name; any other worker in a namespace does.
+	for host, want := range map[string]string{"default": "default-2", "analytics": "analytics-2", "desk": "desk-2", "other": "other-2", "nameless": "nameless-2", "laptop": "laptop", "fresh": "fresh"} {
 		if got := coordinator.AllocateName(host, func(s string) bool { return taken[s] }); got != want {
 			t.Fatalf("%s -> %s, want %s", host, got, want)
 		}
 	}
 }
-
-// A machine named like a shared worker that is not running yet would take that worker's ids.
-// A shared function id reserves its prefix as a shared worker reserves its name.
-func TestJoinCannotTakeASharedWorkersName(t *testing.T) {
-	for _, share := range [][]string{{"laptop"}, {"laptop::x"}} {
-		h, _, up := idleNodeCallHub(t)
-		h.engine = &fakeEngine{}
-		h.config.Share = share
-		if err := h.refreshNames(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		up()
-		names := []string{}
-		for _, n := range h.Coordinator.Nodes() {
-			names = append(names, n.Name)
-		}
-		if !slices.Equal(names, []string{"laptop-2"}) {
-			t.Fatalf("share %v: nodes %v", share, names)
-		}
+func TestJoinCannotTakeTheHubNamespace(t *testing.T) {
+	h, _, up := idleNodeCallHub(t) // the hub runs in `project`; the peer's hostname is laptop
+	h.engine = &fakeEngine{}
+	h.Namespace = "laptop"
+	if err := h.refreshNames(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	up()
+	if nodes := h.Coordinator.Nodes(); len(nodes) != 1 || nodes[0].Name != "laptop-2" || !h.nameReserved("laptop") || !h.nameReserved("default") || h.nameReserved("laptop-2") {
+		t.Fatalf("nodes %+v", nodes)
 	}
 }
 
-func TestFunctionPrefixesRejectMalformedListing(t *testing.T) {
-	for _, raw := range []string{`{}`, `{"functions":null}`, `{"functions":[{}]}`} {
-		if _, err := functionPrefixes(json.RawMessage(raw)); err == nil {
+// A hub project that starts under a connected machine's name must not share its namespace.
+func TestANamespaceTakenUnderAConnectedMachineClosesIt(t *testing.T) {
+	h, _, up := idleNodeCallHub(t) // the hub runs in `project`
+	e := &fakeEngine{}
+	h.engine, h.Tickets, h.Sessions = e, gateway.NewTickets(10*time.Second, time.Now), &Sessions{}
+	up() // the peer joins as laptop
+	auth := func() (AuthResult, error) {
+		return h.Auth(t.Context(), AuthRequest{RegistrationNamespace: true, Headers: map[string]string{gateway.TicketHeader: h.Tickets.Mint("laptop")}})
+	}
+	session, err := auth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.workers = []map[string]any{{"id": "1", "name": "rbac-proxy:laptop::mesh-bridge", "namespace": "laptop"}}
+	if err := h.refreshNames(t.Context()); err != nil || h.nameReserved("laptop") {
+		t.Fatalf("a machine's own session reserved its name: %v", err)
+	}
+	if _, ok := h.Sessions.Valid(session.Context.SessionKey); !ok {
+		t.Fatal("a pass with nothing taken closed the machine")
+	}
+	e.workers = append(e.workers, map[string]any{"id": "2", "name": "state", "namespace": "laptop"})
+	if err := h.refreshNames(t.Context()); err != nil || !h.nameReserved("laptop") {
+		t.Fatalf("a worker in the machine's namespace went unnoticed: %v", err)
+	}
+	if _, ok := h.Sessions.Valid(session.Context.SessionKey); ok {
+		t.Fatal("the machine kept its session")
+	}
+	if _, err := auth(); err == nil || !strings.Contains(err.Error(), "client.name") {
+		t.Fatalf("the machine was admitted again: %v", err)
+	}
+}
+
+// heldEngine answers the first workers listing with no worker, and only once released; later listings show a worker in x.
+type heldEngine struct {
+	calls            atomic.Int32
+	entered, release chan struct{}
+}
+
+func (e *heldEngine) Call(context.Context, iii.CallRequest) (json.RawMessage, error) {
+	if e.calls.Add(1) == 1 {
+		close(e.entered)
+		<-e.release
+		return json.RawMessage(`{"workers":[]}`), nil
+	}
+	return json.RawMessage(`{"workers":[{"id":"1","name":"state","namespace":"x"}]}`), nil
+}
+
+// A rename and a pass refresh at once: a listing read before a worker connected must not publish after the one that saw it.
+func TestRefreshNamesReadsAndPublishesOneListingAtATime(t *testing.T) {
+	c, err := coordinator.New(t.TempDir(), func(string, string) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	e := &heldEngine{entered: make(chan struct{}), release: make(chan struct{})}
+	h := &Hub{Coordinator: c, Namespace: "project", Sessions: &Sessions{}, engine: e}
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() { first <- h.refreshNames(t.Context()) }()
+	<-e.entered
+	// A goroutine blocked on a mutex cannot be observed otherwise: the probe keeps the test free of timers.
+	if h.namesMu.TryLock() {
+		t.Fatal("a second refresh can read and publish while the first still holds its listing")
+	}
+	go func() { second <- h.refreshNames(t.Context()) }() // waits for the first, then reads the worker in x
+	close(e.release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if !h.nameReserved("x") {
+		t.Fatal("the older listing published last: x is free again")
+	}
+}
+
+func TestWorkerNamespacesRejectMalformedListing(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"workers":null}`, `{"workers":[{"id":"1","name":"state"}]}`} {
+		if _, err := workerNamespaces(json.RawMessage(raw)); err == nil {
 			t.Fatalf("accepted malformed listing %s", raw)
 		}
 	}

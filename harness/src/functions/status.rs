@@ -51,6 +51,8 @@ pub struct StatusReport {
     /// still running.
     #[serde(default)]
     pub expects_wake: bool,
+    #[serde(default)]
+    pub open_asks: usize,
     /// WHAT the session is parked on, when `expects_wake`: each armed wake's
     /// watch and deadline, so "parked 12m on state operation_meta/status —
     /// never written" is readable from the outside instead of the session
@@ -132,6 +134,7 @@ impl Serialize for StatusReport {
 
         report.serialize_entry("children", &self.children)?;
         report.serialize_entry("expects_wake", &self.expects_wake)?;
+        report.serialize_entry("open_asks", &self.open_asks)?;
 
         if verbose {
             serialize_non_empty(&mut report, "armed_wakes", &self.armed_wakes)?;
@@ -281,6 +284,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         stop_reason: record.stop_reason.clone(),
         failure: record.failure.clone(),
         expects_wake,
+        open_asks: crate::ask_store::open_count(deps, &record.session_id).await?,
         armed_wakes,
         context,
     }))
@@ -304,6 +308,7 @@ mod tests {
             "step": 4,
             "turn_count": 3,
             "expects_wake": false,
+            "open_asks": 0,
             "result_error": null,
             "children": [{
                 "function_call_id": "call_child",
@@ -345,6 +350,7 @@ mod tests {
             BTreeSet::from([
                 "children",
                 "expects_wake",
+                "open_asks",
                 "result_error",
                 "session_id",
                 "status",
@@ -447,6 +453,7 @@ mod tests {
                 "turn_id": "t_child"
             }],
             "expects_wake": true,
+            "open_asks": 0,
             "armed_wakes": [{
                 "observer_id": "sub_1",
                 "function_id": "state::on-changed",
@@ -493,6 +500,7 @@ mod tests {
             "pending_function_calls": [],
             "children": [],
             "expects_wake": false,
+            "open_asks": 0,
             "armed_wakes": [],
             "queued": []
         });

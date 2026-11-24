@@ -44,6 +44,10 @@ pub struct LifecycleEventV1 {
     /// golden, so the lifecycle sink carries it opaquely.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<serde_json::Value>,
+    /// The session's open or expired durable asks when the turn ended
+    /// (`harness::ask`); board dispatch reads it.
+    #[serde(default)]
+    pub open_asks: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -1,26 +1,26 @@
 iii: v1
 name: iii/deepwork
-version: 0.9.5
+version: 0.10.0
 iii_engine_version: ">=0.26.0"
 description: "Multi-agent workflows on iii with the kanban board as the task list: parallel implementation tickets, tests and independent verification/review once per integrated wave, and bounded rounds. Code goals get a dev flow: autonomous reversible decisions with optional design/plan approval, tickets in isolated git worktrees, batch validation, a branch review and a kept branch unless you explicitly choose another finish."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/deepwork
 tags: [orchestration, sub-agents, kanban, verification, workflows]
 workers:
-  # Every floor below is the first release of that worker built on iii-sdk 0.26 (observe v2,
-  # `scripts/pin-iii-sdk.sh kit`): the profiles arm wakes with harness::observe and wait on
-  # `shell::on-job-finished` and `state::on-changed`, which only those releases serve.
-  # 1.8.54: metrics omit_context (#1401) and profile skills_index (#1406).
-  harness: ^1.9.0
+  # These floors include the contracts below and the iii-sdk 0.26 observe-v2 releases needed by
+  # harness::observe, shell::on-job-finished and state::on-changed (`scripts/pin-iii-sdk.sh kit`).
+  # 1.10.0: durable asks, ask withdrawal and root-session card linking.
+  harness: ^1.10.0
   # 1.2.40 reads skills_index from profiles (#1406); directory::agents::get checks judges.
   # No caret: harness pulls iii-directory@latest.
   iii-directory: ">=1.3.0"
   # No caret: harness pulls state@latest, and ^0.22 would block 0.23.
   state: ">=0.23.0"
   # 0.1.21: subtasks + parent_id (#1396), compact writes (#1400), add_labels / remove_labels (#1384).
-  # 0.2.0 is its observe v2 port: on a 0.26 engine, 0.1.x registers its board page and config
+  # 0.2.6: mirrored durable questions, derived open_questions and question::record.
+  # 0.2.0 was its observe v2 port: on a 0.26 engine, 0.1.x registers its board page and config
   # watch as triggers, which the engine drops, so the Kanban page never appears.
-  kanban: ^0.2.0
+  kanban: ^0.2.6
   # shell::exec and coder::* preloaded by the work and verify tiers. 0.12.19, the first synced
   # manifest after #1150, carries the job-finished event that long runs wait on instead of polling
   # (`shell::on-job-finished` in its observe v2 release).

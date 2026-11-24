@@ -32,7 +32,7 @@ func (h *Hub) callNode(ctx context.Context, name, fn string, payload any, timeou
 	if err != nil {
 		return nil, err
 	}
-	return client.Call(ctx, iii.CallRequest{FunctionID: name + "::" + fn, Namespace: "default", Payload: raw, Timeout: timeout})
+	return client.Call(ctx, iii.CallRequest{FunctionID: fn, Namespace: name, Payload: raw, Timeout: timeout})
 }
 func (h *Hub) fetchNodeStatus(ctx context.Context, name string) (node.Status, error) {
 	var status node.Status
@@ -57,11 +57,7 @@ func (h *Hub) fetchNodeStatus(ctx context.Context, name string) (node.Status, er
 		}
 	}
 	for _, w := range status.Workers {
-		c := ComponentState{Name: w.Name, State: w.State, Functions: []string{}}
-		for _, id := range w.Functions {
-			c.Functions = append(c.Functions, name+"::"+id)
-		}
-		details.Workers = append(details.Workers, c)
+		details.Workers = append(details.Workers, ComponentState{Name: w.Name, State: w.State, Functions: append([]string{}, w.Functions...)})
 	}
 	h.mu.Lock()
 	if h.nodeDetails == nil {
@@ -92,8 +88,9 @@ func (h *Hub) signedNodeDetails(ctx context.Context, name string) (NodeDetails, 
 var errOtherVersion = errors.New("run one mesh version on both")
 
 // OnNodeOnline hands the hub namespace to a node on the hub's version, which
-// lets its bridge publish the shared functions, then the catalog when the node
-// holds another revision. A node on another version gets neither.
+// lets its bridge publish the shared functions in the machine's namespace and
+// call mesh::call in the hub's, then the catalog when the node holds another
+// revision. A node on another version gets neither.
 // shortcut: the lock acts only when the namespace is handed out; a node that
 // already holds one re-applies it (node/runtime.go refresh) and keeps publishing
 // after its hub restarts on another version, until the node restarts. Enforce

@@ -2,6 +2,11 @@ import type { FunctionCallMessage } from '@iii-dev/console-ui'
 import { describe, expect, it, vi } from 'vitest'
 import {
   askCardState,
+  type AskEntry,
+  mayDismiss,
+  readAskEntry,
+  recommendedSelection,
+  structuredAnswers,
   type AskQuestionView,
   type AskView,
   DISMISS_TEXT,
@@ -537,12 +542,12 @@ describe('watchAskSession', () => {
     const onChange = vi.fn()
     watchAskSession(iii, 's1', 'q1-a', onChange)
 
-    const settlement = observers.find((o) => o.source.function_id === 'state::on-changed')
+    expect(observers.some((o) => o.source.function_id === 'state::on-changed')).toBe(false)
+    const settlement = observers.find((o) => o.source.function_id === 'harness::ask::settle')
     expect(settlement?.source.filters).toEqual({
-      'input.scope': { $eq: 'harness_ask' },
-      'input.key': { $eq: 's1' },
+      'input.session_id': { $eq: 's1' },
     })
-    fire('state::on-changed', { scope: 'harness_ask', key: 's1', new_value: [] })
+    fire('harness::ask::settle', { session_id: 's1', question_id: 'q1', outcome: 'answered' })
     expect(onChange).toHaveBeenCalledWith('settlements')
   })
 
@@ -565,7 +570,7 @@ describe('watchAskSession', () => {
     const { iii, fire } = fakeIii()
     const onChange = vi.fn()
     watchAskSession(iii, 's1', 'q1-a', onChange)
-    fire('state::on-changed', { scope: 'harness_ask', key: 's2' })
+    fire('harness::ask::settle', { session_id: 's2', question_id: 'q2', outcome: 'answered' })
     fire('harness::on-turn-started', { session_id: 's2', turn_id: 't9' })
     expect(onChange).not.toHaveBeenCalled()
   })
@@ -583,5 +588,87 @@ describe('watchAskSession', () => {
     expect(second).toHaveBeenCalledWith('turn')
     // The observers address the handlers by their per-tab id.
     for (const { target } of observers) expect(handlers.has(target)).toBe(true)
+  })
+})
+
+describe('durable asks', () => {
+  const entry: AskEntry = { session_id: 'sess_1', question_id: 'call_ask_1', state: 'open' }
+
+  it('reads recommended and about from accepted output, and preselects only recommendations', () => {
+    const about = { class: 'security', why: 'Protect credentials', ticket: 'KAN-1', blocks: ['KAN-2'] }
+    const parsed = parseAsk(
+      wrappedRow(
+        okOutput({
+          ...DETAILS,
+          about,
+          questions: [
+            {
+              ...REQUEST.questions[0],
+              options: [{ label: 'Isolate', recommended: true }, { label: 'Share' }],
+            },
+          ],
+        }),
+      ),
+    )!
+    expect(parsed.about).toEqual(about)
+    expect(recommendedSelection(parsed.questions[0])).toEqual({ picked: ['Isolate'] })
+    expect(recommendedSelection(APPROACH)).toEqual({ picked: [] })
+  })
+
+  it('preserves structured choices, free text and skips in question order', () => {
+    expect(
+      structuredAnswers(viewOf(APPROACH, CHANNELS), [
+        { picked: ['Pause the turn'], other: ' Later ' },
+        { picked: ['Slack', 'Console'], other: ' Email ' },
+      ]),
+    ).toEqual([
+      { header: 'Approach', other: 'Later' },
+      { header: 'Channels', choices: ['Console', 'Slack'], other: 'Email' },
+    ])
+    expect(structuredAnswers(viewOf(APPROACH), [{ picked: [], skipped: true }])).toEqual([
+      { header: 'Approach', skipped: true },
+    ])
+    expect(structuredAnswers(viewOf(APPROACH), [{ picked: [] }])).toBeNull()
+  })
+
+  it('offers dismissal only for scope, routine and run health', () => {
+    expect(mayDismiss(VIEW)).toBe(true)
+    for (const kind of ['scope', 'routine', 'run_health', 'security', 'publish', 'external_cost', 'data']) {
+      expect(mayDismiss({ ...VIEW, about: { class: kind } })).toBe(['scope', 'routine', 'run_health'].includes(kind))
+    }
+  })
+
+  it('uses durable outcomes instead of a legacy settlement or local failure', () => {
+    expect(askCardState('answered', 'idle', entry)).toBe('open')
+    expect(askCardState('answered', 'idle', { ...entry, state: 'expired' })).toBe('open')
+    expect(askCardState(undefined, 'failed', { ...entry, state: 'answering' })).toBe('sending')
+    expect(askCardState(undefined, 'failed', { ...entry, state: 'withdrawn' })).toBe('withdrawn')
+    expect(askCardState(undefined, 'sending', { ...entry, state: 'answered' })).toBe('answered')
+  })
+
+  it('looks beyond the first page before deciding an ask is absent', async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [], cursor: 'next' })
+      .mockResolvedValueOnce({ entries: [entry] })
+    expect(await readAskEntry({ call }, 'sess_1', 'call_ask_1')).toEqual(entry)
+    expect(call.mock.calls[1][1]).toEqual({ session_id: 'sess_1', limit: 200, cursor: 'next' })
+  })
+
+  it('allows the legacy path only after a successful complete empty read', async () => {
+    expect(await readAskEntry({ call: vi.fn().mockResolvedValue({ entries: [] }) }, 's', 'q')).toBeNull()
+    await expect(readAskEntry({ call: vi.fn().mockRejectedValue(new Error('offline')) }, 's', 'q')).rejects.toThrow(
+      'offline',
+    )
+    await expect(readAskEntry({ call: vi.fn().mockResolvedValue({}) }, 's', 'q')).rejects.toThrow('Could not read')
+  })
+
+  it('hears durable settles in another tab and ignores other sessions', () => {
+    const { iii, fire } = fakeIii()
+    const onChange = vi.fn()
+    watchAskSession(iii, 'sess_1', 'durable', onChange)
+    fire('harness::on-ask-settled', { ...entry, state: 'withdrawn' })
+    fire('harness::on-ask-settled', { ...entry, session_id: 'other' })
+    expect(onChange.mock.calls).toEqual([['ask']])
   })
 })

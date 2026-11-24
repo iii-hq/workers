@@ -822,7 +822,7 @@ func TestEventsApplyWithoutATick(t *testing.T) {
 	mu.Unlock()
 	r.kick(wakeApply) // what a configuration::on-updated event does
 	next("probe shared", func(s Status) bool {
-		return len(s.Shared) == 1 && slices.Equal(s.Shared[0].Functions, []string{"laptop::probe::echo"})
+		return len(s.Shared) == 1 && slices.Equal(s.Shared[0].Functions, []string{"probe::echo"})
 	})
 
 	mu.Lock()
@@ -837,7 +837,7 @@ func TestEventsApplyWithoutATick(t *testing.T) {
 	r.kick(wakeApply)
 	next("renaming", func(s Status) bool { return s.State == "renaming" })
 	s := next("renamed", func(s Status) bool { return s.State == "connected" && s.Node == "work" })
-	if s.RequestedName != "work" || s.RenameError != "" || !slices.Equal(s.Shared[0].Functions, []string{"work::probe::echo", "work::probe::more"}) {
+	if s.RequestedName != "work" || s.RenameError != "" || !slices.Equal(s.Shared[0].Functions, []string{"probe::echo", "probe::more"}) {
 		t.Fatalf("renamed status %+v", s)
 	}
 	if n := hub.Nodes(); len(n) != 1 || n[0].Name != "work" {
@@ -1110,7 +1110,7 @@ func TestPeerToPeerFollowsTheSetting(t *testing.T) {
 			}
 		}
 	}
-	alpha, alphaOn := boot("alpha", &fakeLocal{}, nil)
+	alpha, alphaOn := boot("alpha", engine(&[]map[string]any{}), nil) // its catalog reads the namespaces in use
 	beta, betaOn := boot("beta", local, []string{"probe"})
 	nextA, stopA := watched(t, alpha)
 	defer stopA()
@@ -1118,7 +1118,7 @@ func TestPeerToPeerFollowsTheSetting(t *testing.T) {
 	defer stopB()
 	nextA("alpha connected", func(s Status) bool { return s.State == "connected" && s.Node == "alpha" })
 	nextB("beta connected", func(s Status) bool { return s.State == "connected" && s.Node == "beta" })
-	alpha.bridge.SetCatalog(node.Catalog{Rev: "1", Functions: []node.CatalogEntry{{ID: "beta::probe::echo", Owner: "beta"}}})
+	alpha.bridge.SetCatalog(node.Catalog{Rev: "1", Functions: []node.CatalogEntry{{ID: "probe::echo", Owner: "beta"}}})
 	alphaOn(true)
 	nextA("alpha on", func(s Status) bool { return s.PeerToPeer && path(s) == "hub" })
 

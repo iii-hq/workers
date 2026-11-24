@@ -276,6 +276,8 @@ type proxyApplyResult struct {
 	BoundHost     string         `json:"bound_host"`
 	BoundPort     int            `json:"bound_port"`
 	Error         string         `json:"error"`
+	// An rbac-proxy that can pin a session to a registration namespace says so.
+	RegistrationNamespace bool `json:"registration_namespace"`
 }
 
 func (h *Hub) applyProxy(ctx context.Context, id string, desired map[string]any) error {
@@ -290,6 +292,10 @@ func (h *Hub) applyProxy(ctx context.Context, id string, desired map[string]any)
 	}
 	if !result.OK || result.Error != "" {
 		return transient{fmt.Errorf("proxy configuration was not applied: %s", result.Error)}
+	}
+	// Not transient: a restarted proxy registers its functions, which the hub observes and which starts a new pass.
+	if !result.RegistrationNamespace {
+		return errors.New("rbac-proxy does not pin registration namespaces: update rbac-proxy")
 	}
 	_, write, status := EnsureProxyConfig(result.AppliedConfig)
 	if write || status != "ok" || !validProxyHooks(result.AppliedConfig) || !configContains(result.AppliedConfig, desired) {

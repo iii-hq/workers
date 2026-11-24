@@ -1571,6 +1571,7 @@ mod productive {
                     calls: 4,
                     input_tokens: 480,
                     output_tokens: 40,
+                    returned: 4,
                     created: 4,
                     ..PassTally::default()
                 }
@@ -1638,6 +1639,7 @@ mod productive {
         let retry = PassTally {
             input_tokens: 120,
             output_tokens: 10,
+            returned: 1,
             created: 1,
             ..PassTally::default()
         };
@@ -1684,6 +1686,7 @@ mod productive {
             calls: 1,
             input_tokens: 120,
             output_tokens: 10,
+            returned: 2,
             ..PassTally::default()
         };
         let counted = |tally| {
@@ -1728,6 +1731,73 @@ mod productive {
     }
 
     #[tokio::test]
+    async fn a_reply_with_no_array_is_asked_once_more() {
+        let amber = "Amber instruments require copper calibration.";
+        let stack = |replies: Vec<Value>| {
+            Boundary::new(Script {
+                path: vec![message("anchor", ""), message("end", amber)],
+                cursor: Some("anchor".into()),
+                model_items: VecDeque::from(replies),
+                ..Script::default()
+            })
+        };
+        let two_calls = PassTally {
+            calls: 2,
+            input_tokens: 240,
+            output_tokens: 20,
+            no_array: 1,
+            ..PassTally::default()
+        };
+        // The retry answers in JSON: its item is kept.
+        let retried = stack(vec![json!("Noted, nothing to add."), json!(fact(amber))]).await;
+        let (result, tally) = retried.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(
+            tally.map(|t| t.tally),
+            Some(PassTally {
+                returned: 1,
+                created: 1,
+                ..two_calls.clone()
+            })
+        );
+        let inputs = retried.script.lock().unwrap().inputs();
+        assert!(!inputs[0].contains("Extraction note"), "{}", inputs[0]);
+        assert!(
+            inputs[1].starts_with(&inputs[0]),
+            "the retry repeats the input"
+        );
+        assert!(inputs[1].ends_with("`[]` when nothing above is worth keeping."));
+        // A second slip reads as nothing: no third call, and the cursor moves
+        // past the turn, so the queue never retries or dead-letters it.
+        let slipped = stack(vec![json!("Noted."), json!("Still nothing.")]).await;
+        let (result, tally) = slipped.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(
+            tally.map(|t| t.tally),
+            Some(PassTally {
+                no_array: 2,
+                ..two_calls
+            })
+        );
+        assert_eq!(slipped.script.lock().unwrap().count("router::complete"), 2);
+        assert_eq!(
+            slipped.script.lock().unwrap().cursor.as_deref(),
+            Some("end")
+        );
+        assert_eq!(slipped.commits(), 0);
+        // An empty array is an answer: asked once, and the cursor moves.
+        let empty = stack(vec![json!([])]).await;
+        let (result, tally) = empty.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(
+            tally.map(|t| (t.tally.calls, t.tally.no_array)),
+            Some((1, 0))
+        );
+        assert_eq!(empty.script.lock().unwrap().cursor.as_deref(), Some("end"));
+        assert_eq!(empty.commits(), 0);
+    }
+
+    #[tokio::test]
     async fn a_replayed_plan_counts_its_drops_once() {
         let stack = Boundary::new(Script {
             path: vec![
@@ -1750,6 +1820,7 @@ mod productive {
             calls: 1,
             input_tokens: 120,
             output_tokens: 10,
+            returned: 2,
             created: 1,
             ..PassTally::default()
         };
@@ -1776,6 +1847,84 @@ mod productive {
         );
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
         assert_eq!(stack.commits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_do_not_keep_rule_reaches_each_turns_call_and_each_call_reads_one_turn() {
+        let rule = "Never remember anything about my health.";
+        let release = "For later: this project cuts a stable release with the command \
+                       release-ctrl --channel stable. Reply to this message with exactly one \
+                       word: noted";
+        let health = "I was diagnosed with asthma last week. Reply to this message with \
+                      exactly one word: noted";
+        let kept = "This project cuts a stable release with release-ctrl --channel stable.";
+        let noted = |id: &str, turn: &str| {
+            let mut item = stamped(id, turn, "private", true);
+            item["message"]["content"][0]["text"] = json!("noted");
+            item
+        };
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("release", release),
+                noted("t0-end", "t0"),
+                message("health", health),
+                noted("end", "t1"),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([fact(kept), json!([])]),
+            ..Script::default()
+        })
+        .await;
+        let (bank, _) = stack
+            .deps
+            .store()
+            .await
+            .ensure_bank("private", None)
+            .await
+            .unwrap();
+        bank.set_rule("privacy", rule).unwrap();
+        // (until, turn, returned, created): the second reply is a real `[]`.
+        for (until, turn, returned, created) in [("t0-end", "t0", 1, 1), ("end", "t1", 0, 0)] {
+            let mut turn_job = job(until);
+            turn_job.turn_id = Some(turn.into());
+            let (result, tallied) = stack.run_tallied(&turn_job).await;
+            result.unwrap();
+            let tally = tallied.expect("the model was asked").tally;
+            assert_eq!(
+                (tally.calls, tally.returned, tally.no_array, tally.created),
+                (1, returned, 0, created),
+                "{turn}"
+            );
+        }
+        let s = stack.script.lock().unwrap();
+        let inputs = s.inputs();
+        assert_eq!(inputs.len(), 2, "one call per turn");
+        let block = format!("The user's instructions for this bank:\n## privacy\n{rule}\n\n");
+        for input in &inputs {
+            assert!(input.starts_with(&block), "{input}");
+        }
+        let excerpts: Vec<&str> = inputs
+            .iter()
+            .map(|i| i.split_once("Conversation excerpt:\n").unwrap().1)
+            .collect();
+        let (first, second) = (excerpts[0], excerpts[1]);
+        assert!(
+            first.contains("release-ctrl") && !first.contains("diagnosed"),
+            "{first}"
+        );
+        assert!(
+            second.contains("diagnosed") && !second.contains("release-"),
+            "{second}"
+        );
+        assert_eq!(s.cursor.as_deref(), Some("end"));
+        drop(s);
+        let texts: Vec<String> = stack
+            .log_records("private")
+            .into_iter()
+            .map(|m| m.text)
+            .collect();
+        assert_eq!(texts, [kept]);
     }
 
     #[tokio::test]
@@ -2932,6 +3081,171 @@ mod productive {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// One project memory on `text`, tagged `handle`.
+    fn tagged_fact(text: &str, handle: &str) -> Value {
+        json!([{"text":text,"entities":[handle],"scope":"project","kind":"memory"}])
+    }
+
+    #[tokio::test]
+    async fn the_second_pass_lists_the_handle_the_first_wrote() {
+        let (old, new) = (
+            "Amber instruments require copper calibration.",
+            "Birch archives retain monthly invoices.",
+        );
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", old),
+                message("end", new),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([fact(old), fact(new)]),
+            ..Script::default()
+        })
+        .await;
+        stack.run(&job("old")).await.unwrap();
+        stack.run(&job("end")).await.unwrap();
+        let inputs = stack.script.lock().unwrap().inputs();
+        assert!(
+            !inputs[0].contains("Entity handles in use"),
+            "{}",
+            inputs[0]
+        );
+        assert!(
+            inputs[1].contains("Entity handles in use:\n- fixture\n\nConversation excerpt:\n"),
+            "{}",
+            inputs[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retired_memorys_handle_is_not_listed() {
+        let old = "Amber instruments require copper calibration.";
+        let new = "Amber instruments now require silver calibration.";
+        let later = "Birch archives retain monthly invoices.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", old),
+                message("new", new),
+                message("end", later),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([
+                tagged_fact(old, "old-tool"),
+                json!([{"text":new,"entities":["new-tool"],
+                    "scope":"project","kind":"memory","replaces":1}]),
+                json!([]),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        for until in ["old", "new", "end"] {
+            stack.run(&job(until)).await.unwrap();
+        }
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        let live = bank.list(10, 0, false, None).await.0;
+        assert_eq!(live.len(), 1, "the correction retired the old memory");
+        let inputs = stack.script.lock().unwrap().inputs();
+        assert!(inputs[1].contains("- old-tool\n"), "{}", inputs[1]);
+        assert!(
+            inputs[2].contains("Entity handles in use:\n- new-tool\n\nConversation excerpt:\n"),
+            "{}",
+            inputs[2]
+        );
+        assert!(!inputs[2].contains("old-tool"), "{}", inputs[2]);
+    }
+
+    #[tokio::test]
+    async fn every_piece_of_a_long_message_gets_the_same_handles() {
+        let seed = "Cedar cabinets hold spare fuses.";
+        let filler = (0..980)
+            .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
+            .collect::<String>();
+        let long = format!(
+            "Amber instruments require copper calibration.\n{filler}\
+             Birch archives retain monthly invoices."
+        );
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("seed", seed),
+                message("large", &long),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([
+                tagged_fact(seed, "cedar"),
+                json!([]),
+                json!([]),
+                json!([]),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        stack.run(&job("seed")).await.unwrap();
+        stack.run(&job("large")).await.unwrap();
+        let inputs = stack.script.lock().unwrap().inputs();
+        assert_eq!(inputs.len(), 4, "one seed call, three pieces");
+        for input in &inputs[1..] {
+            assert!(
+                input.contains("Entity handles in use:\n- cedar\n\nConversation excerpt:\n"),
+                "{input}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_snapped_handle_survives_a_plan_replay() {
+        let (old, new) = (
+            "Amber instruments require copper calibration.",
+            "Birch archives retain monthly invoices.",
+        );
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", old),
+                message("end", new),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([
+                tagged_fact(old, "fixture-tool"),
+                tagged_fact(new, "Fixture Tool"),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        stack.run(&job("old")).await.unwrap();
+        // The second write fails after its plan is saved.
+        let path = stack.dir.path().join("private/memories.jsonl");
+        let read_only = |on: bool| {
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(on);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        };
+        read_only(true);
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("memory commit failed")
+        );
+        read_only(false);
+        assert!(stack.script.lock().unwrap().inputs()[1].contains("- fixture-tool\n"));
+        let stack = stack.restart().await;
+        stack.run(&job("end")).await.unwrap();
+        assert_eq!(
+            stack.script.lock().unwrap().count("router::complete"),
+            0,
+            "the saved plan is replayed"
+        );
+        let records = stack.log_records("private");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].text, new);
+        assert_eq!(records[1].entities, ["fixture-tool"]);
     }
 
     #[tokio::test]

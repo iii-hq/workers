@@ -78,6 +78,13 @@
         ],
         "description": "Sort order. Default `updated_desc`."
       },
+      "roots": {
+        "description": "When true, only sessions without a `spawned_by` key in metadata. Omit or set false for every session, including sub-agents.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "status": {
         "anyOf": [
           {

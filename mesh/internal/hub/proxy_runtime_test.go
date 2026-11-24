@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ type proxyRPC struct {
 	applyErr   error
 	applied    map[string]any
 	applyCalls int
+	old        bool // answers like an rbac-proxy from before the pin
 	ack        json.RawMessage
 	t          *testing.T
 	value      map[string]any
@@ -64,7 +66,7 @@ func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage
 			b, _ := json.Marshal(f.value)
 			json.Unmarshal(b, &f.applied)
 		}
-		result := map[string]any{"ok": f.applyErr == nil, "applied_config": f.applied, "bound_host": f.applied["host"], "bound_port": f.applied["port"]}
+		result := map[string]any{"ok": f.applyErr == nil, "applied_config": f.applied, "bound_host": f.applied["host"], "bound_port": f.applied["port"], "registration_namespace": !f.old}
 		if f.applyErr != nil {
 			result["error"] = f.applyErr.Error()
 		}
@@ -210,7 +212,18 @@ func TestProxyRequiresAppliedOwnership(t *testing.T) {
 	if f.writes != writes || f.applyCalls != 2 {
 		t.Fatal("recovery did not retry unchanged config through consumer")
 	}
-	for _, ack := range []string{`{}`, `{"ok":true}`, `{"ok":true,"applied_config":{},"bound_host":"127.0.0.1","bound_port":49200}`, `{"ok":false,"error":"failed apply"}`} {
+	f.old = true // a proxy from before the pin answers everything else correctly
+	if err := h.reconcileProxy(t.Context()); err == nil || h.MeshGateway.Status() == "ok" || !strings.Contains(h.proxyHealth(), "update rbac-proxy") {
+		t.Fatalf("a proxy that does not pin was activated: %v, status %q", err, h.proxyHealth())
+	}
+	if f.applyCalls != 3 {
+		t.Fatalf("a missing capability was retried: %d calls", f.applyCalls) // only an event (the new proxy registering) starts another pass
+	}
+	f.old = false
+	if err := h.reconcileProxy(t.Context()); err != nil || h.MeshGateway.Status() != "ok" {
+		t.Fatalf("an updated proxy did not recover: %v", err)
+	}
+	for _, ack := range []string{`{}`, `{"ok":true,"registration_namespace":true}`, `{"ok":true,"registration_namespace":true,"applied_config":{},"bound_host":"127.0.0.1","bound_port":49200}`, `{"ok":false,"error":"failed apply"}`} {
 		f.ack = json.RawMessage(ack)
 		if err := h.reconcileProxy(t.Context()); err == nil || h.MeshGateway.Status() == "ok" {
 			t.Fatalf("invalid applied ack activated: %s", ack)
@@ -230,7 +243,7 @@ func TestProxyRequiresAppliedOwnership(t *testing.T) {
 		t.Fatal("new claim did not follow actual Hub bus")
 	}
 	// A stale acknowledgement from an earlier successfully applied listener cannot activate.
-	stale := map[string]any{"ok": true, "applied_config": f.applied, "bound_host": "0.0.0.0", "bound_port": 49200}
+	stale := map[string]any{"ok": true, "registration_namespace": true, "applied_config": f.applied, "bound_host": "0.0.0.0", "bound_port": 49200}
 	f.ack, _ = json.Marshal(stale)
 	if err := h.reconcileProxy(t.Context()); err == nil {
 		t.Fatal("stale bound listener acknowledged")
@@ -431,7 +444,7 @@ func TestProxyRetriesOnlyWhatNoEventEnds(t *testing.T) {
 		{"the configuration write fails", func(f *proxyRPC) { f.value, f.writeErr = nil, iii.ErrTimeout }, true},
 		{"rbac-proxy could not bind", func(f *proxyRPC) { f.applyErr = errors.New("address already in use") }, true},
 		{"rbac-proxy answers an unbound listener", func(f *proxyRPC) {
-			f.ack, _ = json.Marshal(map[string]any{"ok": true, "applied_config": f.applied, "bound_host": f.applied["host"], "bound_port": 0})
+			f.ack, _ = json.Marshal(map[string]any{"ok": true, "registration_namespace": true, "applied_config": f.applied, "bound_host": f.applied["host"], "bound_port": 0})
 		}, true},
 		{"rbac-proxy is not connected", func(f *proxyRPC) { f.callErr = missing }, false},
 		{"the configuration worker is not connected", func(f *proxyRPC) { f.err = missing }, false},

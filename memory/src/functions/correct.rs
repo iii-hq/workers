@@ -124,7 +124,7 @@ pub async fn correct(deps: &Deps, req: CorrectRequest) -> Result<CorrectResponse
     if fingerprint(&old.text) != old.id {
         return Ok(skipped("edited"));
     }
-    let reason = super::items::clamp_reason(Some(crate::redact::redact(&req.reason).text))
+    let reason = super::items::clamp_reason(Some(req.reason))
         .ok_or_else(|| MemoryError::InvalidInput("reason must not be empty".into()))?;
     if crate::redact::reject_injection("reason", &reason).is_err() {
         return Ok(skipped("flagged"));

@@ -18,8 +18,8 @@
 //! sequence number makes a re-send after a crash land on the same session
 //! (`idempotency_key`), and lets a late event of an older session be told
 //! apart. When a dispatched session's turn ends for good (`terminal`) while
-//! its card is still In progress, the card goes to Backlog with `unfinished`
-//! and the `needs you` pill: nothing is resumed on its own.
+//! its card is still In progress and no questions remain open, the card goes
+//! to Backlog with the `unfinished` label and pill: nothing resumes on its own.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -194,10 +194,10 @@ pub fn starting_pill() -> Pill {
     }
 }
 
-pub fn needs_you_pill() -> Pill {
+pub fn unfinished_pill() -> Pill {
     Pill {
-        icon: "hand".into(),
-        text: "needs you".into(),
+        icon: "circle-pause".into(),
+        text: "unfinished".into(),
     }
 }
 
@@ -398,8 +398,7 @@ pub fn relevant<'a>(rules: &[DispatchRule], mut tickets: impl Iterator<Item = &'
 }
 
 /// The first message of a dispatched session. The ticket key first, then the
-/// `args:` line deepwork reads; `ask=board` because nobody watches this
-/// session in a chat.
+/// `args:` line deepwork reads.
 pub fn first_message(key: &str, project_id: &str, resume: bool, extra: &str) -> String {
     let mut args = Vec::new();
     if resume {
@@ -408,7 +407,6 @@ pub fn first_message(key: &str, project_id: &str, resume: bool, extra: &str) -> 
     if !project_id.is_empty() {
         args.push(format!("project={project_id}"));
     }
-    args.push("ask=board".to_string());
     if !extra.is_empty() {
         args.push(extra.to_string());
     }
@@ -449,7 +447,14 @@ pub fn send_request(
 /// What a final turn of a dispatched session means for its card: a reason
 /// when the card is still In progress under that same claim.
 pub fn stopped_reason(board: &Board, event: &Value) -> Option<(String, String)> {
-    if event.get("terminal").and_then(Value::as_bool) != Some(true) {
+    let status = event
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("ended");
+    if event.get("terminal").and_then(Value::as_bool) != Some(true)
+        || (status != "cancelled"
+            && event.get("open_asks").and_then(Value::as_u64).unwrap_or(0) > 0)
+    {
         return None;
     }
     let session = event.get("session_id")?.as_str()?;
@@ -458,10 +463,6 @@ pub fn stopped_reason(board: &Board, event: &Value) -> Option<(String, String)> 
     if !runs_card(ticket, session, seq) {
         return None;
     }
-    let status = event
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("ended");
     let detail = ["result_error", "reason"]
         .iter()
         .find_map(|field| event.get(*field).filter(|v| !v.is_null()))
@@ -654,10 +655,14 @@ async fn harness_status(ctx: &Ctx, session: &str) -> Result<Value, Error> {
 
 /// Whether a `harness::status` answer is a session still working or waiting.
 fn session_alive(status: &Value) -> bool {
+    if status.get("status").and_then(Value::as_str) == Some("cancelled") {
+        return false;
+    }
     matches!(
         status.get("status").and_then(Value::as_str),
         Some("running" | "awaiting_functions")
     ) || status.get("expects_wake").and_then(Value::as_bool) == Some(true)
+        || status.get("open_asks").and_then(Value::as_u64).unwrap_or(0) > 0
 }
 
 /// Send the claimed card's first message. A failed call is checked against
@@ -721,7 +726,10 @@ async fn send(
             let park = UpdatePatch {
                 status: Some(BACKLOG.to_string()),
                 add_labels: Some(vec!["blocked".to_string()]),
-                pills: Some(vec![needs_you_pill()]),
+                pills: Some(vec![Pill {
+                    icon: "ban".into(),
+                    text: "blocked".into(),
+                }]),
                 ..UpdatePatch::default()
             };
             if update(ctx, &ticket.key, claimed, park).await.is_some() {
@@ -729,7 +737,7 @@ async fn send(
                     ctx,
                     &ticket.key,
                     format!(
-                        "⛔ Needs you — couldn't start {}: {error}. Fix the cause, then move this card to To do.",
+                        "⛔ Blocked — couldn't start {}: {error}. Fix the cause, then move this card to To do.",
                         rule.agent()
                     ),
                 )
@@ -745,7 +753,7 @@ async fn park_stopped(ctx: &Arc<Ctx>, key: &str, session: &str, seq: u64, reason
     let park = UpdatePatch {
         status: Some(BACKLOG.to_string()),
         add_labels: Some(vec!["unfinished".to_string()]),
-        pills: Some(vec![needs_you_pill()]),
+        pills: Some(vec![unfinished_pill()]),
         ..UpdatePatch::default()
     };
     if update(ctx, key, |t| runs_card(t, session, seq), park)
@@ -755,7 +763,7 @@ async fn park_stopped(ctx: &Arc<Ctx>, key: &str, session: &str, seq: u64, reason
         comment(
             ctx,
             key,
-            format!("⛔ Needs you — {reason}, with this card still In progress. Move it to To do to resume."),
+            format!("⛔ Unfinished — {reason}, with this card still In progress. Move it to To do to resume."),
         )
         .await;
     }
@@ -769,6 +777,8 @@ pub struct TurnCompleted {
     pub status: String,
     #[serde(default)]
     pub terminal: bool,
+    #[serde(default)]
+    pub open_asks: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -952,6 +962,7 @@ mod tests {
             description: String::new(),
             lead: None,
             color: None,
+            repos: None,
             source_label: None,
             created_at: "t".into(),
             updated_at: "t".into(),
@@ -1217,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn session_alive_reads_running_and_parked() {
+    fn session_alive_reads_running_wakes_and_open_questions() {
         assert!(session_alive(&json!({ "status": "running" })));
         assert!(session_alive(
             &json!({ "status": "completed", "expects_wake": true })
@@ -1226,6 +1237,15 @@ mod tests {
             &json!({ "status": "completed", "expects_wake": false })
         ));
         assert!(!session_alive(&json!({ "status": "failed" })));
+        for status in ["completed", "failed", "cancelled"] {
+            assert_eq!(
+                session_alive(&json!({ "status": status, "expects_wake": false, "open_asks": 1 })),
+                status != "cancelled"
+            );
+            assert!(!session_alive(
+                &json!({ "status": status, "expects_wake": false, "open_asks": 0 })
+            ));
+        }
     }
 
     #[test]
@@ -1243,11 +1263,11 @@ mod tests {
     fn first_message_carries_the_deepwork_args() {
         assert_eq!(
             first_message("KAN-3", "p1", false, "finish=pr"),
-            "KAN-3\nargs: project=p1 ask=board finish=pr"
+            "KAN-3\nargs: project=p1 finish=pr"
         );
         assert_eq!(
             first_message("KAN-3", "p1", true, ""),
-            "KAN-3\nargs: resume=KAN-3 project=p1 ask=board"
+            "KAN-3\nargs: resume=KAN-3 project=p1"
         );
     }
 
@@ -1261,6 +1281,7 @@ mod tests {
         assert_eq!(req["options"]["max_total_tokens"], 3_000_000);
         assert_eq!(req["options"]["agent"], "deepwork");
         assert_eq!(req["session"]["kind"], "automation");
+        assert_eq!(req["message"], "KAN-3\nargs: project=p1");
     }
 
     #[test]
@@ -1294,6 +1315,19 @@ mod tests {
                 .1
                 .ends_with("ended its run")
         );
+        for status in ["completed", "failed", "cancelled"] {
+            let delivery: TurnCompletedDelivery = serde_json::from_value(json!({
+                "input": { "session_id": "dispatch-kan-3-2", "terminal": true,
+                    "status": status, "open_asks": 2 }
+            }))
+            .unwrap();
+            let event = serde_json::to_value(delivery.input.unwrap()).unwrap();
+            assert_eq!(
+                stopped_reason(&b, &event).is_some(),
+                status == "cancelled",
+                "{event}"
+            );
+        }
     }
 
     #[test]

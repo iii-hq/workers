@@ -80,7 +80,7 @@ func (h *Hub) refreshPass() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.ctx, 15*time.Second)
-	err := h.refreshShared(ctx)
+	err := errors.Join(h.refreshNames(ctx), h.refreshShared(ctx))
 	cancel()
 	h.queueNodes() // node details do not depend on the catalog
 	if err == nil {

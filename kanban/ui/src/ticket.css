@@ -95,6 +95,16 @@
 
 /* --- layout --------------------------------------------------------------- */
 
+[data-iii-ui="kanban"] .kb-timeline > li[hidden] {
+  display: none;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 [data-iii-ui="kanban"] .kb-ticket__layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;

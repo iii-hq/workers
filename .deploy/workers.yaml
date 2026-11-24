@@ -2322,6 +2322,36 @@ workers:
         outputs:
         - dist
     publish: true
+  control-plane:
+    source:
+      path: control-plane
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: control-plane
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 11.13.1
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - dist/bundle/result.schema.json
+      - dist/bundle/page.js
+      - dist/bundle/styles.css
+      - dist/SKILL.md
+      - iii.worker.yaml
+    publish: true
   voice:
     source:
       path: voice

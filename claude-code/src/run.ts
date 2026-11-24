@@ -12,7 +12,8 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
-import { localPluginDir } from './local-plugin.js';
+import { installLocal } from './iii-plugin/install.js';
+import { headlessTools } from './iii-plugin/shared/mode.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -410,195 +411,214 @@ async function runReserved(
   // worker keeps no copy of the prompt or of the skills index.
   const iiiContext = payload.iii_context ?? cfg.iii_context;
   const context = iiiContext ? await fetchIiiContext(iii) : null;
-  const append = [context?.text ?? '', userAppend].filter(Boolean).join('\n\n');
-  // The same plugin the terminal half loads: the SDK turns a local plugin into
-  // the CLI's own `--plugin-dir`, so a headless turn gets the identical hooks
-  // and the identical iii skill.
-  const plugin = iiiContext ? await localPluginDir(iii) : { dir: '', detail: '' };
-  const options: Options = {
-    ...(plugin.dir ? { plugins: [{ type: 'local' as const, path: plugin.dir }] } : {}),
-    ...(record.model ? { model: record.model } : {}),
-    ...(record.cwd ? { cwd: record.cwd } : {}),
-    ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
-    maxTurns: payload.max_turns ?? d.max_turns,
-    // with the approval gate on, the operator wants every tool call routed
-    // through canUseTool; bypassPermissions skips it, so the gate forces a
-    // mode that keeps canUseTool authoritative regardless of the caller
-    permissionMode: cfg.approval_gate ? 'default' : (payload.permission_mode ?? d.permission_mode),
-    allowedTools: [
-      ...(payload.allowed_tools ?? d.allowed_tools),
-      // the iii context teaches discovery through the CLI; the matching
-      // allow rule is what lets those calls run headless
-      ...(iiiContext ? ['Bash(iii *)'] : []),
-    ],
-    disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
-    systemPrompt: payload.system_prompt
-      ? payload.system_prompt
-      : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
-    settingSources: [],
-    ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
-    // A child session renders its turn live: ask for the stream. Before the
-    // caller's options, so a caller can still turn it off.
-    ...(sink?.streaming ? { includePartialMessages: true } : {}),
-    ...callerOptions(payload, cfg),
-    ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
-  };
-
-  // A stop that arrived during setup: start no query. The turn ends like an
-  // interrupted one (stop_reason `interrupted`, not an error). No await sits
-  // between this check and the handle's promotion, so no stop slips between.
-  const stoppedEarly = handle.stopped === true;
-  const q = stoppedEarly ? null : query({ prompt, options });
-  // promote the placeholder to the real interrupt now that the query exists.
-  // Its answer is discarded on purpose: a caller of `claude::stop` learns
-  // whether a run WAS live from the stop response, and the SDK's control
-  // reply adds nothing a caller can act on.
-  if (q) {
-    handle.interrupt = async () => {
-      await q.interrupt();
-    };
-  }
-
-  // persist `working` only once the query + live handle exist, so a throw
-  // during setup never leaves the record stuck in `working`
-  record.status = 'working';
-  record.updated_at_ms = Date.now();
-  await saveSession(iii, record);
-
-  const transcript: AgentMessage[] = [];
-  const pendingResults: FunctionResultMessage[] = [];
-  const calls: ToolCallIndex = new Map();
-  let resultText = '';
-  let stopReason = 'end';
-  let isError = false;
-  /** Whether a claude::stop had landed when the turn's outcome arrived: a
-   *  stop after an SDK error result must not hide that failure. */
-  let stoppedAtOutcome = false;
-
-  if (stoppedEarly) {
-    stopReason = 'interrupted';
-    resultText = 'Stopped before the turn started.';
-  }
+  // The same `iii` plugin the terminal half loads (hooks, runtime skill, the
+  // engine's mcp-server as its MCP server, /iii:* commands): the SDK turns a
+  // local plugin into the CLI's own `--plugin-dir`. It lives in a directory
+  // of this turn's own, removed when the turn ends.
+  const plugin = iiiContext
+    ? await installLocal(iii)
+    : { dir: '', detail: '', mode: '', mcp: false, dispose: async () => {} };
+  if (plugin.detail) console.warn(`claude-code: ${plugin.detail}`);
   try {
-    for await (const msg of q ?? []) {
-      // The child transcript sees every event before the feeds or the record
-      // do, so neither failing can lose what the turn produced.
-      if (msg.type === 'stream_event') sink?.streamEvent((msg as { event?: unknown }).event);
-      if (msg.type === 'result') stoppedAtOutcome = handle.stopped === true;
-      await rawFeed(session_id, msg);
-      if (msg.type === 'system' && msg.subtype === 'init') {
-        record.claude_session_id = msg.session_id;
-        await saveSession(iii, record);
-      } else if (msg.type === 'assistant') {
-        const usage = mapUsage(msg.message.usage);
-        const content = mapAssistantContent(msg.message.content as never, calls);
-        const assistant = makeAssistantMessage(content, msg.message.model ?? record.model, usage);
-        sink?.assistant(
-          (msg.message as { id?: string }).id,
-          content,
-          msg.message.model ?? record.model,
-          usage,
-        );
-        transcript.push(assistant);
-        await agentFeed(session_id, { type: 'message_complete', message: assistant });
-        for (const block of content) {
-          if (block.type === 'function_call') {
+    // default-mcp is appended to Claude Code's own system prompt: an agent
+    // (`--agent`) would replace it, and with it Claude Code's operating rules.
+    // The runtime text teaches the `iii` CLI as the only way in: with
+    // mcp-server, default-mcp and the iii tools take its place.
+    const runtime = plugin.mcp ? '' : (context?.text ?? '');
+    const append = [runtime, plugin.mode, userAppend].filter(Boolean).join('\n\n');
+    const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];
+    const options: Options = {
+      ...(plugins.length ? { plugins } : {}),
+      ...(record.model ? { model: record.model } : {}),
+      ...(record.cwd ? { cwd: record.cwd } : {}),
+      ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
+      maxTurns: payload.max_turns ?? d.max_turns,
+      // with the approval gate on, the operator wants every tool call routed
+      // through canUseTool; bypassPermissions skips it, so the gate forces a
+      // mode that keeps canUseTool authoritative regardless of the caller
+      permissionMode: cfg.approval_gate
+        ? 'default'
+        : (payload.permission_mode ?? d.permission_mode),
+      allowedTools: [
+        ...(payload.allowed_tools ?? d.allowed_tools),
+        // the iii context teaches discovery through the CLI; the matching
+        // allow rule is what lets those calls run headless
+        ...(iiiContext ? ['Bash(iii *)'] : []),
+        // With mcp-server, the iii tools run without a prompt nobody would
+        // answer: rbac-proxy is what bounds them.
+        ...(plugin.mcp ? headlessTools(cfg.approval_gate) : []),
+      ],
+      disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
+      systemPrompt: payload.system_prompt
+        ? payload.system_prompt
+        : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
+      settingSources: [],
+      ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
+      // A child session renders its turn live: ask for the stream. Before the
+      // caller's options, so a caller can still turn it off.
+      ...(sink?.streaming ? { includePartialMessages: true } : {}),
+      ...callerOptions(payload, cfg),
+      ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
+    };
+
+    // A stop that arrived during setup: start no query. The turn ends like an
+    // interrupted one (stop_reason `interrupted`, not an error). No await sits
+    // between this check and the handle's promotion, so no stop slips between.
+    const stoppedEarly = handle.stopped === true;
+    const q = stoppedEarly ? null : query({ prompt, options });
+    // promote the placeholder to the real interrupt now that the query exists.
+    // Its answer is discarded on purpose: a caller of `claude::stop` learns
+    // whether a run WAS live from the stop response, and the SDK's control
+    // reply adds nothing a caller can act on.
+    if (q) {
+      handle.interrupt = async () => {
+        await q.interrupt();
+      };
+    }
+
+    // persist `working` only once the query + live handle exist, so a throw
+    // during setup never leaves the record stuck in `working`
+    record.status = 'working';
+    record.updated_at_ms = Date.now();
+    await saveSession(iii, record);
+
+    const transcript: AgentMessage[] = [];
+    const pendingResults: FunctionResultMessage[] = [];
+    const calls: ToolCallIndex = new Map();
+    let resultText = '';
+    let stopReason = 'end';
+    let isError = false;
+    /** Whether a claude::stop had landed when the turn's outcome arrived: a
+     *  stop after an SDK error result must not hide that failure. */
+    let stoppedAtOutcome = false;
+
+    if (stoppedEarly) {
+      stopReason = 'interrupted';
+      resultText = 'Stopped before the turn started.';
+    }
+    try {
+      for await (const msg of q ?? []) {
+        // The child transcript sees every event before the feeds or the record
+        // do, so neither failing can lose what the turn produced.
+        if (msg.type === 'stream_event') sink?.streamEvent((msg as { event?: unknown }).event);
+        if (msg.type === 'result') stoppedAtOutcome = handle.stopped === true;
+        await rawFeed(session_id, msg);
+        if (msg.type === 'system' && msg.subtype === 'init') {
+          record.claude_session_id = msg.session_id;
+          await saveSession(iii, record);
+        } else if (msg.type === 'assistant') {
+          const usage = mapUsage(msg.message.usage);
+          const content = mapAssistantContent(msg.message.content as never, calls);
+          const assistant = makeAssistantMessage(content, msg.message.model ?? record.model, usage);
+          sink?.assistant(
+            (msg.message as { id?: string }).id,
+            content,
+            msg.message.model ?? record.model,
+            usage,
+          );
+          transcript.push(assistant);
+          await agentFeed(session_id, { type: 'message_complete', message: assistant });
+          for (const block of content) {
+            if (block.type === 'function_call') {
+              await agentFeed(session_id, {
+                type: 'function_execution_start',
+                function_call_id: block.id,
+                function_id: block.function_id,
+                args: block.arguments,
+              });
+            }
+          }
+        } else if (msg.type === 'user') {
+          const blocks = Array.isArray(msg.message.content) ? msg.message.content : [];
+          for (const b of blocks as unknown as Array<Record<string, unknown>>) {
+            if (b.type !== 'tool_result') continue;
+            const callId = String(b.tool_use_id ?? '');
+            const call = calls.get(callId);
+            const content = mapToolResultContent(b.content);
+            const fr = makeFunctionResult(
+              callId,
+              call?.function_id ?? 'claude-code::unknown',
+              content,
+              b.is_error === true,
+            );
+            sink?.functionResult(fr);
+            transcript.push(fr);
+            pendingResults.push(fr);
             await agentFeed(session_id, {
-              type: 'function_execution_start',
-              function_call_id: block.id,
-              function_id: block.function_id,
-              args: block.arguments,
+              type: 'function_execution_end',
+              function_call_id: callId,
+              function_id: fr.function_id,
+              result: { content, details: null },
+              is_error: fr.is_error,
+              duration_ms: call ? Date.now() - call.started_at : 0,
             });
           }
+        } else if (msg.type === 'result') {
+          record.claude_session_id = msg.session_id ?? record.claude_session_id;
+          record.turns += msg.num_turns ?? 1;
+          record.total_cost_usd += msg.total_cost_usd ?? 0;
+          record.usage = mapUsage(msg.usage);
+          isError = msg.is_error === true;
+          stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
+          // A failed result may carry its reason only in `errors`.
+          resultText =
+            'result' in msg && typeof msg.result === 'string' && msg.result
+              ? msg.result
+              : 'errors' in msg && Array.isArray(msg.errors) && msg.errors.length
+                ? msg.errors.map(String).join('; ')
+                : '';
         }
-      } else if (msg.type === 'user') {
-        const blocks = Array.isArray(msg.message.content) ? msg.message.content : [];
-        for (const b of blocks as unknown as Array<Record<string, unknown>>) {
-          if (b.type !== 'tool_result') continue;
-          const callId = String(b.tool_use_id ?? '');
-          const call = calls.get(callId);
-          const content = mapToolResultContent(b.content);
-          const fr = makeFunctionResult(
-            callId,
-            call?.function_id ?? 'claude-code::unknown',
-            content,
-            b.is_error === true,
-          );
-          sink?.functionResult(fr);
-          transcript.push(fr);
-          pendingResults.push(fr);
-          await agentFeed(session_id, {
-            type: 'function_execution_end',
-            function_call_id: callId,
-            function_id: fr.function_id,
-            result: { content, details: null },
-            is_error: fr.is_error,
-            duration_ms: call ? Date.now() - call.started_at : 0,
-          });
-        }
-      } else if (msg.type === 'result') {
-        record.claude_session_id = msg.session_id ?? record.claude_session_id;
-        record.turns += msg.num_turns ?? 1;
-        record.total_cost_usd += msg.total_cost_usd ?? 0;
-        record.usage = mapUsage(msg.usage);
-        isError = msg.is_error === true;
-        stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
-        // A failed result may carry its reason only in `errors`.
-        resultText =
-          'result' in msg && typeof msg.result === 'string' && msg.result
-            ? msg.result
-            : 'errors' in msg && Array.isArray(msg.errors) && msg.errors.length
-              ? msg.errors.map(String).join('; ')
-              : '';
       }
+    } catch (err) {
+      stoppedAtOutcome = handle.stopped === true;
+      isError = true;
+      stopReason = 'error';
+      resultText = String(err);
     }
-  } catch (err) {
-    stoppedAtOutcome = handle.stopped === true;
-    isError = true;
-    stopReason = 'error';
-    resultText = String(err);
-  }
-  // A requested stop: the interrupted query answers with an error result (or
-  // throws), which is how it was stopped, not a failure. A turn that finished
-  // before the stop landed keeps its own outcome.
-  if (stoppedAtOutcome && !stoppedEarly && (isError || stopReason !== 'end')) {
-    isError = false;
-    stopReason = 'interrupted';
-    resultText = 'Stopped by claude::stop.';
-  }
-  // slot release is handled by executeRun's finally (covers setup throws too)
+    // A requested stop: the interrupted query answers with an error result (or
+    // throws), which is how it was stopped, not a failure. A turn that finished
+    // before the stop landed keeps its own outcome.
+    if (stoppedAtOutcome && !stoppedEarly && (isError || stopReason !== 'end')) {
+      isError = false;
+      stopReason = 'interrupted';
+      resultText = 'Stopped by claude::stop.';
+    }
+    // slot release is handled by executeRun's finally (covers setup throws too)
 
-  record.status = isError ? 'error' : 'done';
-  record.updated_at_ms = Date.now();
-  await saveSession(iii, record);
+    record.status = isError ? 'error' : 'done';
+    record.updated_at_ms = Date.now();
+    await saveSession(iii, record);
 
-  if (transcript.length === 0) {
-    const closing = makeAssistantMessage(
-      [{ type: 'text', text: resultText }],
-      record.model,
-      record.usage,
-      stopReason,
-    );
-    sink?.terminal(closing);
-    transcript.push(closing);
+    if (transcript.length === 0) {
+      const closing = makeAssistantMessage(
+        [{ type: 'text', text: resultText }],
+        record.model,
+        record.usage,
+        stopReason,
+      );
+      sink?.terminal(closing);
+      transcript.push(closing);
+    }
+    await agentFeed(session_id, {
+      type: 'turn_end',
+      message: lastAssistant(transcript),
+      function_results: pendingResults,
+    });
+    await agentFeed(session_id, { type: 'agent_end', messages: transcript });
+
+    return {
+      session_id,
+      claude_session_id: record.claude_session_id,
+      result: resultText,
+      stop_reason: stopReason,
+      is_error: isError,
+      num_turns: record.turns,
+      total_cost_usd: record.total_cost_usd,
+      usage: record.usage,
+    };
+  } finally {
+    await plugin.dispose();
   }
-  await agentFeed(session_id, {
-    type: 'turn_end',
-    message: lastAssistant(transcript),
-    function_results: pendingResults,
-  });
-  await agentFeed(session_id, { type: 'agent_end', messages: transcript });
-
-  return {
-    session_id,
-    claude_session_id: record.claude_session_id,
-    result: resultText,
-    stop_reason: stopReason,
-    is_error: isError,
-    num_turns: record.turns,
-    total_cost_usd: record.total_cost_usd,
-    usage: record.usage,
-  };
 }
 
 export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {

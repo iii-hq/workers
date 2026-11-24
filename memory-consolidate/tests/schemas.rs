@@ -9,7 +9,11 @@ fn catalog_has_all_public_functions() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
-        vec!["memory-consolidate::run", "memory-consolidate::status"]
+        vec![
+            "memory-consolidate::run",
+            "memory-consolidate::status",
+            "memory-consolidate::alias-undo"
+        ]
     );
 }
 

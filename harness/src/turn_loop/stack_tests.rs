@@ -509,6 +509,26 @@ async fn a_step_running_its_calls_stops_claiming_to_wait_for_the_model() {
     );
 }
 
+/// A send can narrow a running side chat while its model request is in flight.
+/// The generated call must see that durable ceiling, and finalization must not
+/// overwrite it with the wider policy that generated the reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_policy_narrowed_during_generation_applies_before_dispatch() {
+    let (result, calls, turn) = generate_observed(
+        hold_reply()["message"].clone(),
+        json!({"narrow_during_generate": true}),
+    )
+    .await;
+
+    assert_eq!(result.expect("the denied call advances").next_step, Some(2));
+    assert!(!calls.iter().any(|(function, _)| function == "test::hold"));
+    assert_eq!(
+        turn["options"]["functions"],
+        json!({"allow": ["session::get"], "deny": [], "expose": "agent_call"})
+    );
+    assert_eq!(turn["functions_acknowledged"], json!([999]));
+}
+
 /// A live phase written after the terminal projection would leave a finished
 /// session `working`: nothing writes its status again until the next turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2502,6 +2522,8 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
         "created_at": 1, "updated_at": 1
     })));
     let stored_turn = turn.clone();
+    let generated_turn = turn.clone();
+    let narrow_during_generate = hooks["narrow_during_generate"].as_bool() == Some(true);
     let observed_hooks = observed_hook_points(&hooks);
     let server = tokio::spawn(async move {
         let mut queue = serde_json::Map::new();
@@ -2524,6 +2546,13 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 let Ok(mut stream) = tokio_tungstenite::accept_async(tcp).await else {
                     continue;
                 };
+                if narrow_during_generate {
+                    let mut turn = generated_turn.lock().unwrap();
+                    turn["options"]["functions"] = json!({
+                        "allow": ["session::get"], "deny": [], "expose": "agent_call"
+                    });
+                    turn["functions_acknowledged"] = json!([999]);
+                }
                 let frame = tokio_tungstenite::tungstenite::Message::Text(done.clone().into());
                 tokio::spawn(async move {
                     let _ = stream.send(frame).await;

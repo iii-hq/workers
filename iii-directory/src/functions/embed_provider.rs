@@ -156,6 +156,25 @@ mod tests {
         assert!(err.contains("provider/not_configured:"), "{err}");
     }
 
+    /// Transient, unlike an unprovisioned bundle, so the router returns it
+    /// instead of moving on. Builds without MiniLM never download.
+    #[cfg(minilm)]
+    #[tokio::test]
+    async fn a_bundle_still_downloading_is_a_transient_failure() {
+        use crate::functions::search_semantic::download_until_ready;
+        let dir = tempfile::tempdir().unwrap();
+        let semantic = SemanticSearch::new(Some(dir.path().to_path_buf()));
+        let err = tokio::select! {
+            biased;
+            _ = download_until_ready(&semantic, dir.path(), std::future::pending) => unreachable!(),
+            result = handle(&semantic, request(None, 1)) => result.unwrap_err().to_string(),
+        };
+        assert!(
+            err.contains("provider/internal:") && err.contains("is still downloading"),
+            "{err}"
+        );
+    }
+
     /// Needs the pinned bundle and ONNX runtime, like the search
     /// round-trip test in `search_semantic`.
     #[cfg(minilm)]

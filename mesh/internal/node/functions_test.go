@@ -52,6 +52,7 @@ type testWorkers struct {
 	runtime  Runtime
 	runtimes chan Runtime
 	catalog  *Catalog
+	fail     error // what SetCatalog returns, keeping the catalog it held
 }
 
 func (w *testWorkers) SetRuntime(_ context.Context, r Runtime) error {
@@ -63,10 +64,14 @@ func (w *testWorkers) SetRuntime(_ context.Context, r Runtime) error {
 	}
 	return nil
 }
-func (w *testWorkers) SetCatalog(c Catalog) {
+func (w *testWorkers) SetCatalog(c Catalog) error {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.fail != nil {
+		return w.fail
+	}
 	w.catalog = &c
-	w.mu.Unlock()
+	return nil
 }
 func (w *testWorkers) CatalogRev() string {
 	w.mu.Lock()
@@ -182,6 +187,13 @@ func TestCatalogApply(t *testing.T) {
 	if got := n.Status().Catalog; got != "r1" {
 		t.Fatalf("status catalog %q", got)
 	}
+	// A catalog the workers could not apply fails the call: the hub retries only on an error.
+	w.fail = errors.New("engine away")
+	s, _ = Sign(k, "mesh-node::catalog::apply", Catalog{Rev: "r2", Functions: catalog.Functions}, time.Now())
+	if _, err := n.handle(t.Context(), "mesh-node::catalog::apply", s); err == nil || n.Status().Catalog != "r1" {
+		t.Fatalf("an unapplied catalog answered %v, revision %q", err, n.Status().Catalog)
+	}
+	w.fail = nil
 	// A hub on another version refuses every mirror call, so the mirrors go.
 	s, _ = Sign(k, "mesh-node::status", StatusRequest{HubVersion: "0.9.0"}, time.Now())
 	if _, err := n.handle(t.Context(), "mesh-node::status", s); err != nil || w.catalog.Rev != "" || len(w.catalog.Functions) != 0 {

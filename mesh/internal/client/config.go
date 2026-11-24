@@ -1,6 +1,7 @@
 // Package client runs the mesh worker as a hub node inside a local project:
 // it joins a remote hub without root and bridges the shared local workers'
-// functions to the hub project as <node>::<fn>.
+// functions to the hub project, with their own ids, in the namespace named
+// after the machine.
 package client
 
 import (
@@ -30,8 +31,9 @@ var workerPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 var functionPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+::[A-Za-z0-9_.:-]+$`)
 
 // Bridged calls reach the engine as caller "mesh"; sharing these would hand
-// other projects the mesh identity's secrets and configuration.
-var deniedWorkers = map[string]bool{"mesh": true, "secrets": true, "configuration": true, "rbac-proxy": true}
+// other projects the mesh identity's secrets and configuration. mesh-mirror
+// serves other owners' functions here and is never published back.
+var deniedWorkers = map[string]bool{"mesh": true, "secrets": true, "configuration": true, "rbac-proxy": true, "mesh-mirror": true}
 
 func (c Config) Validate() error {
 	if c.Join != "" && !strings.HasPrefix(c.Join, "secret://") && !strings.HasPrefix(c.Join, "env://") {
@@ -53,9 +55,8 @@ func ValidateShare(share []string) error {
 			}
 		case len(w) > 256 || !functionPattern.MatchString(w):
 			return fmt.Errorf("function %q cannot be shared: not a function id", w)
-		// hub:: and peer:: are this machine's mirrors of other owners' functions.
-		case !Bridgeable(w) || strings.HasPrefix(w, "hub::") || strings.HasPrefix(w, "peer::"):
-			return fmt.Errorf("function %q cannot be shared: %s, hub:: and peer:: functions never leave a machine", w, strings.Join(deniedPrefixes, ", "))
+		case !Bridgeable(w):
+			return fmt.Errorf("function %q cannot be shared: %s functions never leave a machine", w, strings.Join(deniedPrefixes, ", "))
 		}
 	}
 	return nil

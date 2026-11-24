@@ -57,6 +57,10 @@ describe('side chats', () => {
       chat('old', 2, { side_chat_of: 'main' }),
       chat('new', 3, { side_chat_of: 'main' }),
       chat('other', 4, { side_chat_of: 'elsewhere' }),
+      chat('decision', 5, {
+        side_chat_of: 'main',
+        side_chat_question: 'main/q',
+      }),
     ]
     expect(findSideChat(list, 'main')?.id).toBe('new')
     expect(findSideChat(list, 'nobody')).toBeNull()
@@ -330,6 +334,18 @@ describe('review fixes', () => {
     expect(hideSideChats(list).map((c) => c.id)).toEqual(['main', 'child'])
   })
 
+  it('lists kept decision copies while preserving their side-chat identity', () => {
+    const kept = chat('kept', 2, {
+      side_chat_of: 'main',
+      side_chat_question: 'main/q',
+      side_chat_keep: true,
+    })
+    expect(hideSideChats([chat('main', 1), kept]).map((row) => row.id)).toEqual(
+      ['main', 'kept'],
+    )
+    expect(findSideChat([kept], 'main')).toBeNull()
+  })
+
   it('keeps only PRs whose head is the branch and skips default branches', async () => {
     const calls: string[] = []
     const call = workerExec(
@@ -387,6 +403,24 @@ describe('review fixes', () => {
 })
 
 describe('side chat quotes', () => {
+  it('keeps complete decision seeds through metadata and quote rendering', () => {
+    const quote = {
+      messageId: 'decision:s/q',
+      text: 'a'.repeat(1000),
+      full: true,
+    }
+    const stored = withSideChatQuote([], quote)
+    const recovered = sideChatQuotes({
+      sessionMetadata: { side_chat_quotes: stored },
+    })
+    expect(recovered).toEqual([quote])
+    const content = `${sideChatQuote(quote.text, true)}Help me choose.`
+    expect(content).toContain(quote.text)
+    expect(splitQuotedMessage(content, recovered)).toEqual({
+      quote,
+      rest: 'Help me choose.',
+    })
+  })
   it('reads recorded quotes and skips malformed ones', () => {
     expect(
       sideChatQuotes({

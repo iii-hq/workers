@@ -71,29 +71,32 @@ try {
   const initialConfig = { public_url: '', listen: '${MESH_LISTEN:0.0.0.0:49180}', gateway_port: 49135, proxy_url: 'ws://127.0.0.1:49200', stun_port: 0, trusted_proxies: [], links: [], nodes: {}, drives: {} }
   // Offline first, and archive-laptop sorts before every online name: the page must list online machines first, then by name.
   const lastSeen = new Date(Date.now() - 3_600_000).toISOString()
-  // Each shared worker carries its hub function ids, <machine>::<local id>, sorted. A local id need not start with its worker's
-  // name: ide registers coder::* and shell::*.
+  // Each shared worker carries its function ids, sorted; the hub holds them in the namespace named after the machine. An id
+  // need not start with its worker's name: ide registers coder::* and shell::*. Two machines share shell::exec.
   const nodes = [
     { name: 'archive-laptop', address: 'fd7a:115c:a1e0::3', os: 'darwin', arch: 'arm64', version: '0.0.9', online: false, last_seen: lastSeen, path: 'relay', workers: [] },
     // The hub keeps an offline machine's last reported workers; their functions left with its bridge.
     { name: 'travel-laptop', address: 'fd7a:115c:a1e0::4', os: 'darwin', arch: 'arm64', version: '0.1.0', online: false, last_seen: lastSeen, path: 'relay',
-      workers: [{ name: 'mesh-probe', state: 'shared', functions: ['travel-laptop::mesh-probe::echo'] }] },
+      workers: [{ name: 'mesh-probe', state: 'shared', functions: ['mesh-probe::echo'] }] },
     { name: 'linux-workstation', address: 'fd7a:115c:a1e0::2', os: 'linux', arch: 'amd64', version: '0.1.0', online: true, path: 'direct',
-      workers: [{ name: 'ide', state: 'shared', functions: ['linux-workstation::coder::read-file', 'linux-workstation::shell::exec'] }] },
+      workers: [{ name: 'ide', state: 'shared', functions: ['coder::read-file', 'shell::exec'] }] },
     { name: 'gpu-box', address: 'fd7a:115c:a1e0::5', os: 'linux', arch: 'amd64', version: '0.1.0', online: true, path: 'direct',
-      workers: [{ name: 'browser', state: 'shared', functions: ['gpu-box::browser::act', 'gpu-box::browser::chromium::install'] },
-        { name: 'image-resize', state: 'shared', functions: ['gpu-box::image_resize::resize', 'gpu-box::image_resize::thumbnail'] }, { name: 'tmux', state: 'pending', functions: [] }] },
+      workers: [{ name: 'browser', state: 'shared', functions: ['browser::act', 'browser::chromium::install'] },
+        { name: 'image-resize', state: 'shared', functions: ['image_resize::resize', 'image_resize::thumbnail'] }, { name: 'shell', state: 'shared', functions: ['shell::exec'] },
+        { name: 'tmux', state: 'pending', functions: [] }] },
   ]
-  // The hub engine's function list supplies the descriptions: shell::exec has none, image_resize::thumbnail has no row yet.
+  // The hub engine's function list supplies the descriptions, each machine's rows in its namespace: linux-workstation's
+  // shell::exec has none and gpu-box's has its own, image_resize::thumbnail has no row yet.
   const bridge = (machine) => `rbac-proxy:${machine}::mesh-bridge`
-  const longFunction = { function_id: `engineering-workstation-archive::archive_${'x'.repeat(60)}::fetch`, worker_name: bridge('engineering-workstation-archive'),
+  const longFunction = { function_id: `archive_${'x'.repeat(60)}::fetch`, namespace: 'engineering-workstation-archive', worker_name: bridge('engineering-workstation-archive'),
     description: `Fetches https://api.example.com/v1/${'abcdef0123456789'.repeat(5)}` }
   const hubFunctions = [
-    { function_id: 'linux-workstation::shell::exec', worker_name: bridge('linux-workstation') },
-    { function_id: 'linux-workstation::coder::read-file', worker_name: bridge('linux-workstation'), description: 'Reads a file from the workspace' },
-    { function_id: 'linux-workstation::mesh-node::status', worker_name: 'rbac-proxy:linux-workstation::mesh-node' },
-    { function_id: 'gpu-box::image_resize::resize', worker_name: bridge('gpu-box'), description: 'Resizes an image' },
-    { function_id: 'gpu-box::browser::act', worker_name: bridge('gpu-box'), description: `Interact with the page: click, hover, type, select, press, scroll or drag. ${'A ref is scrolled into view first. '.repeat(6)}` },
+    { function_id: 'shell::exec', namespace: 'linux-workstation', worker_name: bridge('linux-workstation') },
+    { function_id: 'coder::read-file', namespace: 'linux-workstation', worker_name: bridge('linux-workstation'), description: 'Reads a file from the workspace' },
+    { function_id: 'mesh-node::status', namespace: 'linux-workstation', worker_name: 'rbac-proxy:linux-workstation::mesh-node' },
+    { function_id: 'image_resize::resize', namespace: 'gpu-box', worker_name: bridge('gpu-box'), description: 'Resizes an image' },
+    { function_id: 'browser::act', namespace: 'gpu-box', worker_name: bridge('gpu-box'), description: `Interact with the page: click, hover, type, select, press, scroll or drag. ${'A ref is scrolled into view first. '.repeat(6)}` },
+    { function_id: 'shell::exec', namespace: 'gpu-box', worker_name: bridge('gpu-box'), description: 'Runs a command on the GPU box' },
     longFunction,
   ]
   const longNodes = [{ ...nodes[2], name: 'engineering-workstation-archive', path: 'relay / ' + 'long-network-path/'.repeat(12), version: '0.1.0-build-' + '1234567890'.repeat(8),
@@ -119,7 +122,7 @@ try {
     { function_id: 'coder::read-file', worker_name: 'ide', description: 'Reads a file from the workspace' },
     // A worker with internal functions only: the picker is the one way to share them.
     { function_id: 'telemetry::flush', worker_name: 'iii-telemetry', metadata: { internal: true } },
-  ]
+  ].map((fn) => ({ ...fn, namespace: 'project' }))
   // Never offered: the mesh's own, secrets and approval-gate, and the engine's own (listed only with include_internal).
   const neverListed = [
     { function_id: 'mesh::status', worker_name: 'mesh' }, { function_id: 'secrets::resolve', worker_name: 'secrets', metadata: { internal: true } },
@@ -127,19 +130,20 @@ try {
   ]
   // Status rows keyed by entry, as the worker builds them: an id entry takes its function from its worker's row, a worker
   // entry never covers an internal function, and an entry with no function is not running.
-  const shareRows = (share, prefix, state) => share.map((entry) => {
+  const shareRows = (share, state) => share.map((entry) => {
     const ids = localFunctions.filter((fn) => entry.includes('::') ? fn.function_id === entry
-      : fn.worker_name === entry && !fn.metadata?.internal && !share.includes(fn.function_id)).map((fn) => prefix + fn.function_id)
+      : fn.worker_name === entry && !fn.metadata?.internal && !share.includes(fn.function_id)).map((fn) => fn.function_id)
     return { worker: entry, state: ids.length ? state : 'not running', functions: ids }
   })
-  // A client registers what the mesh shares with it as its own functions, under the mesh worker.
+  // A client mirrors what the mesh shares with it under the mesh-mirror worker, each owner's in a namespace named after it.
   const mirrorFunctions = [
-    { function_id: 'hub::shell::exec', worker_name: 'mesh', description: 'Runs a command' },
-    { function_id: 'peer::gpu-box::image_resize::resize', worker_name: 'mesh', description: 'Resizes an image' },
+    { function_id: 'shell::exec', namespace: 'hub', worker_name: 'mesh-mirror', description: 'Runs the hub\'s command' },
+    { function_id: 'image_resize::resize', namespace: 'gpu-box', worker_name: 'mesh-mirror', description: 'Resizes an image' },
   ]
-  // What a connected client can call, by owner, hub first, as its mesh::status reports it.
-  const meshRemote = [{ machine: 'hub', functions: ['hub::shell::exec', 'hub::shell::spawn'] },
-    { machine: 'gpu-box', functions: ['peer::gpu-box::image_resize::resize', 'peer::gpu-box::image_resize::thumbnail'] }]
+  // What a connected client can call, by owner, hub first, as its mesh::status reports it: busy is a namespace in use here.
+  const meshRemote = [{ machine: 'hub', functions: ['shell::exec', 'shell::spawn'] },
+    { machine: 'busy', functions: [], path: 'hub', skipped: 'namespace busy is already in use on this engine' },
+    { machine: 'gpu-box', functions: ['image_resize::resize', 'image_resize::thumbnail'] }]
   const results = []
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const theme of ['light', 'dark']) {
@@ -184,7 +188,7 @@ try {
         const tunnel = hub?.tunnel?.enabled !== true ? undefined
           : publicURL ? { enabled: true, tunnel_id: 'mesh', state: 'overridden' }
           : { enabled: true, tunnel_id: 'mesh', ...tunnelPhase }
-        const shared = shareRows(Array.isArray(hub?.share) ? hub.share : [], 'hub::', 'shared')
+        const shared = shareRows(Array.isArray(hub?.share) ? hub.share : [], 'shared')
         return { version: '0.1.0', public_url: publicURL || tunnel?.url || '', ...(tunnel ? { tunnel } : {}), shared, catalog_skipped: [], ...hubExtra }
       }
       // Calls named in `hold` wait in `held` until release() answers them.
@@ -213,7 +217,7 @@ try {
         return { mode: 'client', hub_url: joinedHub ?? config.client?.hub_url ?? '', namespace: 'project', node, state: clientState,
           ...(joined ? { requested_name: requestedName ?? config.client?.name ?? '' } : {}),
           error: clientState === 'removed by hub' ? 'the hub removed this machine; leave the hub, then join with a new join code' : clientState === 'left hub' ? leaveWarning : '',
-          shared: shareRows(appliedShare ?? config.client?.share ?? [], node ? `${node}::` : '', joined ? 'shared' : 'pending'),
+          shared: shareRows(appliedShare ?? config.client?.share ?? [], joined ? 'shared' : 'pending'),
           remote: joined ? clientRemote : [], ...clientExtra }
       }
       // One call of mesh::on-status-changed, delivered to the page's observer: the worker's current mesh::status.
@@ -402,8 +406,8 @@ try {
         await expect(workstation.getByText('shared · 2 functions', { exact: true })).toBeVisible()
         await expect(workstation.getByRole('list', { name: 'ide functions', exact: true })).toBeHidden()
         await open(workstation, 'ide')
-        // The machine prefix is said once; ide's ids do not share a worker prefix, so coder:: and shell:: stay.
-        await expect(workstation.getByText('Ids start with linux-workstation::', { exact: true })).toBeVisible()
+        // ide's ids do not share a worker prefix, so none is said.
+        await expect(workstation.getByText(/Ids start with/)).toHaveCount(0)
         await expect(workstation.getByRole('list', { name: 'ide functions', exact: true }).getByRole('listitem')).toHaveText([
           'coder::read-file Reads a file from the workspace', 'shell::exec',
         ])
@@ -411,7 +415,8 @@ try {
         const gpu = card('gpu-box')
         await open(gpu, 'browser')
         await open(gpu, 'image-resize')
-        await expect(gpu.getByText('Ids start with gpu-box::browser::', { exact: true })).toBeVisible()
+        await open(gpu, 'shell')
+        await expect(gpu.getByText('Ids start with browser::', { exact: true })).toBeVisible()
         const act = gpu.getByRole('list', { name: 'browser functions', exact: true }).getByRole('listitem')
         await expect(act).toHaveText([/^act Interact with the page/, 'chromium::install'])
         // A long description stays on one line.
@@ -420,17 +425,20 @@ try {
         await expect(gpu.getByRole('list', { name: 'image-resize functions', exact: true }).getByRole('listitem')).toHaveText([
           'image_resize::resize Resizes an image', 'image_resize::thumbnail',
         ])
+        // Both machines share shell::exec: each list shows its own machine's description.
+        await expect(gpu.getByRole('list', { name: 'shell functions', exact: true }).getByRole('listitem')).toHaveText(['exec Runs a command on the GPU box'])
         await expect(gpu.getByRole('list', { name: 'tmux functions', exact: true })).toHaveCount(0)
         await expect(gpu.getByRole('listitem').filter({ hasText: 'tmux' }).getByText('pending · No functions registered yet', { exact: true })).toBeVisible()
         await expect(card('archive-laptop').getByText('Not sharing any workers', { exact: true })).toBeVisible()
         const travel = card('travel-laptop')
         await expect(travel.getByRole('listitem').filter({ hasText: 'mesh-probe' }).getByText('Unavailable while the machine is offline', { exact: true })).toBeVisible()
-        await expect(travel.getByText('travel-laptop::mesh-probe::echo')).toHaveCount(0)
+        await expect(travel.getByText('mesh-probe::echo')).toHaveCount(0)
         // The hub keeps an offline machine's last state; showing "shared" would contradict the line above.
         await expect(travel.getByText('shared', { exact: true })).toHaveCount(0)
         const headings = await page.getByRole('heading', { level: 2 }).allTextContents()
         assert(headings.includes('Machines') && headings.indexOf('Machines') < headings.indexOf('Shared workers') && headings.indexOf('Shared workers') < headings.indexOf('Hub address'),
           'Machines, then Shared workers, then Hub address in hub mode')
+        assert(!/hub::|peer::/.test(await page.evaluate(() => document.body.textContent)), 'no mesh prefix on the hub page')
         await capture('populated')
         // The hub has no public URL yet: no join code, and the machines stay listed.
         await expect(noAddressLine).toBeVisible()
@@ -441,7 +449,7 @@ try {
         mode = 'long'; await button('Refresh').click()
         await expect(page.getByRole('heading', { name: longNodes[0].name })).toBeVisible()
         await open(page, 'worker-with-a-very-long-name')
-        await expect(page.getByRole('list', { name: 'worker-with-a-very-long-name functions', exact: true }).getByRole('listitem')).toHaveText([`${longFunction.function_id.slice(longNodes[0].name.length + 2)} ${longFunction.description}`])
+        await expect(page.getByRole('list', { name: 'worker-with-a-very-long-name functions', exact: true }).getByRole('listitem')).toHaveText([`${longFunction.function_id} ${longFunction.description}`])
         await capture('long')
         // A failed function list loses only the descriptions: the hub's ids still show.
         mode = 'functions-error'; await button('Refresh').click()
@@ -467,11 +475,12 @@ try {
         await expect(page.getByRole('heading', { name: 'Available from the mesh' })).toHaveCount(0)
         // The hub shares its own workers: the ones running on its engine, never the mesh's own or approval-gate.
         const hubShares = page.getByRole('region', { name: 'Shared workers', exact: true })
-        await expect(hubShares.getByText('Nothing shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('Nothing shared · joined machines call them by the same id in namespace hub', { exact: true })).toBeVisible()
         // One switch per worker this engine can share, internal-only ones included; none for the mesh's own, secrets,
         // approval-gate, the engine's own, a mirror or a machine bridge.
         const inventory = [['harness', '3 public · 2 internal'], ['ide', '1 public'], ['iii-telemetry', 'No public functions · 1 internal'], ['shell', '2 public'], ['state', '3 public · 2 internal']]
         await expect(hubShares.getByRole('switch')).toHaveCount(inventory.length)
+        await expect(shareSwitch('mesh-mirror')).toHaveCount(0)
         for (const [name, line] of inventory) {
           await expect(shareSwitch(name)).not.toBeChecked()
           // Rows start closed, with what the worker registers.
@@ -849,27 +858,26 @@ try {
         pushStatus()
         await expect(shareRow('shell').getByText('shared', { exact: true })).toBeVisible()
         await expect(stateBadge('shell', 'shared')).toHaveAttribute('data-badge-variant', 'ok')
-        await expect(hubShares.getByText('1 shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('1 shared · joined machines call them by the same id in namespace hub', { exact: true })).toBeVisible()
         // The open row lists the worker's local functions, all checked under All public functions.
         await expect(hubShares.getByRole('list', { name: 'shell public functions', exact: true }).locator('code')).toHaveText(['shell::exec', 'shell::spawn'])
         await expect(hubShares.getByRole('list', { name: 'shell public functions', exact: true }).getByRole('checkbox', { checked: true })).toHaveCount(2)
         await capture('hub-shared')
-        // The states the hub cannot share in, each with what to do, and a machine left out of the catalog on its own card.
-        hubExtra = { shared: [{ worker: 'shell', state: 'name conflict', functions: [] }], catalog_skipped: ['gpu-box'] }
+        // A state the hub cannot share in, with what to do, and a machine left out of the catalog on its own card.
+        hubExtra = { shared: [{ worker: 'shell', state: 'too large', functions: [] }], catalog_skipped: ['gpu-box'] }
         pushStatus()
-        await expect(shareRow('shell').getByText('name conflict', { exact: true })).toBeVisible()
-        await expect(stateBadge('shell', 'name conflict')).toHaveAttribute('data-badge-variant', 'alert')
-        const conflictHelp = shareRow('shell').getByText('A machine has the name these functions start with. Rename or remove it to share them.', { exact: true })
-        await expect(conflictHelp).toBeVisible()
+        await expect(stateBadge('shell', 'too large')).toHaveAttribute('data-badge-variant', 'alert')
+        const tooLargeHelp = shareRow('shell').getByText('Too many functions to share.', { exact: true })
+        await expect(tooLargeHelp).toBeVisible()
         // In an open row the help sits right under the badge it explains, above the functions.
-        assert(await gap(rowSummary('shell'), conflictHelp) <= 16, 'the help line follows the summary of an open row')
+        assert(await gap(rowSummary('shell'), tooLargeHelp) <= 16, 'the help line follows the summary of an open row')
         await expect(card('gpu-box').getByText('gpu-box shares more than the mesh carries; other machines cannot call it.', { exact: true })).toBeVisible()
         await expect(page.getByText(/shares more than the mesh carries/)).toHaveCount(1)
-        await capture('hub-share-conflict')
-        hubExtra = { shared: [{ worker: 'shell', state: 'too large', functions: [] }] }
+        await capture('hub-share-too-large')
+        // Namespaces cannot collide the way prefixes did: an old hub's "name conflict" is a plain state with no advice.
+        hubExtra = { shared: [{ worker: 'shell', state: 'name conflict', functions: [] }] }
         pushStatus()
-        await expect(shareRow('shell').getByText('Too many functions to share.', { exact: true })).toBeVisible()
-        await expect(stateBadge('shell', 'too large')).toHaveAttribute('data-badge-variant', 'alert')
+        await expect(stateBadge('shell', 'name conflict')).toHaveAttribute('data-badge-variant', 'default')
         await expect(shareRow('shell').getByText(/A machine has the name/)).toHaveCount(0)
         await expect(page.getByText(/shares more than the mesh carries/)).toHaveCount(0)
         hubExtra = {}
@@ -1003,7 +1011,7 @@ try {
         await expect(shareSummary('cron')).toHaveText('No functions registered')
         await expect(stateBadge('cron', 'not running')).toHaveAttribute('data-badge-variant', 'warn')
         await expect(shareRow('cron').getByText('No running worker registers a public function under this name. Sharing starts when one does.', { exact: true })).toBeVisible()
-        await expect(hubShares.getByText('3 shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('3 shared · joined machines call them by the same id in namespace hub', { exact: true })).toBeVisible()
         // A refresh keeps open rows open.
         await expect(rowDetails('state')).toHaveAttribute('open', '')
         await otherShared.evaluate((el) => el.scrollIntoView({ block: 'center' }))
@@ -1175,7 +1183,7 @@ try {
         await expect(page.getByText('Restart the mesh worker to switch to client mode')).toHaveCount(0)
         assert(calls.some((call) => call.id === 'compose::restart'), 'Restart mesh calls compose::restart')
         await expect(page.getByRole('region', { name: 'Hub connection' }).getByText('connected', { exact: true })).toBeVisible()
-        await expect(page.getByText('joined as')).toContainText('laptop')
+        await expect(page.getByText('joined as')).toHaveText('joined as laptop')
         // The row opened when it was switched on: the worker's local functions, all public ones checked.
         await expect(page.getByRole('list', { name: 'shell public functions', exact: true }).locator('code')).toHaveText(['shell::exec', 'shell::spawn'])
         await expect(allPublic('shell')).toBeChecked()
@@ -1183,7 +1191,7 @@ try {
         await expect(fnBox(longLocal.function_id)).toBeVisible()
         await fnBox(longLocal.function_id).evaluate((el) => el.scrollIntoView({ block: 'center' }))
         await capture('client-picker')
-        await expect(page.getByText('1 shared · the hub calls them as laptop::function, other machines as peer::laptop::function', { exact: true })).toBeVisible()
+        await expect(page.getByText('1 shared · the hub and the other machines call them by the same id in namespace laptop', { exact: true })).toBeVisible()
         // A function picked from its worker's row joins as its id, warned as that worker; unchecked before a save, nothing is left to save.
         await rowSummary('ide').click()
         await fnBox('coder::read-file').click()
@@ -1192,14 +1200,18 @@ try {
         await fnBox('coder::read-file').click()
         await expect(shareSwitch('ide')).not.toBeChecked()
         await expect(saveBar).toHaveCount(0)
-        // What the mesh shares with this machine, hub first, each owner behind a count, described from the local listing.
+        // What the mesh shares with this machine, hub first, each owner behind a count as a namespace, described from the
+        // local listing in that namespace: the hub's shell::exec is not this project's.
         await expect(remoteList.locator('summary')).toHaveText(['hub2 functions', 'gpu-box2 functions'])
         await remoteList.locator('summary').first().click()
-        await expect(remoteList.getByText('Ids start with hub::', { exact: true })).toBeVisible()
-        await expect(remoteList.getByRole('list', { name: 'hub functions', exact: true }).getByRole('listitem')).toHaveText(['shell::exec Runs a command', 'shell::spawn'])
+        await expect(remoteList.getByText('In namespace hub', { exact: true })).toBeVisible()
+        await expect(remoteList.getByRole('list', { name: 'hub functions', exact: true }).getByRole('listitem')).toHaveText(['shell::exec Runs the hub\'s command', 'shell::spawn'])
         await remoteList.locator('summary').nth(1).click()
-        await expect(remoteList.getByText('Ids start with peer::gpu-box::', { exact: true })).toBeVisible()
+        await expect(remoteList.getByText('In namespace gpu-box', { exact: true })).toBeVisible()
         await expect(remoteList.getByRole('list', { name: 'gpu-box functions', exact: true }).getByRole('listitem')).toHaveText(['image_resize::resize Resizes an image', 'image_resize::thumbnail'])
+        // An owner named like a namespace in use here is not mirrored, and says so.
+        await expect(remoteList.getByText('Not available here: namespace busy is already in use on this engine', { exact: true })).toBeVisible()
+        assert(!/hub::|peer::/.test(await page.evaluate(() => document.body.textContent)), 'no mesh prefix on the client page')
         await capture('client-connected')
         // The list follows what the worker pushes.
         clientRemote = []
@@ -1331,9 +1343,9 @@ try {
         await expect(connection.getByText('applying…', { exact: true })).toHaveCount(0)
         await expect(page.getByText(p2pRisk).first()).toBeVisible()
         // Each machine says how its calls travel; the hub says nothing.
-        clientRemote = [{ machine: 'hub', functions: ['hub::shell::exec'] },
-          { machine: 'a', functions: ['peer::a::x::y'], path: 'hub' }, { machine: 'b', functions: ['peer::b::x::y'], path: 'direct' },
-          { machine: 'c', functions: ['peer::c::x::y'], path: 'relay' }, { machine: 'd', functions: ['peer::d::x::y'], path: 'idle' }]
+        clientRemote = [{ machine: 'hub', functions: ['shell::exec'] },
+          { machine: 'a', functions: ['x::y'], path: 'hub' }, { machine: 'b', functions: ['x::y'], path: 'direct' },
+          { machine: 'c', functions: ['x::y'], path: 'relay' }, { machine: 'd', functions: ['x::y'], path: 'idle' }]
         pushStatus()
         await expect(remoteList.locator('summary')).toHaveText(['hub1 function', 'athrough the hub · 1 function', 'bpeer to peer · direct · 1 function',
           'cpeer to peer · relayed by the hub machine · 1 function', 'dpeer to peer · 1 function'])
@@ -1372,7 +1384,7 @@ try {
         await expect(connection.getByText('The hub named this machine work-2: work is taken or reserved there.', { exact: true })).toBeVisible()
         await expect(panel('Renaming this machine…')).toHaveCount(0)
         // The shared function ids follow the name.
-        await expect(page.getByText('1 shared · the hub calls them as work-2::function, other machines as peer::work-2::function', { exact: true })).toBeVisible()
+        await expect(page.getByText('1 shared · the hub and the other machines call them by the same id in namespace work-2', { exact: true })).toBeVisible()
         await capture('client-renamed')
         // A refused rename keeps the old name and says why.
         await textbox('Machine name').fill('desk')

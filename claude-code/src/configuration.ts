@@ -38,7 +38,7 @@ export async function registerClaudeConfig(iii: IIIClient, seed: Config): Promis
     id: CONFIG_ID,
     name: 'Claude Code',
     description:
-      'Claude Code worker: per-turn defaults (model, permission mode, max turns, working directory, system-prompt append, allowed/disallowed tools), the approval-gate toggle, the claude CLI path, whether to inject the iii runtime context, and the terminal block — the binary, argv, workspace, and install/setup toggles for the console terminal page, which runs on the shell worker’s host, not this one.',
+      'Claude Code worker: per-turn defaults (model, permission mode, max turns, working directory, system-prompt append, allowed/disallowed tools), the approval-gate toggle, the claude CLI path, whether to inject the iii runtime context, and the terminal block — the binary, argv, workspace, and install/setup toggles for the console terminal page, which runs on the ide worker’s host, not this one.',
     schema: runtimeJsonSchema(),
     metadata: { ui_form: DEFAULT_CONFIG_ID },
     initial_value: toRuntime(seed),

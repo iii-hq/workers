@@ -1,0 +1,6 @@
+# Config only. The root workspace owns the UI.
+minimumReleaseAgeExclude:
+  - iii-sdk@0.26.0
+
+allowBuilds:
+  esbuild: true

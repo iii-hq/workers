@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use iii_sdk::IIIClient;
@@ -35,7 +36,7 @@ pub async fn embed_texts(
     model: &str,
     texts: &[String],
     timeout_ms: u64,
-) -> Option<Embedded> {
+) -> Result<Embedded, String> {
     let mut payload = json!({ "input": texts });
     if !model.trim().is_empty() {
         payload["model"] = json!(model);
@@ -48,18 +49,26 @@ pub async fn embed_texts(
             timeout_ms: Some(timeout_ms),
         })
         .await
-        .inspect_err(|e| tracing::debug!(error = %e, "router::embed failed"))
-        .ok()?;
+        .map_err(|e| e.to_string())?;
     // The router always names the model; a reply without one cannot be
     // placed in a space, so it is not used.
     let reported = reply
         .get("model")
         .and_then(Value::as_str)
-        .filter(|m| !m.is_empty())?
+        .filter(|m| !m.is_empty())
+        .ok_or("the reply names no model")?
         .to_string();
     let embeddings: Vec<Vec<f32>> =
-        serde_json::from_value(reply.get("embeddings").cloned().unwrap_or(Value::Null)).ok()?;
-    (embeddings.len() == texts.len()).then_some((reported, embeddings))
+        serde_json::from_value(reply.get("embeddings").cloned().unwrap_or(Value::Null))
+            .map_err(|e| format!("unreadable embeddings: {e}"))?;
+    if embeddings.len() != texts.len() {
+        return Err(format!(
+            "{} vectors for {} texts",
+            embeddings.len(),
+            texts.len()
+        ));
+    }
+    Ok((reported, embeddings))
 }
 
 /// Per configured `embedding_model` ("" = provider default), the model the
@@ -101,24 +110,45 @@ impl QueryVector {
     }
 }
 
-/// Embed the query for one recall. `None` (disabled, router absent, no
-/// embed provider, timeout) means lexical-only recall this turn.
-pub async fn query_vector(deps: &Deps, query: &str) -> Option<QueryVector> {
+/// Set while query embeds fail: semantic recall is unavailable.
+static SEMANTIC_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Records whether a query embed `answered`; true only when that flips
+/// semantic recall: the first failure since boot or since the last answer,
+/// or the first answer after a failure.
+fn availability_flips(down: &AtomicBool, answered: bool) -> bool {
+    down.swap(!answered, Ordering::Relaxed) == answered
+}
+
+/// Embed the query for one recall. `Err` (disabled, router absent, no
+/// embed provider, timeout) means lexical-only recall this turn and says
+/// why. An outage logs one WARN, its end one INFO, repeats DEBUG.
+pub async fn query_vector(deps: &Deps, query: &str) -> Result<QueryVector, String> {
     let cfg = deps.config().await;
     if !cfg.embeddings_enabled {
-        return None;
+        return Err("embeddings disabled by config".into());
     }
-    let (model, mut vectors) = embed_texts(
+    let embedded = embed_texts(
         &deps.iii,
         &cfg.embedding_model,
         &[query.to_string()],
         QUERY_EMBED_TIMEOUT_MS,
     )
-    .await?;
+    .await;
+    let flips = availability_flips(&SEMANTIC_DOWN, embedded.is_ok());
+    match &embedded {
+        Err(e) if flips => {
+            tracing::warn!(reason = %e, "semantic recall unavailable; recall is lexical-only")
+        }
+        Err(e) => tracing::debug!(reason = %e, "semantic recall still unavailable"),
+        Ok(_) if flips => tracing::info!("semantic recall available again"),
+        Ok(_) => {}
+    }
+    let (model, mut vectors) = embedded?;
     learn_model(&cfg.embedding_model, &model);
-    Some(QueryVector {
+    Ok(QueryVector {
         model,
-        v: vectors.pop()?,
+        v: vectors.pop().ok_or("the reply holds no vector")?,
     })
 }
 
@@ -145,7 +175,10 @@ pub async fn backfill_bank(deps: Arc<Deps>, bank_name: String) {
     let total = backfill_pass(&bank, known, |texts| {
         let (iii, configured) = (deps.iii.clone(), configured.clone());
         async move {
-            let reply = embed_texts(&iii, &configured, &texts, BACKFILL_TIMEOUT_MS).await;
+            let reply = embed_texts(&iii, &configured, &texts, BACKFILL_TIMEOUT_MS)
+                .await
+                .inspect_err(|e| tracing::debug!(error = %e, "router::embed failed"))
+                .ok();
             if let Some((reported, _)) = &reply {
                 learn_model(&configured, reported);
             }
@@ -784,5 +817,18 @@ mod tests {
         learn_model("", "default-changed");
         assert_eq!(current_model("").as_deref(), Some("default-changed"));
         assert_eq!(current_model("never-seen"), None);
+    }
+
+    #[test]
+    fn an_outage_warns_once_until_an_embed_answers() {
+        let down = AtomicBool::new(false);
+        assert!(!availability_flips(&down, true), "up since boot");
+        assert!(availability_flips(&down, false), "the first failure");
+        assert!(!availability_flips(&down, false), "a repeat");
+        assert!(availability_flips(&down, true), "back");
+        assert!(!availability_flips(&down, true));
+        assert!(availability_flips(&down, false), "the next outage");
+        let boot = AtomicBool::new(false);
+        assert!(availability_flips(&boot, false), "failing from boot");
     }
 }

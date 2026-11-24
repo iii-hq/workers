@@ -1010,6 +1010,31 @@ describe('entrySegments', () => {
       content: 'Note to the model — memory',
       note: { label: 'memory' },
     })
+    // Not a recall the worker writes: the row keeps the raw text only.
+    expect(memory).not.toHaveProperty(['note', 'memory'])
+  })
+
+  it('reads a memory recall into its memories', () => {
+    const [recall] = entrySegments({
+      entry_id: 'e-r',
+      custom: {
+        custom_type: 'model_notice',
+        data: {
+          kind: 'hook',
+          text: '<memory bank="m">\nRelevant remembered memories ("the user" is the person you are talking to; recalled 2026-11-23 Monday; each dated when last stated; verify anything surprising):\n- likes tea (2026-11-20)\n</memory>',
+        },
+      },
+    })
+    expect(recall).toMatchObject({
+      note: {
+        label: 'memory',
+        memory: {
+          bank: 'm',
+          recalled: '2026-11-23 Monday',
+          memories: [{ text: 'likes tea', date: '2026-11-20' }],
+        },
+      },
+    })
   })
 
   it('hides the mention index and reads a mentions note as its mentions', () => {

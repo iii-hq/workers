@@ -930,7 +930,7 @@ fn list_comments_filters_by_author_thread_and_time() {
     let activity = list_activity(
         &board,
         &ActivityFilter {
-            ticket_id: created.key.clone(),
+            ticket_id: Some(created.key.clone()),
             types: Some(vec!["comment.created".into()]),
             since: Some(at(2)),
             limit: None,
@@ -1032,7 +1032,7 @@ async fn the_board_file_round_trips_and_a_missing_file_is_an_empty_board() {
     write_board(&file, &board).await.unwrap();
 
     let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(raw["version"], 2);
+    assert_eq!(raw["version"], 3);
     assert_eq!(raw["next_number"], 2);
     assert!(
         raw["tickets"][&created.id]["activity"][0]
@@ -1114,6 +1114,9 @@ fn comment_event(author: &str, parent: Option<&str>) -> CommentEvent {
             body: "hello".into(),
             author: author.into(),
             created_at: at(9),
+            question: None,
+            answer: None,
+            recorded_by: None,
         },
         author: author.into(),
         at: at(9),
@@ -1452,7 +1455,7 @@ fn matches_ticket_treats_an_empty_reference_as_no_filter() {
 #[test]
 fn the_catalog_names_every_function_once_with_typed_object_schemas() {
     let ids = functions::FUNCTION_IDS;
-    assert_eq!(ids.len(), 29);
+    assert_eq!(ids.len(), 32);
     let mut unique = ids.to_vec();
     unique.sort();
     unique.dedup();
@@ -1528,6 +1531,7 @@ fn ticket_writes_answer_with_the_compact_row_only_when_asked() {
             "comment_count",
             "id",
             "key",
+            "open_questions",
             "priority",
             "status",
             "title"

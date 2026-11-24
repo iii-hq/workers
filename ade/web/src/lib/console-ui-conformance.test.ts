@@ -21,7 +21,7 @@ import type * as ConsoleUi from '@iii-dev/console-ui'
 import componentNames from '@iii-dev/console-ui/component-names'
 import tokenNames from '@iii-dev/console-ui/token-names'
 import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { SecretKeyField } from '@/components/secrets/SecretKeyField'
@@ -232,6 +232,11 @@ import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 import { WorkerConfigurationPanel } from '@/pages/Workers/components/WorkerConfigurationPanel'
+import type {
+  DecisionChatHandle,
+  DecisionChatRequest,
+  Host,
+} from '@/types/injectable-ui'
 
 /**
  * The type-level check: assigning each real component to the package's
@@ -627,6 +632,16 @@ function expectSameNames(
 }
 
 describe('@iii-dev/console-ui surface', () => {
+  it('mirrors the decision chat request, handle and optional capabilities', () => {
+    expectTypeOf<ConsoleUi.DecisionChatRequest>().toEqualTypeOf<DecisionChatRequest>()
+    expectTypeOf<ConsoleUi.DecisionChatHandle>().toEqualTypeOf<DecisionChatHandle>()
+    expectTypeOf<
+      NonNullable<ConsoleUi.Host['chat']>['openDecisionChat']
+    >().toEqualTypeOf<Host['chat']['openDecisionChat']>()
+    expectTypeOf<
+      NonNullable<ConsoleUi.Host['chat']>['rebindDecisionChat']
+    >().toEqualTypeOf<Host['chat']['rebindDecisionChat']>()
+  })
   it('the curated components record matches the package manifest', () => {
     expectSameNames(
       Object.keys(components),

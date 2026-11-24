@@ -2,7 +2,7 @@ import { ShadcnCheckbox } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
 import { CornerDownRight, FolderOpen, ListTree, Milestone } from 'lucide-react'
 import { memo } from 'react'
-import { type AgentProfile, type Column, Pills, type TicketSummary } from '../shared'
+import { type AgentProfile, type Column, NeedsYouMark, Pills, type TicketSummary } from '../shared'
 import { LabelList } from '../ui/label-badge'
 import { swallow } from '../ui/option-menu'
 import { AssigneePicker, PriorityMenu, StatusMenu } from '../ui/properties'
@@ -99,10 +99,12 @@ export const ListRow = memo(function ListRow({
             onOpen(ticket.key)
           }}
           title={ticket.title}
+          aria-label={`${ticket.title}${ticket.open_questions > 0 ? ', needs you' : ''}`}
           type="button"
         >
           {ticket.title}
         </button>
+        <NeedsYouMark count={ticket.open_questions} />
         {plan.parentKey || plan.orphan ? (
           <span className="kb-lrow__fact" title={plan.parentKey ? `Subtask of ${plan.parentKey}` : 'Subtask'}>
             <CornerDownRight size={16} />

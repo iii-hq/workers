@@ -1,5 +1,5 @@
 {
-  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic merge/supersede of new memories, each with a reason; verify of notes against their source transcript, replacing a contradicted one), applied strictly through memory::supersede and memory::correct; pinned memories are untouchable. dry_run plans without writing.",
+  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup, entity-handle alias merge (a spelling variant retagged through memory::update, a near spelling only once a judge confirms it), plus the optional LLM tiers when enabled (reorder judge; semantic merge/supersede of new memories, each with a reason; verify of notes against their source transcript, replacing a contradicted one), applied strictly through memory::supersede, memory::update and memory::correct; pinned memories are untouchable. dry_run plans without writing.",
   "function_id": "memory-consolidate::run",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -34,8 +34,67 @@
         ],
         "type": "string"
       },
+      "AliasAction": {
+        "description": "One alias pair as reported.",
+        "properties": {
+          "applied": {
+            "description": "Memories were retagged this pass (never on a dry run).",
+            "type": "boolean"
+          },
+          "from": {
+            "description": "The handle retagged away.",
+            "type": "string"
+          },
+          "ids": {
+            "description": "Memories retagged; on a dry run, the ones that would be.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "description": "The rule, the judge's reason, or what the pair waits for.",
+            "type": "string"
+          },
+          "similarity": {
+            "description": "pg_trgm similarity of the two handles.",
+            "format": "double",
+            "type": "number"
+          },
+          "skipped_pinned": {
+            "description": "Memories left alone because they are pinned.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tier": {
+            "$ref": "#/definitions/Tier"
+          },
+          "to": {
+            "description": "The canonical handle: on more live memories, then the older, then the smaller string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "applied",
+          "from",
+          "reason",
+          "similarity",
+          "tier",
+          "to"
+        ],
+        "type": "object"
+      },
       "BankReport": {
         "properties": {
+          "aliases": {
+            "description": "Entity-handle alias pairs: merged (memories retagged through `memory::update`, each spending the per-run supersede cap), judged distinct, waiting for the judge, or ambiguous. A dry run lists what it would merge, `applied: false`.",
+            "items": {
+              "$ref": "#/definitions/AliasAction"
+            },
+            "type": "array"
+          },
           "bank": {
             "type": "string"
           },
@@ -65,7 +124,7 @@
             "type": "array"
           },
           "llm_calls": {
-            "description": "Model call attempts by the judge, semantic and verify tiers, failed ones included.",
+            "description": "Model call attempts by the judge, alias, semantic and verify tiers, failed ones included.",
             "format": "uint",
             "minimum": 0.0,
             "type": "integer"
@@ -250,6 +309,24 @@
           "retire_text"
         ],
         "type": "object"
+      },
+      "Tier": {
+        "oneOf": [
+          {
+            "description": "The same characters, case, whitespace, `-` and `_` aside: merged with no model call.",
+            "enum": [
+              "spelling"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A near spelling: merged only after the judge confirms it.",
+            "enum": [
+              "near"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {

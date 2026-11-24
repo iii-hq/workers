@@ -23,7 +23,7 @@ type renameResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// SetBeforeRename installs what runs before a rename picks a name; the hub refreshes the taken function prefixes in it.
+// SetBeforeRename installs what runs before a rename picks a name; the hub refreshes the namespaces in use in it.
 func (c *Coordinator) SetBeforeRename(before func() error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

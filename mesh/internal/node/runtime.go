@@ -55,7 +55,7 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		// An explicit Authorization key with no value sends no header and stops the
 		// SDK adding the local engine's III_TOKEN, which the gateway forwards to the hub.
-		client = iii.New(url, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-node"), iii.WithNamespace("default"), iii.WithHeaders(http.Header{"Authorization": nil, meshnet.TokenHeader: {n.token}}))
+		client = iii.New(url, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-node"), iii.WithNamespace(name), iii.WithHeaders(http.Header{"Authorization": nil, meshnet.TokenHeader: {n.token}}))
 		if err := n.Register(client); err != nil {
 			return err
 		}

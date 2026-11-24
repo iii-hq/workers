@@ -3,10 +3,10 @@
 //! Reads are lock-free; every mutation runs read → mutate → atomic write
 //! under one mutex so concurrent function calls never interleave on disk.
 //!
-//! The file carries `version`. Version 1 (tickets only) loads as-is and is
+//! The file carries `version`. Older versions load as-is and are
 //! written back as [`BOARD_VERSION`], after a one-time copy of the original to
-//! `board.v1.json` (an older worker would drop the projects, releases and
-//! subtask links on its next write); a file written by a newer worker is
+//! `board.v<N>.json` (older workers would drop newly added fields on their
+//! next write); a file written by a newer worker is
 //! refused on read, so no mutation ever overwrites it.
 
 use std::path::{Path, PathBuf};
@@ -37,6 +37,30 @@ pub struct Comment {
     /// Agent profile id, or `user`.
     pub author: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<Question>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<Answer>,
+    /// Agent profile that recorded a material choice without asking a person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_by: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Question {
+    pub session_id: String,
+    pub question_id: String,
+    pub questions: Vec<crate::questions::AskQuestion>,
+    pub about: Option<crate::questions::AskAbout>,
+    /// Unix epoch milliseconds, as stored by the harness.
+    pub asked_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Answer {
+    pub answer_text: String,
+    pub by: Option<crate::questions::AnswerBy>,
+    pub outcome: crate::questions::AnswerOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -134,6 +158,9 @@ pub struct Project {
     /// blue | purple | teal | green | amber | rose.
     #[serde(default)]
     pub color: Option<String>,
+    /// GitHub repositories, each written as `owner/name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repos: Option<Vec<String>>,
     /// The label this project was converted from, if any.
     #[serde(default)]
     pub source_label: Option<String>,
@@ -166,7 +193,7 @@ pub struct Release {
 }
 
 /// The newest board file version this worker reads and writes.
-pub const BOARD_VERSION: u32 = 2;
+pub const BOARD_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Board {

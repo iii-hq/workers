@@ -81,8 +81,14 @@ already carries its own date.\n\
 Write facts about the person you are talking with as \"The user …\", never by their name or \
 in the first person; when they state their name, write \"The user's name is <name>.\" Other \
 people keep their names.\n\
-- entities: short lowercase handles for the people/projects/tools the memory is about; \
-include \"user\" in every memory about the user.\n\
+- entities: short lowercase handles for the people/projects/tools the memory is about, one \
+handle per thing and the same handle every time. The person you are talking with is always \
+the handle \"user\": write it exactly so, in English, whatever language the text is in, never \
+their name and never a translation of the word, and include it in every memory about them. \
+The input may list entity handles this bank already uses: when a memory is about one of \
+those things, use that handle exactly as listed, even when the excerpt names the thing in \
+another spelling, form or language. Write a new handle only for a thing no listed handle \
+names, and never put a listed handle on a memory that is not about that thing.\n\
 - tags: 0-3 short lowercase topical labels for filtering within the bank (e.g. \"billing\", \
 \"deploy\"); omit when nothing fits.\n\
 - confidence: \"extracted\" when stated directly, \"inferred\" when derived.\n\
@@ -320,16 +326,71 @@ async fn listed(
     out
 }
 
+/// Entity handles the extraction input lists, about 150 tokens at most.
+const MAX_HANDLES: usize = 24;
+
+/// The entity handles a bank already uses, in the order extraction lists
+/// them: the `known` memories' (what the bank recalled for the excerpt), then
+/// the bank's `own` and the `layer`'s, most used first ([`Bank::entities`]).
+/// Never `user`, which the prompt fixes, nor a repeat, nor one over 48
+/// characters or holding a control character: stored text shown to the model.
+fn handles(
+    known: &[Memory],
+    own: Vec<(String, usize)>,
+    layer: Vec<(String, usize)>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    known
+        .iter()
+        .flat_map(|m| m.entities.iter().cloned())
+        .chain(own.into_iter().chain(layer).map(|(handle, _)| handle))
+        .filter(|h| {
+            h != crate::scope::LAYER_ENTITY
+                && h.chars().count() <= 48
+                && !h.chars().any(char::is_control)
+                && seen.insert(h.clone())
+        })
+        .collect()
+}
+
+/// A handle without its separators (spaces, `-`, `_`), lowercased: `build
+/// cache`, `Build-Cache` and `build_cache` spell the same thing; `c++` and
+/// `c#` do not.
+fn spelling(handle: &str) -> impl Iterator<Item = char> + '_ {
+    handle
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
+        .flat_map(char::to_lowercase)
+}
+
+/// `entities` with each one that spells one of `handles` another way written
+/// as that handle (the first listed, when two spell alike), then no repeat:
+/// one thing keeps one handle, whatever separators the model wrote.
+fn snap(entities: &mut Vec<String>, handles: &[String]) {
+    for entity in entities.iter_mut() {
+        if spelling(entity).next().is_none() {
+            continue;
+        }
+        if let Some(handle) = handles.iter().find(|h| spelling(h).eq(spelling(entity))) {
+            entity.clone_from(handle);
+        }
+    }
+    let mut seen = HashSet::new();
+    entities.retain(|e| seen.insert(e.clone()));
+}
+
 /// The extraction model's input: the user's own instructions for the bank
 /// ([`instructions`]), the agents an item may be for (`own`: the first is
 /// the assistant's own profile, the rest its sub-agents'), the numbered
-/// known memories, the learned lines numbered after them, then the excerpt.
+/// known memories, the learned lines numbered after them, the first
+/// [`MAX_HANDLES`] entity handles in use, then the excerpt.
 fn extraction_input(
     agents: &[String],
     own: bool,
     instructions: &str,
     known: &[Memory],
     learned: &[(String, bool)],
+    handles: &[String],
     transcript: &str,
 ) -> String {
     let mut input = String::new();
@@ -360,6 +421,13 @@ fn extraction_input(
         input.push_str("Learned rules:\n");
         for (i, (line, _)) in learned.iter().enumerate() {
             input.push_str(&format!("[{}] {line}\n", known.len() + i + 1));
+        }
+        input.push('\n');
+    }
+    if !handles.is_empty() {
+        input.push_str("Entity handles in use:\n");
+        for handle in handles.iter().take(MAX_HANDLES) {
+            input.push_str(&format!("- {handle}\n"));
         }
         input.push('\n');
     }
@@ -996,11 +1064,22 @@ pub struct PassTally {
     /// absent when none did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Items in the replies' arrays before any check: memories, rules and
+    /// malformed ones.
+    pub returned: u64,
+    /// Of `returned`, the rule items: they become learned rule lines, never
+    /// memories, so `created` and `dropped` never count them.
+    pub rules: u64,
+    /// Replies with no JSON array (prose, one word, no text); a `[]` reply
+    /// is not one. The call is asked once more after one, and a second reads
+    /// as nothing to keep.
+    pub no_array: u64,
     pub created: u64,
     pub reinforced: u64,
     pub superseded: u64,
-    /// Memories the model returned that were not written, by reason.
-    /// Rule items are not tallied.
+    /// Memories the model returned that were not written, by reason, and
+    /// items that did not parse, as `malformed`. A rule item that parsed is
+    /// counted in `rules` only.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dropped: BTreeMap<&'static str, u64>,
 }
@@ -1030,6 +1109,9 @@ impl PassTally {
         if let Some(cost) = other.cost_usd {
             *self.cost_usd.get_or_insert(0.0) += cost;
         }
+        self.returned += other.returned;
+        self.rules += other.rules;
+        self.no_array += other.no_array;
         self.created += other.created;
         self.reinforced += other.reinforced;
         self.superseded += other.superseded;
@@ -1878,7 +1960,9 @@ async fn execute_run(
         return Ok(false);
     }
     // Fail-soft semantic signal; lexical-only when it misses.
-    let query_vec = crate::embed_client::query_vector(deps, &crate::store::cap_query(&query)).await;
+    let query_vec = crate::embed_client::query_vector(deps, &crate::store::cap_query(&query))
+        .await
+        .ok();
     let (mut known, mut layered) = known_memories(
         &*deps.store().await,
         bank_name,
@@ -1978,6 +2062,22 @@ async fn execute_run(
                 "a user message over {USER_CHARS} chars was read as its head and tail"
             );
         }
+        // Read once per run, as `known` was: a replayed plan reads none.
+        let handles = {
+            let store = deps.store().await;
+            let in_bank = match store.bank(bank_name).await {
+                Ok(bank) => bank.entities(|_| true).await,
+                Err(_) => Vec::new(),
+            };
+            let in_layer = match layer_name {
+                Some(name) => match store.bank(name).await {
+                    Ok(bank) => bank.entities(crate::scope::in_layer).await,
+                    Err(_) => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            handles(&known, in_bank, in_layer)
+        };
         // Every piece sees the same known and learned lines, so `replaces`
         // holds across them; items keep piece order in the one plan.
         // shortcut: a failed piece re-asks every piece of its message (up to
@@ -1990,7 +2090,15 @@ async fn execute_run(
                 &model,
                 cfg.max_memories_per_turn,
                 cfg.extraction_timeout_ms,
-                extraction_input(&agents, own, &instructions, &known, &learned, piece),
+                extraction_input(
+                    &agents,
+                    own,
+                    &instructions,
+                    &known,
+                    &learned,
+                    &handles,
+                    piece,
+                ),
                 !agents.is_empty(),
                 session_id,
                 layer_name.is_some(),
@@ -2041,6 +2149,8 @@ async fn execute_run(
         for item in &mut items {
             item.text = crate::redact::redact(item.text.trim()).text;
             crate::redact::drop_secrets(&mut item.entities);
+            // Before the plan is saved, so a replay writes the same handle.
+            snap(&mut item.entities, &handles);
             crate::redact::drop_secrets(&mut item.tags);
             for value in [
                 &mut item.confidence,
@@ -3519,28 +3629,66 @@ async fn extract_items(
     instructions: bool,
     tally: &mut PassTally,
 ) -> Result<Vec<ExtractedItem>, String> {
+    let system = system_prompt(repository, agents, instructions, max_memories);
+    let call = |text: String| CallRequest {
+        function_id: "router::complete".into(),
+        payload: json!({
+            "model": model,
+            "system_prompt": system,
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": text }],
+                "timestamp": now_ms() as i64,
+            }],
+            "max_output_tokens": 2048,
+        }),
+        action: None,
+        timeout_ms: Some(timeout_ms),
+    };
+    let no_array = tally.no_array;
+    let items = complete_items(iii, call(input.clone()), session_id, tally).await?;
+    if tally.no_array == no_array {
+        return Ok(items);
+    }
+    // A reply with no array is a format slip (a transcript line like "reply
+    // with one word: noted" is obeyed), not "nothing to keep". Asked once
+    // more; a second slip reads as nothing and the cursor moves on, so a
+    // model that never answers in JSON doubles its calls instead of failing
+    // the pass. The retry fails like a first call (error, cut, broken array).
+    tracing::warn!(
+        session_id,
+        "extraction reply held no JSON array; asking once more"
+    );
+    complete_items(
+        iii,
+        call(format!("{input}{NO_ARRAY_RETRY}")),
+        session_id,
+        tally,
+    )
+    .await
+}
+
+/// Appended to the input of the one retry after a reply with no array,
+/// marked as outside the excerpt so it never reads as the user's words.
+const NO_ARRAY_RETRY: &str = "\n\n---\nExtraction note, not part of the conversation: your \
+     last reply held no JSON array. Answer with the JSON array only, `[]` when nothing above \
+     is worth keeping.";
+
+/// One `router::complete` call and its items, its tokens counted first: a
+/// reply that fails to parse still spent them.
+async fn complete_items(
+    iii: &IIIClient,
+    request: CallRequest,
+    session_id: &str,
+    tally: &mut PassTally,
+) -> Result<Vec<ExtractedItem>, String> {
     tally.calls += 1;
     let reply = iii
-        .call(CallRequest {
-            function_id: "router::complete".into(),
-            payload: json!({
-                "model": model,
-                "system_prompt": system_prompt(repository, agents, instructions, max_memories),
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": input }],
-                    "timestamp": now_ms() as i64,
-                }],
-                "max_output_tokens": 2048,
-            }),
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        })
+        .call(request)
         .await
         .map_err(|e| format!("router::complete: {e}"))?;
-    // Before parsing: a reply that fails to parse still spent its tokens.
     tally.add_usage(&reply);
-    reply_items(&reply, session_id)
+    reply_items(&reply, session_id, tally)
 }
 
 /// The extraction system prompt: [`EXTRACT_SYSTEM`], then the clauses the
@@ -3571,7 +3719,11 @@ fn system_prompt(
 /// read as "nothing to save", it would advance the cursor past the turn, so
 /// it is an error and the queue retries. So is a reply cut before any whole
 /// item (reasoning spent the budget, a prose preamble ran long).
-fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, String> {
+fn reply_items(
+    reply: &Value,
+    session_id: &str,
+    tally: &mut PassTally,
+) -> Result<Vec<ExtractedItem>, String> {
     crate::extraction_proof::value_bytes(reply, crate::extraction_proof::SOURCE_BYTES)?;
     let message = &reply["message"];
     if message["stop_reason"] == "error" {
@@ -3586,7 +3738,7 @@ fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, St
     {
         return Err("extraction reply text byte bound".into());
     }
-    let items = parse_items(&checked_content_text(message.get("content"))?)?;
+    let items = parse_items(&checked_content_text(message.get("content"))?, tally)?;
     if message["stop_reason"] == "length" {
         if items.is_empty() {
             return Err("router::complete: reply hit max_output_tokens before any item".into());
@@ -3603,13 +3755,16 @@ fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, St
 /// the reply. The array is the first `[` that opens an object list or `[]`,
 /// so prose quoting a known memory's number (`[2]`) is not mistaken for it,
 /// and anything after the array is ignored. An array cut short (the reply
-/// hit max_output_tokens) keeps the items that closed.
-fn parse_items(raw: &str) -> Result<Vec<ExtractedItem>, String> {
+/// hit max_output_tokens) keeps the items that closed. `tally` counts what
+/// the reply held: a reply with no array reads as no items, like `[]`, and
+/// counts in `no_array`, which [`extract_items`] asks again on.
+fn parse_items(raw: &str, tally: &mut PassTally) -> Result<Vec<ExtractedItem>, String> {
     let start = raw
         .match_indices('[')
         .map(|(i, _)| i)
         .find(|&i| matches!(raw[i + 1..].trim_start().chars().next(), Some('{' | ']')));
     let Some(start) = start else {
+        tally.no_array += 1;
         return Ok(Vec::new());
     };
     let array = &raw[start..];
@@ -3621,16 +3776,20 @@ fn parse_items(raw: &str) -> Result<Vec<ExtractedItem>, String> {
             .ok_or_else(|| format!("truncated extraction reply: {e}"))?,
         Err(e) => return Err(format!("unparseable extraction reply: {e}")),
     };
-    Ok(values
+    tally.returned += values.len() as u64;
+    let items: Vec<ExtractedItem> = values
         .into_iter()
         .filter_map(|v| match serde_json::from_value::<ExtractedItem>(v) {
             Ok(item) => Some(item),
             Err(_) => {
                 tracing::warn!("skipping a malformed extracted item");
+                tally.drop_items("malformed", 1);
                 None
             }
         })
-        .collect())
+        .collect();
+    tally.rules += items.iter().filter(|i| i.is_rule()).count() as u64;
+    Ok(items)
 }
 
 #[cfg(test)]
@@ -3678,15 +3837,33 @@ mod tests {
     #[test]
     fn parse_tolerates_fences_and_prose() {
         let raw = "Here you go:\n```json\n[{\"text\": \"user prefers formal writing\", \"entities\": [\"mike\"]}]\n```";
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "user prefers formal writing");
     }
 
     #[test]
-    fn parse_empty_and_no_array_are_empty() {
-        assert!(parse_items("[]").unwrap().is_empty());
-        assert!(parse_items("nothing worth keeping").unwrap().is_empty());
+    fn the_tally_tells_an_empty_array_from_a_reply_with_none() {
+        let malformed = r#"[{"text": "x y z", "tags": null}, {"text": "a b c"}]"#;
+        let rule = r#"[{"text": "Never use em-dashes.", "kind": "rule"}]"#;
+        // (reply, items, returned, rules, no_array, malformed)
+        for (raw, items, returned, rules, no_array, bad) in [
+            ("[]", 0, 0, 0, 0, None),
+            ("Nothing here is worth keeping.", 0, 0, 0, 1, None),
+            ("noted", 0, 0, 0, 1, None),
+            ("", 0, 0, 0, 1, None),
+            (malformed, 1, 2, 0, 0, Some(&1)),
+            (rule, 1, 1, 1, 0, None),
+        ] {
+            let mut tally = PassTally::default();
+            assert_eq!(parse_items(raw, &mut tally).unwrap().len(), items, "{raw}");
+            assert_eq!(
+                (tally.returned, tally.rules, tally.no_array),
+                (returned, rules, no_array),
+                "{raw}"
+            );
+            assert_eq!(tally.dropped.get("malformed"), bad, "{raw}");
+        }
     }
 
     #[test]
@@ -3702,14 +3879,19 @@ mod tests {
     #[test]
     fn parse_unknown_kind_is_a_memory_not_a_rule() {
         let raw = r#"[{"text": "x y z", "kind": "directive"}]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(items.len(), 1);
         assert!(!items[0].is_rule());
     }
 
     #[test]
     fn parse_rejects_non_array_json_objects() {
-        assert!(parse_items(r#"{"text": "not a list"}"#).unwrap().is_empty());
+        assert!(parse(r#"{"text": "not a list"}"#).unwrap().is_empty());
+    }
+
+    /// The items alone, for a test that reads no tally.
+    fn parse(raw: &str) -> Result<Vec<ExtractedItem>, String> {
+        parse_items(raw, &mut PassTally::default())
     }
 
     fn texts(items: &[ExtractedItem]) -> Vec<&str> {
@@ -3718,17 +3900,10 @@ mod tests {
 
     #[test]
     fn parse_skips_references_to_known_memories() {
-        assert!(
-            parse_items("Nothing new; [2] covers it.")
-                .unwrap()
-                .is_empty()
-        );
+        assert!(parse("Nothing new; [2] covers it.").unwrap().is_empty());
         let raw =
             "[2] is close, but this is new: [{\"text\": \"The user lives in Porto.\"}] (see [1])";
-        assert_eq!(
-            texts(&parse_items(raw).unwrap()),
-            ["The user lives in Porto."]
-        );
+        assert_eq!(texts(&parse(raw).unwrap()), ["The user lives in Porto."]);
     }
 
     #[test]
@@ -3740,7 +3915,7 @@ mod tests {
             "not an item",
             {"text": "ledger-sync uses pnpm.", "replaces": 1}
         ]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(
             texts(&items),
             ["The user lives in Porto.", "ledger-sync uses pnpm."]
@@ -3751,13 +3926,13 @@ mod tests {
     #[test]
     fn parse_keeps_the_whole_items_of_a_truncated_array() {
         let raw = r#"[{"text": "Uses {braces}.", "tags": ["x"]}, {"text": "Cut } sho"#;
-        assert_eq!(texts(&parse_items(raw).unwrap()), ["Uses {braces}."]);
+        assert_eq!(texts(&parse(raw).unwrap()), ["Uses {braces}."]);
         assert!(
-            parse_items(r#"[{"text": "Cut sho"#).is_err(),
+            parse(r#"[{"text": "Cut sho"#).is_err(),
             "nothing whole arrived: retry"
         );
         assert!(
-            parse_items(r#"[{"text": "a"} {"text": "b"}]"#).is_err(),
+            parse(r#"[{"text": "a"} {"text": "b"}]"#).is_err(),
             "broken, not cut: retry"
         );
     }
@@ -3772,24 +3947,25 @@ mod tests {
                 "content": [{ "type": "text", "text": text }],
             }})
         };
-        let err = reply_items(&reply("error", "429 Too Many Requests"), "s").unwrap_err();
+        let read = |reply: &Value| reply_items(reply, "s", &mut PassTally::default());
+        let err = read(&reply("error", "429 Too Many Requests")).unwrap_err();
         assert!(err.contains("rate_limited"), "{err}");
         assert!(
-            reply_items(&reply("error", r#"[{"text": "x y z"}]"#), "s").is_err(),
+            read(&reply("error", r#"[{"text": "x y z"}]"#)).is_err(),
             "error text is never read as items"
         );
         let cut = r#"[{"text": "The user lives in Porto."}, {"text": "The us"#;
         assert_eq!(
-            texts(&reply_items(&reply("length", cut), "s").unwrap()),
+            texts(&read(&reply("length", cut)).unwrap()),
             ["The user lives in Porto."]
         );
         for cut in ["", "Looking at the excerpt, the user"] {
             assert!(
-                reply_items(&reply("length", cut), "s").is_err(),
+                read(&reply("length", cut)).is_err(),
                 "cut before any item: retry, never advance past the turn"
             );
         }
-        assert!(reply_items(&reply("end", "[]"), "s").unwrap().is_empty());
+        assert!(read(&reply("end", "[]")).unwrap().is_empty());
     }
 
     /// Lines to merge that correct none.
@@ -3814,7 +3990,7 @@ mod tests {
             {"text": "user publishes on tuesdays", "kind": "memory"},
             {"text": "user lives in pune"}
         ]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(items.len(), 3);
         assert!(items[0].is_rule());
         assert!(!items[1].is_rule());
@@ -4526,28 +4702,28 @@ mod tests {
             known("ledger-sync uses pnpm."),
         ];
         assert_eq!(
-            extraction_input(&[], false, "", &ms, &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &ms, &[], &[], "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n[2] ledger-sync uses pnpm.\n\n\
              Conversation excerpt:\nuser [d]: hi"
         );
         assert_eq!(
-            extraction_input(&[], false, "", &[], &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &[], &[], &[], "user [d]: hi"),
             "Conversation excerpt:\nuser [d]: hi"
         );
         let learned = [("Never use emoji.".to_string(), true)];
         assert_eq!(
-            extraction_input(&[], false, "", &ms[..1], &learned, "user [d]: hi"),
+            extraction_input(&[], false, "", &ms[..1], &learned, &[], "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n\n\
              Learned rules:\n[2] Never use emoji.\n\nConversation excerpt:\nuser [d]: hi"
         );
         let agents = ["tech-lead".to_string(), "reviewer".to_string()];
         assert_eq!(
-            extraction_input(&agents, true, "", &[], &[], "user [d]: hi"),
+            extraction_input(&agents, true, "", &[], &[], &[], "user [d]: hi"),
             "Agents in this conversation:\n- tech-lead: the assistant\n\
              - reviewer: a sub-agent the assistant started\n\nConversation excerpt:\nuser [d]: hi"
         );
         assert!(
-            extraction_input(&agents[1..], false, "", &[], &[], "")
+            extraction_input(&agents[1..], false, "", &[], &[], &[], "")
                 .starts_with("Agents in this conversation:\n- reviewer: a sub-agent"),
             "a session with no profile of its own lists only its sub-agents"
         );
@@ -4564,12 +4740,118 @@ mod tests {
                 rules,
                 &[known("ledger-sync uses pnpm.")],
                 &[],
+                &[],
                 "user [d]: hi"
             ),
             "The user's instructions for this bank:\n\
              ## privacy\nNever remember anything about my health.\n\n\
              Agents in this conversation:\n- tech-lead: the assistant\n\n\
              Already remembered:\n[1] ledger-sync uses pnpm.\n\nConversation excerpt:\nuser [d]: hi"
+        );
+    }
+
+    #[test]
+    fn the_extraction_input_lists_handles_before_the_excerpt() {
+        let learned = [("Never use emoji.".to_string(), true)];
+        let handles = ["dentist".to_string(), "payments-api".to_string()];
+        let ms = [known("ledger-sync uses pnpm.")];
+        assert_eq!(
+            extraction_input(&[], false, "", &ms, &learned, &handles, "user [d]: hi"),
+            "Already remembered:\n[1] ledger-sync uses pnpm.\n\n\
+             Learned rules:\n[2] Never use emoji.\n\n\
+             Entity handles in use:\n- dentist\n- payments-api\n\n\
+             Conversation excerpt:\nuser [d]: hi"
+        );
+        assert_eq!(
+            extraction_input(&[], false, "", &ms, &learned, &[], "user [d]: hi"),
+            "Already remembered:\n[1] ledger-sync uses pnpm.\n\n\
+             Learned rules:\n[2] Never use emoji.\n\nConversation excerpt:\nuser [d]: hi",
+            "no handles, no section"
+        );
+        let many: Vec<String> = (0..30).map(|n| format!("tool-{n:02}")).collect();
+        let input = extraction_input(&[], false, "", &[], &[], &many, "");
+        assert!(
+            input.contains("- tool-23\n\nConversation excerpt:"),
+            "{input}"
+        );
+        assert!(!input.contains("tool-24"), "capped at {MAX_HANDLES}");
+    }
+
+    #[test]
+    fn handles_lead_with_the_known_memories_then_the_most_used() {
+        let tagged = |text: &str, entities: &[&str]| Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..known(text)
+        };
+        let ms = [
+            tagged("The user sees a dentist.", &["user", "dentist"]),
+            tagged("ledger-api pages kai.", &["ledger-api", "kai", "dentist"]),
+        ];
+        let counted = |all: &[&str]| -> Vec<(String, usize)> {
+            all.iter().map(|h| (h.to_string(), 1)).collect()
+        };
+        let (long, longest) = ("x".repeat(49), "y".repeat(48));
+        let own = counted(&["payments-api", "user", "kai", &long, "two\nlines", &longest]);
+        let got = handles(&ms, own, counted(&["porto", "payments-api"]));
+        assert_eq!(
+            got,
+            [
+                "dentist",
+                "ledger-api",
+                "kai",
+                "payments-api",
+                &longest,
+                "porto"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_prompt_fixes_the_speaker_handle_and_asks_for_listed_handles() {
+        let speaker = "The person you are talking with is always the handle \"user\": write it \
+                       exactly so, in English, whatever language the text is in, never their name \
+                       and never a translation of the word, and include it in every memory about \
+                       them.";
+        let listed = "The input may list entity handles this bank already uses: when a memory \
+                      is about one of those things, use that handle exactly as listed, even when \
+                      the excerpt names the thing in another spelling, form or language.";
+        for variant in 0..8 {
+            let (repository, agents, instructions) =
+                (variant & 1 > 0, variant & 2 > 0, variant & 4 > 0);
+            let prompt = system_prompt(repository, agents, instructions, 8);
+            for sentence in [speaker, listed] {
+                assert_eq!(prompt.matches(sentence).count(), 1, "{variant}: {sentence}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_separator_variant_is_written_as_the_banks_handle() {
+        let handles = ["build-cache".to_string(), "us-east-1".to_string()];
+        let mut entities: Vec<String> = ["Build Cache", "build_cache", "us east 1", "user"]
+            .map(String::from)
+            .into();
+        snap(&mut entities, &handles);
+        assert_eq!(entities, ["build-cache", "us-east-1", "user"]);
+    }
+
+    #[test]
+    fn a_different_handle_is_left_alone() {
+        // `payments-api` is never snapped to `ledger-api`, nor a near
+        // spelling to it, nor `c#` to `c++`; a handle of separators alone
+        // spells nothing.
+        let handles = [
+            "payments-api".to_string(),
+            "c++".to_string(),
+            "-".to_string(),
+        ];
+        let mut entities: Vec<String> = ["ledger-api", "payment-api", "c#", "_", "payments"]
+            .map(String::from)
+            .into();
+        snap(&mut entities, &handles);
+        assert_eq!(
+            entities,
+            ["ledger-api", "payment-api", "c#", "_", "payments"]
         );
     }
 
@@ -4676,7 +4958,8 @@ mod tests {
         for rule in [
             "\"The user …\"",
             "\"The user's name is <name>.\"",
-            "include \"user\"",
+            "the handle \"user\"",
+            "include it in every memory about them",
             "already remembered",
             "\"replaces\"",
             "direct instruction to the assistant",
@@ -4689,9 +4972,9 @@ mod tests {
 
     #[test]
     fn parse_reads_replaces() {
-        let items = parse_items(r#"[{"text":"The user lives in Porto.","replaces":2}]"#).unwrap();
+        let items = parse(r#"[{"text":"The user lives in Porto.","replaces":2}]"#).unwrap();
         assert_eq!(items[0].replaces, Some(2));
-        let items = parse_items(r#"[{"text":"The user lives in Porto."}]"#).unwrap();
+        let items = parse(r#"[{"text":"The user lives in Porto."}]"#).unwrap();
         assert_eq!(items[0].replaces, None);
     }
 
@@ -4705,7 +4988,7 @@ mod tests {
             {"text": "e", "scope": "User"},
             {"text": "f", "scope": 1}
         ]"#;
-        let items = parse_items(raw).unwrap();
+        let items = parse(raw).unwrap();
         assert_eq!(
             texts(&items),
             ["a", "b", "c", "d", "e"],
@@ -5619,9 +5902,11 @@ mod tests {
         };
         tally.calls = 3;
         tally.superseded = 1;
+        (tally.returned, tally.rules, tally.no_array) = (3, 1, 1);
         total.add(&tally);
         total.add(&tally);
         assert_eq!(total.calls, 7);
+        assert_eq!((total.returned, total.rules, total.no_array), (6, 2, 2));
         assert_eq!((total.input_tokens, total.output_tokens), (302, 44));
         assert_eq!(total.cost_usd, Some(0.004));
         assert_eq!((total.created, total.superseded), (2, 2));

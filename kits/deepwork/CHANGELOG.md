@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0
+
+- **Every decision uses the durable harness inbox.** Deepwork no longer has an `ask=board` protocol or its own board-comment wake. Design, plan, finish and consequential questions use `harness::ask` with the run or blocked card, the cards waiting on it, a class and reason, a recommended option, and a three-day blocking expiry. Questions remain open while the run moves on; obsolete ones are withdrawn. Their mirrored board comments and the derived `needs you` mark now come from the harness and kanban contracts.
+- **Run-health timeouts stay actionable.** When verification times out twice, Deepwork asks whether to retry only unfinished checks, retry them with a longer deadline, or stop. The first option is recommended and becomes the default after 30 minutes.
+- **The run is linked and its decisions are traceable.** Deepwork links its root session to R as soon as R exists, records material `approve=auto` assumptions in the board's decision log, names R in PR titles, and uses `blocked`, `stuck` and `unverified` pills for those outcomes.
+
 ## 0.9.5
 
 - **Every wake says what it waits for.** The chat showed a wake by its label, such as `dw KAN-38 r1 w2`. Each `harness::observe` now also passes `action`, a plain phrase the chat shows instead: `Results from KAN-12 and KAN-13`, `Coding result for KAN-12`, `CI checks on PR #42 finished`, `Test suite finished`. A wake that can show while it still waits, or that can end in a failure, names the result it waits for and never says the work finished or succeeded. Labels are unchanged, and wakes are still matched by them.

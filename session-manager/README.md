@@ -100,6 +100,13 @@ incremented `revision`.
 The full function surface (22 `session::*` functions: lifecycle,
 messages, branching/fork, attachments) is documented in the spec and on each
 function's registered schema — see `iii call engine::workers::info name=session-manager`.
+
+`session::list` accepts `roots: true` to keep only sessions whose metadata
+has no `spawned_by` key (missing or empty metadata qualifies). Omit `roots`
+or set it to false to include sub-agents. This combines with `status`,
+`kinds` and `metadata` filters before ordering and pagination, so `limit`
+counts matching root sessions.
+
 `session::messages` items carry the entry `origin` (hook annotations —
 e.g. which memory bank fed a generate), so consumers can render
 provenance without a second lookup.

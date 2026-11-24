@@ -24,7 +24,7 @@ type Signed struct {
 	Sig     string          `json:"sig"`
 }
 
-// The signed identity is the registered mesh-node::* ID, before proxy prefixing.
+// The signed identity is the registered mesh-node::* id.
 func Sign(k ed25519.PrivateKey, fn string, payload any, now time.Time) (Signed, error) {
 	if len(k) != ed25519.PrivateKeySize {
 		return Signed{}, ErrBadSig

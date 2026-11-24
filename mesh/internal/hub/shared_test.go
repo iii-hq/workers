@@ -16,15 +16,16 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/node"
 )
 
-// fakeEngine answers engine::functions::list with rows and info with a schema per id.
+// fakeEngine answers engine::functions::list with rows, engine::workers::list with workers and info with a schema per id.
 type fakeEngine struct {
-	mu     sync.Mutex
-	rows   []map[string]any
-	fail   error
-	lists  int    // list calls, failed ones included
-	req    string // the last list call's payload
-	infos  int    // ids whose schemas were read
-	onList func() // runs once, after the next listing is read, under mu
+	mu      sync.Mutex
+	rows    []map[string]any
+	workers []map[string]any
+	fail    error
+	lists   int      // list calls, failed ones included
+	reqs    []string // the list calls' payloads
+	infos   int      // ids whose schemas were read
+	onList  func()   // runs once, after the next listing is read, under mu
 }
 
 func (e *fakeEngine) Call(_ context.Context, r iii.CallRequest) (json.RawMessage, error) {
@@ -32,7 +33,7 @@ func (e *fakeEngine) Call(_ context.Context, r iii.CallRequest) (json.RawMessage
 	defer e.mu.Unlock()
 	if r.FunctionID == "engine::functions::list" {
 		e.lists++
-		e.req = string(r.Payload)
+		e.reqs = append(e.reqs, string(r.Payload))
 	}
 	if e.fail != nil {
 		return nil, e.fail
@@ -45,6 +46,8 @@ func (e *fakeEngine) Call(_ context.Context, r iii.CallRequest) (json.RawMessage
 			e.onList = nil
 		}
 		return out, err
+	case "engine::workers::list":
+		return json.Marshal(map[string]any{"workers": append([]map[string]any{}, e.workers...)})
 	case "engine::functions::info":
 		var in struct {
 			IDs []string `json:"function_ids"`
@@ -103,33 +106,38 @@ func ids(c node.Catalog) []string {
 }
 
 func TestCatalogRows(t *testing.T) {
-	h, e, _ := sharedHub(t, "shell", "coder", "laptop")
+	h, e, _ := sharedHub(t, "shell", "coder")
 	pushes := 0
 	h.emit = func([]byte) { pushes++ }
 	bridge := "rbac-proxy:laptop::mesh-bridge"
 	e.set(
-		fn("shell::exec", "project", "shell"),                             // a hub row
-		fn("shell::elsewhere", "other", "shell"),                          // another namespace
-		fn("approval::resolve", "project", "shell"),                       // never published
-		fn("laptop::coder::read-file", "project", bridge),                 // a machine row
-		fn("laptop::mesh-node::status", "project", bridge),                // never published
-		fn("laptop::shell::exec", "project", "laptop"),                    // an unnamed worker of laptop, or a hub worker under its name
-		fn("laptop::coder::write", "project", "rbac-proxy:laptop::coder"), // not the bridge
+		fn("shell::exec", "project", "shell"),                    // a hub row
+		fn("shell::exec", "laptop", bridge),                      // the same id on a machine: a row of its own
+		fn("coder::read-file", "laptop", bridge),                 // a machine row
+		fn("mesh-node::status", "laptop", bridge),                // never published
+		fn("coder::write", "laptop", "rbac-proxy:laptop::coder"), // not the bridge
+		fn("shell::kill", "laptop", "shell"),                     // a hub worker in the machine's namespace is not the machine's
+		fn("shell::elsewhere", "other", "shell"),                 // a namespace of no owner
+		fn("approval::resolve", "project", "shell"),              // never published
 	)
 	if err := h.refreshShared(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	c := catalogOf(h)
-	if got := ids(c); !reflect.DeepEqual(got, []string{"laptop laptop::coder::read-file", "hub shell::exec"}) || c.Rev == "" {
+	if got := ids(c); !reflect.DeepEqual(got, []string{"laptop coder::read-file", "hub shell::exec", "laptop shell::exec"}) || c.Rev == "" {
 		t.Fatalf("catalog %v rev %q", got, c.Rev)
 	}
 	if f := c.Functions[1]; f.Description != "about shell::exec" || string(f.RequestFormat) != `{"title":"shell::exec"}` {
 		t.Fatalf("entry %+v", f)
 	}
+	for range 20 { // two owners of one id must not reorder between reads
+		if err := h.refreshShared(t.Context()); err != nil || catalogOf(h).Rev != c.Rev {
+			t.Fatalf("an unchanged read moved the revision: %v", err)
+		}
+	}
 	want := []meshclient.SharedStatus{
-		{Worker: "shell", State: "shared", Functions: []string{"hub::shell::exec"}},
+		{Worker: "shell", State: "shared", Functions: []string{"shell::exec"}},
 		{Worker: "coder", State: "not running", Functions: []string{}},
-		{Worker: "laptop", State: "name conflict", Functions: []string{}},
 	}
 	if s := h.Status(); !reflect.DeepEqual(s.Shared, want) || len(s.CatalogSkipped) != 0 || pushes != 1 {
 		t.Fatalf("status %+v %v, %d pushes", s.Shared, s.CatalogSkipped, pushes)
@@ -157,7 +165,7 @@ func TestCatalogRows(t *testing.T) {
 }
 
 func TestCatalogSharesFunctionsByID(t *testing.T) {
-	h, e, _ := sharedHub(t, "shell", "harness::send", "shell::grant", "laptop::x", "gone::coder::run")
+	h, e, _ := sharedHub(t, "shell", "harness::send", "shell::grant", "laptop::x", "coder::run")
 	internal := func(r map[string]any) map[string]any { r["metadata"] = map[string]any{"internal": true}; return r }
 	e.set(
 		fn("shell::exec", "project", "shell"),
@@ -166,40 +174,41 @@ func TestCatalogSharesFunctionsByID(t *testing.T) {
 		internal(fn("harness::send", "project", "harness")),
 		internal(fn("harness::stop", "project", "harness")),
 		fn("harness::status", "project", "harness"),
-		internal(fn("laptop::coder::run", "project", bridgeWorker("laptop"))), // laptop shares it by id
-		fn("laptop::x", "project", "other"),                                   // a cited hub id under a machine's name
-		fn("gone::coder::run", "project", bridgeWorker("gone")),               // cited, but a removed machine's row
+		internal(fn("coder::run", "laptop", bridgeWorker("laptop"))), // laptop shares it by id
+		fn("laptop::x", "project", "other"),                          // a cited hub id that reads like a machine's old one
+		fn("coder::run", "gone", bridgeWorker("gone")),               // cited, but a removed machine's row
 	)
 	if err := h.refreshShared(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if e.req != `{"include_internal":true}` {
-		t.Fatalf("list payload %s", e.req)
+	if !reflect.DeepEqual(e.reqs, []string{`{"include_internal":true}`, `{"include_internal":true,"workers":["rbac-proxy:laptop::mesh-bridge"]}`}) {
+		t.Fatalf("list payloads %s", e.reqs)
 	}
 	internalOf := map[string]bool{}
 	for _, f := range catalogOf(h).Functions {
 		internalOf[f.Owner+" "+f.ID] = f.Internal
 	}
-	want := map[string]bool{"hub harness::send": true, "laptop laptop::coder::run": true, "hub shell::exec": false, "hub shell::grant": true}
+	want := map[string]bool{"hub harness::send": true, "laptop coder::run": true, "hub laptop::x": false, "hub shell::exec": false, "hub shell::grant": true}
 	if !reflect.DeepEqual(internalOf, want) {
 		t.Fatalf("catalog %v", internalOf)
 	}
 	status := []meshclient.SharedStatus{
-		{Worker: "shell", State: "shared", Functions: []string{"hub::shell::exec"}},
-		{Worker: "harness::send", State: "shared", Functions: []string{"hub::harness::send"}},
-		{Worker: "shell::grant", State: "shared", Functions: []string{"hub::shell::grant"}},
-		{Worker: "laptop::x", State: "name conflict", Functions: []string{}},
-		{Worker: "gone::coder::run", State: "not running", Functions: []string{}},
+		{Worker: "shell", State: "shared", Functions: []string{"shell::exec"}},
+		{Worker: "harness::send", State: "shared", Functions: []string{"harness::send"}},
+		{Worker: "shell::grant", State: "shared", Functions: []string{"shell::grant"}},
+		{Worker: "laptop::x", State: "shared", Functions: []string{"laptop::x"}},
+		{Worker: "coder::run", State: "not running", Functions: []string{}},
 	}
 	if s := h.Status(); !reflect.DeepEqual(s.Shared, status) {
 		t.Fatalf("status %+v", s.Shared)
 	}
-	// Without an id entry the hub still reads internal rows, a machine's shares by id, of the listed workers only.
+	// Without an id entry each owner still reads internal rows, a machine's shares by id, of its listed workers only.
 	h.config.Share = []string{"shell"}
-	if err := h.refreshShared(t.Context()); err != nil || e.req != `{"include_internal":true,"workers":["shell","rbac-proxy:laptop::mesh-bridge"]}` {
-		t.Fatalf("list payload %s %v", e.req, err)
+	e.reqs = nil
+	if err := h.refreshShared(t.Context()); err != nil || !reflect.DeepEqual(e.reqs, []string{`{"include_internal":true,"workers":["shell"]}`, `{"include_internal":true,"workers":["rbac-proxy:laptop::mesh-bridge"]}`}) {
+		t.Fatalf("list payloads %s %v", e.reqs, err)
 	}
-	if got := ids(catalogOf(h)); !reflect.DeepEqual(got, []string{"laptop laptop::coder::run", "hub shell::exec"}) {
+	if got := ids(catalogOf(h)); !reflect.DeepEqual(got, []string{"laptop coder::run", "hub shell::exec"}) {
 		t.Fatalf("catalog %v", got)
 	}
 }
@@ -208,7 +217,7 @@ func TestCatalogCaps(t *testing.T) {
 	h, e, _ := sharedHub(t, "shell")
 	rows := []map[string]any{fn("shell::exec", "project", "shell")}
 	for i := range 2 * maxOwnerFunctions {
-		rows = append(rows, fn(fmt.Sprintf("laptop::coder::f%03d", i), "project", "rbac-proxy:laptop::mesh-bridge"))
+		rows = append(rows, fn(fmt.Sprintf("coder::f%03d", i), "laptop", "rbac-proxy:laptop::mesh-bridge"))
 	}
 	e.set(rows...)
 	if err := h.refreshShared(t.Context()); err != nil {
@@ -217,18 +226,18 @@ func TestCatalogCaps(t *testing.T) {
 	if s := h.Status(); !reflect.DeepEqual(ids(catalogOf(h)), []string{"hub shell::exec"}) || !reflect.DeepEqual(s.CatalogSkipped, []string{"laptop"}) || s.Shared[0].State != "shared" {
 		t.Fatalf("catalog %v status %+v", ids(catalogOf(h)), s)
 	}
-	// Schemas are read for one row past the cap, no more: the hub's and laptop's first 501.
+	// Schemas are read per owner for one row past its cap, no more: the hub's one and laptop's first 501.
 	if e.infos != maxOwnerFunctions+2 {
 		t.Fatalf("read %d schemas", e.infos)
 	}
 	for i := range rows {
 		rows[i] = fn(fmt.Sprintf("shell::f%03d", i), "project", "shell")
 	}
-	e.set(append(rows, fn("laptop::coder::read-file", "project", "rbac-proxy:laptop::mesh-bridge"))...)
+	e.set(append(rows, fn("coder::read-file", "laptop", "rbac-proxy:laptop::mesh-bridge"))...)
 	if err := h.refreshShared(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if s := h.Status(); !reflect.DeepEqual(ids(catalogOf(h)), []string{"laptop laptop::coder::read-file"}) || len(s.CatalogSkipped) != 0 || s.Shared[0].State != "too large" || len(s.Shared[0].Functions) != 0 {
+	if s := h.Status(); !reflect.DeepEqual(ids(catalogOf(h)), []string{"laptop coder::read-file"}) || len(s.CatalogSkipped) != 0 || s.Shared[0].State != "too large" || len(s.Shared[0].Functions) != 0 {
 		t.Fatalf("catalog %v status %+v", ids(catalogOf(h)), s)
 	}
 }
@@ -256,6 +265,7 @@ func TestCatalogReadFailureRetries(t *testing.T) {
 	e.mu.Lock()
 	e.fail = errors.New("engine away")
 	e.rows = append(e.rows, fn("shell::kill", "project", "shell"))
+	lists := e.lists // a pass lists once per owner
 	e.mu.Unlock()
 	r.mu.Lock()
 	statuses := r.statuses
@@ -265,7 +275,7 @@ func TestCatalogReadFailureRetries(t *testing.T) {
 		r.mu.Lock()
 		queued := r.statuses > statuses
 		r.mu.Unlock()
-		if queued && e.listCalls() >= 2 {
+		if queued && e.listCalls() > lists {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -298,41 +308,6 @@ func TestCatalogFailuresKeepOneRetry(t *testing.T) {
 	}
 }
 
-// Removing a machine reads the catalog again: an offline one leaves no function change, yet its name blocks a hub share.
-func TestRemovingAMachineFreesItsName(t *testing.T) {
-	defer func(d time.Duration) { nodeRefreshDelay = d }(nodeRefreshDelay)
-	nodeRefreshDelay = time.Millisecond
-	h, e, r := sharedHub(t, "laptop")
-	r.status.Version = h.Version
-	h.nodeDetails = map[string]NodeDetails{"laptop": {NodeEntry: NodeEntry{Version: h.Version}}} // no version move: the start pass is the only one
-	e.set(fn("laptop::run", "project", "laptop"))
-	h.SetHooks(Hooks{})
-	h.Coordinator.SetGone(h.revoke)
-	h.startNodeCalls(t.Context())
-	defer h.Close()
-	state := func() string {
-		if s := h.Status().Shared; len(s) == 1 {
-			return s[0].State
-		}
-		return "" // before the first read
-	}
-	waitShare := func(want string) {
-		t.Helper()
-		for deadline := time.Now().Add(5 * time.Second); state() != want; time.Sleep(10 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				t.Fatalf("share %+v, want %s", h.Status().Shared, want)
-			}
-		}
-	}
-	waitShare("name conflict")
-	h.passMu.Lock() // no pass left running
-	h.passMu.Unlock()
-	if err := h.Coordinator.Remove("laptop"); err != nil {
-		t.Fatal(err)
-	}
-	waitShare("shared")
-}
-
 // A change that lands during a read runs one more pass, which sees it.
 func TestCatalogChangeDuringReadRunsAnotherPass(t *testing.T) {
 	defer func(d time.Duration) { nodeRefreshDelay = d }(nodeRefreshDelay)
@@ -362,7 +337,7 @@ func TestCatalogFollowsVersionAndShare(t *testing.T) {
 	nodeRefreshDelay = time.Millisecond
 	h, e, r := sharedHub(t)
 	machineVersion(t, h, "0.1.0")
-	e.set(fn("shell::exec", "project", "shell"), fn("laptop::coder::read-file", "project", "rbac-proxy:laptop::mesh-bridge"))
+	e.set(fn("shell::exec", "project", "shell"), fn("coder::read-file", "laptop", "rbac-proxy:laptop::mesh-bridge"))
 	h.SetHooks(Hooks{})
 	h.startNodeCalls(t.Context())
 	defer h.Close()
@@ -370,7 +345,7 @@ func TestCatalogFollowsVersionAndShare(t *testing.T) {
 	r.status.Version = h.Version
 	r.mu.Unlock()
 	h.queueNode("laptop")
-	waitCatalog(t, h, "laptop laptop::coder::read-file")
+	waitCatalog(t, h, "laptop coder::read-file")
 	for h.refreshing.Load() { // the version's pass is done: only the share list moves below
 		time.Sleep(time.Millisecond)
 	}
@@ -381,5 +356,5 @@ func TestCatalogFollowsVersionAndShare(t *testing.T) {
 	if err := h.ApplyConfig(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	waitCatalog(t, h, "laptop laptop::coder::read-file", "hub shell::exec")
+	waitCatalog(t, h, "laptop coder::read-file", "hub shell::exec")
 }

@@ -2519,7 +2519,7 @@ export function ChatView({
   const submitWithQuote = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (!sideQuote) return submit(payload)
-      const prefix = sideChatQuote(sideQuote.text)
+      const prefix = sideChatQuote(sideQuote.text, sideQuote.full)
       sendingQuoteRef.current = {
         prefix,
         sent: () => onQuoteSent?.(sideQuote),

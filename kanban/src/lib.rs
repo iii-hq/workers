@@ -24,6 +24,7 @@ pub mod functions;
 pub mod mentions;
 pub mod native_ui;
 pub mod plan;
+pub mod questions;
 pub mod session_links;
 pub mod store;
 pub mod ui;

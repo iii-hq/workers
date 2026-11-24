@@ -759,10 +759,15 @@ memory worker's semantic recall is one caller.
   384 dimensions, L2-normalized, in input order.
 - **Loading.** The model loads on first use, in every `function_search_mode`.
   The boot-time bundle download still runs only in `hybrid` and `judge` mode.
+- **Downloading.** A failed boot-time download retries until it succeeds:
+  30 seconds after the first failure, doubling to at most 10 minutes, and
+  keeping the files that already verify. Until then the surface answers
+  `provider/internal: the MiniLM bundle at <path> is still downloading`. The
+  router returns that error instead of moving on, and callers retry later.
 - **Not configured.** The surface answers `provider/not_configured` when:
   - the build has no MiniLM;
   - `function_search_model_path` is `null`;
-  - the bundle is not provisioned;
+  - the bundle is not provisioned and no download is running;
   - the caller names another model.
 
   The router then moves on.
