@@ -9,12 +9,13 @@ use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use iii_sdk::channels::ChannelReader;
+use iii_sdk::InputStream;
+use iii_sdk::protocol::ChannelItem;
 use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{IIIClient, InitOptions, register_worker};
 use iii_shell_proto::{FsOp, FsReadMeta, FsResult};
@@ -209,25 +210,23 @@ async fn read_channel(iii: &IIIClient, runner: FakeRunnerStream) -> (ReadRespons
         path: "/tmp/file".into(),
     };
     let resp = handle_read(req, &reg, &runner, iii).await.unwrap();
-    let reader = ChannelReader::new(iii.address(), &resp.content);
-    let messages = Arc::new(Mutex::new(Vec::new()));
-    let seen = messages.clone();
-    reader
-        .on_message(move |message| seen.lock().unwrap().push(message))
-        .await;
+    let reader = InputStream::from_ref(resp.content.clone(), iii).expect("read ref");
+    let mut messages = Vec::new();
     let mut bytes = Vec::new();
     let end = tokio::time::timeout(Duration::from_secs(10), async {
+        use futures::StreamExt;
+        let mut frames = reader.frames();
         loop {
-            match reader.next_binary().await {
-                Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
-                Ok(None) => return Ok(()),
-                Err(e) => return Err(e.to_string()),
+            match frames.next().await {
+                Some(Ok(ChannelItem::Binary(chunk))) => bytes.extend_from_slice(&chunk),
+                Some(Ok(ChannelItem::Text(message))) => messages.push(message),
+                None => return Ok(()),
+                Some(Err(e)) => return Err(e.to_string()),
             }
         }
     })
     .await
     .expect("channel ended");
-    let messages = messages.lock().unwrap().clone();
     (
         resp,
         Delivered {

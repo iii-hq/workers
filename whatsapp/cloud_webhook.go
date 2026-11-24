@@ -117,22 +117,30 @@ func readCloudChannel(ctx context.Context, engineURL string, ref *iii.StreamChan
 	if ref == nil || ref.Direction != iii.ChannelRead || ref.ChannelID == "" || ref.AccessKey == "" {
 		return nil, 400
 	}
-	reader := iii.OpenReader(engineURL, *ref)
-	defer reader.Close()
+	// 0.27: a read ref unmarshals to the InputStream it stands for.
+	data, err := json.Marshal(ref)
+	if err != nil {
+		return nil, 400
+	}
+	var body iii.InputStream
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, 400
+	}
 	raw := []byte{}
-	for {
-		chunk, ok, err := reader.NextBinary(ctx)
+	// Leaving the loop early (413) cancels the stream.
+	for frame, err := range body.Frames(ctx) {
 		if err != nil {
 			return nil, 503
 		}
-		if !ok {
-			return raw, 0
+		if frame.Type != iii.FrameBinary {
+			continue
 		}
-		if len(chunk) > limit-len(raw) {
+		if len(frame.Data) > limit-len(raw) {
 			return nil, 413
 		}
-		raw = append(raw, chunk...)
+		raw = append(raw, frame.Data...)
 	}
+	return raw, 0
 }
 func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL string, req cloudReceiveRequest) cloudHTTPResponse {
 	ctx, cancel := context.WithTimeout(parent, 8*time.Second)

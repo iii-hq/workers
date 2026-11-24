@@ -1,8 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChannelReader, type StreamChannelRef } from 'iii-sdk/channel';
-import { createChannel } from 'iii-sdk/helpers';
+import { InputStream } from 'iii-sdk';
+import type { StreamChannelRef } from 'iii-sdk/protocol';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
 import {
   resetMocks,
@@ -12,7 +12,6 @@ import {
   SANDBOX_ID,
 } from './cases-fs-sandbox.ts';
 
-const URL = process.env.III_URL ?? 'ws://127.0.0.1:49134';
 
 function newWorkdir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `iii-shell-sb-break-${prefix}-`));
@@ -116,25 +115,18 @@ export const SANDBOX_BREAK_CASES: TestCase[] = [
     async run(ctx: CaseContext) {
       resetMocks();
       const root = newWorkdir('cap-bypass');
-      const channel = await createChannel(ctx.iii, 64);
+      const pipe = await ctx.iii.pipe({ bufferSize: 64 });
       const oversize = Buffer.alloc(2 * 1024 * 1024); // 2 MiB > 1 MiB host cap
 
-      const writePromise = new Promise<void>((resolve, reject) => {
-        channel.writer.stream.once('error', reject);
-        channel.writer.stream.write(oversize, (err) => {
-          if (err) return reject(err);
-          channel.writer.stream.end(() => resolve());
-        });
-      });
       const write = ctx.call('shell::fs::write', {
         target: SB_TARGET,
         path: join(root, 'big.bin'),
         mode: '0644',
         parents: false,
-        content: channel.readerRef,
+        content: pipe.input,
       });
-      await writePromise;
-      channel.writer.close();
+      await pipe.output.write(oversize);
+      await pipe.output.close();
       const r = await write;
       expectEqual(
         r.bytes_written,
@@ -166,11 +158,12 @@ export const SANDBOX_BREAK_CASES: TestCase[] = [
         path: '/sb/whatever',
       });
       expectEqual(resp.size, 42, 'metadata forwarded verbatim');
-      expectEqual(resp.content.channel_id, bogusRef.channel_id, 'bogus channel_id forwarded as-is');
-      const reader = new ChannelReader(URL, resp.content);
+      // The forwarded ref arrives as an InputStream; toJSON() names its channel.
+      const reader = resp.content as InputStream;
+      expectEqual(reader.toJSON().id, bogusRef.channel_id, 'bogus channel_id forwarded as-is');
       let threwOrEmpty = false;
       try {
-        const data = await reader.readAll();
+        const data = await reader.bytes();
         threwOrEmpty = data.length === 0;
       } catch {
         threwOrEmpty = true;

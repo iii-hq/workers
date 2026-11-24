@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, KeyInit, Mac};
 use iii_sdk::IIIClient;
-use iii_sdk::channels::ChannelWriter;
+use iii_sdk::OutputStream;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -422,7 +422,8 @@ impl WorkerVms {
         );
         let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
         let _scratch = RemoveOnDrop(scratch.clone());
-        let writer = ChannelWriter::new(iii.address(), &req.logs);
+        let writer = open_writer(&req.logs)?;
+        writer.bind(iii);
         let mut log = BuildLog::new(&writer);
         let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
         let image_writer = WriterSlot::default();
@@ -838,7 +839,10 @@ impl WorkerVms {
         }
         let probed = req.follow && vm.leased.load(Ordering::SeqCst);
         let every = self.lease_grace / LEASE_PROBES;
-        let writer = ChannelWriter::new(iii.address(), &req.channel);
+        let writer = open_writer(&req.channel)?;
+        writer.bind(iii);
+        // Written by the task below, after this handler returns: it closes it.
+        writer.keep_open();
         let vms = self.clone();
         tokio::spawn(async move {
             // Connected now, not at the first record. When this adapter goes away, the engine
@@ -853,7 +857,7 @@ impl WorkerVms {
                 pumped = vms.pump_logs(&req, |record| async move {
                     let frame = serde_json::to_string(&record).map_err(|e| e.to_string())?;
                     channel
-                        .send_message(&frame)
+                        .send_text(&frame)
                         .await
                         .map_err(|e| e.to_string())
                 }) => pumped,
@@ -1359,13 +1363,13 @@ async fn forward_lines(
 /// A build's `logs` channel: one `LogRecord` per text frame, and the last lines
 /// for an S507.
 struct BuildLog<'a> {
-    channel: &'a ChannelWriter,
+    channel: &'a OutputStream,
     cursor: u64,
     tail: VecDeque<String>,
 }
 
 impl<'a> BuildLog<'a> {
-    fn new(channel: &'a ChannelWriter) -> Self {
+    fn new(channel: &'a OutputStream) -> Self {
         Self {
             channel,
             cursor: 0,
@@ -1387,7 +1391,7 @@ impl<'a> BuildLog<'a> {
             cursor: self.cursor,
         })
         .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
-        self.channel.send_message(&frame).await.map_err(|e| {
+        self.channel.send_text(&frame).await.map_err(|e| {
             SandboxError::BuildFailed(format!(
                 "build cancelled: its output cannot reach `logs` ({e})"
             ))
@@ -1909,10 +1913,10 @@ async fn lease(vm: Arc<Vm>, vm_id: String, grace: Duration) {
 }
 
 /// Resolves once a frame cannot reach `channel`'s reader. The engine closes a writer's
-/// socket when its reader leaves, but `ChannelWriter` never reads that socket and a quiet
+/// socket when its reader leaves, but a writer never reads that socket and a quiet
 /// guest gives it nothing to fail on, so this writes a byte. Readers take records from text
 /// frames only. The write after the one that meets the closed socket is the one that fails.
-async fn reader_gone(channel: &ChannelWriter, every: Duration) -> String {
+async fn reader_gone(channel: &OutputStream, every: Duration) -> String {
     loop {
         tokio::time::sleep(every).await;
         if let Err(e) = channel.write(&[0]).await {
@@ -2380,7 +2384,7 @@ mod tests {
     use super::*;
     use crate::wire::scoped_auth_token;
     use futures::StreamExt;
-    use iii_sdk::channels::{ChannelDirection, StreamChannelRef};
+    use iii_sdk::protocol::{ChannelDirection, StreamChannelRef};
     use tokio::sync::{Notify, mpsc};
     use tokio_tungstenite::tungstenite::Message;
 
@@ -5044,4 +5048,12 @@ mod tests {
         assert!(vm_id("a").bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(vm_id("a"), vm_id("b"));
     }
+}
+
+/// Opens a forwarded write ref as the stream this adapter writes (0.27: a
+/// write ref deserializes to an `OutputStream`).
+fn open_writer(r: &iii_sdk::protocol::StreamChannelRef) -> Result<OutputStream, SandboxError> {
+    serde_json::to_value(r)
+        .and_then(serde_json::from_value)
+        .map_err(|e| SandboxError::InvalidRequest(format!("stream ref: {e}")))
 }

@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
         },
     );
 
-    let resize_handler = handler::build_handler(cli.url.clone(), config);
+    let resize_handler = handler::build_handler(config);
 
     let _fn_ref = iii.register_function(
         "image_resize::resize",

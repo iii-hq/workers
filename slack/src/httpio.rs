@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use iii_sdk::IIIClient;
-use iii_sdk::channels::{ChannelDirection, ChannelReader, ChannelWriter};
+use iii_sdk::protocol::{ChannelDirection, extract_channel_refs};
+use iii_sdk::{InputStream, OutputStream};
 use iii_sdk::errors::Error;
 use serde_json::{Value, json};
 
@@ -29,15 +30,18 @@ impl Incoming {
 pub async fn read_incoming(
     iii: &IIIClient,
     input: &Value,
-) -> Result<(Incoming, ChannelWriter), Error> {
-    let refs = iii_sdk::channels::extract_channel_refs(input);
+) -> Result<(Incoming, OutputStream), Error> {
+    let refs = extract_channel_refs(input);
 
     let writer_ref = refs
         .iter()
         .find(|(_, r)| matches!(r.direction, ChannelDirection::Write))
         .map(|(_, r)| r.clone())
         .ok_or_else(|| Error::Handler("http: missing response channel".into()))?;
-    let writer = ChannelWriter::new(iii.address(), &writer_ref);
+    // 0.27: a write ref deserializes to the OutputStream the handler writes to.
+    let writer: OutputStream = serde_json::to_value(&writer_ref)
+        .and_then(serde_json::from_value)
+        .map_err(|e| Error::Serde(e.to_string()))?;
 
     let reader_ref = refs
         .iter()
@@ -45,7 +49,7 @@ pub async fn read_incoming(
         .map(|(_, r)| r.clone());
 
     let raw = match reader_ref {
-        Some(rr) => ChannelReader::new(iii.address(), &rr).read_all().await?,
+        Some(rr) => InputStream::from_ref(rr, iii)?.read_all().await?,
         None => {
             // No raw channel — fall back to the parsed body (signature verify
             // will then fail, which is the safe default).
@@ -66,16 +70,16 @@ pub async fn read_incoming(
 }
 
 /// Write a complete HTTP response and close the channel.
-pub async fn respond(writer: &ChannelWriter, status: u16, content_type: &str, body: &[u8]) {
+pub async fn respond(writer: &OutputStream, status: u16, content_type: &str, body: &[u8]) {
     if let Err(e) = writer
-        .send_message(&json!({ "type": "set_status", "status_code": status }).to_string())
+        .send_text(&json!({ "type": "set_status", "status_code": status }).to_string())
         .await
     {
         tracing::warn!(error = %e, "http: set_status failed");
         return;
     }
     let _ = writer
-        .send_message(
+        .send_text(
             &json!({ "type": "set_headers", "headers": { "content-type": content_type } })
                 .to_string(),
         )
@@ -88,7 +92,7 @@ pub async fn respond(writer: &ChannelWriter, status: u16, content_type: &str, bo
 
 /// Outcome of reading and signature-verifying a Slack request.
 pub enum Verified {
-    Ok(Incoming, ChannelWriter),
+    Ok(Incoming, OutputStream),
     Rejected,
 }
 

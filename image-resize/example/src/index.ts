@@ -1,5 +1,5 @@
 import { http } from '@iii-dev/helpers/http'
-import { createChannel } from 'iii-sdk/helpers'
+import { InputStream } from 'iii-sdk'
 import { observeRoute, useApi } from './hooks'
 import { iii } from './iii'
 
@@ -35,20 +35,15 @@ async function processImage(
   imageBuffer: Buffer,
   opts: { format: string; outputFormat: string; width: number; height: number; strategy: string },
 ): Promise<{ thumbnail: Buffer; metadata: Record<string, unknown> }> {
-  // Create two channels: one for sending the image, one for receiving the thumbnail
-  const inputChannel = await createChannel(iii)
-  const outputChannel = await createChannel(iii)
+  // The image goes as a stream the SDK pumps; the thumbnail comes back on a
+  // pipe whose write end the resize function receives.
+  const output = await iii.pipe()
 
-  // Write image bytes to the input channel, then close it.
-  // The SDK's ChannelWriter flushes all data before sending the close frame.
-  inputChannel.writer.stream.end(imageBuffer)
-
-  // Call the resize function
   const callPromise = iii.call({
     function_id: 'image_resize::resize',
     payload: {
-      input_channel: inputChannel.readerRef,
-      output_channel: outputChannel.writerRef,
+      input_channel: InputStream.from(imageBuffer),
+      output_channel: output.output,
       metadata: {
         format: opts.format,
         output_format: opts.outputFormat,
@@ -62,34 +57,18 @@ async function processImage(
     timeoutMs: 30_000,
   })
 
-  // Set up both listeners BEFORE awaiting — the reader WebSocket only connects
-  // when the stream starts flowing (on 'data'), so we must register both the
-  // text-message callback and the stream listener concurrently to avoid deadlock.
-  const metadataPromise = new Promise<Record<string, unknown>>((resolve) => {
-    outputChannel.reader.onMessage((msg) => {
-      resolve(JSON.parse(msg))
-    })
-  })
-
+  // A text frame (thumbnail metadata), then the thumbnail bytes.
+  let metadata: Record<string, unknown> = {}
   const chunks: Buffer[] = []
-  const thumbnailPromise = new Promise<Buffer>((resolve, reject) => {
-    outputChannel.reader.stream.on('data', (chunk: Buffer) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-    })
-    outputChannel.reader.stream.on('end', () => resolve(Buffer.concat(chunks)))
-    outputChannel.reader.stream.on('error', reject)
-  })
-
-  const [metadata, thumbnail] = await Promise.all([metadataPromise, thumbnailPromise])
+  for await (const frame of output.input.frames()) {
+    if (frame.type === 'text') metadata = JSON.parse(frame.value)
+    else chunks.push(frame.value)
+  }
 
   // Wait for the call to complete
   await callPromise
 
-  // Explicitly close all channel endpoints to free engine resources
-  outputChannel.reader.stream.destroy()
-  inputChannel.writer.close()
-
-  return { thumbnail, metadata }
+  return { thumbnail: Buffer.concat(chunks), metadata }
 }
 
 // ── Health check ──────────────────────────────────────
