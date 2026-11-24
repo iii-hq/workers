@@ -3103,19 +3103,23 @@ mod productive {
         let filler = (0..600)
             .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
             .collect::<String>();
-        let stack = Boundary::new(Script {
-            path: vec![message("anchor", ""), message("end", &filler)],
-            cursor: Some("anchor".into()),
-            model_items: VecDeque::from([json!(facts("a", 8)), json!(second)]),
-            ..Script::default()
-        })
-        .await;
-        let (result, tallied) = stack.run_tallied(&job("end")).await;
-        result.unwrap();
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 2);
-        let tally = tallied.unwrap().tally;
-        assert_eq!(tally.saturated, 1);
-        assert!(!tally.dropped.contains_key("over_cap"), "{tally:?}");
+        // Seven and the excluded items alone count none, so the one counted
+        // above is the first piece.
+        for (first, saturated) in [(facts("a", 8), 1), (second.clone(), 0)] {
+            let stack = Boundary::new(Script {
+                path: vec![message("anchor", ""), message("end", &filler)],
+                cursor: Some("anchor".into()),
+                model_items: VecDeque::from([json!(first), json!(second.clone())]),
+                ..Script::default()
+            })
+            .await;
+            let (result, tallied) = stack.run_tallied(&job("end")).await;
+            result.unwrap();
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 2);
+            let tally = tallied.unwrap().tally;
+            assert_eq!(tally.saturated, saturated);
+            assert!(!tally.dropped.contains_key("over_cap"), "{tally:?}");
+        }
     }
 
     /// One project memory on `text`, tagged `handle`.
