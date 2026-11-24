@@ -126,6 +126,8 @@ interface PickerSubpageHeaderProps {
   description: string
   onBack?: () => void
   backButtonRef?: RefObject<HTMLButtonElement | null>
+  /** Held while the page waits on something (an add opening its settings). */
+  backDisabled?: boolean
 }
 
 function PickerSubpageHeader({
@@ -133,6 +135,7 @@ function PickerSubpageHeader({
   description,
   onBack,
   backButtonRef,
+  backDisabled,
 }: PickerSubpageHeaderProps) {
   return (
     <div className="flex shrink-0 items-start gap-2 px-4 py-3 pr-12">
@@ -141,8 +144,9 @@ function PickerSubpageHeader({
           ref={backButtonRef}
           type="button"
           aria-label="back to models"
+          disabled={backDisabled}
           onClick={onBack}
-          className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -298,6 +302,9 @@ export function ModelPicker({
   const [addProviderOpen, setAddProviderOpen] = useState(false)
   // The library dialog behind Manage models: every model, the five slots.
   const [libraryOpen, setLibraryOpen] = useState(false)
+  // An add on the Add a provider page waiting to open the new provider's
+  // settings holds the page's back button meanwhile.
+  const [addProviderBusy, setAddProviderBusy] = useState(false)
   const configurationGuard = useUnsavedGuard()
   // The favorites: up to five, remembered per model with the effort they
   // were last used at; pinned and arranged in the library dialog.
@@ -654,9 +661,11 @@ export function ModelPicker({
               description="Provider workers from the workers registry."
               backButtonRef={addProviderBackRef}
               onBack={closeAddProvider}
+              backDisabled={addProviderBusy}
             />
             <AddProviderPanel
               disabled={disabled}
+              onBusyChange={setAddProviderBusy}
               onConfigureProvider={
                 showProviderConfiguration
                   ? openProviderConfiguration

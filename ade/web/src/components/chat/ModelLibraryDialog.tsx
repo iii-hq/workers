@@ -137,6 +137,9 @@ export function ModelLibraryDialog({
   // Registry providers matching the search (`null` while it loads), so
   // "No match" waits for them.
   const [registryMatches, setRegistryMatches] = useState<number | null>(null)
+  // An add waiting (up to 5 s) to open the new provider's settings holds the
+  // dialog's other controls until it opens or the wait runs out.
+  const [addBusy, setAddBusy] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   // Each opening starts where it was asked to: the library, a provider's
   // settings or the add page, with any search already typed.
@@ -301,6 +304,9 @@ export function ModelLibraryDialog({
                       }
                     }}
                     placeholder="Search models"
+                    // Read-only while an add waits to open its settings, so
+                    // the result being added cannot be filtered away.
+                    readOnly={addBusy}
                     aria-label="search models"
                     autoComplete="off"
                     spellCheck={false}
@@ -310,6 +316,7 @@ export function ModelLibraryDialog({
                     <button
                       type="button"
                       aria-label="Clear search"
+                      disabled={addBusy}
                       onClick={() => {
                         setQuery('')
                         searchRef.current?.focus()
@@ -324,7 +331,7 @@ export function ModelLibraryDialog({
                   type="button"
                   variant="secondary"
                   aria-label="Add a provider"
-                  disabled={disabled}
+                  disabled={disabled || addBusy}
                   onClick={() => setView({ kind: 'add-provider' })}
                   className="bg-transparent"
                 >
@@ -583,6 +590,7 @@ export function ModelLibraryDialog({
                     query={query}
                     providers={providers}
                     onMatchCount={setRegistryMatches}
+                    onBusyChange={setAddBusy}
                     disabled={disabled}
                     onConfigureProvider={(id) =>
                       setView({ kind: 'provider', id })
@@ -603,10 +611,11 @@ export function ModelLibraryDialog({
               <button
                 type="button"
                 aria-label="back to models"
+                disabled={addBusy}
                 onClick={() =>
                   guard.tryNavigate(() => setView({ kind: 'library' }))
                 }
-                className="flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                className="flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
               >
                 <ArrowLeft className="size-4" aria-hidden />
               </button>
@@ -646,6 +655,7 @@ export function ModelLibraryDialog({
               ) : (
                 <AddProviderPanel
                   disabled={disabled}
+                  onBusyChange={setAddBusy}
                   onConfigureProvider={(id) =>
                     setView({ kind: 'provider', id })
                   }

@@ -62,8 +62,13 @@ function ProviderTile({
 /** The dashed action of a search result: the Models dialog's own setup look. */
 const SEARCH_ACTION_CLASS =
   'flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-border px-3 text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 dark:border-edge'
-const SEARCH_STATUS_CLASS =
-  'flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-border px-3 text-sm text-ink-faint tabular-nums dark:border-edge'
+
+/**
+ * After Add, how long the panel waits for the new provider to register
+ * before it stops holding the dialog: it opens the provider's settings the
+ * moment it appears; past this the row offers Configure instead.
+ */
+export const AUTO_CONFIGURE_TIMEOUT_MS = 5_000
 
 /** Base id for the browser-local `engine::on-workers-changed` handler. */
 const PROVIDER_ADD_WATCH_FN = 'ade::provider-add-watch'
@@ -94,6 +99,11 @@ export interface AddProviderPanelProps {
    * loads); the dialog's empty state reads it.
    */
   onMatchCount?: (count: number | null) => void
+  /**
+   * True while an Add waits (up to `AUTO_CONFIGURE_TIMEOUT_MS`) to open the
+   * new provider's settings; the host disables its own controls meanwhile.
+   */
+  onBusyChange?: (busy: boolean) => void
   disabled?: boolean
   className?: string
 }
@@ -114,6 +124,7 @@ export function AddProviderPanel({
   onConfigureProvider,
   query,
   onMatchCount,
+  onBusyChange,
   disabled,
   className,
 }: AddProviderPanelProps) {
@@ -130,6 +141,9 @@ export function AddProviderPanel({
   const [adds, setAdds] = useState<ReadonlyMap<string, AddStatus>>(
     () => new Map(),
   )
+  // The worker an Add is waiting on to open its settings; null once it opens,
+  // fails or the wait runs out.
+  const [awaiting, setAwaiting] = useState<string | null>(null)
 
   const loadRegistry = useCallback((signal?: AbortSignal) => {
     setRegistry({ workers: null, error: false })
@@ -183,6 +197,7 @@ export function AddProviderPanel({
     (name: string) => {
       if (!live || disabled) return
       setAdds((current) => new Map(current).set(name, { kind: 'adding' }))
+      if (onConfigureProvider) setAwaiting(name)
       void (async () => {
         const client = await getIiiClient()
         try {
@@ -214,7 +229,7 @@ export function AddProviderPanel({
         }
       })()
     },
-    [disabled, live],
+    [disabled, live, onConfigureProvider],
   )
 
   // Providers already running are left out — this page is for what is missing.
@@ -265,6 +280,105 @@ export function AddProviderPanel({
     onMatchCount?.(matchCount)
   }, [matchCount, onMatchCount])
 
+  // The wait after Add: the provider's settings open the moment it
+  // registers; a failure or the timeout releases the dialog, and the row
+  // then offers Retry or Configure.
+  useEffect(() => {
+    if (awaiting === null) return
+    const timer = window.setTimeout(
+      () => setAwaiting(null),
+      AUTO_CONFIGURE_TIMEOUT_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [awaiting])
+  useEffect(() => {
+    if (awaiting === null) return
+    const row = rows.find((candidate) => candidate.worker.name === awaiting)
+    if (row?.present && onConfigureProvider) {
+      setAwaiting(null)
+      onConfigureProvider(row.present.id)
+    } else if (!row || row.add?.kind === 'failed') {
+      setAwaiting(null)
+    }
+  }, [awaiting, rows, onConfigureProvider])
+  const busy = awaiting !== null
+  useEffect(() => {
+    onBusyChange?.(busy)
+  }, [busy, onBusyChange])
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange])
+
+  /**
+   * One row's action. It is always the same button whatever the state (Add,
+   * Adding…, Configure, Retry), so the focus stays on it through an add:
+   * swapping it for a label dropped the focus, and the menu's focus trap then
+   * moved it to the list's last button, scrolling the added row off screen.
+   */
+  const actionFor = (row: (typeof rows)[number]) => {
+    const adding = row.add?.kind === 'adding'
+    const failed = row.add?.kind === 'failed'
+    const waiting = awaiting === row.worker.name
+    const blocked = disabled || (busy && !waiting)
+    if (failed) {
+      return {
+        label: 'Retry',
+        ariaLabel: `Retry adding ${row.label}`,
+        icon: 'retry' as const,
+        pending: false,
+        inert: blocked || !live,
+        run: () => addWorker(row.worker.name),
+      }
+    }
+    if (waiting || adding || (row.installed && !row.present)) {
+      return {
+        label: adding || waiting ? 'Adding…' : 'Starting…',
+        ariaLabel: `${adding || waiting ? 'Adding' : 'Starting'} ${row.label}`,
+        icon: 'spin' as const,
+        pending: true,
+        inert: true,
+        run: () => undefined,
+      }
+    }
+    if (row.installed && row.present) {
+      const present = row.present
+      return onConfigureProvider
+        ? {
+            label: 'Configure',
+            ariaLabel: `Configure ${row.label}`,
+            icon: null,
+            pending: false,
+            inert: blocked,
+            run: () => onConfigureProvider(present.id),
+          }
+        : {
+            label: 'Installed',
+            ariaLabel: `${row.label} installed`,
+            icon: 'check' as const,
+            pending: false,
+            inert: true,
+            run: () => undefined,
+          }
+    }
+    const verb = searchMode ? 'Add provider' : 'Add'
+    return {
+      label: verb,
+      ariaLabel: `${verb} ${row.label}`,
+      icon: 'add' as const,
+      pending: false,
+      inert: blocked || !live,
+      run: () => addWorker(row.worker.name),
+    }
+  }
+  const actionIcon = (icon: 'retry' | 'spin' | 'check' | 'add' | null) =>
+    icon === 'retry' ? (
+      <RefreshCw className="size-4" aria-hidden />
+    ) : icon === 'spin' ? (
+      <RefreshCw className="size-4 animate-spin" aria-hidden />
+    ) : icon === 'check' ? (
+      <Check className="size-4" aria-hidden />
+    ) : icon === 'add' ? (
+      <Plus className="size-4 text-ink-faint" aria-hidden />
+    ) : null
+
   const providerList = (
     <ul
       // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.
@@ -272,98 +386,77 @@ export function AddProviderPanel({
       aria-label="providers in the workers registry"
       className="flex flex-col"
     >
-      {shownRows.map(
-        ({ worker, present, providerId, iconSvg, installed, add, label }) => {
-          const adding = add?.kind === 'adding'
-          const failed = add?.kind === 'failed'
-          return (
-            <li
-              key={worker.name}
-              className="flex items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-surface-hover"
-            >
-              <ProviderTile
-                iconSvg={iconSvg}
-                providerId={providerId}
-                label={label}
-              />
-              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <div className="flex min-w-0 items-baseline gap-2">
-                  <span className="shrink-0 font-inter text-base font-medium text-ink sm:text-sm">
-                    {label}
-                  </span>
-                  <span className="hidden min-w-0 truncate font-mono text-xs text-ink-faint sm:inline">
-                    {worker.name}
-                    {worker.version ? `@${worker.version}` : ''}
-                  </span>
-                </div>
-                {worker.description ? (
-                  <p className="line-clamp-2 font-inter text-sm leading-snug text-pretty text-ink-faint sm:text-xs">
-                    {worker.description}
-                  </p>
-                ) : null}
-                {failed ? (
-                  <span
-                    role="alert"
-                    className="font-mono text-meta text-alert break-all"
-                  >
-                    {add.error}
-                  </span>
-                ) : null}
+      {shownRows.map((row) => {
+        const { worker, providerId, iconSvg, add, label } = row
+        const failed = add?.kind === 'failed'
+        return (
+          <li
+            key={worker.name}
+            className="flex items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-surface-hover"
+          >
+            <ProviderTile
+              iconSvg={iconSvg}
+              providerId={providerId}
+              label={label}
+            />
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span className="shrink-0 font-inter text-base font-medium text-ink sm:text-sm">
+                  {label}
+                </span>
+                <span className="hidden min-w-0 truncate font-mono text-xs text-ink-faint sm:inline">
+                  {worker.name}
+                  {worker.version ? `@${worker.version}` : ''}
+                </span>
               </div>
-              <div className="flex shrink-0 items-center">
-                {installed && !adding ? (
-                  present && onConfigureProvider ? (
-                    <Button
-                      type="button"
-                      variant="pill"
-                      size="sm"
-                      disabled={disabled}
-                      onClick={() => onConfigureProvider(present.id)}
-                    >
-                      Configure
-                    </Button>
-                  ) : (
-                    <span className="flex items-center gap-1.5 font-sans text-sm text-ink-faint sm:text-xs">
-                      <Check className="size-4 shrink-0" aria-hidden />
-                      {present ? 'Installed' : 'Starting…'}
-                    </span>
-                  )
-                ) : adding ? (
-                  <span
-                    role="status"
-                    className="flex items-center gap-1.5 font-sans text-sm text-ink-faint tabular-nums sm:text-xs"
-                  >
-                    <RefreshCw
-                      className="size-4 shrink-0 animate-spin"
-                      aria-hidden
-                    />
-                    Adding…
-                  </span>
-                ) : (
+              {worker.description ? (
+                <p className="line-clamp-2 font-inter text-sm leading-snug text-pretty text-ink-faint sm:text-xs">
+                  {worker.description}
+                </p>
+              ) : null}
+              {failed ? (
+                <span
+                  role="alert"
+                  className="font-mono text-meta text-alert break-all"
+                >
+                  {add.error}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 items-center">
+              {(() => {
+                const action = actionFor(row)
+                return (
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
-                    disabled={disabled || !live}
-                    aria-label={`${failed ? 'Retry adding' : 'Add'} ${label}`}
-                    onClick={() => addWorker(worker.name)}
-                    // Outlined on the popover itself: a filled card fill read as a hole
-                    // in the dark popover.
-                    className="bg-transparent pl-2.5"
-                  >
-                    {failed ? (
-                      <RefreshCw aria-hidden />
-                    ) : (
-                      <Plus aria-hidden className="text-ink-faint" />
+                    aria-label={action.ariaLabel}
+                    aria-disabled={action.inert || undefined}
+                    aria-busy={action.pending || undefined}
+                    onClick={() => {
+                      if (!action.inert) action.run()
+                    }}
+                    // Outlined on the popover itself: a filled card fill
+                    // read as a hole in the dark popover. `aria-disabled`,
+                    // not `disabled`, so the focus stays on it.
+                    className={cn(
+                      'bg-transparent pl-2.5 tabular-nums',
+                      action.inert &&
+                        !action.pending &&
+                        'cursor-default opacity-50 hover:bg-transparent',
+                      action.pending && 'cursor-default hover:bg-transparent',
                     )}
-                    {failed ? 'Retry' : searchMode ? 'Add provider' : 'Add'}
+                  >
+                    {actionIcon(action.icon)}
+                    {action.label}
                   </Button>
-                )}
-              </div>
-            </li>
-          )
-        },
-      )}
+                )
+              })()}
+            </div>
+          </li>
+        )
+      })}
     </ul>
   )
 
@@ -373,80 +466,60 @@ export function AddProviderPanel({
     // then one dashed action. `contents` lets the columns join that grid.
     return (
       <div className={cn('contents', className)}>
-        {shownRows.map(
-          ({ worker, present, providerId, iconSvg, installed, add, label }) => {
-            const adding = add?.kind === 'adding'
-            const failed = add?.kind === 'failed'
-            return (
-              <section
-                key={worker.name}
-                aria-label={label}
-                data-registry-provider={worker.name}
-                className="min-w-0"
-              >
-                <h3 className="mb-3 flex h-6 items-center gap-2 text-sm text-ink-faint">
-                  <ProviderIcon
-                    iconSvg={iconSvg}
-                    label={label}
-                    providerId={providerId}
-                  />
-                  <span className="min-w-0 truncate">{label}</span>
-                  <span className="ml-auto shrink-0 text-xs">
-                    Not installed
-                  </span>
-                </h3>
-                {installed && !adding ? (
-                  present && onConfigureProvider ? (
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => onConfigureProvider(present.id)}
-                      className={SEARCH_ACTION_CLASS}
-                    >
-                      Configure {label}
-                    </button>
-                  ) : (
-                    <div role="status" className={SEARCH_STATUS_CLASS}>
-                      <Check className="size-4 shrink-0" aria-hidden />
-                      {present ? 'Installed' : 'Starting…'}
-                    </div>
-                  )
-                ) : adding ? (
-                  <div role="status" className={SEARCH_STATUS_CLASS}>
-                    <RefreshCw
-                      className="size-4 shrink-0 animate-spin"
-                      aria-hidden
-                    />
-                    Adding…
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={disabled || !live}
-                    aria-label={`${failed ? 'Retry' : 'Add provider'} ${label}`}
-                    onClick={() => addWorker(worker.name)}
-                    className={SEARCH_ACTION_CLASS}
-                  >
-                    {failed ? (
-                      <RefreshCw className="size-4" aria-hidden />
-                    ) : (
-                      <Plus className="size-4" aria-hidden />
-                    )}
-                    {failed ? 'Retry' : 'Add provider'}
-                  </button>
+        {shownRows.map((row) => {
+          const { worker, providerId, iconSvg, installed, add, label } = row
+          const failed = add?.kind === 'failed'
+          const action = actionFor(row)
+          return (
+            <section
+              key={worker.name}
+              aria-label={label}
+              data-registry-provider={worker.name}
+              className="min-w-0"
+            >
+              <h3 className="mb-3 flex h-6 items-center gap-2 text-sm text-ink-faint">
+                <ProviderIcon
+                  iconSvg={iconSvg}
+                  label={label}
+                  providerId={providerId}
+                />
+                <span className="min-w-0 truncate">{label}</span>
+                <span className="ml-auto shrink-0 text-xs">
+                  {installed ? 'Installed' : 'Not installed'}
+                </span>
+              </h3>
+              <button
+                type="button"
+                aria-label={action.ariaLabel}
+                aria-disabled={action.inert || undefined}
+                aria-busy={action.pending || undefined}
+                onClick={() => {
+                  if (!action.inert) action.run()
+                }}
+                className={cn(
+                  SEARCH_ACTION_CLASS,
+                  'tabular-nums',
+                  action.inert &&
+                    'cursor-default hover:bg-transparent hover:text-ink-faint',
+                  action.inert && !action.pending && 'opacity-40',
                 )}
-                {failed ? (
-                  <p
-                    role="alert"
-                    className="mt-2 font-mono text-xs break-all text-alert"
-                  >
-                    {add.error}
-                  </p>
-                ) : null}
-              </section>
-            )
-          },
-        )}
+              >
+                {actionIcon(action.icon)}
+                {action.label === 'Configure'
+                  ? `Configure ${label}`
+                  : action.label}
+              </button>
+              {failed ? (
+                <p
+                  role="alert"
+                  className="mt-2 font-mono text-xs break-all text-alert"
+                >
+                  {add.error}
+                </p>
+              ) : null}
+            </section>
+          )
+        })}
       </div>
     )
   }
