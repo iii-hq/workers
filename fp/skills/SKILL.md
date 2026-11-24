@@ -44,7 +44,8 @@ for small values).
   and the agent-policy hard-denied classes (session writes/`approval::*`,
   credentials via `configuration::*`/`oauth::*`/`secrets::*` (but
   `secrets::list`/`get`/`status`/`detect`), model spend via
-  `router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus
+  `router::*`/`provider::*` (but `router::models::list`/`get`/`budget`/`supports`
+  and `router::provider::list` are allowed), turn control via `harness::*`/`run::*`, bus
   internals) — call those directly. So is `workflow::start`, which needs the
   caller stamp a direct call gets; `workflow::status`/`stop` are allowed. Session reads (`session::get-attachment`,
   `session::messages-tail`, …) and `state::*` stay allowed on purpose.

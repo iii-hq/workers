@@ -529,6 +529,28 @@ mod tests {
     }
 
     #[test]
+    fn a_router_catalog_read_rides_a_batch() {
+        let req = parse(json!({ "calls": [
+            { "function": "router::models::list", "payload": {} },
+            { "function": "kanban::project::list", "payload": {} },
+        ]}));
+        assert!(validate(&req).is_ok());
+        let req = parse(json!({ "calls": [
+            { "function": "router::models::list" },
+            { "function": "router::chat" },
+        ]}));
+        let err = validate(&req).unwrap_err();
+        assert!(err.contains("1 problem(s): call 2 (router::chat)"), "{err}");
+        // The hint naming the allowed reads survives the per-problem cap.
+        let req = parse(json!({ "calls": [{ "function": "a::b::provider::anthropic::chat" }] }));
+        assert!(
+            validate(&req)
+                .unwrap_err()
+                .contains("router::provider::list are allowed")
+        );
+    }
+
+    #[test]
     fn batch_args_strip_remote_scope_and_preserve_local_stamping() {
         for trusted in [Some(json!({ "root": "/work/session-7" })), None] {
             for function in ["laptop::coder::read-file", "a::b::shell::exec"] {

@@ -165,7 +165,9 @@ fp::batch { calls: [
   agent policy hard-denies — session writes and `session::store::*`,
   `approval::*`, `configuration::*`/`oauth::*` and `secrets::*` except the
   metadata reads `list`/`get`/`status`/`detect` (credentials),
-  `router::*`/`provider::*` (model spend), `harness::*`/`run::*` (turn
+  `router::*`/`provider::*` (model spend; the catalog reads
+  `router::models::list`/`get`/`budget`/`supports` and `router::provider::list`
+  spend nothing and are allowed), `harness::*`/`run::*` (turn
   control), `workflow::start` (the harness hook stamps the caller's session
   and folder on a direct call; `workflow::status`/`stop` are allowed), `stream::*` (the deprecated iii-stream surface) and bus internals (with `engine::queue::enqueue`, which calls any function later), `*::on-config-change` — because
   steps run with worker authority and must not ride past those denies.
