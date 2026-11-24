@@ -728,7 +728,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
         .iii
         .call(CallRequest {
             function_id: "approval::on-session-deleted".into(),
-            payload: json!({"session_id": id}),
+            payload: approval_purge_payload(id),
             action: None,
             timeout_ms: Some(timeout),
         })
@@ -779,6 +779,29 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
         }
     }
     Ok(())
+}
+
+/// What `approval::on-session-deleted` is called with (P14). Since Observe v2
+/// it is an observer target of `session::on-deleted` and reads the
+/// `Observed` envelope its observer delivers (approval-gate 1.1.7:
+/// `observer_id`, `activation_id`, `function_id`, `invocation_id`,
+/// `status`, `started_at_ms`, `duration_ms` required, the event in
+/// `output`); a gate from before reads the bare event. This payload is both:
+/// the envelope of a successful `session::on-deleted` whose output is the
+/// event, with the event's `session_id` beside it, which neither shape
+/// rejects (neither denies unknown fields).
+pub(crate) fn approval_purge_payload(session_id: &str) -> Value {
+    json!({
+        "observer_id": "harness::delete-session-tree",
+        "activation_id": format!("harness-delete-{session_id}"),
+        "function_id": "session::on-deleted",
+        "invocation_id": format!("harness-delete-{session_id}"),
+        "status": "success",
+        "started_at_ms": AgentMessage::now_ms().max(0),
+        "duration_ms": 0.0,
+        "output": { "session_id": session_id },
+        "session_id": session_id,
+    })
 }
 
 fn notification(op: &Operation) -> String {

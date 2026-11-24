@@ -42,6 +42,14 @@ struct Store {
     topology_held_on_delete: Vec<bool>,
     /// The targets of the observers the mock engine added, by observer id.
     observers: BTreeMap<String, String>,
+    /// The approval-gate on this stack, by the request its
+    /// `approval::on-session-deleted` reads: `Some("observe-v2")` is
+    /// approval-gate 1.1.7 (an observer target of `session::on-deleted`
+    /// reading `iii_sdk::Observed<Value, {session_id}>`), `Some("bare")` a
+    /// gate from before Observe v2 (`{session_id}`), `None` any payload.
+    approval_gate: Option<&'static str>,
+    /// The sessions the gate purged, in order.
+    approval_purged: Vec<String>,
 }
 impl Store {
     fn state(&self, scope: &str, key: &str) -> Value {
@@ -161,7 +169,29 @@ impl Store {
                 self.messages.remove(sid);
                 Ok(json!({"deleted":existed}))
             }
-            "session::set-status" | "approval::on-session-deleted" => Ok(json!({"ok":true})),
+            "session::set-status" => Ok(json!({"ok":true})),
+            "approval::on-session-deleted" => {
+                #[derive(serde::Deserialize)]
+                struct SessionDeleted {
+                    session_id: String,
+                }
+                let purged = match self.approval_gate {
+                    Some("observe-v2") => serde_json::from_value::<
+                        iii_sdk::Observed<Value, SessionDeleted>,
+                    >(data.clone())
+                    .map_err(|e| e.to_string())?
+                    .output
+                    .map(|event| event.session_id),
+                    Some(_) => Some(
+                        serde_json::from_value::<SessionDeleted>(data.clone())
+                            .map_err(|e| e.to_string())?
+                            .session_id,
+                    ),
+                    None => None,
+                };
+                self.approval_purged.extend(purged);
+                Ok(json!({"ok":true}))
+            }
             "approval::list-pending" => Ok(json!({"pending":[]})),
             "approval::get-settings" => Ok(json!({"source":"defaults"})),
             "router::abort" => Ok(json!({"aborted":true})),
@@ -530,6 +560,46 @@ async fn subtree_deletion_preserves_parent_sibling_and_is_idempotent() {
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].1["session_id"], "parent");
     assert!(queued[0].1["message"].to_string().contains("Do not await"));
+}
+
+/// P14 (KAN-74): with approval-gate on the stack, deleting a tree finishes.
+/// approval-gate 1.1.7 reads `approval::on-session-deleted`'s request as the
+/// `Observed` envelope of `session::on-deleted`, and a gate from before
+/// Observe v2 reads the bare event; the harness's call satisfies both, and
+/// each gate purges every deleted session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deletion_finishes_with_approval_gate_present_either_generation() {
+    for gate in ["observe-v2", "bare"] {
+        let stack = Stack::new("running").await;
+        stack.store.lock().unwrap().approval_gate = Some(gate);
+        let accepted = stack.request("child2").await;
+        let done = stack.run(&accepted.operation_id).await;
+        assert_eq!(done.status, DeletionStatus::Completed, "{gate}: {done:?}");
+        assert_eq!(done.error, None, "{gate}");
+        assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+        assert_eq!(
+            stack.store.lock().unwrap().approval_purged,
+            vec!["grandchild1", "child2"],
+            "{gate}: the gate purged each deleted session"
+        );
+    }
+}
+
+/// The mock gate is as strict as approval-gate 1.1.7: the bare event the
+/// harness used to send fails it with the error P14 saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mock_gate_refuses_the_bare_event_like_approval_gate_1_1_7() {
+    let stack = Stack::new("running").await;
+    let mut store = stack.store.lock().unwrap();
+    store.approval_gate = Some("observe-v2");
+    let error = store
+        .respond(
+            "approval::on-session-deleted",
+            &json!({"session_id": "child2"}),
+            &Value::Null,
+        )
+        .unwrap_err();
+    assert!(error.contains("missing field `observer_id`"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
