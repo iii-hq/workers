@@ -527,7 +527,13 @@ repeats and recovery retain the attempt.
 
 The durable queue operation closes admission, cancels every durable descendant,
 waits for terminal turns/in-flight tools, delivers one consolidated message to
-the surviving direct parent, and deletes child-first. Unconfirmed work fails
+the surviving direct parent, and deletes child-first. The side chats of every
+session it deletes (`side_chat_of`, see [Side chats](#side-chats)) go with it,
+with their own subtrees, before the session they belong to. With
+approval-gate on the stack, each deleted session's approval records are
+purged through `approval::on-session-deleted`, called with a payload both
+the Observe v2 gate (the `Observed` envelope of `session::on-deleted`) and an
+older one (the bare `{ session_id }`) read. Unconfirmed work fails
 closed with data retained. See [recovery, safety boundaries and tests](architecture/session-tree-deletion.md).
 
 ## Compacting a conversation (`/compact`)
@@ -755,11 +761,93 @@ cached 120 s, at most 3 s per call; `context_dismissed_prs` left out), `links`
 (http(s) URLs in user and assistant text, with a `count` and the Markdown link
 text as `title`), `attachments` and `images` (`direction: sent` in a user
 message, `received` otherwise; files the agent wrote outside its working
-folder count as received), and `side_chats` (empty until side chats). Links,
+folder count as received), and `side_chats` (see [Side chats](#side-chats)). Links,
 attachments and images stop at 200 / 100 / 200 and `truncated` says so. The
 transcript is read in pages through `session::messages-range` and indexed in
 memory per session (the 64 most recent), so a later call scans only the new
 entries.
+
+## Side chats
+
+A side chat is a side conversation forked from a point of a conversation. It
+knows the conversation up to that point, runs on the conversation's model,
+effort and account (so its first request reads the conversation's prompt
+cache), and writes nothing into the conversation. A conversation can have
+several. Like the rest of the control plane these functions are internal
+(`engine::functions::list { include_internal: true }`); agents are denied
+them.
+
+| Function | Request | Response |
+|---|---|---|
+| `harness::side-chat::open` | `{ session_id, entry_id?, quote?: { message_id, text, agent? } }` | `{ session_id, meta }` |
+| `harness::side-chat::close` | `{ session_id }` | `{ deleted, operation_id? }` |
+| `harness::side-chat::keep` | `{ session_id }` | `{ meta }` |
+| `harness::side-chat::summarize` | `{ session_id }` | `{ turn_id }` |
+
+**`open`** names the conversation and the entry to fork at (default: its last
+user or assistant message; a reply still streaming is skipped, so a side chat
+can open while the conversation's turn runs). It calls
+`session::fork { title: "Side chat" }`, then writes on the fork with one
+`session::patch-meta`: `side_chat_of` (the conversation), `side_chat_from`
+(the fork's own copy of the entry, as the ADE writes it), `side_chat_lock`
+(`{ model, provider?, thinking_level?, account? }`, for display),
+`side_chat_fork_point` (`{ entry_id, message_count }`: the conversation's
+entry, for the mark under it, and the messages the fork copied) and
+`side_chat_quotes` (`[quote]`, when given). It removes the spawn links a fork
+copies (`parent_session_id`, `parent_turn_id`, `function_call_id`,
+`parent_function_call_id`, `depth`, `spawned_by`, `root_session_id`) and who
+named or described the conversation (`title_manual`, `title_by`,
+`description_*`; the description is emptied). `meta` is the side chat's
+session record after that write. The full lock goes to harness state
+`harness_side_chat/<side chat id>`: `{ session_id, parent_session_id,
+parent_entry_id, model, provider, thinking_level, provider_options (the
+account among them), functions, skills, fs_scope, created_at_ms, source }`.
+The conversation's turn record is copied onto the side chat as a finished
+turn, so its first send continues from the conversation's own system prompt,
+skills, dispatch policy, working folder and language; the fork also copies
+the conversation's frozen `runtime_context` entry, so the system prompt is
+the conversation's byte for byte and the session id change reaches the model
+as a notice after it. Refusals: `nested_side_chat` (the session is a side
+chat), `nothing_to_fork` (no turn yet), `not_found` (unknown session or
+entry).
+
+**The lock.** `harness::send` on a side chat runs on the lock. A send that
+names a different `model`, `provider`, `thinking_level`, `provider_options`,
+`reasoning`, `functions`, `skills` or `metadata.fs_scope`, or any
+`system_prompt`, `system_prompt_strategy` or `agent`, fails with
+`side_chat_locked` (`{ code, message, field, sent, locked }`); naming the
+lock's own value is accepted, and clients send none. A side chat the ADE forked
+before side chats (no lock in state) is locked at its next send to the
+conversation's options then (`source: "lazy"`), and starts from the
+conversation's turn record when it has none of its own. The first send names
+the side chat after its message (whitespace collapsed, cut at 60 characters
+with `…`), unless `title_manual` is set.
+
+**`close`** deletes a side chat in which nothing was sent since the fork
+(through `harness::delete-session-tree`, whose `operation_id` it returns) and
+answers `deleted: true`; one with messages stays (`deleted: false`). Clients
+call it when the person closes an empty side chat. **`keep`** removes
+`side_chat_of`, `side_chat_from`, `side_chat_lock`, `side_chat_fork_point` and
+the lock, and puts the conversation's `project_id` on it (`touch: false`): it
+becomes an ordinary conversation in the conversation's project.
+**`summarize`** sends, in the side chat, `Summarize what we concluded in this
+side conversation for the main conversation, in at most five short lines.
+Plain text, no preamble.` as a turn with `options.metadata.side_chat_summary:
+true`; when that turn completes, the entry id of its reply is appended to the
+side chat's `side_chat_summaries` (the newest 20) before
+`harness::on-turn-completed`. It is refused with `side_chat_busy` while a turn
+runs in the side chat. `close`, `keep` and `summarize` answer `not_found` for
+an unknown session and `not_side_chat` for one that is not a side chat. Every
+refusal is one JSON object in the error message, as for projects.
+
+`harness::context-items` lists a conversation's side chats in `side_chats`,
+from `session::list` filtered on `side_chat_of`, most recently active first:
+`{ session_id, title, message_count, created_at_ms, updated_at_ms,
+from_entry_id?, status, running }`. `message_count` counts the messages added
+since the fork (all of them for a side chat forked before side chats),
+`from_entry_id` is the conversation's entry it was forked at, `status` is
+`running`, `done` or `failed` as for subagents, and `running` is true while a
+turn runs. Deleting a conversation deletes its side chats.
 
 ## Observable functions
 

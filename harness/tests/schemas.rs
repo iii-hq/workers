@@ -81,6 +81,10 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::context-items",
             "harness::chat-settings::get",
             "harness::chat-settings::set",
+            "harness::side-chat::open",
+            "harness::side-chat::close",
+            "harness::side-chat::keep",
+            "harness::side-chat::summarize",
         ]
     );
 }

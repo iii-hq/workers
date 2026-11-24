@@ -255,6 +255,9 @@ impl ScenarioRunner<'_> {
         if action.function_id == crate::fixtures::OBSERVE_ACTION {
             return observe_probe_action(services, &payload, deadline).await;
         }
+        if action.function_id == crate::fixtures::SIDE_CHAT_ACTION {
+            return side_chat_probe_action(services, &self.session_id, &payload, deadline).await;
+        }
         services
             .client()
             .call_until_deadline(&action.function_id, payload, deadline)
@@ -288,6 +291,76 @@ impl ScenarioRunner<'_> {
                 )
             })?;
         Ok(())
+    }
+}
+
+/// Open a side chat of `session_id`, send the payload's `message` in it, and
+/// wait until its turn is terminal ([`crate::fixtures::SIDE_CHAT_ACTION`]).
+/// Its completion reaches no observer of the run, so its status is read.
+async fn side_chat_probe_action(
+    services: &RunServices,
+    session_id: &str,
+    payload: &Value,
+    deadline: Deadline,
+) -> Result<(), RunError> {
+    let failed = |what: &str, error: String| {
+        RunError::runner(
+            RunPhase::Await,
+            "side chat probe action",
+            anyhow::anyhow!("{what}: {error}"),
+        )
+    };
+    let opened = services
+        .client()
+        .call_until_deadline(
+            "harness::side-chat::open",
+            json!({ "session_id": session_id }),
+            deadline,
+        )
+        .await
+        .map_err(|error| failed("harness::side-chat::open", error))?;
+    let side_chat = opened["session_id"]
+        .as_str()
+        .ok_or_else(|| {
+            failed(
+                "harness::side-chat::open",
+                format!("no session_id: {opened}"),
+            )
+        })?
+        .to_string();
+    services
+        .client()
+        .call_until_deadline(
+            "harness::send",
+            json!({ "session_id": side_chat, "message": payload["message"] }),
+            deadline,
+        )
+        .await
+        .map_err(|error| failed("harness::send in the side chat", error))?;
+    loop {
+        let status = services
+            .client()
+            .call_with_deadline(
+                "harness::status",
+                json!({ "session_id": side_chat }),
+                deadline,
+                DEFAULT_CALL_TIMEOUT_MS,
+            )
+            .await
+            .map_err(|error| failed("harness::status of the side chat", error))?;
+        if matches!(
+            status["status"].as_str(),
+            Some("completed" | "failed" | "cancelled")
+        ) {
+            return Ok(());
+        }
+        if deadline.is_expired() {
+            return Err(failed(
+                "side chat turn",
+                format!("not terminal before the deadline: {status}"),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 

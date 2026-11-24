@@ -181,23 +181,38 @@
         "type": "object"
       },
       "SideChatItem": {
-        "description": "Phase 2 (sidechats); always empty in phase 1.",
+        "description": "One side chat of the conversation (chat-projects phase 2): the pane row \"<title> · 6 messages · 10m\", with a dot while a turn runs.",
         "properties": {
+          "created_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
           "from_entry_id": {
-            "type": "string"
+            "description": "The conversation's entry it was forked at (`side_chat_fork_point`), for the mark under that message; absent for a side chat forked before phase 2.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_count": {
+            "description": "Messages added in the side chat since the fork (user, assistant and function results; 0 while nothing was sent). A side chat forked before phase 2 records no fork point: all its messages count.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "running": {
+            "description": "A turn is running in it (`status == \"running\"`).",
+            "type": "boolean"
           },
           "session_id": {
             "type": "string"
           },
           "status": {
+            "description": "`running`, `done` or `failed`, from its session status (as subagents).",
             "type": "string"
           },
           "title": {
+            "description": "\"Side chat\" until its first message names it.",
             "type": "string"
           },
           "updated_at_ms": {
@@ -206,8 +221,9 @@
           }
         },
         "required": [
-          "from_entry_id",
+          "created_at_ms",
           "message_count",
+          "running",
           "session_id",
           "status",
           "title",

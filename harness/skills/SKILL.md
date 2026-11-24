@@ -124,9 +124,19 @@ Console and app control-plane (internal, list them with
 `assign` (refusals are one JSON object in the error: `{code, message}` with
 `name_taken`, `folder_taken`, `bad_name`, `bad_color`, `no_folders`,
 `too_many_folders`, `folder_not_absolute`, `not_found`), `harness::context-items`
-(the context pane: subagents, pull requests, links, attachments and images of a
-conversation, newest first) and `harness::chat-settings::get` / `set`. Agents
-are denied the writes.
+(the context pane: subagents, pull requests, links, attachments, images and side
+chats of a conversation, newest first), `harness::chat-settings::get` / `set`,
+and the side chats: `harness::side-chat::open { session_id, entry_id?, quote? }`
+(fork a conversation at an entry into a side chat that runs on its model,
+effort and account, locked by `harness::send`: a send naming other options
+fails `side_chat_locked`), `harness::side-chat::close { session_id }`
+(`deleted: true` when nothing was sent in it), `harness::side-chat::keep
+{ session_id }` (an ordinary conversation in the conversation's project) and
+`harness::side-chat::summarize { session_id }` (a fixed summary prompt; the
+reply's entry id joins `side_chat_summaries`). Their refusals:
+`nested_side_chat`, `nothing_to_fork`, `side_chat_locked`, `side_chat_busy`,
+`not_side_chat`, `not_found`. Agents are denied the writes and the side-chat
+functions.
 
 Internal — the harness drives these; never call them directly:
 `harness::turn` (the durable loop step), `harness::function::call` /

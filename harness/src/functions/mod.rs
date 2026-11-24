@@ -572,6 +572,37 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, r| async move { chat_settings::set(&d, r).await },
     );
 
+    // Sidechats (chat-projects phase 2, D14-D16) — console and app
+    // control-plane like the rest (D37), off the default catalog.
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::OPEN_ID,
+        crate::side_chat::OPEN_DESC,
+        |d, r| async move { crate::side_chat::open(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::CLOSE_ID,
+        crate::side_chat::CLOSE_DESC,
+        |d, r| async move { crate::side_chat::close(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::KEEP_ID,
+        crate::side_chat::KEEP_DESC,
+        |d, r| async move { crate::side_chat::keep(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::SUMMARIZE_ID,
+        crate::side_chat::SUMMARIZE_DESC,
+        |d, r| async move { crate::side_chat::summarize(&d, r).await },
+    );
+
     // Internal cron target — registered, but kept off the public catalog.
     register_internal(
         iii,
@@ -640,7 +671,7 @@ mod tests {
         ));
         super::register_all(&iii, &deps);
         let mut seen = std::collections::BTreeMap::new();
-        let last = crate::functions::chat_settings::SET_ID;
+        let last = crate::side_chat::SUMMARIZE_ID;
         while !seen.contains_key(last) {
             let frame = tokio::time::timeout(std::time::Duration::from_secs(10), frames.recv())
                 .await
@@ -659,7 +690,8 @@ mod tests {
     /// D54: `harness::projects::list` is internal again, like every harness
     /// control-plane function (agents still call it by id). The default
     /// catalog of `register_all` is the one of origin/main plus
-    /// `harness::set-description`, which the model must find.
+    /// `harness::set-description`, which the model must find. The sidechat
+    /// functions of phase 2 are control-plane too (D37).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_the_model_facing_functions_are_on_the_default_catalog() {
         let seen = registered_visibility().await;
@@ -678,6 +710,10 @@ mod tests {
             "harness::chat-settings::set",
             "harness::projects::on-changed",
             "harness::chat-settings::on-changed",
+            "harness::side-chat::open",
+            "harness::side-chat::close",
+            "harness::side-chat::keep",
+            "harness::side-chat::summarize",
         ] {
             assert_eq!(
                 seen.get(id),

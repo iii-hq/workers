@@ -26,7 +26,7 @@ use crate::error::HarnessError;
 pub const CONTEXT_ITEMS_ID: &str = "harness::context-items";
 pub const CONTEXT_ITEMS_DESC: &str = "Internal control-plane: what a conversation gathered, newest first — its subagents, \
      pull requests (with their state when the github worker is present), links, attachments and \
-     images sent and received — for the context pane.";
+     images sent and received, and its side chats — for the context pane.";
 
 pub const MAX_LINKS: usize = 200;
 pub const MAX_ATTACHMENTS: usize = 100;
@@ -131,15 +131,28 @@ pub struct ImageItem {
     pub block_index: u64,
 }
 
-/// Phase 2 (sidechats); always empty in phase 1.
+/// One side chat of the conversation (chat-projects phase 2): the pane row
+/// "<title> · 6 messages · 10m", with a dot while a turn runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SideChatItem {
     pub session_id: String,
+    /// "Side chat" until its first message names it.
     pub title: String,
+    /// Messages added in the side chat since the fork (user, assistant and
+    /// function results; 0 while nothing was sent). A side chat forked
+    /// before phase 2 records no fork point: all its messages count.
     pub message_count: u64,
+    pub created_at_ms: i64,
     pub updated_at_ms: i64,
-    pub from_entry_id: String,
+    /// The conversation's entry it was forked at (`side_chat_fork_point`),
+    /// for the mark under that message; absent for a side chat forked
+    /// before phase 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_entry_id: Option<String>,
+    /// `running`, `done` or `failed`, from its session status (as subagents).
     pub status: String,
+    /// A turn is running in it (`status == "running"`).
+    pub running: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -947,6 +960,36 @@ async fn subagents(
     Ok(out)
 }
 
+// ── side chats ──
+
+pub fn side_chat_item(chat: &SessionSummary) -> SideChatItem {
+    let status = subagent_status(chat.status.as_deref());
+    SideChatItem {
+        session_id: chat.session_id.clone(),
+        title: if chat.title.trim().is_empty() {
+            crate::side_chat::TITLE.into()
+        } else {
+            chat.title.clone()
+        },
+        message_count: crate::side_chat::own_message_count(chat),
+        created_at_ms: chat.created_at,
+        updated_at_ms: chat.updated_at,
+        from_entry_id: crate::side_chat::fork_entry_id(chat),
+        status: status.into(),
+        running: status == "running",
+    }
+}
+
+/// The conversation's side chats, most recently active first.
+async fn side_chats(
+    session: &SessionClient,
+    session_id: &str,
+) -> Result<Vec<SideChatItem>, HarnessError> {
+    let mut chats = crate::side_chat::side_chats_of(session, session_id).await?;
+    chats.sort_by_key(|chat| std::cmp::Reverse((chat.updated_at, chat.created_at)));
+    Ok(chats.iter().map(side_chat_item).collect())
+}
+
 // ── pull request state ──
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1109,6 +1152,10 @@ pub async fn handle(
         tracing::warn!(session_id = id, %error, "could not list the subagents");
         Vec::new()
     });
+    let side_chats = side_chats(&session, id).await.unwrap_or_else(|error| {
+        tracing::warn!(session_id = id, %error, "could not list the side chats");
+        Vec::new()
+    });
     read_pr_states(deps, &mut pull_requests).await;
     Ok(ContextItemsResponse {
         session_id: summary.session_id.clone(),
@@ -1119,7 +1166,7 @@ pub async fn handle(
         links,
         attachments,
         images,
-        side_chats: Vec::new(),
+        side_chats,
         truncated,
     })
 }

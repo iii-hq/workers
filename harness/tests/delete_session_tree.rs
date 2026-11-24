@@ -124,10 +124,14 @@ impl Store {
                 .map(|meta| json!({"meta":meta}))
                 .unwrap_or(Value::Null)),
             "session::list" => {
-                let parent = &data["metadata"]["parent_session_id"];
-                Ok(
-                    json!({"sessions":self.sessions.values().filter(|m| &m["metadata"]["parent_session_id"] == parent).cloned().collect::<Vec<_>>()}),
-                )
+                // session-manager's metadata filter: every key named, equal.
+                let filter = data["metadata"].as_object().cloned().unwrap_or_default();
+                Ok(json!({"sessions": self
+                    .sessions
+                    .values()
+                    .filter(|m| filter.iter().all(|(k, v)| m["metadata"].get(k) == Some(v)))
+                    .cloned()
+                    .collect::<Vec<_>>()}))
             }
             "session::messages" => {
                 Ok(json!({"messages":self.messages.get(sid).cloned().unwrap_or_default()}))
@@ -382,6 +386,18 @@ impl Stack {
         store.put("harness_turn",id,json!({"session_id":id,"turn_id":format!("t_{id}"),"status":status,
             "step":0,"turn_count":0,"depth":0,"options":{"model":"fake","max_turns":16},"created_at":1,"updated_at":1}));
     }
+    /// A side chat of `of` (chat-projects phase 2): linked by
+    /// `side_chat_of`, not `parent_session_id`, with its lock in state.
+    fn side_chat(&self, id: &str, of: &str, status: &str) {
+        self.session(id, None, status);
+        let mut store = self.store.lock().unwrap();
+        store.sessions.get_mut(id).unwrap()["metadata"] = json!({"side_chat_of": of});
+        store.put(
+            "harness_side_chat",
+            id,
+            json!({"session_id": id, "parent_session_id": of}),
+        );
+    }
     fn set_status(&self, id: &str, status: &str) {
         let mut store = self.store.lock().unwrap();
         let mut turn = store.state("harness_turn", id);
@@ -560,6 +576,51 @@ async fn subtree_deletion_preserves_parent_sibling_and_is_idempotent() {
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].1["session_id"], "parent");
     assert!(queued[0].1["message"].to_string().contains("Do not await"));
+}
+
+/// chat-projects §2.2: deleting a session deletes the side chats of every
+/// session it deletes, with their own subtrees, before them; another
+/// session's side chats stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deletion_takes_the_side_chats_of_every_deleted_session_and_their_trees() {
+    let stack = Stack::new("running").await;
+    stack.side_chat("side_of_child2", "child2", "completed");
+    stack.session("side_child", Some("side_of_child2"), "completed");
+    stack.side_chat("side_of_grandchild", "grandchild1", "completed");
+    stack.side_chat("side_of_parent", "parent", "completed");
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(
+        done.deleted_session_ids,
+        vec![
+            "side_of_grandchild",
+            "side_child",
+            "side_of_child2",
+            "grandchild1",
+            "child2"
+        ],
+        "side chats and their trees first, the selected tree after"
+    );
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store.sessions.keys().cloned().collect::<Vec<_>>(),
+        vec!["child1", "parent", "side_of_parent"]
+    );
+    for id in ["side_of_child2", "side_of_grandchild"] {
+        assert!(
+            store.state("harness_side_chat", id).is_null(),
+            "{id}'s lock went"
+        );
+        assert!(store.state("harness_turn", id).is_null());
+    }
+    assert!(!store.state("harness_side_chat", "side_of_parent").is_null());
+    // Tombstoned like every member: a late send cannot recreate them.
+    assert!(
+        store
+            .state("harness_deletion_guard", "side_child")
+            .is_string()
+    );
 }
 
 /// P14 (KAN-74): with approval-gate on the stack, deleting a tree finishes.

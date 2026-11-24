@@ -440,6 +440,23 @@ async fn start_with_delivery_lock(
         Some(session_id) => writable_session_metadata(&session, session_id).await?,
         None => None,
     };
+    // A side chat runs on its conversation's options (chat-projects D14):
+    // its lock is enforced, and written into what the send leaves out,
+    // before anything below reads the request.
+    let mut req = req;
+    let side_chat = match (req.session_id.clone(), existing_metadata.as_ref()) {
+        (Some(id), Some(metadata)) => {
+            crate::side_chat::prepare_send(
+                deps,
+                &id,
+                metadata,
+                &mut req,
+                caller_holds_target_session_lock,
+            )
+            .await?
+        }
+        _ => None,
+    };
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -742,6 +759,9 @@ async fn start_with_delivery_lock(
             ts: AgentMessage::now_ms(),
         };
         let _ = crate::state::put_idem(&deps.iii, key, &rec, cfg.session_timeout_ms).await;
+    }
+    if let Some(prepared) = side_chat {
+        crate::side_chat::after_send(deps, &session_id, prepared).await;
     }
 
     Ok(StartOutcome {

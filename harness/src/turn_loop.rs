@@ -3305,6 +3305,9 @@ async fn finalize_completed(
         }
     }
     let woke = woke || late;
+    // A side chat's summary turn (chat-projects §2.2): its reply joins
+    // `side_chat_summaries` before clients hear the turn completed.
+    crate::side_chat::record_summary_reply(session, record).await;
     // One decision for the proof and the event: a wake can retire in between.
     let terminal = !woke && turn_is_terminal(deps, record).await;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;

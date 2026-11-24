@@ -495,7 +495,9 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
         if metadata.is_some() && !tree.complete {
             return Err(failure("incomplete durable session tree"));
         }
-        op.members = tree.sessions.into_iter().map(|n| n.session_id).collect();
+        let members = tree.sessions.into_iter().map(|n| n.session_id).collect();
+        // A conversation's side chats go with it (chat-projects §2.2).
+        op.members = with_side_chats(deps, members).await?;
         op.parent = metadata
             .as_ref()
             .and_then(|m| m.get("parent_session_id"))
@@ -714,6 +716,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     crate::budget::purge(deps, id, timeout).await?;
     crate::context_snapshot::delete(&deps.iii, id, timeout).await?;
     crate::ask_settlement::purge(deps, id, timeout).await?;
+    crate::side_chat::delete_lock(deps, id).await?;
     // Approval owns its data. Its existing purge is best effort; explicitly
     // read the inbox afterwards so a failed purge cannot be reported completed.
     // No approval gate on this stack: nothing of it to purge (as the
@@ -802,6 +805,51 @@ pub(crate) fn approval_purge_payload(session_id: &str) -> Value {
         "output": { "session_id": session_id },
         "session_id": session_id,
     })
+}
+
+/// The sessions to delete with `members`: each session whose `side_chat_of`
+/// names one of them, with its own subtree, and theirs in turn. They come
+/// after `members`, so the erase (children first, from the end) deletes them
+/// before the conversation they belong to.
+async fn with_side_chats(
+    deps: &Deps,
+    mut members: Vec<String>,
+) -> Result<Vec<String>, HarnessError> {
+    use futures_util::{StreamExt, stream};
+    let session = deps.session().await;
+    let mut seen: BTreeSet<String> = members.iter().cloned().collect();
+    let mut next = 0;
+    while next < members.len() {
+        let level: Vec<String> = members[next..].to_vec();
+        next = members.len();
+        let listed = stream::iter(level.into_iter().map(|id| {
+            let session = session.clone();
+            async move { crate::side_chat::side_chats_of(&session, &id).await }
+        }))
+        .buffered(16)
+        .collect::<Vec<_>>()
+        .await;
+        for side_chats in listed {
+            for side_chat in side_chats? {
+                if seen.contains(&side_chat.session_id) {
+                    continue;
+                }
+                let tree = super::session_tree::collect(deps, &side_chat.session_id).await?;
+                if !tree.complete && !tree.sessions.is_empty() {
+                    return Err(failure(format!(
+                        "incomplete durable session tree of side chat {}",
+                        side_chat.session_id
+                    )));
+                }
+                for node in tree.sessions {
+                    if seen.insert(node.session_id.clone()) {
+                        members.push(node.session_id);
+                    }
+                }
+            }
+        }
+    }
+    Ok(members)
 }
 
 fn notification(op: &Operation) -> String {

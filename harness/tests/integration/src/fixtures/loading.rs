@@ -85,6 +85,12 @@ pub enum ScenarioIntervention {
 /// observer and waits until it is active.
 pub const OBSERVE_ACTION: &str = "probe::observe";
 
+/// The probe action that opens a side chat of the run's session
+/// (`harness::side-chat::open`), sends its payload's `message` in it and
+/// waits until that turn is terminal. A side chat is no child of the
+/// session, so the completion observers never see its turn.
+pub const SIDE_CHAT_ACTION: &str = "probe::side-chat";
+
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
 /// boundary — the seam that lets a scenario trip a state key after the main
 /// turn is idle instead of mid-turn. [`OBSERVE_ACTION`] creates an observer

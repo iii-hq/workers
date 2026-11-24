@@ -123,5 +123,18 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<chat_settings::ChatSettingsSetRequest, chat_settings::ChatSettingsSetResponse>(
             chat_settings::SET_ID,
         ),
+        // chat-projects phase 2
+        spec::<crate::side_chat::SideChatOpenRequest, crate::side_chat::SideChatOpenResponse>(
+            crate::side_chat::OPEN_ID,
+        ),
+        spec::<crate::side_chat::SideChatRequest, crate::side_chat::SideChatCloseResponse>(
+            crate::side_chat::CLOSE_ID,
+        ),
+        spec::<crate::side_chat::SideChatRequest, crate::side_chat::SideChatKeepResponse>(
+            crate::side_chat::KEEP_ID,
+        ),
+        spec::<crate::side_chat::SideChatRequest, crate::side_chat::SideChatSummarizeResponse>(
+            crate::side_chat::SUMMARIZE_ID,
+        ),
     ]
 }

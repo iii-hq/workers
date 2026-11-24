@@ -1,0 +1,39 @@
+{
+  "function_id": "harness::side-chat::close",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`close`, `keep` and `summarize` name the side chat.",
+    "properties": {
+      "session_id": {
+        "description": "The side chat's session id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "SideChatRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "deleted": {
+        "description": "True when the side chat was empty and its deletion was accepted.",
+        "type": "boolean"
+      },
+      "operation_id": {
+        "description": "The `harness::delete-session-tree` operation that deletes it, when `deleted` (read it with `harness::delete-session-tree-status`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "deleted"
+    ],
+    "title": "SideChatCloseResponse",
+    "type": "object"
+  }
+}

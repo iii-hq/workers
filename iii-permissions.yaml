@@ -257,6 +257,12 @@ rules:
   - '!harness::folders::delete'
   - '!harness::chat-settings::set'
   - '!harness::chat-settings::on-changed'
+  # Side chats (chat-projects phase 2): the person opens, closes, keeps and
+  # summarizes them from the apps and the console; agents never do.
+  - '!harness::side-chat::open'
+  - '!harness::side-chat::close'
+  - '!harness::side-chat::keep'
+  - '!harness::side-chat::summarize'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below. Planning is

@@ -50,6 +50,7 @@ pub mod prompt;
 pub mod queue;
 pub mod reconcile;
 pub mod session_status;
+pub mod side_chat;
 pub mod skills;
 pub mod state;
 pub mod subagent;
