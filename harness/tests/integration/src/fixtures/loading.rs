@@ -42,6 +42,11 @@ pub struct ScenarioFixture {
     /// that produces no session turn — a call-mode reaction's dispatch,
     /// including a trailing coalesced fire.
     pub await_target_calls: Option<usize>,
+    /// After every terminal turn arrived, await until the router served
+    /// every scripted generation: the only way to wait for a turn in a
+    /// session the run does not track — a side chat the Console opened and
+    /// sent in (UI-007), whose completion reaches no observer of the run.
+    pub await_generations: bool,
     /// Session-trace-count override for the floor. `None` keeps the driver
     /// formula. Needed when probe actions trip CALL-mode reactions, which
     /// dispatch a function without seeding any session turn — no extra trace

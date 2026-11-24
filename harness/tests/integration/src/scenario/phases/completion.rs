@@ -178,6 +178,26 @@ impl ScenarioRunner<'_> {
             }
         }
 
+        // A turn in an untracked session (a side chat the Console opened and
+        // sent in) has no completion here: the router's count is its only
+        // milestone. In the playground this holds the run open until the
+        // Console's send was served.
+        if self.fixture.await_generations {
+            while services.router().generations_consumed() < services.router().total_generations() {
+                if deadline.is_expired() {
+                    active.timed_out = true;
+                    tracing::error!(
+                        target: "harness_integration::scenario",
+                        "await timed out with {} of {} scripted generations served",
+                        services.router().generations_consumed(),
+                        services.router().total_generations()
+                    );
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
         self.confirm_terminal_status(services, active).await?;
         if tree_run {
             let status_deadline = Deadline::after(FINAL_STATUS_TIMEOUT);
