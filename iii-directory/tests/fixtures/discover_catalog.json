@@ -21865,6 +21865,14 @@
             "null"
           ]
         },
+        "follow_worktree": {
+          "default": null,
+          "description": "Whether the session moves into a git worktree this call adds (default true). Pass `false` to keep the session in its folder.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "stdin": {
           "default": null,
           "description": "Optional bytes written to the program's standard input, followed by EOF. Use this to pipe content to a command that reads stdin (`tee`, `patch`, `cat`, a filter) instead of wrapping it in a shell heredoc. Omit to leave stdin closed (`/dev/null`, the default). HOST target only — rejected (S210) on a sandbox target, like cwd/env.",

@@ -6,12 +6,14 @@
 //! stamped worktree removed (the way back to the main checkout), is answered
 //! to the harness as
 //! `mutations.fs_scope.root`, which moves the session there. The registry is
-//! the proof, not argv parsing or the exit code.
+//! the proof, not argv parsing or the exit code. A call with
+//! `follow_worktree: false` ignores the worktrees it adds; the session's own
+//! worktree, moved or removed, still takes the session along or back.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
 
@@ -35,6 +37,8 @@ struct Snap {
     common: PathBuf,
     /// Admin dir to worktree top, see [`linked_worktrees`].
     before: BTreeMap<PathBuf, PathBuf>,
+    /// [`added_at`] of the worktree the root sits in.
+    added_at: Option<SystemTime>,
     at: Instant,
 }
 
@@ -43,12 +47,22 @@ pub struct WorktreeFollow {
     snaps: Mutex<HashMap<Key, Snap>>,
 }
 
+/// When git added the worktree of this admin dir: `git worktree move` and
+/// `repair` leave `commondir` as the add wrote it.
+fn added_at(admin: &Path) -> Option<SystemTime> {
+    std::fs::metadata(admin.join("commondir"))
+        .and_then(|m| m.modified())
+        .ok()
+}
+
 /// A host `shell::exec` with a stamped scope and `worktree` on its command
 /// line.
 struct Exec {
     key: Key,
     scope: FsScope,
     line: String,
+    /// `follow_worktree` is not `false`: a worktree the call adds counts.
+    follow_new: bool,
 }
 
 // shortcut: only `shell::exec` is watched; an `exec_bg` job or a PTY session
@@ -79,7 +93,13 @@ fn exec_of(input: &HookInput) -> Option<Exec> {
         input.turn_id.clone()?,
         call.id.clone(),
     );
-    (host && line.contains("worktree")).then_some(Exec { key, scope, line })
+    let follow_new = args.get("follow_worktree") != Some(&Value::Bool(false));
+    (host && line.contains("worktree")).then_some(Exec {
+        key,
+        scope,
+        line,
+        follow_new,
+    })
 }
 
 impl WorktreeFollow {
@@ -97,12 +117,17 @@ impl WorktreeFollow {
             let root = Path::new(&root_raw).canonicalize().ok()?;
             let (top, common) = repo_layout(&root)?;
             let before = linked_worktrees(&common);
+            let added_at = before
+                .iter()
+                .filter(|(_, t)| **t == top)
+                .find_map(|(id, _)| added_at(id));
             Some(Snap {
                 root_raw,
                 root,
                 top,
                 common,
                 before,
+                added_at,
                 at: Instant::now(),
             })
         })
@@ -167,10 +192,14 @@ fn moved_root(snap: &Snap, exec: &Exec, cfg: &ShellConfig) -> Option<String> {
         .collect();
     let named: Vec<PathBuf> = linked_worktrees(&snap.common)
         .into_iter()
-        .filter(|(id, t)| {
-            snap.before
-                .get(id)
-                .is_none_or(|was| *was == snap.top && *t != snap.top)
+        .filter(|(id, t)| match snap.before.get(id) {
+            None => exec.follow_new,
+            // git gives a removed worktree's id to the next one of its name.
+            Some(was) => {
+                *was == snap.top
+                    && *t != snap.top
+                    && (exec.follow_new || added_at(id) == snap.added_at)
+            }
         })
         .map(|(_, t)| t)
         .filter(|t| {
@@ -306,6 +335,16 @@ mod tests {
         follow_with(ShellConfig::default(), root, argv, json!({})).await
     }
 
+    /// [`follow`] with a `follow_worktree` argument on the call.
+    async fn follow_flag(root: &Path, argv: &[&str], flag: Value) -> Option<String> {
+        let f = WorktreeFollow::default();
+        let mut hook = input("c_1", "t_1", root, argv, json!({}));
+        hook.call.as_mut().unwrap().arguments["follow_worktree"] = flag;
+        f.on_pre(&hook).await;
+        run(root, argv);
+        f.on_post(&hook, Arc::new(ShellConfig::default())).await
+    }
+
     fn s(p: PathBuf) -> Option<String> {
         Some(p.to_string_lossy().into_owned())
     }
@@ -423,6 +462,100 @@ mod tests {
             f.on_post(&hook, Arc::new(ShellConfig::default())).await,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn follow_worktree_false_ignores_the_worktree_the_call_adds() {
+        let (tmp, main) = repo();
+        let dir = tmp.path().canonicalize().unwrap();
+        let direct = ["git", "worktree", "add", "-q", "../a"];
+        let shell = ["sh", "-c", "git worktree add -q ../b"];
+        for (argv, name) in [(&direct[..], "a"), (&shell[..], "b")] {
+            assert_eq!(follow_flag(&main, argv, json!(false)).await, None);
+            assert!(dir.join(name).join("sub").is_dir(), "{name}");
+        }
+        // Only a real `false` counts.
+        assert_eq!(
+            follow(&main, &["git", "worktree", "add", "-q", "../absent"]).await,
+            s(dir.join("absent"))
+        );
+        for (flag, name) in [
+            (json!(true), "true"),
+            (Value::Null, "null"),
+            (json!("false"), "string"),
+        ] {
+            let target = format!("../{name}");
+            let argv = ["git", "worktree", "add", "-q", target.as_str()];
+            assert_eq!(
+                follow_flag(&main, &argv, flag).await,
+                s(dir.join(name)),
+                "{name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn follow_worktree_false_keeps_the_rules_of_the_sessions_own_worktree() {
+        let (tmp, main) = repo();
+        let dir = tmp.path().canonicalize().unwrap();
+        let main_arg = main.to_str().unwrap();
+        let [gone, own, own2] =
+            ["gone", "own", "own2"].map(|n| dir.join(n).to_string_lossy().into_owned());
+        // Removed: back to the main checkout.
+        git(&main, &["worktree", "add", "-q", &gone]);
+        let argv = [
+            "git", "-C", main_arg, "worktree", "remove", "--force", &gone,
+        ];
+        assert_eq!(
+            follow_flag(&dir.join("gone/sub"), &argv, json!(false)).await,
+            s(main.join("sub"))
+        );
+        // Moved: the session goes along.
+        git(&main, &["worktree", "add", "-q", &own]);
+        let argv = ["git", "-C", main_arg, "worktree", "move", &own, &own2];
+        assert_eq!(
+            follow_flag(&dir.join("own/sub"), &argv, json!(false)).await,
+            s(dir.join("own2/sub"))
+        );
+        // Removed and replaced in one exec: the main checkout, not the new
+        // worktree, also when git gives it the removed one's id.
+        for (old, new) in [("old", "new"), ("same", "other/same")] {
+            let old = dir.join(old);
+            let new = dir.join(new);
+            let (o, n) = (old.to_str().unwrap(), new.to_str().unwrap());
+            git(&main, &["worktree", "add", "-q", o]);
+            let swap = format!(
+                "git -C {main_arg} worktree remove --force {o} && git -C {main_arg} worktree add -q {n}"
+            );
+            assert_eq!(
+                follow_flag(&old, &["sh", "-c", &swap], json!(false)).await,
+                s(main.clone()),
+                "{n}"
+            );
+            assert!(!old.exists() && new.is_dir(), "{n}");
+        }
+        assert!(main.join(".git/worktrees/same").is_dir());
+        assert!(!main.join(".git/worktrees/same1").exists());
+    }
+
+    #[tokio::test]
+    async fn follow_worktree_false_does_not_reach_a_parallel_call() {
+        let (tmp, main) = repo();
+        let dir = tmp.path().canonicalize().unwrap();
+        let f = WorktreeFollow::default();
+        let cfg = Arc::new(ShellConfig::default());
+        let side = ["git", "worktree", "add", "-q", "../side"];
+        let mine = ["git", "worktree", "add", "-q", "../mine"];
+        let mut stays = input("c_1", "t_1", &main, &side, json!({}));
+        stays.call.as_mut().unwrap().arguments["follow_worktree"] = json!(false);
+        let moves = input("c_2", "t_1", &main, &mine, json!({}));
+        f.on_pre(&stays).await;
+        f.on_pre(&moves).await;
+        run(&main, &side);
+        run(&main, &mine);
+        assert_eq!(f.on_post(&stays, cfg.clone()).await, None);
+        assert_eq!(f.on_post(&moves, cfg).await, s(dir.join("mine")));
+        assert!(dir.join("side").is_dir());
     }
 
     #[tokio::test]

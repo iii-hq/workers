@@ -12,7 +12,8 @@
 //! codex, cursor, devin, grok, hermes, opencode and pi, a2ui::binding::set,
 //! browser::cookies::list / set, shell::exec_bg and
 //! directory::system-prompts::delete), and `cron::on-config-change`, which
-//! the port retired, left the snapshot). bm25 — the shipped
+//! the port retired, left the snapshot; shell::exec got `follow_worktree`
+//! on 2026-11-24). bm25 — the shipped
 //! default — is purely lexical, so no engine, no model, and no judge are
 //! involved: expectations pin exact function sets and run in
 //! milliseconds. If a rank change breaks one of these, either the scorer

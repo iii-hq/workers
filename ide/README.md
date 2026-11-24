@@ -155,7 +155,8 @@ When a session's host `shell::exec` runs `git worktree add`, git registers a new
 - Run the `git worktree add` as the only call of its step. Use relative paths in the new worktree only after the session-context note confirms the move; calls already written in the same step are re-anchored to it.
 - Under `workspace` the old checkout leaves the session's scope and the new worktree needs no grant. With `fs.exec_confinement: landlock` the worktree must be where the exec could write (the root, a grant or `fs.exec_writable`); under `configured_roots` it must be inside `fs.host_roots`. A denylisted directory is never adopted.
 - `git worktree remove` of the worktree the session is rooted in returns it to the repository's main checkout, and `git worktree move` of it takes the session along; moving any other worktree does not move the session. With `fs.exec_confinement: landlock` that way back needs the worktree's parent and the main checkout writable for the exec (a grant or `fs.exec_writable`); otherwise the exec cannot delete its own root, so git empties the worktree, drops its registration and then fails, and the session stays in that empty directory.
-- For a worktree meant for a child or a side look, use `worktree::create`: it does not move the caller.
+- With `follow_worktree: false` on the call (a boolean, default `true`), the session stays in its folder: a worktree that call adds does not move it. The session's own worktree behaves as above: moved, it takes the session along; removed, the session returns to the main checkout, even when the same call adds another worktree.
+- For a worktree meant for a child or a side look, pass `follow_worktree: false` or use `worktree::create`; neither moves the caller.
 
 ## Quick start
 
