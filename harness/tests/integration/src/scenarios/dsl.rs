@@ -191,6 +191,31 @@ impl Scenario {
             after_target_calls: None,
             function_id: function_id.to_string(),
             payload,
+            expected_output: None,
+        });
+        self
+    }
+
+    /// Fire a probe call at a completion boundary and require its response to
+    /// contain `expected`. This keeps read-contract evidence in the scenario
+    /// without adding a bespoke runner intervention.
+    pub(super) fn probe_after_matching(
+        mut self,
+        after_turns: usize,
+        function_id: &str,
+        payload: serde_json::Value,
+        expected: serde_json::Value,
+    ) -> Self {
+        self.probe_actions.push(crate::fixtures::ProbeAction {
+            after_turns,
+            after_parked: None,
+            after_target_calls: None,
+            function_id: function_id.to_string(),
+            payload,
+            expected_output: Some(JsonMatcherV1::Subset {
+                expected,
+                normalize: None,
+            }),
         });
         self
     }
@@ -209,6 +234,7 @@ impl Scenario {
             after_target_calls: None,
             function_id: function_id.to_string(),
             payload,
+            expected_output: None,
         });
         self
     }

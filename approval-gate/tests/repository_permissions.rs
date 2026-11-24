@@ -38,6 +38,49 @@ fn mesh_reads_are_allowed_in_root_and_worker_permissions() {
 }
 
 #[test]
+fn secret_values_and_writes_are_denied_in_root_and_worker_permissions() {
+    for permissions in [
+        repository_permissions(),
+        permissions_from_yaml(include_str!("../../secrets/iii-permissions.yaml")),
+    ] {
+        for id in [
+            "secrets::resolve",
+            "secrets::set",
+            "secrets::compare-and-set",
+            "secrets::delete",
+            "secrets::access",
+            "secrets::import",
+            "secrets::on-config-change",
+            "secrets::on-changed",
+        ] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::Deny { .. }
+                ),
+                "{id} should be denied"
+            );
+        }
+    }
+}
+
+/// The rules as written, for a call in `namespace`.
+fn in_ns(permissions: &Permissions, namespace: &str, id: &str) -> Decision {
+    permissions.check_in(Some(namespace), id, &json!({}), PermissionMode::Manual)
+}
+
+/// What the gate answers for a call in `namespace` from an agent in `project`.
+fn gate(permissions: &Permissions, namespace: &str, id: &str) -> Decision {
+    permissions.check_call(
+        Some(namespace),
+        Some("project"),
+        id,
+        &json!({}),
+        PermissionMode::Manual,
+    )
+}
+
+#[test]
 fn mesh_internal_handlers_are_denied_in_root_and_worker_permissions() {
     for permissions in [
         repository_permissions(),
@@ -55,11 +98,6 @@ fn mesh_internal_handlers_are_denied_in_root_and_worker_permissions() {
             "mesh-node::update",
             "mesh-node::workers::apply",
             "mesh-node::drives::apply",
-            "laptop::mesh-node::status",
-            "laptop::mesh-node::update",
-            "laptop::mesh-node::workers::apply",
-            "laptop::mesh-node::drives::apply",
-            "tenant::laptop::mesh-node::update",
         ] {
             assert!(
                 matches!(
@@ -68,33 +106,62 @@ fn mesh_internal_handlers_are_denied_in_root_and_worker_permissions() {
                 ),
                 "{id} should be denied"
             );
+            for namespace in ["laptop", "hub"] {
+                assert!(
+                    matches!(in_ns(&permissions, namespace, id), Decision::Deny { .. }),
+                    "{id} should be denied in {namespace}"
+                );
+            }
         }
     }
 }
 
+/// The harness ships these rules and can run in front of a mesh that still uses prefixes.
 #[test]
-fn remote_shell_internals_are_denied_in_root_and_worker_permissions() {
+fn old_mesh_ids_stay_denied_by_the_root_rules() {
+    let permissions = repository_permissions();
+    for id in [
+        "laptop::mesh-node::update",
+        "tenant::laptop::mesh-node::update",
+        "laptop::shell::pty::open",
+        "laptop::shell::pty::sessions",
+        "laptop::shell::scm::commit-message",
+        "laptop::shell::ui-state::get",
+        "laptop::shell::config-status",
+        "laptop::shell::kill-session-jobs",
+        "laptop::shell::on-config-change",
+    ] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Deny { .. }
+            ),
+            "{id} should be denied"
+        );
+    }
+}
+
+#[test]
+fn remote_shell_internals_are_denied_in_every_namespace() {
     for permissions in [
         repository_permissions(),
         permissions_from_yaml(include_str!("../../mesh/iii-permissions.yaml")),
     ] {
         for id in [
-            "laptop::shell::pty::sessions",
-            "laptop::shell::pty::open",
-            "laptop::shell::scm::commit-message",
-            "laptop::shell::ui-state::get",
-            "laptop::shell::config-status",
-            "laptop::shell::kill-session-jobs",
-            "laptop::shell::on-config-change",
-            "tenant::laptop::shell::pty::open",
+            "shell::pty::open",
+            "shell::scm::commit-message",
+            "shell::ui-state::get",
+            "shell::config-status",
+            "shell::kill-session-jobs",
+            "shell::on-config-change",
         ] {
-            assert!(
-                matches!(
-                    permissions.check(id, &json!({}), PermissionMode::Manual),
-                    Decision::Deny { .. }
-                ),
-                "{id} should be denied"
-            );
+            // The rules as written: they must hold without the old spelling.
+            for namespace in ["laptop", "hub"] {
+                assert!(
+                    matches!(in_ns(&permissions, namespace, id), Decision::Deny { .. }),
+                    "{id} should be denied in {namespace}"
+                );
+            }
         }
     }
 }
@@ -105,10 +172,16 @@ fn remote_tools_and_mesh_management_need_approval() {
         repository_permissions(),
         permissions_from_yaml(include_str!("../../mesh/iii-permissions.yaml")),
     ] {
+        for namespace in ["laptop", "hub"] {
+            assert!(
+                matches!(
+                    gate(&permissions, namespace, "shell::exec"),
+                    Decision::NeedsApproval
+                ),
+                "shell::exec in {namespace} should need approval"
+            );
+        }
         for id in [
-            "laptop::shell::exec",
-            "laptop::coder::read-file",
-            "tenant::coder::read-file",
             "mesh::nodes::remove",
             "mesh::join::code",
             "mesh::join::cycle",
@@ -124,6 +197,24 @@ fn remote_tools_and_mesh_management_need_approval() {
             );
         }
     }
+}
+
+/// A bare rule matches every namespace. The mesh release notes say so.
+/// `shell::pty::sessions` stays denied on another machine while the
+/// `*::shell::pty::*` line is kept: it matches the call's old spelling.
+#[test]
+fn read_only_allows_cover_every_namespace() {
+    let permissions = repository_permissions();
+    for id in ["coder::read-file", "coder::search", "coder::tree"] {
+        assert!(
+            matches!(gate(&permissions, "laptop", id), Decision::Allow { .. }),
+            "{id} should be allowed in laptop"
+        );
+    }
+    assert!(matches!(
+        gate(&permissions, "laptop", "shell::pty::sessions"),
+        Decision::Deny { .. }
+    ));
 }
 
 #[test]

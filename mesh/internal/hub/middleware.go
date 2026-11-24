@@ -115,13 +115,13 @@ func (h *Hub) meshCall(ctx context.Context, client rpc, caller string, req Middl
 	var call meshCallRequest
 	_ = json.Unmarshal(req.Payload, &call)
 	h.mu.Lock()
-	row, listed := h.shared.rows[call.FunctionID]
+	row, listed := h.shared.rows[rowKey{call.Owner, call.FunctionID}]
 	// The version read last, not the catalog's: a machine gets the catalog in the reconcile that reads its version.
 	details, known := h.nodeDetails[caller]
 	ready := known && h.shared.rows != nil // after a hub restart, until its first reads
 	// An action is refused: an enqueued call would run after a revocation.
 	allowed := req.Namespace == h.Namespace && req.Action == nil && ready && details.Version == h.Version &&
-		listed && row.owner == call.Owner && row.owner != caller &&
+		listed && call.Owner != caller &&
 		(row.owner != "hub" || meshclient.ShareEntry(h.config.Share, row.worker, call.FunctionID, row.internal) != "") // an unshared worker or id leaves before the next read
 	busy := allowed && h.inFlight[caller] >= maxCallsInFlight
 	if allowed && !busy {
@@ -152,9 +152,15 @@ func (h *Hub) meshCall(ctx context.Context, client rpc, caller string, req Middl
 		log.Printf("mesh call: refused %q of %q for %s: channel refs sent", call.FunctionID, call.Owner, caller)
 		return nil, errMeshChannels
 	}
-	out, err := client.Call(ctx, iii.CallRequest{FunctionID: call.FunctionID, Namespace: h.Namespace, Payload: call.Payload, Timeout: 610 * time.Second})
+	// A hub row runs here, so the hub drops what the calling machine stamped; a machine row is dropped again by its bridge.
+	payload := meshclient.DropMachineBound(call.FunctionID, call.Payload)
+	namespace := call.Owner // a machine's functions live in the namespace named after it
+	if call.Owner == "hub" {
+		namespace = h.Namespace
+	}
+	out, err := client.Call(ctx, iii.CallRequest{FunctionID: call.FunctionID, Namespace: namespace, Payload: payload, Timeout: 610 * time.Second})
 	if err != nil {
-		return nil, err
+		return nil, meshclient.DropAccessRequest(err)
 	}
 	if meshclient.HasChannelRefs(out) {
 		log.Printf("mesh call: refused %q of %q for %s: channel refs returned", call.FunctionID, call.Owner, caller)

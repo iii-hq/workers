@@ -19,6 +19,7 @@ import {
   Milestone,
   Monitor,
   Puzzle,
+  RadioTower,
   SquareCode,
   SquareFunction,
   SquareKanban,
@@ -129,6 +130,11 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
   state: {
     icon: HardDrive,
     description: 'Shared runtime state.',
+  },
+  'control-plane': {
+    icon: RadioTower,
+    description: 'Project progress, runs, and what needs you.',
+    keywords: ['overview', 'runs', 'approvals'],
   },
   'state-manager': {
     icon: HardDrive,

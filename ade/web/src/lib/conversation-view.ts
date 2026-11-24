@@ -178,6 +178,11 @@ export function effectiveConversationKind(
     seen.add(parent.id)
     current = parent
   }
+  if (
+    typeof current.sessionMetadata?.side_chat_question === 'string' &&
+    current.sessionMetadata.side_chat_keep === true
+  )
+    return 'user'
   return isConversationKind(current.kind) ? current.kind : 'user'
 }
 

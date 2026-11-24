@@ -370,6 +370,13 @@ function ProjectDetail({
     placeholder: 'What is this project for?',
     value: project.description,
   })
+  const repositories = useInlineEdit({
+    label: 'repositories',
+    multiline: true,
+    onSave: (repos) => patch({ repos: repos ? repos.split(/\s+/) : null }),
+    placeholder: 'owner/name, one per line',
+    value: project.repos?.join('\n') ?? '',
+  })
 
   const mine = useMemo(() => tickets.filter((ticket) => ticket.project_id === project.id), [tickets, project.id])
   const unassigned = mine.filter((ticket) => !ticket.assignee).length
@@ -581,6 +588,31 @@ function ProjectDetail({
             <Prop label="Tickets">
               <span className="kb-plan-value">{plural(mine.length, 'ticket')}</span>
             </Prop>
+          </Section>
+
+          <Section
+            action={
+              repositories.editing ? null : (
+                <ShadcnButton onClick={repositories.start} size="sm" type="button" variant="ghost">
+                  Edit
+                </ShadcnButton>
+              )
+            }
+            title="Repositories"
+          >
+            {repositories.editing ? (
+              repositories.editor
+            ) : project.repos?.length ? (
+              <div className="kb-plan-section-empty">
+                {project.repos.map((repo, index) => (
+                  <span className="kb-plan-mono" key={`${repo}:${index}`}>
+                    {repo}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="kb-plan-faint">No repositories set.</p>
+            )}
           </Section>
 
           <Section title="Releases">

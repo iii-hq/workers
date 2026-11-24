@@ -361,7 +361,9 @@ pub async fn invoke(
                 false,
             ),
             crate::functions::observers_list::OBSERVERS_LIST_ID
-            | crate::functions::observers_list::OBSERVERS_DISPOSE_ID => {
+            | crate::functions::observers_list::OBSERVERS_DISPOSE_ID
+            | crate::ask_store::WITHDRAW_ID
+            | crate::functions::link_card::ID => {
                 // In-turn controls always target their caller. External console
                 // calls bypass this chokepoint and continue supplying session_id.
                 let args = with_caller_session_id(arguments, session_id);
@@ -428,6 +430,8 @@ pub fn is_locally_intercepted(
 /// ordinary provider and public state calls remain valid.
 fn agent_call_forbidden(function_id: &str) -> bool {
     function_id.starts_with("harness::delete-session-tree")
+        || function_id == crate::ask_store::ANSWER_ID
+        || function_id == "kanban::question::answer"
         || function_id == crate::state::CLAIM_NAMESPACE_ID
         || function_id == crate::bindings::OBSERVERS_DISPOSE_ID
         || function_id == crate::functions::EDIT_QUEUED_ID
@@ -2850,6 +2854,8 @@ pub(crate) mod tests {
     }
 
     const AGENT_FORBIDDEN_CALLS: &[&str] = &[
+        "harness::ask::answer",
+        "kanban::question::answer",
         "harness::state::get",
         "harness::state::list",
         "harness::state::compare-and-set",

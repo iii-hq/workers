@@ -716,6 +716,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     crate::budget::purge(deps, id, timeout).await?;
     crate::context_snapshot::delete(&deps.iii, id, timeout).await?;
     crate::ask_settlement::purge(deps, id, timeout).await?;
+    crate::ask_store::purge(deps, id).await?;
     crate::side_chat::delete_lock(deps, id).await?;
     // Approval owns its data. Its existing purge is best effort; explicitly
     // read the inbox afterwards so a failed purge cannot be reported completed.

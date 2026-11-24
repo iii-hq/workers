@@ -713,7 +713,7 @@ pub(crate) async fn injection(
         return out;
     };
     // Fail-soft semantic signal; lexical-only when it misses.
-    let query_vec = crate::embed_client::query_vector(deps, &query).await;
+    let query_vec = crate::embed_client::query_vector(deps, &query).await.ok();
     out.retrieval = if query_vec.is_some() {
         "bm25-entity-semantic"
     } else {
@@ -4354,6 +4354,23 @@ Formal."
     }
 
     #[test]
+    fn known_limit_a_handle_spelled_another_way_is_another_subject() {
+        // Subjects compare handle strings: a line tagged with the named
+        // subject spelled another way is on another subject, so extraction
+        // must reuse the bank's handle.
+        for (entities, told) in [
+            (&["payments-api"][..], true),
+            (&["payments api"], false),
+            (&["payment-api"], false),
+        ] {
+            let near = minilm(&["api"], 0.448, 0.432, 1.72);
+            let hits = vec![escalation(), (on_ledger(entities), near)];
+            let ids = kept(hits, &HashSet::new(), 6);
+            assert_eq!(ids.contains(&"fp-ledger".to_string()), told, "{entities:?}");
+        }
+    }
+
+    #[test]
     fn no_named_subject_gates_nothing() {
         // No hit holds every word of one of its entities (`payments` without
         // `api`): kai's line stands on the share of the best, as before.
@@ -4846,6 +4863,8 @@ Formal."
                     entities: None,
                     tags: None,
                     pinned: None,
+                    expected_memory: None,
+                    reason: None,
                 },
             )
             .await
@@ -4942,6 +4961,8 @@ Formal."
                 entities: None,
                 tags: None,
                 pinned: Some(true),
+                expected_memory: None,
+                reason: None,
             },
         )
         .await

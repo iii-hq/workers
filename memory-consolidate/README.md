@@ -1,6 +1,6 @@
 # memory-consolidate
 
-Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. A memory from the user always survives over a note an agent saved from a turn, and that note never retires it. An opt-in verify tier checks notes against their source transcript and replaces a note the transcript contradicts. Every write goes through memory's supersede and correct seams (`memory::supersede`, `memory::correct`), pinned memories untouchable, every change visible as a `memory::on-item-changed` event. Install, stop, or remove it without touching stored memory.
+Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. A memory from the user always survives over a note an agent saved from a turn, and that note never retires it. An alias tier retags memories whose entity handle is another spelling of a handle the bank already uses. An opt-in verify tier checks notes against their source transcript and replaces a note the transcript contradicts. Every write goes through memory's supersede, update and correct seams (`memory::supersede`, `memory::update`, `memory::correct`), pinned memories untouchable, every change visible as a `memory::on-item-changed` event. Install, stop, or remove it without touching stored memory.
 
 ## Install
 
@@ -18,7 +18,7 @@ Plan without writing; the `run` response is the plan:
 iii call memory-consolidate::run dry_run=true
 ```
 
-A dry run is read-only: it reports the deterministic groups, skips the LLM, semantic and verify tiers (no recall, embedding, transcript, model or rule calls), and writes no memory, cursor, pass report or `last_run`, so `memory-consolidate::status` keeps showing the last real pass. The configured `dry_run: true` (scheduled planning mode) makes the same read-only plan but records it in `reports` and checkpoints `last_run`, so the schedule still waits `interval_hours` between passes.
+A dry run is read-only: it reports the deterministic groups and the alias pairs it would merge, skips the LLM, semantic and verify tiers and the alias judge (no recall, embedding, transcript, model or rule calls), and writes no memory, cursor, pass report or `last_run`, so `memory-consolidate::status` keeps showing the last real pass. The configured `dry_run: true` (scheduled planning mode) makes the same read-only plan but records it in `reports` and checkpoints `last_run`, so the schedule still waits `interval_hours` between passes.
 
 Apply for one bank only:
 
@@ -33,26 +33,29 @@ The report names every group: the surviving memory, the retired duplicates, and 
 | Function | Input | What it does |
 |---|---|---|
 | `memory-consolidate::run` | `{ bank?, dry_run? }` | One consolidation pass on demand, over every configured bank or one bank; returns the per-bank report |
-| `memory-consolidate::status` | `{}` | The schedule and the last passes: `enabled`, `interval_hours`, `last_run`, `due`, and `reports`, the last 30 pass reports newest first (`{ ms, dry_run, banks }`, each bank with its LLM calls, tokens and cost; only the newest keeps its banks' `groups` and `semantic` lists) |
+| `memory-consolidate::status` | `{}` | The schedule and the last passes: `enabled`, `interval_hours`, `last_run`, `due`, and `reports`, the last 30 pass reports newest first (`{ ms, dry_run, banks }`, each bank with its LLM calls, tokens and cost; only the newest keeps its banks' `groups`, `aliases` and `semantic` lists) |
+| `memory-consolidate::alias-undo` | `{ bank, from }` | Undo an alias merge: the pair turns `distinct` in the ledger, then each memory the merge retagged that is live, unpinned, still carries the canonical handle and does not already carry `from` gets it back; returns `{ bank, from, to, restored, skipped }`. Operator-only, like `run` |
 | `memory-consolidate::on-tick` | the `cron::on-tick` event | Internal: the schedule heartbeat |
 | `memory-consolidate::on-config-change` | the `configuration::on-updated` event | Internal: hot-reloads the configuration |
-| `memory-consolidate::rest` | the http worker's `HttpRequest` | Internal: serves the `run` and `status` REST routes |
+| `memory-consolidate::rest` | the http worker's `HttpRequest` | Internal: serves the `run`, `status` and `alias-undo` REST routes |
 
 The worker hosts no observable events of its own: every change it makes is a `memory::on-item-changed` call of the memory worker. It observes:
 
 - `cron::on-tick` with args `{ expression: "0 0 * * * *" }`, target `memory-consolidate::on-tick`;
 - `configuration::on-updated`, filtered on its own entry id and `configuration:updated`, target `memory-consolidate::on-config-change`;
-- `http::on-request` with args `{ method: "POST", path }` for `run` and `status` (`POST /memory-consolidate/run`, `POST /memory-consolidate/status`), target `memory-consolidate::rest` (internal). It receives the `HttpRequest`, runs the function with the request's JSON body as its input (an empty body is `{}`), and returns the `HttpResponse`: `200` with the function's result, or `{ error }` with `400` (the body does not fit the input), `404` or `500` (the function failed, a bank outside the allowlist included). `curl -X POST localhost:3111/memory-consolidate/run -H 'content-type: application/json' -d '{"bank":"blog","dry_run":true}'` plans one bank.
+- `http::on-request` with args `{ method: "POST", path }` for `run`, `status` and `alias-undo` (`POST /memory-consolidate/run`, `POST /memory-consolidate/status`, `POST /memory-consolidate/alias-undo`), target `memory-consolidate::rest` (internal). It receives the `HttpRequest`, runs the function with the request's JSON body as its input (an empty body is `{}`), and returns the `HttpResponse`: `200` with the function's result, or `{ error }` with `400` (the body does not fit the input), `404` or `500` (the function failed, a bank outside the allowlist included). `curl -X POST localhost:3111/memory-consolidate/run -H 'content-type: application/json' -d '{"bank":"blog","dry_run":true}'` plans one bank.
 
 Each observer stays `pending` until its function registers, so the cron, configuration and http workers can boot in any order.
 
 ## Configuration
 
-All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass), `max_llm_calls_per_run` (200: `router::complete` calls per pass, the judge, semantic and verify tiers of every bank together; the rest waits for the next pass with a `deferred` note; 0 = no model calls), `verify_enabled` (off by default) and `verify_max_per_run` (20), see the verify tier below.
+All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass), `max_llm_calls_per_run` (200: `router::complete` calls per pass, the judge, alias, semantic and verify tiers of every bank together; the rest waits for the next pass with a `deferred` note; 0 = no model calls), `alias_merge_enabled` (on by default, see the alias tier below), `verify_enabled` (off by default) and `verify_max_per_run` (20), see the verify tier below.
+
+To run without model calls, set `max_llm_calls_per_run` to 0 (spelling aliases still merge, near pairs wait with a note), or turn off `alias_merge_enabled` and `semantic_enabled`; `llm_assist_enabled` and `verify_enabled` are off by default and call the model only when turned on.
 
 ### The model
 
-`llm_model` serves the judge, semantic and verify tiers. A pinned `provider::id` is used as written, and the router is not asked. Left empty, the model is automatic, by the same rule as memory's `extraction_model`:
+`llm_model` serves the judge, alias, semantic and verify tiers. A pinned `provider::id` is used as written, and the router is not asked. Left empty, the model is automatic, by the same rule as memory's `extraction_model`:
 
 1. A provider is usable when it is available and signed in, or owns its sign-in (no credential env var).
 2. Tier 1: the default model of the first usable provider, by provider id.
@@ -60,6 +63,32 @@ All fields hot-reload through the `configuration` worker: `enabled`, `interval_h
 4. An id that contains `embed` or `rerank` is never picked. With nothing left, the tier stops with a note that names each provider and why it was skipped.
 
 The pick is kept for 60 s, so a pass does not ask the router before every model call. It is logged at INFO when it changes, as `automatic consolidation model model=<provider::id> reason=<provider_default|first_listed_model>`. A failed `router::complete` call and a provider error reply both end in `(model <id>)`, so the pass notes name the model. On the judge tier, such an error is noted as `llm tier skipped`. The pick can change shortly after a restart, until every provider has finished its first model refresh, and a provider whose sign-in has expired can still be picked. Pin `llm_model` to rule this out.
+
+## The alias tier (on by default)
+
+The extraction model can write one thing under two entity handles: `build cache` on some memories and `build-cache` on others, or `dentista` beside `dentist`. Recall and the hook compare handles as strings, so the two read as two subjects. `alias_merge_enabled` (on by default) runs this tier on each bank right after the deterministic pass, on the same scan less the memories that pass retires. It retags in place: each memory carrying the alias gets the canonical handle through `memory::update` (same id, revision + 1, the prior revision stays in memory's log). Nothing is read through an alias map, so recall code is unchanged.
+
+**The rule.** Similarity is pg_trgm's: lowercase, split into runs of letters and digits, pad each word with two blanks before and one after, take every 3-character window, Jaccard of the two sets. A pair is a candidate only when every guard holds:
+
+1. Neither handle is `user`, the speaker's fixed handle. It is never retagged, and no handle is retagged into it.
+2. No live memory carries both. Two handles on one memory are two things; the pair is recorded as `distinct` and never asked about.
+3. Tier `spelling`: the same characters once whitespace, `-` and `_` are dropped, case aside, the rule memory's extraction snaps handles with (`build cache` / `build-cache`, `vs code` / `vscode`). It merges with no model call. Any other character counts: `c++` / `c#` and `c` / `c++` are `near` pairs for the judge, and `java 1.8` / `java 18` never pair (other words and digit runs).
+4. Otherwise tier `near` needs the same number of words, the same digit runs (`us-east-1` / `us-east-2`, `pg15` / `pg16` and `python` / `python3` never pair), each word pair equal or at 0.6 or more, and the whole handles at 0.6 or more (`dentist` / `dentista` 0.70, `postgres` / `postgresql` 0.67). `payments-api` / `ledger-api` fails twice: `payments` against `ledger` is 0.00, the whole handles 0.20.
+5. A handle with two or more candidate partners merges with none of them; its pairs are listed as ambiguous.
+
+The canonical handle is the one on more live memories, then the one whose first memory is older, then the smaller string.
+
+**The judge.** No similarity floor tells `dentist` / `dentista` from two people: `gabriel` / `gabriela` scores the same 0.70. So a `near` pair merges only after a `router::complete` judge says both handles name the very same person, project, place or tool (another spelling, a plural, another language's word for it); two people, two services, a product and its part are different, and when unsure, different. One call per bank per pass, only when the bank has a near pair with no recorded verdict, for at most 20 pairs, each with both handles and up to two memory texts each; the rest wait for the next pass. The reply is strict JSON, `{"pairs":[{"n":1,"same":true,"reason":"..."}]}`, and its output budget holds 20 verdicts. A reply cut short, that does not parse, or that answers a pair twice or numbers one outside the batch halves the batch, one call per half, as the semantic tier does. A pair that still fails alone is recorded `distinct` (`kept apart: no judge reply about this pair parsed`) once another reply of the pass parsed, so it never holds up the others; when no reply parsed, nothing is recorded and the pairs are asked again on the next pass. Every call counts in `llm_calls`, tokens and cost and against `max_llm_calls_per_run`. With no router, or the cap reached, near pairs stay in the report as `waits for the judge`, with a note.
+
+**The ledger.** Every decided pair is kept in the state worker (scope `memory_consolidate`, key `aliases:{bank}`): `{ from, to, tier, verdict, reason, ms, ids }`, `verdict` `same` or `distinct`, `ids` the memories the merge retagged. A `same` entry retags later memories that carry the alias with no judge call, and a `distinct` entry is never asked again. The entry is written before the retags; a ledger that cannot be read or saved skips the tier with a note, so it never judges or writes blind.
+
+**Writes.** Each retag is `memory::update { bank, id, entities, expected_memory, reason }`: `entities` is the memory's list with the alias replaced, order kept, repeats dropped; `expected_memory` is the record as this pass read it, so memory refuses one edited since; `reason` (`alias: dentista -> dentist (<why>)`) rides the `memory::on-item-changed` event. Pinned memories are never retagged and are listed in `skipped_pinned`. A memory whose retag would carry more than eight handles is left alone with a note: an older memory worker keeps only the first eight, which would drop `user`. Each retag spends one unit of `max_supersedes_per_run`; the rest counts in `capped` and waits for the next pass. A memory that absorbed a duplicate earlier in the same pass is retagged on the next pass. A failed retag is a bank error, so the pass stays due. A retag bumps `updated_at`, so the semantic and verify tiers look at that memory again. An older memory worker ignores `expected_memory` and `reason` and retags all the same.
+
+**Report.** Each bank lists `aliases`: `{ from, to, tier, similarity, applied, ids, skipped_pinned, reason }` per pair merged, judged distinct this pass, waiting for the judge, or ambiguous. A dry run lists what it would merge, `applied: false`, and never calls the judge or writes.
+
+**Undo.** `memory-consolidate::alias-undo { bank, from }` turns the pair's entry `distinct` first, so no pass merges it again, then puts `from` back on each recorded memory that is live, unpinned, still carries `to`, does not already carry `from` (on a memory with both, the merge or a person may have put `to` there, so undo drops neither; it is listed in `skipped` for a hand edit) and holds at most eight handles, with the reason `alias merge undone: <to> -> <from>`. A failed write leaves the rest for a second call. No pass merges `user`, so an entry naming it (written by hand) is refused, and `user` is never taken off or put on a memory.
+
+Not covered: accents (`júlia` / `julia` is 0.33), a name against a full name (`rafael` / `rafael souza`, different word counts), and aliases across two banks.
 
 ## The LLM tier (optional)
 
@@ -72,7 +101,7 @@ Fail-soft: an unavailable router just skips the tier (named in the report's `not
 
 ## The semantic tier (on by default)
 
-`semantic_enabled` (on by default; set it to `false` to run without model calls) runs one more tier, last, on a fresh fetch. It costs one `router::complete` call per 8 new memories, capped at `semantic_max_per_run` per bank per pass. Without a router or an embed provider, it stops with a note and never blocks the pass. While memories still lack a vector, it waits with a note (see **Vectors still landing** below). Its calls count in the bank's `llm_calls`, `llm_input_tokens`, `llm_output_tokens` and `llm_cost_usd`, and it is `deferred` with a note once the pass reaches `max_llm_calls_per_run`. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
+`semantic_enabled` (on by default; `false` stops this tier's model calls only, the alias judge still calls the model: see above for a pass with none) runs one more tier, last, on a fresh fetch. It costs one `router::complete` call per 8 new memories, capped at `semantic_max_per_run` per bank per pass. Without a router or an embed provider, it stops with a note and never blocks the pass. While memories still lack a vector, it waits with a note (see **Vectors still landing** below). Its calls count in the bank's `llm_calls`, `llm_input_tokens`, `llm_output_tokens` and `llm_cost_usd`, and it is `deferred` with a note once the pass reaches `max_llm_calls_per_run`. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
 
 - **merge**: both state the same fact (paraphrase, another language). The duplicate retires and the survivor absorbs its observations. The survivor must keep every detail; when both are equally complete, the older one survives. A merge the judge gives to an agent's note over a memory that is not one is swapped, so the user's line survives and the note retires into it (the number and operator checks then apply to the swapped pair), and an agent's note merged into another memory adds nothing to it.
 - **supersede**: a state change ("moved to", "switched to", a rescheduled date). The outdated record retires in favour of the current one, which is the one stated last.
@@ -148,8 +177,8 @@ Normalization keeps operators and signs (`<`, `<=`, `!=`, `+`, `#`, `-5`) and an
 
 ## Boundaries
 
-- Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call; never from an agent's note, which is not the user saying it again, nor from a `demoted-rule` line, so its count cannot carry a twin back into the rule), or `memory::correct` for the verify tier — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::on-item-changed` events.
-- Pinned memories are never superseded, even inside a duplicate group.
+- Never touches memory's files; every mutation goes through `memory::update` for an alias retag, `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call; never from an agent's note, which is not the user saying it again, nor from a `demoted-rule` line, so its count cannot carry a twin back into the rule), or `memory::correct` for the verify tier — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::on-item-changed` events.
+- Pinned memories are never superseded, even inside a duplicate group, and never retagged.
 - Every `memory::supersede` carries `expected_memory` and `expected_superseded_by`, both records as this pass read them, so a memory worker that knows these guards refuses a record edited since; the pass reports the error and stays due. An older memory worker ignores the fields.
 - A memory worker whose `memory::recall` does not report `vector_coverage` is judged as before, with one note per bank: `memory worker did not report vector coverage; semantic tier judged without knowing it; upgrade memory`.
 - Every `memory::rule::set` of `learned` carries `expected`, the rule as this pass last read it, so the memory worker refuses it with `rule_changed` when the rule changed since. An older memory worker ignores `expected` and writes unguarded.

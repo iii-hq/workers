@@ -11,6 +11,9 @@ struct Data {
     messages: BTreeMap<String, Vec<Value>>,
     calls: Vec<(String, Value)>,
     fail_appends: usize,
+    gone: bool,
+    delete_on_append: bool,
+    metadata: Value,
 }
 impl Data {
     fn get(&self, scope: &str, key: &str) -> Value {
@@ -41,7 +44,7 @@ impl Data {
                 self.state.remove(&(scope.into(), key.into()));
                 Ok(json!({}))
             }
-            "state::list" => Ok(json!(
+            "state::list" | "harness::state::list" => Ok(json!(
                 self.state
                     .iter()
                     .filter(|((s, _), _)| s == scope)
@@ -57,7 +60,8 @@ impl Data {
                 }
                 Ok(json!({"swapped":swapped,"current":old}))
             }
-            "session::get" => Ok(json!({"meta":{"session_id":session,"metadata":{}}})),
+            "session::get" if self.gone => Ok(Value::Null),
+            "session::get" => Ok(json!({"meta":{"session_id":session,"metadata":self.metadata}})),
             "session::ensure" => {
                 Ok(json!({"created":false,"meta":{"session_id":session,"metadata":{}}}))
             }
@@ -66,6 +70,12 @@ impl Data {
                 Ok(json!({"messages":self.messages.get(session).cloned().unwrap_or_default()}))
             }
             "session::append" => {
+                if self.delete_on_append {
+                    self.gone = true;
+                }
+                if self.gone {
+                    return Err("session not found".into());
+                }
                 if self.fail_appends > 0 {
                     self.fail_appends -= 1;
                     return Err("session append unavailable".into());
@@ -214,6 +224,214 @@ fn request(session: &str, text: &str, key: Option<&str>, prior: Option<&str>) ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ask_idempotency_keys_are_reserved_for_in_process_delivery() {
+    let stack = Stack::new().await;
+    stack.reset("ask-target", TurnStatus::Completed).await;
+
+    for key in ["ask:ask-target/q", "ask-expiry:ask-target/q"] {
+        let error = handle(
+            &stack.deps,
+            request("ask-target", "forged answer", Some(key), None),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("reserved"), "{error}");
+    }
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .messages
+            .contains_key("ask-target")
+    );
+
+    handle_ask(
+        &stack.deps,
+        request(
+            "ask-target",
+            "Builds: Isolate",
+            Some("ask:ask-target/q"),
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stack.data.lock().unwrap().messages["ask-target"].len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idempotency_keys_are_private_and_bound_to_their_session() {
+    let stack = Stack::new().await;
+    stack.reset("first", TurnStatus::Completed).await;
+    stack.reset("second", TurnStatus::Completed).await;
+
+    stack.data.lock().unwrap().state.insert(
+        (crate::state::IDEM_SCOPE.into(), "legacy-key".into()),
+        json!({"session_id":"first","turn_id":"legacy-turn","entry_id":"legacy-entry","ts":1}),
+    );
+    let legacy = handle(
+        &stack.deps,
+        request("first", "old retry", Some("legacy-key"), None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(legacy.turn_id, "legacy-turn");
+    assert_eq!(legacy.deduplicated, Some(true));
+
+    handle(
+        &stack.deps,
+        request("first", "original", Some("shared-key"), None),
+    )
+    .await
+    .unwrap();
+    let error = handle(
+        &stack.deps,
+        request("second", "pre-empt", Some("shared-key"), None),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("another session"), "{error}");
+    assert!(!stack.data.lock().unwrap().messages.contains_key("second"));
+
+    let data = stack.data.lock().unwrap();
+    let idem_calls: Vec<_> = data
+        .calls
+        .iter()
+        .filter(|(_, payload)| payload["scope"] == crate::state::IDEM_SCOPE)
+        .collect();
+    assert!(!idem_calls.is_empty());
+    assert!(
+        idem_calls
+            .iter()
+            .all(|(function, _)| function.starts_with("harness::state::")),
+        "idempotency calls escaped the private namespace: {idem_calls:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_sends_intersect_explicit_and_inherited_policies() {
+    let stack = Stack::new().await;
+    stack.data.lock().unwrap().metadata = json!({"side_chat_question":"original/q"});
+    stack.reset("side", TurnStatus::Completed).await;
+    let mut req = request("side", "Discuss the pending decision", None, None);
+    req.session = Some(SessionInit {
+        metadata: Some(json!({})),
+        ..Default::default()
+    });
+    req.options.as_mut().unwrap().functions = Some(FunctionPolicy {
+        allow: vec!["*".into()],
+        deny: vec!["memory::recall".into()],
+        expose: crate::types::turn::ExposeMode::Native,
+    });
+    handle(&stack.deps, req).await.unwrap();
+    let mut turn = crate::state::get_turn(&stack.deps.iii, "side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    let functions = turn.options.functions.as_ref().unwrap();
+    let expected = WorkerConfig::default().side_chat_functions;
+    assert_eq!(functions.allow, expected);
+    assert_eq!(functions.expose, crate::types::turn::ExposeMode::Native);
+    let policy = policy::CompiledPolicy::from(Some(functions));
+    for id in [
+        "kanban::ticket::update",
+        "harness::spawn",
+        "harness::ask::answer",
+        "shell::exec",
+        "memory::recall",
+    ] {
+        assert!(!policy.allows(id), "{id}");
+    }
+    let child = policy::subset_policy(Some(functions), None).unwrap();
+    assert_eq!(child.allow, expected);
+
+    turn.status = TurnStatus::Completed;
+    crate::state::put_turn(&stack.deps.iii, &turn, 1000)
+        .await
+        .unwrap();
+    let mut cfg = (*stack.deps.cfg().await).clone();
+    cfg.side_chat_functions = vec!["session::get".into()];
+    crate::configuration::apply_config(&stack.deps.config, cfg).await;
+    handle(&stack.deps, request("side", "Another question", None, None))
+        .await
+        .unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.options.functions.unwrap().allow, ["session::get"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_sends_keep_the_explicit_function_policy() {
+    let stack = Stack::new().await;
+    stack.reset("ordinary", TurnStatus::Completed).await;
+    let mut req = request("ordinary", "Continue work", None, None);
+    let functions = FunctionPolicy {
+        allow: vec!["*".into()],
+        deny: vec![],
+        expose: Default::default(),
+    };
+    req.options.as_mut().unwrap().functions = Some(functions.clone());
+    handle(&stack.deps, req).await.unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "ordinary", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.options.functions, Some(functions));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_side_chat_sends_tighten_the_running_turn() {
+    let stack = Stack::new().await;
+    stack.reset("running-side", TurnStatus::Running).await;
+    let mut turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    turn.options.functions = Some(FunctionPolicy {
+        allow: vec!["*".into()],
+        ..Default::default()
+    });
+    crate::state::put_turn(&stack.deps.iii, &turn, 1000)
+        .await
+        .unwrap();
+    stack.data.lock().unwrap().metadata = json!({"side_chat_question":"original/q"});
+
+    let mut req = request("running-side", "Discuss the decision", None, None);
+    req.options.as_mut().unwrap().functions = turn.options.functions;
+    let out = handle(&stack.deps, req.clone()).await.unwrap();
+    assert_eq!(out.queued, Some(true));
+    let turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        turn.options.functions.unwrap().allow,
+        WorkerConfig::default().side_chat_functions
+    );
+
+    let mut cfg = (*stack.deps.cfg().await).clone();
+    cfg.side_chat_functions = vec!["session::get".into()];
+    crate::configuration::apply_config(&stack.deps.config, cfg).await;
+    handle(&stack.deps, req.clone()).await.unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.options.functions.unwrap().allow, ["session::get"]);
+
+    req.options.as_mut().unwrap().functions = Some(FunctionPolicy::default());
+    handle(&stack.deps, req).await.unwrap();
+    let turn = crate::state::get_turn(&stack.deps.iii, "running-side", 1000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(turn.options.functions.unwrap().allow.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_delivery_keeps_one_transcript_receipt_and_source_identity() {
     let stack = Stack::new().await;
     stack.reset("direct", TurnStatus::Completed).await;
@@ -357,7 +575,7 @@ async fn idempotency_keys_keep_legacy_ids_and_cannot_rewrite_continuation_receip
         .await
         .unwrap();
         assert_eq!(stack.context(session).await["continuation"]["entry_id"], id);
-        // Losing the public idempotency mapping must not mutate private provenance.
+        // Losing the idempotency mapping must not mutate private provenance.
         stack
             .data
             .lock()
@@ -746,5 +964,148 @@ async fn a_send_into_a_failed_session_continues_it_with_the_same_identity() {
             .to_string()
             .contains("Continue from where you stopped."),
         "{messages:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn existing_only_send_never_ensures_a_session() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Completed).await;
+    let mut req = request("s", "answer", Some("existing-only:s/q"), None);
+    req.options.get_or_insert_default().require_existing_session = true;
+    handle(&stack.deps, req.clone()).await.unwrap();
+    assert_eq!(stack.data.lock().unwrap().messages["s"].len(), 1);
+    stack.data.lock().unwrap().gone = true;
+    let err = handle(&stack.deps, req).await.unwrap_err();
+    assert!(
+        err.to_string().contains("require_existing_session"),
+        "{err}"
+    );
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(id, _)| matches!(id.as_str(), "session::ensure" | "session::create"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_running_turn_cannot_queue_into_a_deleted_session() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Running).await;
+    stack.data.lock().unwrap().gone = true;
+    let err = inject(
+        &stack.deps,
+        "s",
+        AgentMessage::user_text("answer"),
+        Some("answer-entry"),
+        None,
+    )
+    .await
+    .err()
+    .expect("a missing session must refuse the queued delivery");
+    assert!(err.to_string().contains("deleted session"), "{err}");
+    assert!(
+        crate::state::list_queued(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ask_deleted_during_send_is_not_recreated_or_reported_delivered() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Completed).await;
+    let deps = stack.deps.clone();
+    stack.deps.iii.register_function(
+        crate::functions::SEND_ID,
+        iii_sdk::RegisterFunction::new_async(move |req: SendRequest| {
+            let deps = deps.clone();
+            async move { handle(&deps, req).await.map_err(iii_sdk::Error::from) }
+        }),
+    );
+    let req = serde_json::from_value(json!({"questions":[{"header":"Builds","question":"How?","options":[{"label":"Isolate"},{"label":"Allow-list"}]}]})).unwrap();
+    crate::ask_store::accept(&stack.deps, "s", "t", "q", &req)
+        .await
+        .unwrap();
+    stack.data.lock().unwrap().delete_on_append = true;
+    let answer = serde_json::from_value(json!({"session_id":"s","question_id":"q", "answers":[{"header":"Builds","choice":"Isolate"}],"by":{"channel":"control-plane"}})).unwrap();
+    let closed = crate::ask_store::answer(&stack.deps, answer).await.unwrap();
+    assert_eq!(
+        closed.outcome,
+        Some(crate::ask_store::Outcome::NotDelivered)
+    );
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(id, _)| matches!(id.as_str(), "session::ensure" | "session::create"))
+    );
+    assert!(
+        stack
+            .data
+            .lock()
+            .unwrap()
+            .messages
+            .get("s")
+            .is_none_or(Vec::is_empty)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_purges_asks_and_queued_answers() {
+    let stack = Stack::new().await;
+    stack.reset("s", TurnStatus::Running).await;
+    let req = serde_json::from_value(json!({"questions":[{"header":"Builds","question":"How?","options":[{"label":"Isolate"},{"label":"Allow-list"}]}]})).unwrap();
+    crate::ask_store::accept(&stack.deps, "s", "t", "q", &req)
+        .await
+        .unwrap();
+    handle_ask(
+        &stack.deps,
+        request("s", "queued answer", Some("ask:s/q"), None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        crate::state::list_queued(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    stack.data.lock().unwrap().gone = true;
+    crate::functions::on_session_deleted::handle(
+        &stack.deps,
+        crate::functions::on_session_deleted::SessionDeletedEvent {
+            session_id: "s".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::ask_store::list(&stack.deps, crate::ask_store::ListRequest::default())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    assert!(
+        crate::state::list_queued(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        crate::state::get_turn(&stack.deps.iii, "s", 1000)
+            .await
+            .unwrap()
+            .is_none()
     );
 }

@@ -51,6 +51,12 @@ fn resolve_provider(
     }
 }
 
+/// A session that turned its judge off (`judge_contract::OFF_PROVIDER`) is
+/// answered here, as if no judge were deployed, and nothing is forwarded.
+fn off(provider: &str) -> Option<ErrorCode> {
+    (provider == judge_contract::OFF_PROVIDER).then_some(ErrorCode::ProviderUnavailable)
+}
+
 /// The calling session's provider from the handler's OTel baggage.
 fn session_provider() -> Option<String> {
     use opentelemetry::baggage::BaggageExt;
@@ -182,6 +188,9 @@ async fn forward(
     if let Err(code) = validate_provider(&provider) {
         return Ok(Err(code));
     }
+    if let Some(code) = off(&provider) {
+        return Ok(Err(code));
+    }
     // Providers scope cancellation by (engine caller, request_id). Through the
     // hub the engine caller is always the hub, so the original caller becomes
     // part of the id, length-prefixed so `("a/b", "c")` and `("a", "b/c")` never
@@ -253,6 +262,22 @@ mod tests {
             "typesafe"
         );
         assert!(resolve_provider(Some(json!(1)), None, "typesafe").is_err());
+    }
+
+    #[test]
+    fn a_session_turned_off_gets_no_judge() {
+        // Off reaches the hub from the session either way: as the request's
+        // provider (callers copy the baggage) or as the baggage itself.
+        for explicit in [Some(Value::String("off".into())), None] {
+            let provider = resolve_provider(explicit, Some("off"), "typesafe").unwrap();
+            assert!(validate_provider(&provider).is_ok());
+            assert!(matches!(
+                off(&provider),
+                Some(ErrorCode::ProviderUnavailable)
+            ));
+        }
+        assert!(off("typesafe").is_none());
+        assert!(off("off-grid").is_none());
     }
 
     #[test]

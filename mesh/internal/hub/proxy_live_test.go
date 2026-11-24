@@ -49,7 +49,7 @@ func TestRunningProxyMeshClaim(t *testing.T) {
 	h.Namespace = "default"
 	h.config.ProxyURL = proxyURL
 	// Extra operator call grants must never widen observer visibility.
-	h.defaults = GrantDefaults{Allow: []string{"hub::collision", "ade::ui::asset", "state::on-changed"}}
+	h.defaults = GrantDefaults{Allow: []string{"echo::event", "ade::ui::asset", "state::on-changed"}}
 	h.Client = iii.New(engineURL, iii.WithName("mesh"), iii.WithNamespace("default"))
 	defer h.Client.Close()
 	if err := h.Client.Connect(ctx); err != nil {
@@ -90,9 +90,10 @@ func TestRunningProxyMeshClaim(t *testing.T) {
 	gatewayServer := httptest.NewServer(h.MeshGateway)
 	defer gatewayServer.Close()
 	endpoint := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
+	// The machine registers in the namespace named after it; the hub calls it there through the proxy.
 	roundTrip := func(name string) {
 		t.Helper()
-		node := iii.New(endpoint, iii.WithName(name), iii.WithNamespace("default"))
+		node := iii.New(endpoint, iii.WithName(name), iii.WithNamespace("laptop"))
 		defer node.Close()
 		if err := node.Connect(ctx); err != nil {
 			t.Fatal(err)
@@ -101,7 +102,7 @@ func TestRunningProxyMeshClaim(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitProxyTest(t, ctx, func() error {
-			out, err := node.Call(ctx, iii.CallRequest{FunctionID: "echo::ping", Namespace: "default", Payload: json.RawMessage(`{"through":"mesh"}`), Timeout: time.Second})
+			out, err := h.Client.Call(ctx, iii.CallRequest{FunctionID: "echo::ping", Namespace: "laptop", Payload: json.RawMessage(`{"through":"mesh"}`), Timeout: time.Second})
 			if err == nil {
 				var result map[string]any
 				if json.Unmarshal(out, &result) != nil || result["through"] != "mesh" {
@@ -224,11 +225,11 @@ func waitProxyTest(t *testing.T, ctx context.Context, f func() error) {
 
 func checkProxyObservers(t *testing.T, ctx context.Context, h *Hub, endpoint string) {
 	t.Helper()
-	// A hub function with the same bare spelling is still a foreign source.
-	if _, err := iii.RegisterFunctionTyped(h.Client, "hub::collision", func(_ context.Context, p json.RawMessage) (json.RawMessage, error) { return p, nil }); err != nil {
+	// The same id in two namespaces is two functions: the hub's echo::event is a foreign source.
+	if _, err := iii.RegisterFunctionTyped(h.Client, "echo::event", func(_ context.Context, p json.RawMessage) (json.RawMessage, error) { return p, nil }); err != nil {
 		t.Fatal(err)
 	}
-	node := iii.New(endpoint, iii.WithName("observing-node"), iii.WithNamespace("default"))
+	node := iii.New(endpoint, iii.WithName("observing-node"), iii.WithNamespace("laptop"))
 	defer node.Close()
 	if err := node.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -247,7 +248,7 @@ func checkProxyObservers(t *testing.T, ctx context.Context, h *Hub, endpoint str
 	}
 	// Wait for a call through the proxy to prove these registrations reached iii.
 	waitProxyTest(t, ctx, func() error {
-		_, err := h.Client.Call(ctx, iii.CallRequest{FunctionID: "laptop::echo::event", Namespace: "default", Payload: json.RawMessage(`{}`), Timeout: time.Second})
+		_, err := h.Client.Call(ctx, iii.CallRequest{FunctionID: "echo::event", Namespace: "laptop", Payload: json.RawMessage(`{}`), Timeout: time.Second})
 		return err
 	})
 	observe := func(source iii.Source, allow bool) *iii.ObserverHandle {
@@ -271,8 +272,8 @@ func checkProxyObservers(t *testing.T, ctx context.Context, h *Hub, endpoint str
 		}
 		return handle
 	}
-	own := observe(iii.Source{FunctionID: "echo::event", Namespace: "default", Capture: []iii.Capture{iii.CaptureOutput}}, true)
-	if _, err := h.Client.Call(ctx, iii.CallRequest{FunctionID: "laptop::echo::event", Namespace: "default", Payload: json.RawMessage(`{"own":true}`), Timeout: time.Second}); err != nil {
+	own := observe(iii.Source{FunctionID: "echo::event", Namespace: "laptop", Capture: []iii.Capture{iii.CaptureOutput}}, true)
+	if _, err := h.Client.Call(ctx, iii.CallRequest{FunctionID: "echo::event", Namespace: "laptop", Payload: json.RawMessage(`{"own":true}`), Timeout: time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -285,9 +286,9 @@ func checkProxyObservers(t *testing.T, ctx context.Context, h *Hub, endpoint str
 	}
 	own.Dispose(ctx)
 	for _, source := range []iii.Source{
-		{FunctionID: "hub::collision", Namespace: "default"},
+		{FunctionID: "echo::event", Namespace: "default"},
 		{FunctionID: "echo::event", Namespace: "foreign"},
-		{FunctionID: "desktop::echo::event", Namespace: "default"},
+		{FunctionID: "echo::event", Namespace: "desktop"},
 		{FunctionID: "state::on-changed", Namespace: "default"},
 		{FunctionID: "ade::ui::asset", Namespace: "default", Args: iii.Args{"path": "mesh/page.js", "kind": "script"}},
 		{FunctionID: "configuration::on-updated", Namespace: "default"},

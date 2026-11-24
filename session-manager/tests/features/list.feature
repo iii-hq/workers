@@ -3,9 +3,9 @@ Feature: session::list — pagination, ordering and filters
 
   Contract (session-manager.md § session::list): lists sessions with an
   opaque cursor, default order updated_desc (most recently active
-  first), optional status filter, and a metadata subset-equality filter
-  (the tenancy hook). Ties on the sort key break deterministically by
-  session id so pagination never skips or repeats.
+  first), optional status, kinds and roots filters, and a metadata
+  subset-equality filter (the tenancy hook). Ties on the sort key break
+  deterministically by session id so pagination never skips or repeats.
 
   # Prevents: a dashboard's "recent sessions" list ignoring activity —
   # updated_desc must surface the most recently *touched* session first.
@@ -120,6 +120,109 @@ Feature: session::list — pagination, ordering and filters
       """
     Then the response field "sessions" has length 1
     And the response field "sessions.0.session_id" is "s_002"
+
+  Scenario Outline: roots requires an absent spawned_by key and is opt-in
+    Given a bare session
+    And a session created with:
+      """
+      { "metadata": {} }
+      """
+    And a session created with:
+      """
+      { "metadata": { "parent_session_id": "parent" } }
+      """
+    And a session created with:
+      """
+      { "metadata": { "spawned_by": <marker> } }
+      """
+    When I call "session::list" with:
+      """
+      { "roots": true, "order": "created_asc" }
+      """
+    Then the response field "sessions" has length 3
+    And the response field "sessions.0.session_id" is "s_001"
+    And the response field "sessions.1.session_id" is "s_002"
+    And the response field "sessions.2.session_id" is "s_003"
+    And the response has no field "next_cursor"
+    When I call "session::list" with:
+      """
+      { "roots": false }
+      """
+    Then the response field "sessions" has length 4
+    When I call "session::list" with "{}"
+    Then the response field "sessions" has length 4
+    When I call "session::list" with:
+      """
+      { "roots": true, "metadata": { "spawned_by": <marker> } }
+      """
+    Then the response field "sessions" has length 0
+    And the response has no field "next_cursor"
+
+    Examples:
+      | marker  |
+      | "agent" |
+      | "other" |
+      | null    |
+      | false   |
+
+  Scenario Outline: roots combines with all filters before pagination in every order
+    Given a session created with:
+      """
+      { "kind": "automation", "metadata": { "owner": "u_1", "spawned_by": "agent" } }
+      """
+    And a session created with:
+      """
+      { "kind": "automation", "metadata": { "owner": "u_1" } }
+      """
+    And a session created with:
+      """
+      { "kind": "user", "metadata": { "owner": "u_1" } }
+      """
+    And a session created with:
+      """
+      { "kind": "automation", "metadata": { "owner": "u_1" } }
+      """
+    And a session created with:
+      """
+      { "kind": "automation", "metadata": { "owner": "u_2" } }
+      """
+    And a session created with:
+      """
+      { "kind": "automation", "metadata": { "owner": "u_1" } }
+      """
+    And I call "session::set-status" with:
+      """
+      { "session_id": "s_006", "status": "working" }
+      """
+    And a session created with:
+      """
+      { "kind": "automation", "metadata": { "owner": "u_1" } }
+      """
+    And a session created with:
+      """
+      { "kind": "automation", "metadata": { "owner": "u_1", "spawned_by": "agent" } }
+      """
+    When I call "session::list" with:
+      """
+      { "roots": true, "status": "idle", "kinds": ["automation"], "metadata": { "owner": "u_1" }, "order": "<order>", "limit": 2 }
+      """
+    Then the response field "sessions" has length 2
+    And the response field "sessions.0.session_id" is "<first>"
+    And the response field "sessions.1.session_id" is "s_004"
+    And I alias the response field "next_cursor" as "ROOTS_CURSOR"
+    When I call "session::list" with:
+      """
+      { "roots": true, "status": "idle", "kinds": ["automation"], "metadata": { "owner": "u_1" }, "order": "<order>", "limit": 2, "cursor": "${ROOTS_CURSOR}" }
+      """
+    Then the response field "sessions" has length 1
+    And the response field "sessions.0.session_id" is "<last>"
+    And the response has no field "next_cursor"
+
+    Examples:
+      | order        | first | last  |
+      | created_asc  | s_002 | s_007 |
+      | created_desc | s_007 | s_002 |
+      | updated_desc | s_007 | s_002 |
 
   # Prevents: pagination skipping or repeating sessions when walking
   # pages — even with identical timestamps (id tie-break).

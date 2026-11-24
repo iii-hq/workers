@@ -51,7 +51,7 @@ func TestRunWaitsForGatewayAndReconnectsWorkers(t *testing.T) {
 				namespace = metadata["namespace"]
 			}
 			if len(seen) == 3 && namespace != "" && !notified {
-				if namespace != "default" || !seen["mesh-node::status"] || !seen["mesh-node::workers::apply"] || !seen["mesh-node::catalog::apply"] {
+				if namespace != "laptop-2" || !seen["mesh-node::status"] || !seen["mesh-node::workers::apply"] || !seen["mesh-node::catalog::apply"] {
 					t.Errorf("registration namespace=%q handlers=%v", namespace, seen)
 				}
 				notified = true

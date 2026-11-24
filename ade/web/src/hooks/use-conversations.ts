@@ -55,6 +55,7 @@ import { upsertSavedFolder } from '@/lib/backend/folders'
 import { assignProject, projectOf } from '@/lib/backend/projects'
 import { getChatCapabilities } from '@/lib/chat-capabilities'
 import { retireChatDraftSeed } from '@/lib/chat-draft-seeds'
+import { summarizeChatTitle } from '@/lib/chat-title'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import {
@@ -1304,6 +1305,12 @@ export function bumpSessionWatchEpoch(
   return next
 }
 
+/** Not a person's ask: any non-user row, or a client-handled command row
+ *  (`/compact`), which starts no turn and does not name the chat. */
+function isNotAnAsk(m: Message): boolean {
+  return m.role !== 'user' || m.command === true
+}
+
 export function appendMessageToConversation(
   c: Conversation,
   message: Message,
@@ -1338,11 +1345,7 @@ export function appendMessageToConversation(
     next.status = 'working'
     next.statusReason = undefined
   }
-  if (
-    !c.titleManual &&
-    startsTurn &&
-    c.messages.every((m) => m.role !== 'user')
-  ) {
+  if (!c.titleManual && startsTurn && c.messages.every(isNotAnAsk)) {
     next.title = deriveTitle(message.content)
   }
   return next
@@ -3044,13 +3047,17 @@ export function useConversations(
   const metaWriteQueueRef = useRef(
     new Map<string, { title?: string; keys: Set<string> }>(),
   )
+  /** Each session's last metadata write, so the next one waits for it. */
+  const metaWriteChainRef = useRef(new Map<string, Promise<void>>())
 
   /* Every edit of one tick lands as ONE write, built after the last of them:
      a model pick also sets that model's effort (two setters, one handler),
      and a write built between the two would carry only half of the pick.
-     ponytail: writes from different ticks are not ordered, and the backend
-     may apply two in flight either way; a revision check on set-meta is the
-     upgrade path if that ever shows up. */
+     Writes for one session go out one at a time and each is built when it
+     goes, from the live mirror: set-meta replaces the stored metadata
+     wholesale, so an automatic heading that was still in flight can never
+     land after (and undo) a rename, and a write that waited carries the
+     latest title and `title_manual`, not the ones of its own tick. */
   const writeMeta = useCallback(
     (id: string, title?: string, keys: readonly string[] = []) => {
       const queue = metaWriteQueueRef.current
@@ -3065,27 +3072,37 @@ export function useConversations(
         const entry = queue.get(id)
         queue.delete(id)
         const queuedTitle = entry?.title
-        const conv = conversationsRef.current.find((c) => c.id === id)
-        if (!serverEnabled || !conv || conv.draft) return
-        // A read-only session keeps its metadata; only a rename is written.
-        if (conv.sessionMetadata?.read_only === true && !queuedTitle) return
-        const full = metadataForWrite(conv)
-        const write = getChatCapabilities().patchMeta
-          ? patchSessionMeta({
-              session_id: id,
-              ...(queuedTitle ? { title: queuedTitle } : {}),
-              ...(conv.sessionMetadata?.read_only === true
-                ? {}
-                : consoleMetadataPatch(full, entry?.keys)),
-            })
-          : setSessionMeta({
-              session_id: id,
-              ...(queuedTitle ? { title: queuedTitle } : {}),
-              metadata: full,
-            })
-        void write.catch((err) => {
-          if (import.meta.env.DEV)
-            console.warn('[conversations] set_meta failed', err)
+        if (!serverEnabled) return
+        const chains = metaWriteChainRef.current
+        const write = (chains.get(id) ?? Promise.resolve()).then(async () => {
+          const conv = conversationsRef.current.find((c) => c.id === id)
+          if (!conv || conv.draft) return
+          // A read-only session keeps its metadata; only a rename is written.
+          if (conv.sessionMetadata?.read_only === true && !queuedTitle) return
+          // A write that waited carries the latest title, not its tick's.
+          const title = queuedTitle ? conv.title || queuedTitle : undefined
+          const full = metadataForWrite(conv)
+          const written = getChatCapabilities().patchMeta
+            ? patchSessionMeta({
+                session_id: id,
+                ...(title ? { title } : {}),
+                ...(conv.sessionMetadata?.read_only === true
+                  ? {}
+                  : consoleMetadataPatch(full, entry?.keys)),
+              })
+            : setSessionMeta({
+                session_id: id,
+                ...(title ? { title } : {}),
+                metadata: full,
+              })
+          await Promise.resolve(written).catch((err) => {
+            if (import.meta.env.DEV)
+              console.warn('[conversations] set_meta failed', err)
+          })
+        })
+        chains.set(id, write)
+        void write.then(() => {
+          if (chains.get(id) === write) chains.delete(id)
         })
       })
     },
@@ -3396,14 +3413,59 @@ export function useConversations(
     [patchConversation],
   )
 
+  /* The first ask names the chat twice: at once with its opening words
+     (appendMessageToConversation), then with a short heading the chat's
+     model writes. The heading replaces the words only while they are still
+     the title, so a rename made in the meantime wins. */
+  const requestHeading = useCallback(
+    (id: string, prompt: string, model: ModelId | null, derived: string) => {
+      void getIiiClient()
+        .then((client) =>
+          summarizeChatTitle(client, { sessionId: id, prompt, model }),
+        )
+        .then((heading) => {
+          const current = conversationsRef.current.find((c) => c.id === id)
+          if (
+            !heading ||
+            !current ||
+            current.titleManual ||
+            current.title !== derived ||
+            heading === derived
+          )
+            return
+          editMeta(id, (c) => ({ ...c, title: heading }), heading)
+        })
+        .catch(() => {})
+    },
+    [editMeta],
+  )
+
   const appendMessage = useCallback(
-    (id: string, message: Message) =>
+    (id: string, message: Message) => {
+      const before = conversationsRef.current.find((c) => c.id === id)
       patchConversation(id, (c) =>
         c.sessionMetadata?.read_only === true
           ? c
           : appendMessageToConversation(c, message),
-      ),
-    [patchConversation],
+      )
+      if (
+        serverEnabled &&
+        before &&
+        before.sessionMetadata?.read_only !== true &&
+        !before.titleManual &&
+        message.role === 'user' &&
+        !message.command &&
+        before.messages.every(isNotAnAsk)
+      ) {
+        requestHeading(
+          id,
+          message.content,
+          before.model,
+          deriveTitle(message.content),
+        )
+      }
+    },
+    [patchConversation, requestHeading, serverEnabled],
   )
 
   const updateMessage = useCallback(

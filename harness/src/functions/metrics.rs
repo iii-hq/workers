@@ -781,7 +781,7 @@ fn session_context<T>(snapshot: Option<T>, omit: bool) -> (Option<T>, bool) {
 /// function takes the session a caller is holding, so this one accepts it too
 /// and reports the whole tree that session belongs to rather than refusing the
 /// id. A root (or an orphan) walks zero steps.
-async fn resolve_root(deps: &Deps, session_id: &str) -> Result<String, HarnessError> {
+pub(crate) async fn resolve_root(deps: &Deps, session_id: &str) -> Result<String, HarnessError> {
     let session = deps.session().await;
     resolve_root_with_metadata(session_id, |id| {
         let session = session.clone();

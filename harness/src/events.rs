@@ -30,6 +30,9 @@ use serde_json::Value;
 use crate::surface::schema_value;
 use crate::types::turn::ParentLink;
 
+pub const ON_ASK_FN: &str = "harness::on-ask";
+pub const ON_ASK_SETTLED_FN: &str = "harness::on-ask-settled";
+
 pub const ON_TURN_STARTED_FN: &str = "harness::on-turn-started";
 pub const ON_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
 pub const ON_MESSAGE_QUEUED_FN: &str = "harness::on-message-queued";
@@ -70,6 +73,8 @@ pub struct TurnStartedEvent {
 /// `terminal: true` when its last wake is gone.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TurnCompletedEvent {
+    #[serde(default)]
+    pub open_asks: usize,
     pub session_id: String,
     pub turn_id: String,
     /// `completed`, `cancelled` or `failed`.
@@ -264,6 +269,15 @@ impl TurnEvents {
              input.session_id, or on input.parent.session_id / input.parent_session_id.",
             schema_value::<TurnCompletedEvent>(),
         );
+        for id in [ON_ASK_FN, ON_ASK_SETTLED_FN] {
+            iii.on_observer_added_for(id, refuse_spawn_target);
+            register_event(
+                iii,
+                id,
+                "A durable ask was accepted or changed state. Carries the whole entry; filter on input.session_id.",
+                schema_value::<crate::ask_store::Entry>(),
+            );
+        }
         register_event(
             iii,
             ON_MESSAGE_QUEUED_FN,
@@ -412,6 +426,7 @@ impl TurnEvents {
         display_parent: Option<&str>,
         terminal: bool,
         context: Option<&crate::context_snapshot::ContextSnapshotV1>,
+        open_asks: usize,
     ) {
         tracing::info!(
             session_id,
@@ -434,6 +449,7 @@ impl TurnEvents {
             "turn_id": turn_id,
             "status": status,
             "terminal": terminal,
+            "open_asks": open_asks,
             "timestamp": now_ms(),
         });
         if let Some(r) = result {
@@ -452,6 +468,14 @@ impl TurnEvents {
             payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
         self.emit(ON_TURN_COMPLETED_FN, payload).await;
+    }
+
+    pub async fn emit_ask(&self, function_id: &str, entry: &crate::ask_store::Entry) {
+        self.emit(
+            function_id,
+            serde_json::to_value(entry).expect("ask entry serializes"),
+        )
+        .await;
     }
 
     /// Call the event function, fire-and-forget: iii delivers the call to

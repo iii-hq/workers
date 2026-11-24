@@ -25,7 +25,7 @@ use iii_kanban::plan::{
     self, ConvertInput, ConvertInto, EntityView, ProjectFields, ProjectStatus, ReleaseFields,
     ReleaseStatus, natural_cmp,
 };
-use iii_kanban::store::{Board, BoardStore, Change, Ticket, read_board, write_board};
+use iii_kanban::store::{Board, BoardStore, Change, Comment, Ticket, read_board, write_board};
 use iii_sdk::Call;
 use serde_json::{Value, json};
 
@@ -219,6 +219,41 @@ fn change(field: &str, from: Value, to: Value) -> Change {
     }
 }
 
+fn question_comment(ticket_id: &str, comment_id: &str, question_id: &str) -> Comment {
+    serde_json::from_value(json!({
+        "id": comment_id,
+        "ticket_id": ticket_id,
+        "body": "Needs you",
+        "author": "harness",
+        "created_at": clock(1),
+        "question": {
+            "session_id": "session-1",
+            "question_id": question_id,
+            "questions": [{"header": "Build", "question": "Proceed?", "options": []}],
+            "about": null,
+            "asked_at": 1795262400000_i64
+        }
+    }))
+    .unwrap()
+}
+
+fn answer_comment(ticket_id: &str, parent_id: &str) -> Comment {
+    serde_json::from_value(json!({
+        "id": format!("answer-{parent_id}"),
+        "ticket_id": ticket_id,
+        "parent_id": parent_id,
+        "body": "Proceed",
+        "author": "user",
+        "created_at": clock(2),
+        "answer": {
+            "answer_text": "Proceed",
+            "by": {"channel": "kanban", "user": "layon"},
+            "outcome": "answered"
+        }
+    }))
+    .unwrap()
+}
+
 fn assert_untouched(before: &Board, after: &Board) {
     assert_eq!(before.tickets, after.tickets);
     assert_eq!(before.projects, after.projects);
@@ -281,13 +316,13 @@ const V1_BOARD: &str = r#"{
 }"#;
 
 #[tokio::test]
-async fn a_v1_board_loads_with_empty_relations_and_is_written_back_as_v2() {
+async fn a_v1_board_loads_with_empty_relations_and_is_written_back_as_v3() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("board.json");
     std::fs::write(&file, V1_BOARD).unwrap();
 
     let board = read_board(&file).await.unwrap();
-    assert_eq!(board.version, 2);
+    assert_eq!(board.version, 3);
     assert!(board.projects.is_empty() && board.releases.is_empty());
     let old = &board.tickets["t1"];
     assert_eq!(
@@ -297,7 +332,7 @@ async fn a_v1_board_loads_with_empty_relations_and_is_written_back_as_v2() {
 
     write_board(&file, &board).await.unwrap();
     let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(raw["version"], 2);
+    assert_eq!(raw["version"], 3);
     assert_eq!(raw["projects"], json!({}));
     assert_eq!(raw["releases"], json!({}));
     for field in ["parent_id", "project_id", "release_id"] {
@@ -309,17 +344,67 @@ async fn a_v1_board_loads_with_empty_relations_and_is_written_back_as_v2() {
     }
 }
 
+const V2_BOARD: &str = r#"{
+  "version": 2,
+  "next_number": 2,
+  "tickets": {
+    "t1": {
+      "id": "t1", "key": "KAN-1", "title": "Old", "status": "backlog",
+      "priority": "low", "created_at": "2025-01-01T00:00:00.000Z",
+      "updated_at": "2025-01-01T00:00:00.000Z",
+      "comments": [{
+        "id": "c1", "ticket_id": "t1", "body": "plain comment",
+        "author": "user", "created_at": "2025-01-01T00:00:00.000Z"
+      }]
+    }
+  },
+  "projects": {
+    "p1": {
+      "id": "p1", "name": "old project", "created_at": "2025-01-01T00:00:00.000Z",
+      "updated_at": "2025-01-01T00:00:00.000Z"
+    }
+  },
+  "releases": {}
+}"#;
+
+#[tokio::test]
+async fn a_v2_board_gains_question_and_repository_fields_without_losing_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("board.json");
+    std::fs::write(&file, V2_BOARD).unwrap();
+
+    let board = read_board(&file).await.unwrap();
+    assert_eq!(board.version, 3);
+    assert_eq!(board.tickets["t1"].comments[0].body, "plain comment");
+    assert_eq!(board.tickets["t1"].comments[0].question, None);
+    assert_eq!(board.tickets["t1"].comments[0].answer, None);
+    assert_eq!(board.projects["p1"].repos, None);
+
+    let config = KanbanConfig {
+        data_path: dir.path().display().to_string(),
+        ..KanbanConfig::default()
+    };
+    let store = BoardStore::new(Arc::new(RwLock::new(config)));
+    store.update(|_, _| Ok(())).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("board.v2.json")).unwrap(),
+        V2_BOARD
+    );
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(raw["version"], 3);
+}
+
 #[tokio::test]
 async fn a_board_from_a_newer_worker_is_refused_and_never_overwritten() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("board.json");
-    // Not even shaped like a v2 board: the version is what the error names.
-    let newer = r#"{"version": 3, "next_number": 9, "tickets": [1, 2, 3]}"#;
+    // Not even shaped like a v3 board: the version is what the error names.
+    let newer = r#"{"version": 4, "next_number": 9, "tickets": [1, 2, 3]}"#;
     std::fs::write(&file, newer).unwrap();
 
     let error = read_board(&file).await.unwrap_err();
+    assert!(error.contains("version 4"), "{error}");
     assert!(error.contains("version 3"), "{error}");
-    assert!(error.contains("version 2"), "{error}");
 
     let config = KanbanConfig {
         data_path: dir.path().display().to_string(),
@@ -333,7 +418,7 @@ async fn a_board_from_a_newer_worker_is_refused_and_never_overwritten() {
         })
         .await
         .unwrap_err();
-    assert!(written.contains("version 3"), "{written}");
+    assert!(written.contains("version 4"), "{written}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
@@ -371,7 +456,7 @@ async fn the_first_write_over_a_v1_board_keeps_a_copy_and_never_replaces_it() {
         "the copy is the file as the old worker wrote it"
     );
     let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(raw["version"], 2);
+    assert_eq!(raw["version"], 3);
     assert_eq!(
         std::fs::read_dir(dir.path()).unwrap().count(),
         2,
@@ -397,7 +482,7 @@ async fn a_new_or_current_board_keeps_no_copy() {
     };
     let store = BoardStore::new(Arc::new(RwLock::new(config)));
     for _ in 0..2 {
-        // The first write creates the file, the second rewrites a v2 one.
+        // The first write creates the file, the second rewrites a v3 one.
         store.update(|_, _| Ok(())).await.unwrap();
     }
     assert_eq!(
@@ -1203,13 +1288,115 @@ fn project_names_are_required_unique_and_colors_are_checked() {
             description: Some(" Binaries ".into()),
             lead: Some(Some("tech-lead".into())),
             color: Some(Some("teal".into())),
+            repos: Some(Some(strs(&["iii-hq/workers", "iii-hq/iii"]))),
         },
     )
     .unwrap();
     assert_eq!(full.project.description, "Binaries");
     assert_eq!(full.project.lead.as_deref(), Some("tech-lead"));
     assert_eq!(full.project.color.as_deref(), Some("teal"));
+    assert_eq!(
+        full.project.repos.as_deref(),
+        Some(strs(&["iii-hq/workers", "iii-hq/iii"]).as_slice())
+    );
     assert_eq!(full.project.source_label, None);
+}
+
+#[test]
+fn project_repositories_require_owner_name_and_can_be_replaced_or_cleared() {
+    let mut env = Env::new();
+    let at = env.at();
+    for repo in [
+        "workers",
+        "/workers",
+        "iii-hq/",
+        "iii-hq/workers/extra",
+        "iii hq/workers",
+        "iii-hq/work ers",
+        "https://github.com/iii-hq/workers",
+        "https:/workers",
+        "iii-hq/workers?query",
+        "../workers",
+        "iii-hq/..",
+    ] {
+        let error = plan::create_project(
+            &mut env.board,
+            &ProjectFields {
+                name: Some("project".into()),
+                repos: Some(Some(vec![repo.into()])),
+                ..ProjectFields::default()
+            },
+            &context(),
+            &at,
+        )
+        .unwrap_err();
+        assert!(error.contains("owner/name"), "{repo}: {error}");
+    }
+    assert!(env.board.projects.is_empty());
+
+    let created = plan::create_project(
+        &mut env.board,
+        &ProjectFields {
+            name: Some("project".into()),
+            repos: Some(Some(strs(&["iii-hq/workers", "owner/repo.name"]))),
+            ..ProjectFields::default()
+        },
+        &context(),
+        &at,
+    )
+    .unwrap();
+    assert_eq!(
+        created.project.repos,
+        Some(strs(&["iii-hq/workers", "owner/repo.name"]))
+    );
+
+    let invalid_at = env.at();
+    let error = plan::update_project(
+        &mut env.board,
+        "project",
+        &ProjectFields {
+            repos: Some(Some(strs(&["not-a-repository"]))),
+            ..ProjectFields::default()
+        },
+        &context(),
+        &invalid_at,
+    )
+    .unwrap_err();
+    assert!(error.contains("owner/name"), "{error}");
+    assert_eq!(
+        env.project_view("project").project.repos,
+        Some(strs(&["iii-hq/workers", "owner/repo.name"]))
+    );
+
+    let replaced_at = env.at();
+    let replaced = plan::update_project(
+        &mut env.board,
+        "project",
+        &ProjectFields {
+            repos: Some(Some(strs(&["iii-hq/iii"]))),
+            ..ProjectFields::default()
+        },
+        &context(),
+        &replaced_at,
+    )
+    .unwrap();
+    assert_eq!(replaced.project.repos, Some(strs(&["iii-hq/iii"])));
+    assert_eq!(replaced.project.updated_at, replaced_at);
+
+    let cleared_at = env.at();
+    let cleared = plan::update_project(
+        &mut env.board,
+        "project",
+        &ProjectFields {
+            repos: Some(None),
+            ..ProjectFields::default()
+        },
+        &context(),
+        &cleared_at,
+    )
+    .unwrap();
+    assert_eq!(cleared.project.repos, None);
+    assert_eq!(cleared.project.updated_at, cleared_at);
 }
 
 #[test]
@@ -1356,6 +1543,42 @@ fn archiving_and_restoring_a_project_is_idempotent_and_the_view_counts_live_tick
     let error =
         plan::set_project_archived(&mut env.board, "ghost", true, &context(), &later).unwrap_err();
     assert!(error.contains("project not found"), "{error}");
+}
+
+#[test]
+fn project_and_release_views_count_only_questions_without_an_answer_reply() {
+    let mut env = Env::new();
+    env.project("cloud");
+    env.release("R", None);
+    for title in ["Open", "Answered"] {
+        env.ticket(title);
+    }
+    for key in ["KAN-1", "KAN-2"] {
+        env.set(key, Some("cloud"), Some("R"));
+    }
+
+    let open_id = env.get("KAN-1").id;
+    env.board
+        .tickets
+        .get_mut(&open_id)
+        .unwrap()
+        .comments
+        .push(question_comment(&open_id, "question-open", "q-open"));
+    let answered_id = env.get("KAN-2").id;
+    let answered = env.board.tickets.get_mut(&answered_id).unwrap();
+    answered.comments.push(question_comment(
+        &answered_id,
+        "question-answered",
+        "q-answered",
+    ));
+    answered
+        .comments
+        .push(answer_comment(&answered_id, "question-answered"));
+
+    assert_eq!(env.project_view("cloud").open_questions, 1);
+    let release = env.release_view("R");
+    assert_eq!(release.open_questions, 1);
+    assert_eq!(release.projects[0].open_questions, 1);
 }
 
 /* ── releases ─────────────────────────────────────────────────────────── */
@@ -2481,6 +2704,7 @@ fn every_ticket_serializes_as_a_view_with_the_contract_field_names() {
             "parent",
             "children",
             "progress",
+            "open_questions",
         ])
     );
     assert_eq!(parent["progress"], json!({ "done": 0, "total": 1 }));
@@ -2498,6 +2722,7 @@ fn every_ticket_serializes_as_a_view_with_the_contract_field_names() {
             "deleted_at",
             "project_id",
             "release_id",
+            "open_questions",
         ])
     );
     assert_eq!(brief["key"], "KAN-2");
@@ -2518,6 +2743,7 @@ fn every_ticket_serializes_as_a_view_with_the_contract_field_names() {
             "status",
             "total",
             "done",
+            "open_questions",
             "counts",
         ])
     );
@@ -2537,6 +2763,7 @@ fn every_ticket_serializes_as_a_view_with_the_contract_field_names() {
             "status",
             "total",
             "done",
+            "open_questions",
             "counts",
             "reopened",
             "projects",
@@ -2549,7 +2776,7 @@ fn every_ticket_serializes_as_a_view_with_the_contract_field_names() {
     assert_eq!(release["projects"][0]["total"], 1);
     assert_eq!(
         keys_of(&release["projects"][0]),
-        set(&["project_id", "total", "done"])
+        set(&["project_id", "total", "done", "open_questions"])
     );
 }
 

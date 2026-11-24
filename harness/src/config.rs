@@ -144,6 +144,11 @@ pub struct WorkerConfig {
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
 
+    /// Exact function ids allowed as a ceiling on every send to a session
+    /// marked with `metadata.side_chat_question`. Client policies can narrow it.
+    #[serde(default = "default_side_chat_functions")]
+    pub side_chat_functions: Vec<String>,
+
     /// Working-directory root stamped onto the FIRST turn of a session whose
     /// send carries no `metadata.fs_scope.root`. Absent/null → the project
     /// directory: `III_COMPOSE_DIR` under Compose, else the process's working
@@ -402,6 +407,20 @@ fn default_functions() -> Option<FunctionPolicy> {
         expose: Default::default(),
     })
 }
+fn default_side_chat_functions() -> Vec<String> {
+    [
+        "session::get",
+        "session::messages-tail",
+        "harness::status",
+        "kanban::ticket::get",
+        "kanban::ticket::list",
+        "kanban::question::list",
+        "coder::read-file",
+        "memory::recall",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
 fn expand_env(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -449,6 +468,7 @@ impl Default for WorkerConfig {
             turn_queue_concurrency: default_turn_queue_concurrency(),
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
+            side_chat_functions: default_side_chat_functions(),
             default_filesystem_root: None,
             filesystem_boundary: Default::default(),
             projects_file_path: default_projects_file_path(),
@@ -524,6 +544,28 @@ mod tests {
         let cfg =
             WorkerConfig::from_json(&serde_json::json!({ "default_functions": null })).unwrap();
         assert!(cfg.default_functions.is_none());
+    }
+
+    #[test]
+    fn side_chat_functions_defaults_and_override_are_in_the_schema() {
+        let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        assert_eq!(
+            cfg.side_chat_functions,
+            [
+                "session::get",
+                "session::messages-tail",
+                "harness::status",
+                "kanban::ticket::get",
+                "kanban::ticket::list",
+                "kanban::question::list",
+                "coder::read-file",
+                "memory::recall",
+            ]
+        );
+        let schema = WorkerConfig::json_schema();
+        assert_eq!(schema["properties"]["side_chat_functions"]["type"], "array");
+        let cfg = WorkerConfig::from_json(&serde_json::json!({"side_chat_functions":[]})).unwrap();
+        assert!(cfg.side_chat_functions.is_empty());
     }
 
     #[test]

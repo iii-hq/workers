@@ -83,11 +83,13 @@ type Hub struct {
 	tunnelDue       *time.Timer // guarded by tunnelMu: when the held lease is due
 	refreshing      atomic.Bool // a re-read of the online nodes is scheduled
 	passMu          sync.Mutex  // one catalog read and node re-read at a time
+	namesMu         sync.Mutex  // one refreshNames at a time; taken before mu, never under it
 	passBackoff     time.Duration
-	passRetry       *time.Timer    // guarded by passMu: the retry of a failed catalog read
-	shared          shared         // guarded by mu: the last catalog read
-	inFlight        map[string]int // guarded by mu: mesh::call calls per calling machine
-	emit            func([]byte)   // delivers a mesh::status answer to its observers; nil publishes nothing
+	passRetry       *time.Timer     // guarded by passMu: the retry of a failed catalog read
+	shared          shared          // guarded by mu: the last catalog read
+	taken           map[string]bool // guarded by mu: namespaces another worker uses, from refreshNames
+	inFlight        map[string]int  // guarded by mu: mesh::call calls per calling machine
+	emit            func([]byte)    // delivers a mesh::status answer to its observers; nil publishes nothing
 	// Set only by reconcileTunnel. tunnelProxy: PROXY v2 headers from loopback are
 	// quick-tunnel's. tunnelRaw: the tunnel is OpenTunnel, which hands a visitor's
 	// bytes to loopback unchanged, so forwarding headers from loopback are the visitor's.
@@ -250,7 +252,7 @@ func (h *Hub) SetHooks(hooks Hooks) {
 	}
 	hooks.RevokeNode = func(name string) {
 		h.cancelNode(name)
-		h.onFunctionsChange() // an offline machine leaves no function change, yet its name may block a hub share
+		h.onFunctionsChange() // an offline machine leaves no function change, and the catalog still lists it
 		if revoke != nil {
 			revoke(name)
 		}

@@ -1,6 +1,7 @@
 //! Extraction eval: the production prompt and parser
-//! ([`extract_items`]) over short EN excerpts, every case a repository
-//! session with `default_bank` layered under it. Scores two things:
+//! ([`extract_items`]) over short excerpts (EN but for two `handles`
+//! cases), every case a repository session with `default_bank` layered
+//! under it. Scores three things:
 //! - capture: every expected item is captured, wrong (its kind, where it
 //!   lands, the memory it corrects, or the rule gate [`stated_by_user`]
 //!   drops it), or missed. A trap hit is any item past the expected ones
@@ -15,6 +16,10 @@
 //!   must reach the default bank, and nothing project-only may; with agents
 //!   listed, what the user tells one about its role's work must
 //!   reach that agent's bank, and nothing about the user or the project may.
+//! - handles ([`Handles`]): an item is wrong when its entities miss one
+//!   its case requires or carry one it forbids: the speaker is `user` in a
+//!   Portuguese excerpt too, never their name, and a listed handle is reused
+//!   for its thing, named in Portuguese too, and put on nothing else.
 //!
 //! Live, so ignored: `III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns>
 //! EXTRACTION_MODEL=<id> cargo test -p memory --lib extract::eval --
@@ -40,6 +45,7 @@ const STRICT: &[&str] = &[
     "assistant-only",
     "corrections",
     "errors",
+    "handles",
     "learned rules",
     "negatives",
     "notices",
@@ -74,9 +80,32 @@ struct Case {
     own: bool,
     /// Learned lines already in force, the same way, numbered after `known`.
     learned: &'static [(&'static str, bool)],
+    handles: Handles,
     /// `(role, text)` excerpt lines, roles as [`parse_entry`] reads them.
     lines: &'static [(&'static str, &'static str)],
     want: &'static [Want],
+}
+
+/// The entity handles a case lists in the input, those every item it
+/// returns must carry, and those none may.
+struct Handles {
+    listed: &'static [&'static str],
+    on_every: &'static [&'static str],
+    on_none: &'static [&'static str],
+}
+
+const NO_HANDLES: Handles = Handles {
+    listed: &[],
+    on_every: &[],
+    on_none: &[],
+};
+
+impl Handles {
+    /// Whether `item`'s entities, as they are stored, keep to the case.
+    fn kept_by(&self, item: &ExtractedItem) -> bool {
+        let has = |h: &&str| item.entities.iter().any(|e| e.trim().to_lowercase() == *h);
+        self.on_every.iter().all(has) && !self.on_none.iter().any(has)
+    }
 }
 
 const fn fact(has: &'static [&'static str], user: bool) -> Want {
@@ -131,9 +160,15 @@ const fn case(
         agents: &[],
         own: false,
         learned: &[],
+        handles: NO_HANDLES,
         lines,
         want,
     }
+}
+
+/// `case` listing and expecting `handles`.
+const fn with(handles: Handles, case: Case) -> Case {
+    Case { handles, ..case }
 }
 
 /// `case` in a session listing `agents`, the first its own profile when
@@ -343,6 +378,7 @@ const CASES: &[Case] = &[
         agents: &[],
         own: false,
         learned: &[],
+        handles: NO_HANDLES,
         lines: &[
             ("user", "In this repo I use pnpm, not npm."),
             ("assistant", "Okay, pnpm it is for this repository."),
@@ -434,6 +470,7 @@ const CASES: &[Case] = &[
         agents: &[],
         own: false,
         learned: &[],
+        handles: NO_HANDLES,
         lines: &[
             ("user", "I moved to Porto last month."),
             ("assistant", "Congrats on the move!"),
@@ -453,6 +490,7 @@ const CASES: &[Case] = &[
         agents: &[],
         own: false,
         learned: &[],
+        handles: NO_HANDLES,
         lines: &[
             (
                 "user",
@@ -478,6 +516,7 @@ const CASES: &[Case] = &[
         agents: &[],
         own: false,
         learned: &[],
+        handles: NO_HANDLES,
         lines: &[
             (
                 "user",
@@ -1067,6 +1106,7 @@ const CASES: &[Case] = &[
         agents: &[],
         own: false,
         learned: &[],
+        handles: NO_HANDLES,
         lines: &[
             (
                 "user",
@@ -1092,6 +1132,7 @@ const CASES: &[Case] = &[
         agents: &[],
         own: false,
         learned: &[("Never use emoji in your answers.", true)],
+        handles: NO_HANDLES,
         lines: &[
             ("user", "And no emojis in replies, please, ever."),
             ("assistant", "Understood, none."),
@@ -1112,6 +1153,7 @@ const CASES: &[Case] = &[
         agents: &[],
         own: false,
         learned: &[("Always reply to me in English.", true)],
+        handles: NO_HANDLES,
         lines: &[
             (
                 "user",
@@ -1137,6 +1179,7 @@ const CASES: &[Case] = &[
             ("Never use emoji in your answers.", true),
             ("Always reply to me in English.", true),
         ],
+        handles: NO_HANDLES,
         lines: &[
             (
                 "user",
@@ -1364,6 +1407,75 @@ const CASES: &[Case] = &[
         ],
         &[fact(&["bike", "marta"], true)],
     ),
+    // The speaker is `user`, never their name nor the word in the excerpt's
+    // language.
+    with(
+        Handles {
+            listed: &[],
+            on_every: &["user"],
+            on_none: &["marina", "usuário", "usuária"],
+        },
+        case(
+            "speaker-pt",
+            "handles",
+            &[
+                ("user", "Meu nome é Marina."),
+                ("assistant", "Prazer, Marina!"),
+            ],
+            &[fact(&["marina"], true)],
+        ),
+    ),
+    // A listed handle, named in another language.
+    with(
+        Handles {
+            listed: &["dentist"],
+            on_every: &["dentist", "user"],
+            on_none: &["dentista"],
+        },
+        case(
+            "dentist-pt",
+            "handles",
+            &[
+                ("user", "Tenho consulta no dentista na sexta às 15h."),
+                ("assistant", "Anotado: sexta às 15h."),
+            ],
+            &[fact(&["dentist", "16"], true)],
+        ),
+    ),
+    // A listed handle of a near-miss thing stays off.
+    with(
+        Handles {
+            listed: &["payments-api", "dana"],
+            on_every: &["ledger-api"],
+            on_none: &["payments-api"],
+        },
+        case(
+            "ledger-api",
+            "handles",
+            &[
+                ("user", "ledger-api now runs three replicas in production."),
+                ("assistant", "Noted, three replicas."),
+            ],
+            &[fact(&["ledger", "replicas"], false)],
+        ),
+    ),
+    // Listed handles, an excerpt about none of them.
+    with(
+        Handles {
+            listed: &["dentist", "payments-api", "ledger-api"],
+            on_every: &["user"],
+            on_none: &["dentist", "payments-api", "ledger-api"],
+        },
+        case(
+            "cello",
+            "handles",
+            &[
+                ("user", "I've started learning the cello."),
+                ("assistant", "Lovely instrument!"),
+            ],
+            &[fact(&["cello"], true)],
+        ),
+    ),
 ];
 
 #[derive(Default)]
@@ -1378,10 +1490,11 @@ struct Tally {
     harmful: usize,
 }
 
-/// One returned item as a report line: `text / scope / kind / lands`.
+/// One returned item as a report line: `text / scope / kind / lands /
+/// entities`.
 fn line(item: &ExtractedItem, bank: &str, retires: bool) -> String {
     format!(
-        "{} / {}{} / {} / {bank}{}",
+        "{} / {}{} / {} / {bank}{} / {:?}",
         item.text,
         item.scope.as_deref().unwrap_or("-"),
         item.agent
@@ -1392,7 +1505,8 @@ fn line(item: &ExtractedItem, bank: &str, retires: bool) -> String {
         match (retires, item.replaces) {
             (true, Some(n)) => format!(" retires [{n}]"),
             _ => String::new(),
-        }
+        },
+        item.entities
     )
 }
 
@@ -1450,6 +1564,7 @@ async fn extraction_eval() {
             .iter()
             .map(|(line, in_layer)| (line.to_string(), *in_layer))
             .collect();
+        let handles: Vec<String> = case.handles.listed.iter().map(|h| h.to_string()).collect();
         let entries: Vec<Entry> = case
             .lines
             .iter()
@@ -1474,7 +1589,15 @@ async fn extraction_eval() {
                 &model,
                 cfg.max_memories_per_turn,
                 120_000,
-                extraction_input(&agents, case.own, "", &known, &learned, &transcript),
+                extraction_input(
+                    &agents,
+                    case.own,
+                    "",
+                    &known,
+                    &learned,
+                    &handles,
+                    &transcript,
+                ),
                 !agents.is_empty(),
                 case.id,
                 repository,
@@ -1515,6 +1638,8 @@ async fn extraction_eval() {
                     // A stray retire is harmful, below. With learned lines
                     // listed, a new rule that names one is a numbering error.
                     Some("replaces")
+                } else if !case.handles.kept_by(item) {
+                    Some("entities")
                 } else if !gate(item) {
                     Some("gated")
                 } else {

@@ -32,7 +32,8 @@ type WorkerController interface {
 	SetRuntime(context.Context, Runtime) error
 	Status() []WorkerStatus
 	// SetCatalog replaces the functions shared in the mesh; it must not fail on one bad entry.
-	SetCatalog(Catalog)
+	// An error leaves the catalog as it was, and the hub sends it again.
+	SetCatalog(Catalog) error
 	CatalogRev() string // the revision SetCatalog last received, "" after a runtime change
 }
 type Options struct {

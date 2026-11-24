@@ -2,12 +2,10 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   ChevronRight,
-  CircleQuestionMark,
   Download,
   FolderKanban,
   Plus,
   Search,
-  Settings,
   SquarePen,
 } from 'lucide-react'
 import {
@@ -30,7 +28,6 @@ import { ProjectMenu } from '@/components/projects/ProjectMenu'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { navRowVariants } from '@/components/ui/nav-row'
-import { hashForSettingsLanding } from '@/hooks/use-hash-route'
 import type { ChatProject } from '@/lib/backend/projects'
 import { hideSideChats } from '@/lib/chat-aside'
 import type { ConversationDetailsDraft } from '@/lib/conversation-details'
@@ -66,7 +63,6 @@ import {
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { usePinnedConversations } from '@/lib/pinned-conversations'
-import { requestShortcutsDialog } from '@/lib/shortcuts-request'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ConversationFilterMenu } from './ConversationFilterMenu'
@@ -943,48 +939,6 @@ export function ConversationSidebar({
               : items.map(renderItem)}
           </div>
         )}
-      </div>
-
-      {/* The bottom row: help on the left of settings, nothing else. Help
- opens the shortcuts reference outright, not a palette search. */}
-      <div className="flex shrink-0 items-center justify-end gap-1 px-2 py-2">
-        <Hint
-          label="Keyboard shortcuts"
-          shortcut="app.shortcuts"
-          side="top"
-          disabled={narrow}
-        >
-          <button
-            type="button"
-            onClick={() => requestShortcutsDialog()}
-            aria-label="Help and keyboard shortcuts"
-            className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
-          >
-            <CircleQuestionMark className="size-4" aria-hidden />
-          </button>
-        </Hint>
-        <Hint
-          label="Settings"
-          shortcut="app.settings"
-          side="top"
-          disabled={narrow}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              window.location.hash = hashForSettingsLanding(narrow)
-            }}
-            aria-label="ADE settings"
-            // learn-iii-settings: tour anchor (workers/learn-iii). Do not remove.
-            className={cn(
-              'learn-iii-settings',
-              QUIET_ACTION,
-              narrow ? 'size-12' : 'size-8',
-            )}
-          >
-            <Settings className="size-4" aria-hidden />
-          </button>
-        </Hint>
       </div>
     </div>
   )

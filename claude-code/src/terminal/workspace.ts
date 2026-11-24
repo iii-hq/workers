@@ -1,16 +1,26 @@
 /**
- * Everything the terminal needs before it opens: the CLI installed, the
- * workspace equipped with the engine notes (whose iii half comes from
- * `iii-directory`) and the hooks that report what Claude does. All of it runs on the terminal host through
- * the `shell` worker, so this worker never touches a local path.
+ * Everything the terminal needs before it opens: the CLI installed and the
+ * workspace equipped with the iii plugin (the hooks that report what Claude
+ * does, the iii skills and commands). All of it runs on the terminal host
+ * through the `shell::*` functions of the `ide` worker, so this worker never
+ * touches a local path.
  */
 
 import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
-import { PLUGIN_DIR_NAME, pluginDetail, pluginFiles } from '../plugin.js';
-import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
+import { installOnHost } from '../iii-plugin/install.js';
+import { MODE_FILE } from '../plugin.js';
+import {
+  exec,
+  fileExists,
+  hostRoot,
+  mkdir,
+  probe,
+  readFile,
+  removeFile,
+  writeFile,
+} from './host.js';
 import { fetchIiiContext } from '../iii-context.js';
-import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
 
 const INSTALL_CMD = 'curl -fsSL https://claude.ai/install.sh | bash';
 
@@ -53,16 +63,21 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   let bridge = '';
   let plugin = '';
+  let mode = false;
   if (config.setup_workspace) {
     // Equipping the workspace is not what makes a terminal usable: a read-only
     // `CLAUDE.md` or an unreadable `.claude/` still leaves a working CLI in a
     // working directory. A failure here is reported, and the terminal opens.
     try {
       const context = await fetchIiiContext(iii);
-      await writeNotes(iii, workspace, context);
-      const written = await writePlugin(iii, workspace, context);
+      await removeLegacyNotes(iii, workspace);
+      // The `iii` plugin: activity hooks, the runtime skill, the engine's
+      // mcp-server as its MCP server, and the /iii:* commands
+      // (../iii-plugin/install.ts).
+      const written = await installOnHost(iii, workspace, context);
       bridge = written.bridge;
       plugin = written.dir;
+      mode = Boolean(written.mode);
       if (written.detail) {
         console.warn(`claude-code: ${written.detail}`);
         detail = detail ? `${detail}; ${written.detail}` : written.detail;
@@ -82,7 +97,21 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   // The plugin is how a session gets its hooks and the iii skill; the flag is
   // the same one the Agent SDK emits for a headless turn.
-  const args = plugin ? [...config.args, '--plugin-dir', plugin] : config.args;
+  const args = plugin ? [...config.args, '--plugin-dir', plugin] : [...config.args];
+  // default-mcp (only with mcp-server) is appended to Claude Code's
+  // own system prompt. An agent (`--agent`) would replace that prompt. An
+  // append the operator configured is kept, and ours is left out.
+  if (plugin && mode) {
+    const ownAppend = config.args.some((a) => a.startsWith('--append-system-prompt'));
+    if (ownAppend) {
+      const skipped =
+        'default-mcp was not appended: the terminal args already carry an --append-system-prompt';
+      console.warn(`claude-code: ${skipped}`);
+      detail = detail ? `${detail}; ${skipped}` : skipped;
+    } else {
+      args.push('--append-system-prompt-file', `${plugin}/${MODE_FILE}`);
+    }
+  }
   return { ...base, args, executable, detail, bridge, plugin };
 }
 
@@ -139,61 +168,31 @@ async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promis
   return (await probe(iii, 'command -v claude')) || (await probe(iii, 'ls ~/.local/bin/claude'));
 }
 
-/** The worker's block inside CLAUDE.md; text outside the markers is the operator's. */
-async function writeNotes(
-  iii: IIIClient,
-  workspace: string,
-  context: { text: string; detail: string },
-): Promise<void> {
-  const engineUrl = process.env.III_URL ?? 'ws://127.0.0.1:49134';
-  // The iii half of this block belongs to `iii-directory`; this worker only
-  // says where the workspace and the engine are.
-  const notes = engineNotes({
-    workspace,
-    engineUrl,
-    context: context.text,
-    detail: context.detail,
-  });
-  const block = `${NOTES_BEGIN}\n${notes.trim()}\n${NOTES_END}`;
-  const path = `${workspace}/CLAUDE.md`;
-  const current = (await readFile(iii, path)) ?? '';
-  let next: string;
-  if (current.includes(NOTES_BEGIN) && current.includes(NOTES_END)) {
-    const start = current.indexOf(NOTES_BEGIN);
-    const end = current.indexOf(NOTES_END) + NOTES_END.length;
-    next = current.slice(0, start) + block + current.slice(end);
-  } else {
-    next = current.trim() ? `${block}\n\n${current.trimStart()}` : `${block}\n`;
-  }
-  if (next !== current) await writeFile(iii, path, next);
-}
+/** The block earlier versions kept in the workspace's CLAUDE.md. */
+const LEGACY_BEGIN = '<!-- iii:begin';
+const LEGACY_END = '<!-- iii:end -->';
 
 /**
- * The iii plugin, materialised in the workspace.
- *
- * Claude Code loads it with `--plugin-dir`, which is also what the Agent SDK
- * emits for a local plugin — so this is the same directory a headless turn
- * gets, from the same description (`../plugin.ts`). The hooks that report
- * activity live in it, which is why nothing writes `.claude/settings.json` any
- * more: that file is the operator's, and a plugin directory is this worker's.
- *
- * Returns the CLI it found, or '' — the plugin is written either way (a CLI
- * installed later then works), but an empty answer means the hooks are mute and
- * the caller says so out loud.
+ * Earlier versions kept a marked block in the workspace's `CLAUDE.md`. What it
+ * said now comes from the plugin (the `iii-runtime` skill, default-mcp
+ * appended), and what it got wrong (the `shell` worker, the `iii` CLI as the
+ * only way in) contradicted default-mcp, so the block is taken out. Text
+ * outside the markers is the operator's and stays; a file left empty is
+ * removed. A read that fails for any reason but "absent" throws: the file is
+ * left alone and the caller reports it.
  */
-export async function writePlugin(
-  iii: IIIClient,
-  workspace: string,
-  context: { text: string; detail: string },
-): Promise<{ bridge: string; dir: string; detail: string }> {
-  const found = await probe(iii, 'command -v iii');
-  const dir = `${workspace}/${PLUGIN_DIR_NAME}`;
-  const options = { cli: found || 'iii', context: context.text, contextDetail: context.detail };
-  for (const file of pluginFiles(options)) {
-    const path = `${dir}/${file.path}`;
-    // Written whole, every boot: the plugin is this worker's directory, so
-    // there is no operator content in it to merge around.
-    if ((await readFile(iii, path)) !== file.content) await writeFile(iii, path, file.content);
-  }
-  return { bridge: found, dir, detail: pluginDetail(options) };
+async function removeLegacyNotes(iii: IIIClient, workspace: string): Promise<void> {
+  const path = `${workspace}/CLAUDE.md`;
+  // Unknown (null) is read anyway: only a sure "absent" skips the read.
+  if ((await fileExists(iii, path)) === false) return;
+  const current = await readFile(iii, path);
+  if (current === null) return;
+  const start = current.indexOf(LEGACY_BEGIN);
+  const end = start < 0 ? -1 : current.indexOf(LEGACY_END, start);
+  if (end < 0) return;
+  const before = current.slice(0, start).trim();
+  const after = current.slice(end + LEGACY_END.length).trim();
+  const rest = [before, after].filter(Boolean).join('\n\n');
+  if (rest) await writeFile(iii, path, `${rest}\n`);
+  else await removeFile(iii, path);
 }

@@ -96,6 +96,9 @@ pub const OBSERVE_ACTION: &str = "probe::observe";
 /// session, so the completion observers never see its turn.
 pub const SIDE_CHAT_ACTION: &str = "probe::side-chat";
 
+/// Race two identical human answers and require one winner and one refusal.
+pub const ANSWER_RACE_ACTION: &str = "probe::answer-race";
+
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
 /// boundary — the seam that lets a scenario trip a state key after the main
 /// turn is idle instead of mid-turn. [`OBSERVE_ACTION`] creates an observer
@@ -112,6 +115,10 @@ pub struct ProbeAction {
     pub after_target_calls: Option<usize>,
     pub function_id: String,
     pub payload: serde_json::Value,
+    /// Optional contract for the function's direct response. Most probe
+    /// actions only need a successful call; read contracts use this to prove
+    /// the returned row, not merely that the endpoint exists.
+    pub expected_output: Option<crate::types::script::JsonMatcherV1>,
 }
 
 impl ScenarioFixture {

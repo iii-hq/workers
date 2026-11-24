@@ -116,6 +116,13 @@ calls `session::on-meta-updated` once, with the merged metadata, and answers
 (the harness moving a conversation into a project) and must not re-order
 lists; the write and its event happen all the same. Write metadata with
 `patch-meta` unless you mean to replace it all.
+
+`session::list` accepts `roots: true` to keep only sessions whose metadata
+has no `spawned_by` key (missing or empty metadata qualifies). Omit `roots`
+or set it to false to include sub-agents. This combines with `status`,
+`kinds` and `metadata` filters before ordering and pagination, so `limit`
+counts matching root sessions.
+
 `session::messages` items carry the entry `origin` (hook annotations —
 e.g. which memory bank fed a generate), so consumers can render
 provenance without a second lookup.

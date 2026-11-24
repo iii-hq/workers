@@ -63,6 +63,7 @@ import {
   type Change,
   type Column,
   noteOwnWrite,
+  NeedsYouMark,
   PLAN_CHANGED_EVENT,
   PROJECTS_PAGE_ID,
   Pills,
@@ -85,6 +86,7 @@ import {
 } from './subtask-rules'
 import { type Act, DoneWarning, ParentStrip, SubtasksSection, TicketRef } from './subtasks'
 import { LabelAdder } from './ticket/label-adder'
+import { QuestionCard } from './ticket/question-card'
 import { AssigneeAvatar, assigneeName } from './ui/avatar'
 import { Empty, Notice } from './ui/feedback'
 import { StatusIcon } from './ui/glyphs'
@@ -671,12 +673,22 @@ export function TicketScreen({
 
   // An unsent comment counts too: the screen is keyed by ticket, so moving to another drops it.
   const [commentDraft, setCommentDraft] = useState(false)
+  const [questionDrafts, setQuestionDrafts] = useState<Set<string>>(new Set())
+  const onQuestionDraft = useCallback((id: string, dirty: boolean) => {
+    setQuestionDrafts((current) => {
+      if (current.has(id) === dirty) return current
+      const next = new Set(current)
+      if (dirty) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
   useEffect(() => {
     if (!setDirty) return
     const descriptionDirty = editingDescription && draft !== (ticket?.description ?? '')
     const titleDirty = editingTitle && titleDraft.trim() !== (ticket?.title ?? '')
-    setDirty(descriptionDirty || titleDirty || commentDraft)
-  }, [editingDescription, draft, ticket?.description, editingTitle, titleDraft, ticket?.title, commentDraft, setDirty])
+    setDirty(descriptionDirty || titleDirty || commentDraft || questionDrafts.size > 0)
+  }, [editingDescription, draft, ticket?.description, editingTitle, titleDraft, ticket?.title, commentDraft, questionDrafts, setDirty])
 
   const composerId = useId()
   const linksTitleId = useId()
@@ -896,6 +908,7 @@ export function TicketScreen({
     return [...ticket.activity]
       .sort((a, b) => a.seq - b.seq)
       .map((entry) => ({ entry, comment: entry.comment_id ? comments.get(entry.comment_id) ?? null : null }))
+      .filter(({ comment }) => !(comment?.answer && comment.parent_id && comments.get(comment.parent_id)?.question))
   }, [ticket])
 
   if (loading && !ticket) {
@@ -1039,7 +1052,7 @@ export function TicketScreen({
             </ShadcnDropdownMenu>
           </>
         }
-        description={<span className="kb-header-key">{ticket.key}</span>}
+        description={<span className="kb-ticket-heading"><span className="kb-header-key">{ticket.key}</span><NeedsYouMark count={ticket.open_questions} /></span>}
         icon={<TicketIcon size={16} />}
         onClose={closeFrame}
         title="Ticket"
@@ -1313,19 +1326,16 @@ export function TicketScreen({
                     </ShadcnTabsList>
                   </ShadcnTabs>
                 </header>
-                {timeline.length === 0 ? (
-                  <p className="kb-muted">Nothing has happened yet.</p>
-                ) : visibleTimeline.length === 0 ? (
-                  <p className="kb-muted">No {activityFilter} yet.</p>
-                ) : (
-                  <ol className="kb-timeline">
-                    {groupSubtaskAdds(visibleTimeline).map((row) => {
+                {timeline.length === 0 ? <p className="kb-muted">Nothing has happened yet.</p> : null}
+                {timeline.length > 0 && visibleTimeline.length === 0 ? <p className="kb-muted">No {activityFilter} yet.</p> : null}
+                  <ol className="kb-timeline" hidden={timeline.length === 0}>
+                    {groupSubtaskAdds(timeline).map((row) => {
                       if (row.kind === 'adds') {
                         const first = row.items[0]?.entry
                         const last = row.items[row.items.length - 1]?.entry
                         if (!first || !last) return null
                         return (
-                          <li className="kb-event" key={first.id}>
+                          <li className="kb-event" hidden={activityFilter === 'comments'} key={first.id}>
                             <span aria-hidden="true" className="kb-event__icon">
                               <ListTree size={16} />
                             </span>
@@ -1342,9 +1352,26 @@ export function TicketScreen({
                         )
                       }
                       const { entry, comment } = row.item
+                      if (comment?.question) {
+                        return (
+                          <li hidden={activityFilter === 'changes'} key={entry.id}>
+                            <QuestionCard
+                              agents={agents}
+                              comment={comment}
+                              disabled={deleted}
+                              host={host}
+                              onDraft={onQuestionDraft}
+                              onRefresh={refreshSelf}
+                              question={comment.question}
+                              reply={ticket.comments.find((reply) => reply.parent_id === comment.id && reply.answer)}
+                              ticketId={ticket.id}
+                            />
+                          </li>
+                        )
+                      }
                       if (comment) {
                         return (
-                          <li className="kb-comment" data-reply={comment.parent_id ? 'true' : undefined} key={entry.id}>
+                          <li className="kb-comment" data-reply={comment.parent_id ? 'true' : undefined} hidden={activityFilter === 'changes'} key={entry.id}>
                             <div className="kb-comment__head">
                               <AssigneeAvatar agents={agents} id={comment.author} />
                               <span className="kb-comment__author">{agentName(comment.author)}</span>
@@ -1373,7 +1400,7 @@ export function TicketScreen({
                       }
                       const EventIcon = activityIcon(entry)
                       return (
-                        <li className="kb-event" key={entry.id}>
+                        <li className="kb-event" hidden={activityFilter === 'comments'} key={entry.id}>
                           <span aria-hidden="true" className="kb-event__icon">
                             <EventIcon size={16} />
                           </span>
@@ -1387,7 +1414,6 @@ export function TicketScreen({
                       )
                     })}
                   </ol>
-                )}
                 {deleted ? null : (
                   <Composer
                     busy={busy}

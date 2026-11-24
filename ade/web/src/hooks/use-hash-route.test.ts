@@ -4,6 +4,7 @@ import {
   hashForStandalone,
   hashForWorkerPage,
   hashForWorkersConfiguration,
+  normalizeLegacyControlPlaneHash,
   normalizeWorkersConfigurationHash,
   routeFromHash,
   standaloneRouteFromHash,
@@ -104,6 +105,20 @@ describe('workers configuration hash helpers', () => {
 })
 
 describe('isolated worker route', () => {
+  it('redirects the retired route to the Control plane workspace page', () => {
+    expect(normalizeLegacyControlPlaneHash('#/tower')).toBe(
+      '#/workspace/control-plane',
+    )
+    expect(normalizeLegacyControlPlaneHash('#/workers')).toBeNull()
+    expect(routeFromHash('#/tower')).toBeNull()
+    expect(routeFromHash('#/workspace/control-plane')).toBe('ext:control-plane')
+    expect(workerRouteFromHash('#/worker/control-plane')).toEqual({
+      scope: 'control-plane',
+      pageId: null,
+      context: null,
+    })
+  })
+
   it('parses scope, page id and context', () => {
     expect(workerRouteFromHash('#/worker/state')).toEqual({
       scope: 'state',

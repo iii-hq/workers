@@ -13,7 +13,7 @@ import (
 func TestDefaultsExcludeUnconfinable(t *testing.T) {
 	h := authHub()
 	h.defaults = GrantDefaults{Allow: append(DefaultAllow(), "audit::write")}
-	result, err := h.Auth(t.Context(), AuthRequest{Headers: map[string]string{gateway.TicketHeader: h.Tickets.Mint("laptop")}})
+	result, err := h.Auth(t.Context(), AuthRequest{RegistrationNamespace: true, Headers: map[string]string{gateway.TicketHeader: h.Tickets.Mint("laptop")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestDefaultsExcludeUnconfinable(t *testing.T) {
 				t.Errorf("unconfined %s matches effective grant %s", target, grant)
 			}
 		}
-		if _, err := h.ObserverHook(t.Context(), ObserverHookRequest{FunctionID: target, ResolvedFunctionID: target, Namespace: "proj", TargetFunctionID: "ide::on-change", ResolvedTargetFunctionID: "laptop::ide::on-change", TargetNamespace: "proj", Args: json.RawMessage(`{}`), Context: result.Context}); err == nil {
+		if _, err := h.ObserverHook(t.Context(), ObserverHookRequest{FunctionID: target, Namespace: "proj", TargetFunctionID: "ide::on-change", TargetNamespace: "laptop", Args: json.RawMessage(`{}`), Context: result.Context}); err == nil {
 			t.Errorf("unconfined binding %s accepted", target)
 		}
 	}

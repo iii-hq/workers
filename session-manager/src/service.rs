@@ -299,6 +299,13 @@ impl SessionService {
         if let Some(kinds) = &req.kinds {
             metas.retain(|m| kinds.contains(&m.kind));
         }
+        if req.roots == Some(true) {
+            metas.retain(|m| {
+                m.metadata
+                    .as_ref()
+                    .is_none_or(|metadata| !metadata.contains_key("spawned_by"))
+            });
+        }
         if let Some(want) = &req.metadata {
             metas.retain(|m| metadata_matches(want, m.metadata.as_ref()));
         }

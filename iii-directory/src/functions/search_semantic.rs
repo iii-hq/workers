@@ -151,6 +151,9 @@ pub struct SemanticSearch {
 #[derive(Default)]
 struct Inner {
     disabled: AtomicBool,
+    /// [`download_until_ready`] has not succeeded yet: a missing bundle is
+    /// still coming, not unprovisioned.
+    downloading: AtomicBool,
     model_dir: Option<PathBuf>,
     model: RwLock<Option<Arc<LoadedModel>>>,
     #[cfg(minilm)]
@@ -346,6 +349,14 @@ impl SemanticSearch {
         };
         let loaded = self.inner.model.read().expect("semantic model").is_some();
         if !loaded && !minilm_artifact_contract_matches(dir) {
+            // Transient, so the router returns it instead of moving callers
+            // to another embedder's vector space.
+            if self.inner.downloading.load(Ordering::Acquire) {
+                return Err(EmbedError::Failed(format!(
+                    "the MiniLM bundle at {} is still downloading",
+                    dir.display()
+                )));
+            }
             return Err(EmbedError::Unconfigured(format!(
                 "the MiniLM bundle at {} is not provisioned",
                 dir.display()
@@ -367,9 +378,11 @@ impl SemanticSearch {
         Ok(vectors)
     }
 
+    /// Cosine of every query against the `held` copies (one per id) only.
     pub(crate) async fn rank(
         &self,
         catalog_fingerprint: &str,
+        held: &[ToolSchema],
         queries: &[String],
         minimum_cosine: f32,
     ) -> Result<Vec<Vec<(String, f64)>>, SemanticUnavailable> {
@@ -398,14 +411,26 @@ impl SemanticSearch {
             .await
             .map_err(|error| unavailable(format!("query task failed: {error}")))??;
         validate_vectors(&encoded, query_count, MINILM_DIMENSIONS)?;
+        if index.function_ids.len() != index.vectors.len() {
+            return Err(unavailable("index stale or incomplete"));
+        }
+        let rows = held_rows(&index, held);
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|row| index.function_ids[*row].as_str())
+            .collect();
+        let vectors: Vec<&[f32]> = rows
+            .iter()
+            .map(|row| index.vectors[*row].as_slice())
+            .collect();
         encoded
             .iter()
             .map(|query| {
                 rank_vectors(
                     &index.catalog_fingerprint,
                     catalog_fingerprint,
-                    &index.function_ids,
-                    &index.vectors,
+                    &ids,
+                    &vectors,
                     query,
                     minimum_cosine,
                 )
@@ -496,10 +521,13 @@ impl SemanticSearch {
             .collect()
     }
 
+    /// Cross-encoder scores of each lane's candidates, each read as its
+    /// `held` copy (one per id).
     #[cfg(minilm)]
     pub(crate) async fn rerank(
         &self,
         catalog_fingerprint: &str,
+        held: &[ToolSchema],
         queries: &[String],
         candidate_ids: &[Vec<String>],
     ) -> Result<Vec<Vec<(String, f64)>>, SemanticUnavailable> {
@@ -518,11 +546,9 @@ impl SemanticSearch {
         {
             return Err(unavailable("index stale"));
         }
-        let positions: HashMap<&str, usize> = index
-            .function_ids
-            .iter()
-            .enumerate()
-            .map(|(position, id)| (id.as_str(), position))
+        let positions: HashMap<&str, usize> = held_rows(&index, held)
+            .into_iter()
+            .map(|position| (index.function_ids[position].as_str(), position))
             .collect();
         let mut lanes = Vec::with_capacity(candidate_ids.len());
         for (query, candidates) in queries.iter().zip(candidate_ids) {
@@ -574,6 +600,7 @@ impl SemanticSearch {
     pub(crate) async fn rerank(
         &self,
         _catalog_fingerprint: &str,
+        _held: &[ToolSchema],
         _queries: &[String],
         _candidate_ids: &[Vec<String>],
     ) -> Result<Vec<Vec<(String, f64)>>, SemanticUnavailable> {
@@ -698,6 +725,28 @@ fn is_desired(inner: &Inner, fingerprint: &str) -> bool {
             == Some(fingerprint)
 }
 
+/// The index rows of the copies a search holds, at most one per id. The
+/// index has a row per distinct copy of an id, so a row is matched on its id
+/// and its text; the held copies go through the same `canonical_tools` the
+/// index was built with.
+fn held_rows(index: &DenseIndex, held: &[ToolSchema]) -> Vec<usize> {
+    let held: HashMap<String, String> = canonical_tools(held)
+        .into_iter()
+        .map(|tool| (searchable_text(&tool), tool.name))
+        .collect();
+    // Two catalog rows can still share a canonical text: the 160-byte cut
+    // can erase where they differed.
+    let mut ids = std::collections::HashSet::new();
+    index
+        .function_ids
+        .iter()
+        .zip(&index.searchable_texts)
+        .enumerate()
+        .filter(|(_, (id, text))| held.get(text.as_str()) == Some(*id) && ids.insert(id.as_str()))
+        .map(|(row, _)| row)
+        .collect()
+}
+
 fn publish_if_desired(inner: &Inner, fingerprint: &str, index: DenseIndex) -> bool {
     let desired = inner.desired_catalog.lock().expect("desired catalog");
     if inner.disabled.load(Ordering::Acquire)
@@ -783,8 +832,8 @@ fn cosine(left: &[f32], right: &[f32]) -> Result<f64, SemanticUnavailable> {
 fn rank_vectors(
     index_fingerprint: &str,
     requested_fingerprint: &str,
-    function_ids: &[String],
-    vectors: &[Vec<f32>],
+    function_ids: &[impl AsRef<str>],
+    vectors: &[impl AsRef<[f32]>],
     query: &[f32],
     minimum_cosine: f32,
 ) -> Result<Vec<(String, f64)>, SemanticUnavailable> {
@@ -794,7 +843,7 @@ fn rank_vectors(
     let mut ranked = function_ids
         .iter()
         .zip(vectors)
-        .map(|(id, vector)| Ok((id.clone(), cosine(query, vector)?)))
+        .map(|(id, vector)| Ok((id.as_ref().to_string(), cosine(query, vector.as_ref())?)))
         .collect::<Result<Vec<_>, SemanticUnavailable>>()?;
     ranked.retain(|(_, score)| *score >= f64::from(minimum_cosine));
     ranked.sort_by(|left, right| {
@@ -914,6 +963,40 @@ pub async fn download_bundle(root: &Path) -> Result<(), String> {
     download_bundle_inner(root)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// The pause after the first failed download; it doubles per failure up to
+/// [`DOWNLOAD_RETRY_MAX`].
+const DOWNLOAD_RETRY_FIRST: Duration = Duration::from_secs(30);
+const DOWNLOAD_RETRY_MAX: Duration = Duration::from_secs(600);
+
+/// Run `attempt` (a [`download_bundle`] into `root`) until it succeeds,
+/// pausing [`DOWNLOAD_RETRY_FIRST`] after the first failure and doubling up
+/// to [`DOWNLOAD_RETRY_MAX`]. Each retry resumes: files that verify are
+/// kept. Until then `semantic` answers embeds with "still downloading".
+pub async fn download_until_ready<F, Fut>(semantic: &SemanticSearch, root: &Path, mut attempt: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    semantic.inner.downloading.store(true, Ordering::Release);
+    let mut delay = DOWNLOAD_RETRY_FIRST;
+    let mut attempts = 1u32;
+    while let Err(error) = attempt().await {
+        tracing::warn!(
+            %error,
+            attempt = attempts,
+            retry_in_secs = delay.as_secs(),
+            path = %root.display(),
+            "MiniLM search bundle download failed; BM25 serves and provider::minilm::embed \
+             answers \"still downloading\" until a retry succeeds"
+        );
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(DOWNLOAD_RETRY_MAX);
+        attempts += 1;
+    }
+    semantic.inner.downloading.store(false, Ordering::Release);
+    tracing::info!(path = %root.display(), attempts, "MiniLM search bundle ready");
 }
 
 async fn download_bundle_inner(root: &Path) -> Result<(), SemanticUnavailable> {
@@ -1178,6 +1261,28 @@ mod tests {
         assert!(!is_desired(&semantic.inner, &fingerprint));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_download_retries_with_a_capped_backoff_until_it_succeeds() {
+        let semantic = SemanticSearch::default();
+        let mut calls = Vec::new();
+        download_until_ready(&semantic, Path::new("bundle"), || {
+            calls.push(tokio::time::Instant::now());
+            assert!(semantic.inner.downloading.load(Ordering::Acquire));
+            let succeed = calls.len() == 8;
+            async move {
+                if succeed {
+                    Ok(())
+                } else {
+                    Err("offline".into())
+                }
+            }
+        })
+        .await;
+        let pauses: Vec<u64> = calls.windows(2).map(|w| (w[1] - w[0]).as_secs()).collect();
+        assert_eq!(pauses, [30, 60, 120, 240, 480, 600, 600]);
+        assert!(!semantic.inner.downloading.load(Ordering::Acquire));
+    }
+
     #[test]
     fn bundle_url_targets_the_pinned_revision() {
         assert_eq!(
@@ -1279,14 +1384,77 @@ mod tests {
 
     #[test]
     fn cosine_rank_is_ordered_thresholded_stable_and_rejects_stale_data() {
-        let ids = vec!["b::same".into(), "a::best".into(), "c::low".into()];
-        let vectors = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+        let ids = ["b::same", "a::best", "c::low"];
+        let vectors: [Vec<f32>; 3] = [vec![1.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
         assert!(rank_vectors("old", "new", &ids, &vectors, &[1.0, 0.0], 0.5).is_err());
         assert_eq!(
             rank_vectors("new", "new", &ids, &vectors, &[1.0, 0.0], 0.5).unwrap(),
             vec![("a::best".into(), 1.0), ("b::same".into(), 1.0)]
         );
         assert!(rank_vectors("new", "new", &ids, &vectors, &[0.0, 0.0], 0.0).is_err());
+    }
+
+    #[test]
+    fn a_search_ranks_only_the_index_rows_of_the_copies_it_holds() {
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: serde_json::json!({ "type": "object", "properties": { "to": {}, "body": {} } }),
+            namespaces: vec!["default".into()],
+        };
+        let default = tool("ops::run", "Resize an image. Keeps the aspect ratio.");
+        let laptop = tool("ops::run", "Send email messages. Over smtp.");
+        let mail = tool("mail::send", "Send mail.");
+        // Cut at 160 bytes right after a space: the index's canonical text
+        // drops that space, the raw copy's text keeps it.
+        let long = tool("long::fn", &format!("{} tail", "x".repeat(159)));
+        let corpus =
+            canonical_tools(&[default.clone(), laptop.clone(), mail.clone(), long.clone()]);
+        let index = DenseIndex {
+            catalog_fingerprint: "catalog".into(),
+            model_revision: MINILM_REVISION,
+            function_ids: corpus.iter().map(|tool| tool.name.clone()).collect(),
+            searchable_texts: corpus.iter().map(searchable_text).collect(),
+            vectors: vec![vec![1.0]; corpus.len()],
+        };
+        let rows = |held: &[ToolSchema]| {
+            let mut texts: Vec<&str> = held_rows(&index, held)
+                .into_iter()
+                .map(|row| index.searchable_texts[row].as_str())
+                .collect();
+            texts.sort_unstable();
+            texts
+        };
+        assert_eq!(
+            rows(&[laptop.clone(), mail.clone()]),
+            [
+                "mail::send Send mail. body to",
+                "ops::run Send email messages. body to"
+            ]
+        );
+        assert_eq!(
+            rows(std::slice::from_ref(&laptop)),
+            ["ops::run Send email messages. body to"]
+        );
+        assert_eq!(
+            rows(std::slice::from_ref(&default)),
+            ["ops::run Resize an image. body to"]
+        );
+        assert_eq!(rows(std::slice::from_ref(&long)).len(), 1);
+        // A second copy whose text only the 160-byte cut made equal.
+        let twin = tool("long::fn", &format!("{} other", "x".repeat(159)));
+        let twins = DenseIndex {
+            catalog_fingerprint: "catalog".into(),
+            model_revision: MINILM_REVISION,
+            function_ids: vec!["long::fn".into(); 2],
+            searchable_texts: canonical_tools(&[long.clone(), twin])
+                .iter()
+                .map(searchable_text)
+                .collect(),
+            vectors: vec![vec![1.0]; 2],
+        };
+        assert_eq!(held_rows(&twins, &[long]), [0]);
+        assert!(rows(&[tool("ops::run", "Something else.")]).is_empty());
     }
 
     #[test]
@@ -1439,16 +1607,30 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
                 namespaces: Vec::new(),
             },
+            // Two copies of one id that describe different things.
+            ToolSchema {
+                name: "ops::run".into(),
+                description: "Resize an image to a given width.".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                namespaces: vec!["default".into()],
+            },
+            ToolSchema {
+                name: "ops::run".into(),
+                description: "Send an email message to a recipient.".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                namespaces: vec!["laptop".into()],
+            },
         ]);
         let fingerprint = tool_fingerprint(&tools);
         let semantic = SemanticSearch::new(Some(path.into()));
         assert!(semantic.is_production_minilm());
-        semantic.rebuild(tools);
+        semantic.rebuild(tools.clone());
+        let held = &tools[..3];
 
         let queries = vec!["download the contents of a web page".to_owned()];
         let ranked = tokio::time::timeout(std::time::Duration::from_secs(120), async {
             loop {
-                if let Ok(ranked) = semantic.rank(&fingerprint, &queries, -1.0).await {
+                if let Ok(ranked) = semantic.rank(&fingerprint, held, &queries, -1.0).await {
                     break ranked;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1460,12 +1642,44 @@ mod tests {
         assert_eq!(ranked[0].len(), 3);
         let candidates = vec![ranked[0].iter().map(|(id, _)| id.clone()).collect()];
         let reranked = semantic
-            .rerank(&fingerprint, &queries, &candidates)
+            .rerank(&fingerprint, held, &queries, &candidates)
             .await
             .unwrap();
         assert_eq!(reranked.len(), 1);
         assert_eq!(reranked[0].len(), 3);
         assert_eq!(reranked[0][0].0, "web::fetch");
+
+        // Each search reads the copy of `ops::run` it holds: laptop's
+        // (email) leads and outscores default's (image resizing).
+        let email = vec!["send an email".to_owned()];
+        let score = |lanes: &[Vec<(String, f64)>]| {
+            lanes[0]
+                .iter()
+                .find(|(id, _)| id == "ops::run")
+                .map(|(_, score)| *score)
+                .unwrap()
+        };
+        let mut scores = Vec::new();
+        for copy in [&tools[4], &tools[3]] {
+            let held = vec![tools[0].clone(), tools[2].clone(), copy.clone()];
+            let ranked = semantic
+                .rank(&fingerprint, &held, &email, -1.0)
+                .await
+                .unwrap();
+            assert_eq!(ranked[0].len(), 3);
+            let candidates = vec![ranked[0].iter().map(|(id, _)| id.clone()).collect()];
+            let reranked = semantic
+                .rerank(&fingerprint, &held, &email, &candidates)
+                .await
+                .unwrap();
+            if scores.is_empty() {
+                assert_eq!(ranked[0][0].0, "ops::run", "{ranked:?}");
+                assert_eq!(reranked[0][0].0, "ops::run", "{reranked:?}");
+            }
+            scores.push((score(&ranked), score(&reranked)));
+        }
+        assert!(scores[0].0 > scores[1].0, "{scores:?}");
+        assert!(scores[0].1 > scores[1].1, "{scores:?}");
 
         // The embed surface's chunks give exactly the vectors of one batch.
         let texts: Vec<String> = (0..20)

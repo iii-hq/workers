@@ -297,8 +297,20 @@ fn nothing_to_fork(session_id: &str) -> HarnessError {
     )
 }
 
-/// The conversation a side chat belongs to, from its metadata.
+/// Session metadata of a decision side chat: the console's isolated copy of
+/// a pending decision (`<session>/<question>`). It also names `side_chat_of`,
+/// but it is not a side chat of this module: it runs under the harness's
+/// `side_chat_functions` ceiling and the console ends it with its decision.
+pub const DECISION_KEY: &str = "side_chat_question";
+
+/// The conversation a side chat belongs to, from its metadata. `None` for a
+/// session that is no side chat, and for a decision side chat
+/// ([`DECISION_KEY`]), which this module neither locks, lists, deletes with
+/// its conversation, closes, keeps nor summarizes.
 pub fn side_chat_parent(metadata: &Map<String, Value>) -> Option<&str> {
+    if metadata.contains_key(DECISION_KEY) {
+        return None;
+    }
     metadata
         .get(SIDE_CHAT_OF)
         .and_then(Value::as_str)
@@ -433,7 +445,8 @@ pub async fn delete_lock(deps: &Deps, session_id: &str) -> Result<(), HarnessErr
 // ── reads ──
 
 /// The side chats of `session_id`: the sessions whose `side_chat_of` names
-/// it (`session::list` filtered on that key), in the store's order.
+/// it (`session::list` filtered on that key), in the store's order, without
+/// its decision side chats ([`DECISION_KEY`]).
 pub async fn side_chats_of(
     session: &SessionClient,
     session_id: &str,
@@ -442,7 +455,7 @@ pub async fn side_chats_of(
         .list_summaries(Some(json!({ SIDE_CHAT_OF: session_id })))
         .await?
         .into_iter()
-        .filter(|chat| chat.meta_str(SIDE_CHAT_OF) == Some(session_id))
+        .filter(|chat| chat.metadata.as_ref().and_then(side_chat_parent) == Some(session_id))
         .collect())
 }
 
@@ -544,8 +557,9 @@ pub async fn open(
     if parent
         .metadata
         .as_ref()
-        .and_then(side_chat_parent)
-        .is_some()
+        // Any side chat, a decision's included: a side chat of a side chat
+        // is never wanted.
+        .is_some_and(|metadata| metadata.contains_key(SIDE_CHAT_OF))
     {
         return Err(HarnessError::rejected(
             "nested_side_chat",

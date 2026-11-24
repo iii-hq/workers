@@ -1,0 +1,147 @@
+[data-iii-ui="kanban"] .kb-question {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="kanban"] .kb-question__head {
+  flex-wrap: wrap;
+  height: auto;
+  min-height: 40px;
+  gap: 8px;
+}
+
+[data-iii-ui="kanban"] .kb-question__author {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kb-question__meta {
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-question__body,
+[data-iii-ui="kanban"] .kb-question__fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kb-question__fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+[data-iii-ui="kanban"] .kb-question__prompt {
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+[data-iii-ui="kanban"] .kb-question__fieldset > legend {
+  margin-bottom: 12px;
+}
+
+[data-iii-ui="kanban"] .kb-question__why,
+[data-iii-ui="kanban"] .kb-question__by {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+[data-iii-ui="kanban"] .kb-question__options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+[data-iii-ui="kanban"] .kb-question__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  color: var(--color-ink);
+  background: var(--color-surface);
+  cursor: pointer;
+}
+
+[data-iii-ui="kanban"] .kb-question__option:hover {
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui="kanban"] .kb-question__option[data-selected] {
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui="kanban"] .kb-question__option:focus-within {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+
+[data-iii-ui="kanban"] .kb-question__option > input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--color-ink);
+}
+
+[data-iii-ui="kanban"] .kb-question__option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kb-question__option-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+[data-iii-ui="kanban"] .kb-question__recommended {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+[data-iii-ui="kanban"] .kb-question__actions,
+[data-iii-ui="kanban"] .kb-question__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+[data-iii-ui="kanban"] .kb-question__answer {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+@container kb-ticket (max-width: 520px) {
+  [data-iii-ui="kanban"] .kb-question__actions > button {
+    flex: 1 1 100%;
+    min-height: 48px;
+  }
+}

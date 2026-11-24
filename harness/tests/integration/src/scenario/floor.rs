@@ -364,6 +364,7 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
         "parent_session_id",
         "reactive_depth",
         "context",
+        "open_asks",
     ]);
     let shape = payloads.iter().all(|payload| {
         let Some(map) = payload.as_object() else {

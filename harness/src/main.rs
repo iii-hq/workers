@@ -192,6 +192,9 @@ async fn main() -> Result<()> {
     harness::functions::delete_session_tree::recover(&deps)
         .await
         .context("recovering durable session deletions")?;
+    harness::ask_store::recover(&deps)
+        .await
+        .context("recovering durable asks")?;
     deps.events.emit_ready().await;
     tracing::info!(
         "harness ready: harness::* functions + observers + turn events + hook points + reactive function-registry cache"

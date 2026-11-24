@@ -1059,6 +1059,71 @@ async fn context_items_list_the_side_chats_newest_first() {
     assert!(own.side_chats.is_empty());
 }
 
+/// The control plane's decision side chats (`side_chat_question`) also name
+/// `side_chat_of`, but they are the console's copies of a pending decision,
+/// capped by `side_chat_functions` and ended with their decision: no lock,
+/// not listed with the conversation's side chats, refused by close, keep and
+/// summarize, and no side chat of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decision_side_chat_is_left_to_its_ceiling_and_its_decision() {
+    let fake = Fake::with_conversation().await;
+    fake.data.lock().unwrap().sessions.insert(
+        "s_decision".into(),
+        meta(
+            "s_decision",
+            "Which retry policy?",
+            json!({ SIDE_CHAT_OF: MAIN, DECISION_KEY: "s_main/q1" }),
+            4,
+        ),
+    );
+    fake.send(
+        "s_decision",
+        json!({ "message": "Which option?", "model": "gpt-5", "provider": "openai",
+                "options": { "functions": { "allow": ["session::get"] } } }),
+    )
+    .await
+    .unwrap();
+    assert!(load_lock(&fake.deps, "s_decision").await.unwrap().is_none());
+    assert_eq!(
+        fake.turn("s_decision").await.unwrap().options.model,
+        "gpt-5"
+    );
+
+    let items = crate::context_items::handle(
+        &fake.deps,
+        crate::context_items::ContextItemsRequest {
+            session_id: MAIN.into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(items.side_chats.is_empty(), "{:?}", items.side_chats);
+    let request = || SideChatRequest {
+        session_id: "s_decision".into(),
+    };
+    for refused in [
+        close(&fake.deps, request()).await.map(drop).unwrap_err(),
+        keep(&fake.deps, request()).await.map(drop).unwrap_err(),
+        summarize(&fake.deps, request())
+            .await
+            .map(drop)
+            .unwrap_err(),
+    ] {
+        assert_eq!(code(&refused).as_deref(), Some("not_side_chat"));
+    }
+    let nested = open(
+        &fake.deps,
+        SideChatOpenRequest {
+            session_id: "s_decision".into(),
+            entry_id: None,
+            quote: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&nested).as_deref(), Some("nested_side_chat"));
+}
+
 // ── pure rules ──
 
 fn lock() -> SideChatLock {

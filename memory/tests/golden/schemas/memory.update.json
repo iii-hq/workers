@@ -22,6 +22,10 @@
           "null"
         ]
       },
+      "expected_memory": {
+        "default": null,
+        "description": "Optional snapshot of the memory as the caller read it (a full record or a revision-bound projection): the write is refused when the memory changed since."
+      },
       "id": {
         "type": "string"
       },
@@ -29,6 +33,14 @@
         "default": null,
         "type": [
           "boolean",
+          "null"
+        ]
+      },
+      "reason": {
+        "default": null,
+        "description": "Why, carried on the `memory::on-item-changed` event this call emits (not persisted on the record). Secrets redacted, trimmed, capped at 500 chars.",
+        "type": [
+          "string",
           "null"
         ]
       },

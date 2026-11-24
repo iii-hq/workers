@@ -1101,7 +1101,9 @@
 /* Narrow pane (a phone or a narrow split): touch-sized option rows, and the
    Other field under its label. Same container threshold as the chip. */
 @container (max-width: 30rem) {
-  [data-iii-ui="harness"] .harness-ui-ask-option {
+  [data-iii-ui="harness"] .harness-ui-ask-option,
+  [data-iii-ui="harness"] .harness-ui-ask-skip,
+  [data-iii-ui="harness"] .harness-ui-ask-foot button {
     min-height: 44px;
   }
   [data-iii-ui="harness"] .harness-ui-ask-other {

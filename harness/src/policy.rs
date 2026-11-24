@@ -207,6 +207,22 @@ impl CompiledPolicy {
         }
     }
 
+    /// Intersect allow globs with exact function ids, keeping namespace
+    /// qualifiers. The caller retains its deny globs unchanged.
+    pub(crate) fn restrict_allow(&self, function_ids: &[String]) -> Vec<String> {
+        function_ids
+            .iter()
+            .flat_map(|id| {
+                self.allow.matches(id).into_iter().map(move |index| {
+                    match self.allow_ns[index].as_deref() {
+                        Some(namespace) => format!("{namespace}/{id}"),
+                        None => id.clone(),
+                    }
+                })
+            })
+            .collect()
+    }
+
     /// Whether `function_id` may be dispatched in its implicit namespace
     /// (fail-closed).
     pub fn allows(&self, function_id: &str) -> bool {

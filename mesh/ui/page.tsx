@@ -10,9 +10,11 @@ import { useCopyFlash, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Network, RefreshCw } from 'lucide-react'
 import { quickTunnelEntryId, quickTunnelPlan, type QuickTunnelPlan } from './quick-tunnel'
 
-// functions: the worker's hub function ids (<machine>::<local id>), sorted.
+// functions: the worker's function ids, sorted; the hub holds them in the namespace named after the machine.
 type ComponentState = { name: string; state: string; functions?: string[] }
-type EngineFunction = { function_id: string; worker_name?: string; description?: string; metadata?: { internal?: boolean } }
+type EngineFunction = { function_id: string; namespace?: string; worker_name?: string; description?: string; metadata?: { internal?: boolean } }
+// Descriptions by namespace and id: two machines can share one id.
+const describe = (functions: EngineFunction[]) => new Map(functions.map((fn) => [`${fn.namespace}/${fn.function_id}`, fn.description]))
 const internal = (fn: EngineFunction) => fn.metadata?.internal === true
 type Node = {
   name: string; address: string; os: string; arch: string; version: string
@@ -30,12 +32,13 @@ type ClientStatus = {
   peer_to_peer?: boolean
   // join_unused: client.hub_url or client.join is not the enrollment in use; it is used only after a leave.
   join_unused?: boolean; hub_wants_version?: string; shared: Shared[]
-  // What this machine can call, by owner, hub first: ids are its local hub::… and peer::<machine>::… functions.
-  remote?: { machine: string; functions: string[]; path?: string }[]
+  // What this machine can call, by owner, hub first: each owner's ids, mirrored here in a namespace named after it.
+  // skipped: why an owner is not mirrored here.
+  remote?: { machine: string; functions: string[]; path?: string; skipped?: string }[]
 }
 // The hub's mesh::status; `tunnel` is present only while the tunnel is enabled.
 type Tunnel = { enabled: boolean; tunnel_id: string; state: string; url?: string; error?: string }
-// shared: the hub's own shares, ids as joined machines see them (hub::…). catalog_skipped: machines over the catalog caps.
+// shared: the hub's own shares, by id; joined machines call them in namespace hub. catalog_skipped: machines over the catalog caps.
 type HubStatus = { public_url?: string; tunnel?: Tunnel; shared?: Shared[]; catalog_skipped?: string[] }
 // The client's mesh::leave; `warning` is set when the hub may still list the machine.
 type Left = { hub_notified: boolean; warning: string }
@@ -56,18 +59,18 @@ function CopyValue({ label, value, action }: { label: string; value: string; act
   </div>
 }
 
-// A hub id is <machine>::<local id>, and a local id usually starts with its worker's name: say that prefix once.
-function idPrefix(ids: string[], machine: string, worker: string) {
-  const base = machine && ids.every((id) => id.startsWith(`${machine}::`)) ? `${machine}::` : ''
-  return ids.every((id) => id.startsWith(`${base}${worker}::`)) ? `${base}${worker}::` : base
+// An id usually starts with its worker's name: say that prefix once.
+function idPrefix(ids: string[], worker: string) {
+  return ids.every((id) => id.startsWith(`${worker}::`)) ? `${worker}::` : ''
 }
 
 // Collapsed to a count: one worker can register dozens of functions.
-function FunctionList({ worker, machine, functions, lead, state }: { worker: string; machine: string; functions: EngineFunction[]; lead?: ReactNode; state?: string }) {
-  const prefix = idPrefix(functions.map((fn) => fn.function_id), machine, worker)
+function FunctionList({ worker, namespace, functions, lead, state }: { worker: string; namespace?: string; functions: EngineFunction[]; lead?: ReactNode; state?: string }) {
+  const prefix = idPrefix(functions.map((fn) => fn.function_id), worker)
   const count = `${functions.length} ${functions.length === 1 ? 'function' : 'functions'}`
   return <details className="mesh-ui-fns">
     <summary>{lead}<span className="mesh-ui-muted">{state ? `${state} · ${count}` : count}</span></summary>
+    {namespace ? <p className="mesh-ui-muted">In namespace <code>{namespace}</code></p> : null}
     {prefix ? <p className="mesh-ui-muted">Ids start with <code>{prefix}</code></p> : null}
     {/* role="list": Safari drops list semantics from a list without markers. */}
     <ul role="list" className={functions.some((fn) => fn.description) ? 'mesh-ui-functions' : 'mesh-ui-functions mesh-ui-names'} aria-label={`${worker} functions`}>
@@ -81,7 +84,7 @@ function FunctionList({ worker, machine, functions, lead, state }: { worker: str
 function SharedWorkers({ node, functions, skipped }: { node: Node; functions: EngineFunction[]; skipped: boolean }) {
   const label = `mesh-node-${node.name}-workers`
   const workers = node.workers ?? []
-  const described = new Map(functions.map((fn) => [fn.function_id, fn.description]))
+  const described = describe(functions)
   return <div className="mesh-ui-workers">
     <p className="mesh-ui-label" id={label}>Shared workers</p>
     {skipped ? <StatusPanel variant="warn" headline={<><code>{node.name}</code> shares more than the mesh carries; other machines cannot call it.</>} /> : null}
@@ -91,8 +94,8 @@ function SharedWorkers({ node, functions, skipped }: { node: Node; functions: En
         const ids = node.online ? worker.functions ?? [] : []
         const lead = <code>{worker.name}</code>
         return <li key={worker.name}>
-          {ids.length ? <FunctionList worker={worker.name} machine={node.name} lead={lead} state={worker.state}
-            functions={ids.map((id) => ({ function_id: id, description: described.get(id) }))} />
+          {ids.length ? <FunctionList worker={worker.name} lead={lead} state={worker.state}
+            functions={ids.map((id) => ({ function_id: id, description: described.get(`${node.name}/${id}`) }))} />
             : <div className="mesh-ui-worker">{lead}<span className="mesh-ui-muted">
               {node.online ? `${worker.state} · No functions registered yet` : 'Unavailable while the machine is offline'}</span></div>}
         </li>
@@ -129,22 +132,22 @@ const MODE_HELP: Record<Mode, string> = {
   client: 'This project joins another project\'s hub. It shares the workers you pick below and can call what the hub and other machines share. Calls go through the hub unless both machines turn on peer to peer.',
 }
 // The mesh worker refuses these or never publishes their functions; listing them would only offer a switch that does nothing.
-const NEVER_SHARED = new Set(['mesh', 'secrets', 'configuration', 'rbac-proxy', 'approval-gate'])
+// mesh-mirror serves other owners' functions here, with their own ids.
+const NEVER_SHARED = new Set(['mesh', 'mesh-mirror', 'secrets', 'configuration', 'rbac-proxy', 'approval-gate'])
 // Sharing one of these lets every caller in the mesh run commands where it runs.
 const RUNS_COMMANDS = new Set(['ide', 'harness', 'shell', 'coder', 'tmux', 'code-runner'])
 // A share entry with "::" is one function id; its prefix stands for its worker.
 const runsCommands = (entry: string) => RUNS_COMMANDS.has(entry.split('::')[0])
 // The worker's ValidateShare rule for a function id, so the page never stores an entry that stops the worker.
 const FUNCTION_ID = /^[A-Za-z0-9_.-]+::[A-Za-z0-9_.:-]+$/
-const LOCAL_ONLY = ['engine', 'mesh', 'mesh-node', 'secrets', 'configuration', 'rbac-proxy', 'approval', 'hub', 'peer']
+const LOCAL_ONLY = ['engine', 'mesh', 'mesh-node', 'secrets', 'configuration', 'rbac-proxy', 'approval']
 const canShareId = (id: string) => id.length <= 256 && FUNCTION_ID.test(id) && !LOCAL_ONLY.includes(id.split('::')[0])
 // What a share state the hub reports asks of the person, beyond its name.
 const SHARE_HELP: Record<string, string> = {
-  'name conflict': 'A machine has the name these functions start with. Rename or remove it to share them.',
   'too large': 'Too many functions to share.',
   'not running': 'No running worker registers a public function under this name. Sharing starts when one does.',
 }
-const SHARE_BADGE: Record<string, 'ok' | 'warn' | 'alert'> = { shared: 'ok', 'not running': 'warn', 'name conflict': 'alert', 'too large': 'alert' }
+const SHARE_BADGE: Record<string, 'ok' | 'warn' | 'alert'> = { shared: 'ok', 'not running': 'warn', 'too large': 'alert' }
 // A name the hub keeps as it is: no hyphen at the end or next to another.
 const NAME = /^(?=.{1,31}$)[a-z](?:-?[a-z0-9])*$/
 const RAW_CONFIG = 'The mesh settings are one raw value. Open Settings and replace it with individual settings first.'
@@ -378,8 +381,8 @@ function ClientSetup({ basics, saved, edit, status, local, listError, onRetry, f
   onLeave: () => void
 }) {
   const remote = status?.remote ?? []
-  // The mirrors are local functions: the local listing has their descriptions.
-  const described = new Map(functions.map((fn) => [fn.function_id, fn.description]))
+  // The mirrors are local functions, each owner's in its namespace: the local listing has their descriptions.
+  const described = describe(functions)
   // The saved client.name; '' for a ${VAR} template, which only the worker expands, so it compares with nothing the worker reports.
   const wanted = saved.name.includes('${') ? '' : saved.name
   // The worker has not asked the hub for the saved name yet: it does on the event of the save.
@@ -394,7 +397,7 @@ function ClientSetup({ basics, saved, edit, status, local, listError, onRetry, f
     <section className="mesh-ui-section" aria-labelledby="mesh-connect-title">
       <div className="mesh-ui-section-head"><h2 id="mesh-connect-title">Hub connection</h2>
         {state ? <Badge variant={STATE_BADGE[state] ?? 'default'}>{state}</Badge> : null}
-        {status?.node ? <span className="mesh-ui-muted">joined as <code>{status.node}</code>{status.namespace ? <> in namespace <code>{status.namespace}</code></> : null}</span> : null}
+        {status?.node ? <span className="mesh-ui-muted">joined as <code>{status.node}</code></span> : null}
         {NOTHING_TO_LEAVE.has(state) ? null : <Button variant="ghost" size="sm" className="mesh-ui-head-action" onClick={onLeave}>Leave hub</Button>}
       </div>
       {/* Announced: the worker pushes each step of a join, and nobody is clicking Refresh. */}
@@ -422,15 +425,16 @@ function ClientSetup({ basics, saved, edit, status, local, listError, onRetry, f
       </SettingsList>
     </section>
     <ShareList share={basics.share} saved={saved.share} live={status ? status.shared ?? [] : null} local={local} listError={listError} onRetry={onRetry}
-      place="this machine" calls={<>the hub calls them as <code>{node}::function</code>, other machines as <code>peer::{node}::function</code></>}
+      place="this machine" calls={<>the hub and the other machines call them by the same id in namespace <code>{node}</code></>}
       risk={"The hub project and every machine joined to the hub can call shared workers, and nothing asks here first, so sharing these gives all of them remote code execution here." + (basics.peer_to_peer ? PEER_RISK : '')}
       footer={"The hub project and every machine joined to the hub can call what you share." + (basics.peer_to_peer ? PEER_RISK : '')} onChange={(next) => edit('share', next)} />
     <section className="mesh-ui-section" aria-labelledby="mesh-remote-title">
       <div className="mesh-ui-section-head"><h2 id="mesh-remote-title">Available from the mesh</h2></div>
       <div className="mesh-ui-workers">{remote.length ? <ul role="list" aria-labelledby="mesh-remote-title">
-        {remote.map(({ machine, functions: ids, path }) => <li key={machine}>
-          <FunctionList worker={machine} machine={machine === 'hub' ? 'hub' : `peer::${machine}`} lead={<code>{machine}</code>} state={path ? PATH_LABEL[path] : undefined}
-            functions={ids.map((id) => ({ function_id: id, description: described.get(id) }))} />
+        {remote.map(({ machine, functions: ids, path, skipped }) => <li key={machine}>
+          {skipped ? <><div className="mesh-ui-worker"><code>{machine}</code></div><StatusPanel variant="warn" headline={`Not available here: ${skipped}`} /></>
+            : <FunctionList worker={machine} namespace={machine} lead={<code>{machine}</code>} state={path ? PATH_LABEL[path] : undefined}
+              functions={ids.map((id) => ({ function_id: id, description: described.get(`${machine}/${id}`) }))} />}
         </li>)}
       </ul> : <p className="mesh-ui-muted">{status?.state === 'connected' ? 'Nothing is shared with this machine yet' : 'Shown once this machine is connected'}</p>}</div>
     </section>
@@ -726,7 +730,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
         ? <ClientSetup basics={basics} saved={saved} edit={edit} status={data?.client ?? null} local={data?.local ?? []} listError={data?.functionsError ?? null} onRetry={refresh} functions={data?.functions ?? []}
           secretInput={secretInput} onLeave={() => setLeaving(true)} />
         : <><ShareList share={basics.hub_share} saved={saved.hub_share} live={data?.hub ? data.hub.shared ?? [] : null} local={data?.local ?? []} listError={data?.functionsError ?? null} onRetry={refresh}
-          place="this hub" calls={<>joined machines call them as <code>hub::function</code></>}
+          place="this hub" calls={<>joined machines call them by the same id in namespace <code>hub</code></>}
           risk="Every machine joined to this hub can call shared workers, and nothing asks here first, so sharing these gives each of them remote code execution with this project's access."
           footer="Every machine joined to this hub can call what you share." onChange={(next) => edit('hub_share', next)} />
         <section className="mesh-ui-section" aria-labelledby="mesh-address-title">

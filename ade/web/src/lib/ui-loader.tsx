@@ -13,6 +13,7 @@
  * only recorded, and imported when a script calls `host.importModule`.
  */
 
+import { decisionChatCapabilities } from '@/components/chat/decision/host'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { hashForWorkerPage, workerRouteFromHash } from '@/hooks/use-hash-route'
 import { listSavedFolders, recentFolderPaths } from '@/lib/backend/folders'
@@ -58,6 +59,7 @@ import type {
   ConfigFormProps,
   ConsoleApi,
   ContextSectionProps,
+  DecisionChatHandle,
   Host,
   MessageBlockProps,
   ProviderConfigFormProps,
@@ -177,6 +179,25 @@ function makeHost(
   const track = (off: () => void): (() => void) => {
     cleanups.push(off)
     return off
+  }
+  const decisionChat = decisionChatCapabilities(api.iii)
+  const trackDecisionChat = async <T extends DecisionChatHandle | null>(
+    pending: Promise<T>,
+  ): Promise<T> => {
+    const handle = await pending
+    if (handle) {
+      if (entry.screenDisposed) handle.detach()
+      else {
+        const detach = handle.detach
+        handle.detach = () => {
+          detach()
+          const index = cleanups.indexOf(handle.detach)
+          if (index !== -1) cleanups.splice(index, 1)
+        }
+        track(handle.detach)
+      }
+    }
+    return handle
   }
   return {
     iii: api.iii,
@@ -379,6 +400,12 @@ function makeHost(
       },
     },
     chat: {
+      async openDecisionChat(request) {
+        return trackDecisionChat(decisionChat.openDecisionChat(request))
+      },
+      rebindDecisionChat(request) {
+        return trackDecisionChat(decisionChat.rebindDecisionChat(request))
+      },
       openDraft(draft, options) {
         return options
           ? conversationAdapter.openDraft(draft, options)

@@ -76,7 +76,7 @@ const ConfigSchema = z.object({
         .string()
         .default('')
         .describe(
-          "Directory the terminal starts in. Empty: `claude-code` under the shell worker's primary root. Must be inside shell's jail — shell owns the terminal.",
+          "Directory the terminal starts in. Empty: `claude-code` under the ide worker's primary root. Must be inside its jail: the ide worker owns the terminal.",
         ),
       auto_install: z
         .boolean()
@@ -86,7 +86,7 @@ const ConfigSchema = z.object({
         .boolean()
         .default(true)
         .describe(
-          'Keep the workspace equipped on every boot: the iii skills, the engine notes, and the hooks that report activity',
+          'Keep the workspace equipped on every boot: the iii plugin, with its skills, commands and the hooks that report activity',
         ),
     })
     .prefault({})

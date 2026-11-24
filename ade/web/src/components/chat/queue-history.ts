@@ -22,10 +22,12 @@ export type HistoryNavResult =
 
 /**
  * Pure ↑/↓ queue-history navigation. `browseId` is the message the editor
- * currently holds (`null` = a live draft); `current` is the editor's text.
+ * currently holds (`null` = a live draft); `current` is the editor's text
+ * and `currentAttachments` its chips.
  *
  * Navigation only happens while the editor is *pristine* — blank for a live
- * draft, or exactly the browsed message unedited — so an in-progress edit and
+ * draft, or exactly the browsed message unedited (text and chips) — so an
+ * in-progress edit, an attachment-only one included, and
  * caret moves within it are never clobbered. ↑ goes older (from a blank
  * composer, enters at the newest); ↓ goes newer (past the newest, exits to a
  * blank draft). Ends of the range that can't advance are `noop`.
@@ -35,11 +37,17 @@ export function nextHistoryTarget(
   browseId: string | null,
   current: string,
   direction: 'up' | 'down',
+  currentAttachments: readonly Attachment[] = [],
 ): HistoryNavResult {
-  const original = browseId
-    ? (list.find((m) => m.id === browseId)?.text ?? '')
-    : ''
-  const pristine = browseId === null ? current === '' : current === original
+  const browsed = browseId ? list.find((m) => m.id === browseId) : undefined
+  const originalAttachments = browsed?.attachments ?? []
+  const sameChips =
+    currentAttachments.length === originalAttachments.length &&
+    currentAttachments.every((a, i) => a.id === originalAttachments[i]?.id)
+  const pristine =
+    browseId === null
+      ? current === ''
+      : current === (browsed?.text ?? '') && sameChips
   if (!pristine) return { kind: 'noop' }
 
   const load = (target: HistoryTarget): HistoryNavResult => ({

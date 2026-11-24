@@ -46,10 +46,10 @@ func (r *nodeCallRPC) statusCalls() int {
 func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if req.Namespace != "default" || !strings.HasPrefix(req.FunctionID, "laptop::mesh-node::") {
-		return nil, errors.New("incorrect control namespace or prefix")
+	if req.Namespace != "laptop" || !strings.HasPrefix(req.FunctionID, "mesh-node::") {
+		return nil, errors.New("incorrect machine namespace or node function")
 	}
-	fn := strings.TrimPrefix(req.FunctionID, "laptop::")
+	fn := req.FunctionID
 	var signed node.Signed
 	var wire any
 	json.Unmarshal(req.Payload, &wire)
@@ -156,7 +156,7 @@ func TestVersionMismatchSharesNothing(t *testing.T) {
 	if len(list) != 1 || list[0].Version != "0.2.0" || list[0].OS != "linux" || list[0].Arch != "amd64" {
 		t.Fatalf("list %+v", list)
 	}
-	if workers, _ := json.Marshal(list[0].Workers); string(workers) != `[{"name":"ide","state":"shared","functions":["laptop::coder::read-file","laptop::shell::exec"]},{"name":"probe","state":"not running","functions":[]}]` {
+	if workers, _ := json.Marshal(list[0].Workers); string(workers) != `[{"name":"ide","state":"shared","functions":["coder::read-file","shell::exec"]},{"name":"probe","state":"not running","functions":[]}]` {
 		t.Fatalf("workers %s", workers)
 	}
 }
@@ -186,7 +186,7 @@ func TestOnlineNodeWorkersRefresh(t *testing.T) {
 	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "shared", Functions: []string{"coder::read-file"}}}
 	r.mu.Unlock()
 	h.onFunctionsChange() // what the hub engine's function change event does
-	waitWorkers(`[{"name":"ide","state":"shared","functions":["laptop::coder::read-file"]}]`)
+	waitWorkers(`[{"name":"ide","state":"shared","functions":["coder::read-file"]}]`)
 }
 
 // readingHub is nodeCallHub with its node reads running, after the two reads its join starts: the first catalog pass and the pass the node's version starts.
@@ -374,7 +374,7 @@ func TestCatalogPushedWhenTheRevisionDiffers(t *testing.T) {
 		t.Fatal("before the first read: ", err)
 	}
 	catalog := node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "hub", Description: "run"}}}
-	h.shared = shared{catalog: catalog, rows: map[string]sharedRow{"shell::exec": {"hub", "shell", false}}}
+	h.shared = shared{catalog: catalog, rows: map[rowKey]sharedRow{{"hub", "shell::exec"}: {"hub", "shell", false}}}
 	if err := online("workers::apply", "catalog::apply"); err != nil || !reflect.DeepEqual(*r.catalog, catalog) {
 		t.Fatalf("catalog %+v: %v", r.catalog, err)
 	}
@@ -468,7 +468,7 @@ func TestRenameFollowsOnTheHub(t *testing.T) {
 	named("laptop")
 	session := h.Sessions.Open("laptop")
 	h.mu.Lock()
-	h.nodeDetails = map[string]NodeDetails{"laptop": {NodeEntry: NodeEntry{Name: "laptop", Workers: []ComponentState{{Name: "ide", State: "shared", Functions: []string{"laptop::coder::read-file"}}}}}}
+	h.nodeDetails = map[string]NodeDetails{"laptop": {NodeEntry: NodeEntry{Name: "laptop", Workers: []ComponentState{{Name: "ide", State: "shared", Functions: []string{"coder::read-file"}}}}}}
 	h.mu.Unlock()
 	if name, err := m.Rename(t.Context(), "work"); err != nil || name != "work" {
 		t.Fatalf("rename: %q %v", name, err)

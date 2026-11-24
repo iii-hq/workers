@@ -1,10 +1,10 @@
 # workflow kit
 
-Give the **Workflow** agent a goal and it finishes it the cheapest way that is still right. The `workflow` worker runs the agents of a larger goal, and the kanban board is the task list of a broad one:
+Give the **Workflow** agent a goal and it finishes it the cheapest way that is still right. The `workflow` worker runs the agents of a larger goal, and the kanban board is its task list:
 
 1. The Workflow agent sizes the goal first, with a few read-only calls, and says which path it took. A small one (a question, a lookup, a run-and-report, or a change of at most five files with one obvious way to do it, low stakes and a quick check) it does itself, in your checkout, with no ticket and no workflow run, and reports what it changed and what it ran.
-2. Any other goal is a run. Before it plans, the agent asks you the decisions only you can make: rounds of one card, up to four questions, each with a recommended answer. Facts it looks up itself, and a goal that leaves nothing open gets no card. One or two tickets run **focused**: off the board, with no design run unless the agent could not find the place (then explorers and a planner), one workflow run per ticket, in which one agent writes the code and its tests and a check node verifies them.
-3. Anything larger runs **full**, with the tickets as subtasks of one run ticket on the board. When the agent cannot write the tickets from what it read, it explores first: one workflow run of explorers and a planner, plus three competing designs and a refuter for each only when the approach is a real choice that is costly to reverse, or the goal asks for a design. Each wave of ready tickets is one workflow run. Every ticket phase is a node of that run, with its own agent profile and model.
+2. Any other goal is a run, with its tickets as subtasks of one run ticket on the board. Before it plans, the agent asks you the decisions only you can make: rounds of one card, up to four questions, each with a recommended answer. Facts it looks up itself, and a goal that leaves nothing open gets no card. One or two tickets run **focused**: with no design run unless the agent could not find the place (then explorers and a planner), one workflow run per ticket, in which one agent writes the code and its tests and a check node verifies them.
+3. Anything larger runs **full**. When the agent cannot write the tickets from what it read, it explores first: one workflow run of explorers and a planner, plus three competing designs and a refuter for each only when the approach is a real choice that is costly to reverse, or the goal asks for a design. Each wave of ready tickets is one workflow run. Every ticket phase is a node of that run, with its own agent profile and model.
 4. A check node verifies each result. On a `fail` the run loops the work back with the check's reasons, up to `attempts` passes. A pass that fixed none of them ends the loop as `stalled`: the batch gets one repair on the plan model with a root-cause brief, and a second stall parks its cards for you.
 5. Rounds repeat until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
 
@@ -12,7 +12,7 @@ The workflow kit uses the ticket strategy of [`deepwork`](../deepwork/) (run tic
 
 A goal that changes code in a git repository runs the **dev flow**. A ticket that runs alone is one run in the run worktree: an implementer node writes the code and its tests, and the check (verify and review together) loops it back on a fail. A wave of several tickets gives each its own git worktree, integrates them on the run branch, and one run writes the wave's tests and checks them. A full run first runs the baseline checks once, in the run worktree; a focused run runs none, and a failing command whose file and imports the change did not touch is reported, not charged to the ticket. A card gets tests only when a regression test can observe its change: a change of looks, wording or a configuration value is proved by its Verify calls. That check also holds the change to the code rules the repository writes down (a markdown file in its top folder or in `docs/`: `CONTRIBUTING.md`, `AGENTS.md`, a UI, style or conventions file). Cards become Done only after that check passes. When a run lets a defect through, write the rule in one of those files: the next run's implementer follows it and its check enforces it. A critic node reviews the whole branch when two or more tickets were verified, a ticket was marked hard or the goal asks for a review (`critic=on`: always), and the branch is kept by default; when the repository has a remote, the run ends by asking whether to push the branch and open a pull request. Other goals (research, reading, analysis) run the **plain flow**: each ticket is worked and checked in the same run, every claim in a result cites where it comes from or is marked `(unsourced)`, and one last ticket can merge the results into one report (`synthesize=off` turns it off).
 
-The kit needs the `workflow`, `harness`, `state`, `kanban`, `ide` and `fp` workers. The `workflow` worker must take the flat `workflow::start` request (`nodes` at the top level, each node with its `task`): an older one refuses every run the kit starts. The `browser` worker is optional: with it, a card that changes a web page is checked in a real tab (see [Pages](#pages)).
+The kit needs the `workflow`, `harness`, `state`, `kanban`, `ide` and `fp` workers. The `workflow` worker must take the flat `workflow::start` request (`nodes` at the top level, each node with its `task`): an older one refuses every run the kit starts. The `browser` worker is optional: with it, a card that changes a web page is checked in a real tab (see [Pages](#pages)). The `judge` worker is optional too: with it, a run on the board is filed under the project its goal fits (see [Projects](#projects)).
 
 ## Paths
 
@@ -22,7 +22,7 @@ The agent says which path it took, and why, in its first line (`Path: focused (o
 |---|---|---|---|
 | For | a question, a lookup, a run-and-report, a change of at most five files with one way to do it, low stakes and a quick check | one or two tickets; a place the agent could not find is explored first | everything else: three or more tickets, an audit, a migration, a goal that asks for a design |
 | Who works | the Workflow agent | nodes of a workflow run | nodes of workflow runs |
-| Board | never | off (`board=on` keeps it) | on (`board=off` turns it off) |
+| Board | never | on (`board=off` turns it off) | on (`board=off` turns it off) |
 | Design run | none | none, or explorers and a planner when the place is not found | none, explorers and a planner, or the panel of competing designs and refuters |
 | Check | the narrow command the agent runs itself | a check node per run | a check node per run, and a branch review when two or more tickets were verified |
 | Where it writes | your checkout, uncommitted | a run branch in `.worktrees/` | a run branch in `.worktrees/` |
@@ -70,6 +70,21 @@ A ticket the plan marks hard runs on the plan model. The planner writes a `Hard`
 
 When the `browser` worker is installed and finds a Chromium, a card that changes what a person sees on a web page gets a page check: the check starts the project's server in the worktree, opens the page in a private tab, types and clicks as the card says, and reads the visible text and the page's console. An uncaught exception on the page fails the card. Research tickets read a page that renders with JavaScript through `browser::dynamic-fetch`. Install it with `iii call compose::add worker=browser`. Without it, or without a Chromium, the run goes on: page criteria are marked `(not checked in a browser)` and the run ticket's Notes say why. A run never downloads a browser.
 
+## Projects
+
+A run on the board is filed under a project that stands for a product or a theme, not for the run, so the project list no longer grows by one per run.
+
+- With the `judge` worker and a provider that answers, the agent asks it one question: which active project fits the goal, or none. A confident answer files the run under that project, or under a new one named after the theme. A repository's project is never one of the choices, so a goal no theme covers gets a new theme project. An unsure answer is one more question on a full run's interview card.
+- With the `judge` worker installed and no product or theme project on the board yet, there is nothing to ask: the run opens a theme project named after the goal's theme, without a judge call, and the run ticket's `Project` bullet says `(no candidate)`.
+- Without the judge, when its call fails, when a focused run gets an unsure answer or when nobody answers the card, the run goes under the repository's project. It is named after the repository's folder (the main checkout, not a worktree) and created once. Its description, `Work in the <name> repository.`, is what marks it: keep that text when you edit the project.
+- `project=` wins over all of it. A goal that is a ticket with a project keeps that project, and a resumed run keeps the run ticket's.
+- A name that belongs to an archived project is not reused: the run goes without a project and the run ticket's Notes say so. Restore the project on the Projects page, or pass `project=`.
+- Projects that older versions named `workflow: …` are never picked. Archive them on the Projects page.
+
+The run ticket's title is the goal, with no `workflow:` prefix; its `wf:run` label marks it as a run, and its `Project` bullet says how the project was chosen.
+
+Creating a project waits for a person unless the session's approval mode or rules allow `kanban::project::create`; when it is refused, the run goes on without a project. A hosted judge provider (`judge-typesafe`, `judge-openai`) receives the first 200 characters of the goal (for a goal that is a ticket: of its title and description), the repository's name and the names and descriptions of the active projects. To keep them on the machine, pick a local judge in the composer or pass `project=`.
+
 ## Install
 
 ```
@@ -97,7 +112,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `flow` | `auto` | `dev` or `plain` to force one |
 | `approve` | `auto` | `on` adds a Plan card, a Design card when the design run leaves questions, and the merge and discard options of the Finish card; `auto` gets the Finish card only to ask before a push |
 | `deadline_min` / `verify_deadline_min` | 20 / 40 | node timeouts of work and check nodes |
-| `board` | `auto` | on for a full run, off for a focused one; `on` / `off` force it. Off: plan, results and report in the chat, no resume |
+| `board` | `auto` | every run is on the board, focused or full; `on` also makes a small goal a run; `off` keeps a run off it: plan, results and report in the chat, no resume |
 | `design` | `auto` | the design run before planning, sized by the goal: none when the agent can write the tickets from what it read, explorers and a planner when it cannot, and the panel of three competing designs with a refuter each only when the approach is a real choice that is costly to reverse or the goal asks for a design. `on` forces the panel, `off` none. The run ticket's `Design` bullet says which and why |
 | `critic` / `synthesize` | `auto` / `on` | the final review (`auto`: with two or more verified tickets, a hard ticket, or a goal that asks for a review; `on` always, `off` never) / the merged report |
 | `models` | `auto` | `auto` takes each stage's model from `agents/workflow-models.md`, and for a provider with no row there runs the explore, baseline and plain work nodes one size below the orchestrator's model, never on its provider's smallest; `own` keeps every node without a pin or a model arg on the orchestrator's model |
@@ -107,7 +122,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `budget_usd` | none | stop dispatching once the run's cost reaches it |
 | `max_items` | 2 × concurrency, at least 4 | tickets the run may create in all, new items included; the rest go to a Follow-ups ticket |
 | `min_free_gb` | 5 | free disk the dev flow needs before it starts or tests |
-| `project` | a new one | kanban project to file the run under |
+| `project` | picked by the run | kanban project (id or name) to file the run under; see [Projects](#projects) |
 | `resume` | none | an earlier run ticket to adopt |
 
 Every run's nodes carry a phase, in the order the run goes: `baseline`, `explore`, `design`, `refute`, `plan`, `implement` (plain flow: `work`), `verify`, `review`. The ADE's Workflow section lists them per run.
@@ -133,5 +148,5 @@ Watch the run on the board, or open the run ticket's waves with `workflow::statu
 - A check the baseline could not run for lack of what only you can supply or allow (a download, a credential, a service) is asked once, before the first wave: supply or allow it, or the tickets that need it are delivered `unverified`. With nobody to answer, they are delivered `unverified`.
 - The direct path edits your checkout in place, with guarded writes, and commits only when your message asks for it (never a file that already had your uncommitted changes), and pushes nothing. A file that already had uncommitted changes is edited too, and the report names it as mixed with yours: `git diff` is the review, and the report's undo line covers only the files that were clean.
 - A direct change is checked by one narrow command the agent picks and names in its report, not by an independent check node. Ask for a workflow run or an independent check in the goal to get one.
-- A focused run is off the board and cannot be resumed; its branch and worktree are kept. Pass `board=on` for a run you may want to resume.
+- A run with `board=off` cannot be resumed; its branch and worktree are kept.
 - A focused run runs no baseline. In a repository whose base is red, a failure whose file, and what that file imports, the change did not touch is reported as `base?` and does not fail the ticket; the report lists it under Needs you.

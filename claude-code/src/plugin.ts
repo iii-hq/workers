@@ -18,8 +18,14 @@
  * copy.
  */
 
+import { approveHookEntry, callApprovalHookEntry } from './iii-plugin/shared/mode.js';
+
 /** Where the plugin is materialised, relative to a workspace. */
 export const PLUGIN_DIR_NAME = '.iii-plugin';
+
+/** The default-mcp prompt, appended to Claude Code's system prompt (an agent
+ * would replace it). */
+export const MODE_FILE = 'default-mcp.md';
 
 /** Where every hook posts, and therefore how a hook entry is recognised. */
 export const ACTIVITY_TARGET = 'claude::terminal::activity';
@@ -43,6 +49,15 @@ export type PluginOptions = {
   context: string;
   /** Why the context is missing, when it is. */
   contextDetail?: string;
+  /**
+   * The mcp-server endpoint the session's `iii` MCP server is; empty when the
+   * engine runs none, and the session works through the `iii` CLI instead.
+   */
+  mcpUrl?: string;
+  /** The default-mcp prompt, written for `--append-system-prompt-file`. */
+  mode?: string;
+  /** The `iii` agent built from default-mcp (`agents/iii.md`). */
+  agent?: string;
 };
 
 /**
@@ -55,7 +70,7 @@ function quote(value: string): string {
 
 /**
  * Every file of the plugin, as paths relative to its root. The caller decides
- * how they land — through the `shell` worker on the terminal host, or on this
+ * how they land — through `shell::*` (the `ide` worker) on the terminal host, or on this
  * worker's own disk for a headless turn.
  */
 export function pluginFiles(options: PluginOptions): PluginFile[] {
@@ -67,26 +82,29 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
     const entry = { hooks: [{ type: 'command', command }] };
     hooks[event] = [shape === 'matcher' ? { matcher: '*', ...entry } : entry];
   }
+  // The plugin's approvals, after the activity report: the read-only iii
+  // tools, and iii_call for the read-only directory calls (approve-call).
+  hooks.PreToolUse.push(approveHookEntry(), callApprovalHookEntry());
 
+  // The manifest and commands are the plugin folder fetched from
+  // iii-hq/agent-plugins-claude at build (see `iii-plugin/install.ts`); these are the parts only a worker can write:
+  // hooks that call this host's `iii` CLI, the mcp-server address, and the
+  // runtime skill.
   const files: PluginFile[] = [
-    {
-      path: '.claude-plugin/plugin.json',
-      content: `${JSON.stringify(
-        {
-          name: 'iii',
-          description:
-            'This engine, as Claude Code sees it: the iii runtime skill, and the hooks that report every turn onto claude::on-agent-event.',
-          version: '0.1.0',
-          // `claude plugin validate` asks for attribution; the worker that
-          // wrote the directory is the honest answer.
-          author: { name: 'iii claude-code worker' },
-        },
-        null,
-        2,
-      )}\n`,
-    },
     { path: 'hooks/hooks.json', content: `${JSON.stringify({ hooks }, null, 2)}\n` },
   ];
+  if (options.mcpUrl) {
+    // The committed `.mcp.json` reads the user's `mcp_url` option; a worker
+    // knows where mcp-server is, so it writes the address itself.
+    const mcp = { mcpServers: { iii: { type: 'http', url: options.mcpUrl } } };
+    files.push({ path: '.mcp.json', content: `${JSON.stringify(mcp, null, 2)}\n` });
+  }
+  if (options.mode?.trim()) {
+    files.push({ path: MODE_FILE, content: `${options.mode.trim()}\n` });
+  }
+  if (options.agent) {
+    files.push({ path: 'agents/iii.md', content: options.agent });
+  }
 
   const context = options.context.trim();
   if (context) {
@@ -109,7 +127,8 @@ ${context}
  * operator should see, not a silent gap in what the agent knows.
  */
 export function pluginDetail(options: PluginOptions): string {
-  if (options.context.trim()) return '';
+  // With mcp-server, the skill is left out on purpose (default-mcp guides).
+  if (options.context.trim() || options.mcpUrl) return '';
   return `the iii runtime skill is not in the plugin: ${
     options.contextDetail || 'iii-directory served nothing'
   }`;

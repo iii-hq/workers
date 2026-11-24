@@ -63,6 +63,10 @@ impl From<String> for MessageInput {
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
+    /// Refuse a missing session and never ensure/create it. Durable ask
+    /// delivery uses this so an answer cannot resurrect a deleted session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_existing_session: bool,
     /// Explicit continuation of a user entry on this session's active path.
     /// Resolved and bounded by Harness; never inferred from message text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -270,7 +274,25 @@ pub struct StartOutcome {
 }
 
 pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, HarnessError> {
-    handle_with_delivery_lock(deps, req, false, DeliveryChannel::Direct).await
+    handle_with_delivery_lock(deps, req, false, DeliveryChannel::Direct, false).await
+}
+
+/// Trusted in-process ask delivery. Reserved keys never cross the public
+/// `harness::send` boundary, so an agent cannot pre-empt a person's answer.
+pub(crate) async fn handle_ask(
+    deps: &Deps,
+    req: SendRequest,
+) -> Result<SendResponse, HarnessError> {
+    if !req
+        .idempotency_key
+        .as_deref()
+        .is_some_and(is_ask_idempotency_key)
+    {
+        return Err(HarnessError::InvalidRequest(
+            "internal ask delivery requires an ask: or ask-expiry: idempotency key".into(),
+        ));
+    }
+    handle_with_delivery_lock(deps, req, false, DeliveryChannel::Direct, true).await
 }
 
 /// Trusted in-process entry from the invocation chokepoint. Lock ownership is
@@ -291,6 +313,7 @@ pub(crate) async fn handle_from_invoke(
         req,
         caller_holds_target_session_lock,
         DeliveryChannel::InvokedAgent,
+        false,
     )
     .await
 }
@@ -300,7 +323,18 @@ async fn handle_with_delivery_lock(
     req: SendRequest,
     caller_holds_target_session_lock: bool,
     channel: DeliveryChannel,
+    allow_reserved_idempotency_key: bool,
 ) -> Result<SendResponse, HarnessError> {
+    if !allow_reserved_idempotency_key
+        && req
+            .idempotency_key
+            .as_deref()
+            .is_some_and(is_ask_idempotency_key)
+    {
+        return Err(HarnessError::InvalidRequest(
+            "ask: and ask-expiry: idempotency keys are reserved for harness ask delivery".into(),
+        ));
+    }
     if let Some(command) = compact_command(&req.message) {
         return start_compaction(deps, req, command).await;
     }
@@ -316,6 +350,10 @@ async fn handle_with_delivery_lock(
         reasoning: out.reasoning,
         compaction: None,
     })
+}
+
+fn is_ask_idempotency_key(key: &str) -> bool {
+    key.starts_with("ask:") || key.starts_with("ask-expiry:")
 }
 
 /// The `/compact` command, whatever client typed it.
@@ -345,6 +383,7 @@ async fn start_compaction(
         && let Some(existing) =
             crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?
     {
+        validate_idempotency_session(&existing, req.session_id.as_deref())?;
         return Ok(SendResponse {
             session_id: existing.session_id,
             turn_id: existing.turn_id,
@@ -440,6 +479,15 @@ async fn start_with_delivery_lock(
         Some(session_id) => writable_session_metadata(&session, session_id).await?,
         None => None,
     };
+    let require_existing = req
+        .options
+        .as_ref()
+        .is_some_and(|o| o.require_existing_session);
+    if require_existing && existing_metadata.is_none() {
+        return Err(HarnessError::InvalidRequest(
+            "require_existing_session needs an existing session_id".into(),
+        ));
+    }
     // A side chat runs on its conversation's options (chat-projects D14):
     // its lock is enforced, and written into what the send leaves out,
     // before anything below reads the request.
@@ -472,6 +520,7 @@ async fn start_with_delivery_lock(
     };
     if let Some(outcome) = resolve_send_gate(
         idempotent,
+        req.session_id.as_deref(),
         prev.as_ref()
             .is_some_and(|record| !record.status.is_terminal()),
         req.options
@@ -492,12 +541,65 @@ async fn start_with_delivery_lock(
     // and a failed resolve must leave no session or budget ledger behind.
     // The one dispatch-policy rule for this send: persisted as
     // `options.functions` AND the policy its profile's contracts freeze under.
-    let functions = send_functions(
+    let mut functions = send_functions(
         &cfg,
         &req,
         prev.as_ref().and_then(|p| p.options.functions.as_ref()),
     )
     .cloned();
+    let is_side_chat = existing_metadata
+        .as_ref()
+        .or_else(|| {
+            req.session
+                .as_ref()
+                .and_then(|init| init.metadata.as_ref())
+                .and_then(Value::as_object)
+        })
+        .is_some_and(|metadata| metadata.contains_key("side_chat_question"));
+    if is_side_chat {
+        cap_side_chat_functions(&mut functions, &cfg.side_chat_functions);
+        let explicit_functions = req
+            .options
+            .as_ref()
+            .is_some_and(|options| options.functions.is_some());
+        if let Some(previous) = prev.as_ref().filter(|turn| !turn.status.is_terminal())
+            && (explicit_functions || previous.options.functions != functions)
+        {
+            // A queued send normally keeps the running policy. Tighten it
+            // under the turn's writer lock when the marker or ceiling changed.
+            with_delivery_guard(
+                &deps.locks,
+                &previous.session_id,
+                caller_holds_target_session_lock,
+                || async {
+                    if let Some(mut active) = crate::state::get_turn_unhydrated(
+                        &deps.iii,
+                        &previous.session_id,
+                        cfg.session_timeout_ms,
+                    )
+                    .await?
+                        && !active.status.is_terminal()
+                    {
+                        let mut narrowed = if explicit_functions {
+                            functions.clone()
+                        } else {
+                            active.options.functions.clone()
+                        };
+                        cap_side_chat_functions(&mut narrowed, &cfg.side_chat_functions);
+                        if active.options.functions != narrowed {
+                            active.options.functions = narrowed;
+                            active.functions_acknowledged = None;
+                            active.updated_at = AgentMessage::now_ms();
+                            crate::state::put_turn(&deps.iii, &active, cfg.session_timeout_ms)
+                                .await?;
+                        }
+                    }
+                    Ok::<(), HarnessError>(())
+                },
+            )
+            .await?;
+        }
+    }
     let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref(), functions.as_ref()).await?;
 
     // A profile-associated model is authoritative for that profile. Console
@@ -627,6 +729,7 @@ async fn start_with_delivery_lock(
         super::delete_session_tree::ensure_live(deps, id).await?;
     }
     let session_id = match &req.session_id {
+        Some(id) if require_existing => id.clone(),
         Some(id) => {
             let ensured = session
                 .ensure(id, title.as_deref(), metadata.as_ref(), kind.as_deref())
@@ -1058,6 +1161,11 @@ async fn try_enqueue(
     };
     let topology = deps.topology.lock().await;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
+    if !deps.session().await.exists(session_id).await? {
+        return Err(HarnessError::InvalidRequest(
+            "cannot queue a message into a deleted session".into(),
+        ));
+    }
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
     drop(topology);
     // Fire-and-forget: lets clients (e.g. the console's queued strip) refresh
@@ -1558,6 +1666,18 @@ fn send_functions<'a>(
         })
 }
 
+fn cap_side_chat_functions(functions: &mut Option<FunctionPolicy>, ceiling: &[String]) -> bool {
+    let Some(functions) = functions else {
+        return false;
+    };
+    let allow = policy::CompiledPolicy::from(Some(functions)).restrict_allow(ceiling);
+    if functions.allow == allow {
+        return false;
+    }
+    functions.allow = allow;
+    true
+}
+
 /// Refusal for a `skills` change on a session that has no skill context: a
 /// legacy session, or one started as a profile with `skills_index: false`.
 const NO_SKILL_CONTEXT: &str = "cannot change `skills` on a legacy session or one whose agent profile \
@@ -1597,10 +1717,12 @@ pub(crate) fn validate_active_skill_request(
 
 fn resolve_send_gate(
     idempotent: Option<IdemRecord>,
+    requested_session_id: Option<&str>,
     active: bool,
     skills_explicit: bool,
 ) -> Result<Option<StartOutcome>, HarnessError> {
     if let Some(existing) = idempotent {
+        validate_idempotency_session(&existing, requested_session_id)?;
         return Ok(Some(StartOutcome {
             session_id: existing.session_id,
             turn_id: existing.turn_id,
@@ -1612,6 +1734,18 @@ fn resolve_send_gate(
     }
     validate_active_skill_request(active, skills_explicit)?;
     Ok(None)
+}
+
+fn validate_idempotency_session(
+    existing: &IdemRecord,
+    requested_session_id: Option<&str>,
+) -> Result<(), HarnessError> {
+    if requested_session_id.is_some_and(|requested| requested != existing.session_id) {
+        return Err(HarnessError::InvalidRequest(
+            "idempotency key belongs to another session".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn merge_explicit_skill_filter(
@@ -3077,6 +3211,27 @@ mod tests {
     }
 
     #[test]
+    fn side_chat_ceiling_keeps_namespace_qualifiers_denies_and_fail_closed_policies() {
+        let ceiling = WorkerConfig::default().side_chat_functions;
+        let mut functions = Some(FunctionPolicy {
+            allow: vec!["laptop/session::*".into()],
+            deny: vec!["session::messages-tail".into()],
+            expose: Default::default(),
+        });
+        assert!(cap_side_chat_functions(&mut functions, &ceiling));
+        let policy = policy::CompiledPolicy::from(functions.as_ref());
+        assert!(policy.allows_in("laptop", "session::get"));
+        assert!(!policy.allows_in("other", "session::get"));
+        assert!(!policy.allows_in("laptop", "session::messages-tail"));
+        assert!(!cap_side_chat_functions(&mut functions, &ceiling));
+
+        functions.as_mut().unwrap().allow = vec!["[".into(), "*".into()];
+        cap_side_chat_functions(&mut functions, &ceiling);
+        assert!(functions.unwrap().allow.is_empty());
+        assert!(!cap_side_chat_functions(&mut None, &ceiling));
+    }
+
+    #[test]
     fn send_without_prompt_fields_inherits_prior_resolved_prompt() {
         // Omitting both prompt fields is the inherit condition…
         assert!(prompt_fields_omitted(None));
@@ -3282,7 +3437,7 @@ mod tests {
             ts: 1,
         };
 
-        let outcome = resolve_send_gate(Some(existing), true, true)
+        let outcome = resolve_send_gate(Some(existing), Some("s_original"), true, true)
             .unwrap()
             .expect("idempotency mapping resolves before active validation");
 

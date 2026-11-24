@@ -7,6 +7,7 @@ mod agent_preloaded_skills;
 mod agent_shared_prompt_prefix;
 mod ask_bypasses_approval_hook;
 mod ask_ends_turn;
+mod ask_open_answer;
 mod binding_prefix_append_only;
 mod call_argument_contract;
 mod call_argument_diagnosis;
@@ -71,6 +72,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         agent_shared_prompt_prefix::scenario(),
         ask_bypasses_approval_hook::scenario(),
         ask_ends_turn::scenario(),
+        ask_open_answer::scenario(),
         binding_prefix_append_only::scenario(),
         child_discovery_granted::scenario(),
         compaction_anchor::scenario(),
@@ -123,7 +125,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 50);
+        assert_eq!(fixtures.len(), 51);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

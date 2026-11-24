@@ -113,12 +113,16 @@ func TestMiddlewareConfigurationRules(t *testing.T) {
 	}
 }
 
-// meshHub has desk and laptop on its version, the hub sharing shell and laptop sharing coder.
+// meshHub has desk and laptop on its version, the hub sharing shell and laptop sharing coder and shell.
 func meshHub() (*Hub, SessionContext) {
 	h := authHub()
 	h.Version = "0.2.0"
 	h.config.Share = []string{"shell"}
-	h.shared = shared{rows: map[string]sharedRow{"shell::exec": {"hub", "shell", false}, "laptop::coder::read-file": {"laptop", bridgeWorker("laptop"), false}}}
+	h.shared = shared{rows: map[rowKey]sharedRow{
+		{"hub", "shell::exec"}:         {"hub", "shell", false},
+		{"laptop", "coder::read-file"}: {"laptop", bridgeWorker("laptop"), false},
+		{"laptop", "shell::exec"}:      {"laptop", bridgeWorker("laptop"), false},
+	}}
 	h.nodeDetails = map[string]NodeDetails{"desk": {NodeEntry: NodeEntry{Version: "0.2.0"}}, "laptop": {NodeEntry: NodeEntry{Version: "0.2.0"}}}
 	return h, SessionContext{MeshNode: "desk", SessionKey: h.Sessions.Open("desk")}
 }
@@ -136,18 +140,38 @@ func code(err error) string {
 
 func TestMeshCallForwardsSharedFunctions(t *testing.T) {
 	h, desk := meshHub()
-	for _, c := range []struct{ owner, id string }{{"hub", "shell::exec"}, {"laptop", "laptop::coder::read-file"}} {
+	for _, c := range []struct{ owner, id, namespace string }{{"hub", "shell::exec", "proj"}, {"laptop", "coder::read-file", "laptop"}, {"laptop", "shell::exec", "laptop"}} {
 		f := &forwardingRPC{}
 		got, err := h.middleware(t.Context(), f, meshRequest(desk, c.owner, c.id, `{"a":1}`))
 		if err != nil || string(got) != `{"target":"result"}` || len(f.calls) != 1 {
 			t.Fatalf("%s: %s %v %+v", c.id, got, err, f.calls)
 		}
-		if call := f.calls[0]; call.FunctionID != c.id || call.Namespace != "proj" || string(call.Payload) != `{"a":1}` || call.Action != nil || call.Timeout != 610*time.Second {
+		if call := f.calls[0]; call.FunctionID != c.id || call.Namespace != c.namespace || string(call.Payload) != `{"a":1}` || call.Action != nil || call.Timeout != 610*time.Second {
 			t.Fatalf("forwarded %+v", call)
 		}
 	}
 	if h.inFlight["desk"] != 0 {
 		t.Fatalf("calls in flight %d", h.inFlight["desk"])
+	}
+}
+
+func TestMeshCallDropsMachineBoundFields(t *testing.T) {
+	for _, owner := range []string{"hub", "laptop"} {
+		h, desk := meshHub()
+		f := &forwardingRPC{}
+		stamped := `{"command":"ls","fs_scope":{"root":"/desk"},"caller_fs_root":"/desk","caller_session_id":"s1"}`
+		if _, err := h.middleware(t.Context(), f, meshRequest(desk, owner, "shell::exec", stamped)); err != nil || len(f.calls) != 1 {
+			t.Fatalf("%s: %v %+v", owner, err, f.calls)
+		}
+		if got := string(f.calls[0].Payload); got != `{"command":"ls"}` {
+			t.Fatalf("%s: the hub engine got %s", owner, got)
+		}
+		f.err = &iii.InvocationError{Code: "C215", Message: `outside jail filesystem_access_request={"v":1,"requested_root":"/srv"}`}
+		_, err := h.middleware(t.Context(), f, meshRequest(desk, owner, "shell::exec", `{}`))
+		var ie *iii.InvocationError
+		if !errors.As(err, &ie) || ie.Message != "outside jail" {
+			t.Fatalf("%s: error %v", owner, err)
+		}
 	}
 }
 
@@ -166,10 +190,11 @@ func TestMeshCallRefusals(t *testing.T) {
 		}, "hub", "shell::exec", `{}`},
 		{"a caller never read", "mesh_offline", func(h *Hub, _ *MiddlewareRequest) { h.Version = ""; delete(h.nodeDetails, "desk") }, "hub", "shell::exec", `{}`},
 		{"before the first catalog read", "mesh_offline", func(h *Hub, _ *MiddlewareRequest) { h.shared.rows = nil }, "hub", "shell::exec", `{}`},
-		{"an unshared hub function", "FORBIDDEN", nil, "hub", "coder::read-file", `{}`},
-		{"the wrong owner", "FORBIDDEN", nil, "hub", "laptop::coder::read-file", `{}`},
+		{"an unshared hub function", "FORBIDDEN", nil, "hub", "coder::write", `{}`},
+		{"the wrong owner", "FORBIDDEN", nil, "hub", "coder::read-file", `{}`},
+		{"a machine's id under the hub's name", "FORBIDDEN", func(h *Hub, _ *MiddlewareRequest) { h.config.Share = []string{"shell", "coder"} }, "hub", "coder::read-file", `{}`},
 		{"a stale catalog after an unshare", "FORBIDDEN", func(h *Hub, _ *MiddlewareRequest) { h.config.Share = nil }, "hub", "shell::exec", `{}`},
-		{"a node function", "FORBIDDEN", nil, "laptop", "laptop::mesh-node::workers::apply", `{}`},
+		{"a node function", "FORBIDDEN", nil, "laptop", "mesh-node::workers::apply", `{}`},
 		{"a mesh function", "FORBIDDEN", nil, "hub", "mesh::join::code", `{}`},
 		{"an engine function", "FORBIDDEN", nil, "hub", "engine::functions::list", `{}`},
 		{"no owner", "FORBIDDEN", nil, "", "engine::functions::list", `{}`},
@@ -192,7 +217,7 @@ func TestMeshCallRefusals(t *testing.T) {
 	h, _ := meshHub()
 	laptop := SessionContext{MeshNode: "laptop", SessionKey: h.Sessions.Open("laptop")}
 	f := &forwardingRPC{}
-	if _, err := h.middleware(t.Context(), f, meshRequest(laptop, "laptop", "laptop::coder::read-file", `{}`)); code(err) != "FORBIDDEN" || len(f.calls) != 0 {
+	if _, err := h.middleware(t.Context(), f, meshRequest(laptop, "laptop", "coder::read-file", `{}`)); code(err) != "FORBIDDEN" || len(f.calls) != 0 {
 		t.Fatalf("own function: %v", err)
 	}
 	// A channel ref in the result is refused after the call, which leaves the count.
@@ -207,8 +232,8 @@ func TestMeshCallRefusals(t *testing.T) {
 func TestMeshCallGatesFunctionsByID(t *testing.T) {
 	h, desk := meshHub()
 	h.config.Share = []string{"shell", "harness::send"}
-	h.shared.rows["harness::send"] = sharedRow{"hub", "harness", true}
-	h.shared.rows["shell::spawn"] = sharedRow{"hub", "shell", true} // as a read racing a re-registration could leave it
+	h.shared.rows[rowKey{"hub", "harness::send"}] = sharedRow{"hub", "harness", true}
+	h.shared.rows[rowKey{"hub", "shell::spawn"}] = sharedRow{"hub", "shell", true} // as a read racing a re-registration could leave it
 	f := &forwardingRPC{}
 	if _, err := h.middleware(t.Context(), f, meshRequest(desk, "hub", "harness::send", `{}`)); err != nil || len(f.calls) != 1 || f.calls[0].FunctionID != "harness::send" {
 		t.Fatalf("cited internal function: %v %+v", err, f.calls)

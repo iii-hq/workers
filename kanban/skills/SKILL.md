@@ -22,6 +22,11 @@ A ticket has at most one parent (a subtask), one project and one release,
 independent of each other. A parent's `progress` counts only children in the
 `done_status` column (read it from `kanban::config::info`; `in_review` is not done), over
 the children not in the `canceled_status` column: move a ticket that will not be done there.
+Ticket views and project and release lists expose the derived
+`open_questions` count. Questions are append-only comments mirrored from the
+harness through `Comment.question` and its answer reply's `Comment.answer`;
+the worker never writes a `needs you` pill for them. Projects may carry
+validated `repos` as `owner/name` strings.
 
 Tickets are never removed by an agent: a finished ticket is moved to
 `in_review` or `done`, and a human soft-deletes from the console's ticket
@@ -38,6 +43,8 @@ board, a ticket, a releases and a projects page into the console.
   it off where the reviewer will see it.
 - You need to react to a human's or another agent's comment on one ticket
   without polling.
+- You made a material choice without asking a person and need to preserve it
+  in the card's decision log.
 - The console should show a board or a ticket beside the conversation.
 
 Pills are small badges another worker pins on a ticket, shown on the card and
@@ -58,12 +65,15 @@ itself: a due date, an alarm, a source system.
   The one exception is the deepwork orchestrator, which creates its run's project.
 - Agent profiles are resolved through `iii-directory` (with the configured
   agents folder as the fallback); this worker does not create profiles.
+- The harness owns live question state. Agents ask from a root session with
+  `harness::ask`; only a person calls `kanban::question::answer`.
 
 ## Comment discipline
 
 Treat comments as a decision and handoff log, not an execution trace. Comment
-for a material scope/acceptance decision, a new actionable blocker or human
-question, a review rejection with evidence, or a consolidated final handoff.
+for a material scope/acceptance decision, a new actionable blocker, a review
+rejection with evidence, or a consolidated final handoff. Ask a person through
+`harness::ask`; its question and answer are mirrored here automatically.
 Do not post each tool call, dispatch, phase start/end, successful check or
 internal retry. Keep technical progress in session traces, state results or
 the evidence artifact; status changes already appear in activity.
@@ -74,6 +84,17 @@ A blocker warrants another comment only when something material changes.
 For delegated multi-phase work, leaves use the assigned result channel and
 the ticket owner consolidates the handoff. Preserve required reports and
 human decisions; fewer comments must not hide failures or open questions.
+
+Ask from a root session with `harness::ask`, including `about.ticket`,
+`about.why` and the recommended option when the work is on a card. A sub-agent
+reports its question as blocked to its parent, which asks the person. Keep
+working where the answer is not needed, and withdraw an obsolete question with
+`harness::ask::withdraw`. A run-health problem that prevents progress calls for
+a `run_health` question with an expiry default instead of ending blocked.
+
+Record a material choice you made alone with `kanban::question::record`, using
+your agent profile as `recorded_by`. Name the card key in the title or branch
+of every pull request for that card so the control plane can link it.
 
 ## Functions
 
@@ -86,15 +107,18 @@ human decisions; fewer comments must not hide failures or open questions.
 - `kanban::ticket::update` — change title, description, status, priority, assignee, labels, pills, `parent`, `project` or `release` (a string sets, `null` clears, absent leaves it); `add_labels` / `remove_labels` edit the current labels (ASCII case ignored, applied after `labels`, remove before add) so concurrent label edits do not overwrite each other. A patch that changes nothing records and fires nothing. A deleted ticket's other fields can be edited, but its status cannot be changed: restore it first.
 - `kanban::ticket::move` — move a ticket to a column and position (the board drag and drop); moving to where it already is changes nothing, and a deleted ticket cannot be moved.
 - `kanban::ticket::delete` / `kanban::ticket::restore` — soft delete and undo; human actions. Deleting a deleted ticket or restoring a live one changes nothing.
-- Writes (`ticket::create` / `update` / `move`, `comment::create`) return the whole ticket; pass `compact: true` to get only its compact row (key, title, status, priority, assignee, comment_count) when you don't need the rest.
+- Writes (`ticket::create` / `update` / `move`, `comment::create`) return the whole ticket; pass `compact: true` to get only its compact row (key, title, status, priority, assignee, comment_count, open_questions) when you don't need the rest.
 - `kanban::comment::create` — comment or reply (`parent_id`); replies stay one level deep.
 - `kanban::comment::list` — comments filtered by author, excluded author, root only, or since a timestamp.
-- `kanban::activity::list` — the ticket's timeline, oldest first, optionally narrowed by type or time.
+- `kanban::activity::list` — one ticket's timeline oldest first, or, without `ticket_id`, board-wide activity newest first; optionally narrowed by type or time.
+- `kanban::question::answer` — forward a person's structured answer or dismissal to the harness question mirrored on a ticket.
+- `kanban::question::list` — page question comments and their derived state, optionally narrowed by state, project or release.
+- `kanban::question::record` — append a material question and its answer together when an agent made the choice without asking.
 - `kanban::sessions::links` — which agent sessions changed which tickets (first and latest change, how many, the latest kind and turn), by project, ticket or session. Each change records the session of the agent turn that made it.
 - `kanban::agent::list` — assignable agent profiles and their ids.
-- `kanban::project::list` — projects with status, totals and per-column counts; `include_archived` adds the archived ones.
-- `kanban::release::list` — releases with derived status (planned, active, released), totals, counts and a per-project breakdown.
-- `kanban::project::create` / `kanban::project::update` / `kanban::project::archive` / `kanban::project::restore` — manage projects; human actions.
+- `kanban::project::list` — projects with status, totals, `open_questions` and per-column counts; `include_archived` adds the archived ones.
+- `kanban::release::list` — releases with derived status (planned, active, released), totals, `open_questions`, counts and a per-project breakdown.
+- `kanban::project::create` / `kanban::project::update` / `kanban::project::archive` / `kanban::project::restore` — manage projects, including optional `owner/name` repositories; human actions.
 - `kanban::release::create` / `kanban::release::update` / `kanban::release::ship` / `kanban::release::reopen` / `kanban::release::delete` — manage releases; `ship` needs `move_open_to` when tickets are not done; human actions.
 - `kanban::label::convert` — turn the tickets carrying a label into a project or a release, with `dry_run` buckets; human action.
 
@@ -126,7 +150,8 @@ Reach for it when:
 
 If you only need the comment you just wrote, use the return value of
 `kanban::comment::create`; observe only when a *different* author should wake
-you. `kanban::on-change` is the board-wide sibling: the worker calls it on
+you. Mirrored and recorded questions use these same existing
+`kanban::on-comment` and `kanban::on-change` events. `kanban::on-change` is the board-wide sibling: the worker calls it on
 every event (`ticket.created`, `ticket.updated`, `ticket.moved`,
 `ticket.deleted`, `ticket.restored`, `comment.created`) with the whole
 ticket, selected by ticket and event name only, and it is the right function

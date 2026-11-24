@@ -1,13 +1,9 @@
 import { Loader2, Mail, MailCheck } from 'lucide-react'
 import * as React from 'react'
+import { DialogContent } from '@/components/shadcn/dialog'
 import { Input } from '@/components/shadcn/input'
 import { Button } from '@/components/ui/Button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/Dialog'
+import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/Dialog'
 import { useEmailPrompt } from '@/hooks/use-email-prompt'
 import { isEmailish } from '@/lib/email-prompt'
 import { getIiiClient } from '@/lib/iii-client'
@@ -121,7 +117,10 @@ export function EmailPrompt() {
       }}
     >
       <DialogContent
-        className="flex w-[calc(100%-24px)] max-w-[420px] flex-col overflow-hidden rounded-2xl p-0 font-inter"
+        // The shadcn sheet directly: the legacy wrapper widens every desktop
+        // dialog past this one's cap. The variable sets the desktop width;
+        // phones keep the sheet's own full-width margins.
+        className="flex flex-col overflow-hidden rounded-2xl p-0 font-inter [--dialog-max-width:28rem]"
         // The address field, not the close button, takes the first focus.
         initialFocus={() => inputRef.current}
       >

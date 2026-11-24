@@ -759,10 +759,15 @@ memory worker's semantic recall is one caller.
   384 dimensions, L2-normalized, in input order.
 - **Loading.** The model loads on first use, in every `function_search_mode`.
   The boot-time bundle download still runs only in `hybrid` and `judge` mode.
+- **Downloading.** A failed boot-time download retries until it succeeds:
+  30 seconds after the first failure, doubling to at most 10 minutes, and
+  keeping the files that already verify. Until then the surface answers
+  `provider/internal: the MiniLM bundle at <path> is still downloading`. The
+  router returns that error instead of moving on, and callers retry later.
 - **Not configured.** The surface answers `provider/not_configured` when:
   - the build has no MiniLM;
   - `function_search_model_path` is `null`;
-  - the bundle is not provisioned;
+  - the bundle is not provisioned and no download is running;
   - the caller names another model.
 
   The router then moves on.
@@ -796,7 +801,7 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ capabilities, namespace? }` → `{ guidance, workers[], installable[]?, skills[]?, observers[]?, search_mode, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. `namespace` (keep only functions present in that engine namespace), each candidate's `namespaces`, `observers[].namespace` / `target_namespace` and the namespace sentence in `guidance` apply only when the call carries the `iii.own_namespace` OpenTelemetry baggage, which the harness sets around a turn step; any other caller (`iii trigger`, the console, a workflow, a call released from a hold) gets none of them and `namespace` is ignored without an error. Requests to summarize provided text/content are ignored. |
+| `directory::search_functions` | public | `{ capabilities, namespace? }` → `{ guidance, workers[], installable[]?, skills[]?, observers[]?, search_mode, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. `namespace` (keep only functions present in that engine namespace), each candidate's `namespaces`, `observers[].namespace` / `target_namespace` and the namespace sentence in `guidance` apply only when the call carries the `iii.own_namespace` OpenTelemetry baggage, which the harness sets around a turn step; any other caller (`iii trigger`, the console, a workflow, a call released from a hold) gets none of them and `namespace` is ignored without an error. When copies of an id differ between namespaces, a search ranks and describes one copy: that of the `namespace` it filters by, else the directory's own namespace's, then `default`'s; a search with `namespace` does not skip candidates already delivered, and the next search without it sends the ids it showed again. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
 | `directory::on-functions-change` | internal | Refreshes the search catalog; observes `engine::on-functions-changed`. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |

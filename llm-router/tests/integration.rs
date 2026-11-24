@@ -2316,6 +2316,83 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn complete_names_the_malformed_message_field_before_any_provider_call() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, test_init_options());
+    register_router(router.clone()).await.expect("router boots");
+
+    let provider = register_worker(&engine.url, test_init_options());
+    let provider_calls = Arc::new(AtomicU64::new(0));
+    let observed = provider_calls.clone();
+    provider.register_function(
+        "provider::typed::stream",
+        typed_async_with_bad_request(
+            move |_input: llm_router::types::router::ProviderStreamInput| {
+                let observed = observed.clone();
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    Ok::<llm_router::types::router::ProviderStreamOutput, Error>(
+                        llm_router::types::router::ProviderStreamOutput { ok: true },
+                    )
+                }
+            },
+            {
+                let observed = provider_calls.clone();
+                move |error| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    Error::Remote {
+                        code: "provider/invalid_request".into(),
+                        message: format!("bad ProviderStreamInput: {error}"),
+                        stacktrace: None,
+                    }
+                }
+            },
+        ),
+    );
+    call(
+        &provider,
+        "router::provider::register",
+        json!({
+            "id": "typed",
+            "models": [{
+                "id": "typed-model",
+                "provider": "typed",
+                "context_window": 1_000,
+                "max_output_tokens": 100
+            }]
+        }),
+    )
+    .await
+    .expect("typed provider registers");
+
+    // The probe shape that cost a false trail: OpenAI-style string content.
+    let error = call(
+        &router,
+        "router::complete",
+        json!({
+            "model": "typed-model",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "ok"}], "timestamp": 1},
+                {"role": "user", "content": "hi"}
+            ]
+        }),
+    )
+    .await
+    .expect_err("a malformed message is a request error");
+    assert_eq!(remote_code(&error), "router/invalid_request", "{error:?}");
+    let message = error.to_string();
+    assert!(message.contains("messages[1].content"), "{message}");
+    assert_eq!(
+        provider_calls.load(Ordering::SeqCst),
+        0,
+        "a malformed request never reaches the provider"
+    );
+
+    provider.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn provider_bad_request_is_permanent_and_is_not_retried() {
     let engine = engine_or_skip!();
     let router = register_worker(&engine.url, test_init_options());
@@ -2373,9 +2450,11 @@ async fn provider_bad_request_is_permanent_and_is_not_retried() {
                 "writer_ref": writer_ref,
                 "request_id": "malformed-provider-input",
                 "model": "typed-model",
+                // Passes the router's shape check; only the provider's typed
+                // input knows this block type is not one it accepts.
                 "messages": [{
                     "role": "user",
-                    "content": "content must be an array",
+                    "content": [{"type": "not_a_block_type"}],
                     "timestamp": 1
                 }]
             }),
@@ -3251,7 +3330,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
         "router::complete",
         json!({
             "model": "listen-1",
-            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }]
         }),
     )
     .await

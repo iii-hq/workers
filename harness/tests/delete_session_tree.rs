@@ -588,6 +588,16 @@ async fn deletion_takes_the_side_chats_of_every_deleted_session_and_their_trees(
     stack.session("side_child", Some("side_of_child2"), "completed");
     stack.side_chat("side_of_grandchild", "grandchild1", "completed");
     stack.side_chat("side_of_parent", "parent", "completed");
+    // The control plane's copy of a pending decision of child2: it ends
+    // with its decision, not with the conversation.
+    stack.side_chat("decision_of_child2", "child2", "completed");
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("decision_of_child2")
+        .unwrap()["metadata"]["side_chat_question"] = json!("child2/q1");
     let accepted = stack.request("child2").await;
     let done = stack.run(&accepted.operation_id).await;
     assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
@@ -605,7 +615,7 @@ async fn deletion_takes_the_side_chats_of_every_deleted_session_and_their_trees(
     let store = stack.store.lock().unwrap();
     assert_eq!(
         store.sessions.keys().cloned().collect::<Vec<_>>(),
-        vec!["child1", "parent", "side_of_parent"]
+        vec!["child1", "decision_of_child2", "parent", "side_of_parent"]
     );
     for id in ["side_of_child2", "side_of_grandchild"] {
         assert!(

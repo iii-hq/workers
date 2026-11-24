@@ -52,6 +52,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
             "INT-044",
             "INT-045",
             "INT-046",
+            "INT-047",
             "UI-001",
             "UI-002",
             "UI-003",
@@ -67,7 +68,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
             .iter()
             .filter(|fixture| fixture.driver == crate::scenarios::ScenarioDriver::Direct)
             .count(),
-        42
+        43
     );
 }
 

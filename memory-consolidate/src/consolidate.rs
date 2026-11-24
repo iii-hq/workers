@@ -205,6 +205,12 @@ pub struct BankReport {
     /// cannot re-run the whole pass on every heartbeat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// Entity-handle alias pairs: merged (memories retagged through
+    /// `memory::update`, each spending the per-run supersede cap), judged
+    /// distinct, waiting for the judge, or ambiguous. A dry run lists what it
+    /// would merge, `applied: false`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<crate::alias::AliasAction>,
     /// Applied semantic-tier decisions, each with the judge's reason (the
     /// tier never runs on dry runs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -232,7 +238,7 @@ pub struct BankReport {
     /// (quote, numbers, length), or a reply cut short or never parsed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub verify_rejected: usize,
-    /// Model call attempts by the judge, semantic and verify tiers, failed
+    /// Model call attempts by the judge, alias, semantic and verify tiers, failed
     /// ones included.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub llm_calls: usize,

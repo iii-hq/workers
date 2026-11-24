@@ -93,7 +93,7 @@ export function toHarnessSendError(err: unknown): Error {
   return err instanceof Error ? err : new Error(errText(err))
 }
 
-function resolveRunParams(model: ModelId): RunParams {
+export function resolveRunParams(model: ModelId): RunParams {
   const parsed = parseCatalogModelKey(model)
   if (parsed) {
     return { provider: parsed.provider, model: parsed.id }

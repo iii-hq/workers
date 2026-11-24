@@ -1,4 +1,5 @@
 import type { SystemPromptState } from '@/components/chat/system-prompt-selection'
+import type { MemoryNote } from '@/lib/memory-note'
 
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
 export const CATALOG_MODEL_KEY_SEP = '::' as const
@@ -408,6 +409,8 @@ export interface ModelNote {
   label: string
   text: string
   mentions?: ModelNoteMention[]
+  /** A memory worker note read back (`@/lib/memory-note`). */
+  memory?: MemoryNote
 }
 
 export interface ModelNoteMention {

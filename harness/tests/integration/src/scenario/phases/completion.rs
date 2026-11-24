@@ -261,7 +261,7 @@ impl ScenarioRunner<'_> {
     /// payload first. A failed dispatch is a runner error — the scenario's
     /// premise (the reaction it should trip) can't hold without it.
     async fn fire_probe_action(
-        &self,
+        &mut self,
         services: &RunServices,
         action: &crate::fixtures::ProbeAction,
         deadline: Deadline,
@@ -278,13 +278,50 @@ impl ScenarioRunner<'_> {
         if action.function_id == crate::fixtures::SIDE_CHAT_ACTION {
             return side_chat_probe_action(services, &self.session_id, &payload, deadline).await;
         }
-        services
-            .client()
-            .call_until_deadline(&action.function_id, payload, deadline)
-            .await
-            .map_err(|error| {
-                RunError::runner(RunPhase::Await, "fire probe action", anyhow::anyhow!(error))
-            })?;
+        let output = if action.function_id == crate::fixtures::ANSWER_RACE_ACTION {
+            let (first, second) = tokio::join!(
+                services.client().call_until_deadline(
+                    "harness::ask::answer",
+                    payload.clone(),
+                    deadline,
+                ),
+                services
+                    .client()
+                    .call_until_deadline("harness::ask::answer", payload, deadline,),
+            );
+            self.write_artifact(
+                &self.fixture.scenario.id,
+                "answer-race.json",
+                &(&first, &second),
+                RunPhase::Await,
+            )?;
+            answer_race_output(first, second).map_err(|error| {
+                RunError::with_source(
+                    RunPhase::Await,
+                    crate::runtime::RunErrorKind::Contract,
+                    "concurrent answers must have one winner and one already-answered refusal",
+                    error,
+                )
+            })?
+        } else {
+            services
+                .client()
+                .call_until_deadline(&action.function_id, payload, deadline)
+                .await
+                .map_err(|error| {
+                    RunError::runner(RunPhase::Await, "fire probe action", anyhow::anyhow!(error))
+                })?
+        };
+        if let Some(expected) = &action.expected_output {
+            let matched = crate::matcher::evaluate("probe output", expected, Some(&output));
+            if !matched.passed {
+                return Err(RunError::new(
+                    RunPhase::Await,
+                    crate::runtime::RunErrorKind::Contract,
+                    matched.detail,
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -384,6 +421,22 @@ async fn side_chat_probe_action(
     }
 }
 
+fn answer_race_output(
+    first: Result<Value, String>,
+    second: Result<Value, String>,
+) -> anyhow::Result<Value> {
+    match (first, second) {
+        (Ok(entry), Err(error)) | (Err(error), Ok(entry))
+            if entry["by"]["channel"].as_str().is_some_and(|channel| {
+                error.contains(&format!("already answered by {channel}"))
+            }) =>
+        {
+            Ok(entry)
+        }
+        results => anyhow::bail!("unexpected answer race results: {results:?}"),
+    }
+}
+
 /// Create the observer an [`crate::fixtures::OBSERVE_ACTION`] describes and
 /// wait until it is active. The probe keeps no handle: the observer lives
 /// with the probe connection for the rest of the run.
@@ -424,4 +477,29 @@ async fn observe_probe_action(
                 anyhow::anyhow!("observer {} failed: {error}", handle.id()),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answer_race_requires_one_winner_and_one_already_answered_refusal() {
+        let entry = json!({ "state": "answered", "by": { "channel": "control-plane" } });
+        let refused = Err("invalid request: already answered by control-plane".to_string());
+        assert_eq!(
+            answer_race_output(Ok(entry.clone()), refused.clone()).unwrap(),
+            entry
+        );
+        assert_eq!(
+            answer_race_output(refused.clone(), Ok(entry.clone())).unwrap(),
+            entry
+        );
+        assert!(answer_race_output(Ok(entry.clone()), Ok(entry.clone())).is_err());
+        assert!(answer_race_output(refused.clone(), refused).is_err());
+        assert!(
+            answer_race_output(Ok(entry.clone()), Err("already answered by chat".into())).is_err()
+        );
+        assert!(answer_race_output(Ok(entry), Err("transport failed".into())).is_err());
+    }
 }

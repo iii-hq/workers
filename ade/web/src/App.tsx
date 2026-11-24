@@ -13,6 +13,11 @@ import {
 } from 'react'
 import { ConnectionNotice } from '@/components/ConnectionNotice'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { DecisionSideChat } from '@/components/chat/decision/DecisionSideChat'
+import {
+  registerDecisionChatWorkspace,
+  useDecisionChatBinding,
+} from '@/components/chat/decision/host'
 import { EmailPrompt } from '@/components/EmailPrompt'
 import { ExtOverlays } from '@/components/ExtOverlays'
 import { OnboardingWizardHost } from '@/components/onboarding/OnboardingWizard'
@@ -348,6 +353,7 @@ export function App({
     [],
   )
 
+  const decisionCaller = useRef<{ tabId: string; paneId: string } | null>(null)
   const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
   const openWorkspaceScreen = useCallback(
     (screen: TabScreen, placement?: ScreenPlacement) => {
@@ -362,6 +368,54 @@ export function App({
       )
     },
     [],
+  )
+  useEffect(
+    () =>
+      registerDecisionChatWorkspace({
+        caller(screen) {
+          const tab = workspaceRef.current.activeTab
+          const index = screen ? tab.screens.indexOf(screen) : -1
+          const last = decisionCaller.current
+          const paneId =
+            (last?.tabId === tab.id && tabPaneIds(tab).includes(last.paneId)
+              ? last.paneId
+              : undefined) ??
+            focusedPaneId(tab) ??
+            (index >= 0 ? tabPaneIds(tab)[index] : undefined)
+          if (!paneId)
+            throw new Error('The calling workspace pane is unavailable.')
+          return { tabId: tab.id, paneId }
+        },
+        open(id, caller) {
+          const current = workspaceRef.current
+          const tab = current.tabs.find((tab) => tab.id === caller.tabId)
+          if (!tab || !tabPaneIds(tab).includes(caller.paneId)) return
+          const screen = chatSessionScreen(id)
+          requestPaneFocus(screen)
+          if (tab.screens.includes(screen)) {
+            if (tab.id === current.activeTabId) openWorkspaceScreen(screen)
+            return
+          }
+          if (tabColumns(tab) >= MAX_COLUMNS)
+            throw new Error('This workspace has no room for another panel.')
+          const beside = { paneId: caller.paneId, screen }
+          const commands = panelCommandsRef.current
+          if (commands && tab.id === current.activeTabId)
+            commands.split('right', beside)
+          else current.addColumn(tab.id, 'right', beside)
+        },
+        close(id) {
+          const current = workspaceRef.current
+          const screen = chatSessionScreen(id)
+          for (const tab of current.tabs) {
+            const column = tab.screens.indexOf(screen)
+            if (column < 0) continue
+            if (tabColumns(tab) === 1) current.detachScreen(tab.id, column)
+            else current.removeColumn(tab.id, tabPaneIds(tab)[column])
+          }
+        },
+      }),
+    [openWorkspaceScreen],
   )
   const stepPaneFocus = useCallback((delta: 1 | -1) => {
     const roots = tabPaneIds(workspaceRef.current.activeTab)
@@ -571,6 +625,9 @@ export function App({
           mobilePanelIndex={mobilePanelIndex}
           onMobilePanelIndexChange={setMobilePanelIndex}
           onRequestClosePanes={requestClosePanes}
+          onPaneInteraction={(paneId) => {
+            decisionCaller.current = { tabId: activeTabId, paneId }
+          }}
         />
         <ExtOverlays />
         <ConfirmDialog
@@ -617,6 +674,7 @@ interface WorkspacePanesProps {
   commandsRef: MutableRefObject<WorkspacePanelCommands | null>
   mobilePanelIndex: number
   onMobilePanelIndexChange: (index: number) => void
+  onPaneInteraction: (paneId: string) => void
   /** Close panes after the dirty-work guard has had its say. */
   onRequestClosePanes: (
     tabId: string,
@@ -668,6 +726,7 @@ function WorkspacePanes({
   mobilePanelIndex,
   onMobilePanelIndexChange,
   onRequestClosePanes,
+  onPaneInteraction,
 }: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
   const { activeTab } = workspace
@@ -1280,6 +1339,8 @@ function WorkspacePanes({
           saveEdgeAddDiscovered()
           setEdgeNudge(false)
         }
+        if (beside.screen && current.activeTab.id === command.tabId)
+          pendingMobileScreenRef.current = beside.screen
         current.addColumn(command.tabId, side, beside)
         return true
       }
@@ -1567,6 +1628,8 @@ function WorkspacePanes({
               )}
               data-workspace-panel={column}
               data-workspace-pane-id={paneId}
+              onPointerDownCapture={() => onPaneInteraction(paneId)}
+              onFocusCapture={() => onPaneInteraction(paneId)}
               data-panel-drag-state={
                 isDragged ? 'dragging' : isDropTarget ? 'target' : undefined
               }
@@ -1627,7 +1690,7 @@ function WorkspacePanes({
                   }}
                 />
               ) : null}
-              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
+              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-b-sm sm:border">
                 {screen === null ? (
                   <EmptyPane
                     screenOptions={emptyPaneOptions}
@@ -1770,7 +1833,13 @@ function ScreenBody({
 }: ScreenBodyProps) {
   // The active conversation's working dir, forwarded live so ext pages
   // (e.g. the shell explorer) can follow the chat's folder in a split.
-  const { active } = useConversationsCtx()
+  const { active, conversations } = useConversationsCtx()
+  const conversationId = sessionIdForChatScreen(screen)
+  const decisionBinding = useDecisionChatBinding(conversationId ?? '')
+  const decisionCopy =
+    conversationId &&
+    conversations.find((row) => row.id === conversationId)?.sessionMetadata
+      ?.side_chat_question
   const setDirty = useCallback(
     (dirty: boolean | string) =>
       setPaneDirty(
@@ -1787,7 +1856,8 @@ function ScreenBody({
     paneId,
   )
   if (isChatScreen(screen)) {
-    const conversationId = sessionIdForChatScreen(screen)
+    if (conversationId && (decisionBinding || decisionCopy))
+      return <DecisionSideChat sessionId={conversationId} onClose={onClose} />
     // The compact header variant — a tab column is width-constrained the
     // same way the old side dock was, especially in two-column layouts.
     return (
@@ -1854,6 +1924,10 @@ export function ConfigurationOverlay({
   return (
     <Dialog
       open
+      // A full-page sheet has no "outside": a press on a worker form's
+      // portaled popup (a select's list, a menu) must not close settings.
+      // Back and Escape are the ways out.
+      disablePointerDismissal
       onOpenChange={(open) => {
         if (!open) onClose()
       }}

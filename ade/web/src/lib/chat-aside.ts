@@ -20,6 +20,8 @@ import type {
 
 /** Session metadata key naming the conversation a side chat forked from. */
 export const SIDE_CHAT_KEY = 'side_chat_of'
+export const SIDE_CHAT_QUESTION_KEY = 'side_chat_question'
+export const SIDE_CHAT_KEEP_KEY = 'side_chat_keep'
 
 /** A passage of a main-chat message asked about in the side chat. */
 export interface SideChatQuote {
@@ -28,6 +30,8 @@ export interface SideChatQuote {
   text: string
   /** Who wrote the message, for the card's label. */
   agent?: string
+  /** Decision seeds keep the whole question and its options. */
+  full?: boolean
 }
 
 /**
@@ -82,12 +86,13 @@ export function sideChatQuotes(
   const quotes: SideChatQuote[] = []
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue
-    const { message_id, text, agent } = entry as Record<string, unknown>
+    const { message_id, text, agent, full } = entry as Record<string, unknown>
     if (typeof message_id !== 'string' || typeof text !== 'string') continue
     quotes.push({
       messageId: message_id,
       text,
       ...(typeof agent === 'string' ? { agent } : {}),
+      ...(full === true ? { full: true } : {}),
     })
   }
   return quotes
@@ -101,7 +106,7 @@ export function sideChatQuotes(
 export function withSideChatQuote(
   quotes: readonly SideChatQuote[],
   quote: SideChatQuote,
-): Record<string, string>[] {
+): Record<string, string | boolean>[] {
   const known = quotes.some(
     (q) => q.messageId === quote.messageId && q.text === quote.text,
   )
@@ -111,6 +116,7 @@ export function withSideChatQuote(
       message_id: q.messageId,
       text: q.text,
       ...(q.agent ? { agent: q.agent } : {}),
+      ...(q.full ? { full: true } : {}),
     }))
 }
 
@@ -123,7 +129,7 @@ export function splitQuotedMessage(
   quotes: readonly SideChatQuote[],
 ): { quote: SideChatQuote; rest: string } | null {
   for (let index = quotes.length - 1; index >= 0; index -= 1) {
-    const prefix = sideChatQuote(quotes[index].text)
+    const prefix = sideChatQuote(quotes[index].text, quotes[index].full)
     if (content.startsWith(prefix)) {
       return { quote: quotes[index], rest: content.slice(prefix.length) }
     }
@@ -393,7 +399,11 @@ export function hideSideChats<T extends Conversation>(
     const seen = new Set<string>()
     let current: T | undefined = conversation
     while (current && !seen.has(current.id)) {
-      if (isSideChat(current)) return true
+      if (
+        isSideChat(current) &&
+        current.sessionMetadata?.[SIDE_CHAT_KEEP_KEY] !== true
+      )
+        return true
       seen.add(current.id)
       current = current.parentId ? byId.get(current.parentId) : undefined
     }
@@ -509,8 +519,14 @@ export function findSideChat(
   conversations: readonly Conversation[],
   mainId: string,
 ): Conversation[] {
+  // A decision side chat (`side_chat_question`) belongs to its decision,
+  // not to the conversation's Sidechats.
   return conversations
-    .filter((conversation) => sideChatOf(conversation) === mainId)
+    .filter(
+      (conversation) =>
+        sideChatOf(conversation) === mainId &&
+        !(SIDE_CHAT_QUESTION_KEY in (conversation.sessionMetadata ?? {})),
+    )
     .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
 }
 
@@ -729,10 +745,10 @@ export function sideChatMessages(
 const QUOTE_LIMIT = 600
 
 /** A markdown blockquote of `text`, ready for a question under it. */
-export function sideChatQuote(text: string): string {
+export function sideChatQuote(text: string, full = false): string {
   const trimmed = text.trim()
   const cut =
-    trimmed.length > QUOTE_LIMIT
+    !full && trimmed.length > QUOTE_LIMIT
       ? `${trimmed.slice(0, QUOTE_LIMIT).trimEnd()}…`
       : trimmed
   const quoted = cut

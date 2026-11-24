@@ -26,6 +26,9 @@ fn comment(ticket: &str, n: usize, body: &str) -> Comment {
         body: body.into(),
         author: "user".into(),
         created_at: "2026-01-01T00:00:00.000Z".into(),
+        question: None,
+        answer: None,
+        recorded_by: None,
     }
 }
 
@@ -605,6 +608,7 @@ fn rows_serialize_exactly_like_the_ui_ticket_summary() {
         "parent_id",
         "project_id",
         "release_id",
+        "open_questions",
     ]
     .into_iter()
     .collect();

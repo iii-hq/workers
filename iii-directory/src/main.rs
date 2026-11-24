@@ -271,19 +271,12 @@ async fn main() -> Result<()> {
                 "downloading the pinned MiniLM search bundle in the background (first run, \
                  ~180 MB, every file verified by length and SHA-256); BM25 serves meanwhile"
             );
-            match functions::search_semantic::download_bundle(&root).await {
-                Ok(()) => {
-                    tracing::info!(path = %root.display(), "MiniLM search bundle ready");
-                    let tools = catalog.read().await;
-                    semantic.rebuild(tools.clone());
-                }
-                Err(error) => tracing::warn!(
-                    %error,
-                    path = %root.display(),
-                    "MiniLM search bundle download failed; directory::search_functions runs \
-                     BM25-only until the bundle is provisioned"
-                ),
-            }
+            functions::search_semantic::download_until_ready(&semantic, &root, || {
+                functions::search_semantic::download_bundle(&root)
+            })
+            .await;
+            let tools = catalog.read().await;
+            semantic.rebuild(tools.clone());
         });
     }
     let hint_observer = iii_directory::hook::HintObserverSlot::default();

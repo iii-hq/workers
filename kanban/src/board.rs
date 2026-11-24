@@ -97,10 +97,12 @@ pub struct TicketSummary {
     pub parent_id: Option<String>,
     pub project_id: Option<String>,
     pub release_id: Option<String>,
+    pub open_questions: u64,
 }
 
 pub fn summarize(ticket: &Ticket) -> TicketSummary {
     TicketSummary {
+        open_questions: crate::questions::open_questions(ticket),
         id: ticket.id.clone(),
         key: ticket.key.clone(),
         title: ticket.title.clone(),
@@ -133,10 +135,12 @@ pub struct Brief {
     pub deleted_at: Option<String>,
     pub project_id: Option<String>,
     pub release_id: Option<String>,
+    pub open_questions: u64,
 }
 
 pub fn relation_brief(ticket: &Ticket) -> Brief {
     Brief {
+        open_questions: crate::questions::open_questions(ticket),
         id: ticket.id.clone(),
         key: ticket.key.clone(),
         title: ticket.title.clone(),
@@ -167,6 +171,7 @@ pub struct TicketView {
     /// Live subtasks by ticket number.
     pub children: Vec<Brief>,
     pub progress: Progress,
+    pub open_questions: u64,
 }
 
 /// Live subtasks of `parent_id`, by ticket number.
@@ -191,6 +196,7 @@ pub fn ticket_view(
 ) -> TicketView {
     let children = live_children(board, &ticket.id);
     TicketView {
+        open_questions: crate::questions::open_questions(ticket),
         parent: ticket
             .parent_id
             .as_deref()
@@ -274,6 +280,7 @@ pub struct TicketBrief {
     pub priority: String,
     pub assignee: Option<String>,
     pub comment_count: u64,
+    pub open_questions: u64,
 }
 
 /// One list row: the summary by default, the brief when `compact` was asked.
@@ -286,6 +293,7 @@ pub enum TicketRow {
 
 pub fn brief(ticket: &Ticket) -> TicketBrief {
     TicketBrief {
+        open_questions: crate::questions::open_questions(ticket),
         id: ticket.id.clone(),
         key: ticket.key.clone(),
         title: ticket.title.clone(),
@@ -361,7 +369,7 @@ pub fn find_ticket<'a>(board: &'a Board, id_or_key: &str) -> Option<&'a Ticket> 
     resolve_id(board, id_or_key).and_then(|id| board.tickets.get(&id))
 }
 
-fn find_ticket_mut<'a>(board: &'a mut Board, id_or_key: &str) -> Option<&'a mut Ticket> {
+pub(crate) fn find_ticket_mut<'a>(board: &'a mut Board, id_or_key: &str) -> Option<&'a mut Ticket> {
     let id = resolve_id(board, id_or_key)?;
     board.tickets.get_mut(&id)
 }
@@ -1376,21 +1384,28 @@ pub fn create_comment(
         body,
         author: author.clone(),
         created_at: at.to_string(),
+        question: None,
+        answer: None,
+        recorded_by: None,
     };
+    Ok(Some(append_comment(ticket, comment, at)))
+}
+
+pub(crate) fn append_comment(ticket: &mut Ticket, comment: Comment, at: &str) -> CommentResult {
     ticket.comments.push(comment.clone());
     ticket.updated_at = at.to_string();
     record(
         ticket,
         "comment.created",
-        &author,
+        &comment.author,
         at,
         Vec::new(),
         Some(comment.id.clone()),
     );
-    Ok(Some(CommentResult {
+    CommentResult {
         comment,
         ticket: ticket.clone(),
-    }))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1439,26 +1454,35 @@ pub fn list_comments(board: &Board, filter: &CommentFilter) -> Vec<Comment> {
 
 #[derive(Debug, Clone, Default)]
 pub struct ActivityFilter {
-    pub ticket_id: String,
+    pub ticket_id: Option<String>,
     pub types: Option<Vec<String>>,
     pub since: Option<String>,
     pub limit: Option<usize>,
 }
 
 pub fn list_activity(board: &Board, filter: &ActivityFilter) -> Vec<Activity> {
-    let Some(ticket) = find_ticket(board, &filter.ticket_id) else {
-        return Vec::new();
+    let tickets: Vec<&Ticket> = match &filter.ticket_id {
+        Some(id) => find_ticket(board, id).into_iter().collect(),
+        None => board.tickets.values().collect(),
     };
     let types = filter.types.clone().unwrap_or_default();
     let since = trimmed(filter.since.as_deref());
-    let mut rows: Vec<Activity> = ticket
-        .activity
-        .iter()
+    let mut rows: Vec<Activity> = tickets
+        .into_iter()
+        .flat_map(|ticket| &ticket.activity)
         .filter(|entry| types.is_empty() || types.contains(&entry.kind))
         .filter(|entry| since.as_ref().is_none_or(|s| &entry.at > s))
         .cloned()
         .collect();
-    rows.sort_by_key(|entry| entry.seq);
+    if filter.ticket_id.is_some() {
+        rows.sort_by_key(|entry| entry.seq);
+    } else {
+        rows.sort_by(|a, b| {
+            b.at.cmp(&a.at)
+                .then_with(|| b.seq.cmp(&a.seq))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+    }
     if let Some(limit) = filter.limit.filter(|limit| *limit > 0) {
         rows.truncate(limit);
     }

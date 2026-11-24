@@ -138,10 +138,12 @@ name=session-manager` / `get function info`); the shapes below are the contract.
 { session_id } -> { meta } | null
 
 // session::list — pagination + filters.
-{ limit?, cursor?, status?, metadata?, order?, kinds? } -> { sessions: SessionMeta[], next_cursor? }
+{ limit?, cursor?, status?, metadata?, order?, kinds?, roots? } -> { sessions: SessionMeta[], next_cursor? }
 //   order: "created_asc" | "created_desc" | "updated_desc" (default)
 //   metadata: subset-equality against SessionMeta.metadata (every given key must match)
 //   kinds: SessionKind[]; omit for every kind, [] matches nothing
+//   roots: true keeps sessions without a metadata.spawned_by key; omit/false includes sub-agents
+//   all filters apply before ordering and pagination
 
 // session::set-meta — supplied fields replace; metadata replaces WHOLESALE.
 // Calls session::on-meta-updated (all-fields-absent request is a silent no-op).

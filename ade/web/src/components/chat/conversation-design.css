@@ -103,9 +103,27 @@
 }
 
 .chat-user-bubble {
-  padding: 12px 16px;
+  padding: 10px 16px;
   border-radius: 20px 20px 6px 20px;
   background: var(--color-surface);
+}
+
+/* The bubble's padding is the whole inset: the prose's paragraph margins
+   would otherwise stack on it and float a one-line message in a tall
+   pill. A bubble reads at the tighter 1.5 leading of a speech bubble,
+   not the 1.7 of a long reply. */
+.chat-user-bubble :is(p, ul, ol, pre, blockquote):first-child {
+  margin-block-start: 0;
+}
+
+.chat-user-bubble :is(p, ul, ol, pre, blockquote):last-child {
+  margin-block-end: 0;
+}
+
+/* The bubble is itself `.chat-prose`: the compound selector outranks the
+   shared `.chat-prose :is(p, ul, ol)` 1.7 leading declared below. */
+.chat-user-bubble.chat-prose :is(p, ul, ol) {
+  line-height: 1.5;
 }
 
 /* Dark: what you sent is the one raised shape in the chat — a `card`
@@ -732,7 +750,7 @@
   }
 
   .chat-user-bubble {
-    padding: 11px 14px;
+    padding: 9px 14px;
   }
 
   .chat-prose :is(p, ul, ol) {

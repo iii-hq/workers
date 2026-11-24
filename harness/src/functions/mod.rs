@@ -12,6 +12,7 @@ pub mod filesystem;
 pub mod folders;
 pub mod function_call;
 pub mod function_resolve;
+pub mod link_card;
 pub mod metrics;
 pub mod observe;
 pub mod observer_deliver;
@@ -60,10 +61,12 @@ pub const SPAWN_DESC: &str = "Spawn a sub-agent in a child session (never an obs
 pub const ASK_ID: &str = "harness::ask";
 pub const ASK_DESC: &str = "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
      the UI adds a free-text \"Other\" choice, so do not include one. The questions are shown \
-     as a clickable card in the chat, your turn ends, and the answer arrives as the user's next \
-     message (one `Header: answer` line per question; a skipped question reads `(skipped)`, and \
+     as a clickable card in the chat and stay open while you do other work. The answer arrives as a \
+     user message (one `Header: answer` line per question; a skipped question reads `(skipped)`, and \
      a dismissed card sends a notice instead of answers), so do not repeat the questions in \
-     text. Not available to sub-agents or structured-output turns.";
+     text. Set `about.class` to `security` for credentials or permissions, `publish` for a release \
+     or deployment, `external_cost` for paid spend, or `data` for data access, migration, or deletion. \
+     It defaults to `scope` for other questions. Not available to sub-agents or structured-output turns.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
@@ -318,6 +321,34 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         crate::description::SET_DESCRIPTION_ID,
         crate::description::TOOL_DESC,
         |_d, r| async move { crate::description::direct_handle(r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::ask_store::ANSWER_ID,
+        "Answer a durable ask; only human console/operator calls may answer.",
+        |d, r| async move { crate::ask_store::answer(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        crate::ask_store::WITHDRAW_ID,
+        "Withdraw a question that no longer needs an answer. Agent calls always target their own session.",
+        |d, r| async move { crate::ask_store::withdraw(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        crate::ask_store::LIST_ID,
+        "List durable asks, including closed entries, with optional session and state filters.",
+        |d, r| async move { crate::ask_store::list(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        link_card::ID,
+        "Link the calling session tree's root to a kanban card without replacing other session metadata.",
+        |d, r| async move { link_card::handle(&d, r).await },
     );
     // Catalog-visible so the model finds the observe controls; the turn loop
     // intercepts the calls, and these handlers only answer direct calls
@@ -626,7 +657,20 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 
 #[cfg(test)]
 mod tests {
-    use super::SPAWN_DESC;
+    use super::{ASK_DESC, SPAWN_DESC};
+
+    #[test]
+    fn ask_tool_description_tells_the_model_to_classify_escalated_questions() {
+        for guidance in [
+            "`security` for credentials or permissions",
+            "`publish` for a release or deployment",
+            "`external_cost` for paid spend",
+            "`data` for data access, migration, or deletion",
+            "defaults to `scope`",
+        ] {
+            assert!(ASK_DESC.contains(guidance), "missing {guidance}");
+        }
+    }
 
     /// What `register_all` registers, by id: `true` when the function is on
     /// the default catalog (neither `metadata.internal` nor private).
@@ -671,16 +715,33 @@ mod tests {
         ));
         super::register_all(&iii, &deps);
         let mut seen = std::collections::BTreeMap::new();
-        let last = crate::side_chat::SUMMARIZE_ID;
-        while !seen.contains_key(last) {
-            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), frames.recv())
-                .await
-                .expect("every registration reaches the engine")
-                .expect("the fake engine is up");
+        // The last function `register_all` registers, and the event
+        // functions `Deps::new` registers: their frames can come in any
+        // order, so the read waits for all of them, then for the stragglers.
+        let awaited = [
+            crate::side_chat::SUMMARIZE_ID,
+            "harness::projects::on-changed",
+            "harness::chat-settings::on-changed",
+        ];
+        let mut record = |frame: serde_json::Value| {
             let id = frame["id"].as_str().unwrap_or_default().to_string();
             let internal = frame["metadata"]["internal"] == serde_json::json!(true);
             let private = frame["private"] == serde_json::json!(true);
             seen.insert(id, !internal && !private);
+        };
+        let mut pending: std::collections::BTreeSet<&str> = awaited.into_iter().collect();
+        while !pending.is_empty() {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), frames.recv())
+                .await
+                .expect("every registration reaches the engine")
+                .expect("the fake engine is up");
+            pending.remove(frame["id"].as_str().unwrap_or_default());
+            record(frame);
+        }
+        while let Ok(Some(frame)) =
+            tokio::time::timeout(std::time::Duration::from_millis(300), frames.recv()).await
+        {
+            record(frame);
         }
         iii.shutdown();
         server.abort();
@@ -689,8 +750,10 @@ mod tests {
 
     /// D54: `harness::projects::list` is internal again, like every harness
     /// control-plane function (agents still call it by id). The default
-    /// catalog of `register_all` is the one of origin/main plus
-    /// `harness::set-description`, which the model must find. The sidechat
+    /// catalog of `register_all` is the one of origin/main (which added
+    /// `harness::ask::list`, `harness::ask::withdraw` and
+    /// `harness::link-card`) plus `harness::set-description`, which the
+    /// model must find. The sidechat
     /// functions of phase 2 are control-plane too (D37).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_the_model_facing_functions_are_on_the_default_catalog() {
@@ -730,6 +793,9 @@ mod tests {
             public,
             [
                 "harness::ask",
+                "harness::ask::list",
+                "harness::ask::withdraw",
+                "harness::link-card",
                 "harness::metrics",
                 "harness::observe",
                 "harness::observers::dispose",
