@@ -900,7 +900,7 @@ export function CommandPalette({
                         aria-hidden
                         className={`${TILE} ${selected ? TILE_ON : TILE_IDLE}`}
                       >
-                        <Icon className="size-4" />
+                        {entry.media ?? <Icon className="size-4" />}
                         {/* A worker's status rides its tile, so the name
  reads uninterrupted. */}
                         {entry.kind === 'worker' && entry.keywords?.[0] ? (

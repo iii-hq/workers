@@ -13,6 +13,7 @@
  */
 
 import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
 
 export type PaletteKind =
@@ -107,6 +108,8 @@ export interface PaletteEntry {
    *  so a page looks the same here as it does in the attach menu; anything
    *  without one falls back to its category icon. */
   icon?: LucideIcon
+  /** Drawn in place of the icon: a provider's own logo, say. */
+  media?: ReactNode
   run: () => void
 }
 

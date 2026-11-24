@@ -45,7 +45,7 @@ import { ProviderIcon } from './ProviderIcon'
 
 const DRAG_MIME = 'application/x-iii-model'
 
-type LibraryView =
+export type LibraryView =
   | { kind: 'library' }
   | { kind: 'provider'; id: string }
   | { kind: 'add-provider' }
@@ -60,6 +60,10 @@ interface ModelLibraryDialogProps {
   thinkingLevel: ThinkingLevel
   onPinnedChange: (next: PinnedModel[]) => void
   disabled?: boolean
+  /** The page the dialog opens on (⌘K opens a provider's settings directly). */
+  initialView?: LibraryView
+  /** The search the library opens with (⌘K hands over what was typed). */
+  initialQuery?: string
 }
 
 interface ProviderColumn {
@@ -123,6 +127,8 @@ export function ModelLibraryDialog({
   thinkingLevel,
   onPinnedChange,
   disabled,
+  initialView,
+  initialQuery,
 }: ModelLibraryDialogProps) {
   const [view, setView] = useState<LibraryView>({ kind: 'library' })
   const [dragId, setDragId] = useState<ModelId | null>(null)
@@ -132,6 +138,13 @@ export function ModelLibraryDialog({
   // "No match" waits for them.
   const [registryMatches, setRegistryMatches] = useState<number | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  // Each opening starts where it was asked to: the library, a provider's
+  // settings or the add page, with any search already typed.
+  useEffect(() => {
+    if (!open) return
+    setView(initialView ?? { kind: 'library' })
+    setQuery(initialQuery ?? '')
+  }, [open, initialView, initialQuery])
   // The catalog has scrolled under the sticky slots: a hairline then marks
   // the slots' edge so the rows visibly slide beneath it.
   const [scrolled, setScrolled] = useState(false)
