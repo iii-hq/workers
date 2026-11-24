@@ -23,10 +23,24 @@ import { MAX_FONT_SIZE, MIN_FONT_SIZE, stepFontSize, useTerminalFontSize } from 
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { FolderPill } from './folder-pill'
+import {
+  describePayload,
+  type Lease,
+  leaveSession,
+  pickOrphan,
+  readLease,
+  type SessionSummary,
+  startFolder,
+  writeLease,
+} from './session'
 
 const STALL_MS = 250
 const MAX_QUEUED_EVENTS = 4096
 const CALL_TIMEOUT_MS = 10_000
+// Describe prepares the session: on a folder's first start it installs the
+// agent's plugin there (a marketplace clone), which takes longer than a call.
+const DESCRIBE_TIMEOUT_MS = 180_000
 
 export interface AgentTerminalOptions {
   /** Worker name: the page id, the handler prefix, and the describe function. */
@@ -34,6 +48,14 @@ export interface AgentTerminalOptions {
   /** Nav title and the name used in status lines ("claude", "pi"). */
   title: string
   description: string
+  /**
+   * Give the pane its own folder pill in the bottom row. The session starts
+   * in the chat's working directory (else wherever the worker's describe
+   * defaults), and picking a folder restarts the agent there. The worker's
+   * `<worker>::terminal::describe` must take `{ cwd }`; off by default, so a
+   * worker whose describe takes no folder keeps its page as it was.
+   */
+  folderPicker?: boolean
 }
 
 interface PtyOutputEvent {
@@ -44,11 +66,6 @@ interface PtyOutputEvent {
   exit_code: number | null
   signal: string | null
   error: string | null
-}
-
-interface Lease {
-  sessionId: string
-  reconnectToken: string
 }
 
 interface AttachResponse {
@@ -76,6 +93,8 @@ interface TerminalSpec {
   cwd: string
   env: Record<string, string>
   detail?: string
+  /** The compose project's folder, when the worker names one. */
+  project_dir?: string
 }
 
 type Listener = (event: PtyOutputEvent) => void
@@ -234,45 +253,6 @@ function encodeB64(text: string): string {
 }
 
 /**
- * The lease lives in `localStorage`, not `sessionStorage`: a session outlives
- * the browser tab that opened it. sessionStorage is cleared when the tab
- * closes, so closing the console and coming back the next morning left the
- * running agent unreachable and started a second one beside it — two agents
- * in one workspace, one of them invisible.
- *
- * A lease written by the old build is read once and carried over, so an open
- * terminal survives this change instead of being abandoned.
- */
-function readLease(prefix: string, tabId: string): Lease | null {
-  try {
-    const key = prefix + tabId
-    const raw = localStorage.getItem(key) ?? sessionStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as Lease) : null
-  } catch {
-    return null
-  }
-}
-
-function writeLease(prefix: string, tabId: string, lease: Lease | null): void {
-  try {
-    const key = prefix + tabId
-    sessionStorage.removeItem(key)
-    if (lease) localStorage.setItem(key, JSON.stringify(lease))
-    else localStorage.removeItem(key)
-  } catch {
-    // Storage full or blocked — the terminal still works, only the reattach
-    // across a reload is lost.
-  }
-}
-
-interface SessionSummary {
-  session_id: string
-  program: string | null
-  status: string | { exited?: unknown }
-  ui: string | null
-}
-
-/**
  * The session this page left behind, if there is one.
  *
  * A lost lease strands a running agent: the program keeps working in the
@@ -288,15 +268,11 @@ interface SessionSummary {
  */
 async function findOrphan(
   call: <T>(fn: string, payload: unknown) => Promise<T>,
-  program: string,
-  ui: string,
+  want: { program: string; ui: string; cwd?: string },
 ): Promise<string | null> {
   try {
     const { sessions } = await call<{ sessions: SessionSummary[] }>('shell::pty::sessions', {})
-    const orphan = sessions.find(
-      (session) => session.ui === ui && session.status === 'detached' && session.program === program,
-    )
-    return orphan?.session_id ?? null
+    return pickOrphan(sessions, want)
   } catch {
     // An older shell worker has no `sessions`/`adopt`; a fresh session is
     // then the only behaviour available, which is what this page did before.
@@ -365,13 +341,31 @@ function AgentTerminal({
   tabId,
   options,
   leasePrefix,
+  workingDir,
 }: {
   host: Host
   router: OutputRouter
   tabId: string
   options: AgentTerminalOptions
   leasePrefix: string
+  /** The chat's live working directory: where a fresh session starts. */
+  workingDir?: string | null
 }) {
+  const folderPicker = options.folderPicker === true
+  // The folder this pane's person picked; it wins over the chat's folder.
+  // Read inside the session effect, never a dependency of it: a chat that
+  // moves its folder must not kill the agent running in this pane.
+  const pickedRef = useRef<string | null>(null)
+  const workingDirRef = useRef(workingDir)
+  workingDirRef.current = workingDir
+  // What the pill shows: the running session's folder once the worker named
+  // it, the folder about to be asked for until then.
+  const [folder, setFolder] = useState<string | null>(() =>
+    folderPicker ? (readLease(leasePrefix, tabId)?.cwd ?? startFolder(null, workingDir)) : null,
+  )
+  const [projectDir, setProjectDir] = useState<string | null>(null)
+  // The live connection, for the folder change outside the session effect.
+  const connRef = useRef<() => { sessionId: string; accessKey: string } | null>(() => null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [status, setStatus] = useState<'connecting' | 'running' | 'exited' | 'error'>('connecting')
   const [detail, setDetail] = useState('')
@@ -443,8 +437,9 @@ function AgentTerminal({
     termRef.current = term
     fitRef.current = fit
 
-    const call = <T,>(fn: string, payload: unknown): Promise<T> =>
-      host.iii.call(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
+    const call = <T,>(fn: string, payload: unknown, timeoutMs = CALL_TIMEOUT_MS): Promise<T> =>
+      host.iii.call(fn, payload, { timeoutMs })
+    connRef.current = () => conn
 
     // Shown next to the status while a session runs: "running · 12 frames,
     // 4.2 kB". A blank terminal with no frames is a delivery problem; a blank
@@ -594,6 +589,7 @@ function AgentTerminal({
           writer.reset(0)
           unsubscribe = router.subscribe(lease.sessionId, handleEvent)
           for (const event of router.drain(lease.sessionId)) writer.feed(event)
+          if (folderPicker && lease.cwd) setFolder(lease.cwd)
           try {
             const attached = await call<AttachResponse>('shell::pty::attach', {
               session_id: lease.sessionId,
@@ -607,6 +603,7 @@ function AgentTerminal({
             writeLease(leasePrefix, tabId, {
               sessionId: lease.sessionId,
               reconnectToken: attached.reconnect_token,
+              ...(lease.cwd ? { cwd: lease.cwd } : {}),
             })
             if (attached.truncated) {
               // Partial history is worse than none: it lands inside whatever
@@ -635,14 +632,35 @@ function AgentTerminal({
 
         // The worker owns the command: the page asks what to run and never
         // decides. A worker that cannot answer has no terminal to give.
-        const spec = await call<TerminalSpec>(`${options.worker}::terminal::describe`, {})
+        // With the pill, the worker is told which folder; it installs the
+        // agent's plugin there when missing, so this call can take a while.
+        const wanted = startFolder(pickedRef.current, workingDirRef.current)
+        if (folderPicker) {
+          setFolder(wanted)
+          setDetail(wanted ? `preparing ${wanted}` : 'preparing the project folder')
+        }
+        const spec = await call<TerminalSpec>(
+          `${options.worker}::terminal::describe`,
+          describePayload(folderPicker, wanted),
+          DESCRIBE_TIMEOUT_MS,
+        )
+        if (disposed) return
+        if (folderPicker) {
+          setFolder(spec.cwd)
+          setProjectDir(spec.project_dir ?? null)
+        }
+        const leaseCwd = folderPicker ? { cwd: spec.cwd } : {}
 
         // Before starting a second agent, look for the first one. A lease can
         // be lost — cleared storage, a different browser, a token that went
         // stale — while the program keeps running in the workspace, and the
         // page has no other way to notice. `shell::pty::adopt` takes back an
         // unattached session that belongs to this page.
-        const orphan = await findOrphan(call, spec.program, `${options.worker}-ui`)
+        const orphan = await findOrphan(call, {
+          program: spec.program,
+          ui: `${options.worker}-ui`,
+          ...(folderPicker ? { cwd: spec.cwd } : {}),
+        })
         if (orphan) {
           unsubscribe = router.subscribe(orphan, handleEvent)
           try {
@@ -657,6 +675,7 @@ function AgentTerminal({
             writeLease(leasePrefix, tabId, {
               sessionId: orphan,
               reconnectToken: adopted.reconnect_token,
+              ...leaseCwd,
             })
             term.reset()
             if (adopted.truncated) {
@@ -698,6 +717,7 @@ function AgentTerminal({
         writeLease(leasePrefix, tabId, {
           sessionId: opened.session_id,
           reconnectToken: opened.reconnect_token,
+          ...leaseCwd,
         })
         for (const event of router.drain(opened.session_id)) writer.feed(event)
         setStatus('running')
@@ -755,8 +775,25 @@ function AgentTerminal({
       term.dispose()
       termRef.current = null
       fitRef.current = null
+      connRef.current = () => null
     }
   }, [host, router, tabId, generation, options, leasePrefix])
+
+  // Claude Code cannot change folder mid-session: a new folder closes this
+  // pane's session and starts a fresh one there (which runs the plugin check
+  // in that folder).
+  const changeFolder = useCallback(
+    async (dir: string) => {
+      pickedRef.current = dir
+      setFolder(dir)
+      setStatus('connecting')
+      const call = <T,>(fn: string, payload: unknown): Promise<T> =>
+        host.iii.call(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
+      await leaveSession(call, connRef.current(), leasePrefix, tabId)
+      setGeneration((n) => n + 1)
+    },
+    [host, leasePrefix, tabId],
+  )
 
   const restart = useCallback(() => {
     writeLease(leasePrefix, tabId, null)
@@ -785,6 +822,14 @@ function AgentTerminal({
     <div className="agent-terminal">
       <div className="agent-terminal-viewport" ref={containerRef} data-autofocus="true" />
       <div className="agent-terminal-statusbar">
+        {folderPicker && (
+          <FolderPill
+            value={folder}
+            projectDir={projectDir}
+            disabled={status === 'connecting'}
+            onChange={(dir) => void changeFolder(dir)}
+          />
+        )}
         {status === 'error' ? (
           <span className="agent-terminal-status-error">{detail}</span>
         ) : (
@@ -842,7 +887,7 @@ export function createAgentTerminalPage(options: AgentTerminalOptions) {
     host.pages.register({
       id: options.worker,
       title: options.title,
-      render: (props: { tabId?: string; onRequestClose?: () => void }) => (
+      render: (props: { tabId?: string; onRequestClose?: () => void; workingDir?: string | null }) => (
         <PageShell>
           <PageHeader title={options.title} description={options.description} onClose={props.onRequestClose} />
           <PageBody>
@@ -853,6 +898,7 @@ export function createAgentTerminalPage(options: AgentTerminalOptions) {
                 tabId={props.tabId || 'default'}
                 options={options}
                 leasePrefix={leasePrefix}
+                workingDir={props.workingDir}
               />
             </PageMain>
           </PageBody>

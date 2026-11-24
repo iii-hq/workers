@@ -34,6 +34,16 @@
   font-size: 12px;
 }
 
+/* The pane's folder: the console's DirectoryPicker trigger. It shrinks
+   before anything else in the row, so a long path never pushes the font
+   stepper out of a narrow pane. */
+.agent-terminal-folder {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+}
+
 .agent-terminal-statusbar .agent-terminal-status-error {
   color: var(--color-alert);
 }

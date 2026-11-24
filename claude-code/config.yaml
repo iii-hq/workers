@@ -38,6 +38,6 @@ claude_executable: ""
 terminal:
   executable: ""        # path to `claude` on the terminal host; empty = resolve on PATH there
   args: []              # extra argv for every terminal session
-  workspace_dir: ""     # empty = `claude-code` under shell's primary root
+  workspace_dir: ""     # the worker's own files (default-mcp.md); empty = `claude-code` under the ide root. Sessions run in the folder the page picks
   auto_install: true    # install Claude Code from https://claude.ai/install.sh when missing
-  setup_workspace: true # keep the iii skills, the engine notes, and the activity hooks in place
+  setup_workspace: true # install the iii plugin (iii@iii, scope local) in each session folder when missing; append default-mcp

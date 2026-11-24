@@ -76,7 +76,7 @@ const ConfigSchema = z.object({
         .string()
         .default('')
         .describe(
-          "Directory the terminal starts in. Empty: `claude-code` under the ide worker's primary root. Must be inside its jail: the ide worker owns the terminal.",
+          "The worker's own folder on the terminal host (it keeps default-mcp.md there). Empty: `claude-code` under the ide worker's primary root. Not where sessions run: each runs in the folder the console page picks, else the compose project folder.",
         ),
       auto_install: z
         .boolean()
@@ -86,7 +86,7 @@ const ConfigSchema = z.object({
         .boolean()
         .default(true)
         .describe(
-          'Keep the workspace equipped on every boot: the iii plugin, with its skills, commands and the hooks that report activity',
+          'Before every session: install the published iii plugin (iii@iii, scope local) in its folder when missing, and append default-mcp',
         ),
     })
     .prefault({})

@@ -249,33 +249,47 @@ terminal itself stays dark whatever the console theme is: an agent CLI paints
 its own interface in colors chosen for a dark terminal and never learns the
 page went light.
 
-### What the workspace gets
+### Which folder, and what a session gets
 
-On every boot, when `terminal.setup_workspace` is on:
+Each Claude pane has its own **folder pill** in its bottom row. A session
+starts in the chat's working directory, else in the compose project's folder
+(the folder holding the project's worker-compose file, from `compose::list`),
+never in the ide worker's own folder. Picking another folder closes the
+session and starts a new one there: Claude Code cannot change folder
+mid-session. `claude::terminal::describe { cwd? }` is what the page calls; it
+prepares the session right then, every time.
 
-- `.iii-plugin/`, a Claude Code **plugin** the session loads with
-  `--plugin-dir` (see [the iii plugin](https://github.com/iii-hq/agent-plugins-claude/tree/main/plugins/iii)). It carries the
-  hooks for `SessionStart`, `SessionEnd`,
-  `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop` — each posting its
-  payload to `claude::terminal::activity` with the `iii` CLI, so it works
-  whether or not the terminal host is this worker's host — and the
-  `iii-runtime` skill fetched from `iii-directory` when the engine runs no
-  mcp-server (with mcp-server, default-mcp takes its place).
+When `terminal.setup_workspace` is on, that preparation:
 
-  The same plugin serves the headless half: the Agent SDK turns
-  `plugins: [{ type: 'local', path }]` into that same `--plugin-dir` flag, so a
-  typed turn and a `claude::run` turn get identical hooks and the identical
-  skill from one definition (`src/plugin.ts`). `claude plugin validate` accepts
-  the generated directory.
+- **installs the published `iii` plugin in the folder when it is missing**,
+  with Claude Code's own commands: `claude plugin list --json` (run in the
+  folder) decides; when `iii@iii` is not installed and enabled for it, the
+  worker adds the `iii` marketplace (iii-hq/agent-plugins-claude) if it is
+  missing and runs `claude plugin install iii@iii --scope local` there (a
+  disabled local install is enabled instead). The plugin is not configured
+  and no copy of it is written: no `--plugin-dir`, no generated hooks,
+  commands or agent. A folder already covered is left alone.
+- **sets the environment of the Claude process**, read at that start:
+  `III_MCP_URL` (the http worker's address from `http::status`, plus `/mcp`;
+  the plugin's `.mcp.json` reads it), `III_CLI` (the `iii` CLI on the terminal
+  host, which the plugin's activity hooks report through to
+  `claude::terminal::activity`) and `III_URL`. A moved http worker therefore
+  reaches the next session without a worker restart.
+- **writes default-mcp** to `<workspace_dir>/default-mcp.md` (the worker's own
+  folder on the terminal host) and checks it is there before appending it with
+  `--append-system-prompt-file`; a session never starts with a path to a
+  missing file. An `--append-system-prompt` in `terminal.args` wins.
 
-  `.claude/settings.json` is no longer written at all. It is the operator's
-  file; the plugin directory is this worker's, so it is written whole instead of
-  merged into.
+Headless `claude::run` turns get the same plugin check in the folder the turn
+runs in (its `cwd`, else this worker's own folder), on this worker's host,
+and the same `III_MCP_URL` / `III_CLI` environment. A turn reads the folder's
+local settings (`settingSources: ['local']`, where a local install lives)
+only when the plugin is there.
 
-  `CLAUDE.md` is not written either. Earlier versions kept an
-  `<!-- iii:begin -->` block in it; the plugin carries what it said, so the
-  worker takes that block out on the next boot, keeps any text of yours around
-  it, and removes the file when nothing else is in it.
+The `/iii:<profile>` commands and the `iii` agent come from the plugin
+itself: its SessionStart hook generates them (`sync`, in the background, so a
+profile added to the engine appears from the next session on) and adds the
+default-mcp profile to the session.
 
 ## Billing: which plan a session spends
 
@@ -384,14 +398,14 @@ claude_executable: ""          # path to the claude CLI; empty = SDK default res
 terminal:                      # the console terminal page — a DIFFERENT host: the ide worker's
   executable: ""               # path to `claude` there; empty = resolve on PATH there
   args: []                     # extra argv for every terminal session
-  workspace_dir: ""            # empty = `claude-code` under the ide worker's primary root
+  workspace_dir: ""            # the worker's own files (default-mcp.md); empty = `claude-code` under the ide worker's root. NOT where sessions run
   auto_install: true           # install Claude Code from https://claude.ai/install.sh when missing
-  setup_workspace: true        # keep the iii plugin (skills, commands, activity hooks) in place
+  setup_workspace: true        # install the iii plugin in each session folder when missing; append default-mcp
 ```
 
 Settings live in the `configuration` worker under the **Claude Code** entry —
 edit them in the Console's global Settings modal; they hot-reload, and a change to the
-`terminal` block re-runs the workspace preparation for the next session.
+`terminal` block applies to the next session (every session is prepared when it starts).
 
 The event feeds are fixed functions, not settings. The former
 `events_stream` / `raw_events_stream` keys are ignored; a stored
@@ -441,14 +455,14 @@ those keys rather than in one covering span; a headless turn gets both.
 
 ## The iii Claude Code plugin
 
-The `iii` Claude Code plugin lives in [iii-hq/agent-plugins-claude](https://github.com/iii-hq/agent-plugins-claude): `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by the engine's `mcp-server` worker. The worker embeds it in its bundle and installs it for every session (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), adding the activity hooks that feed `claude::on-agent-event`, and the `iii-runtime` skill when the engine runs no mcp-server. It also works in a standalone `claude` on any machine that can reach an engine:
+The `iii` Claude Code plugin lives in [iii-hq/agent-plugins-claude](https://github.com/iii-hq/agent-plugins-claude): `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by the engine's `mcp-server` worker. The worker installs it with Claude Code's own commands (scope local) in the folder of every session where it is missing (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), and points each Claude process at mcp-server with `III_MCP_URL`. It also works in a standalone `claude` on any machine that can reach an engine:
 
 ```sh
 claude plugin marketplace add iii-hq/agent-plugins-claude
 claude plugin install iii@iii
 ```
 
-`pnpm run build:iii-plugin` (part of `build`, `build:bundle`, `typecheck`, `test` and `dev`) fetches the latest `main` of that repository (a shallow clone; the build needs network) and embeds its `plugins/iii/` into `src/iii-plugin/assets.generated.ts`, recording the commit as `PLUGIN_SOURCE`; it also copies the modules the worker shares with the plugin's CLI into `src/iii-plugin/shared/`. Both are generated and git-ignored: change those modules in the plugin repository. The worker logs the embedded commit at start (`claude-code: iii plugin from ... at <sha>`). To build against a local checkout instead (offline, or while changing the plugin), set `III_PLUGIN_SOURCE`:
+`pnpm run build:iii-plugin` (part of `build`, `build:bundle`, `typecheck`, `test` and `dev`) fetches the latest `main` of that repository (a shallow clone; the build needs network) and copies the modules the worker shares with the plugin's CLI into `src/iii-plugin/shared/`, recording the commit as `PLUGIN_SOURCE` in `src/iii-plugin/source.generated.ts`. The plugin's own files are not embedded. Both outputs are generated and git-ignored: change those modules in the plugin repository. The worker logs the commit at start (`claude-code: iii plugin modules from ... at <sha>`). To build against a local checkout instead (offline, or while changing the plugin), set `III_PLUGIN_SOURCE`:
 
 ```sh
 III_PLUGIN_SOURCE=/path/to/agent-plugins-claude pnpm run build:iii-plugin
