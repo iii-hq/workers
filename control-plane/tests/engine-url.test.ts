@@ -13,6 +13,12 @@ describe('resolveEngineUrl', () => {
     ['WSS://user:pass@0.0.0.0:443/engine?b=2&a=1', 'WSS://user:pass@127.0.0.1:443/engine?b=2&a=1'],
     ['ws://0.0.0.0:49334 ', 'ws://127.0.0.1:49334 '],
     ['  ws://0.0.0.0 ', '  ws://127.0.0.1 '],
+    [
+      'ws://0.0.0.0\t:049334/engine?listen=0.0.0.0',
+      'ws://127.0.0.1\t:049334/engine?listen=0.0.0.0',
+    ],
+    ['ws://0.0.0.0\t/engine?x=%2f', 'ws://127.0.0.1\t/engine?x=%2f'],
+    ['w\nss://user@0.0.\r0.0/path?x=1', 'w\nss://user@127.0.0.1/path?x=1'],
     ['ws://0.0.0.0:49334\\engine?listen=0.0.0.0', 'ws://127.0.0.1:49334\\engine?listen=0.0.0.0'],
   ])('rewrites only the wildcard host in %s', (configured, expected) => {
     expect(resolveEngineUrl(configured)).toBe(expected)
@@ -24,7 +30,10 @@ describe('resolveEngineUrl', () => {
     'ws://localhost:49334',
     'ws://[::]:49334',
     'ws://0.0.0.0.example:49334',
+    'ws://0.0.0.0\t.example:49334',
+    'ws://0.0.0.00\t:49334',
     'ws://0.0.0.0:secret@engine.example:49334',
+    'ws://0.0.0.0:secret@0\t:49334',
     'ws://0:49334',
     'http://0.0.0.0:49334',
     'not a URL',
@@ -47,6 +56,7 @@ describe('control-plane startup', () => {
   it.each([
     ['ws://0.0.0.0:49334', 'wss://other.example', 'ws://127.0.0.1:49334'],
     ['ws://0.0.0.0:49334 ', 'wss://other.example', 'ws://127.0.0.1:49334 '],
+    ['ws://0.0.0.0\t:49334/engine?x=1', 'wss://other.example', 'ws://127.0.0.1\t:49334/engine?x=1'],
     ['wss://engine.example', 'ws://0.0.0.0:49134', 'wss://engine.example'],
     [undefined, 'ws://0.0.0.0:49134', 'ws://127.0.0.1:49134'],
     [undefined, undefined, undefined],
