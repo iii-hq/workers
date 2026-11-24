@@ -234,7 +234,7 @@ function ControlPlaneScreenContent({
         actions={
           <>
             <IconButton
-              label={scope === 'all' ? 'Chat with the controller (read-only for All projects)' : 'Chat with the controller'}
+              label="Chat with the controller"
               onClick={() => void openController()}
               disabled={!iii || !host.chat?.openConversation}
               aria-busy={controller.opening}

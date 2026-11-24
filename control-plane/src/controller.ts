@@ -5,53 +5,14 @@ import { reasoningOptions } from './writer.js'
 export const CONTROLLER_PROFILE = 'control-plane-controller'
 const STATE_SCOPE = 'control-plane'
 
-/** What every controller reads: the control plane, the board, sessions and PRs. */
-export const CONTROLLER_READS = [
-  'control-plane::digest',
-  'control-plane::overview',
-  'control-plane::needs-you::list',
-  'control-plane::runs::list',
-  'control-plane::prs::list',
-  'control-plane::decided::list',
-  'control-plane::assumptions::list',
-  'kanban::board::get',
-  'kanban::project::list',
-  'kanban::release::list',
-  'kanban::ticket::get',
-  'kanban::ticket::list',
-  'kanban::comment::list',
-  'kanban::activity::list',
-  'kanban::question::list',
-  'session::list',
-  'session::messages-tail',
-  'harness::status',
-  'harness::ask::list',
-  'github::pr::list',
-  'github::pr::view',
-  'github::pr::checks',
-  // To confirm a batch of board actions with the person before writing.
-  'harness::ask',
-] as const
-
 /**
- * A project controller acts through the board only: creating, updating and
- * moving cards (To do starts a card's run through dispatch), commenting and
- * recording decisions. harness::send, harness::stop and answering a question
- * stay out (controller.md C1, C2).
+ * Unrestricted for now, at the person's request (2026-11-24): every function
+ * the engine offers, in every scope. The repository's permission rules
+ * (iii-permissions.yaml) still deny agents harness::send, stop, run and
+ * compact. The board-only policy of controller.md (C1, C2) comes back with
+ * phase 3; the profile still confirms consequential actions first.
  */
-export const CONTROLLER_WRITES = [
-  'kanban::ticket::create',
-  'kanban::ticket::update',
-  'kanban::ticket::move',
-  'kanban::comment::create',
-  'kanban::question::record',
-] as const
-
-/** "All projects" reads only: a write needs one project's controller. */
-export const controllerPolicy = (scope: string) => [
-  ...CONTROLLER_READS,
-  ...(scope === 'all' ? [] : CONTROLLER_WRITES),
-]
+export const controllerPolicy = (_scope: string) => ['*']
 
 interface StoredController {
   session_id: string

@@ -2,7 +2,7 @@
 
 ## 0.3.0
 
-- **The project controller.** A new `control-plane-controller` profile for the control plane's chat. It reads the control plane and the board, and acts through the board only: creating, updating and moving cards (To do starts a card's run), commenting and recording decisions, each batch after the person confirms. It cannot send to or stop other sessions or answer an agent's question. All projects reads only. Needs control-plane 0.0.2 or later.
+- **The project controller.** A new `control-plane-controller` profile for the control plane's chat. It reads the control plane and the board and acts for the person, preferring the board (To do starts a card's run), and confirms every write or side effect with one question first. Its sessions may call any function the engine allows an agent. Needs control-plane 0.0.2 or later.
 
 ## 0.2.0
 

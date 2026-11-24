@@ -427,7 +427,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
     async (input: unknown) => controllers.open((await scoped(scopeInput, input)).scope),
     {
       description:
-        "Open the scope's controller chat: one per project, read and act through the board after the person confirms; All projects reads only. Creates the session on first use (and after the person deleted it) and returns its id for the console chat.",
+        "Open the scope's controller chat: one per project (and one for All projects) that reads everything and acts for the person after they confirm, with every function an agent may call. Creates the session on first use (and after the person deleted it) and returns its id for the console chat.",
       request_format: request(scopeInput),
       response_format: object({ session_id: { type: 'string' }, created: { type: 'boolean' } }),
     },

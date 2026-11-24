@@ -2,7 +2,7 @@ iii: v1
 name: iii/control-plane
 version: 0.3.0
 iii_engine_version: ">=0.26.0"
-description: "Agent profiles for the control plane worker: the read-only writer of its summary, diary, Needs you checks and PR wait reasons, and the project controller you chat with, which acts through the board after you confirm."
+description: "Agent profiles for the control plane worker: the read-only writer of its summary, diary, Needs you checks and PR wait reasons, and the project controller you chat with, which acts for you after you confirm."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/control-plane
 tags: [control-plane, summaries, kanban, github]

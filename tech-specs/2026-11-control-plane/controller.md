@@ -395,8 +395,8 @@ On an isolated stack:
 
 The person talks to the controller; it does not run on its own. None of the
 open problems below applies, because the controller claims no exclusive
-authority: every turn is started by the person, and every board write is
-confirmed by them, as if they clicked it in kanban.
+authority: every turn is started by the person, and every write is confirmed
+by them.
 
 - **The session.** `control-plane::controller::open {scope}` returns one
   session per scope, created on first use (and again after the person deleted
@@ -411,16 +411,13 @@ confirmed by them, as if they clicked it in kanban.
   harness keeps the first one.
 - **The model:** `controller.model` and `controller.reasoning` in the
   settings; unset, the summary's.
-- **The policy:** the control plane reads (and `control-plane::digest`, the
-  writer's bounded digest), board reads, session tails, harness status and
-  asks, PR reads, and `harness::ask` to confirm. In a project, also
-  `kanban::ticket::create|update|move`, `kanban::comment::create` and
-  `kanban::question::record`. All projects reads only. Never `harness::send`,
-  `harness::stop`, `harness::ask::answer` or `kanban::question::answer`
-  (C1, C2).
-- **Confirmation:** before any write, the profile lists the exact actions in
-  one `harness::ask` (Do it, Change, Cancel); a message from the person that
-  names the exact action is its own confirmation. Moving a card to To do
+- **The policy:** unrestricted for now, at the person's request
+  (2026-11-24): `allow ["*"]` in every scope. The repository's permission
+  rules still deny agents `harness::send`, `harness::stop`, `harness::run` and
+  `harness::compact`. The board-only policy (C1, C2) returns with phase 3.
+- **Confirmation:** before any write or side effect, the profile lists the
+  exact actions in one `harness::ask` (Do it, Change, Cancel); a message from
+  the person that names the exact action is its own confirmation. Moving a card to To do
   starts its run through dispatch; moving a running card out of In progress
   does not stop its session, and the controller says so.
 - **The page:** a chat button in the header opens the scope's controller in

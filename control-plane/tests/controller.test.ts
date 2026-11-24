@@ -1,11 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { defaultConfig } from '../src/config.js'
-import {
-  CONTROLLER_PROFILE,
-  CONTROLLER_WRITES,
-  ControllerSessions,
-  controllerPolicy,
-} from '../src/controller.js'
+import { CONTROLLER_PROFILE, ControllerSessions, controllerPolicy } from '../src/controller.js'
 import { controlPlaneFixture } from '../src/fixtures.js'
 import type { ControlPlaneConfig, ControlPlaneData } from '../src/types.js'
 
@@ -53,7 +48,7 @@ const withModel = (patch: Partial<ControlPlaneConfig> = {}): ControlPlaneConfig 
 }
 
 describe('controller chat sessions', () => {
-  it('creates one project controller with the profile, its model and a board-writing policy, then reuses it', async () => {
+  it('creates one project controller with the profile, its model and an unrestricted policy, then reuses it', async () => {
     const f = fake(withModel())
     const first = await f.controllers.open('assistente')
     expect(first.created).toBe(true)
@@ -75,14 +70,7 @@ describe('controller chat sessions', () => {
       model: 'claude-code/sonnet',
       options: { agent: CONTROLLER_PROFILE, functions: { allow: controllerPolicy('assistente') } },
     })
-    for (const write of CONTROLLER_WRITES) expect(controllerPolicy('assistente')).toContain(write)
-    for (const never of [
-      'harness::send',
-      'harness::stop',
-      'harness::ask::answer',
-      'kanban::question::answer',
-    ])
-      expect(controllerPolicy('assistente')).not.toContain(never)
+    expect(controllerPolicy('assistente')).toEqual(['*'])
 
     expect(await f.controllers.open('assistente')).toEqual({
       session_id: first.session_id,
@@ -91,7 +79,7 @@ describe('controller chat sessions', () => {
     expect(f.sent()).toHaveLength(1)
   })
 
-  it('reads only for All projects, and uses its own model over the summary one', async () => {
+  it('has every function in All projects too, and uses its own model over the summary one', async () => {
     const f = fake(withModel({ controller: { model: 'openai::gpt-6', reasoning: 'high' } }))
     await f.controllers.open('all')
     const [, send] = f.sent()[0]
@@ -100,7 +88,7 @@ describe('controller chat sessions', () => {
       model: 'gpt-6',
       options: { thinking_level: 'high' },
     })
-    for (const write of CONTROLLER_WRITES) expect(controllerPolicy('all')).not.toContain(write)
+    expect(controllerPolicy('all')).toEqual(['*'])
   })
 
   it('replaces a deleted session, shares a concurrent open, and asks for a model when none is set', async () => {
