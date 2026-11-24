@@ -65,8 +65,11 @@ Profiles reach `agents_folder` from three places, and `directory::agents::list`
   file). Kit profiles take precedence over worker ones: a worker's registry
   download skips an id a kit owns and reports it in `agents_skipped`.
 - **worker** — a worker's registry download wrote it; the worker's completion
-  marker (`<skills_folder>/<worker>/.iii-skill-complete`, schema 2) records
-  every profile it wrote with its sha256.
+  marker (`<skills_folder>/<worker>/.iii-skill-complete`, schema 2 and later)
+  records every profile it wrote with its sha256. A later download replaces
+  the file only while it still has that sha256: a profile edited or made in
+  the project, or written by another worker, is kept and reported in
+  `agents_skipped`.
 - **local** — anything else: written by hand or by a template.
 
 `global` and `builtin` mark the user-global root and the bundled profiles.
