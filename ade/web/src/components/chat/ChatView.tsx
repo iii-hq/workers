@@ -212,6 +212,8 @@ import { ConversationDetailsDialog } from './ConversationDetailsDialog'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
+import { QuestionNotice } from './QuestionNotice'
+import type { OffscreenQuestions } from './question-jump'
 import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
 import {
@@ -229,6 +231,7 @@ import {
 } from './system-prompt-selection'
 import { CONTINUE_MESSAGE, TurnRestRow } from './TurnRestRow'
 import { deriveTurnVisualState } from './turn-visual-state'
+import { useAwaitingQuestions } from './use-awaiting-questions'
 import { useModelSwitch } from './use-model-switch'
 import {
   type KeptReason,
@@ -2882,6 +2885,25 @@ export function ChatView({
     () => isWaitingOnAnswer(conversation, streamingIndicator),
     [conversation, streamingIndicator],
   )
+  // Question cards still waiting on the person: the list keeps them mounted
+  // and offers a jump to any that scrolled out of view.
+  const awaitingQuestionIds = useAwaitingQuestions({
+    backend,
+    sessionId: conversation.id,
+    messages: shownMessages,
+    waitingOnAnswer,
+  })
+  // Which of them the list has scrolled out of view, and its jump to the
+  // oldest: the notice in the composer's tray shows while any is hidden.
+  const [offscreenQuestions, setOffscreenQuestions] = useState<{
+    offscreen: OffscreenQuestions
+    jump: () => void
+  } | null>(null)
+  const handleQuestionsOffscreen = useCallback(
+    (offscreen: OffscreenQuestions, jump: () => void) =>
+      setOffscreenQuestions(offscreen.count > 0 ? { offscreen, jump } : null),
+    [],
+  )
 
   // Pre-content phase text for the waiting indicator. Only trusted while the transcript
   // still ends at the user's message — on the real backend content arrives via
@@ -3817,6 +3839,8 @@ export function ChatView({
                         : undefined
                     }
                     observersById={observersById}
+                    awaitingQuestionIds={awaitingQuestionIds}
+                    onQuestionsOffscreen={handleQuestionsOffscreen}
                     focusMessageId={quoteFocusId ?? focusMessageId}
                     onFocusMessageHandled={() => {
                       setQuoteFocusId(null)
@@ -3899,6 +3923,13 @@ export function ChatView({
                     </div>
                   ) : null}
                 </section>
+              ) : null}
+              {offscreenQuestions ? (
+                <QuestionNotice
+                  count={offscreenQuestions.offscreen.count}
+                  direction={offscreenQuestions.offscreen.direction}
+                  onShow={offscreenQuestions.jump}
+                />
               ) : null}
               {sessionTurnSummaries ? (
                 <div

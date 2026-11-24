@@ -45,9 +45,9 @@ import {
   registrationFromRow,
 } from '@/components/observer-activity/model'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
-import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { ImageViewer } from '@/components/ui/ImageViewer'
+import { JumpPill } from '@/components/ui/JumpPill'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
@@ -79,6 +79,11 @@ import { functionCallGroups } from './function-call-groups'
 import { imageZoomTarget } from './image-zoom-target'
 import { Message, type SpawnTaskContext } from './Message'
 import { ModelWaitingIndicator } from './ModelWaitingIndicator'
+import {
+  type OffscreenQuestions,
+  questionCardNode,
+  useOffscreenQuestions,
+} from './question-jump'
 import {
   nextTailScrollTop,
   type PrependScrollMetrics,
@@ -114,10 +119,6 @@ import {
 import type { TurnVisualPhase } from './turn-visual-state'
 import './chat-motion.css'
 import './tool-group.css'
-
-// viewport: phone chrome — the sm and md utilities here are the console's
-// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
-// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 interface MessageListProps {
   messages: MessageType[]
@@ -201,6 +202,21 @@ interface MessageListProps {
   focusMessageId?: string | null
   onFocusMessageHandled?: () => void
   /**
+   * Question cards (`harness::ask`) that still wait on the person, as
+   * message ids, oldest first. Their rows stay mounted, and the list
+   * reports which are out of view (`onQuestionsOffscreen`).
+   */
+  awaitingQuestionIds?: readonly string[]
+  /**
+   * Called when the waiting cards out of view change, with the jump that
+   * centres the oldest of them and focuses its first answer control. The
+   * owner shows the notice (by the composer, not over the transcript).
+   */
+  onQuestionsOffscreen?: (
+    offscreen: OffscreenQuestions,
+    jump: () => void,
+  ) => void
+  /**
    * Where the loaded window ends at the top (`Conversation.history`). Drives
    * the status row above the first message and the upward infinite scroll:
    * while `hasMore`, a sentinel entering the viewport asks `onLoadOlder` for
@@ -224,6 +240,7 @@ interface MessageListProps {
 }
 
 const ACTIVITY_RESULT_DWELL_MS = 250
+const NO_QUESTIONS: readonly string[] = []
 
 /**
  * How far above the viewport the top sentinel counts as "reached". A page is
@@ -534,6 +551,8 @@ export function MessageList({
   observersById,
   focusMessageId,
   onFocusMessageHandled,
+  awaitingQuestionIds = NO_QUESTIONS,
+  onQuestionsOffscreen,
   history,
   onLoadOlder,
   onLoadActivityEntries,
@@ -727,6 +746,12 @@ export function MessageList({
       ? rowIndexById.get(focusMessageId)
       : undefined
     if (focusIndex !== undefined) pinned.add(focusIndex)
+    // A waiting question card stays mounted: it keeps what the person has
+    // ticked so far, and the jump pill can measure where it is.
+    for (const id of awaitingQuestionIds) {
+      const index = rowIndexById.get(id)
+      if (index !== undefined) pinned.add(index)
+    }
     if (selectedRows) {
       const anchor = rowIndexById.get(selectedRows.anchor)
       const focus = rowIndexById.get(selectedRows.focus)
@@ -738,7 +763,14 @@ export function MessageList({
       }
     }
     return pinned
-  }, [flatRows, focusMessageId, rowIndexById, selectedRows, stickyRowKeys])
+  }, [
+    flatRows,
+    focusMessageId,
+    rowIndexById,
+    selectedRows,
+    stickyRowKeys,
+    awaitingQuestionIds,
+  ])
   const prevFirstIdRef = useRef<string | undefined>(undefined)
   const renderedRowKeysRef = useRef<readonly string[]>([])
   // Only rows already mounted: one first mounted in this commit would add its
@@ -1005,6 +1037,13 @@ export function MessageList({
     const cap = setTimeout(finishOpening, OPEN_SETTLE_MAX_MS)
     return () => clearTimeout(cap)
   }, [transcriptHydrated, noteOpeningLayout, finishOpening])
+  const { offscreen: offscreenQuestions, check: checkQuestions } =
+    useOffscreenQuestions(
+      awaitingQuestionIds,
+      containerRef,
+      contentRef,
+      !opening,
+    )
   useEffect(() => {
     if (!opening) return
     const timer = setTimeout(
@@ -1242,8 +1281,14 @@ export function MessageList({
       // A prepend restores against the offset the reader was at, not the
       // one at the last commit.
       recordScrollMetrics(container)
+      checkQuestions()
     },
-    [cancelTailAnimation, recordScrollMetrics, transitionTailState],
+    [
+      cancelTailAnimation,
+      recordScrollMetrics,
+      transitionTailState,
+      checkQuestions,
+    ],
   )
 
   const handleWheel = useCallback(
@@ -1334,6 +1379,52 @@ export function MessageList({
     scrollRowToCenter,
     transitionTailState,
   ])
+
+  // The question notice: center the oldest waiting card out of view, flash it,
+  // and put focus on its first control so the keyboard can answer at once.
+  const handleJumpToQuestion = useCallback(() => {
+    const container = containerRef.current
+    const card = questionCardNode(
+      contentRef.current,
+      offscreenQuestions.target ?? '',
+    )
+    if (!container || !card) return
+    cancelTailAnimation()
+    transitionTailState('paused')
+    scrollRowToCenter(container, card)
+    // The answer controls first: the card's own header toggle comes before
+    // them in the DOM, and landing there would not let the keyboard answer.
+    const control =
+      card.querySelector<HTMLElement>(
+        'input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
+      ) ?? card.querySelector<HTMLElement>('button:not([disabled])')
+    ;(control ?? card).focus({ preventScroll: true })
+    if (typeof card.animate === 'function' && !reducedMotionRef.current) {
+      card.animate(
+        [
+          {
+            backgroundColor: 'color-mix(in srgb, currentColor 6%, transparent)',
+          },
+          { backgroundColor: 'transparent' },
+        ],
+        { duration: 900, easing: 'ease-out' },
+      )
+    }
+  }, [
+    cancelTailAnimation,
+    offscreenQuestions.target,
+    scrollRowToCenter,
+    transitionTailState,
+  ])
+
+  // The jump is read through a ref so a new closure (a new target) does not
+  // re-report an unchanged state.
+  const jumpToQuestionRef = useRef(handleJumpToQuestion)
+  jumpToQuestionRef.current = handleJumpToQuestion
+  const jumpToQuestion = useCallback(() => jumpToQuestionRef.current(), [])
+  useEffect(() => {
+    onQuestionsOffscreen?.(offscreenQuestions, jumpToQuestion)
+  }, [offscreenQuestions, onQuestionsOffscreen, jumpToQuestion])
 
   /* External landing (trace → "go to message"): center the requested row
  once it exists, then hand the request back to the owner. Tail following
@@ -1695,28 +1786,22 @@ export function MessageList({
         </div>
       ) : null}
       {tailState === 'paused' ? (
-        <Button
-          type="button"
-          variant="pill"
-          size="sm"
-          className={cn(
-            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md ring-1 ring-border sm:h-8 sm:text-[0.8125rem]',
-            hasPendingApproval && 'text-warn',
-          )}
-          onClick={hasPendingApproval ? handleJumpToAction : handleJumpToLatest}
-          aria-label={
-            hasPendingApproval
-              ? 'jump to action required'
-              : 'jump to latest message'
-          }
-        >
-          <span
-            className="absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-            aria-hidden="true"
-          />
-          <ArrowDown aria-hidden="true" className="stroke-current" />
-          <span>{hasPendingApproval ? 'action required' : 'latest'}</span>
-        </Button>
+        <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
+          <JumpPill
+            tone={hasPendingApproval ? 'warn' : 'default'}
+            onClick={
+              hasPendingApproval ? handleJumpToAction : handleJumpToLatest
+            }
+            aria-label={
+              hasPendingApproval
+                ? 'jump to action required'
+                : 'jump to latest message'
+            }
+            icon={<ArrowDown aria-hidden="true" className="stroke-current" />}
+          >
+            {hasPendingApproval ? 'action required' : 'latest'}
+          </JumpPill>
+        </div>
       ) : null}
     </div>
   )

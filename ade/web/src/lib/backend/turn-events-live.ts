@@ -25,10 +25,14 @@ const TURN_COMPLETED_HANDLER = 'iii::console::turn_completed'
 const TURN_STARTED_HANDLER = 'iii::console::turn_started'
 const MESSAGE_QUEUED_HANDLER = 'iii::console::message_queued'
 const OBSERVERS_CHANGED_HANDLER = 'iii::console::observers_changed'
+const ASK_CHANGED_HANDLER = 'iii::console::ask_changed'
 const ON_TURN_COMPLETED_FN = 'harness::on-turn-completed'
 const ON_TURN_STARTED_FN = 'harness::on-turn-started'
 const ON_MESSAGE_QUEUED_FN = 'harness::on-message-queued'
 const ON_OBSERVERS_CHANGED_FN = 'harness::on-observers-changed'
+const ON_ASK_FN = 'harness::on-ask'
+const ON_ASK_SETTLED_FN = 'harness::on-ask-settled'
+const ASK_SETTLE_FN = 'harness::ask::settle'
 
 type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'observe'>
 
@@ -148,4 +152,27 @@ export function startObserversChangedSubscription(
     sessionId,
     onChanged,
   )
+}
+
+/**
+ * Observe the harness's question-card events for one session:
+ * `harness::on-ask` (the agent asked), `harness::on-ask-settled` (a card
+ * was answered, dismissed, withdrawn or expired, from any tab or channel)
+ * and `harness::ask::settle` (a card without an ask entry settled through
+ * the chat; observed as a call, filtered on its input).
+ * A doorbell — consumers refetch `harness::ask::list`. Returns a cleanup.
+ */
+export function startAskEventsSubscription(
+  client: ClientSubset,
+  sessionId: string,
+  onChanged: () => void,
+): () => void {
+  const offs = [ON_ASK_FN, ON_ASK_SETTLED_FN, ASK_SETTLE_FN].map((functionId) =>
+    bind<unknown>(client, ASK_CHANGED_HANDLER, functionId, sessionId, () =>
+      onChanged(),
+    ),
+  )
+  return () => {
+    for (const off of offs) off()
+  }
 }

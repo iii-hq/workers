@@ -40,14 +40,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** An accepted `harness::ask` result: `{ content, details: { status } }`. */
-function isAcceptedAsk(message: Message): boolean {
-  if (message.role !== 'function-call') return false
-  if (message.functionId !== ASK_FUNCTION_ID || message.running) return false
+/** The details of an accepted `harness::ask` result (`{ content, details:
+ *  { status, question_id, … } }`), or `null`. */
+function acceptedAskDetails(message: Message): Record<string, unknown> | null {
+  if (message.role !== 'function-call') return null
+  if (message.functionId !== ASK_FUNCTION_ID || message.running) return null
   const { output } = message
-  if (!isRecord(output) || 'error' in output) return false
+  if (!isRecord(output) || 'error' in output) return null
   const details = Array.isArray(output.content) ? output.details : output
   return isRecord(details) && details.status === ASK_AWAITING_STATUS
+    ? details
+    : null
+}
+
+function isAcceptedAsk(message: Message): boolean {
+  return acceptedAskDetails(message) !== null
+}
+
+/** One question card in the transcript: its row and the harness's id for it. */
+export interface QuestionCardRef {
+  /** The function-call message the card renders in. */
+  messageId: string
+  /** `harness::ask` question id (`harness::ask::list` → `question_id`). */
+  questionId: string
+  /** Its position in the messages it was read from. */
+  index: number
+}
+
+/** Every question card the agent showed in `messages`, oldest first. */
+export function questionCardsIn(
+  messages: readonly Message[],
+): QuestionCardRef[] {
+  const cards: QuestionCardRef[] = []
+  messages.forEach((message, index) => {
+    const details = acceptedAskDetails(message)
+    if (details && typeof details.question_id === 'string') {
+      cards.push({
+        messageId: message.id,
+        questionId: details.question_id,
+        index,
+      })
+    }
+  })
+  return cards
 }
 
 /**

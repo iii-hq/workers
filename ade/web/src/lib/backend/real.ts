@@ -53,6 +53,7 @@ import {
   translateTurnSource,
 } from './translate'
 import {
+  startAskEventsSubscription,
   startObserversChangedSubscription,
   startQueuedEventsSubscription,
   startTurnEventsSubscription,
@@ -669,6 +670,113 @@ function realOnObserversChanged(
   }
 }
 
+/** States of a `harness::ask` entry that still wait on the person. */
+const AWAITING_ASK_STATES = new Set(['open', 'expired'])
+
+type AskListReply = {
+  entries?: { session_id?: unknown; question_id?: unknown; state?: unknown }[]
+  cursor?: unknown
+} | null
+
+/** `harness::ask::list` for one session, every page: question id → waiting. */
+async function readAskEntries(
+  client: Awaited<ReturnType<typeof getIiiClient>>,
+  sessionId: string,
+): Promise<Map<string, boolean>> {
+  const states = new Map<string, boolean>()
+  let cursor: string | undefined
+  do {
+    const reply = await client.call<AskListReply>('harness::ask::list', {
+      session_id: sessionId,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    })
+    if (!reply || !Array.isArray(reply.entries)) {
+      throw new Error('Could not read the session’s questions.')
+    }
+    for (const entry of reply.entries) {
+      if (
+        entry.session_id === sessionId &&
+        typeof entry.question_id === 'string' &&
+        typeof entry.state === 'string'
+      ) {
+        states.set(entry.question_id, AWAITING_ASK_STATES.has(entry.state))
+      }
+    }
+    cursor =
+      typeof reply.cursor === 'string' && reply.cursor
+        ? reply.cursor
+        : undefined
+  } while (cursor)
+  return states
+}
+
+/** `harness::ask::settlements`: the cards settled through the chat. */
+async function readAskSettlements(
+  client: Awaited<ReturnType<typeof getIiiClient>>,
+  sessionId: string,
+): Promise<Set<string>> {
+  const reply = await client.call<{
+    settlements?: { question_id?: unknown }[]
+  } | null>('harness::ask::settlements', { session_id: sessionId })
+  if (!reply || !Array.isArray(reply.settlements)) {
+    throw new Error('Could not read the session’s settled questions.')
+  }
+  const settled = new Set<string>()
+  for (const row of reply.settlements) {
+    if (typeof row.question_id === 'string') settled.add(row.question_id)
+  }
+  return settled
+}
+
+/**
+ * Which of the session's question cards still wait on the person. An entry
+ * in the ask store is the truth; a card without one (asked through an
+ * agent's own tool path) is settled once a settlement row names it.
+ */
+async function realAskStates(
+  sessionId: string,
+): Promise<ReadonlyMap<string, boolean>> {
+  const client = await getIiiClient()
+  const [entries, settlements] = await Promise.allSettled([
+    readAskEntries(client, sessionId),
+    readAskSettlements(client, sessionId),
+  ])
+  if (entries.status === 'rejected' && settlements.status === 'rejected') {
+    throw entries.reason
+  }
+  const states =
+    entries.status === 'fulfilled' ? entries.value : new Map<string, boolean>()
+  if (settlements.status === 'fulfilled') {
+    for (const id of settlements.value) {
+      if (!states.has(id)) states.set(id, false)
+    }
+  }
+  return states
+}
+
+/** Ask events for a session, with the same reconnect reseed as
+ *  `realOnObserversChanged`. */
+function realOnAskChanged(sessionId: string, onEvent: () => void): () => void {
+  let disposed = false
+  let off: (() => void) | null = null
+  let offConn: (() => void) | null = null
+  getIiiClient()
+    .then((client) => {
+      if (disposed) return
+      off = startAskEventsSubscription(client, sessionId, onEvent)
+      offConn = client.addConnectionStateListener((state) => {
+        if (state === 'connected') onEvent()
+      })
+    })
+    .catch(() => {})
+  return () => {
+    disposed = true
+    off?.()
+    offConn?.()
+  }
+}
+
 async function realListObservers(
   sessionId: string,
 ): Promise<SessionObserverInfo[]> {
@@ -895,6 +1003,8 @@ export const realBackend: ChatBackend = {
   onQueuedMessage: realOnQueuedMessage,
   listObservers: realListObservers,
   onObserversChanged: realOnObserversChanged,
+  askStates: realAskStates,
+  onAskChanged: realOnAskChanged,
   disposeObserver: realDisposeObserver,
   watchApprovals: realWatchApprovals,
   resolveApproval: realResolveApproval,
