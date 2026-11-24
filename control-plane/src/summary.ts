@@ -75,19 +75,25 @@ export function acceptSummary(
 ): ControlPlaneSummary | null {
   const parsed = resultContract.safeParse(value)
   if (!parsed.success) return previous
-  const next = parsed.data
+  // The diary's order and duplicates are the worker's to fix, not a reason
+  // to throw a whole summary away: newest first, each event once.
+  const seen = new Set<string>()
+  const next = {
+    ...parsed.data,
+    diary: [...parsed.data.diary]
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+      .filter(({ at, text }) => {
+        const key = JSON.stringify([at, text])
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      }),
+  }
   const checked = Date.parse(next.checked_at)
   if (
     checked > now ||
     (previous && checked < Date.parse(previous.checked_at)) ||
-    next.diary.some((entry, index) => {
-      const at = Date.parse(entry.at)
-      return (
-        at > checked || (index > 0 && at > Date.parse(next.diary[index - 1].at))
-      )
-    }) ||
-    new Set(next.diary.map(({ at, text }) => JSON.stringify([at, text])))
-      .size !== next.diary.length ||
+    next.diary.some((entry) => Date.parse(entry.at) > checked) ||
     [...Object.entries(next.now), ...Object.entries(next.pr_waits)].some(
       ([subject, note]) => !note.refs.includes(subject),
     )

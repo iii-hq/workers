@@ -94,21 +94,18 @@ describe('control-plane writer result contract', () => {
     ).toBe(result)
   })
 
-  it('keeps the previous summary if milestones are duplicated or are not newest first', () => {
+  it('puts milestones newest first and drops a repeated one instead of rejecting the result', () => {
     const entry = result.diary[0]
     const earlier = {
       ...entry,
+      text: 'An earlier milestone.',
       at: new Date(Date.parse(entry.at) - 60_000).toISOString(),
     }
-    expect(
-      acceptSummary({ ...result, diary: [entry, entry] }, result, checked),
-    ).toBe(result)
-    expect(
-      acceptSummary({ ...result, diary: [earlier, entry] }, result, checked),
-    ).toBe(result)
-    expect(
-      acceptSummary({ ...result, diary: [entry, earlier] }, result, checked),
-    ).not.toBe(result)
+    expect(acceptSummary({ ...result, diary: [entry, entry] }, result, checked)?.diary).toEqual([entry])
+    expect(acceptSummary({ ...result, diary: [earlier, entry] }, result, checked)?.diary).toEqual([
+      entry,
+      earlier,
+    ])
   })
 
   it('advances an unchanged checkpoint while keeping accepted prose and restores a carried result on reload', () => {
