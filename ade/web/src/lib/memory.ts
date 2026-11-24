@@ -28,6 +28,8 @@ const memorySchema = z.object({
   invalid_at: z.number().nullish(),
   superseded_by: z.string().nullish(),
   revision: z.number().default(0),
+  /** When the fact was last stated (ms); older records have none. */
+  stated_at: z.number().nullish(),
 })
 export type MemoryItem = z.infer<typeof memorySchema>
 

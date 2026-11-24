@@ -3,6 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { parseMemoryNote } from '@/lib/memory-note'
 import { iiiMentionRuntime, setMentionRuntime } from '@/lib/mentions/runtime'
 import type { SystemMessage } from '@/types/chat'
 import { SystemNotice } from './SystemNotice'
@@ -80,6 +81,43 @@ describe('model note row', () => {
     expect(container.querySelector('[data-model-note-text]')?.textContent).toBe(
       text,
     )
+  })
+
+  it('reads a memory note as its memories, with the exact text a click away', async () => {
+    const text =
+      '<memory bank="m">\n- likes tea (2026-11-20)\n- works on iii (2026-11-21)\n</memory>'
+    const memory = parseMemoryNote(text)
+    await render({
+      id: 'n-m',
+      role: 'system',
+      kind: 'model-note',
+      content: 'Note to the model — memory',
+      note: { label: 'memory', text, ...(memory ? { memory } : {}) },
+      createdAt: 1,
+    })
+    const row = container.querySelector('[data-message-role="model-note"]')
+    expect(row?.querySelector('[data-message-summary]')?.textContent).toBe(
+      'Recalled 2 memories · m',
+    )
+    expect(
+      row?.querySelector('[data-note-glyph]')?.getAttribute('data-note-glyph'),
+    ).toBe('memory')
+    await expand()
+    const items = [...container.querySelectorAll('[data-memory-list] li')]
+    expect(items.map((li) => li.textContent)).toEqual([
+      'likes tea2026-11-20',
+      'works on iii2026-11-21',
+    ])
+    expect(container.querySelector('[data-model-note-text]')).toBeNull()
+    const exact = [...container.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Exact text',
+    )
+    await act(async () => exact?.click())
+    expect(exact?.getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('[data-model-note-text]')?.textContent).toBe(
+      text,
+    )
+    expect(container.querySelector('[data-memory-list]')).toBeNull()
   })
 
   it('reads a mentions note as pills, summaries and details calls', async () => {
