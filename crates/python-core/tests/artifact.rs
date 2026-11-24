@@ -38,3 +38,14 @@ fn module_compiles_and_second_load_hits_cwasm_cache() {
     );
     let _m2 = artifact::load_module(&engine, &root).expect("warm load");
 }
+
+/// wasmtime compares only its major when it loads a cwasm, so this constant
+/// is what keeps a module an older patch release compiled from being reused.
+#[test]
+fn cwasm_key_is_the_pinned_wasmtime() {
+    let pin = format!(
+        "wasmtime = {{ version = \"={}\"",
+        artifact::WASMTIME_VERSION
+    );
+    assert!(include_str!("../Cargo.toml").contains(&pin), "{pin}");
+}
