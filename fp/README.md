@@ -163,10 +163,11 @@ fp::batch { calls: [
 - Statically refused as steps: `fp::batch` and `fp::pipe` (no nesting), `engine::observers::dispose` (observer
   control; agents observe through `harness::observe`), nested pipes, and every class the
   agent policy hard-denies — session writes and `session::store::*`,
-  `approval::*`, `configuration::*`/`oauth::*` (credentials),
+  `approval::*`, `configuration::*`/`oauth::*` and `secrets::*` except the
+  metadata reads `list`/`get`/`status`/`detect` (credentials),
   `router::*`/`provider::*` (model spend), `harness::*`/`run::*` (turn
   control), `workflow::start` (the harness hook stamps the caller's session
-  and folder on a direct call; `workflow::status`/`stop` are allowed), `stream::*` (the deprecated iii-stream surface) and bus internals, `*::on-config-change` — because
+  and folder on a direct call; `workflow::status`/`stop` are allowed), `stream::*` (the deprecated iii-stream surface) and bus internals (with `engine::queue::enqueue`, which calls any function later), `*::on-config-change` — because
   steps run with worker authority and must not ride past those denies.
   Session READS (`session::get`/`list`/`messages*`/`get-message`/
   `get-attachment`/`list-attachments`) are allowed, like `database::query`:
