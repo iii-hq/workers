@@ -167,11 +167,13 @@ async fn not_found() -> (StatusCode, &'static str) {
 
 /// `GET /runtime` — connection settings that cannot be baked into the SPA.
 /// A browser has no process environment, so it needs the ADE worker to
-/// tell it which namespace its proxied engine connection must join, and
-/// whether telemetry may run (see [`crate::telemetry`]).
+/// tell it which namespace its proxied engine connection must join, which
+/// engine `/ws` forwards to (credentials stripped, so the header can name
+/// it), and whether telemetry may run (see [`crate::telemetry`]).
 async fn runtime_handler(State(state): State<AppState>) -> Response {
     let mut response = Json(serde_json::json!({
         "namespace": state.namespace,
+        "engine_url": crate::config::redact_url(&state.engine_url),
         "telemetry": crate::telemetry::runtime(state.iii.as_deref()).await,
     }))
     .into_response();
@@ -497,6 +499,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["namespace"], "project-a");
+        assert_eq!(value["engine_url"], "ws://127.0.0.1:1");
         assert!(value["telemetry"]["enabled"].is_boolean());
     }
 

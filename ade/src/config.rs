@@ -26,6 +26,24 @@ use serde::Deserialize;
 /// Default iii engine WebSocket URL (CLI `--url` default).
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
+/// The engine URL with any `user:secret@` stripped. The engine WebSocket
+/// URL is operator-controlled and can carry credentials in
+/// `wss://user:secret@host` form; the redactor keeps them out of `tracing`
+/// output, `ade::status` and the `/runtime` answer the browser shows. Falls
+/// back to the original string on parse failure.
+pub fn redact_url(s: &str) -> String {
+    match url::Url::parse(s) {
+        // Nothing to hide: keep the address exactly as given.
+        Ok(u) if u.username().is_empty() && u.password().is_none() => s.to_string(),
+        Ok(mut u) => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.to_string()
+        }
+        Err(_) => s.to_string(),
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct ConsoleConfig {
     /// Interface the HTTP listener binds. Defaults to `127.0.0.1`, limiting
@@ -79,6 +97,16 @@ pub fn load_config(path: &str) -> Result<ConsoleConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_url_strips_userinfo_only() {
+        assert_eq!(redact_url("ws://127.0.0.1:49134"), "ws://127.0.0.1:49134");
+        assert_eq!(
+            redact_url("wss://user:secret@iii.example.com:1234/path"),
+            "wss://iii.example.com:1234/path"
+        );
+        assert_eq!(redact_url("not a url"), "not a url");
+    }
 
     #[test]
     fn defaults_from_empty_yaml() {

@@ -66,6 +66,30 @@ describe('nextHistoryTarget', () => {
     })
   })
 
+  it('an attachment-only edit is an edit: ↑/↓ leave it in the composer', () => {
+    const chip = { id: 'f', name: 'a.txt', size: 1, type: 'text/plain' }
+    const other = { id: 'g', name: 'b.txt', size: 1, type: 'text/plain' }
+    const withAttach: QueuedForEdit[] = [
+      { id: 'x', text: 'hi', attachments: [chip] },
+      { id: 'y', text: 'there', attachments: [] },
+    ]
+    // Same text, a chip removed / swapped: not pristine.
+    expect(nextHistoryTarget(withAttach, 'x', 'hi', 'down', []).kind).toBe(
+      'noop',
+    )
+    expect(nextHistoryTarget(withAttach, 'x', 'hi', 'down', [other]).kind).toBe(
+      'noop',
+    )
+    // A chip added to a message that had none: not pristine either.
+    expect(nextHistoryTarget(withAttach, 'y', 'there', 'up', [chip]).kind).toBe(
+      'noop',
+    )
+    // Untouched text and chips still navigate.
+    expect(nextHistoryTarget(withAttach, 'x', 'hi', 'down', [chip]).kind).toBe(
+      'load',
+    )
+  })
+
   it('clamps when the browsed id has left the list', () => {
     // Browsing a stale id (drained) with its old text: not pristine vs '' →
     // noop until the composer resets the cursor.

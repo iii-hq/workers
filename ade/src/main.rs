@@ -21,6 +21,7 @@ use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{InitOptions, register_worker};
 
+use ade::config::redact_url;
 use ade::workspace_store::WorkspaceStore;
 use ade::{config, configuration, functions, manifest, server, ui, ui_assets};
 
@@ -274,23 +275,6 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     }
 }
 
-/// Strip userinfo (username:password) from a URL before logging it. The
-/// engine WebSocket URL is operator-controlled and can carry credentials
-/// in `wss://user:secret@host` form; the redactor keeps them out of
-/// `tracing` output. Falls back to the original string on parse failure.
-fn redact_url(s: &str) -> String {
-    match url::Url::parse(s) {
-        // Nothing to hide: keep the address exactly as given.
-        Ok(u) if u.username().is_empty() && u.password().is_none() => s.to_string(),
-        Ok(mut u) => {
-            let _ = u.set_username("");
-            let _ = u.set_password(None);
-            u.to_string()
-        }
-        Err(_) => s.to_string(),
-    }
-}
-
 /// The interface to bind: an explicit `--http-host` first, then the stored
 /// configuration value, then the local seed.
 fn bind_host_for(
@@ -306,7 +290,7 @@ fn bind_host_for(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_host_for, redact_url};
+    use super::bind_host_for;
 
     #[test]
     fn bind_host_prefers_cli_then_stored_then_seed() {
@@ -330,15 +314,5 @@ mod tests {
             listener.local_addr().unwrap().ip().is_loopback(),
             "the default ADE listener must not bind every interface"
         );
-    }
-
-    #[test]
-    fn redact_url_strips_userinfo_only() {
-        assert_eq!(redact_url("ws://127.0.0.1:49134"), "ws://127.0.0.1:49134");
-        assert_eq!(
-            redact_url("wss://user:secret@iii.example.com:1234/path"),
-            "wss://iii.example.com:1234/path"
-        );
-        assert_eq!(redact_url("not a url"), "not a url");
     }
 }

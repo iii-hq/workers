@@ -58,6 +58,8 @@
   --border: oklch(0.92 0 0);
   --input: oklch(0.94 0 0);
   --ring: oklch(0 0 0);
+  /* The dimming layer behind a modal surface (the palette, dialogs). */
+  --scrim: oklch(0 0 0 / 55%);
   --chart-1: oklch(0.81 0.17 75.35);
   --chart-2: oklch(0.55 0.22 264.53);
   --chart-3: oklch(0.72 0 0);
@@ -121,6 +123,7 @@
   --border: oklch(0.26 0 0);
   --input: oklch(0.32 0 0);
   --ring: oklch(0.72 0 0);
+  --scrim: oklch(0 0 0 / 30%);
   --chart-1: oklch(0.81 0.17 75.35);
   --chart-2: oklch(0.58 0.21 260.84);
   --chart-3: oklch(0.56 0 0);
@@ -175,6 +178,8 @@
   --color-surface-hover: var(--accent);
   --color-surface-selected: var(--accent);
   --color-surface-active: var(--secondary);
+  /* The dimming layer behind modal surfaces: `bg-scrim`. */
+  --color-scrim: var(--scrim);
 
   /* ── Ink ramp ──────────────────────────────────────────────────────── */
   --color-ink: var(--foreground);
@@ -423,7 +428,11 @@
      12 / 14px; `meta` is the 11px floor (metadata, eyebrows, key caps) and
      `body` the 13px console body (rows, labels, buttons). Never a bracket. */
   --text-meta: 0.6875rem;
+  --text-xs: 0.75rem;
   --text-body: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
 
   /* Letter-spacing: the design system's slightly tight default. */
   --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
