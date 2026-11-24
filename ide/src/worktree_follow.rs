@@ -49,6 +49,8 @@ pub struct WorktreeFollow {
 
 /// When git added the worktree of this admin dir: `git worktree move` and
 /// `repair` leave `commondir` as the add wrote it.
+// shortcut: two adds of one id within the filesystem's mtime step (1-2 s on
+// HFS+ and FAT) read as a move; use the creation time if that is ever seen.
 fn added_at(admin: &Path) -> Option<SystemTime> {
     std::fs::metadata(admin.join("commondir"))
         .and_then(|m| m.modified())
@@ -517,6 +519,16 @@ mod tests {
             follow_flag(&dir.join("own/sub"), &argv, json!(false)).await,
             s(dir.join("own2/sub"))
         );
+        // Moved by a call that also adds one: along with the own worktree.
+        let own3 = dir.join("own3").to_string_lossy().into_owned();
+        let both = format!(
+            "git -C {main_arg} worktree move {own2} {own3} && git -C {main_arg} worktree add -q ../extra"
+        );
+        assert_eq!(
+            follow_flag(&dir.join("own2/sub"), &["sh", "-c", &both], json!(false)).await,
+            s(dir.join("own3/sub"))
+        );
+        assert!(dir.join("extra").is_dir());
         // Removed and replaced in one exec: the main checkout, not the new
         // worktree, also when git gives it the removed one's id.
         for (old, new) in [("old", "new"), ("same", "other/same")] {
