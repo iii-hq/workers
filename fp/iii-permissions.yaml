@@ -10,10 +10,12 @@
 # to allow here if your deployment wants agents to pipe freely — knowing that
 # also grants un-approved shell::*/coder::* execution via pipe steps.
 #
-# NOTE: the policy the checked-in harness actually loads is the repo-root
-# iii-permissions.yaml (harness/iii-permissions.yaml symlinks to it), which
-# carries these same transform allows. This per-worker copy documents the
-# worker's intended posture for other deployments.
+# NOTE: no process loads this file or the repo-root iii-permissions.yaml at
+# runtime. The live policy is the approval-gate configuration entry. The root
+# file carries these same transform allows, and fp refuses as steps every call
+# it denies, less the written exceptions in ALLOWED_ON_PURPOSE (a test in
+# src/pipe.rs keeps the two in line). This per-worker
+# copy documents the worker's intended posture for other deployments.
 version: 1
 
 rules:
