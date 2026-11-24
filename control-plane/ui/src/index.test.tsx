@@ -164,6 +164,12 @@ describe('Control plane views', () => {
     })
     await change('summary.language', 'Português')
     expect(onChange).toHaveBeenLastCalledWith({ ...sonnet, summary: { ...sonnet.summary, language: 'Português' } })
+    const controllerPicker = container.querySelectorAll<HTMLSelectElement>('select[data-model-picker]')[1]
+    await act(() => {
+      controllerPicker.value = 'openai-codex::codex/gpt-6-luna'
+      controllerPicker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenLastCalledWith({ ...sonnet, controller: { model: 'openai-codex::codex/gpt-6-luna' } })
     const [pageId, [command]] = registerCommands.mock.calls[0]
     expect(pageId).toBe('control-plane')
     expect(command).toMatchObject({ id: 'open', title: 'Open control plane' })
@@ -491,6 +497,20 @@ describe('canvas overview', () => {
     await render({})
     await click('Decided')
     expect(container.textContent).toContain('Median decision wait · 90 min over the last 7 days')
+  })
+
+  it('opens the scope controller chat from the header, and shows why when it cannot', async () => {
+    vi.mocked(host.chat!.openConversation!).mockClear()
+    const call = vi.fn(async () => ({ session_id: 'lead-assistente-1', created: true }))
+    await render({ scope: 'assistente', iii: { call } as never })
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Chat with the controller"]')?.click())
+    expect(call).toHaveBeenCalledWith('control-plane::controller::open', { scope: 'assistente' })
+    expect(host.chat!.openConversation).toHaveBeenCalledWith('lead-assistente-1')
+
+    call.mockRejectedValueOnce(new Error('Pick a controller model (or a summary model) in the control plane settings.'))
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Chat with the controller"]')?.click())
+    expect(container.textContent).toContain('The controller chat did not open')
+    expect(container.textContent).toContain('Pick a controller model')
   })
 
   it('shows the worker failure with the last valid summary age', async () => {

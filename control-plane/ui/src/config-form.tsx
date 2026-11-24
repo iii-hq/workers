@@ -87,6 +87,15 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
     if (model !== summary.model) delete next.reasoning
     onChange({ ...config, summary: next })
   }
+  const controller = asObject(config.controller)
+  const setController = (patch: Record<string, JsonValue | null>) => {
+    const next: Record<string, JsonValue> = { ...controller }
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) delete next[key]
+      else next[key] = value
+    }
+    onChange({ ...config, controller: next })
+  }
   const setSummaryText = (key: 'guidance' | 'language', text: string) => {
     const next = { ...summary }
     if (text.trim()) next[key] = text
@@ -116,6 +125,25 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
             onChange={setModel}
             onThinkingLevelChange={setReasoning}
             automatic={{ label: 'No summary', onSelect: () => setModel(null) }}
+          />
+        )}
+      />
+      <SettingsField
+        label="Controller model"
+        field="controller.model"
+        description="The model of the controller you chat with from the control plane, and its reasoning effort. Unset, it uses the summary model."
+        error={errors?.get('/controller/model')}
+        renderControl={() => (
+          <ModelPicker
+            value={typeof controller.model === 'string' ? controller.model : null}
+            options={catalog.options}
+            loading={catalog.loading}
+            thinkingLevel={typeof controller.reasoning === 'string' ? controller.reasoning : 'default'}
+            showReasoningEffort
+            // An effort belongs to its model; a new model starts at its default.
+            onChange={(model) => setController({ model: model ?? null, reasoning: null })}
+            onThinkingLevelChange={(level) => setController({ reasoning: level && level !== 'default' ? level : null })}
+            automatic={{ label: 'Same as the summary', onSelect: () => setController({ model: null, reasoning: null }) }}
           />
         )}
       />

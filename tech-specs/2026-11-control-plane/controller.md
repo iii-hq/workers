@@ -1,6 +1,6 @@
 # Project controller
 
-Status: proposed, 2026-11-22. Revision 3, after two adversarial reviews.
+Status: phases 1 and 2 (the controller chat) built 2026-11-24; phase 3 (autonomous orchestration) blocked on the open problems below. Revision 4.
 
 It was split from revision 3 of `control-plane-worker.md` and builds on `README.md`
 and `control-plane-worker.md`. It is implemented after `control-plane-worker.md`, and gets
@@ -390,6 +390,44 @@ On an isolated stack:
    - Stopping the controller does not stop running cards.
    - After a spent budget, Renew records a new session and leaves cards
      running.
+
+## Built: the controller chat (phases 1 and 2, 2026-11-24)
+
+The person talks to the controller; it does not run on its own. None of the
+open problems below applies, because the controller claims no exclusive
+authority: every turn is started by the person, and every board write is
+confirmed by them, as if they clicked it in kanban.
+
+- **The session.** `control-plane::controller::open {scope}` returns one
+  session per scope, created on first use (and again after the person deleted
+  it) with a fresh `lead-<scope>-<uuid>` id, title `Controller · <name>`, kind
+  `user`, and the controller model in its metadata so the console chat
+  continues on it. The id is kept in the control plane state
+  (`controller:<scope>`), not on the project; kanban enforcement (§2) waits
+  for phase 3.
+- **The first send** freezes the `control-plane-controller` profile (kit
+  `iii/control-plane` 0.3.0) and the function policy, and asks for a short
+  status. Later messages come from the console chat without a policy, so the
+  harness keeps the first one.
+- **The model:** `controller.model` and `controller.reasoning` in the
+  settings; unset, the summary's.
+- **The policy:** the control plane reads (and `control-plane::digest`, the
+  writer's bounded digest), board reads, session tails, harness status and
+  asks, PR reads, and `harness::ask` to confirm. In a project, also
+  `kanban::ticket::create|update|move`, `kanban::comment::create` and
+  `kanban::question::record`. All projects reads only. Never `harness::send`,
+  `harness::stop`, `harness::ask::answer` or `kanban::question::answer`
+  (C1, C2).
+- **Confirmation:** before any write, the profile lists the exact actions in
+  one `harness::ask` (Do it, Change, Cancel); a message from the person that
+  names the exact action is its own confirmation. Moving a card to To do
+  starts its run through dispatch; moving a running card out of In progress
+  does not stop its session, and the controller says so.
+- **The page:** a chat button in the header opens the scope's controller in
+  the console chat; a failure (no model) shows why.
+
+Phase 3 adds the wakes (§1 Waking), the budget (§5) and kanban's checks on
+the writing session (§2), after the harness primitives below exist.
 
 ## Open problems (review 4, 2026-11-22)
 

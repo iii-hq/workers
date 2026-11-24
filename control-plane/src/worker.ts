@@ -5,6 +5,8 @@ import type { IIIClient } from 'iii-sdk'
 import { z } from 'zod'
 import { configSchema, defaultConfig } from './config.js'
 import { sourceHash, ControlPlaneReadModel } from './read-model.js'
+import { ControllerSessions } from './controller.js'
+import { scopeDigest } from './digest.js'
 import { resolveSummary, SUMMARY_MAX_AGE, summaryIsFresh, withAgentChecks } from './summary.js'
 import type { ControlPlaneClient } from './types.js'
 import { ControlPlaneWriter } from './writer.js'
@@ -414,6 +416,34 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
       return {}
     },
     { ...eventHandler, metadata: { internal: true } },
+  )
+  const controllers = new ControllerSessions({
+    iii: client,
+    config: () => config,
+    read: (scope) => read.read(scope),
+  })
+  iii.registerFunction(
+    'control-plane::controller::open',
+    async (input: unknown) => controllers.open((await scoped(scopeInput, input)).scope),
+    {
+      description:
+        "Open the scope's controller chat: one per project, read and act through the board after the person confirms; All projects reads only. Creates the session on first use (and after the person deleted it) and returns its id for the console chat.",
+      request_format: request(scopeInput),
+      response_format: object({ session_id: { type: 'string' }, created: { type: 'boolean' } }),
+    },
+  )
+  iii.registerFunction(
+    'control-plane::digest',
+    async (input: unknown) => {
+      const { scope } = await scoped(scopeInput, input)
+      return scopeDigest(client, await read.read(scope), scope)
+    },
+    {
+      description:
+        "Read one scope's bounded digest: board counts, releases, active and changed cards, the last day of activity, runs with their last message, what needs the person with its evidence, and open PRs. Start here instead of listing the board.",
+      request_format: request(scopeInput),
+      response_format: { type: 'object' },
+    },
   )
   iii.registerFunction(
     'control-plane::configuration-id',

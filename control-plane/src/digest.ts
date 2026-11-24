@@ -1,4 +1,4 @@
-import type { ControlPlaneData } from './types.js'
+import type { ControlPlaneClient, ControlPlaneData } from './types.js'
 
 /** One board-wide `kanban::activity::list` row, as the writer's digest reads it. */
 export interface ActivityRow {
@@ -169,4 +169,45 @@ export function writerDigest(
           wait: pr.waitReason,
         })),
   }
+}
+
+const CARD_EVIDENCE = 15
+
+/**
+ * The digest of one scope, as the writer and the controller read it: the last
+ * day of board activity, and the evidence of the marked cards (description and
+ * newest comments), so neither spends its own reads on them.
+ */
+export async function scopeDigest(
+  iii: Pick<ControlPlaneClient, 'call'>,
+  data: ControlPlaneData,
+  scope: string,
+) {
+  const since = new Date(Date.now() - 86_400_000).toISOString()
+  const activity = await iii
+    .call<{ activity?: ActivityRow[] }>('kanban::activity::list', { since, limit: 200 })
+    .then((result) => result?.activity ?? [])
+    .catch(() => [])
+  const evidence = Object.fromEntries(
+    await Promise.all(
+      (data.items ?? [])
+        .filter((item) => item.kind === 'card' && item.card)
+        .slice(0, CARD_EVIDENCE)
+        .map(async (item) => {
+          const ticket = await iii
+            .call<CardDetail>('kanban::ticket::get', { id: item.card?.key })
+            .catch(() => null)
+          return [item.id, ticket] as const
+        }),
+    ),
+  )
+  return writerDigest(data, {
+    evidence,
+    scopeName:
+      scope === 'all'
+        ? 'All projects'
+        : ((data.projects ?? []).find((project) => project.id === scope)?.name ?? scope),
+    since,
+    activity,
+  })
 }

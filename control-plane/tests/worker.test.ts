@@ -174,6 +174,8 @@ describe('worker functions without an engine', () => {
       'control-plane::assumptions::list',
       'control-plane::watch',
       'control-plane::summary::refresh',
+      'control-plane::controller::open',
+      'control-plane::digest',
       'control-plane::configuration-id',
     ])
     expect(f.invoke('control-plane::configuration-id', {})).toEqual({ id: 'control-plane' })
@@ -261,6 +263,7 @@ describe('worker functions without an engine', () => {
 
   it('accepts the Engine stamp on every public RPC while keeping strict requests', async () => {
     const f = fake()
+    f.runtime.config.controller = { model: 'openai::controller-model' }
     controlPlanes.push(await registerControlPlane(f.iii))
     for (const id of f.handlers.keys()) {
       if (f.registrations.get(id)?.metadata || id === 'control-plane::on-changed') continue
