@@ -43,7 +43,8 @@ use super::synthesize::{synthesize_aborted, synthesize_error};
 ///
 /// `messages` / `tools` / `response_format` / `thinking_level` /
 /// `provider_options` stay `Value`: they are forwarded to the provider verbatim,
-/// so the router intentionally does not re-validate their shape. The struct
+/// so the router does not re-validate their full types (`messages` only gets
+/// the shape check in `message_shape_problem`). The struct
 /// still derives `JsonSchema` so the SDK emits a real request schema (the
 /// freeform sub-fields surface as permissive sub-schemas).
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -62,7 +63,7 @@ pub struct ChatCall {
     pub system_sections: Option<Vec<PromptSection>>,
     #[serde(default)]
     pub cache_intent: Option<PromptCacheIntent>,
-    pub messages: Value, // forwarded verbatim; validated to be an array
+    pub messages: Value, // forwarded verbatim after message_shape_problem
     #[serde(default)]
     pub tools: Option<Value>,
     #[serde(default)]
@@ -135,6 +136,71 @@ fn terminal_dispatch_error(err: &Error) -> Option<(&str, ErrorKind)> {
         return Some((message, kind));
     }
     (code == "provider/invalid_request").then_some((message, ErrorKind::Permanent))
+}
+
+/// The shape every message variant has shared since the first router: an
+/// object with a string `role`, an integer `timestamp`, and a `content` array
+/// of blocks tagged by a string `type`. Only these invariants are checked
+/// here; the full types stay with the provider, which may be newer than this
+/// router. Names the first offending field so a malformed request fails as a
+/// request error instead of a provider round trip.
+fn message_shape_problem(messages: &Value) -> Option<String> {
+    fn found(value: Option<&Value>) -> &'static str {
+        match value {
+            None => "missing",
+            Some(Value::Null) => "null",
+            Some(Value::Bool(_)) => "a boolean",
+            Some(Value::Number(_)) => "a number",
+            Some(Value::String(_)) => "a string",
+            Some(Value::Array(_)) => "an array",
+            Some(Value::Object(_)) => "an object",
+        }
+    }
+    let Some(messages) = messages.as_array() else {
+        return Some(format!(
+            "messages must be an array, got {}",
+            found(Some(messages))
+        ));
+    };
+    for (i, message) in messages.iter().enumerate() {
+        let Some(fields) = message.as_object() else {
+            return Some(format!(
+                "messages[{i}] must be an object, got {}",
+                found(Some(message))
+            ));
+        };
+        let role = fields.get("role");
+        if !role.is_some_and(Value::is_string) {
+            return Some(format!(
+                "messages[{i}].role must be a string, got {}",
+                found(role)
+            ));
+        }
+        let content = fields.get("content");
+        let Some(blocks) = content.and_then(Value::as_array) else {
+            return Some(format!(
+                "messages[{i}].content must be an array of content blocks such as [{{\"type\": \"text\", \"text\": \"...\"}}], got {}",
+                found(content)
+            ));
+        };
+        if let Some(j) = blocks
+            .iter()
+            .position(|block| !block.get("type").is_some_and(Value::is_string))
+        {
+            return Some(format!(
+                "messages[{i}].content[{j}] must be an object with a string type, got {}",
+                found(Some(&blocks[j]))
+            ));
+        }
+        let timestamp = fields.get("timestamp");
+        if !timestamp.is_some_and(Value::is_i64) {
+            return Some(format!(
+                "messages[{i}].timestamp must be an integer in milliseconds, got {}",
+                found(timestamp)
+            ));
+        }
+    }
+    None
 }
 
 type ProviderCallOutcome = Result<Value, Error>;
@@ -452,11 +518,11 @@ impl ChatPipeline {
                 "Select a model before sending the request.".into(),
             ));
         }
-        if !call.messages.is_array() {
+        if let Some(problem) = message_shape_problem(&call.messages) {
             return Err(fail_pre_stream(
                 "",
                 RouterCode::InvalidRequest,
-                "The chat history is invalid. Start a new chat and try again.".into(),
+                format!("The chat history is invalid: {problem}."),
             ));
         }
 
@@ -1094,6 +1160,58 @@ fn insert_present(map: &mut serde_json::Map<String, Value>, key: &str, value: Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_shape_names_the_first_malformed_field() {
+        let ok =
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1});
+        let cases = [
+            (json!("hi"), "messages must be an array, got a string"),
+            (
+                json!([ok, "hi"]),
+                "messages[1] must be an object, got a string",
+            ),
+            (
+                json!([{"content": [], "timestamp": 1}]),
+                "messages[0].role must be a string, got missing",
+            ),
+            (
+                json!([{"role": "user", "content": "hi", "timestamp": 1}]),
+                "messages[0].content must be an array of content blocks such as [{\"type\": \"text\", \"text\": \"...\"}], got a string",
+            ),
+            (
+                json!([{"role": "user", "content": ["hi"], "timestamp": 1}]),
+                "messages[0].content[0] must be an object with a string type, got a string",
+            ),
+            (
+                json!([{"role": "user", "content": []}]),
+                "messages[0].timestamp must be an integer in milliseconds, got missing",
+            ),
+            (
+                json!([{"role": "user", "content": [], "timestamp": 1.5}]),
+                "messages[0].timestamp must be an integer in milliseconds, got a number",
+            ),
+        ];
+        for (messages, want) in cases {
+            assert_eq!(
+                message_shape_problem(&messages).as_deref(),
+                Some(want),
+                "{messages}"
+            );
+        }
+    }
+
+    #[test]
+    fn message_shape_leaves_the_rest_to_the_provider() {
+        // Roles, block types and extra fields this router does not know pass:
+        // a newer provider may accept them.
+        let messages = json!([
+            {"role": "user", "content": [], "timestamp": 1},
+            {"role": "future_role", "content": [{"type": "future_block", "x": 1}], "timestamp": 2, "extra": true},
+        ]);
+        assert_eq!(message_shape_problem(&messages), None);
+        assert_eq!(message_shape_problem(&json!([])), None);
+    }
 
     struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
 

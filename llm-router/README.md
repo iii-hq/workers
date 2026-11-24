@@ -97,6 +97,18 @@ The main recovery codes are `router/provider_unavailable`,
 `router/provider_rate_limited`, `router/context_overflow`, and
 `router/provider_rejected`.
 
+A malformed request fails before any provider call as a permanent
+`router/invalid_request` naming the first bad field. For `messages`, the router
+checks only the shape every message type it defines has always had, and every
+Rust provider in this repo requires: an object with a string
+`role`, an integer `timestamp` in milliseconds, and a `content` array of blocks
+tagged by a string `type`. OpenAI-style string content (`"content": "hi"`) is
+rejected here, with `messages[i].content` in the message. Everything else in a
+message is forwarded verbatim, so a provider newer than the router can accept
+roles and block types the router does not know. When the provider's typed input
+rejects a message, the caller gets the provider's own permanent
+`provider/invalid_request`, never a retried stream failure.
+
 ### Provider protocol
 
 Token-gated after the first declare: the response to `register` carries a
