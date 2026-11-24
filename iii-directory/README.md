@@ -231,7 +231,8 @@ iii call --function-id=directory::skills::download \
 
 The response is
 `{ namespace, skills_written, system_prompts_written, agents_written, agents_skipped?, source }`.
-The three `*_written` fields list the files materialised in this run.
+The three `*_written` fields list the files materialised in this run, the ones
+already identical on disk included.
 Registry entries shaped exactly as `agents/<id>.md` land in
 `<agents_folder>/<id>.md`; repo downloads do not install agent profiles.
 A registry entry is not written when the profile on disk belongs to an

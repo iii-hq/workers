@@ -269,26 +269,35 @@ pub fn write_response(
             }
             let dest = agents_folder.join(format!("{id}.md"));
             let current = read_existing(&dest)?;
-            if current.as_deref() != Some(body) {
+            let same = current.as_deref() == Some(body);
+            if let Some(current) = &current {
                 let recorded = previous.and_then(|m| m.agents.get(id));
-                if let Some(current) = &current
-                    && recorded != Some(&sha256_hex(current))
-                {
-                    let owner = match recorded {
-                        // Ours, edited here: still attributed to this worker.
-                        Some(sha) => {
-                            result.agent_shas.insert(id.to_string(), sha.clone());
-                            None
-                        }
-                        None => markers.iter().find(|m| m.agents.contains_key(id)),
+                let other = markers
+                    .iter()
+                    .find(|m| m.worker != worker && m.agents.contains_key(id));
+                let ours = match recorded {
+                    Some(sha) => same || *sha == sha256_hex(current),
+                    // An older build, or a download interrupted before its
+                    // marker, wrote an identical copy nothing records.
+                    None => same && other.is_none(),
+                };
+                if !ours {
+                    // Ours but edited here: still attributed to this worker.
+                    if let Some(sha) = recorded {
+                        result.agent_shas.insert(id.to_string(), sha.clone());
+                    }
+                    let owned_by = match other.filter(|_| recorded.is_none()) {
+                        Some(m) => format!("worker {}", m.worker),
+                        None => "project".into(),
                     };
                     result.agents_skipped.push(SkippedAgent {
                         id: id.to_string(),
-                        owned_by: owner
-                            .map_or_else(|| "project".into(), |m| format!("worker {}", m.worker)),
+                        owned_by,
                     });
                     continue;
                 }
+            }
+            if !same {
                 write_file_atomic(&dest, body)?;
             }
             result.agents_written.push(id.to_string());
@@ -907,5 +916,39 @@ mod tests {
             "kanban"
         );
         assert_eq!(result.agents_skipped[0].owned_by, "worker kanban");
+    }
+
+    #[test]
+    fn an_identical_profile_another_worker_wrote_stays_theirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        let shipped = |content: &'static str| [("agents/lead.md", content)];
+        install("kanban", "1.0.0", &shipped("same"), &skills, &agents);
+        let result = install("zeta", "1.0.0", &shipped("same"), &skills, &agents);
+        assert_eq!(result.agents_skipped[0].owned_by, "worker kanban");
+        install("zeta", "1.1.0", &shipped("zeta"), &skills, &agents);
+        assert_eq!(
+            std::fs::read_to_string(agents.join("lead.md")).unwrap(),
+            "same"
+        );
+    }
+
+    /// What an older build (schema 1) wrote, or a download interrupted before
+    /// its marker: nothing records it, and it must keep following the worker.
+    #[test]
+    fn an_identical_profile_no_marker_records_is_the_workers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("lead.md"), "one").unwrap();
+        for (version, content) in [("1.0.0", "one"), ("1.1.0", "two")] {
+            let bundle = [("agents/lead.md", content)];
+            let result = install("kanban", version, &bundle, &skills, &agents);
+            assert!(result.agents_skipped.is_empty(), "{version}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(agents.join("lead.md")).unwrap(),
+            "two"
+        );
     }
 }
