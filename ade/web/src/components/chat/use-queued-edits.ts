@@ -67,6 +67,12 @@ export function useQueuedEdits({
 }: QueuedEditsOptions) {
   const [held, setHeld] = useState<ReadonlySet<string>>(() => new Set())
   const reservationsRef = useRef(new Map<string, Promise<boolean>>())
+  // A release still waiting for its reservation to answer. Browsing back
+  // into the message before it does adopts the reservation, and the release
+  // stands down (see `reserve` and `release`).
+  const releasingRef = useRef(
+    new Map<string, { reservation: Promise<boolean> }>(),
+  )
 
   const hold = useCallback((id: string) => {
     setHeld((current) => {
@@ -106,23 +112,33 @@ export function useQueuedEdits({
     (id: string): Promise<boolean> => {
       if (!removeQueued) return Promise.resolve(false)
       hold(id)
-      const reservation = removeQueued(conversationId, id)
-        .then((removed) => {
-          if (!removed) {
+      // One request per message. Browsing back in while the first is still
+      // out (↑, ↓, ↑ faster than the harness answers) adopts it: the
+      // release that was waiting on it stands down, and no second request
+      // goes out to be told the message is "already gone" and clear the
+      // editor the person has just re-entered.
+      const releasing = releasingRef.current.get(id)
+      releasingRef.current.delete(id)
+      const existing = reservationsRef.current.get(id) ?? releasing?.reservation
+      const reservation =
+        existing ??
+        removeQueued(conversationId, id)
+          .then((removed) => {
+            if (!removed) {
+              warn(
+                conversationId,
+                'that message already reached the agent, so it cannot be edited',
+              )
+            }
+            return removed
+          })
+          .catch((err) => {
             warn(
               conversationId,
-              'that message already reached the agent, so it cannot be edited',
+              `could not take the queued message back for editing (${err instanceof Error ? err.message : String(err)}) — it will be delivered as queued`,
             )
-          }
-          return removed
-        })
-        .catch((err) => {
-          warn(
-            conversationId,
-            `could not take the queued message back for editing (${err instanceof Error ? err.message : String(err)}) — it will be delivered as queued`,
-          )
-          return false
-        })
+            return false
+          })
       reservationsRef.current.set(id, reservation)
       // Not taken back: it is still queued, or already went, so the
       // composer does not hold it.
@@ -137,7 +153,19 @@ export function useQueuedEdits({
   // Browsing moved on without a change: the original goes back to the agent.
   const release = useCallback(
     (id: string) => {
-      void take(id).then((reserved) => {
+      const reservation = reservationsRef.current.get(id)
+      reservationsRef.current.delete(id)
+      if (!reservation) {
+        unhold(id)
+        return
+      }
+      const claim = { reservation }
+      releasingRef.current.set(id, claim)
+      void reservation.then((reserved) => {
+        // Browsed back in before the answer came: the new browse owns the
+        // reservation, and the message stays where it is.
+        if (releasingRef.current.get(id) !== claim) return
+        releasingRef.current.delete(id)
         if (reserved) {
           const draft = queuedDraftsRef.current.find((d) => d.id === id)
           drop(id)
@@ -151,7 +179,7 @@ export function useQueuedEdits({
         unhold(id)
       })
     },
-    [take, queuedDraftsRef, drop, deliver, unhold],
+    [queuedDraftsRef, drop, deliver, unhold],
   )
 
   // Enter on a browsed message: send the edit (`payload`), or remove the

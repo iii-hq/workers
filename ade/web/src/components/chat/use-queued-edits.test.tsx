@@ -167,6 +167,76 @@ describe('useQueuedEdits', () => {
     )
   })
 
+  it('browsing back in before the reservation answers keeps the message', async () => {
+    // ↑, ↓, ↑ faster than the harness answers: one request, nothing sent,
+    // and the message is still the composer's to edit.
+    const reservation = deferred<boolean>()
+    const removeQueued = vi.fn().mockReturnValue(reservation.promise)
+    const { hook, send, warn } = setup({ removeQueued })
+    act(() => void hook.result.current.edits.reserve('q1'))
+    act(() => hook.result.current.edits.release('q1'))
+    act(() => void hook.result.current.edits.reserve('q1'))
+    reservation.resolve(true)
+    await flush()
+    expect(removeQueued).toHaveBeenCalledTimes(1)
+    expect(send).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
+    expect(hook.result.current.drafts).toEqual([queued])
+    expect(hook.result.current.edits.held.has('q1')).toBe(true)
+    act(() =>
+      hook.result.current.edits.edit('q1', { text: 'edited', attachments: [] }),
+    )
+    await flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledWith({ text: 'edited', attachments: [] })
+    expect(hook.result.current.drafts).toEqual([])
+    expect(hook.result.current.edits.held.size).toBe(0)
+  })
+
+  it('releases an adopted reservation once, after the last browse away', async () => {
+    // ↑, ↓, ↑, ↓ before the answer: the original goes back exactly once.
+    const reservation = deferred<boolean>()
+    const removeQueued = vi.fn().mockReturnValue(reservation.promise)
+    const { hook, send } = setup({ removeQueued })
+    act(() => void hook.result.current.edits.reserve('q1'))
+    act(() => hook.result.current.edits.release('q1'))
+    act(() => void hook.result.current.edits.reserve('q1'))
+    act(() => hook.result.current.edits.release('q1'))
+    reservation.resolve(true)
+    await flush()
+    expect(removeQueued).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledWith({
+      text: 'original ask',
+      attachments: [],
+    })
+    expect(hook.result.current.drafts).toEqual([])
+    expect(hook.result.current.edits.held.size).toBe(0)
+  })
+
+  it('lets go of a re-browsed message whose reservation answers false', async () => {
+    const reservation = deferred<boolean>()
+    const removeQueued = vi.fn().mockReturnValue(reservation.promise)
+    const { hook, send, warn } = setup({ removeQueued })
+    act(() => void hook.result.current.edits.reserve('q1'))
+    act(() => hook.result.current.edits.release('q1'))
+    let adopted: boolean | undefined
+    act(() => {
+      void hook.result.current.edits.reserve('q1').then((r) => {
+        adopted = r
+      })
+    })
+    reservation.resolve(false)
+    await flush()
+    expect(adopted).toBe(false)
+    expect(removeQueued).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(send).not.toHaveBeenCalled()
+    // Delivered already: its row stays until the transcript row lands.
+    expect(hook.result.current.drafts).toEqual([queued])
+    expect(hook.result.current.edits.held.size).toBe(0)
+  })
+
   it('moves an abandoned edit into the draft instead of losing it', async () => {
     const { hook, send, keepAsDraft } = setup({
       removeQueued: async () => true,
