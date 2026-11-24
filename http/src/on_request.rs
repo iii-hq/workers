@@ -30,13 +30,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
-use iii_sdk::helpers::create_channel;
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{
-    AddedHook, Call, CallRequest, DeliverHook, IIIClient, ObserveRejection, Observer,
-    RegisterFunction, RemovedHook,
+    AddedHook, Call, CallRequest, DeliverHook, IIIClient, InputStream, ObserveRejection, Observer,
+    OutputStream, RegisterFunction, RemovedHook,
 };
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -52,10 +50,6 @@ pub const ON_REQUEST_FN: &str = "http::on-request";
 
 /// Rejection code of an observer whose route collides with a registered one.
 pub const HTTP_ROUTE_CONFLICT: &str = "HTTP_ROUTE_CONFLICT";
-
-/// Channel buffer size for both request-body and response channels (matches
-/// the engine default in `views.rs`).
-const CHANNEL_BUFFER: usize = 64;
 
 pub const ON_REQUEST_DESCRIPTION: &str = "One call per HTTP request the http worker receives (OPTIONS requests are answered by its \
      CORS layer). Observe it with args { method, path } (plus optional public_webhook and \
@@ -196,25 +190,26 @@ impl RouteHooks {
         })
     }
 
-    /// Opens the request-body and response channels for a target about to
-    /// run: writes the request's bytes into the first and hands the second's
-    /// reader to the server. Returns the refs the target receives, or the
-    /// response for a failure.
-    async fn open_channels(
-        &self,
-        request: &InFlight,
-    ) -> Result<(StreamChannelRef, StreamChannelRef), Value> {
-        let request_body = create_channel(&self.iii, Some(CHANNEL_BUFFER))
+    /// Opens the request-body and response pipes for a target about to run:
+    /// writes the request's bytes into the first and hands the second's read
+    /// end to the server. Returns the ends the target receives (the SDK sends
+    /// their refs), or the response for a failure.
+    async fn open_pipes(&self, request: &InFlight) -> Result<(InputStream, OutputStream), Value> {
+        let request_body = self
+            .iii
+            .pipe()
             .await
-            .map_err(|e| internal_error(&format!("failed to create request channel: {e}")))?;
-        let response = create_channel(&self.iii, Some(CHANNEL_BUFFER))
+            .map_err(|e| internal_error(&format!("failed to create request pipe: {e}")))?;
+        let response = self
+            .iii
+            .pipe()
             .await
-            .map_err(|e| internal_error(&format!("failed to create response channel: {e}")))?;
+            .map_err(|e| internal_error(&format!("failed to create response pipe: {e}")))?;
 
-        // The target reads the body concurrently; the writer closes the
-        // channel so the target's reader sees EOF.
+        // The target reads the body concurrently; closing the write end ends
+        // the target's read.
         let bytes = request.body().cloned().unwrap_or_default();
-        let writer = request_body.writer;
+        let writer = request_body.output;
         tokio::spawn(async move {
             if !bytes.is_empty() {
                 let _ = writer.write(&bytes).await;
@@ -222,12 +217,12 @@ impl RouteHooks {
             let _ = writer.close().await;
         });
 
-        if !request.hand_over(response.reader) {
+        if !request.hand_over(response.input) {
             return Err(internal_error(
                 "the server stopped waiting for the response",
             ));
         }
-        Ok((request_body.reader_ref, response.writer_ref))
+        Ok((request_body.input, response.output))
     }
 }
 
@@ -320,8 +315,8 @@ impl DeliverHook for RouteHooks {
             }
         }
 
-        let (request_body, response) = match self.open_channels(&in_flight).await {
-            Ok(refs) => refs,
+        let (request_body, response) = match self.open_pipes(&in_flight).await {
+            Ok(ends) => ends,
             Err(response) => return Ok(response),
         };
         let target_request = HttpRequest {

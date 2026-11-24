@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::StreamChannelRef;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction, register_worker};
 use llm_router::chat::chat::{ChatCall, ChatFnInput};
 use llm_router::config::entry::{register_entry, write_entry_value};
@@ -64,9 +64,9 @@ async fn failing_provider(
                 }
                 let writer_ref: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone()).unwrap();
-                let writer = ChannelWriter::new(&address, &writer_ref);
+                let writer = open_writer(&writer_ref);
                 writer
-                    .send_message(
+                    .send_text(
                         &json!({
                             "type": "error",
                             "error": {
@@ -111,22 +111,24 @@ async fn failing_turn(consumer: &IIIClient, streaming: bool, retry_max: Option<u
         assert_eq!(response["message"]["stop_reason"], "error", "{response}");
         return;
     }
-    let channel = iii_sdk::helpers::create_channel(consumer, None)
-        .await
-        .unwrap();
-    payload["writer_ref"] = serde_json::to_value(&channel.writer_ref).unwrap();
+    let pipe = consumer.pipe().await.unwrap();
+    payload["writer_ref"] = serde_json::to_value(ref_of(&pipe.output)).unwrap();
     let terminals = Arc::new(AtomicU64::new(0));
     let observed = terminals.clone();
-    channel
-        .reader
-        .on_message(move |message| {
-            let frame: Value = serde_json::from_str(&message).unwrap();
-            if matches!(frame["type"].as_str(), Some("done" | "error")) {
-                observed.fetch_add(1, Ordering::SeqCst);
+    let input = pipe.input;
+    let pump = tokio::spawn(async move {
+        use futures::StreamExt;
+        let mut items = input.frames();
+        while let Some(item) = items.next().await {
+            if let iii_sdk::protocol::ChannelItem::Text(message) = item? {
+                let frame: Value = serde_json::from_str(&message).unwrap();
+                if matches!(frame["type"].as_str(), Some("done" | "error")) {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                }
             }
-        })
-        .await;
-    let pump = tokio::spawn(async move { channel.reader.read_all().await });
+        }
+        Ok::<(), Error>(())
+    });
     let response = call(consumer, "router::chat", payload).await;
     assert_eq!(response["ok"], false, "{response}");
     tokio::time::timeout(Duration::from_secs(3), pump)

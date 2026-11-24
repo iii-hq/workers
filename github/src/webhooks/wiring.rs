@@ -191,7 +191,7 @@ async fn deliver_notification(
 
 /// Registration has no external prerequisite. Disabled defaults never open the
 /// database, probe gh, acquire a tunnel, register HTTP or publish to a queue.
-pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str) {
+pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell) {
     let config = cell.read().await.webhooks.clone();
     let (store, storage_error) = if config.enabled {
         let storage_config = config.clone();
@@ -214,7 +214,6 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         iii: iii.clone(),
         cell: cell.clone(),
         config,
-        engine_url: engine_url.into(),
         store,
         storage_error,
         operations: Mutex::new(()),

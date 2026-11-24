@@ -15,7 +15,6 @@ use iii_http::config::{MiddlewareConfig, RestApiConfig, WebhookListenerConfig};
 use iii_http::on_request::ON_REQUEST_FN;
 use iii_http::types::HttpRequest;
 use iii_sdk::RegisterFunction;
-use iii_sdk::channel::ChannelWriter;
 use iii_sdk::errors::Error;
 use serde_json::{Value, json};
 
@@ -257,21 +256,17 @@ async fn a_targets_error_is_a_500_with_its_code_and_message() {
 #[tokio::test]
 async fn an_observer_target_can_stream_through_the_response_channel() {
     let (engine, boot) = start().await;
-    let url = engine.url.clone();
     engine.iii.register_function(
         "test::stream".to_string(),
-        RegisterFunction::new_async(move |req: HttpRequest| {
-            let url = url.clone();
-            async move {
-                let writer = ChannelWriter::new(&url, &req.response);
-                writer
-                    .send_message(&json!({"type": "set_status", "status_code": 206}).to_string())
-                    .await?;
-                writer.write(b"chunk-1").await?;
-                writer.write(b"chunk-2").await?;
-                writer.close().await?;
-                Ok::<Value, Error>(Value::Null)
-            }
+        RegisterFunction::new_async(move |req: HttpRequest| async move {
+            let writer = req.response;
+            writer
+                .send(&json!({"type": "set_status", "status_code": 206}))
+                .await?;
+            writer.write(b"chunk-1").await?;
+            writer.write(b"chunk-2").await?;
+            writer.close().await?;
+            Ok::<Value, Error>(Value::Null)
         }),
     );
     assert!(

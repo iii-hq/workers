@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::IIIClient;
+use iii_sdk::Pipe;
 use iii_sdk::errors::Error;
-use iii_sdk::helpers::create_channel;
-use iii_sdk::protocol::CallRequest;
+use iii_sdk::protocol::{CallRequest, ChannelItem};
 use serde_json::{Value, json};
 
 use crate::configuration::ConfigCell;
@@ -216,28 +216,35 @@ impl Drop for AbortReaderOnDrop {
 #[async_trait]
 impl Summarizer for RouterSummarizer {
     async fn summarize(&self, req: SummarizeRequest) -> Result<String, SummarizeError> {
-        let channel = create_channel(&self.iii, None)
+        let Pipe { input, output } = self
+            .iii
+            .pipe()
             .await
             .map_err(|e| SummarizeError::Unavailable(format!("create_channel failed: {e}")))?;
 
-        // Frames may arrive as WS text messages (dispatched to the
-        // callback) or as binary chunks (returned by read_all); collect
+        // Frames may arrive as text messages or as binary chunks; collect
         // both since the router's framing is provider-defined.
         let text_frames: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = text_frames.clone();
-        let reader = channel.reader;
-        reader
-            .on_message(move |frame| {
-                sink.lock()
-                    .unwrap_or_else(|poison| poison.into_inner())
-                    .push(frame);
-            })
-            .await;
-        let read_task = tokio::spawn(async move { reader.read_all().await });
+        let read_task = tokio::spawn(async move {
+            use futures_util::StreamExt;
+            let mut binary = Vec::new();
+            let mut frames = input.frames();
+            while let Some(frame) = frames.next().await {
+                match frame? {
+                    ChannelItem::Text(text) => sink
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .push(text),
+                    ChannelItem::Binary(bytes) => binary.extend_from_slice(&bytes),
+                }
+            }
+            Ok::<Vec<u8>, Error>(binary)
+        });
         let _reader_guard = AbortReaderOnDrop(read_task.abort_handle());
 
         let mut payload = json!({
-            "writer_ref": channel.writer_ref,
+            "writer_ref": output,
             "model": req.model,
             "system_prompt": req.system_prompt,
             "messages": [{

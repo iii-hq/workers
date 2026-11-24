@@ -8,14 +8,14 @@
 //! matches the route, applies the observer's filters, runs the middleware,
 //! and answers the call itself or calls the route's target.
 //!
-//! Before it calls a target, the hook opens two SDK channels via
-//! [`iii_sdk::helpers::create_channel`]:
+//! Before it calls a target, the hook opens two engine pipes via
+//! [`iii_sdk::IIIClient::pipe`]:
 //!
-//! - **request-body channel**: the hook WRITES the request's bytes; the target
+//! - **request-body pipe**: the hook WRITES the request's bytes; the target
 //!   READS them from [`crate::types::HttpRequest::request_body`].
-//! - **response channel**: the target WRITES the response; the server READS
-//!   it. The hook hands the reader to the server and passes the writer ref to
-//!   the target as [`crate::types::HttpRequest::response`].
+//! - **response pipe**: the target WRITES the response; the server READS
+//!   it. The hook hands the read end to the server and passes the write end
+//!   to the target as [`crate::types::HttpRequest::response`].
 //!
 //! This mirrors the engine's `take_sender`/`take_receiver` semantics (engine
 //! `views.rs:391-466`).
@@ -39,11 +39,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use colored::Colorize;
+use futures::StreamExt;
 use iii_helpers::observability::opentelemetry::KeyValue;
 use iii_helpers::observability::opentelemetry::metrics::Counter;
-use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, IIIClient};
+use iii_sdk::protocol::ChannelItem;
+use iii_sdk::{CallRequest, IIIClient, InputStream};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
@@ -408,7 +409,7 @@ async fn respond(
     state: &AppState,
     request: InboundRequest,
     request_id: &str,
-    opened: oneshot::Receiver<ChannelReader>,
+    opened: oneshot::Receiver<InputStream>,
     default_timeout: u64,
 ) -> Response {
     let path = request.path.clone();
@@ -467,43 +468,46 @@ async fn respond(
     };
 
     // Accumulated response control state. Text control messages on the response
-    // channel are dispatched (in order, ahead of the next Binary frame) to the
-    // `on_message` callback, which updates this shared state. A malformed
-    // control message is logged and skipped -- it never kills the stream
-    // (carry-forward: the current status/headers stay in effect).
+    // stream are applied (in order, ahead of the next Binary frame) to this
+    // shared state. A malformed control message is logged and skipped -- it
+    // never kills the stream (carry-forward: the current status/headers stay
+    // in effect).
     let control = Arc::new(StdMutex::new((200u16, HashMap::<String, String>::new())));
-    {
+
+    // Forward Binary frames off the response stream into an mpsc channel. This
+    // keeps the stream off the `select!`, so racing it against the invocation
+    // cannot lose a frame. Text frames are applied to `control` here, before
+    // the Binary frame that follows them is forwarded. The task ends (dropping
+    // the stream, closing its socket) when the function closes the response
+    // stream.
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(FRAME_BUFFER);
+    let forward = {
         let control = control.clone();
-        res_reader
-            .on_message(move |text| match ControlMessage::parse(&text) {
-                Some(msg) => {
-                    if let Ok(mut guard) = control.lock() {
-                        let (status, headers) = &mut *guard;
-                        apply_control(msg, status, headers);
+        tokio::spawn(async move {
+            let mut frames = res_reader.frames();
+            while let Some(Ok(frame)) = frames.next().await {
+                match frame {
+                    ChannelItem::Text(text) => match ControlMessage::parse(&text) {
+                        Some(msg) => {
+                            if let Ok(mut guard) = control.lock() {
+                                let (status, headers) = &mut *guard;
+                                apply_control(msg, status, headers);
+                            }
+                        }
+                        None => {
+                            tracing::warn!(msg = %text, "Response stream: skipping malformed control message");
+                        }
+                    },
+                    ChannelItem::Binary(data) => {
+                        if tx.send(data).await.is_err() {
+                            break;
+                        }
                     }
                 }
-                None => {
-                    tracing::warn!(msg = %text, "Response channel: skipping malformed control message");
-                }
-            })
-            .await;
-    }
-
-    // Forward Binary frames off the response reader into an mpsc channel. This
-    // keeps the reader off the `select!` (its `next_binary` future is not
-    // cancellation-safe), so racing the channel against the invocation cannot
-    // corrupt the reader. Text frames are consumed internally by `next_binary`
-    // and applied via the callback above. The task ends (dropping the reader,
-    // closing its socket) when the function closes the response channel.
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(FRAME_BUFFER);
-    let forward = tokio::spawn(async move {
-        while let Ok(Some(data)) = res_reader.next_binary().await {
-            if tx.send(data).await.is_err() {
-                break;
             }
-        }
-    });
-    // Stopping the reader closes the channel's connection to the engine.
+        })
+    };
+    // Stopping the reader closes the stream's connection to the engine.
     let forward_task = RequestTask::new(&forward);
 
     // Overall bound for the streaming drain. The engine bounds an open response

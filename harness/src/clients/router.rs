@@ -15,8 +15,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::IIIClient;
-use iii_sdk::helpers::create_channel;
+use iii_sdk::Pipe;
 use iii_sdk::protocol::CallRequest;
+use iii_sdk::protocol::ChannelItem;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::sync::{Notify, watch};
@@ -323,38 +324,37 @@ impl RouterClient {
         mut abort_rx: watch::Receiver<bool>,
         mut generation: Option<&mut generation_capture::GenerationEvent>,
     ) -> Result<ChatOutcome, HarnessError> {
-        let channel = create_channel(&self.iii, None)
+        let Pipe { input, output } = self
+            .iii
+            .pipe()
             .await
             .map_err(|e| HarnessError::Dependency(format!("create_channel: {e}")))?;
+        // The router writes to the pipe's write end; the payload carries its
+        // ref (a pipe end serializes to it).
+        let writer_ref = serde_json::to_value(&output)
+            .map_err(|e| HarnessError::Dependency(format!("create_channel: {e}")))?;
 
-        // Bridge the sync on_message callback into an async mpsc, and drive
-        // next_binary in a pump task (the reader only dispatches text frames
-        // while it is polled). The on_message closure holds the only live
-        // sender; reader EOF drops it and ends our consume loop.
+        // A pump task forwards the read end's text frames into an async mpsc;
+        // the end of the stream drops the sender and ends our consume loop.
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        {
-            let cb_tx = tx.clone();
-            channel
-                .reader
-                .on_message(move |frame| {
-                    let _ = cb_tx.send(frame);
-                })
-                .await;
-        }
-        drop(tx);
-        let reader = channel.reader;
         let cancel = Arc::new(Notify::new());
         let cancel_pump = cancel.clone();
         let pump = tokio::spawn(async move {
+            use futures_util::StreamExt;
+            let mut frames = input.frames();
             loop {
                 tokio::select! {
-                    r = reader.next_binary() => {
-                        if !matches!(r, Ok(Some(_))) {
-                            break;
+                    frame = frames.next() => match frame {
+                        Some(Ok(ChannelItem::Text(text))) => {
+                            if tx.send(text).is_err() {
+                                break;
+                            }
                         }
-                    }
+                        Some(Ok(ChannelItem::Binary(_))) => {}
+                        _ => break,
+                    },
                     _ = cancel_pump.notified() => {
-                        let _ = reader.close().await;
+                        input.cancel().await;
                         break;
                     }
                 }
@@ -369,7 +369,7 @@ impl RouterClient {
         let mut messages = params.messages;
         strip_file_blocks(&mut messages, Some(&params.session_id));
         let mut payload = json!({
-            "writer_ref": channel.writer_ref,
+            "writer_ref": writer_ref,
             "request_id": params.request_id,
             "session_id": params.session_id,
             "model": params.model,

@@ -70,14 +70,27 @@ const OUTCOME_UNKNOWN_REMOTE_CODES: &[&str] = &[
 ///   (de)serialization failure; a target's serde failure arrives as
 ///   `Remote { code: "invocation_failed" }`.
 /// - `RegistrationRejected`: a fatal registration state, not an invocation.
+/// - `StreamNotAllowed` / `StreamInUse`: a stream in the payload was refused
+///   before anything was sent.
+/// - `StreamAborted` / `StreamClosed`: a stream of the call failed or ended
+///   early, possibly after the engine dispatched it; fail closed.
 pub(crate) fn invocation_outcome_unknown(error: &iii_sdk::Error) -> bool {
     use iii_sdk::Error;
     match error {
-        Error::NotConnected | Error::Timeout | Error::WebSocket(_) | Error::Runtime(_) => true,
+        Error::NotConnected
+        | Error::Timeout
+        | Error::WebSocket(_)
+        | Error::Runtime(_)
+        | Error::StreamAborted { .. }
+        | Error::StreamClosed(_) => true,
         Error::Remote { code, .. } => OUTCOME_UNKNOWN_REMOTE_CODES
             .iter()
             .any(|known| code.eq_ignore_ascii_case(known)),
-        Error::Handler(_) | Error::Serde(_) | Error::RegistrationRejected { .. } => false,
+        Error::Handler(_)
+        | Error::Serde(_)
+        | Error::RegistrationRejected { .. }
+        | Error::StreamNotAllowed(_)
+        | Error::StreamInUse(_) => false,
     }
 }
 
