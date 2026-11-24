@@ -25,8 +25,8 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import { RadioTower, RefreshCw } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { MessageSquare, RadioTower, RefreshCw } from 'lucide-react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { useControlPlaneOverview, type ControlPlaneOverviewData as ControlPlaneData } from './useControlPlaneOverview'
 import { ControlPlaneHost, useControlPlaneHost } from './host'
 import {
@@ -172,6 +172,42 @@ function ControlPlaneScreenContent({
   }
   // Spins while the click's reads are in flight and while a writer turn runs.
   const refreshing = Boolean(summary?.refreshing || summary?.writing)
+  const host = useControlPlaneHost()
+  const [controller, setController] = useState<{ opening: boolean; error: string | null }>({
+    opening: false,
+    error: null,
+  })
+  // The scope's controller chat: the worker creates or finds the session, the console opens it.
+  // A scope change remounts this screen: the old instance must not open its scope's chat afterwards.
+  const mounted = useRef(true)
+  useEffect(
+    () => () => {
+      mounted.current = false
+    },
+    [],
+  )
+  const currentScope = useRef(scope)
+  currentScope.current = scope
+  const openController = async () => {
+    if (!iii || controller.opening) return
+    const requested = scope
+    setController({ opening: true, error: null })
+    try {
+      const opened = await iii.call<{ session_id: string; created?: boolean; thinking_level?: string }>(
+        'control-plane::controller::open',
+        { scope: requested },
+      )
+      // The person moved to another scope meanwhile: do not open the old scope's chat over it.
+      if (!mounted.current || currentScope.current !== requested) return
+      host.chat?.openConversation?.(opened.session_id)
+      // A new chat adopts the configured effort the way the console wants it: on the mounted conversation.
+      if (opened.created && opened.thinking_level)
+        host.chat?.requestThinkingLevelChange?.({ sessionId: opened.session_id, level: opened.thinking_level })
+      setController({ opening: false, error: null })
+    } catch (error) {
+      setController({ opening: false, error: errorMessage(error) })
+    }
+  }
   const openNeed = (item?: NeedsYouItem, askAbout = false) => {
     setSelectedId(item?.id ?? null)
     setAskAboutId(askAbout ? (item?.id ?? null) : null)
@@ -215,9 +251,19 @@ function ControlPlaneScreenContent({
         title="Control plane"
         onClose={onRequestClose}
         actions={
-          <IconButton label="Refresh Control plane" onClick={refresh} aria-busy={refreshing}>
-            <RefreshCw className={`control-plane-size-4${refreshing ? ` ${uiClasses.spin}` : ''}`} />
-          </IconButton>
+          <>
+            <IconButton
+              label="Chat with the controller"
+              onClick={() => void openController()}
+              disabled={!iii || !host.chat?.openConversation}
+              aria-busy={controller.opening}
+            >
+              <MessageSquare className="control-plane-size-4" />
+            </IconButton>
+            <IconButton label="Refresh Control plane" onClick={refresh} aria-busy={refreshing}>
+              <RefreshCw className={`control-plane-size-4${refreshing ? ` ${uiClasses.spin}` : ''}`} />
+            </IconButton>
+          </>
         }
       >
         <span className="control-plane-header-description control-plane-muted">
@@ -226,6 +272,18 @@ function ControlPlaneScreenContent({
         <div className="control-plane-scope control-plane-desktop-scope">{scopeControl}</div>
       </PageHeader>
       <div className="control-plane-scope control-plane-mobile-scope">{scopeControl}</div>
+      {controller.error ? (
+        <StatusPanel
+          variant="alert"
+          headline="The controller chat did not open"
+          detail={controller.error}
+          action={
+            <Button variant="ghost" size="sm" onClick={() => setController({ opening: false, error: null })}>
+              Dismiss
+            </Button>
+          }
+        />
+      ) : null}
       <div className="control-plane-desktop-nav">
         <Tabs value={view} onValueChange={(value) => setView(value as ControlPlaneView)}>
           <TabsList aria-label="Control plane views">

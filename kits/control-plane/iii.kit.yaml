@@ -1,12 +1,13 @@
 iii: v1
 name: iii/control-plane
-version: 0.2.0
+version: 0.3.0
 iii_engine_version: ">=0.26.0"
-description: "Read-only prose for the control plane worker: release direction, an incremental summary, milestone diary, session notes and PR wait reasons, each with references."
+description: "Agent profiles for the control plane worker: the read-only writer of its summary, diary, Needs you checks and PR wait reasons, and the project controller you chat with, which acts for you after you confirm."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/control-plane
 tags: [control-plane, summaries, kanban, github]
 workers:
+  control-plane: ">=0.0.2"
   harness: ">=1.10.0"
   iii-directory: ">=1.3.9"
   kanban: ">=0.2.6"

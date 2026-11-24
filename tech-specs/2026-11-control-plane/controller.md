@@ -1,6 +1,6 @@
 # Project controller
 
-Status: proposed, 2026-11-22. Revision 3, after two adversarial reviews.
+Status: phases 1 and 2 (the controller chat) built 2026-11-24; phase 3 (autonomous orchestration) blocked on the open problems below. Revision 4.
 
 It was split from revision 3 of `control-plane-worker.md` and builds on `README.md`
 and `control-plane-worker.md`. It is implemented after `control-plane-worker.md`, and gets
@@ -390,6 +390,48 @@ On an isolated stack:
    - Stopping the controller does not stop running cards.
    - After a spent budget, Renew records a new session and leaves cards
      running.
+
+## Built: the controller chat (phases 1 and 2, 2026-11-24)
+
+The person talks to the controller; it does not run on its own. None of the
+open problems below applies, because the controller claims no exclusive
+authority: every turn is started by the person, and every write is confirmed
+by them.
+
+- **The session.** `control-plane::controller::open {scope}` returns one
+  session per scope, created on first use (and again after the person deleted
+  it) with a fresh `lead-<scope>-<uuid>` id, title `Controller · <name>`, kind
+  `user`, and the controller model in its metadata so the console chat
+  continues on it. The id is kept in the control plane state
+  (`controller:<scope>`), not on the project; kanban enforcement (§2) waits
+  for phase 3.
+- **The first send** freezes the `control-plane-controller` profile (kit
+  `iii/control-plane` 0.3.0) and the function policy, and asks for a short
+  status. Later messages come from the console chat without a policy, so the
+  harness keeps the first one.
+- **The model:** `controller.model` in the settings, else the summary's.
+  The effort: `controller.reasoning`, else the summary's while the controller
+  model follows the summary's. A new chat starts on it when the console
+  accepts it (minimal to xhigh); a reopened chat keeps what the person picked.
+- **The policy:** unrestricted for now, at the person's request
+  (2026-11-24): `allow ["*"]` in every scope. The repository's permission
+  rules still deny agents `harness::send`, `harness::stop`, `harness::run` and
+  `harness::compact`, and planning (releases, projects, deleting cards); a
+  call that matches no rule is held for the person's approval. The
+  board-only policy (C1, C2) returns with phase 3.
+- **Confirmation:** before any write or side effect, the profile lists the
+  exact actions in one `harness::ask` (Do it, Change, Cancel), at most ten per
+  question; a message from the person that names the action, every card key
+  and the target is its own confirmation. This is a prompt rule, not an
+  enforced gate: the permission file allows the card writes without approval,
+  so nothing in the engine stops a write the model makes without asking. Moving a card to To do
+  starts its run through dispatch; moving a running card out of In progress
+  does not stop its session, and the controller says so.
+- **The page:** a chat button in the header opens the scope's controller in
+  the console chat; a failure (no model) shows why.
+
+Phase 3 adds the wakes (§1 Waking), the budget (§5) and kanban's checks on
+the writing session (§2), after the harness primitives below exist.
 
 ## Open problems (review 4, 2026-11-22)
 

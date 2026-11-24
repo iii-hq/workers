@@ -50,6 +50,7 @@ export interface ControlPlaneConfig {
     interval_min: number
     language: string
   }
+  controller?: { model?: string; reasoning?: string }
   prs: { watched_interval_min: number; idle_interval_min: number }
   escalate: Record<string, AskClass[]>
   needs_you: { card_labels: string[] }

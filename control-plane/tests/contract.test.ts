@@ -112,19 +112,20 @@ describe('Control plane writer contract', () => {
     expect(acceptSummary({ ...result, extra: 'instruction' }, null, now)).toBeNull()
   })
 
-  it('rejects invalid timestamps, references, diary bounds and missing fields', () => {
+  it('rejects invalid timestamps, references and missing fields, and bounds the diary itself', () => {
     const now = Date.parse(result.checked_at)
     expect(acceptSummary({ ...result, checked_at: 'yesterday' }, null, now)).toBeNull()
     expect(
       acceptSummary({ ...result, brief: { ...result.brief, refs: ['release:r1'] } }, null, now),
     ).toBeNull()
+    // A repeated milestone is the worker's to drop, not a reason to reject.
     expect(
       acceptSummary(
         { ...result, diary: Array.from({ length: 51 }, () => result.diary[0]) },
         null,
         now,
-      ),
-    ).toBeNull()
+      )?.diary,
+    ).toHaveLength(1)
     const { diary: _diary, ...withoutDiary } = result
     expect(acceptSummary(withoutDiary, null, now)).toBeNull()
   })

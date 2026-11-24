@@ -26,6 +26,16 @@ export const configSchema = z.strictObject({
       language: z.string().min(1).default('English'),
     })
     .prefault({}),
+  /** The project controller chat: its own model and effort; unset falls back to the summary's. */
+  controller: z
+    .strictObject({
+      model: z
+        .string()
+        .regex(/^[^:]+::.+$/)
+        .optional(),
+      reasoning: z.string().min(1).optional(),
+    })
+    .prefault({}),
   prs: z
     .strictObject({
       watched_interval_min: z.number().positive().default(5),

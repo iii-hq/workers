@@ -146,7 +146,7 @@ export const mockUi = {
 export const host = {
   iii: { call: vi.fn() },
   panels: { open: vi.fn(), openScreen: vi.fn() },
-  chat: { openConversation: vi.fn() },
+  chat: { openConversation: vi.fn(), requestThinkingLevelChange: vi.fn(() => true) },
 } as unknown as Host
 export const TooltipProvider = ({ children }: { children: ReactNode }) => children
 
