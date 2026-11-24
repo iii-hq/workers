@@ -13,7 +13,8 @@
 # NOTE: no process loads this file or the repo-root iii-permissions.yaml at
 # runtime. The live policy is the approval-gate configuration entry. The root
 # file carries these same transform allows, and fp refuses as steps every call
-# it denies (a test in src/pipe.rs keeps the two in line). This per-worker
+# it denies, less the written exceptions in ALLOWED_ON_PURPOSE (a test in
+# src/pipe.rs keeps the two in line). This per-worker
 # copy documents the worker's intended posture for other deployments.
 version: 1
 

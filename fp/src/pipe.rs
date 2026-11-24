@@ -23,7 +23,7 @@ use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, secrets:: (but list/get/status/detect), mcp-client::, router:: (but its catalog reads router::models::list/get/budget/supports and router::provider::list), provider::, harness::, run::, workflow::start, workflow-result::submit, session writes, approval::, or any other call the agent policy denies (hooks, terminals, console UI). For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, secrets:: (but list/get/status/detect), mcp-client::, router:: (but its catalog reads router::models::list/get/budget/supports and router::provider::list), provider::, harness::, run::, workflow::start, workflow-result::submit, session writes, approval::, or any other call the agent policy denies (hooks, terminals, console UI) except state writes and kanban planning writes. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -284,9 +284,14 @@ pub(crate) fn forbidden_step(
     function_id: &str,
     approval_gate_running: bool,
 ) -> Option<&'static str> {
+    // Every `::` offset, overlapping ones too: in `a:::x::y` the tail `x::y`
+    // starts after the second `::`, which `match_indices` would skip.
     let ids = std::iter::once(function_id).chain(
         function_id
-            .match_indices("::")
+            .as_bytes()
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| *pair == b"::")
             .map(|(index, _)| &function_id[index + 2..]),
     );
     for id in ids {
@@ -1143,7 +1148,7 @@ mod tests {
 
         // control / nested / worker-authority steps are refused with a
         // reason — mirroring every agent-policy hard-denied class
-        // (iii-permissions.yaml), state::* excepted on purpose
+        // (iii-permissions.yaml), the ALLOWED_ON_PURPOSE ids excepted on purpose
         for (function, needle) in [
             ("shell::config-status", "control-plane"),
             ("shell::kill-session-jobs", "control-plane"),
@@ -1571,7 +1576,7 @@ mod tests {
             ("slack::events", "policy denies"),
             ("openwiki::cron::refresh-due", "policy denies"),
         ] {
-            for prefix in ["", "laptop::", "a::b::"] {
+            for prefix in ["", "laptop::", "a::b::", "laptop:::"] {
                 let id = format!("{prefix}{function}");
                 for gate in [false, true] {
                     let reason = forbidden_step(&id, gate);
@@ -1976,6 +1981,7 @@ mod tests {
                 Some(_) => vec![
                     rule.function_id.replace('*', "zz"),
                     rule.function_id.replace('*', "zz::yy"),
+                    rule.function_id.replace('*', "zz:"),
                 ],
             };
             if rule.action == Action::Deny {
