@@ -361,11 +361,11 @@ async fn load_local_model(deps: &mut Deps) {
     deps.semantic = SemanticSearch::new(Some(path.into()));
     let tools = deps.catalog.read().await.clone();
     let fingerprint = tool_fingerprint(&tools);
-    deps.semantic.rebuild(tools);
+    deps.semantic.rebuild(tools.clone());
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while deps
             .semantic
-            .rank(&fingerprint, &["compose an email".into()], -1.0)
+            .rank(&fingerprint, &tools, &["compose an email".into()], -1.0)
             .await
             .is_err()
         {
