@@ -1074,6 +1074,9 @@ pub struct PassTally {
     /// is not one. The call is asked once more after one, and a second reads
     /// as nothing to keep.
     pub no_array: u64,
+    /// Pieces whose memories reached `max_memories_per_turn`: the model may
+    /// have left facts out to stay under it, and nothing else shows that.
+    pub saturated: u64,
     pub created: u64,
     pub reinforced: u64,
     pub superseded: u64,
@@ -1112,6 +1115,7 @@ impl PassTally {
         self.returned += other.returned;
         self.rules += other.rules;
         self.no_array += other.no_array;
+        self.saturated += other.saturated;
         self.created += other.created;
         self.reinforced += other.reinforced;
         self.superseded += other.superseded;
@@ -2015,9 +2019,10 @@ async fn execute_run(
         .await
         .map_err(|e| format!("extraction plan read: {e}"))?;
     // shortcut: a replayed plan no longer counts the items its pieces
-    // dropped (over their share, or corrected again by a later piece); keep
-    // the counts in the plan if the tally must be exact across retries.
-    let (mut piece_over_cap, mut piece_superseded) = (0, 0);
+    // dropped (over their share, or corrected again by a later piece) nor
+    // the pieces that reached their share; keep the counts in the plan if
+    // the tally must be exact across retries.
+    let (mut piece_over_cap, mut piece_superseded, mut piece_saturated) = (0, 0, 0);
     let items = if let Some(plan) = stored_plan {
         let item_fields = [
             "text",
@@ -2118,6 +2123,7 @@ async fn execute_run(
                 }
             });
             piece_over_cap += before - got.len();
+            piece_saturated += u64::from(n >= cfg.max_memories_per_turn);
             // A later piece that corrects what an earlier one corrected is
             // the message's last word on it; both would name the same old
             // record, and the second would conflict. Only a user or project
@@ -2178,7 +2184,10 @@ async fn execute_run(
     // the plan, which its receipt names: a dropped item never shifts the rest.
     // A drop writes no receipt and a retry replays the plan, so drops join
     // the tally only once the run settles.
-    let mut drops = PassTally::default();
+    let mut drops = PassTally {
+        saturated: piece_saturated,
+        ..PassTally::default()
+    };
     drops.drop_items("over_cap", piece_over_cap);
     drops.drop_items("superseded", piece_superseded);
     drops.drop_items(
