@@ -83,7 +83,7 @@ A run on the board is filed under a project that stands for a product or a theme
 
 The run ticket's title is the goal, with no `workflow:` prefix; its `wf:run` label marks it as a run, and its `Project` bullet says how the project was chosen.
 
-Creating a project waits for a person unless the session's approval mode or rules allow `kanban::project::create`; when it is refused, the run goes on without a project. A hosted judge provider (`judge-typesafe`, `judge-openai`) receives the first 200 characters of the goal, the repository's name and the names and descriptions of the active projects. To keep them on the machine, pick a local judge in the composer or pass `project=`.
+Creating a project waits for a person unless the session's approval mode or rules allow `kanban::project::create`; when it is refused, the run goes on without a project. A hosted judge provider (`judge-typesafe`, `judge-openai`) receives the first 200 characters of the goal (for a goal that is a ticket: of its title and description), the repository's name and the names and descriptions of the active projects. To keep them on the machine, pick a local judge in the composer or pass `project=`.
 
 ## Install
 
