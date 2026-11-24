@@ -48,6 +48,10 @@ export const chatThinkingLevel = (reasoning: string | undefined) =>
   reasoning && CHAT_LEVELS.includes(reasoning) ? reasoning : undefined
 
 /**
+ * ponytail: opens are deduplicated in memory only, which assumes one control-plane worker per
+ * namespace (compose runs one). Two instances opening the same scope at once could each create a
+ * session; a conditional state write would close that if the worker ever scales out.
+ *
  * One controller chat per scope. The first open creates the session with a
  * fresh, unguessable id, its model in the metadata the console reads, and a
  * first send that freezes the controller profile and its function policy;
@@ -75,9 +79,11 @@ export class ControllerSessions {
       key,
     })
     if (stored?.session_id) {
-      const existing = await iii
-        .call<{ meta?: unknown } | null>('session::get', { session_id: stored.session_id })
-        .catch(() => null)
+      // Only a missing (or deleted) session is replaced: session::get answers null for it.
+      // An engine error propagates, so one timeout never orphans the person's chat.
+      const existing = await iii.call<{ meta?: unknown } | null>('session::get', {
+        session_id: stored.session_id,
+      })
       // A reopened chat keeps the effort the person may have changed in it.
       if (existing) return { session_id: stored.session_id, created: false }
     }
@@ -103,26 +109,42 @@ export class ControllerSessions {
       },
     })
     const [provider, ...modelParts] = model.split('::')
-    await iii.call('harness::send', {
-      session_id: sessionId,
-      idempotency_key: `controller:${sessionId}:open`,
-      message: `Give me a short status of ${name} (scope ${scope}): what moved, what is running, and what needs me.`,
-      provider,
-      model: modelParts.join('::'),
-      options: {
-        agent: CONTROLLER_PROFILE,
-        ...reasoningOptions(provider, reasoning),
-        functions: { allow: controllerPolicy(scope) },
-      },
-    })
-    await iii.call('state::set', {
-      scope: STATE_SCOPE,
-      key,
-      value: {
+    try {
+      const sent = await iii.call<{
+        turn_id?: string
+        merged?: boolean
+        queued?: boolean
+        deduplicated?: boolean
+      }>('harness::send', {
         session_id: sessionId,
-        created_at: new Date().toISOString(),
-      } satisfies StoredController,
-    })
+        idempotency_key: `controller:${sessionId}:open`,
+        message: `Give me a short status of ${name} (scope ${scope}): what moved, what is running, and what needs me.`,
+        provider,
+        model: modelParts.join('::'),
+        options: {
+          agent: CONTROLLER_PROFILE,
+          ...reasoningOptions(provider, reasoning),
+          functions: { allow: controllerPolicy(scope) },
+        },
+      })
+      // Only a new turn freezes the profile and the policy; anything else leaves a plain chat.
+      if (!sent?.turn_id || sent.merged || sent.queued || sent.deduplicated)
+        throw new Error('The controller chat did not start its first turn.')
+      await iii.call('state::set', {
+        scope: STATE_SCOPE,
+        key,
+        value: {
+          session_id: sessionId,
+          created_at: new Date().toISOString(),
+        } satisfies StoredController,
+      })
+    } catch (error) {
+      // A half-made session would be a chat without the profile, or one no open finds again.
+      await iii
+        .call('harness::delete-session-tree', { session_id: sessionId })
+        .catch(() => undefined)
+      throw error
+    }
     const thinkingLevel = chatThinkingLevel(reasoning)
     return {
       session_id: sessionId,

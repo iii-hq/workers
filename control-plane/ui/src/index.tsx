@@ -26,7 +26,7 @@ import {
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
 import { MessageSquare, RadioTower, RefreshCw } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { useControlPlaneOverview, type ControlPlaneOverviewData as ControlPlaneData } from './useControlPlaneOverview'
 import { ControlPlaneHost, useControlPlaneHost } from './host'
 import {
@@ -178,14 +178,27 @@ function ControlPlaneScreenContent({
     error: null,
   })
   // The scope's controller chat: the worker creates or finds the session, the console opens it.
+  // A scope change remounts this screen: the old instance must not open its scope's chat afterwards.
+  const mounted = useRef(true)
+  useEffect(
+    () => () => {
+      mounted.current = false
+    },
+    [],
+  )
+  const currentScope = useRef(scope)
+  currentScope.current = scope
   const openController = async () => {
     if (!iii || controller.opening) return
+    const requested = scope
     setController({ opening: true, error: null })
     try {
       const opened = await iii.call<{ session_id: string; created?: boolean; thinking_level?: string }>(
         'control-plane::controller::open',
-        { scope },
+        { scope: requested },
       )
+      // The person moved to another scope meanwhile: do not open the old scope's chat over it.
+      if (!mounted.current || currentScope.current !== requested) return
       host.chat?.openConversation?.(opened.session_id)
       // A new chat adopts the configured effort the way the console wants it: on the mounted conversation.
       if (opened.created && opened.thinking_level)

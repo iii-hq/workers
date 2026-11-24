@@ -32,9 +32,8 @@ const resultContract = z.strictObject({
         ? brief.refs.length > 0 && Boolean(brief.happened || brief.happening || brief.remaining)
         : !brief.happened && !brief.happening && !brief.remaining && brief.refs.length === 0,
     ),
-  diary: z
-    .array(line.extend({ at: timestamp }))
-    .max(schema.properties.diary.maxItems),
+  // The cap applies after the worker dedupes (acceptSummary), not to what the writer sent.
+  diary: z.array(line.extend({ at: timestamp })),
   now: z.record(
     z
       .string()
@@ -75,19 +74,19 @@ export function acceptSummary(
 ): ControlPlaneSummary | null {
   const parsed = resultContract.safeParse(value)
   if (!parsed.success) return previous
-  // The diary's order and duplicates are the worker's to fix, not a reason
-  // to throw a whole summary away: newest first, each event once.
-  const seen = new Set<string>()
+  // The diary's order, duplicates and length are the worker's to fix, not a
+  // reason to throw a whole summary away: newest first, each event once (its
+  // references merged), the newest entries up to the cap.
+  const byEvent = new Map<string, (typeof parsed.data.diary)[number]>()
+  for (const entry of [...parsed.data.diary].sort((a, b) => Date.parse(b.at) - Date.parse(a.at))) {
+    const key = JSON.stringify([entry.at, entry.text])
+    const kept = byEvent.get(key)
+    if (kept) kept.refs = [...new Set([...kept.refs, ...entry.refs])]
+    else byEvent.set(key, { ...entry, refs: [...entry.refs] })
+  }
   const next = {
     ...parsed.data,
-    diary: [...parsed.data.diary]
-      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
-      .filter(({ at, text }) => {
-        const key = JSON.stringify([at, text])
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      }),
+    diary: [...byEvent.values()].slice(0, schema.properties.diary.maxItems),
   }
   const checked = Date.parse(next.checked_at)
   if (

@@ -409,15 +409,22 @@ by them.
   `iii/control-plane` 0.3.0) and the function policy, and asks for a short
   status. Later messages come from the console chat without a policy, so the
   harness keeps the first one.
-- **The model:** `controller.model` and `controller.reasoning` in the
-  settings; unset, the summary's.
+- **The model:** `controller.model` in the settings, else the summary's.
+  The effort: `controller.reasoning`, else the summary's while the controller
+  model follows the summary's. A new chat starts on it when the console
+  accepts it (minimal to xhigh); a reopened chat keeps what the person picked.
 - **The policy:** unrestricted for now, at the person's request
   (2026-11-24): `allow ["*"]` in every scope. The repository's permission
   rules still deny agents `harness::send`, `harness::stop`, `harness::run` and
-  `harness::compact`. The board-only policy (C1, C2) returns with phase 3.
+  `harness::compact`, and planning (releases, projects, deleting cards); a
+  call that matches no rule is held for the person's approval. The
+  board-only policy (C1, C2) returns with phase 3.
 - **Confirmation:** before any write or side effect, the profile lists the
-  exact actions in one `harness::ask` (Do it, Change, Cancel); a message from
-  the person that names the exact action is its own confirmation. Moving a card to To do
+  exact actions in one `harness::ask` (Do it, Change, Cancel), at most ten per
+  question; a message from the person that names the action, every card key
+  and the target is its own confirmation. This is a prompt rule, not an
+  enforced gate: the permission file allows the card writes without approval,
+  so nothing in the engine stops a write the model makes without asking. Moving a card to To do
   starts its run through dispatch; moving a running card out of In progress
   does not stop its session, and the controller says so.
 - **The page:** a chat button in the header opens the scope's controller in

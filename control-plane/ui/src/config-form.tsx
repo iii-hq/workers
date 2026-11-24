@@ -138,10 +138,19 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
             value={typeof controller.model === 'string' ? controller.model : null}
             options={catalog.options}
             loading={catalog.loading}
-            thinkingLevel={typeof controller.reasoning === 'string' ? controller.reasoning : 'default'}
+            // The effort the controller really runs on: its own, else the summary's while its model follows the summary.
+            thinkingLevel={
+              typeof controller.reasoning === 'string'
+                ? controller.reasoning
+                : !controller.model && typeof summary.reasoning === 'string'
+                  ? summary.reasoning
+                  : 'default'
+            }
             showReasoningEffort
             // An effort belongs to its model; a new model starts at its default.
-            onChange={(model) => setController({ model: model ?? null, reasoning: null })}
+            onChange={(model) => {
+              if (model !== (controller.model ?? null)) setController({ model: model ?? null, reasoning: null })
+            }}
             onThinkingLevelChange={(level) => setController({ reasoning: level && level !== 'default' ? level : null })}
             automatic={{ label: 'Same as the summary', onSelect: () => setController({ model: null, reasoning: null }) }}
           />

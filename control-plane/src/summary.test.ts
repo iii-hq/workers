@@ -40,7 +40,6 @@ describe('control-plane writer result contract', () => {
     { ...result, brief: { ...result.brief, refs: ['https://example.com'] } },
     { ...result, brief: { ...result.brief, refs: ['KAN-616', 'KAN-616'] } },
     { ...result, brief: { ...result.brief, refs: [] } },
-    { ...result, diary: Array(51).fill(result.diary[0]) },
     { ...result, diary: [{ ...result.diary[0], at: 'invalid' }] },
     {
       ...result,
@@ -92,6 +91,37 @@ describe('control-plane writer result contract', () => {
         checked,
       ),
     ).toBe(result)
+  })
+
+  it('keeps the newest 50 milestones after dedupe, keeps same-time different events, and merges a repeat\'s refs', () => {
+    const base = Date.parse(result.diary[0].at)
+    const many = Array.from({ length: 51 }, (_, index) => ({
+      text: `Milestone ${index}.`,
+      refs: ['KAN-616'],
+      at: new Date(base - index * 60_000).toISOString(),
+    }))
+    const capped = acceptSummary({ ...result, diary: [...many, many[0]] }, result, checked)?.diary
+    expect(capped).toHaveLength(50)
+    expect(capped?.[0].text).toBe('Milestone 0.')
+    expect(capped?.at(-1)?.text).toBe('Milestone 49.')
+
+    const at = result.diary[0].at
+    const merged = acceptSummary(
+      {
+        ...result,
+        diary: [
+          { at, text: 'PR merged.', refs: ['KAN-616'] },
+          { at, text: 'Card moved.', refs: ['KAN-616'] },
+          { at, text: 'PR merged.', refs: ['KAN-616', 'iii-hq/workers#1834'] },
+        ],
+      },
+      result,
+      checked,
+    )?.diary
+    expect(merged).toEqual([
+      { at, text: 'PR merged.', refs: ['KAN-616', 'iii-hq/workers#1834'] },
+      { at, text: 'Card moved.', refs: ['KAN-616'] },
+    ])
   })
 
   it('puts milestones newest first and drops a repeated one instead of rejecting the result', () => {

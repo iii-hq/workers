@@ -509,6 +509,23 @@ describe('canvas overview', () => {
     expect(host.chat!.openConversation).toHaveBeenCalledWith('lead-assistente-1')
     expect(host.chat!.requestThinkingLevelChange).toHaveBeenCalledWith({ sessionId: 'lead-assistente-1', level: 'high' })
 
+    // A reopened chat keeps the effort the person picked in it.
+    vi.mocked(host.chat!.requestThinkingLevelChange!).mockClear()
+    call.mockResolvedValueOnce({ session_id: 'lead-assistente-1', created: false, thinking_level: 'high' })
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Chat with the controller"]')?.click())
+    expect(host.chat!.requestThinkingLevelChange).not.toHaveBeenCalled()
+
+    // Moving to another scope while the chat opens does not open the old scope's chat.
+    vi.mocked(host.chat!.openConversation!).mockClear()
+    let finish: (value: { session_id: string; created: boolean; thinking_level: string }) => void = () => {}
+    call.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Chat with the controller"]')?.click())
+    await act(async () => root.unmount())
+    await act(async () => finish({ session_id: 'lead-assistente-2', created: true, thinking_level: 'high' }))
+    expect(host.chat!.openConversation).not.toHaveBeenCalled()
+    root = createRoot(container)
+    await render({ scope: 'assistente', iii: { call } as never })
+
     call.mockRejectedValueOnce(new Error('Pick a controller model (or a summary model) in the control plane settings.'))
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Chat with the controller"]')?.click())
     expect(container.textContent).toContain('The controller chat did not open')

@@ -7,7 +7,17 @@ import type { ControlPlaneConfig, ControlPlaneData } from '../src/types.js'
 function fake(config: ControlPlaneConfig) {
   const state = new Map<string, unknown>()
   const sessions = new Set<string>()
+  const faults: { send?: unknown; get?: Error } = {}
   const call = vi.fn(async (id: string, input: Record<string, unknown> = {}) => {
+    if (id === 'session::get' && faults.get) throw faults.get
+    if (id === 'harness::send' && faults.send !== undefined) {
+      if (faults.send instanceof Error) throw faults.send
+      return faults.send
+    }
+    if (id === 'harness::delete-session-tree') {
+      sessions.delete(String(input.session_id))
+      return { status: 'deleting' }
+    }
     if (id === 'state::get') return state.get(String(input.key)) ?? null
     if (id === 'state::set') {
       state.set(String(input.key), input.value)
@@ -34,6 +44,8 @@ function fake(config: ControlPlaneConfig) {
     call,
     controllers,
     sessions,
+    state,
+    faults,
     sent: () => call.mock.calls.filter(([id]) => id === 'harness::send'),
   }
 }
@@ -125,5 +137,28 @@ describe('controller chat sessions', () => {
     await expect(fake(defaultConfig()).controllers.open('assistente')).rejects.toThrow(
       'Pick a controller model',
     )
+  })
+
+  it('removes a half-made session when the first turn does not start, and keeps a chat through an engine error', async () => {
+    for (const fault of [new Error('provider down'), { queued: true }, {}]) {
+      const f = fake(withModel())
+      f.faults.send = fault
+      await expect(f.controllers.open('assistente')).rejects.toThrow()
+      const made = f.call.mock.calls.find(([id]) => id === 'session::ensure')?.[1]?.session_id
+      expect(f.call).toHaveBeenCalledWith('harness::delete-session-tree', { session_id: made })
+      expect(f.state.has('controller:assistente')).toBe(false)
+      expect(f.sessions.size).toBe(0)
+    }
+
+    const f = fake(withModel())
+    const first = await f.controllers.open('assistente')
+    f.faults.get = new Error('engine timeout')
+    await expect(f.controllers.open('assistente')).rejects.toThrow('engine timeout')
+    f.faults.get = undefined
+    expect(await f.controllers.open('assistente')).toEqual({
+      session_id: first.session_id,
+      created: false,
+    })
+    expect(f.sent()).toHaveLength(1)
   })
 })
