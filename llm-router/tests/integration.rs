@@ -277,7 +277,6 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     let stream_calls = Arc::new(AtomicU64::new(0));
     let token_cell: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
 
-    let address = url.to_string();
     let wf = write_failed.clone();
     let fam = fail_at_ms.clone();
     let calls = stream_calls.clone();
@@ -286,7 +285,6 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     iii.register_function(
         "provider::real::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let (wf, fam) = (wf.clone(), fam.clone());
             let calls = calls.clone();
             async move {
@@ -2508,11 +2506,9 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
     let resolution_keys = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let observed_calls = calls.clone();
     let observed_keys = resolution_keys.clone();
-    let address = engine.url.clone();
     provider.register_function(
         "provider::retryable::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let calls = observed_calls.clone();
             let resolution_keys = observed_keys.clone();
             async move {
@@ -2660,11 +2656,9 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
     let error_sent = Arc::new(tokio::sync::Semaphore::new(0));
     let observed_calls = calls.clone();
     let observed_error = error_sent.clone();
-    let address = engine.url.clone();
     provider.register_function(
         "provider::backoff::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let calls = observed_calls.clone();
             let error_sent = observed_error.clone();
             async move {

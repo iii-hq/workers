@@ -49,11 +49,10 @@ async fn failing_provider(
     let provider = register_worker(url, test_init_options());
     let calls = Arc::new(AtomicU64::new(0));
     let observed = calls.clone();
-    let address = url.to_owned();
     provider.register_function(
         "provider::retry-fixture::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let (calls, address, gate) = (observed.clone(), address.clone(), gate.clone());
+            let (calls, gate) = (observed.clone(), gate.clone());
             async move {
                 let attempt = calls.fetch_add(1, Ordering::SeqCst);
                 if attempt == 0
