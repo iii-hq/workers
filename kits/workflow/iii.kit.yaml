@@ -39,6 +39,6 @@ workers:
   # Chromium, a card that changes a web page is verified in a tab; otherwise the run says pages
   # were not checked. Listing it would install the worker, and maybe a Chromium, for every run
   # that never opens a page.
-  # Not listed either: `judge` is optional. A run on the board calls judge::evaluate once, to ask
-  # which project its goal belongs to. Without the worker, without a provider key, or on any
-  # error, the run goes under the repository's project. (The harness already depends on judge.)
+  # Not listed either: `judge` is optional. A run on the board calls judge::evaluate at most once,
+  # to ask which project its goal belongs to. Without the worker, or when the call fails, the run
+  # goes under the repository's project. (The harness already depends on judge.)
