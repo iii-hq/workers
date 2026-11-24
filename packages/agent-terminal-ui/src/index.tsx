@@ -18,15 +18,63 @@
  * xterm, that reattach replays the WHOLE buffer — an agent TUI paints on
  * change, so a tail replay would leave an empty pane.
  */
-import { Button, PageBody, PageHeader, PageMain, PageShell } from '@iii-dev/console-ui'
+import {
+  Chip,
+  type ChipTone,
+  Eyebrow,
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
+  ShadcnButton,
+  StatusBar,
+} from '@iii-dev/console-ui'
 import { MAX_FONT_SIZE, MIN_FONT_SIZE, stepFontSize, useTerminalFontSize } from '@iii-workers/terminal-font'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Minus, Plus } from 'lucide-react'
+import { type ReactNode, type Ref, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 
 const STALL_MS = 250
 const MAX_QUEUED_EVENTS = 4096
 const CALL_TIMEOUT_MS = 10_000
+const OPEN_ELSEWHERE = 'It is open in another console tab or window.'
+
+/** What a rail knows of the terminal beside it, and how it shows another session there. */
+export interface AgentTerminalApi {
+  /** The PTY session on screen; null while none is. */
+  current: string | null
+  /** The row the terminal was opened for, or that claimed it since; null for none. */
+  currentKey: string | null
+  /** Whether this browser still holds a terminal it opened for `key`. */
+  has(key: string): boolean
+  /**
+   * The row that runs in `pty` now. A terminal held for another one follows
+   * it: a fork, /clear or /resume leaves the row the terminal was opened for.
+   */
+  claim(pty: string, key: string): void
+  /**
+   * Show another session: the PTY `pty`, else the one held for `key`, else a
+   * new one that runs `spec`, which is what the worker's describe returned.
+   * False when that session is gone; rejects with the reason it cannot be
+   * shown. The terminal on screen is untouched unless it resolves true.
+   */
+  open(target: { key: string; pty?: string; spec?: TerminalSpec }): Promise<boolean>
+}
+
+/**
+ * A rail beside the terminal, on the pane's outer edge. The terminal stays the
+ * page; the rail is what a worker shows about its agent next to it, and it
+ * collapses to the toggle when the operator wants the width back.
+ */
+export interface AgentTerminalSidebar {
+  /** Accessible name of the rail. */
+  label: string
+  /** Host-owned key for the rail's width and collapsed state. */
+  storageKey: string
+  render(host: Host, terminal: AgentTerminalApi): ReactNode
+}
 
 export interface AgentTerminalOptions {
   /** Worker name: the page id, the handler prefix, and the describe function. */
@@ -34,6 +82,7 @@ export interface AgentTerminalOptions {
   /** Nav title and the name used in status lines ("claude", "pi"). */
   title: string
   description: string
+  sidebar?: AgentTerminalSidebar
 }
 
 interface PtyOutputEvent {
@@ -56,6 +105,7 @@ interface AttachResponse {
   reconnect_token: string
   frames: { sequence: number; data: string }[]
   truncated: boolean
+  status: SessionSummary['status']
 }
 
 interface OpenResponse {
@@ -70,7 +120,7 @@ interface AuthStatus {
   detail: string
 }
 
-interface TerminalSpec {
+export interface TerminalSpec {
   program: string
   args: string[]
   cwd: string
@@ -265,10 +315,46 @@ function writeLease(prefix: string, tabId: string, lease: Lease | null): void {
   }
 }
 
+interface Held {
+  token: string
+  /** The row it was opened for, or that claimed it since. */
+  key?: string
+}
+
+/**
+ * Every session this browser holds a token for, by PTY session id: the way
+ * back to one no tab shows now. A page with no rail keeps no book.
+ */
+function readBook(prefix: string): Record<string, Held> {
+  try {
+    return JSON.parse(localStorage.getItem(`${prefix}book`) ?? '{}') as Record<string, Held>
+  } catch {
+    return {}
+  }
+}
+
+/** A null token drops the entry; without a key, the entry keeps the one it has. */
+function writeBook(prefix: string, sessionId: string, token: string | null, key?: string): void {
+  try {
+    const book = readBook(prefix)
+    if (token) book[sessionId] = { token, key: key ?? book[sessionId]?.key }
+    else delete book[sessionId]
+    localStorage.setItem(`${prefix}book`, JSON.stringify(book))
+  } catch {
+    // As for the lease: only the way back is lost.
+  }
+}
+
+function heldFor(prefix: string, key: string): string | undefined {
+  return Object.entries(readBook(prefix)).find(([, held]) => held.key === key)?.[0]
+}
+
 interface SessionSummary {
   session_id: string
   program: string | null
   status: string | { exited?: unknown }
+  /** Where output goes; null while detached. */
+  output_function_id: string | null
   ui: string | null
 }
 
@@ -293,6 +379,8 @@ async function findOrphan(
 ): Promise<string | null> {
   try {
     const { sessions } = await call<{ sessions: SessionSummary[] }>('shell::pty::sessions', {})
+    // `ui` comes without its `-ui` suffix, so nothing matches. Leave it: with a rail, detached is
+    // normal, and adopting one at random would steal it from the tab that holds it.
     const orphan = sessions.find(
       (session) => session.ui === ui && session.status === 'detached' && session.program === program,
     )
@@ -331,6 +419,54 @@ function sessionGone(error: unknown): boolean {
   )
 }
 
+/**
+ * Take a session over before the page lets go of the one on screen, so a
+ * refusal leaves that one untouched: by its token, else by adoption. Null when
+ * there is nothing to show. The worker keeps listing an ended session and
+ * still attaches to it, so only the attach tells.
+ */
+async function takeSession(
+  call: <T>(fn: string, payload: unknown) => Promise<T>,
+  listed: SessionSummary,
+  view: { output_function_id: string; cols: number; rows: number },
+  token: string | undefined,
+  /** Whether a live row named it, rather than the book. */
+  named: boolean,
+): Promise<AttachResponse | null> {
+  // No replay: the connect that follows asks for the whole buffer.
+  const request = { ...view, session_id: listed.session_id, after_sequence: Number.MAX_SAFE_INTEGER }
+  let taken: AttachResponse | null = null
+  if (token) {
+    taken = await call<AttachResponse>('shell::pty::attach', { ...request, reconnect_token: token }).catch((error) => {
+      if (!sessionGone(error)) throw error
+      return null
+    })
+  }
+  if (!taken) {
+    if (listed.status === 'attached') {
+      // An ended session still reads attached: without a live row, the worker's describe decides.
+      if (!named) return null
+      throw new Error(OPEN_ELSEWHERE)
+    }
+    taken = await call<AttachResponse>('shell::pty::adopt', request)
+  }
+  if (typeof taken.status !== 'object') return taken
+  // Ended: it keeps one of the shell worker's 16 slots until someone closes it.
+  void call('shell::pty::close', { session_id: listed.session_id, access_key: taken.access_key }).catch(() => undefined)
+  return null
+}
+
+/**
+ * Whether a terminal shown from the rail may take the keyboard: not under the
+ * rail's open drawer, where Escape closes the drawer and here would reach the
+ * agent, and not from a field the operator is typing in.
+ */
+function mayFocus(container: HTMLElement | null): boolean {
+  if (container?.closest('main')?.parentElement?.querySelector(':scope > [data-drawer="open"]')) return false
+  const active = document.activeElement
+  return !active?.matches('input, textarea, select, [contenteditable]') || !!container?.contains(active)
+}
+
 function frameToEvent(sessionId: string, frame: { sequence: number; data: string }): PtyOutputEvent {
   return {
     session_id: sessionId,
@@ -365,12 +501,16 @@ function AgentTerminal({
   tabId,
   options,
   leasePrefix,
+  openRef,
+  onCurrent,
 }: {
   host: Host
   router: OutputRouter
   tabId: string
   options: AgentTerminalOptions
   leasePrefix: string
+  openRef: Ref<AgentTerminalApi['open']>
+  onCurrent: (sessionId: string | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [status, setStatus] = useState<'connecting' | 'running' | 'exited' | 'error'>('connecting')
@@ -379,6 +519,11 @@ function AgentTerminal({
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  // What the next connect serves in place of the tab's own session.
+  const requestRef = useRef<{ key: string; lease: Lease } | null>(null)
+  const connectRef = useRef<Promise<void> | null>(null)
+  // `current` as it is now, not as it was when the rail last rendered.
+  const currentRef = useRef<string | null>(null)
   const [fontSize, setFontSize] = useTerminalFontSize()
   // Read inside the session effect, never a dependency of it: resizing the
   // type must not tear down a live agent.
@@ -430,6 +575,8 @@ function AgentTerminal({
     let recovering = false
     let unsubscribe: (() => void) | null = null
     let conn: { sessionId: string; accessKey: string } | null = null
+    // The token this terminal was last given: storage is shared with the other windows.
+    let heldToken = ''
 
     const term = new Terminal({
       fontSize: fontSizeRef.current,
@@ -445,6 +592,32 @@ function AgentTerminal({
 
     const call = <T,>(fn: string, payload: unknown): Promise<T> =>
       host.iii.call(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
+    // Detach, never close: the agent keeps running for the next mount.
+    const detach = (session: { sessionId: string; accessKey: string }) =>
+      void call('shell::pty::detach', {
+        session_id: session.sessionId,
+        access_key: session.accessKey,
+      }).catch(() => undefined)
+
+    const show = (sessionId: string | null) => {
+      if (disposed) return
+      currentRef.current = sessionId
+      onCurrent(sessionId)
+    }
+    const book = (sessionId: string, token: string | null, key?: string) => {
+      if (options.sidebar) writeBook(leasePrefix, sessionId, token, key)
+    }
+    const hold = (sessionId: string, reconnectToken: string, key?: string) => {
+      heldToken = reconnectToken
+      writeLease(leasePrefix, tabId, { sessionId, reconnectToken })
+      book(sessionId, reconnectToken, key)
+      show(sessionId)
+    }
+    const release = (sessionId: string) => {
+      // Another window on this tab may have left it another session.
+      if (readLease(leasePrefix, tabId)?.sessionId === sessionId) writeLease(leasePrefix, tabId, null)
+      show(null)
+    }
 
     // Shown next to the status while a session runs: "running · 12 frames,
     // 4.2 kB". A blank terminal with no frames is a delivery problem; a blank
@@ -473,8 +646,19 @@ function AgentTerminal({
         showProgress()
       },
       onEof: (event) => {
+        // The last frame's progress line must not land after the exit message.
+        if (progressTimer !== null) window.clearTimeout(progressTimer)
+        progressTimer = null
+        // It keeps one of the shell worker's 16 slots until someone closes it.
+        if (conn && options.sidebar) {
+          void call('shell::pty::close', {
+            session_id: conn.sessionId,
+            access_key: conn.accessKey,
+          }).catch(() => undefined)
+        }
         conn = null
-        writeLease(leasePrefix, tabId, null)
+        book(event.session_id, null)
+        release(event.session_id)
         setStatus('exited')
         setDetail(
           event.exit_code === null || event.exit_code === 0
@@ -490,24 +674,27 @@ function AgentTerminal({
     // worker's ring buffer.
     const recover = async () => {
       if (disposed || recovering || !conn) return
+      const { sessionId } = conn
       recovering = true
       try {
         const lease = readLease(leasePrefix, tabId)
-        if (!lease || lease.sessionId !== conn.sessionId) return
         const attached = await call<AttachResponse>('shell::pty::attach', {
           session_id: conn.sessionId,
-          reconnect_token: lease.reconnectToken,
+          // Not the book's: that one may be another window's, and a stall must not take it.
+          reconnect_token: lease?.sessionId === sessionId ? lease.reconnectToken : heldToken,
           output_function_id: router.outputFunctionId,
           after_sequence: writer.lastSeq(),
           cols: term.cols,
           rows: term.rows,
         })
-        if (disposed) return
+        if (disposed) {
+          // The cleanup detached with the key this attach replaced: keep the new token, let go again.
+          book(sessionId, attached.reconnect_token)
+          detach({ sessionId, accessKey: attached.access_key })
+          return
+        }
         conn.accessKey = attached.access_key
-        writeLease(leasePrefix, tabId, {
-          sessionId: conn.sessionId,
-          reconnectToken: attached.reconnect_token,
-        })
+        hold(conn.sessionId, attached.reconnect_token)
         if (attached.truncated) {
           // The missing range is already off the end of the ring buffer, so
           // it will never arrive. Skipping to the newest sequence keeps the
@@ -525,7 +712,9 @@ function AgentTerminal({
         if (disposed) return
         if (sessionGone(error)) {
           conn = null
-          writeLease(leasePrefix, tabId, null)
+          // Another window's token is still the way back to it.
+          if (readBook(leasePrefix)[sessionId]?.token === heldToken) book(sessionId, null)
+          release(sessionId)
           setStatus('exited')
           setDetail(`${options.title} session lost`)
         }
@@ -574,15 +763,19 @@ function AgentTerminal({
     const connect = async () => {
       setStatus('connecting')
       setDetail('')
+      show(null)
       // Let layout settle so the first fit measures the real pane — a session
       // opened at the default 80x24 and resized a beat later leaves redraw
       // artifacts in a TUI.
       await new Promise((resolve) => requestAnimationFrame(resolve))
       if (disposed) return
+      // Served once: a restart or a remount is the tab's own session again.
+      const request = requestRef.current
+      requestRef.current = null
       fit.fit()
       const cols = term.cols
       const rows = term.rows
-      const lease = readLease(leasePrefix, tabId)
+      const lease = request?.lease ?? readLease(leasePrefix, tabId)
       try {
         if (lease) {
           // A remount builds a NEW xterm with an empty screen, so the whole
@@ -597,17 +790,21 @@ function AgentTerminal({
           try {
             const attached = await call<AttachResponse>('shell::pty::attach', {
               session_id: lease.sessionId,
-              reconnect_token: lease.reconnectToken,
+              // Another tab may have shown it since, which rotated the token.
+              reconnect_token: readBook(leasePrefix)[lease.sessionId]?.token ?? lease.reconnectToken,
               output_function_id: router.outputFunctionId,
               after_sequence: 0,
               cols,
               rows,
             })
             conn = { sessionId: lease.sessionId, accessKey: attached.access_key }
-            writeLease(leasePrefix, tabId, {
-              sessionId: lease.sessionId,
-              reconnectToken: attached.reconnect_token,
-            })
+            hold(lease.sessionId, attached.reconnect_token, request?.key)
+            if (disposed) {
+              detach(conn)
+              return
+            }
+            // It ended with no viewer, and the worker sends an EOF only to one.
+            const ended = options.sidebar && typeof attached.status === 'object'
             if (attached.truncated) {
               // Partial history is worse than none: it lands inside whatever
               // the agent was drawing. Start from the newest sequence the
@@ -615,18 +812,26 @@ function AgentTerminal({
               const newest = attached.frames.at(-1)?.sequence ?? 0
               term.reset()
               writer.base(newest)
-              setStatus('running')
-              await askForRepaint(conn)
-              return
-            }
-            for (const frame of attached.frames) {
-              writer.feed(frameToEvent(lease.sessionId, frame))
+            } else {
+              for (const frame of attached.frames) {
+                writer.feed(frameToEvent(lease.sessionId, frame))
+              }
             }
             setStatus('running')
+            if (ended) {
+              const last = frameToEvent(lease.sessionId, { sequence: 0, data: '' })
+              writer.feed({ ...last, sequence: null, data: null, eof: true })
+            } else if (attached.truncated) {
+              await askForRepaint(conn)
+            }
             return
           } catch (error) {
             unsubscribe()
             unsubscribe = null
+            if (sessionGone(error)) book(lease.sessionId, null)
+            // Asked for by name: a fresh agent is not the answer, and the
+            // lease still names what this tab showed before.
+            if (request) throw error
             writeLease(leasePrefix, tabId, null)
             if (!sessionGone(error)) throw error
             // fall through to a fresh session
@@ -654,10 +859,7 @@ function AgentTerminal({
               after_sequence: 0,
             })
             conn = { sessionId: orphan, accessKey: adopted.access_key }
-            writeLease(leasePrefix, tabId, {
-              sessionId: orphan,
-              reconnectToken: adopted.reconnect_token,
-            })
+            hold(orphan, adopted.reconnect_token)
             term.reset()
             if (adopted.truncated) {
               writer.reset(adopted.frames.at(-1)?.sequence ?? 0)
@@ -687,18 +889,14 @@ function AgentTerminal({
           env: spec.env ?? {},
         })
         if (disposed) {
-          void call('shell::pty::detach', {
-            session_id: opened.session_id,
-            access_key: opened.access_key,
-          }).catch(() => undefined)
+          // It runs with nobody watching: the book is the way back to it.
+          book(opened.session_id, opened.reconnect_token)
+          detach({ sessionId: opened.session_id, accessKey: opened.access_key })
           return
         }
         conn = { sessionId: opened.session_id, accessKey: opened.access_key }
         unsubscribe = router.subscribe(opened.session_id, handleEvent)
-        writeLease(leasePrefix, tabId, {
-          sessionId: opened.session_id,
-          reconnectToken: opened.reconnect_token,
-        })
+        hold(opened.session_id, opened.reconnect_token)
         for (const event of router.drain(opened.session_id)) writer.feed(event)
         setStatus('running')
       } catch (error) {
@@ -708,23 +906,22 @@ function AgentTerminal({
       }
     }
 
-    const onData = term.onData((data) => {
+    const send = (fn: 'write' | 'resize', payload: object) => {
       if (!conn) return
-      call('shell::pty::write', {
-        session_id: conn.sessionId,
-        access_key: conn.accessKey,
-        data: encodeB64(data),
-      }).catch(() => undefined)
-    })
-    const onResize = term.onResize(({ cols, rows }) => {
-      if (!conn) return
-      call('shell::pty::resize', {
-        session_id: conn.sessionId,
-        access_key: conn.accessKey,
-        cols,
-        rows,
-      }).catch(() => undefined)
-    })
+      const { sessionId, accessKey } = conn
+      call(`shell::pty::${fn}`, { session_id: sessionId, access_key: accessKey, ...payload }).catch((error) => {
+        // A refused key: another window took the session, so its lease and its token are that
+        // window's now. A recovery replaces the key too, and that one is ours.
+        if (!options.sidebar || disposed || recovering || conn?.accessKey !== accessKey) return
+        if (!errorText(error).includes('terminal session credentials are invalid')) return
+        conn = null
+        show(null)
+        setStatus('error')
+        setDetail(OPEN_ELSEWHERE)
+      })
+    }
+    const onData = term.onData((data) => send('write', { data: encodeB64(data) }))
+    const onResize = term.onResize(({ cols, rows }) => send('resize', { cols, rows }))
     const observer = new ResizeObserver(() => {
       try {
         fit.fit()
@@ -734,24 +931,27 @@ function AgentTerminal({
     })
     observer.observe(container)
 
-    void connect()
-    term.focus()
+    // Closing the window runs no cleanup, and the worker never notices that its viewer is gone:
+    // the session would read attached, and no other browser could show it. A page kept for the
+    // back button keeps its terminal.
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (conn && !event.persisted) detach(conn)
+    }
+    if (options.sidebar) window.addEventListener('pagehide', onPageHide)
+
+    connectRef.current = connect()
+    if (!requestRef.current || mayFocus(container)) term.focus()
 
     return () => {
       disposed = true
+      window.removeEventListener('pagehide', onPageHide)
       observer.disconnect()
       onData.dispose()
       onResize.dispose()
       unsubscribe?.()
       if (progressTimer !== null) window.clearTimeout(progressTimer)
       writer.dispose()
-      // Detach, never close: the agent keeps running for the next mount.
-      if (conn) {
-        void call('shell::pty::detach', {
-          session_id: conn.sessionId,
-          access_key: conn.accessKey,
-        }).catch(() => undefined)
-      }
+      if (conn) detach(conn)
       term.dispose()
       termRef.current = null
       fitRef.current = null
@@ -762,6 +962,55 @@ function AgentTerminal({
     writeLease(leasePrefix, tabId, null)
     setGeneration((n) => n + 1)
   }, [leasePrefix, tabId])
+
+  const open: AgentTerminalApi['open'] = async ({ key, pty, spec }) => {
+    // A connect cut short would leave behind the session it is about to get.
+    await connectRef.current
+    const call = <T,>(fn: string, payload: unknown): Promise<T> =>
+      host.iii.call(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
+    const view = {
+      output_function_id: router.outputFunctionId,
+      cols: termRef.current?.cols ?? 80,
+      rows: termRef.current?.rows ?? 24,
+    }
+    // Held before `spec`: a second click must not run the same session twice.
+    let sessionId = pty ?? heldFor(leasePrefix, key)
+    let taken: Pick<OpenResponse, 'access_key' | 'reconnect_token'> | null = null
+    if (sessionId) {
+      const { sessions } = await call<{ sessions: SessionSummary[] }>('shell::pty::sessions', {})
+      const listed = sessions.find((session) => session.session_id === sessionId)
+      // Not by `current` alone: another window may have taken it, and nothing told this one.
+      const attachedHere = listed?.status === 'attached' && listed.output_function_id === view.output_function_id
+      if (attachedHere && sessionId === currentRef.current) {
+        if (mayFocus(containerRef.current)) termRef.current?.focus()
+        return true
+      }
+      if (listed) taken = await takeSession(call, listed, view, readBook(leasePrefix)[sessionId]?.token, !!pty)
+      writeBook(leasePrefix, sessionId, taken?.reconnect_token ?? null, key)
+    }
+    if (!taken && spec) {
+      const opened = await call<OpenResponse>('shell::pty::open', {
+        ...view,
+        cwd: spec.cwd,
+        program: spec.program,
+        args: spec.args ?? [],
+        env: spec.env ?? {},
+      })
+      sessionId = opened.session_id
+      taken = opened
+      writeBook(leasePrefix, sessionId, taken.reconnect_token, key)
+    }
+    if (!sessionId || !taken) return false
+    if (!termRef.current) {
+      // Unmounted meanwhile: nothing would show it, or ever detach it.
+      void call('shell::pty::detach', { session_id: sessionId, access_key: taken.access_key }).catch(() => undefined)
+      return true
+    }
+    requestRef.current = { key, lease: { sessionId, reconnectToken: taken.reconnect_token } }
+    setGeneration((n) => n + 1)
+    return true
+  }
+  useImperativeHandle(openRef, () => open)
 
   // Ctrl/⌘ + wheel is what every terminal emulator does, and it beats clicking
   // a stepper 20 times to get from 14 to 34.
@@ -784,48 +1033,145 @@ function AgentTerminal({
   return (
     <div className="agent-terminal">
       <div className="agent-terminal-viewport" ref={containerRef} data-autofocus="true" />
-      <div className="agent-terminal-statusbar">
+      <StatusBar
+        className="agent-terminal-strip"
+        aria-label={`${options.title} terminal status`}
+        end={
+          <>
+            {auth && (
+              <span className="agent-terminal-strip-billing" data-billing={auth.billing} title={auth.detail}>
+                <Eyebrow>Billing</Eyebrow>
+                <Chip tone={BILLING_TONE[auth.billing] ?? 'neutral'}>
+                  <span className="agent-terminal-truncate">{auth.label}</span>
+                </Chip>
+              </span>
+            )}
+            <span
+              className="agent-terminal-strip-field"
+              title={`Terminal font size in pixels (${MIN_FONT_SIZE}–${MAX_FONT_SIZE}). Ctrl or ⌘ + scroll does the same.`}
+            >
+              <Eyebrow>Font</Eyebrow>
+              <ShadcnButton
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setFontSize(stepFontSize(fontSize, -1))}
+                disabled={fontSize <= MIN_FONT_SIZE}
+                aria-label="Smaller terminal font"
+              >
+                <Minus aria-hidden />
+              </ShadcnButton>
+              <output aria-label="Terminal font size in pixels">{fontSize}</output>
+              <ShadcnButton
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setFontSize(stepFontSize(fontSize, 1))}
+                disabled={fontSize >= MAX_FONT_SIZE}
+                aria-label="Larger terminal font"
+              >
+                <Plus aria-hidden />
+              </ShadcnButton>
+            </span>
+            {(status === 'exited' || status === 'error') && (
+              <ShadcnButton size="sm" onClick={restart}>
+                Restart {options.title}
+              </ShadcnButton>
+            )}
+          </>
+        }
+      >
         {status === 'error' ? (
-          <span className="agent-terminal-status-error">{detail}</span>
+          <span className="agent-terminal-truncate agent-terminal-strip-error" title={detail}>
+            {detail}
+          </span>
         ) : (
-          <span>{status === 'exited' ? detail : detail ? `${status} · ${detail}` : status}</span>
-        )}
-        {auth && (
-          <span className={`agent-terminal-billing agent-terminal-billing-${auth.billing}`} title={auth.detail}>
-            <span className="agent-terminal-field-label">Billing</span>
-            {auth.label}
+          <span className="agent-terminal-truncate">
+            {status === 'exited' ? detail : detail ? `${status} · ${detail}` : status}
           </span>
         )}
-        <span
-          className="agent-terminal-font"
-          title={`Terminal font size in pixels (${MIN_FONT_SIZE}–${MAX_FONT_SIZE}). Ctrl or ⌘ + scroll does the same.`}
-        >
-          <span className="agent-terminal-field-label">Font</span>
-          <button
-            type="button"
-            onClick={() => setFontSize(stepFontSize(fontSize, -1))}
-            disabled={fontSize <= MIN_FONT_SIZE}
-            aria-label="Smaller terminal font"
-          >
-            −
-          </button>
-          <output aria-label="Terminal font size in pixels">{fontSize}</output>
-          <button
-            type="button"
-            onClick={() => setFontSize(stepFontSize(fontSize, 1))}
-            disabled={fontSize >= MAX_FONT_SIZE}
-            aria-label="Larger terminal font"
-          >
-            +
-          </button>
-        </span>
-        {(status === 'exited' || status === 'error') && (
-          <Button size="sm" onClick={restart}>
-            Restart {options.title}
-          </Button>
-        )}
-      </div>
+      </StatusBar>
     </div>
+  )
+}
+
+/**
+ * Which plan the session spends. Accent is reserved for actions, so the
+ * subscription case stays neutral and only the two cases an operator might
+ * not expect — a metered key, or no credentials at all — carry a colour.
+ */
+const BILLING_TONE: Record<AuthStatus['billing'], ChipTone> = {
+  subscription: 'neutral',
+  unknown: 'neutral',
+  'api-key': 'warning',
+  none: 'danger',
+}
+
+/** The page: the terminal, and the rail that reads what is on it and asks it for another session. */
+function AgentTerminalPage({
+  host,
+  router,
+  tabId,
+  options,
+  leasePrefix,
+  onClose,
+}: {
+  host: Host
+  router: OutputRouter
+  tabId: string
+  options: AgentTerminalOptions
+  leasePrefix: string
+  onClose?: () => void
+}) {
+  const [current, setCurrent] = useState<string | null>(null)
+  const openRef = useRef<AgentTerminalApi['open']>(null)
+  const { sidebar } = options
+  const terminal = (
+    <PageMain>
+      <AgentTerminal
+        host={host}
+        router={router}
+        tabId={tabId}
+        options={options}
+        leasePrefix={leasePrefix}
+        openRef={openRef}
+        onCurrent={setCurrent}
+      />
+    </PageMain>
+  )
+  return (
+    <PageShell>
+      <PageHeader title={options.title} description={options.description} onClose={onClose} />
+      {sidebar ? (
+        <PageBody side="right">
+          <PageSidebar
+            label={sidebar.label}
+            side="right"
+            collapsible
+            resizable
+            storageKey={sidebar.storageKey}
+            defaultWidth={300}
+            minWidth={240}
+            maxWidth={440}
+            narrowBelow={960}
+            narrowMode="drawer"
+            closeDrawerOnSelect={false}
+          >
+            {sidebar.render(host, {
+              current,
+              currentKey: (current && readBook(leasePrefix)[current]?.key) || null,
+              has: (key) => heldFor(leasePrefix, key) !== undefined,
+              claim: (pty, key) => {
+                const held = readBook(leasePrefix)[pty]
+                if (held && held.key !== key) writeBook(leasePrefix, pty, held.token, key)
+              },
+              open: async (target) => (await openRef.current?.(target)) ?? false,
+            })}
+          </PageSidebar>
+          {terminal}
+        </PageBody>
+      ) : (
+        <PageBody>{terminal}</PageBody>
+      )}
+    </PageShell>
   )
 }
 
@@ -843,20 +1189,14 @@ export function createAgentTerminalPage(options: AgentTerminalOptions) {
       id: options.worker,
       title: options.title,
       render: (props: { tabId?: string; onRequestClose?: () => void }) => (
-        <PageShell>
-          <PageHeader title={options.title} description={options.description} onClose={props.onRequestClose} />
-          <PageBody>
-            <PageMain>
-              <AgentTerminal
-                host={host}
-                router={router}
-                tabId={props.tabId || 'default'}
-                options={options}
-                leasePrefix={leasePrefix}
-              />
-            </PageMain>
-          </PageBody>
-        </PageShell>
+        <AgentTerminalPage
+          host={host}
+          router={router}
+          tabId={props.tabId || 'default'}
+          options={options}
+          leasePrefix={leasePrefix}
+          onClose={props.onRequestClose}
+        />
       ),
     })
     return () => router.dispose()

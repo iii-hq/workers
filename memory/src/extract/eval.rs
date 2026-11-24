@@ -7,11 +7,12 @@
 //!   drops it), or missed. A trap hit is any item past the expected ones
 //!   from an excerpt built to hold nothing more ([`STRICT`]): an
 //!   instruction only the assistant gave, a pasted document or a fetched
-//!   issue relayed, a harness notice, a transient error, a one-off
-//!   instruction, task progress, what a correction leaves behind, an
-//!   explicit "remember X" answered with only X, a turn with nothing to
-//!   keep. The report also counts the trap hits the rule
-//!   gate would still let into the bank.
+//!   issue relayed, a cause the assistant only suspects or a claim it
+//!   restates from a generated wiki page, a harness notice, a transient
+//!   error, a one-off instruction, task progress, what a correction leaves
+//!   behind, an explicit "remember X" answered with only X, a turn with
+//!   nothing to keep. The report also counts the trap hits the rule gate
+//!   would still let into the bank.
 //! - placement ([`lands`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may; with agents
 //!   listed, what the user tells one about its role's work must
@@ -52,6 +53,7 @@ const STRICT: &[&str] = &[
     "one-off",
     "pasted",
     "progress",
+    "unconfirmed",
 ];
 
 /// An item the case expects back: the first unused returned item whose
@@ -369,6 +371,49 @@ const CASES: &[Case] = &[
             ),
         ],
         &[fact(&["utc"], false)],
+    ),
+    // What the assistant only suspects, or restates from a generated page:
+    // the cases above, which state what it found, are their twins.
+    case(
+        "untested-cause",
+        "unconfirmed",
+        &[
+            (
+                "user",
+                "Why does checkout_flow_test fail now and then in CI?",
+            ),
+            (
+                "assistant",
+                "Probably a race in the cache warmup: the test can call /checkout before `warm_price_cache()` finishes, so the first price lookup times out. A log line when the warmup ends would confirm it; want me to add one?",
+            ),
+        ],
+        &[],
+    ),
+    // The same with no offer to check, in a hedge the rule does not quote:
+    // quoting it there would make the case test the quote.
+    case(
+        "hedged-cause",
+        "unconfirmed",
+        &[
+            ("user", "Why does the image upload sometimes return 413?"),
+            (
+                "assistant",
+                "My bet is the nginx `client_max_body_size` in deploy/nginx.conf: it defaults to 1m, so anything larger is rejected before it reaches the app.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "wiki-claim",
+        "unconfirmed",
+        &[
+            ("user", "How does the sync service retry failed pushes?"),
+            (
+                "assistant",
+                "Going by the openwiki page on the sync service: failed pushes are retried with exponential backoff, at most 5 attempts, and the cap is `max_retries` in sync/config.rs.",
+            ),
+        ],
+        &[],
     ),
     // About the user, but only here.
     Case {

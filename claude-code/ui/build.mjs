@@ -34,7 +34,9 @@ export const STYLES_CSS = ${JSON.stringify(styles)};
 }
 
 await buildWorkerUi({
-  scope: 'claude-code',
+  // The console wraps the page in the worker id that serves it (`claude`, see
+  // registerUi), not in this package's name.
+  scope: 'claude',
   root: ui,
   lint: { strict: true },
   // TODO fase 3: styles.css @imports @iii-workers/agent-terminal-ui's sheet, whose

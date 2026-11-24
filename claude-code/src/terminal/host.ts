@@ -30,7 +30,9 @@ export async function exec(
   return {
     stdout: res?.stdout ?? '',
     stderr: res?.stderr ?? '',
-    exit_code: res?.exit_code ?? 0,
+    // A null exit code is a command killed at its timeout or by a signal (the
+    // ide appends why to stderr): never a success.
+    exit_code: res?.exit_code ?? -1,
   };
 }
 

@@ -1271,6 +1271,9 @@ importers:
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
         specifier: ^19.2.8
         version: 19.2.8

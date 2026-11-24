@@ -10,7 +10,7 @@
 //!   4. Register every public function against the engine — every
 //!      registration sits under `directory::*` (search, skills, system
 //!      prompts, agents, registry, and one engine-info wrapper).
-//!   5. (Optional) Run a boot reconcile for missing skills, and run its
+//!   5. (Optional) Run a boot reconcile for missing or outdated skills, and run its
 //!      worker pass again whenever a worker connects (it observes
 //!      `engine::on-workers-changed`), so workers added later get theirs.
 //!   6. Start the filesystem watch so external edits under the directory
@@ -39,8 +39,10 @@ use iii_sdk::{Capture, IIIClient, InitOptions, RegisterFunction, Source, registe
 use serde_json::Value;
 
 use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
+use iii_directory::events::ChangeSources;
 use iii_directory::functions::download::{
-    InFlightGuard, download_worker_skills, reconcile_decision, refresh_decision,
+    ClassifiedInput, InFlightGuard, download_worker_skills, fan_out, reconcile_decision,
+    refresh_decision,
 };
 use iii_directory::functions::registry::RegistryCache;
 use iii_directory::functions::search::call_namespace;
@@ -291,12 +293,13 @@ async fn main() -> Result<()> {
     // `auto_download` (a topology field — changing it requires a restart).
     if auto_download {
         let in_flight = Arc::new(InFlightGuard::new());
-        setup_auto_download(&iii, &cfg_handle, &registered_cache, &in_flight);
+        setup_auto_download(&iii, &cfg_handle, &registered_cache, &in_flight, sources);
         spawn_boot_reconcile(
             iii.clone(),
             cfg_handle.clone(),
             registered_cache.clone(),
             in_flight,
+            sources,
         );
     }
 
@@ -441,6 +444,7 @@ fn setup_auto_download(
     cfg: &SharedConfig,
     cache: &Arc<RegisteredWorkersCache>,
     in_flight: &Arc<InFlightGuard>,
+    sources: ChangeSources,
 ) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
@@ -467,7 +471,8 @@ fn setup_auto_download(
                                 return;
                             }
                         };
-                        if worker_pass(&cfg, &in_flight, &status).await > 0 {
+                        let notify = Some((iii.as_ref(), &sources));
+                        if worker_pass(&cfg, &in_flight, &status, notify).await > 0 {
                             cache.invalidate().await;
                         }
                     });
@@ -514,11 +519,20 @@ fn worker_versions(status: &Value) -> Option<Vec<(String, String)>> {
     )
 }
 
+/// Where a download reports the change; `None` (the tests) reports nothing.
+type Notify<'a> = Option<(&'a IIIClient, &'a ChangeSources)>;
+
 /// A worker connection's pass over `compose::status`. Only a worker version
 /// this process has not tried reaches the registry, so a connection that
 /// adds no worker (an `iii call` client, a browser tab) asks it nothing.
-async fn worker_pass(cfg: &SkillsConfig, in_flight: &Arc<InFlightGuard>, status: &Value) -> u32 {
-    reconcile_workers(cfg, in_flight, &worker_versions(status).unwrap_or_default()).await
+async fn worker_pass(
+    cfg: &SkillsConfig,
+    in_flight: &Arc<InFlightGuard>,
+    status: &Value,
+    notify: Notify<'_>,
+) -> u32 {
+    let workers = worker_versions(status).unwrap_or_default();
+    reconcile_workers(cfg, in_flight, &workers, notify).await
 }
 
 /// Download skills for each of `workers` (container, version) whose
@@ -529,6 +543,7 @@ async fn reconcile_workers(
     cfg: &SkillsConfig,
     in_flight: &Arc<InFlightGuard>,
     workers: &[(String, String)],
+    notify: Notify<'_>,
 ) -> u32 {
     let global_root = cfg.resolved_skills_folder();
     let local_root = cfg.local_skills_folder();
@@ -550,33 +565,57 @@ async fn reconcile_workers(
         if !in_flight.first_try(name, version) {
             continue;
         }
-        if reconcile_one(cfg, in_flight, name, &spec).await {
+        if reconcile_one(cfg, in_flight, name, &spec, notify).await {
             reconciled += 1;
         }
     }
     reconciled
 }
 
-/// Reconcile a single namespace: claim the in-flight slot and download
-/// its skills. Returns `true` iff at least one skill file was written.
-/// Shared by the engine-skill reconcile and the per-worker loop.
+/// Bring the engine's own skill (`iii`) up to date, unless it is overridden
+/// locally. The engine is not a worker: it never appears in
+/// `compose::status` and no function reports its version, so each boot asks
+/// for `latest` and writes it only when its version is new.
+async fn refresh_engine_skill(
+    cfg: &SkillsConfig,
+    in_flight: &Arc<InFlightGuard>,
+    notify: Notify<'_>,
+) -> bool {
+    if cfg.local_skills_folder().join(ENGINE_NAMESPACE).is_dir() {
+        return false;
+    }
+    let latest = VersionSpec::Tag("latest".to_string());
+    reconcile_one(cfg, in_flight, ENGINE_NAMESPACE, &latest, notify).await
+}
+
+/// Reconcile a single namespace: claim the in-flight slot, download its
+/// skills and call the matching `on-change`. Returns `true` iff a bundle was
+/// written. Shared by the engine-skill reconcile and the per-worker loop.
 async fn reconcile_one(
     cfg: &SkillsConfig,
     in_flight: &Arc<InFlightGuard>,
     name: &str,
     spec: &VersionSpec,
+    notify: Notify<'_>,
 ) -> bool {
     // RAII: _claim drops when this fn returns (or on panic).
     let Some(_claim) = in_flight.claim(name) else {
         return false;
     };
     match download_worker_skills(cfg, name, spec).await {
-        Ok(true) => {
+        Ok(Some(result)) => {
             tracing::info!(worker = name, "auto-download: downloaded skills");
+            if let Some((iii, sources)) = notify {
+                let source = ClassifiedInput::Registry {
+                    worker: name.to_string(),
+                    spec: spec.clone(),
+                };
+                fan_out(iii, sources, &source, &result).await;
+            }
             true
         }
-        Ok(false) => {
-            tracing::debug!(worker = name, "auto-download: 404 (benign)");
+        Ok(None) => {
+            tracing::debug!(worker = name, "auto-download: nothing to write");
             false
         }
         Err(e) => {
@@ -635,16 +674,15 @@ async fn fetch_worker_names_with_retry(iii: &IIIClient) -> Option<Vec<(String, S
     None
 }
 
-/// Spawn a non-blocking boot reconcile task. Always ensures the engine's
-/// own skill (`iii`) is present, then fetches the installed worker list
-/// and downloads skills for any worker whose global namespace is
-/// absent/incomplete (no completion marker) AND has no local override
-/// AND name validates.
+/// Spawn a non-blocking boot reconcile task. Always brings the engine's
+/// own skill (`iii`) up to date, then fetches the installed worker list and
+/// runs the worker pass over it (see [`reconcile_workers`]).
 fn spawn_boot_reconcile(
     iii: Arc<IIIClient>,
     cfg: SharedConfig,
     cache: Arc<RegisteredWorkersCache>,
     in_flight: Arc<InFlightGuard>,
+    sources: ChangeSources,
 ) {
     tokio::spawn(async move {
         // Snapshot the live config for this one-shot boot pass. The fields it
@@ -655,18 +693,12 @@ fn spawn_boot_reconcile(
         // Small delay so the engine has time to wire us up.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        let global_root = cfg.resolved_skills_folder();
-        let local_root = cfg.local_skills_folder();
         let mut reconciled = 0u32;
 
-        // Always ensure the engine's own skill is present. The engine is
-        // not a worker, so it never appears in `compose::status`; reconcile
-        // it directly (registry pull), independent of — and before — the
-        // worker list, so it lands even when `compose::status` isn't ready
-        // yet on a cold start.
-        if let Some(spec) = reconcile_decision(ENGINE_NAMESPACE, None, &local_root, &global_root)
-            && reconcile_one(&cfg, &in_flight, ENGINE_NAMESPACE, &spec).await
-        {
+        // The engine's own skill comes before the worker list, so it lands
+        // even when `compose::status` isn't ready yet on a cold start.
+        let notify = Some((iii.as_ref(), &sources));
+        if refresh_engine_skill(&cfg, &in_flight, notify).await {
             reconciled += 1;
         }
 
@@ -688,7 +720,7 @@ fn spawn_boot_reconcile(
             }
         };
 
-        reconciled += reconcile_workers(&cfg, &in_flight, &workers).await;
+        reconciled += reconcile_workers(&cfg, &in_flight, &workers, notify).await;
 
         if reconciled > 0 {
             cache.invalidate().await;
@@ -793,7 +825,7 @@ mod tests {
 
         // The first download pulls the skills of the version Compose runs.
         assert_eq!(
-            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0")).await,
+            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0"), None).await,
             1
         );
         assert_eq!(
@@ -804,18 +836,18 @@ mod tests {
 
         // The next connection: alpha is on disk, beta was asked at 2.0.0.
         assert_eq!(
-            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0")).await,
+            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0"), None).await,
             0
         );
         assert_eq!(asked().await, 2);
 
         // Another version of beta is asked again.
-        worker_pass(&cfg, &in_flight, &status("1.0.0", "2.1.0")).await;
+        worker_pass(&cfg, &in_flight, &status("1.0.0", "2.1.0"), None).await;
         assert_eq!(asked().await, 3);
 
         // An updated alpha gets the skills of its new version, once.
         assert_eq!(
-            worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0")).await,
+            worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0"), None).await,
             1
         );
         assert_eq!(
@@ -824,12 +856,120 @@ mod tests {
         );
         assert_eq!(marked().as_deref(), Some("1.1.0"));
         assert_eq!(asked().await, 4);
-        worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0")).await;
+        worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0"), None).await;
         assert_eq!(asked().await, 4);
 
         // A path:// worker reports `local`, which is no registry version.
-        worker_pass(&cfg, &in_flight, &status("local", "2.1.0")).await;
+        worker_pass(&cfg, &in_flight, &status("local", "2.1.0"), None).await;
         assert_eq!(asked().await, 4);
+    }
+
+    /// MOT-5893: the engine's skill was downloaded once and never again, so
+    /// a project kept documenting APIs the engine had removed.
+    #[tokio::test]
+    async fn a_stale_engine_skill_is_replaced_at_boot() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let bundle = json!({
+            "name": "iii",
+            "version": "0.26.0",
+            "skills": [{"path": "index.md", "content": "call iii.call"}],
+        });
+        Mock::given(method("GET"))
+            .and(path("/w/iii/skills"))
+            .and(query_param("version", "latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&bundle))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+        let cfg = SkillsConfig {
+            skills_folder: dir("skills"),
+            local_skills_folder: dir("skills/iii"),
+            agents_folder: dir("agents"),
+            registry_url: server.uri(),
+            ..SkillsConfig::default()
+        };
+        let in_flight = Arc::new(InFlightGuard::new());
+        let folder = cfg.resolved_skills_folder().join("iii");
+        let skill = folder.join("index.md");
+        let backups = || {
+            std::fs::read_dir(&folder)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "bak"))
+                .map(|e| std::fs::read_to_string(e.path()).unwrap())
+                .collect::<Vec<_>>()
+        };
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&skill, "call iii.trigger").unwrap();
+        std::fs::write(
+            folder.join(".iii-skill-complete"),
+            r#"{"worker":"iii","source":"registry","tag_or_version":"latest","schema":1}"#,
+        )
+        .unwrap();
+
+        assert!(refresh_engine_skill(&cfg, &in_flight, None).await);
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), "call iii.call");
+        assert_eq!(backups(), ["call iii.trigger"]);
+
+        // The next boot, same version: an edit made since stays.
+        std::fs::write(&skill, "edited").unwrap();
+        assert!(!refresh_engine_skill(&cfg, &in_flight, None).await);
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), "edited");
+
+        // A local override is never asked for.
+        let asked = server.received_requests().await.unwrap().len();
+        std::fs::create_dir_all(cfg.local_skills_folder().join("iii")).unwrap();
+        assert!(!refresh_engine_skill(&cfg, &in_flight, None).await);
+        assert_eq!(server.received_requests().await.unwrap().len(), asked);
+    }
+
+    /// A worker whose skills an older build downloaded (no version in the
+    /// marker) gets those of the version Compose runs.
+    #[tokio::test]
+    async fn the_worker_pass_replaces_skills_of_an_unknown_version() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let bundle = json!({
+            "name": "alpha",
+            "version": "1.0.0",
+            "skills": [{"path": "index.md", "content": "current"}],
+        });
+        Mock::given(method("GET"))
+            .and(path("/w/alpha/skills"))
+            .and(query_param("version", "1.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&bundle))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+        let cfg = SkillsConfig {
+            skills_folder: dir("global"),
+            local_skills_folder: dir("local"),
+            agents_folder: dir("agents"),
+            registry_url: server.uri(),
+            ..SkillsConfig::default()
+        };
+        let folder = cfg.resolved_skills_folder().join("alpha");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("index.md"), "stale").unwrap();
+        std::fs::write(
+            folder.join(".iii-skill-complete"),
+            r#"{"worker":"alpha","source":"registry","tag_or_version":"latest","schema":1}"#,
+        )
+        .unwrap();
+        let in_flight = Arc::new(InFlightGuard::new());
+        let status = json!({ "containers": [{ "container": "alpha", "version": "1.0.0" }] });
+        assert_eq!(worker_pass(&cfg, &in_flight, &status, None).await, 1);
+        assert_eq!(
+            std::fs::read_to_string(folder.join("index.md")).unwrap(),
+            "current"
+        );
     }
 
     #[test]

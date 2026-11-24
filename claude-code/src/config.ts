@@ -60,6 +60,12 @@ const ConfigSchema = z.object({
     .string()
     .default('')
     .describe('Path to the claude CLI; empty = resolve on PATH'),
+  external_sessions: z
+    .boolean()
+    .default(false)
+    .describe(
+      "claude::agents::list shows every Claude Code session on the terminal host, not only this worker's runs and the sessions whose hooks reached it, and its background ones may be opened and stopped",
+    ),
   terminal: z
     .object({
       executable: z

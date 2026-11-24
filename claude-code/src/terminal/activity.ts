@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import type { Emit } from '../agent-feed.js';
 import { runTurnSpan } from '../trace.js';
+import { isHeadless, recordTurn, type TurnSettle } from '../turns.js';
 import type {
   AgentMessage,
   AssistantMessage,
@@ -26,6 +27,9 @@ import type {
 } from './types.js';
 
 const IDLE_MS = 60 * 60_000;
+
+/** A real Claude Code session id; the `'claude-code'` fallback key never settles. */
+const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type ToolCall = { function_id: string; started_at: number };
 
@@ -59,6 +63,8 @@ type SessionState = {
   prompt: string;
   /** What this session is called on the claude::on-agent-event feed and in a trace. */
   group: string;
+  /** The last turn's final text, for the settle `SessionEnd` writes. */
+  lastResult?: string;
 };
 
 /** `mcp__server__tool` is that server's function; everything else is ours. */
@@ -112,7 +118,30 @@ function isError(response: unknown): boolean {
 export class ActivityTracker {
   private sessions = new Map<string, SessionState>();
 
-  constructor(private readonly emit: Emit) {}
+  constructor(
+    private readonly emit: Emit,
+    private readonly iii?: IIIClient,
+  ) {}
+
+  /** Whether this session's hooks have reached the sink (and it is not swept). */
+  has(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
+  /** Headless runs load the same plugin, but executeRun settles their turns. */
+  private async settle(
+    sessionId: string,
+    settle: Omit<TurnSettle, 'id' | 'source' | 'claude_session_id' | 'settled_at_ms'>,
+  ): Promise<void> {
+    if (!this.iii || !SESSION_UUID.test(sessionId) || isHeadless(sessionId)) return;
+    await recordTurn(this.iii, {
+      id: sessionId,
+      source: 'hook',
+      claude_session_id: sessionId,
+      ...settle,
+      settled_at_ms: Date.now(),
+    });
+  }
 
   private state(sessionId: string): SessionState {
     let state = this.sessions.get(sessionId);
@@ -237,8 +266,12 @@ export class ActivityTracker {
         break;
       }
 
-      case 'Stop': {
-        const message = assistant([], 'end');
+      case 'Stop':
+      case 'StopFailure': {
+        const failed = name === 'StopFailure';
+        const error = failed ? (event.error_details ?? String(event.error)) : undefined;
+        const message = assistant([], failed ? 'error' : 'end');
+        if (failed) message.error_message = error;
         state.transcript.push(message);
         await this.emit(group, {
           type: 'turn_end',
@@ -247,10 +280,29 @@ export class ActivityTracker {
         });
         await this.emit(group, { type: 'agent_end', messages: state.transcript });
         state.results = [];
+        state.lastResult = event.last_assistant_message;
+        await this.settle(sessionId, {
+          status: failed ? 'error' : 'completed',
+          turn_id: state.turnId,
+          result: event.last_assistant_message,
+          ...(failed
+            ? { error }
+            : {
+                background_tasks: Array.isArray(event.background_tasks)
+                  ? event.background_tasks.length
+                  : 0,
+              }),
+        });
         break;
       }
 
       case 'SessionEnd':
+        await this.settle(sessionId, {
+          status: 'gone',
+          stop_reason: event.reason,
+          turn_id: state.turnId,
+          result: state.lastResult,
+        });
         this.sessions.delete(sessionId);
         break;
 
@@ -265,13 +317,13 @@ export class ActivityTracker {
 }
 
 export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
-  const tracker = new ActivityTracker(emit);
+  const tracker = new ActivityTracker(emit, iii);
   iii.registerFunction(
     'claude::terminal::activity',
     (input: HookEvent) => tracker.handle(input ?? {}),
     {
       description:
-        'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the claude::on-agent-event feed.',
+        'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, StopFailure, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the claude::on-agent-event feed; Stop, StopFailure and SessionEnd also settle the turn in state scope `claude_turns` (key: the Claude Code session id).',
       request_format: {
         type: 'object',
         properties: {
@@ -283,6 +335,11 @@ export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
           tool_use_id: { type: 'string' },
           tool_input: { type: 'object' },
           tool_response: {},
+          last_assistant_message: { type: 'string' },
+          background_tasks: { type: 'array' },
+          error: {},
+          error_details: { type: 'string' },
+          reason: { type: 'string' },
         },
       },
       response_format: {

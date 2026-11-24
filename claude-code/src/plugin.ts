@@ -36,6 +36,8 @@ const HOOK_EVENTS: [event: string, shape: 'plain' | 'matcher'][] = [
   ['SessionEnd', 'plain'],
   ['UserPromptSubmit', 'plain'],
   ['Stop', 'plain'],
+  // Fires instead of Stop when the turn ends on an API error.
+  ['StopFailure', 'plain'],
   ['PreToolUse', 'matcher'],
   ['PostToolUse', 'matcher'],
 ];
