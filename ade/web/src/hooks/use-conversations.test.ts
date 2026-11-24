@@ -1412,6 +1412,33 @@ describe('appendMessageToConversation', () => {
     )
   })
 
+  it('the first ask after a command row still names the chat', () => {
+    // `/compact` first, then a real question: the question is the first
+    // ask, so it seeds the title (and the heading request keyed on it).
+    const afterCommand = appendMessageToConversation(
+      conversation({ status: 'idle', messages: [] }),
+      {
+        id: 'm1',
+        role: 'user',
+        content: '/compact',
+        command: true,
+        createdAt: 3_000,
+      },
+      3_500,
+    )
+    const next = appendMessageToConversation(
+      afterCommand,
+      {
+        id: 'm2',
+        role: 'user',
+        content: 'Fix the login redirect loop',
+        createdAt: 4_000,
+      },
+      4_500,
+    )
+    expect(next.title).toBe('Fix the login redirect loop')
+  })
+
   it('upserts a durable lifecycle notice over its live fallback', () => {
     const next = appendMessageToConversation(
       conversation({

@@ -215,6 +215,11 @@
   color: var(--color-ink-faint);
 }
 
+/* The field keeps no outline of its own; the rule under it shows focus. */
+[data-iii-ui='judge'] .judge-ui-session-filter:focus-within {
+  border-bottom-color: var(--color-rule-focus);
+}
+
 [data-iii-ui='judge'] .judge-ui-session-filter > svg {
   flex: 0 0 auto;
 }
@@ -255,6 +260,15 @@
   padding: 2px 8px 6px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* The rows' own box (the listbox, once there is a filter), so the empty
+   and status notes after it sit outside it. */
+[data-iii-ui='judge'] .judge-ui-session-options {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-width: 0;
 }
 
 /* A row: the choice and its settings on one wash. The row radius is `md`

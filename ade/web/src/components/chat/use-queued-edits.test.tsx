@@ -51,6 +51,7 @@ const queued: UserMessage = {
 
 function setup(opts: {
   removeQueued: (cid: string, id: string) => Promise<boolean>
+  listQueued?: (cid: string) => Promise<{ id: string }[]>
   canSend?: boolean
 }) {
   const send = vi.fn()
@@ -62,6 +63,7 @@ function setup(opts: {
     const edits = useQueuedEdits({
       conversationId: 'c1',
       removeQueued: opts.removeQueued,
+      listQueued: opts.listQueued,
       queuedDraftsRef: ref,
       setQueuedDrafts: setDrafts,
       send,
@@ -86,7 +88,10 @@ describe('useQueuedEdits', () => {
       hook.result.current.edits.edit('q1', { text: 'edited', attachments: [] }),
     )
     await flush()
-    expect(send).toHaveBeenCalledWith({ text: 'edited', attachments: [] })
+    expect(send).toHaveBeenCalledWith(
+      { text: 'edited', attachments: [] },
+      'edit',
+    )
     expect(hook.result.current.edits.held.size).toBe(0)
     expect(hook.result.current.drafts).toEqual([])
   })
@@ -117,11 +122,16 @@ describe('useQueuedEdits', () => {
   })
 
   it('sends the edit once a retried removal confirms the original is out', async () => {
+    // The first unqueue failed, but the queue still lists the message, so
+    // it was not removed and Enter may try again.
     const removeQueued = vi
       .fn()
       .mockRejectedValueOnce(new Error('timeout'))
       .mockResolvedValue(true)
-    const { hook, send } = setup({ removeQueued })
+    const { hook, send } = setup({
+      removeQueued,
+      listQueued: async () => [{ id: 'q1' }],
+    })
     act(() => void hook.result.current.edits.reserve('q1'))
     await flush()
     act(() =>
@@ -188,7 +198,10 @@ describe('useQueuedEdits', () => {
     )
     await flush()
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send).toHaveBeenCalledWith({ text: 'edited', attachments: [] })
+    expect(send).toHaveBeenCalledWith(
+      { text: 'edited', attachments: [] },
+      'edit',
+    )
     expect(hook.result.current.drafts).toEqual([])
     expect(hook.result.current.edits.held.size).toBe(0)
   })
@@ -206,10 +219,10 @@ describe('useQueuedEdits', () => {
     await flush()
     expect(removeQueued).toHaveBeenCalledTimes(1)
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send).toHaveBeenCalledWith({
-      text: 'original ask',
-      attachments: [],
-    })
+    expect(send).toHaveBeenCalledWith(
+      { text: 'original ask', attachments: [] },
+      'original',
+    )
     expect(hook.result.current.drafts).toEqual([])
     expect(hook.result.current.edits.held.size).toBe(0)
   })
@@ -265,9 +278,130 @@ describe('useQueuedEdits', () => {
     await flush()
     expect(hook.result.current.edits.held.size).toBe(0)
     act(() =>
-      hook.result.current.edits.abandon('q1', { text: 'x', attachments: [] }),
+      hook.result.current.edits.abandon('q1', {
+        text: 'original ask',
+        attachments: [],
+      }),
     )
     await flush()
     expect(keepAsDraft).not.toHaveBeenCalled()
+  })
+
+  it('keeps a changed edit when leaving races a reservation that fails', async () => {
+    // Edited, then switched chats before unqueue answered "already gone":
+    // the original still delivers, and the edit lands in the draft.
+    const reservation = deferred<boolean>()
+    const { hook, send, keepAsDraft } = setup({
+      removeQueued: () => reservation.promise,
+    })
+    act(() => void hook.result.current.edits.reserve('q1'))
+    act(() =>
+      hook.result.current.edits.abandon('q1', {
+        text: 'edited ask',
+        attachments: [],
+      }),
+    )
+    reservation.resolve(false)
+    await flush()
+    expect(send).not.toHaveBeenCalled()
+    expect(keepAsDraft).toHaveBeenCalledWith(
+      'c1',
+      { text: 'edited ask', attachments: [] },
+      'edit',
+    )
+    expect(hook.result.current.drafts).toEqual([queued])
+  })
+
+  it('never resends an original whose unqueue answer was lost', async () => {
+    // The call rejected and the queue no longer lists the message: it may
+    // have been removed, so it is kept as a draft rather than sent again.
+    const { hook, send, keepAsDraft, warn } = setup({
+      removeQueued: async () => {
+        throw new Error('timeout')
+      },
+      listQueued: async () => [],
+    })
+    let reserved: boolean | undefined
+    act(() => {
+      void hook.result.current.edits.reserve('q1').then((r) => {
+        reserved = r
+      })
+    })
+    await flush()
+    expect(reserved).toBe(true)
+    expect(warn).toHaveBeenCalledTimes(1)
+    act(() => hook.result.current.edits.release('q1'))
+    await flush()
+    expect(send).not.toHaveBeenCalled()
+    expect(keepAsDraft).toHaveBeenCalledWith(
+      'c1',
+      { text: 'original ask', attachments: [] },
+      'original',
+    )
+    expect(hook.result.current.drafts).toEqual([])
+    expect(hook.result.current.edits.held.size).toBe(0)
+  })
+
+  it('lets a failed unqueue the queue still lists be delivered as queued', async () => {
+    const { hook, send, keepAsDraft } = setup({
+      removeQueued: async () => {
+        throw new Error('timeout')
+      },
+      listQueued: async () => [{ id: 'q1' }],
+    })
+    let reserved: boolean | undefined
+    act(() => {
+      void hook.result.current.edits.reserve('q1').then((r) => {
+        reserved = r
+      })
+    })
+    await flush()
+    expect(reserved).toBe(false)
+    expect(hook.result.current.edits.held.size).toBe(0)
+    expect(send).not.toHaveBeenCalled()
+    expect(keepAsDraft).not.toHaveBeenCalled()
+  })
+
+  it('an earlier attempt settling late never clears a newer hold', async () => {
+    // Enter on a browsed message, then ↑ back into the same row before the
+    // first reservation answers: only the newest browse may let go.
+    const first = deferred<boolean>()
+    const second = deferred<boolean>()
+    const removeQueued = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const { hook } = setup({ removeQueued })
+    act(() => void hook.result.current.edits.reserve('q1'))
+    act(() =>
+      hook.result.current.edits.edit('q1', { text: 'edited', attachments: [] }),
+    )
+    act(() => void hook.result.current.edits.reserve('q1'))
+    first.resolve(true)
+    await flush()
+    expect(hook.result.current.edits.held.has('q1')).toBe(true)
+    second.resolve(false)
+    await flush()
+    expect(hook.result.current.edits.held.size).toBe(0)
+  })
+
+  it('a release that crosses a Stop goes to the draft, not out', async () => {
+    // ↑, ↓, then Stop before unqueue answers: no new turn starts.
+    const reservation = deferred<boolean>()
+    const { hook, send, keepAsDraft } = setup({
+      removeQueued: () => reservation.promise,
+    })
+    act(() => void hook.result.current.edits.reserve('q1'))
+    act(() => hook.result.current.edits.release('q1'))
+    act(() => hook.result.current.edits.stopped())
+    reservation.resolve(true)
+    await flush()
+    expect(send).not.toHaveBeenCalled()
+    expect(keepAsDraft).toHaveBeenCalledWith(
+      'c1',
+      { text: 'original ask', attachments: [] },
+      'original',
+    )
+    expect(hook.result.current.edits.held.size).toBe(0)
   })
 })

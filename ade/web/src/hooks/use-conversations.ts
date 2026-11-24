@@ -1214,6 +1214,12 @@ export function bumpSessionWatchEpoch(
   return next
 }
 
+/** Not a person's ask: any non-user row, or a client-handled command row
+ *  (`/compact`), which starts no turn and does not name the chat. */
+function isNotAnAsk(m: Message): boolean {
+  return m.role !== 'user' || m.command === true
+}
+
 export function appendMessageToConversation(
   c: Conversation,
   message: Message,
@@ -1248,11 +1254,7 @@ export function appendMessageToConversation(
     next.status = 'working'
     next.statusReason = undefined
   }
-  if (
-    !c.titleManual &&
-    startsTurn &&
-    c.messages.every((m) => m.role !== 'user')
-  ) {
+  if (!c.titleManual && startsTurn && c.messages.every(isNotAnAsk)) {
     next.title = deriveTitle(message.content)
   }
   return next
@@ -2901,13 +2903,17 @@ export function useConversations(
 
   /** Sessions with a write queued for this tick, and the title it carries. */
   const metaWriteQueueRef = useRef(new Map<string, string | undefined>())
+  /** Each session's last set-meta write, so the next one waits for it. */
+  const metaWriteChainRef = useRef(new Map<string, Promise<void>>())
 
   /* Every edit of one tick lands as ONE write, built after the last of them:
      a model pick also sets that model's effort (two setters, one handler),
      and a write built between the two would carry only half of the pick.
-     ponytail: writes from different ticks are not ordered, and the backend
-     may apply two in flight either way; a revision check on set-meta is the
-     upgrade path if that ever shows up. */
+     Writes for one session go out one at a time and each is built when it
+     goes, from the live mirror: set-meta replaces the stored metadata
+     wholesale, so an automatic heading that was still in flight can never
+     land after (and undo) a rename, and a write that waited carries the
+     latest title and `title_manual`, not the ones of its own tick. */
   const writeMeta = useCallback(
     (id: string, title?: string) => {
       const queue = metaWriteQueueRef.current
@@ -2917,17 +2923,25 @@ export function useConversations(
       queueMicrotask(() => {
         const queuedTitle = queue.get(id)
         queue.delete(id)
-        const conv = conversationsRef.current.find((c) => c.id === id)
-        if (!serverEnabled || !conv || conv.draft) return
-        // A read-only session keeps its metadata; only a rename is written.
-        if (conv.sessionMetadata?.read_only === true && !queuedTitle) return
-        void setSessionMeta({
-          session_id: id,
-          ...(queuedTitle ? { title: queuedTitle } : {}),
-          metadata: metadataForWrite(conv),
-        }).catch((err) => {
-          if (import.meta.env.DEV)
-            console.warn('[conversations] set_meta failed', err)
+        if (!serverEnabled) return
+        const chains = metaWriteChainRef.current
+        const write = (chains.get(id) ?? Promise.resolve()).then(async () => {
+          const conv = conversationsRef.current.find((c) => c.id === id)
+          if (!conv || conv.draft) return
+          // A read-only session keeps its metadata; only a rename is written.
+          if (conv.sessionMetadata?.read_only === true && !queuedTitle) return
+          await setSessionMeta({
+            session_id: id,
+            ...(queuedTitle ? { title: conv.title || queuedTitle } : {}),
+            metadata: metadataForWrite(conv),
+          }).catch((err) => {
+            if (import.meta.env.DEV)
+              console.warn('[conversations] set_meta failed', err)
+          })
+        })
+        chains.set(id, write)
+        void write.then(() => {
+          if (chains.get(id) === write) chains.delete(id)
         })
       })
     },
@@ -3179,7 +3193,7 @@ export function useConversations(
         !before.titleManual &&
         message.role === 'user' &&
         !message.command &&
-        before.messages.every((m) => m.role !== 'user')
+        before.messages.every(isNotAnAsk)
       ) {
         requestHeading(
           id,

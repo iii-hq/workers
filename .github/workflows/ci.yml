@@ -1119,6 +1119,21 @@ jobs:
         # (pnpm --filter chat-app lint:design:prune) so the count shrinks.
         run: pnpm --filter chat-app lint:design
 
+      - name: ADE design system baseline never grows
+        # ESLint accepts any count in eslint-suppressions.json, so a raised
+        # count would hide a new finding. Compare with the base revision;
+        # no baseline there (the gate's first) passes.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          base_file="$RUNNER_TEMP/base-eslint-suppressions.json"
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            git show "$BASE_SHA:ade/web/eslint-suppressions.json" > "$base_file" 2>/dev/null || rm -f "$base_file"
+          fi
+          node ade/web/scripts/check-suppression-growth.mjs "$base_file" ade/web/eslint-suppressions.json
+
       - name: ADE console tests
         run: pnpm --filter chat-app test
 

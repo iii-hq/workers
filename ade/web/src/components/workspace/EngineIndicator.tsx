@@ -112,7 +112,9 @@ function EngineFact({
             tooltip={copied ? 'Copied' : 'Copy'}
             className="-my-1.5 shrink-0"
             onClick={() => {
-              void copyTextToClipboard(value).then(() => setCopied(true))
+              void copyTextToClipboard(value).then((ok) => {
+                if (ok) setCopied(true)
+              })
             }}
           >
             {copied ? (
@@ -148,17 +150,30 @@ export function EngineIndicator({
     if (!enabled) return
     let cancelled = false
     let off: (() => void) | undefined
-    void getIiiClient()
-      .then((client) => {
-        if (cancelled) return
-        setInfo(client.connection)
-        off = client.addConnectionStateListener(setState)
-      })
-      .catch(() => {
-        if (!cancelled) setState('failed')
-      })
+    let retry: number | undefined
+    // A failed bootstrap is not cached (`getIiiClient` starts afresh, or
+    // joins whichever attempt the rest of the app has in flight), so the
+    // indicator keeps asking, backing off, until a client comes up.
+    const connect = (attempt: number) => {
+      void getIiiClient()
+        .then((client) => {
+          if (cancelled) return
+          setInfo(client.connection)
+          off = client.addConnectionStateListener(setState)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setState('failed')
+          retry = window.setTimeout(
+            () => connect(attempt + 1),
+            Math.min(1000 * 2 ** attempt, 30_000),
+          )
+        })
+    }
+    connect(0)
     return () => {
       cancelled = true
+      window.clearTimeout(retry)
       off?.()
     }
   }, [enabled])

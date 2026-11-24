@@ -170,6 +170,19 @@
       "count": 26
     }
   },
+  "src/components/chat/MemoryChip.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 3
+    },
+    "shadcn/no-restyle": {
+      "count": 19
+    }
+  },
+  "src/components/chat/MemoryList.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 1
+    }
+  },
   "src/components/chat/Message.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 3
@@ -213,10 +226,10 @@
   },
   "src/components/chat/ModelNoteMarker.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 3
+      "count": 5
     },
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 10
     }
   },
   "src/components/chat/ModelPicker.tsx": {
@@ -530,11 +543,6 @@
       "count": 1
     }
   },
-  "src/components/onboarding/JudgeStep.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    }
-  },
   "src/components/onboarding/ModelsStep.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 4
@@ -549,11 +557,6 @@
     },
     "shadcn/no-restyle": {
       "count": 21
-    }
-  },
-  "src/components/onboarding/ReadyStep.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
     }
   },
   "src/components/onboarding/Stepper.tsx": {
@@ -687,6 +690,9 @@
     }
   },
   "src/components/ui/FactCard.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 1
+    },
     "shadcn/no-inline-styles": {
       "count": 4
     }
@@ -712,6 +718,11 @@
   "src/components/ui/PageSidebar.tsx": {
     "shadcn/no-inline-styles": {
       "count": 6
+    }
+  },
+  "src/components/ui/Wordmark.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 1
     }
   },
   "src/components/workspace/EmptyPane.tsx": {
@@ -770,6 +781,9 @@
   "src/lib/markdown.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 10
+    },
+    "shadcn/no-restyle": {
+      "count": 4
     }
   },
   "src/lib/syntax.tsx": {

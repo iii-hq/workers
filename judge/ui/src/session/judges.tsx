@@ -22,7 +22,10 @@ export interface ConfigureTarget {
 }
 
 interface JudgeRow {
-  /** Stable and selector-safe: `default`, `off` or the provider name. */
+  /**
+   * Stable and selector-safe: `default`, `off`, or `provider-<name>` (its
+   * own namespace, so a provider named `default` never collides).
+   */
   id: string
   /** What choosing it writes to the session; `undefined` = Default. */
   value: string | undefined
@@ -119,7 +122,7 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
     ...names.sort().map((name): JudgeRow => {
       const entry = running.get(name)
       return {
-        id: name,
+        id: `provider-${name}`,
         value: name,
         mark: <JudgeMark provider={name} />,
         label: name,
@@ -257,23 +260,37 @@ export function JudgesPanel({
           />
         </div>
       ) : null}
-      <div id={listId} className="judge-ui-session-list">
+      <div className="judge-ui-session-list">
+        {/* With the filter, the rows are its listbox: the field keeps focus
+            and points at the active option (`aria-activedescendant`), and
+            each option says whether it is the session's choice. Without
+            it they are plain toggle buttons reached by Tab. A row's
+            settings button stays a Tab stop either way. */}
+        <div
+          id={listId}
+          className="judge-ui-session-options"
+          role={showFilter ? 'listbox' : undefined}
+          aria-label={showFilter ? 'Judges' : undefined}
+        >
         {visible.map((row) => {
           const selected = row.value === stored
           const tip = row.reason ? (
             <span className="judge-ui-session-tip">
               <span>{row.reason}</span>
-              {row.configure ? <span className="judge-ui-session-tip-action">Configure {row.id}</span> : null}
+              {row.configure ? <span className="judge-ui-session-tip-action">Configure {row.label}</span> : null}
             </span>
           ) : undefined
           return (
-            <div key={row.id} className="judge-ui-session-row">
+            <div key={row.id} className="judge-ui-session-row" role={showFilter ? 'none' : undefined}>
               <button
                 id={optionId(row)}
-                data-judge-option={row.id}
+                data-judge-option={row.value ?? 'default'}
                 type="button"
                 className="judge-ui-session-option"
-                aria-pressed={selected}
+                role={showFilter ? 'option' : undefined}
+                aria-selected={showFilter ? selected : undefined}
+                aria-pressed={showFilter ? undefined : selected}
+                tabIndex={showFilter ? -1 : undefined}
                 data-selected={selected || undefined}
                 data-highlighted={row === active || undefined}
                 data-warning={row.warning || undefined}
@@ -295,7 +312,7 @@ export function JudgesPanel({
               </button>
               {row.configure ? (
                 <IconButton
-                  label={`Configure ${row.id}`}
+                  label={`Configure ${row.label}`}
                   // A warning's whole reason rides on the settings button's
                   // tooltip, so the keyboard reaches it, not only a pointer.
                   tooltip={tip}
@@ -310,6 +327,7 @@ export function JudgesPanel({
             </div>
           )
         })}
+        </div>
         {visible.length === 0 && words.length > 0 ? (
           <p className="judge-ui-session-empty">No judge matches “{filter.trim()}”.</p>
         ) : null}

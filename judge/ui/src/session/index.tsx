@@ -93,7 +93,7 @@ function JudgeIntro({ onDismiss }: { onDismiss(): void }) {
         <span className="judge-ui-session-intro-title">What a judge does</span>
         <span>
           It answers the agent’s small questions, like which function fits or whether the arguments match, with a
-          fast model instead of the chat model. Default uses the judge in the judge settings; Off asks none.
+          fast model instead of the chat model. Default uses the judge in the judge settings; Off asks none, unless a function names a judge itself.
         </span>
         <Button variant="ghost" size="sm" className="judge-ui-session-intro-dismiss" onClick={onDismiss}>
           Got it

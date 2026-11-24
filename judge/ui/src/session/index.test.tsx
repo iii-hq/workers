@@ -295,7 +295,7 @@ describe('per-session judge provider', () => {
   it('explains the judge once, then stays out of the way', async () => {
     localStorage.removeItem('judge-ui-session-intro-seen')
     const { view, button } = await mount({})
-    expect(view.querySelector('[role="note"]')?.textContent).toContain('Off asks none')
+    expect(view.querySelector('[role="note"]')?.textContent).toContain('Off asks none, unless a function names a judge itself')
     await act(async () => button('Got it').click())
     expect(view.querySelector('[role="note"]')).toBeNull()
     expect(localStorage.getItem('judge-ui-session-intro-seen')).toBe('true')
@@ -380,6 +380,13 @@ describe('per-session judge provider', () => {
     await press(filter, 'ArrowDown')
     expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('clef')
     expect(filter.getAttribute('aria-activedescendant')).toBe(view.querySelector('[data-highlighted]')?.id)
+    // The field controls a listbox of options; the choice is aria-selected.
+    const listbox = view.querySelector(`#${CSS.escape(filter.getAttribute('aria-controls') ?? '')}`)
+    expect(listbox?.getAttribute('role')).toBe('listbox')
+    const optionRows = [...(listbox?.querySelectorAll('[data-judge-option]') ?? [])]
+    expect(optionRows.every((row) => row.getAttribute('role') === 'option')).toBe(true)
+    expect(listbox?.querySelector('[data-judge-option="default"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(listbox?.querySelector('[data-judge-option="clef"]')?.getAttribute('aria-selected')).toBe('false')
     await press(filter, 'Enter')
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'clef' })
     // Default matches what it resolves to.
@@ -391,6 +398,13 @@ describe('per-session judge provider', () => {
     await type(filter, 'nothing')
     expect(options()).toEqual([])
     expect(view.textContent).toContain('No judge matches “nothing”.')
+  })
+
+  it('a judge named "default" gets its own row, apart from Default', async () => {
+    const { view } = await mount({}, { iii: engine(['default', 'typesafe']) })
+    const ids = [...view.querySelectorAll('[data-judge-option]')].map((row) => row.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(view.querySelectorAll('.judge-ui-session-option-label').length).toBe(4)
   })
 
   it("configures a judge inside the picker and comes back to the list", async () => {

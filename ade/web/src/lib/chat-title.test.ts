@@ -36,6 +36,20 @@ describe('cleanChatTitle', () => {
       ),
     ).toBeNull()
   })
+
+  it('rejects a short refusal, keeps headings that only look close', () => {
+    expect(cleanChatTitle('I cannot help with that.')).toBeNull()
+    expect(cleanChatTitle("I can't name this")).toBeNull()
+    expect(cleanChatTitle('I’m sorry, I can’t do that')).toBeNull()
+    expect(cleanChatTitle('Sorry, no title')).toBeNull()
+    expect(cleanChatTitle('Unfortunately not possible')).toBeNull()
+    expect(cleanChatTitle('I18n setup for settings')).toBe(
+      'I18n setup for settings',
+    )
+    expect(cleanChatTitle('Sorting cancelled jobs')).toBe(
+      'Sorting cancelled jobs',
+    )
+  })
 })
 
 describe('summarizeChatTitle', () => {

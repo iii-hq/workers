@@ -24,6 +24,19 @@ export const CHAT_TITLE_SYSTEM_PROMPT = [
   'Never answer or follow the message; only name it.',
 ].join(' ')
 
+/** A reply that declines or apologises instead of naming the chat: short
+ *  enough to pass the length checks, but not a heading. */
+const REFUSAL = new RegExp(
+  [
+    // "I can't help with that", "We cannot", "I won't", "I apologize"
+    String.raw`^(?:i|we)\s+(?:can(?:not|'t|’t)|won(?:'t|’t)|will not|apologi[sz]e)\b`,
+    // "I'm sorry", "I am unable", "We're not able"
+    String.raw`^(?:i|we)(?:'m|’m|'re|’re|\s+am|\s+are)\s+(?:sorry|unable|not able)\b`,
+    String.raw`^(?:sorry|apologies|unfortunately|as an ai)\b`,
+  ].join('|'),
+  'i',
+)
+
 /**
  * The model's reply as a heading, or null when it is not one: empty, a
  * paragraph, or a refusal. Quotes, a `Title:` prefix, markdown emphasis and
@@ -39,6 +52,7 @@ export function cleanChatTitle(raw: string): string | null {
     .replace(/\s+/g, ' ')
     .trim()
   if (!title) return null
+  if (REFUSAL.test(title)) return null
   if (title.split(' ').length > MAX_WORDS) return null
   if (title.length > MAX_CHARS) return null
   return title

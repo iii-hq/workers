@@ -700,9 +700,9 @@ export function ChatView({
   queuedDraftsRef.current = queuedDrafts
   // The send path is defined further down (it needs the turn machinery);
   // queued edits reach it through this ref.
-  const sendQueuedEditRef = useRef<(payload: QueuedEditPayload) => void>(
-    () => {},
-  )
+  const sendQueuedEditRef = useRef<
+    (payload: QueuedEditPayload, reason: KeptReason) => void
+  >(() => {})
   const conversationIdRef = useRef(conversation.id)
   conversationIdRef.current = conversation.id
   const keepQueuedAsDraft = useCallback(
@@ -741,10 +741,12 @@ export function ChatView({
   const queuedEdits = useQueuedEdits({
     conversationId: conversation.id,
     removeQueued: backend.removeQueued,
+    listQueued: backend.listQueued,
     queuedDraftsRef,
     setQueuedDrafts,
     send: useCallback(
-      (payload: QueuedEditPayload) => sendQueuedEditRef.current(payload),
+      (payload: QueuedEditPayload, reason: KeptReason) =>
+        sendQueuedEditRef.current(payload, reason),
       [],
     ),
     canSend: useCallback(() => !submitBlockedRef.current, []),
@@ -762,17 +764,23 @@ export function ChatView({
   // optimistic transcript rows that reconcile in place when events land.
   // A message the composer holds (being edited, or its edit settling) was
   // taken out of the queue and never drained: its row stays until the edit
-  // settles, and it is not shown as sent.
+  // settles, and it is not shown as sent. A draft whose `queueMessage` has
+  // not answered yet waits too: a rejected enqueue removes it, an accepted
+  // one flushes here once the answer lands.
   useEffect(() => {
     if (streamingIndicator) return
-    const leaving = queuedDrafts.filter((d) => !heldQueued.has(d.id))
+    const leaving = queuedDrafts.filter(
+      (d) => !heldQueued.has(d.id) && !pendingQueueIds.has(d.id),
+    )
     if (leaving.length === 0) return
-    setQueuedDrafts((drafts) => drafts.filter((d) => heldQueued.has(d.id)))
+    const flushed = new Set(leaving.map((d) => d.id))
+    setQueuedDrafts((drafts) => drafts.filter((d) => !flushed.has(d.id)))
     for (const draft of leaving) onAppendMessage(conversation.id, draft)
   }, [
     streamingIndicator,
     queuedDrafts,
     heldQueued,
+    pendingQueueIds,
     conversation.id,
     onAppendMessage,
   ])
@@ -2538,8 +2546,12 @@ export function ChatView({
     [submitWithQuote],
   )
 
+  // An untouched original going back to the queue is not a new ask: a side
+  // chat's pending quote stays for the next deliberate send.
+  const resendOriginal = useMemo(() => withScreenWakeLock(submit), [submit])
   // Editing a queued message (`useQueuedEdits`) sends through here.
-  sendQueuedEditRef.current = (payload) => void handleSubmit(payload)
+  sendQueuedEditRef.current = (payload, reason) =>
+    void (reason === 'original' ? resendOriginal : handleSubmit)(payload)
   // The side panel's way to hand this chat's agent an instruction: sent now,
   // or put in this chat's draft (the composer remounts to pick it up). The
   // composer buses are global, so neither goes through them.
@@ -2569,6 +2581,9 @@ export function ChatView({
     setStopping(true)
     setStopRequested(true)
     abortRef.current?.abort()
+    // A queued message the composer is releasing unchanged must not start
+    // a turn after this Stop; it goes to the draft instead.
+    queuedEdits.stopped()
     // Re-enable the button if the stop RPC fails while the server still
     // reports working — otherwise `stopping` never clears (the reset
     // effect waits on the indicator) and the user can't retry.
@@ -2628,6 +2643,7 @@ export function ChatView({
     conversationsCtx,
     conversation.id,
     onAppendMessage,
+    queuedEdits.stopped,
   ])
 
   // Rescue a parked stream loop: the session hit a terminal error server-side

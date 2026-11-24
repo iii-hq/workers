@@ -573,7 +573,8 @@ function SelectItem({
       className={cn(
         // The check sits at the right, as in the shadcn item, so the text
         // starts at the row's edge instead of behind a 28px empty column.
-        'relative flex min-h-12 cursor-pointer select-none items-center rounded-md py-2 pr-3 pl-2 outline-none sm:min-h-0 sm:py-1.5',
+        // `pr-8` keeps long labels clear of it (8px inset + 16px check + gap).
+        'relative flex min-h-12 cursor-pointer select-none items-center rounded-md py-2 pr-8 pl-2 outline-none sm:min-h-0 sm:py-1.5',
         'data-highlighted:bg-muted data-highlighted:text-foreground',
         'data-selected:text-foreground',
         'data-disabled:pointer-events-none data-disabled:opacity-40',

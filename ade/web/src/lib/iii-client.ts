@@ -206,12 +206,14 @@ async function bootstrap(deps: Deps): Promise<IiiClient> {
     wsUrl,
     namespace === undefined ? undefined : { namespace },
   )
+  // `/runtime` names the engine behind the ADE's `/ws` proxy. A socket
+  // pointed elsewhere (`VITE_ENGINE_WS_URL`) is its own engine, so the
+  // proxy's upstream would name the wrong one.
+  const engineUrl = engineWsOverride() ? undefined : _runtimeEngineUrl
   return wrapSdk(sdk, browserId, {
     wsUrl,
     ...(namespace === undefined ? {} : { namespace }),
-    ...(_runtimeEngineUrl === undefined
-      ? {}
-      : { engineUrl: _runtimeEngineUrl }),
+    ...(engineUrl === undefined ? {} : { engineUrl }),
   })
 }
 
@@ -403,11 +405,16 @@ export function wrapSdk(
  *      to the engine.
  * Outside a browser (tests), default to `ws://127.0.0.1:49134`.
  */
-function resolveWsUrl(): string {
+function engineWsOverride(): string | undefined {
   const override = import.meta.env?.VITE_ENGINE_WS_URL as string | undefined
-  if (typeof override === 'string' && override.length > 0) {
-    return override
-  }
+  return typeof override === 'string' && override.length > 0
+    ? override
+    : undefined
+}
+
+function resolveWsUrl(): string {
+  const override = engineWsOverride()
+  if (override) return override
   if (typeof window !== 'undefined' && window.location) {
     const url = new URL('./ws', window.location.href)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'

@@ -38,6 +38,7 @@ export const tokenNames = Object.freeze([
   '--color-card-edge',
   '--color-control-edge',
   '--color-popover-surface',
+  '--color-scrim',
   '--color-popover-edge',
   '--color-dialog-surface',
   '--color-dialog-edge',

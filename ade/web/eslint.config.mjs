@@ -97,12 +97,26 @@ export default defineConfig([
     },
   },
   {
-    /* The design system itself: components own their appearance. Colours
-       and inline styles stay checked here too. */
+    /* The design system itself: components own their appearance, so
+       structural arbitrary values are fine. Colours (no-raw-colors skips
+       arbitrary values, so `bg-[#…]` is caught only here) and inline styles
+       stay checked here too. */
     files: ['src/components/shadcn/**', 'src/components/ui/**'],
     rules: {
       'shadcn/no-restyle': 'off',
-      'shadcn/no-arbitrary-values': 'off',
+      'shadcn/no-arbitrary-values': [
+        'error',
+        {
+          allow: [
+            'layout',
+            'typography',
+            'spacing',
+            'shape',
+            'effects',
+            'motion',
+          ],
+        },
+      ],
       'shadcn/require-static-classes': 'off',
     },
   },

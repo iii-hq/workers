@@ -545,8 +545,12 @@ export function Composer({
   // reported as the live draft.
   const [browseId, setBrowseId] = useState<string | null>(null)
   const browseIdRef = useRef<string | null>(null)
+  // Bumped on every browse change, so a reservation answer is matched to the
+  // browse that asked for it, not just to a row id a later ↑ may share.
+  const browseTokenRef = useRef(0)
   const setBrowse = useCallback(
     (id: string | null) => {
+      browseTokenRef.current += 1
       browseIdRef.current = id
       setBrowseId(id)
       onBrowseChange?.(id)
@@ -599,13 +603,16 @@ export function Composer({
         browseId,
         textRef.current,
         direction,
+        attachmentsRef.current,
       )
       if (result.kind === 'noop') return null
       const target = result.target.id
-      // Only a pristine message navigates (see queue-history), so leaving
-      // one means it is unchanged: it goes back to the queue.
+      // Only a pristine message navigates (see queue-history: text and
+      // chips), so leaving one means it is unchanged: it goes back to the
+      // queue.
       if (browseId !== null && browseId !== target) onReleaseQueued?.(browseId)
       setBrowse(target)
+      const browseToken = browseTokenRef.current
       setAttachments(result.target.attachments)
       textRef.current = result.target.text
       setHasText(result.target.text.trim().length > 0)
@@ -621,7 +628,7 @@ export function Composer({
       }
       if (target !== null && onReserveQueued) {
         void onReserveQueued(target).then((reserved) => {
-          if (reserved || browseIdRef.current !== target) return
+          if (reserved || browseTokenRef.current !== browseToken) return
           dropBrowsed()
         })
       }

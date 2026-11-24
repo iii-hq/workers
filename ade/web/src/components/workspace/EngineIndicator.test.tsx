@@ -13,7 +13,7 @@ import {
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
 vi.mock('@/lib/clipboard', () => ({
-  copyTextToClipboard: vi.fn().mockResolvedValue(undefined),
+  copyTextToClipboard: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('@/lib/backend', () => ({ getDefaultBackend: () => ({ id: 'real' }) }))
 
@@ -112,6 +112,44 @@ describe('EngineIndicator', () => {
     expect(copy('Copied the namespace')).not.toBeNull()
     await act(async () => copy('Copy the engine URL')?.click())
     expect(copyTextToClipboard).toHaveBeenLastCalledWith('ws://127.0.0.1:49134')
+  })
+
+  it('does not claim Copied when the clipboard write fails', async () => {
+    vi.mocked(copyTextToClipboard).mockResolvedValueOnce(false)
+    await act(async () => {
+      root.render(<EngineIndicator />)
+    })
+    await act(async () => host.querySelector('button')?.click())
+    const copy = (name: string) =>
+      document.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)
+    await act(async () => copy('Copy the namespace')?.click())
+    expect(copy('Copied the namespace')).toBeNull()
+    expect(copy('Copy the namespace')).not.toBeNull()
+  })
+
+  it('picks the engine up once a failed bootstrap recovers', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = await vi.mocked(getIiiClient)()
+      vi.mocked(getIiiClient)
+        .mockReset()
+        .mockRejectedValueOnce(new Error('runtime down'))
+        .mockResolvedValue(client)
+      await act(async () => {
+        root.render(<EngineIndicator />)
+      })
+      const trigger = host.querySelector('button')
+      expect(trigger?.getAttribute('aria-label')).toContain('Unable to connect')
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(getIiiClient).toHaveBeenCalledTimes(2)
+      expect(trigger?.getAttribute('aria-label')).toBe(
+        'Engine: 127.0.0.1:49134, Connecting…',
+      )
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reads out the engine on the phone row', async () => {
