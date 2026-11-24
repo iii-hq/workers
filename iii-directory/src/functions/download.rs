@@ -85,8 +85,8 @@ struct DownloadOutput {
     skills_written: Vec<String>,
     system_prompts_written: Vec<String>,
     agents_written: Vec<String>,
-    /// Agent profiles the bundle ships but an installed kit owns: left as
-    /// the kit wrote them (kit profiles take precedence).
+    /// Agent profiles the bundle ships but that a kit, another worker or
+    /// the project owns on disk: left as they are.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     agents_skipped: Vec<sources::SkippedAgent>,
     source: Value,
@@ -189,7 +189,8 @@ fn register_download_from_registry(
             "Download one worker's directory bundle from the workers registry into \
              skills_folder. `worker` is required; pass `version` (exact semver) or \
              `tag` (default \"latest\"), not both. Files are overwritten \
-             file-by-file.",
+             file-by-file (an edited one is kept as `<file>.<sha>.bak`); an agent \
+             profile made or edited in the project is left alone.",
         )
         .metadata(json!({"tool": {"label": "Download skills (registry)"}})),
     );
@@ -367,11 +368,12 @@ fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> Downloa
     }
 }
 
-/// Call the change functions. We call `skills::on-change` only when at
+/// Call the change functions, after an explicit download and after each
+/// bundle the auto-download writes. We call `skills::on-change` only when at
 /// least one skill was written (and likewise for system prompts / agents)
 /// so noisy no-op downloads don't churn MCP
 /// `notifications/list_changed`.
-async fn fan_out(
+pub async fn fan_out(
     iii: &IIIClient,
     sources: &super::ChangeSources,
     classified: &ClassifiedInput,
@@ -407,10 +409,12 @@ async fn fan_out(
 const COMPLETION_MARKER: &str = ".iii-skill-complete";
 
 /// Marker payload: `{ worker, source, tag_or_version, schema, version?,
-/// agents? }`. Schema 2 adds the resolved `version` and the agent profiles
-/// the download wrote (`id → sha256`), which is how `agents/<id>.md` is
-/// attributed to a worker (see `crate::kits::origin`). Schema-1 markers
-/// still parse; they attribute no agents.
+/// agents?, files? }`. Schema 2 adds the resolved `version` and the agent
+/// profiles the download wrote (`id → sha256`), which is how
+/// `agents/<id>.md` is attributed to a worker (see `crate::kits::origin`).
+/// Schema 3 adds every other file (`path → sha256`), which is how the next
+/// download tells an edited file. Older markers still parse; they attribute
+/// no agents (schema 1) and no files.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkerMarker {
     pub worker: String,
@@ -421,13 +425,15 @@ pub struct WorkerMarker {
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub agents: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub files: std::collections::BTreeMap<String, String>,
 }
 
 /// Marker schema written by this build.
-const MARKER_SCHEMA: u32 = 2;
+const MARKER_SCHEMA: u32 = 3;
 
 /// Write the completion marker under `<skills_folder>/<worker>/`.
-fn write_completion_marker(
+pub(crate) fn write_completion_marker(
     skills_folder: &std::path::Path,
     worker: &str,
     spec: &VersionSpec,
@@ -441,8 +447,12 @@ fn write_completion_marker(
             VersionSpec::Tag(t) => t.clone(),
         },
         schema: MARKER_SCHEMA,
-        version: result.version.clone(),
+        version: result.version.clone().or_else(|| match spec {
+            VersionSpec::Version(v) => Some(v.clone()),
+            VersionSpec::Tag(_) => None,
+        }),
         agents: result.agent_shas.clone(),
+        files: result.file_shas.clone(),
     };
     let json = serde_json::to_string_pretty(&marker).map_err(|e| format!("encode marker: {e}"))?;
     let dest = skills_folder.join(worker).join(COMPLETION_MARKER);
@@ -464,6 +474,12 @@ pub fn read_worker_markers(skills_folder: &std::path::Path) -> Vec<WorkerMarker>
     out
 }
 
+/// `worker`'s completion marker; `None` when missing or unreadable.
+fn read_marker(skills_folder: &std::path::Path, worker: &str) -> Option<WorkerMarker> {
+    let raw = std::fs::read_to_string(skills_folder.join(worker).join(COMPLETION_MARKER)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 /// Check if a completion marker exists for `worker` under `skills_folder`.
 pub fn has_completion_marker(skills_folder: &std::path::Path, worker: &str) -> bool {
     skills_folder.join(worker).join(COMPLETION_MARKER).exists()
@@ -479,14 +495,16 @@ pub fn has_completion_marker(skills_folder: &std::path::Path, worker: &str) -> b
 //     without a marker                      ▼
 //                              validate name
 //                                    │
-//                              registry::download_typed
+//                              registry::fetch
 //                                    │
 //                    ┌───────────────┼───────────────┬───────────────┐
 //                    ▼               ▼               ▼               ▼
-//               Ok(result)    NotFound(404)    Unavailable     Err(other)
+//               Ok(bundle)    NotFound(404)    Unavailable     Err(other)
 //                    │           (no-op)     (unreachable,   (logged warn)
-//               write marker                  5xx, 429: ask
-//               invalidate cache              again, backoff)
+//              version new?                   5xx, 429: ask
+//               write files                   again, backoff)
+//               write marker
+//               invalidate cache
 
 /// How long `download_worker_skills` waits before each new try of a
 /// registry that could not answer (unreachable, 5xx, 429); after the last
@@ -503,16 +521,18 @@ const UNAVAILABLE_BACKOFF: [std::time::Duration; 5] = [
 const UNAVAILABLE_BACKOFF: [std::time::Duration; 5] = [std::time::Duration::from_millis(10); 5];
 
 /// Download skills for a single worker from the registry. Validates the
-/// name, calls `registry::download_typed`, writes the completion marker
-/// on success, and treats 404 as a benign no-op. A registry that could not
-/// answer is asked again after each wait of [`UNAVAILABLE_BACKOFF`].
+/// name, calls `registry::fetch`, writes the bundle and the completion marker
+/// on success, and treats 404 as a benign no-op. A bundle of the version the
+/// marker already records is not written again, so an edit made since stays.
+/// A registry that could not answer is asked again after each wait of
+/// [`UNAVAILABLE_BACKOFF`].
 ///
-/// Returns `true` if skills were successfully downloaded.
+/// Returns what was written, `None` when there was nothing to write.
 pub async fn download_worker_skills(
     cfg: &SkillsConfig,
     worker: &str,
     spec: &VersionSpec,
-) -> Result<bool, String> {
+) -> Result<Option<DownloadResult>, String> {
     use crate::sources::registry;
 
     registry::validate_worker_name(worker)?;
@@ -522,21 +542,22 @@ pub async fn download_worker_skills(
     std::fs::create_dir_all(&folder)
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
-    let kit_agents = kit_owned_agents();
     let mut backoff = UNAVAILABLE_BACKOFF.iter();
     loop {
-        match registry::download_typed(
-            cfg.registry_base(),
-            worker,
-            spec,
-            &folder,
-            &agents_folder,
-            cfg.download_timeout_ms,
-            &kit_agents,
-        )
-        .await?
-        {
-            registry::RegistryDownloadOutcome::Ok(result) => {
+        match registry::fetch(cfg.registry_base(), worker, spec, cfg.download_timeout_ms).await? {
+            registry::RegistryFetchOutcome::Ok(bundle) => {
+                let on_disk = read_marker(&folder, worker).and_then(|m| m.version);
+                if on_disk.is_some() && on_disk == bundle.version {
+                    tracing::debug!(worker, version = ?on_disk, "skills already at this version");
+                    return Ok(None);
+                }
+                let result = registry::write_response(
+                    worker,
+                    bundle,
+                    &folder,
+                    &agents_folder,
+                    &kit_owned_agents(),
+                )?;
                 tracing::info!(
                     worker,
                     skills = result.skills_written.len(),
@@ -546,13 +567,13 @@ pub async fn download_worker_skills(
                     "auto-downloaded worker skills"
                 );
                 write_completion_marker(&folder, worker, spec, &result)?;
-                return Ok(true);
+                return Ok(Some(result));
             }
-            registry::RegistryDownloadOutcome::NotFound => {
+            registry::RegistryFetchOutcome::NotFound => {
                 tracing::debug!(worker, "registry 404 — no skills bundle; benign skip");
-                return Ok(false);
+                return Ok(None);
             }
-            registry::RegistryDownloadOutcome::Unavailable(error) => {
+            registry::RegistryFetchOutcome::Unavailable(error) => {
                 let Some(wait) = backoff.next() else {
                     return Err(error);
                 };
@@ -685,9 +706,9 @@ pub fn reconcile_decision(
 
 /// Decide whether a worker whose skills are already present needs them
 /// again because Compose now runs `installed`, another version than the one
-/// they came from. Returns that version's spec. A local override, an
-/// unknown installed version, or a marker that records no version
-/// (schema 1) keeps the skills as they are.
+/// they came from. Returns that version's spec. A marker that records no
+/// version (schema 1) or cannot be read is out of date. A local override or
+/// an unknown installed version keeps the skills as they are.
 pub fn refresh_decision(
     name: &str,
     installed: &str,
@@ -697,12 +718,12 @@ pub fn refresh_decision(
     if installed.is_empty()
         || crate::sources::registry::validate_worker_name(name).is_err()
         || local_root.join(name).is_dir()
+        || !has_completion_marker(global_root, name)
     {
         return None;
     }
-    let raw = std::fs::read_to_string(global_root.join(name).join(COMPLETION_MARKER)).ok()?;
-    let downloaded = serde_json::from_str::<WorkerMarker>(&raw).ok()?.version?;
-    (downloaded != installed).then(|| VersionSpec::Version(installed.to_string()))
+    let downloaded = read_marker(global_root, name).and_then(|m| m.version);
+    (downloaded.as_deref() != Some(installed)).then(|| VersionSpec::Version(installed.to_string()))
 }
 
 #[cfg(test)]
@@ -980,7 +1001,7 @@ mod tests {
         assert_eq!(marker.worker, "resend");
         assert_eq!(marker.tag_or_version, "latest");
         assert_eq!(marker.source, "registry");
-        assert_eq!(marker.schema, 2);
+        assert_eq!(marker.schema, 3);
     }
 
     #[test]
@@ -1041,6 +1062,8 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("myworker").join(COMPLETION_MARKER)).unwrap();
         let marker: WorkerMarker = serde_json::from_str(&raw).unwrap();
         assert_eq!(marker.tag_or_version, "2.3.4");
+        // The registry named no version: the one asked for is what was served.
+        assert_eq!(marker.version.as_deref(), Some("2.3.4"));
     }
 
     // ── download_worker_skills (wiremock integration) ──────────────
@@ -1073,11 +1096,56 @@ mod tests {
         let spec = VersionSpec::Tag("latest".into());
         let result = download_worker_skills(&cfg, "resend", &spec).await;
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
-        assert!(result.unwrap());
+        assert!(result.unwrap().is_some());
         assert!(
             has_completion_marker(&cfg.resolved_skills_folder(), "resend"),
             "completion marker should be written after successful download"
         );
+    }
+
+    /// A bundle of the version already on disk is not written again: an edit
+    /// made since stays.
+    #[tokio::test]
+    async fn download_worker_skills_leaves_the_version_on_disk_alone() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "name": "iii",
+            "version": "0.26.0",
+            "skills": [{"path": "index.md", "content": "shipped"}],
+        });
+        Mock::given(method("GET"))
+            .and(path("/w/iii/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&server)
+            .await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SkillsConfig {
+            skills_folder: tmp.path().join("skills").to_string_lossy().into_owned(),
+            agents_folder: tmp.path().join("agents").to_string_lossy().into_owned(),
+            registry_url: server.uri(),
+            ..SkillsConfig::default()
+        };
+        let latest = VersionSpec::Tag("latest".into());
+        let file = cfg.resolved_skills_folder().join("iii/index.md");
+
+        let first = download_worker_skills(&cfg, "iii", &latest).await.unwrap();
+        assert!(first.is_some());
+        std::fs::write(&file, "edited").unwrap();
+        let again = download_worker_skills(&cfg, "iii", &latest).await.unwrap();
+        assert!(again.is_none());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited");
+
+        // An explicit download still writes it.
+        let classified = ClassifiedInput::Registry {
+            worker: "iii".into(),
+            spec: latest,
+        };
+        run_download(&cfg, &classified).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "shipped");
     }
 
     #[tokio::test]
@@ -1100,7 +1168,7 @@ mod tests {
         };
         let spec = VersionSpec::Tag("latest".into());
         let result = download_worker_skills(&cfg, "missing", &spec).await;
-        assert!(!result.unwrap());
+        assert!(result.unwrap().is_none());
         assert!(
             !has_completion_marker(&cfg.resolved_skills_folder(), "missing"),
             "no marker should be written on 404"
@@ -1145,7 +1213,8 @@ mod tests {
             ..SkillsConfig::default()
         };
         let spec = VersionSpec::Tag("latest".into());
-        assert!(download_worker_skills(&cfg, "flaky", &spec).await.unwrap());
+        let flaky = download_worker_skills(&cfg, "flaky", &spec).await;
+        assert!(flaky.unwrap().is_some());
         assert!(has_completion_marker(
             &cfg.resolved_skills_folder(),
             "flaky"
@@ -1157,11 +1226,8 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(
-            !download_worker_skills(&cfg, "missing", &spec)
-                .await
-                .unwrap()
-        );
+        let missing = download_worker_skills(&cfg, "missing", &spec).await;
+        assert!(missing.unwrap().is_none());
 
         let requests = server.received_requests().await.unwrap();
         let asked = |worker: &str| {
@@ -1305,18 +1371,20 @@ mod tests {
             "no marker is the first download's job"
         );
 
-        // A marker that records no version cannot be compared.
-        write_completion_marker(
-            &global_root,
-            "resend",
-            &latest,
-            &DownloadResult::new("resend"),
-        )
-        .unwrap();
-        assert_eq!(
-            refresh_decision("resend", "1.1.0", &local_root, &global_root),
-            None
-        );
+        // A marker that records no version (schema 1) or cannot be read is
+        // out of date: what it stands for may be any version.
+        let marker = global_root.join("resend").join(COMPLETION_MARKER);
+        for raw in [
+            r#"{"worker":"resend","source":"registry","tag_or_version":"latest","schema":1}"#,
+            "not json",
+        ] {
+            std::fs::write(&marker, raw).unwrap();
+            assert_eq!(
+                refresh_decision("resend", "1.1.0", &local_root, &global_root),
+                Some(VersionSpec::Version("1.1.0".into())),
+                "{raw}"
+            );
+        }
 
         // A local override is never replaced.
         write_completion_marker(&global_root, "resend", &latest, &result).unwrap();
