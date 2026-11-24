@@ -22,7 +22,7 @@ use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, mcp-client::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, secrets:: (but list/get/status/detect), mcp-client::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -53,6 +53,16 @@ const SESSION_READS: &[&str] = &[
     "session::get-message",
     "session::get-attachment",
     "session::list-attachments",
+];
+
+/// The metadata reads of the secrets worker (masked hints, fingerprints,
+/// never a value). The only `secrets::` steps a pipe accepts: the rest grant
+/// access, resolve a value or change a credential.
+const SECRETS_READS: &[&str] = &[
+    "secrets::list",
+    "secrets::get",
+    "secrets::status",
+    "secrets::detect",
 ];
 
 // NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects
@@ -242,6 +252,12 @@ fn forbidden_unprefixed_step(
              deny on them",
         );
     }
+    if function_id.starts_with("secrets::") && !SECRETS_READS.contains(&function_id) {
+        return Some(
+            "only secrets::list/get/status/detect are supported in a pipe — other secrets \
+             functions would run with worker authority, past the agent-level deny on them",
+        );
+    }
     if function_id.starts_with("configuration::") || function_id.starts_with("oauth::") {
         return Some(
             "credential/config functions are not supported in a pipe — steps run with worker \
@@ -294,6 +310,9 @@ fn forbidden_unprefixed_step(
                 | "mesh::on-tunnel-change"
                 | "mesh::ui-content"
                 | "mesh::configuration-id"
+                // It calls any function_id later with the queue worker's
+                // authority, so a step could reach what this list refuses.
+                | "engine::queue::enqueue"
         )
     {
         return Some("bus-internal functions are not supported in a pipe");
@@ -950,6 +969,8 @@ mod tests {
             ("approval::resolve", "worker"),
             ("configuration::get", "credential"),
             ("oauth::anthropic::login", "credential"),
+            ("secrets::resolve", "secrets::list/get/status/detect"),
+            ("secrets::on-changed", "secrets::list/get/status/detect"),
             ("router::chat", "routing"),
             ("provider::anthropic::chat", "routing"),
             ("harness::send", "turn-control"),
@@ -957,6 +978,7 @@ mod tests {
             ("workflow::start", "caller stamp"),
             ("stream::set", "bus-internal"),
             ("iii::durable::publish", "bus-internal"),
+            ("engine::queue::enqueue", "bus-internal"),
             ("storage::on-config-change", "lifecycle"),
             ("database::execute", "read-only"),
             ("database::transaction", "read-only"),
@@ -1222,6 +1244,15 @@ mod tests {
             "approval::resolve",
             "configuration::get",
             "oauth::anthropic::login",
+            "secrets::resolve",
+            "secrets::access",
+            "secrets::set",
+            "secrets::compare-and-set",
+            "secrets::delete",
+            "secrets::import",
+            "secrets::on-config-change",
+            "secrets::on-changed",
+            "engine::queue::enqueue",
             "router::chat",
             "provider::anthropic::chat",
             "harness::send",
@@ -1259,6 +1290,10 @@ mod tests {
                 "session::get-message",
                 "session::get-attachment",
                 "session::list-attachments",
+                "secrets::list",
+                "secrets::get",
+                "secrets::status",
+                "secrets::detect",
             ] {
                 let id = format!("{prefix}{function}");
                 for gate in [false, true] {

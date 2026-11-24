@@ -37,6 +37,33 @@ fn mesh_reads_are_allowed_in_root_and_worker_permissions() {
     }
 }
 
+#[test]
+fn secret_values_and_writes_are_denied_in_root_and_worker_permissions() {
+    for permissions in [
+        repository_permissions(),
+        permissions_from_yaml(include_str!("../../secrets/iii-permissions.yaml")),
+    ] {
+        for id in [
+            "secrets::resolve",
+            "secrets::set",
+            "secrets::compare-and-set",
+            "secrets::delete",
+            "secrets::access",
+            "secrets::import",
+            "secrets::on-config-change",
+            "secrets::on-changed",
+        ] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::Deny { .. }
+                ),
+                "{id} should be denied"
+            );
+        }
+    }
+}
+
 /// The rules as written, for a call in `namespace`.
 fn in_ns(permissions: &Permissions, namespace: &str, id: &str) -> Decision {
     permissions.check_in(Some(namespace), id, &json!({}), PermissionMode::Manual)

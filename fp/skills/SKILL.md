@@ -42,7 +42,8 @@ for small values).
 - Refused as steps: `shell::*`/`coder::*`, observer control
   (`engine::observers::dispose`; observe through `harness::observe`), nested pipes, `fp::batch` as a step (a batch is not a pipe step),
   and the agent-policy hard-denied classes (session writes/`approval::*`,
-  credentials via `configuration::*`/`oauth::*`, model spend via
+  credentials via `configuration::*`/`oauth::*`/`secrets::*` (but
+  `secrets::list`/`get`/`status`/`detect`), model spend via
   `router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus
   internals) — call those directly. So is `workflow::start`, which needs the
   caller stamp a direct call gets; `workflow::status`/`stop` are allowed. Session reads (`session::get-attachment`,
