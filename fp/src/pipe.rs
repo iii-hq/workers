@@ -22,7 +22,7 @@ use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, secrets:: (but list/get/status/detect), mcp-client::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, secrets:: (but list/get/status/detect), mcp-client::, router:: (but its catalog reads router::models::list/get/budget/supports and router::provider::list), provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -63,6 +63,17 @@ const SECRETS_READS: &[&str] = &[
     "secrets::get",
     "secrets::status",
     "secrets::detect",
+];
+
+/// The router's catalog reads: they spend nothing, return no credential
+/// value, and iii-permissions.yaml does not deny them. The only `router::`
+/// steps a pipe accepts.
+const ROUTER_READS: &[&str] = &[
+    "router::models::list",
+    "router::models::get",
+    "router::models::budget",
+    "router::models::supports",
+    "router::provider::list",
 ];
 
 // NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects
@@ -186,13 +197,22 @@ pub(crate) fn forbidden_step(
     function_id: &str,
     approval_gate_running: bool,
 ) -> Option<&'static str> {
-    std::iter::once(function_id)
-        .chain(
-            function_id
-                .match_indices("::")
-                .map(|(index, _)| &function_id[index + 2..]),
-        )
-        .find_map(|id| forbidden_unprefixed_step(id, approval_gate_running))
+    let ids = std::iter::once(function_id).chain(
+        function_id
+            .match_indices("::")
+            .map(|(index, _)| &function_id[index + 2..]),
+    );
+    for id in ids {
+        // A catalog read ends the scan: the `provider::list` tail of
+        // `router::provider::list` is not a provider call.
+        if ROUTER_READS.contains(&id) {
+            return None;
+        }
+        if let Some(reason) = forbidden_unprefixed_step(id, approval_gate_running) {
+            return Some(reason);
+        }
+    }
+    None
 }
 
 fn forbidden_unprefixed_step(
@@ -266,8 +286,9 @@ fn forbidden_unprefixed_step(
     }
     if function_id.starts_with("router::") || function_id.starts_with("provider::") {
         return Some(
-            "LLM routing/provider functions are not supported in a pipe — model spend must \
-             stay under the harness loop's accounting",
+            "LLM routing/provider functions are not supported in a pipe (model spend stays in \
+             the harness loop); router::models::list/get/budget/supports and \
+             router::provider::list are allowed",
         );
     }
     if function_id.starts_with("harness::") || function_id.starts_with("run::") {
@@ -1254,6 +1275,14 @@ mod tests {
             "secrets::on-changed",
             "engine::queue::enqueue",
             "router::chat",
+            "router::complete",
+            "router::route",
+            "router::count_tokens",
+            "router::provider::resolve",
+            "router::models::reconcile",
+            "router::models::list::x",
+            "harness::router::models::list",
+            "provider::list",
             "provider::anthropic::chat",
             "harness::send",
             "run::start",
@@ -1294,6 +1323,11 @@ mod tests {
                 "secrets::get",
                 "secrets::status",
                 "secrets::detect",
+                "router::models::list",
+                "router::models::get",
+                "router::models::budget",
+                "router::models::supports",
+                "router::provider::list",
             ] {
                 let id = format!("{prefix}{function}");
                 for gate in [false, true] {
