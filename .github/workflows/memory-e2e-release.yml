@@ -234,7 +234,7 @@ jobs:
       - name: Compare the arms
         id: gain
         # The memory gain arms; the stacks run harness-e2e latest, 0.33.0 or later.
-        uses: iii-hq/harness-e2e/.github/actions/memory-gain@3d1c3566d116882f4efdb07a9c445d9b662fe9c0
+        uses: iii-hq/harness-e2e/.github/actions/memory-gain@5cb117039f6481ff03d961798641404489baaadc
         with:
           token: ${{ steps.app.outputs.token }}
           runs: ${{ steps.runs.outputs.runs }}
