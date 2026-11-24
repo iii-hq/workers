@@ -1181,7 +1181,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1857,9 +1857,9 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.26.0"
+version = "0.27.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "100136ca50d80e9fc36d68e64524e7380f4a6d99e696d274879e6c8cc7efefb0"
+checksum = "4163177a2f6cf0bd4ff76086de984471604e47cc393ebd4751820b785220a26a"
 dependencies = [
  "serde",
  "serde_json",
@@ -1867,9 +1867,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.26.0"
+version = "0.27.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46fc050a119fa7cc342e10b6b83737d0a85828ecca2e3517dbfd3ebfe3e0ae17"
+checksum = "b2ea43dad23ab631dea2b8709c625f746c18f9f62136628b1d8f472d6c3142c3"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -1888,12 +1888,13 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.26.0"
+version = "0.27.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c29ef3d5d399ad8d71a478ac75d617ce42604956e9aa5e1a79989b5291798d84"
+checksum = "29c8bd24b4249331a25318ca3a7e6d812b513a112e4134de4639089ac33a0aa5"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "bytes",
  "futures-util",
  "hostname",
  "iii-filter",
@@ -2204,7 +2205,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2608,7 +2609,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2922,7 +2923,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2981,7 +2982,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3513,7 +3514,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4152,7 +4153,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -169,8 +169,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0
       iii-browser-sdk:
-        specifier: 0.26.0
-        version: 0.26.0
+        specifier: 0.27.0-rc.1
+        version: 0.27.0-rc.1
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -1545,8 +1545,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       iii-sdk:
-        specifier: 0.26.0
-        version: 0.26.0
+        specifier: 0.27.0-rc.1
+        version: 0.27.0-rc.1
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -2760,8 +2760,8 @@ packages:
   '@iconify/utils@3.1.4':
     resolution: {integrity: sha512-b1S7B1k9ohZ+iNTi2ATxbRYG9fTrJmUT0rc46bvVnNxqNRGW7dyo/vRREwyniI5IRN2RSJHDcm+s3BjWrSAjHw==}
 
-  '@iii-dev/helpers@0.26.0':
-    resolution: {integrity: sha512-G3WE9g4fbHaiojohlQDwtAup1d6ff+b5OQCwH+G0dXQmtYui7pYee6kMvewSI1VPZMDrwq3dk/2ad1wIHsdxyw==}
+  '@iii-dev/helpers@0.27.0-rc.1':
+    resolution: {integrity: sha512-WFST6inq1tPc5R68KSqyKtYsciF9hhu6qgcPY7/T1fThy2ktndhREx3eppPp1qWF+DOHPbw02kS8PU05KssnkQ==}
 
   '@isaacs/nonrecursive-glob-match@1.1.0':
     resolution: {integrity: sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==}
@@ -5533,11 +5533,11 @@ packages:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
     engines: {node: '>= 4'}
 
-  iii-browser-sdk@0.26.0:
-    resolution: {integrity: sha512-/Cju7xAcIGOLWftxo+ZeHyOoiDjwsxDOXLMNzayByh77R8wGnizN+mJv9l2q0ONqKzK1NNHmTxmfgKQbOr81hg==}
+  iii-browser-sdk@0.27.0-rc.1:
+    resolution: {integrity: sha512-XcQs4deKcoBDci3HvE7OkRoiHDYBzjgLikf2Kq/h0a8/Zk+6hSEj9k8KGs9aK9dSmk/vSA21RFRU+4rY0D/a4w==}
 
-  iii-sdk@0.26.0:
-    resolution: {integrity: sha512-9WVPjIXXg2sxZ9YDxMNMOgdbViRgokWOcxqEZLy5aX0PPxZ887ITwKWXi7qee2E+DhaofkhPOJxwZbkrWLlGww==}
+  iii-sdk@0.27.0-rc.1:
+    resolution: {integrity: sha512-kEFDnugsHA4EqdaF+jHSA0AhDEk8/HDj8Nbc0xzz9ipShe8qovLJapxzYs4n8V/Ib+sLkzDsRe9X+R8we7AMnQ==}
 
   image-blob-reduce@3.0.1:
     resolution: {integrity: sha512-/VmmWgIryG/wcn4TVrV7cC4mlfUC/oyiKIfSg5eVM3Ten/c1c34RJhMYKCWTnoSMHSqXLt3tsrBR4Q2HInvN+Q==}
@@ -8070,7 +8070,7 @@ snapshots:
       '@iconify/types': 2.0.0
       import-meta-resolve: 4.2.0
 
-  '@iii-dev/helpers@0.26.0':
+  '@iii-dev/helpers@0.27.0-rc.1':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -9716,7 +9716,7 @@ snapshots:
       obug: 2.1.4
       std-env: 4.2.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
+      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   '@vitest/expect@3.2.4':
     dependencies:
@@ -10776,11 +10776,11 @@ snapshots:
 
   ignore@5.3.2: {}
 
-  iii-browser-sdk@0.26.0: {}
+  iii-browser-sdk@0.27.0-rc.1: {}
 
-  iii-sdk@0.26.0:
+  iii-sdk@0.27.0-rc.1:
     dependencies:
-      '@iii-dev/helpers': 0.26.0
+      '@iii-dev/helpers': 0.27.0-rc.1
       '@opentelemetry/api': 1.9.1
       ws: 8.21.1
     transitivePeerDependencies:
