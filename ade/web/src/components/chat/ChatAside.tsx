@@ -525,7 +525,10 @@ export function ChatAside({
     ? sideChatMessages(openChat.messages, openSince, openFrom)
     : []
   // Leaving a side chat in which nothing was sent discards it, without
-  // asking (§2.3.2): `close` deletes it only when it is empty.
+  // asking (§2.3.2): `close` deletes it only when it is empty. One left
+  // before its transcript was read goes to `close` too, since the engine
+  // keeps one that was sent in; but not with text typed in it, the draft of
+  // an Enter that waited for that read.
   const leaveSideChat = () => {
     const target = openChat
     setOpenId(null)
@@ -533,16 +536,18 @@ export function ChatAside({
     onPendingQuoteChange(null)
     if (
       !target ||
-      target.hydrated === false ||
       target.status === 'working' ||
       openOwn.some((message) => message.role === 'user')
     ) {
       return
     }
-    hideSide(target.id, true)
+    const unread = target.hydrated === false
+    if (unread && ctx.getDraftText(target.id)?.trim()) return
+    // A read one is known to be empty: out of the list at once.
+    if (!unread) hideSide(target.id, true)
     void closeSideChat(target.id).then(
       (result) => {
-        if (!result?.deleted) hideSide(target.id, false)
+        hideSide(target.id, Boolean(result?.deleted))
         sideChangedRef.current?.()
       },
       () => hideSide(target.id, false),

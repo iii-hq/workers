@@ -138,8 +138,9 @@ interface MessageListProps {
   turnKey?: string
   density?: 'route' | 'dock'
   /** Rendered at the top of the transcript scroller, above the messages, so
- it scrolls away with them instead of unmounting. When set it replaces
- the `EmptyState` on an empty transcript (landing demo). */
+ it scrolls away with them instead of unmounting. When given it replaces
+ the `EmptyState` on an empty transcript (landing demo); `null` asks for
+ nothing there (a side chat, whose fork strip says what it is). */
   header?: ReactNode
   onResolveApproval?: (
     sessionId: string,
@@ -1391,7 +1392,12 @@ export function MessageList({
     transitionTailState,
   ])
 
-  if (messages.length === 0 && !header && !isThinking && transcriptHydrated) {
+  if (
+    messages.length === 0 &&
+    header === undefined &&
+    !isThinking &&
+    transcriptHydrated
+  ) {
     return (
       <EmptyState
         {...resolveEmptyState(ctx, density, onConfigureProvider, {

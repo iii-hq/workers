@@ -353,6 +353,67 @@ describe('ChatAside with the engine side chats', () => {
     expect(changed).toHaveBeenCalled()
   })
 
+  it('closes one left before its transcript was read (P31)', async () => {
+    const fresh = chat('fresh', {
+      title: 'Side chat',
+      createdAt: 60,
+      updatedAt: 60,
+      hydrated: false,
+      sessionMetadata: lockMeta,
+    })
+    mocks.call.mockImplementation((fn: string) => {
+      if (fn === 'harness::side-chat::open') {
+        mocks.ctx = makeCtx([main, why, logs, fresh])
+        mocks.ctx.getDraftText = vi.fn((id: string) =>
+          id === 'fresh' ? '' : 'Also log it.',
+        )
+        return Promise.resolve({ session_id: 'fresh', meta: {} })
+      }
+      if (fn === 'harness::side-chat::close') {
+        return Promise.resolve({ deleted: true, operation_id: 'op' })
+      }
+      return Promise.reject(new Error(`unexpected ${fn}`))
+    })
+    render()
+    act(() => button('New')?.click())
+    await settle()
+    render()
+    act(() => button('Back to context')?.click())
+    await settle()
+    expect(mocks.call).toHaveBeenCalledWith('harness::side-chat::close', {
+      session_id: 'fresh',
+    })
+  })
+
+  it('keeps one left unread with text typed in it, its draft (P31)', async () => {
+    const fresh = chat('fresh', {
+      title: 'Side chat',
+      createdAt: 60,
+      updatedAt: 60,
+      hydrated: false,
+      sessionMetadata: lockMeta,
+    })
+    mocks.call.mockImplementation((fn: string) => {
+      if (fn === 'harness::side-chat::open') {
+        mocks.ctx = makeCtx([main, why, logs, fresh])
+        mocks.ctx.getDraftText = vi.fn((id: string) =>
+          id === 'fresh' ? 'Why five attempts and not eight?' : 'Also log it.',
+        )
+        return Promise.resolve({ session_id: 'fresh', meta: {} })
+      }
+      return Promise.reject(new Error(`unexpected ${fn}`))
+    })
+    render()
+    act(() => button('New')?.click())
+    await settle()
+    render()
+    act(() => button('Back to context')?.click())
+    await settle()
+    expect(mocks.call).not.toHaveBeenCalledWith('harness::side-chat::close', {
+      session_id: 'fresh',
+    })
+  })
+
   it('forks at the reply a "Side chat" action names', async () => {
     mocks.call.mockResolvedValue({ session_id: 'why', meta: {} })
     render({ seq: 1, tab: 'side-chat', fork: { entryId: 'e1' } })

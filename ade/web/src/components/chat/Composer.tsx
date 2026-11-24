@@ -276,6 +276,13 @@ interface ComposerProps {
   /** Prevent sending without locking the editor (e.g. transcript hydration). */
   submitBlocked?: boolean
   /**
+   * While true, a send that `submitBlocked` stops is held instead of ignored:
+   * it goes, with the editor's text at that moment, as soon as the composer
+   * can send. For a block that ends by itself, such as the transcript read of
+   * a chat that has just opened, where an Enter would otherwise do nothing.
+   */
+  holdSubmit?: boolean
+  /**
    * Claims a send someone already decided for this chat's draft (see
    * `sendDraftWhenReady`), answering the text it was decided for. Asked the
    * first time the composer can send; the draft goes only if it still holds
@@ -459,6 +466,7 @@ export function Composer({
   queueWhileStreaming,
   blocked,
   submitBlocked,
+  holdSubmit,
   claimDraftSend,
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
@@ -676,7 +684,15 @@ export function Composer({
   const optionsDisabled = isStreaming || blocked
 
   const handleSubmit = useCallback(() => {
-    if (submitDisabled) return
+    if (submitDisabled) {
+      // A chat that has just opened is still reading its transcript: the
+      // send is held and goes the moment it can (the pending-send effect
+      // below), its text left in the editor until then.
+      if (holdSubmit && browseId === null && textRef.current.trim()) {
+        pendingSubmitRef.current = true
+      }
+      return
+    }
     const text = textRef.current.trim()
     const empty = !text && attachments.length === 0
     // Editing a queued message: send the edit (or remove the message when
@@ -701,6 +717,7 @@ export function Composer({
     setClearToken((t) => t + 1)
   }, [
     submitDisabled,
+    holdSubmit,
     attachments,
     onSubmit,
     browseId,
@@ -896,7 +913,8 @@ export function Composer({
     for (const text of texts) onSubmit({ text, attachments: [] })
   }, [submitDisabled, model, onSubmit, heldToken])
   // A send that arrived while the composer could not send (a chat pane just
-  // opened again, its session still loading) goes the moment it can.
+  // opened again, its session still loading; an Enter held by `holdSubmit`)
+  // goes the moment it can.
   useEffect(() => {
     if (
       submitDisabled ||

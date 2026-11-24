@@ -4019,6 +4019,9 @@ export function ChatView({
                 queueWhileStreaming={!!backend.queueMessage}
                 blocked={harnessBlocked}
                 submitBlocked={submitBlocked || modelSwitch.pending}
+                // An Enter while the transcript still loads (a side chat
+                // just opened) waits for it instead of doing nothing.
+                holdSubmit={sessionHydrating}
                 claimDraftSend={claimComposerSend}
                 autoFocus={
                   (side ? side.autoFocus === true : focusComposerOnOpen) &&
