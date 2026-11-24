@@ -1,0 +1,35 @@
+{
+  "name": "control-plane",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Read-only control plane backend and summary scheduler.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "build": "pnpm run build:bundle",
+    "build:bundle": "pnpm run build:ui && node scripts/build-bundle.mjs",
+    "build:ui": "pnpm --dir .. --filter @iii-workers/control-plane-ui... install --frozen-lockfile && pnpm --dir .. --filter @iii-workers/control-plane-ui run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "start": "node dist/bundle/index.mjs",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.26.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

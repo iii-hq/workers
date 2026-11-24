@@ -53,6 +53,7 @@ pub struct Deps {
     /// ([`crate::bindings::expiry`]); the binding store cancels a binding's
     /// timer whenever it deletes the record.
     pub expiry_timers: crate::timer::OneShots,
+    pub ask_timers: crate::timer::OneShots,
     /// Coalesced wake-ups for the recovery passes the engine's worker
     /// connect/disconnect/announce feed drives; see [`crate::engine_events`].
     pub kicks: crate::engine_events::RecoveryKicks,
@@ -91,6 +92,7 @@ impl Deps {
             observer_handles: crate::bindings::ObserverHandles::default(),
             observing_again: crate::bindings::ObservingAgain::default(),
             expiry_timers: crate::timer::OneShots::new(),
+            ask_timers: crate::timer::OneShots::new(),
             kicks: crate::engine_events::RecoveryKicks::default(),
             compactions: crate::compaction::Compactions::default(),
         }

@@ -86,7 +86,7 @@ fn truncated_values_carry_the_original_length_and_the_list_keeps_full_text() {
     let full = list_activity(
         &board,
         &ActivityFilter {
-            ticket_id: "KAN-1".into(),
+            ticket_id: Some("KAN-1".into()),
             ..ActivityFilter::default()
         },
     );

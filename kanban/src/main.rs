@@ -100,6 +100,8 @@ async fn main() -> Result<()> {
     // Closes the boot gap: fetch the authoritative value through the same
     // serialized path every later update takes.
     reload.run().await;
+    iii_kanban::questions::register(&ctx);
+    iii_kanban::questions::spawn_reconcile(ctx.clone());
     // Finish claims a restart interrupted, park cards whose session ended
     // meanwhile, start what the rules call for, and keep checking.
     iii_kanban::dispatch::spawn_sweep(ctx.clone());

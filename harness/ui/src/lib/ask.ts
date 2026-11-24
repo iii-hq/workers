@@ -18,12 +18,13 @@
  * result is already on record.
  */
 
-import type { FunctionCallMessage } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
 export interface AskOptionView {
   label: string
   description?: string
+  recommended?: boolean
 }
 
 export interface AskQuestionView {
@@ -37,10 +38,10 @@ export interface AskView {
   /** The function-call id of the ask. */
   questionId: string
   sessionId: string
-  /** The turn that asked; once the session's current turn differs, the
-   *  question has been answered. */
+  /** The turn that asked; a later turn does not settle the question. */
   turnId: string
   questions: AskQuestionView[]
+  about?: { ticket?: string; blocks?: string[]; class?: string; why?: string }
 }
 
 /** The only `details.status` an accepted ask records. */
@@ -58,9 +59,12 @@ function isText(value: unknown): value is string {
 function parseOption(value: unknown): AskOptionView | null {
   if (!isRecord(value) || !isText(value.label)) return null
   const { label, description } = value
-  // Omitted when absent; the schema also allows `null`.
-  if (description == null || description === '') return { label }
-  return typeof description === 'string' ? { label, description } : null
+  if (description != null && typeof description !== 'string') return null
+  return {
+    label,
+    ...(description ? { description } : {}),
+    ...(value.recommended === true ? { recommended: true } : {}),
+  }
 }
 
 function parseQuestion(value: unknown): AskQuestionView | null {
@@ -85,9 +89,7 @@ function parseQuestion(value: unknown): AskQuestionView | null {
  * through) for a running call with no output, an error output, a missing or
  * unknown `details.status`, or malformed ids or questions.
  */
-export function parseAsk(
-  message: Pick<FunctionCallMessage, 'output'>,
-): AskView | null {
+export function parseAsk(message: Pick<FunctionCallMessage, 'output'>): AskView | null {
   const { output } = message
   if (!isRecord(output) || 'error' in output) return null
   const details = unwrapEnvelope(output)
@@ -108,6 +110,7 @@ export function parseAsk(
     sessionId: session_id,
     turnId: turn_id,
     questions: parsed,
+    ...(isRecord(details.about) ? { about: details.about as AskView['about'] } : {}),
   }
 }
 
@@ -144,43 +147,102 @@ export const SKIPPED_ANSWER = '(skipped)'
 export const DISMISS_TEXT =
   'I dismissed your questions without answering them. Go on with your best judgement; ask again later only if you really must.'
 
-/** One question's answer, or null when it has none. */
-function answerFor(
-  question: AskQuestionView,
-  selection: AskSelection | undefined,
-): string | null {
-  if (!selection) return null
-  if (selection.skipped) return SKIPPED_ANSWER
-  const other = selection.other?.trim() ?? ''
-  // Option order, not click order.
-  const picked = question.options
-    .map((option) => option.label)
-    .filter((label) => selection.picked.includes(label))
-  if (!question.multiSelect) return other || picked[0] || null
-  const items = other ? [...picked, other] : picked
-  return items.length > 0 ? items.join(', ') : null
+export function recommendedSelection(question: AskQuestionView): AskSelection {
+  return { picked: question.options.filter((option) => option.recommended).map((option) => option.label) }
 }
 
-/**
- * The message the card sends: one `Header: answer` line per question, in
- * question order. The answer is the picked label (single-select), the
- * picked labels joined with ", " in option order plus the Other text last
- * (multi-select), the trimmed Other text, or `SKIPPED_ANSWER` for a skipped
- * question. `null` while any question is unanswered (not skipped, no pick
- * and a blank Other); never an empty string.
- */
-export function formatAnswer(
-  view: AskView,
-  selections: readonly AskSelection[],
-): string | null {
+export function mayDismiss(view: AskView): boolean {
+  return ['scope', 'routine', 'run_health'].includes(view.about?.class ?? 'scope')
+}
+
+export interface AskAnswer {
+  header: string
+  choice?: string
+  choices?: string[]
+  other?: string
+  skipped?: boolean
+}
+
+/** Both delivery paths use option order and trimmed free text. */
+export function structuredAnswers(view: AskView, selections: readonly AskSelection[]): AskAnswer[] | null {
   if (view.questions.length === 0) return null
-  const lines: string[] = []
+  const answers: AskAnswer[] = []
   for (const [index, question] of view.questions.entries()) {
-    const answer = answerFor(question, selections[index])
-    if (answer === null) return null
-    lines.push(`${question.header}: ${answer}`)
+    const selection = selections[index]
+    if (!selection) return null
+    const header = question.header
+    if (selection.skipped) {
+      answers.push({ header, skipped: true })
+      continue
+    }
+    const other = selection.other?.trim() ?? ''
+    const picked = question.options.map((option) => option.label).filter((label) => selection.picked.includes(label))
+    if (!other && picked.length === 0) return null
+    answers.push(
+      question.multiSelect
+        ? { header, ...(picked.length ? { choices: picked } : {}), ...(other ? { other } : {}) }
+        : { header, ...(other ? { other } : { choice: picked[0] }) },
+    )
   }
-  return lines.join('\n')
+  return answers
+}
+
+/** Exact text used by the pre-deploy card and by harness::ask::answer. */
+export function formatAnswer(view: AskView, selections: readonly AskSelection[]): string | null {
+  const answers = structuredAnswers(view, selections)
+  return (
+    answers
+      ?.map((answer) => {
+        const text = answer.skipped
+          ? SKIPPED_ANSWER
+          : (answer.choice ?? [...(answer.choices ?? []), ...(answer.other ? [answer.other] : [])].join(', '))
+        return `${answer.header}: ${text}`
+      })
+      .join('\n') ?? null
+  )
+}
+
+export interface AskEntry {
+  session_id: string
+  question_id: string
+  state: 'open' | 'answering' | 'answered' | 'dismissed' | 'withdrawn' | 'expired'
+  answers?: AskAnswer[]
+  answer_text?: string
+  about?: AskView['about']
+  by?: { channel: string; user?: string }
+  outcome?: string
+}
+
+/** A complete successful list is required before using the legacy composer. */
+export async function readAskEntry(
+  iii: Pick<Host['iii'], 'call'>,
+  sessionId: string,
+  questionId: string,
+): Promise<AskEntry | null> {
+  let cursor: string | undefined
+  do {
+    const reply = await iii.call(
+      'harness::ask::list',
+      {
+        session_id: sessionId,
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      },
+      { timeoutMs: 5000 },
+    )
+    if (!isRecord(reply) || !Array.isArray(reply.entries)) throw new Error('Could not read the question.')
+    const entry = reply.entries.find(
+      (row: unknown) => isRecord(row) && row.session_id === sessionId && row.question_id === questionId,
+    )
+    if (entry) {
+      if (!['open', 'answering', 'answered', 'dismissed', 'withdrawn', 'expired'].includes(entry.state)) {
+        throw new Error('Could not read the question state.')
+      }
+      return entry as AskEntry
+    }
+    cursor = typeof reply.cursor === 'string' && reply.cursor ? reply.cursor : undefined
+  } while (cursor)
+  return null
 }
 
 /** What became of a card: the answer was sent, or it was dismissed. */
@@ -284,7 +346,7 @@ export function sendLanded(before: CurrentTurn, after: CurrentTurn, text: string
  * - `sending`: the text went to the composer and the card is re-reading
  *   the session;
  * - `unconfirmed`: the last of those reads still showed nothing landed;
- * - `failed`: `compose` threw.
+ * - `failed`: the answer request or legacy composer failed.
  */
 export type SendPhase = 'idle' | 'sending' | 'unconfirmed' | 'failed'
 
@@ -297,9 +359,9 @@ export type SendPhase = 'idle' | 'sending' | 'unconfirmed' | 'failed'
  * - `dismissed`: read-only, dismissed without an answer;
  * - `not-sent`: takes an answer again; the composer most likely kept the
  *   text as a draft;
- * - `failed`: takes an answer again; `compose` threw.
+ * - `failed`: takes an answer again after a failed send.
  */
-export type AskCardState = 'open' | 'sending' | 'answered' | 'dismissed' | 'not-sent' | 'failed'
+export type AskCardState = 'open' | 'sending' | 'answered' | 'dismissed' | 'withdrawn' | 'not-sent' | 'failed'
 
 /**
  * The card's state. Only a settlement closes it: this card's own confirmed
@@ -310,8 +372,12 @@ export type AskCardState = 'open' | 'sending' | 'answered' | 'dismissed' | 'not-
 export function askCardState(
   settlement: AskOutcome | undefined,
   phase: SendPhase,
+  entry?: AskEntry | null,
 ): AskCardState {
-  if (settlement !== undefined) return settlement
+  if (entry) {
+    if (entry.state === 'answered' || entry.state === 'dismissed' || entry.state === 'withdrawn') return entry.state
+    if (entry.state === 'answering') return 'sending'
+  } else if (settlement !== undefined) return settlement
   switch (phase) {
     case 'sending':
       return 'sending'
@@ -331,10 +397,7 @@ export function askCardState(
 export interface AskSessionIii {
   browserId: string
   on(functionId: string, handler: (payload: unknown) => void): () => void
-  observe(
-    source: { function_id: string; filters?: Record<string, unknown> },
-    target: string,
-  ): () => void
+  observe(source: { function_id: string; filters?: Record<string, unknown> }, target: string): () => void
 }
 
 /**
@@ -344,18 +407,14 @@ export interface AskSessionIii {
  * - `turn`: a turn of the session started or ended (the person said
  *   something else, the card's own answer seeded a turn, the agent replied).
  */
-export type AskSessionChange = 'settlements' | 'turn'
+export type AskSessionChange = 'settlements' | 'turn' | 'ask'
 
-/** State scope of the harness's settlement rows (`ask_settlement::ASK_SCOPE`;
- *  key: the session id). */
-export const ASK_SETTLEMENT_SCOPE = 'harness_ask'
-const STATE_ON_CHANGED_FN = 'state::on-changed'
 const TURN_EVENT_FNS = ['harness::on-turn-started', 'harness::on-turn-completed'] as const
 const HANDLER_FN = 'iii::harness-ui::ask'
 
 /**
  * Hear about the card's session as it changes, from any tab: observes the
- * state worker's `state::on-changed` for the session's settlement row, and
+ * harness ask events and legacy `harness::ask::settle` calls, plus
  * `harness::on-turn-started` / `on-turn-completed` for its turns. Without
  * this an open card only re-read on mount, visibility and focus, so a card
  * answered in another tab kept a live Send here, and the "chat moved on"
@@ -386,33 +445,29 @@ export function watchAskSession(
 
   const settlementsTarget = listen(
     'settlements',
-    (event) => !isRecord(event) || event.key === undefined || event.key === sessionId,
+    (event) => !isRecord(event) || event.session_id === undefined || event.session_id === sessionId,
   )
   offs.push(
     iii.observe(
       {
-        function_id: STATE_ON_CHANGED_FN,
-        filters: {
-          'input.scope': { $eq: ASK_SETTLEMENT_SCOPE },
-          'input.key': { $eq: sessionId },
-        },
+        function_id: 'harness::ask::settle',
+        filters: { 'input.session_id': { $eq: sessionId } },
       },
       settlementsTarget,
     ),
   )
 
+  const askTarget = listen('ask', (event) => isRecord(event) && event.session_id === sessionId)
+  for (const function_id of ['harness::on-ask', 'harness::on-ask-settled']) {
+    offs.push(iii.observe({ function_id, filters: { 'input.session_id': { $eq: sessionId } } }, askTarget))
+  }
+
   const turnTarget = listen(
     'turn',
-    (event) =>
-      !isRecord(event) || event.session_id === undefined || event.session_id === sessionId,
+    (event) => !isRecord(event) || event.session_id === undefined || event.session_id === sessionId,
   )
   for (const function_id of TURN_EVENT_FNS) {
-    offs.push(
-      iii.observe(
-        { function_id, filters: { 'input.session_id': { $eq: sessionId } } },
-        turnTarget,
-      ),
-    )
+    offs.push(iii.observe({ function_id, filters: { 'input.session_id': { $eq: sessionId } } }, turnTarget))
   }
 
   return () => {

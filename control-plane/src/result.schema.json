@@ -1,0 +1,182 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Control plane writer result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checked_at", "unchanged", "brief", "diary", "now", "pr_waits", "needs_you"],
+  "properties": {
+    "checked_at": {
+      "$ref": "#/definitions/timestamp"
+    },
+    "unchanged": {
+      "type": "boolean"
+    },
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headline", "happened", "happening", "remaining", "refs"],
+      "properties": {
+        "headline": {
+          "type": "string"
+        },
+        "happened": {
+          "type": "string",
+          "description": "What happened: the milestones since the last summary, in natural language."
+        },
+        "happening": {
+          "type": "string",
+          "description": "What is happening now: live runs, cards in progress, pull requests waiting."
+        },
+        "remaining": {
+          "type": "string",
+          "description": "What is left: open cards, the rest of the active releases, decisions waiting on the person."
+        },
+        "refs": {
+          "$ref": "#/definitions/refs"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "headline": {
+              "minLength": 1
+            },
+            "refs": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "headline": {
+              "const": ""
+            },
+            "happened": {
+              "const": ""
+            },
+            "happening": {
+              "const": ""
+            },
+            "remaining": {
+              "const": ""
+            },
+            "refs": {
+              "maxItems": 0
+            }
+          }
+        }
+      ]
+    },
+    "diary": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "text", "refs"],
+        "properties": {
+          "at": {
+            "$ref": "#/definitions/timestamp"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "refs": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/refs"
+              }
+            ],
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "now": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^session:[^\\s]+$": {
+          "$ref": "#/definitions/line"
+        }
+      }
+    },
+    "pr_waits": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$": {
+          "$ref": "#/definitions/line"
+        }
+      }
+    },
+    "needs_you": {
+      "type": "array",
+      "maxItems": 40,
+      "description": "Your check of each digest needs_you candidate, by its id, plus found:<subject> entries for decisions waiting on the person that no candidate covers.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "waiting", "text", "recommendation", "refs"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(question|stalled|card|reply):.+$|^found:([A-Z][A-Z0-9]*-[0-9]+|session:[^\\s]+)$"
+          },
+          "waiting": {
+            "type": "boolean",
+            "description": "Whether the person is really needed for this now."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "In plain language, what the person must decide or do."
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "What you recommend and why, from the evidence; empty when the evidence does not support one."
+          },
+          "refs": {
+            "allOf": [{ "$ref": "#/definitions/refs" }],
+            "minItems": 1
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^([A-Z][A-Z0-9]*-[0-9]+|session:[^\\s]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)$"
+      }
+    },
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "refs"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "refs": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/refs"
+            }
+          ],
+          "minItems": 1
+        }
+      }
+    }
+  }
+}

@@ -48,6 +48,23 @@ import {
 const NO_EXT = new Map<string, string>()
 
 describe('parseWorkspaceTabs', () => {
+  it('migrates stored legacy screens to the Control plane worker page', () => {
+    const tabs = [
+      { id: 'built-in', screens: ['tower'] },
+      { id: 'injected', screens: ['ext:tower'] },
+    ]
+    expect(parseWorkspaceTabs({ tabs })).toMatchObject([
+      { id: 'built-in', screens: ['ext:control-plane'] },
+      { id: 'injected', screens: ['ext:control-plane'] },
+    ])
+    expect(deepLinkScreen('#/tower')).toBeNull()
+    expect(
+      screenLabel(
+        'ext:control-plane',
+        new Map([['control-plane', 'Control plane']]),
+      ),
+    ).toBe('Control plane')
+  })
   it('returns [] for an empty / malformed document', () => {
     expect(parseWorkspaceTabs({})).toEqual([])
     expect(parseWorkspaceTabs({ tabs: 'nope' })).toEqual([])

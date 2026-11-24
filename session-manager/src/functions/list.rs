@@ -28,6 +28,9 @@ pub struct ListRequest {
     /// Only sessions whose kind is one of these. Omit for every kind; an
     /// empty list matches nothing.
     pub kinds: Option<Vec<SessionKind>>,
+    /// When true, only sessions without a `spawned_by` key in metadata.
+    /// Omit or set false for every session, including sub-agents.
+    pub roots: Option<bool>,
     /// Equality filter against `SessionMeta.metadata` (tenancy):
     /// every given key must equal the stored value.
     pub metadata: Option<JsonMap>,

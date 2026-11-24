@@ -25,6 +25,8 @@ pub const MIN_OPTIONS: usize = 2;
 pub const MAX_OPTIONS: usize = 4;
 /// Longest option `label`, in characters (not bytes).
 pub const MAX_LABEL_CHARS: usize = 80;
+/// Milliseconds in one `expires_in_min` minute.
+pub const MILLIS_PER_MINUTE: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AskRequest {
@@ -32,6 +34,85 @@ pub struct AskRequest {
     /// user's next message, one line per question.
     #[schemars(length(min = 1, max = 4))]
     pub questions: Vec<AskQuestion>,
+    /// What this decision concerns and what it blocks.
+    #[serde(default, skip_serializing_if = "AskAbout::is_default")]
+    pub about: AskAbout,
+    /// Minutes until the expiry action runs. Omitted asks wait forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_min: Option<u64>,
+    /// What to do at expiry. Defaults to leaving the question open and
+    /// telling the agent that it must not decide for the user.
+    #[serde(default, skip_serializing_if = "AskExpiry::is_block")]
+    pub on_expiry: AskExpiry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AskAbout {
+    /// The card this question concerns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
+    /// Cards whose work waits on this answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<String>,
+    /// Classify the decision as `security` for credentials or permissions,
+    /// `publish` for a release or deployment, `external_cost` for paid spend,
+    /// or `data` for data access, migration, or deletion. Defaults to `scope`
+    /// for other questions.
+    #[serde(default)]
+    pub class: AskClass,
+    /// One paragraph explaining why the answer is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+impl AskAbout {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AskClass {
+    Security,
+    Publish,
+    ExternalCost,
+    Data,
+    #[default]
+    Scope,
+    RunHealth,
+    Routine,
+}
+
+impl AskClass {
+    pub fn allows_expiry_answer(self) -> bool {
+        matches!(self, Self::RunHealth | Self::Routine)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AskExpiryBlock {
+    Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum AskExpiry {
+    Answer { answer: String },
+    Block(AskExpiryBlock),
+}
+
+impl Default for AskExpiry {
+    fn default() -> Self {
+        Self::Block(AskExpiryBlock::Block)
+    }
+}
+
+impl AskExpiry {
+    fn is_block(&self) -> bool {
+        matches!(self, Self::Block(AskExpiryBlock::Block))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -62,6 +143,13 @@ pub struct AskOption {
     /// Optional one-line explanation shown under the label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Marks the agent's preferred choice. At most one option per question.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recommended: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -79,11 +167,16 @@ pub struct AskResponse {
     /// The function-call id of this ask.
     pub question_id: String,
     pub session_id: String,
-    /// The turn that asked; once the session's current turn differs, the
-    /// question has been answered.
+    /// The turn that asked; the question remains open if the session moves on.
     pub turn_id: String,
     /// The questions as shown, in request order.
     pub questions: Vec<AskQuestion>,
+    #[serde(default, skip_serializing_if = "AskAbout::is_default")]
+    pub about: AskAbout,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_min: Option<u64>,
+    #[serde(default, skip_serializing_if = "AskExpiry::is_block")]
+    pub on_expiry: AskExpiry,
 }
 
 /// Check a request against the `harness::ask` limits. The error names the
@@ -99,6 +192,49 @@ pub fn validate(req: &AskRequest) -> Result<(), String> {
     for (qi, q) in req.questions.iter().enumerate() {
         validate_question(qi, q)?;
     }
+    if let Some(ticket) = &req.about.ticket {
+        check_text("about.ticket", ticket, None)?;
+        check_single_line("about.ticket", ticket)?;
+    }
+    for (index, block) in req.about.blocks.iter().enumerate() {
+        let field = format!("about.blocks[{index}]");
+        check_text(&field, block, None)?;
+        check_single_line(&field, block)?;
+    }
+    if let Some(why) = &req.about.why {
+        check_text("about.why", why, None)?;
+        check_single_line("about.why", why)?;
+    }
+    if let Some(minutes) = req.expires_in_min {
+        if minutes == 0 {
+            return Err("expires_in_min must be greater than 0".into());
+        }
+        minutes
+            .checked_mul(MILLIS_PER_MINUTE)
+            .and_then(|ms| i64::try_from(ms).ok())
+            .and_then(|ms| crate::types::message::AgentMessage::now_ms().checked_add(ms))
+            .ok_or_else(|| "expires_in_min is too large to represent as a deadline".to_string())?;
+    }
+    if let AskExpiry::Answer { answer } = &req.on_expiry {
+        let [question] = req.questions.as_slice() else {
+            return Err("on_expiry.answer requires exactly one question".into());
+        };
+        if question.multi_select {
+            return Err("on_expiry.answer requires a single-select question".into());
+        }
+        if !req.about.class.allows_expiry_answer() {
+            return Err(
+                "on_expiry.answer is only allowed for run_health or routine questions".into(),
+            );
+        }
+        if !question
+            .options
+            .iter()
+            .any(|option| option.label == *answer)
+        {
+            return Err("on_expiry.answer must match an option label exactly".into());
+        }
+    }
     Ok(())
 }
 
@@ -112,6 +248,11 @@ fn validate_question(qi: usize, q: &AskQuestion) -> Result<(), String> {
     if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&count) {
         return Err(format!(
             "{at}.options must have {MIN_OPTIONS}-{MAX_OPTIONS} entries (got {count})"
+        ));
+    }
+    if q.options.iter().filter(|option| option.recommended).count() > 1 {
+        return Err(format!(
+            "{at}.options may mark at most one option as recommended"
         ));
     }
     for (oi, opt) in q.options.iter().enumerate() {
@@ -204,6 +345,9 @@ pub fn awaiting_result(
             session_id: session_id.to_owned(),
             turn_id: turn_id.to_owned(),
             questions: req.questions.clone(),
+            about: req.about.clone(),
+            expires_in_min: req.expires_in_min,
+            on_expiry: req.on_expiry.clone(),
         }),
     }
 }
@@ -214,7 +358,8 @@ const AWAITING_TEXT: &str = "The questions are now shown to the user as a card o
      A question the user skipped reads `Header: (skipped)`: decide that one yourself. \
      The user may also dismiss the whole card; a notice then arrives instead of answers, \
      and you go on with your best judgement. \
-     Do not repeat the questions in text. End your turn now.";
+     Do not repeat the questions in text. Keep working if you can; withdraw the question \
+     if it no longer needs an answer.";
 
 /// The `is_error` result for an `ask` that cannot be shown (invalid
 /// arguments, no human to answer, a second ask in the step).
@@ -246,6 +391,7 @@ mod tests {
         AskOption {
             label: label.into(),
             description: None,
+            recommended: false,
         }
     }
 
@@ -263,7 +409,12 @@ mod tests {
     }
 
     fn request(questions: Vec<AskQuestion>) -> AskRequest {
-        AskRequest { questions }
+        AskRequest {
+            questions,
+            about: AskAbout::default(),
+            expires_in_min: None,
+            on_expiry: AskExpiry::default(),
+        }
     }
 
     fn contract_example() -> serde_json::Value {
@@ -299,6 +450,11 @@ mod tests {
         .unwrap();
         assert!(!req.questions[0].multi_select);
         assert_eq!(req.questions[0].options[0].description, None);
+        assert!(!req.questions[0].options[0].recommended);
+        assert_eq!(req.about, AskAbout::default());
+        assert_eq!(req.about.class, AskClass::Scope);
+        assert_eq!(req.expires_in_min, None);
+        assert_eq!(req.on_expiry, AskExpiry::default());
         let wire = serde_json::to_value(&req).unwrap();
         assert!(
             !wire["questions"][0]["options"][0]
@@ -306,7 +462,167 @@ mod tests {
                 .unwrap()
                 .contains_key("description")
         );
+        for absent in ["about", "expires_in_min", "on_expiry"] {
+            assert!(!wire.as_object().unwrap().contains_key(absent), "{wire}");
+        }
         assert_eq!(validate(&req), Ok(()));
+    }
+
+    #[test]
+    fn class_schema_tells_the_model_to_classify_escalated_questions() {
+        let schema = serde_json::to_value(schemars::schema_for!(AskRequest)).unwrap();
+        let description = schema["definitions"]["AskAbout"]["properties"]["class"]["description"]
+            .as_str()
+            .unwrap();
+
+        for guidance in [
+            "`security` for credentials or permissions",
+            "`publish` for a release or deployment",
+            "`external_cost` for paid spend",
+            "`data` for data access, migration, or deletion",
+            "Defaults to `scope`",
+        ] {
+            assert!(description.contains(guidance), "missing {guidance}");
+        }
+    }
+
+    #[test]
+    fn accepts_recommended_about_and_block_expiry() {
+        let req: AskRequest = serde_json::from_value(json!({
+            "questions": [{
+                "header": "Builds",
+                "question": "How should builds run?",
+                "options": [
+                    { "label": "Isolate", "recommended": true },
+                    { "label": "Share" }
+                ]
+            }],
+            "about": {
+                "ticket": "KAN-597",
+                "blocks": ["KAN-598"],
+                "class": "security",
+                "why": "The release needs a network boundary."
+            },
+            "expires_in_min": 30,
+            "on_expiry": "block"
+        }))
+        .unwrap();
+
+        assert_eq!(req.about.class, AskClass::Security);
+        assert!(req.questions[0].options[0].recommended);
+        assert_eq!(validate(&req), Ok(()));
+        assert_eq!(serde_json::to_value(&req.on_expiry).unwrap(), "block");
+    }
+
+    #[test]
+    fn rejects_two_recommended_options_in_one_question() {
+        let req: AskRequest = serde_json::from_value(json!({ "questions": [{
+            "header": "Builds",
+            "question": "How should builds run?",
+            "options": [
+                { "label": "Isolate", "recommended": true },
+                { "label": "Share", "recommended": true }
+            ]
+        }] }))
+        .unwrap();
+
+        assert_eq!(
+            validate(&req),
+            Err("questions[0].options may mark at most one option as recommended".into())
+        );
+    }
+
+    #[test]
+    fn about_values_are_non_empty_single_lines() {
+        for wire in [
+            json!({ "questions": [contract_example()["questions"][0].clone()], "about": { "ticket": " " } }),
+            json!({ "questions": [contract_example()["questions"][0].clone()], "about": { "blocks": ["KAN-1\nKAN-2"] } }),
+            json!({ "questions": [contract_example()["questions"][0].clone()], "about": { "why": "first\nsecond" } }),
+        ] {
+            let req: AskRequest = serde_json::from_value(wire).unwrap();
+            assert!(validate(&req).is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_a_valid_expiry_default_answer() {
+        let req: AskRequest = serde_json::from_value(json!({
+            "questions": [{
+                "header": "Checks",
+                "question": "What should happen if checks time out?",
+                "options": [{ "label": "Retry unfinished" }, { "label": "Stop" }]
+            }],
+            "about": { "class": "run_health" },
+            "expires_in_min": 30,
+            "on_expiry": { "answer": "Retry unfinished" }
+        }))
+        .unwrap();
+
+        assert_eq!(validate(&req), Ok(()));
+    }
+
+    #[test]
+    fn rejects_invalid_expiry_default_answers_at_ask_time() {
+        let cases = [
+            (
+                json!({
+                    "questions": [
+                        { "header": "One", "question": "One?", "options": [{"label":"Yes"},{"label":"No"}] },
+                        { "header": "Two", "question": "Two?", "options": [{"label":"Yes"},{"label":"No"}] }
+                    ],
+                    "about": { "class": "routine" },
+                    "on_expiry": { "answer": "Yes" }
+                }),
+                "on_expiry.answer requires exactly one question",
+            ),
+            (
+                json!({
+                    "questions": [{ "header": "One", "question": "One?", "multi_select": true,
+                        "options": [{"label":"Yes"},{"label":"No"}] }],
+                    "about": { "class": "routine" },
+                    "on_expiry": { "answer": "Yes" }
+                }),
+                "on_expiry.answer requires a single-select question",
+            ),
+            (
+                json!({
+                    "questions": [{ "header": "One", "question": "One?",
+                        "options": [{"label":"Yes"},{"label":"No"}] }],
+                    "about": { "class": "security" },
+                    "on_expiry": { "answer": "Yes" }
+                }),
+                "on_expiry.answer is only allowed for run_health or routine questions",
+            ),
+            (
+                json!({
+                    "questions": [{ "header": "One", "question": "One?",
+                        "options": [{"label":"Yes"},{"label":"No"}] }],
+                    "about": { "class": "routine" },
+                    "on_expiry": { "answer": "yes" }
+                }),
+                "on_expiry.answer must match an option label exactly",
+            ),
+        ];
+
+        for (wire, expected) in cases {
+            let req: AskRequest = serde_json::from_value(wire).unwrap();
+            assert_eq!(validate(&req), Err(expected.into()));
+        }
+    }
+
+    #[test]
+    fn expiry_minutes_must_be_positive_and_fit_milliseconds() {
+        let mut req = request(vec![valid_question()]);
+        req.expires_in_min = Some(0);
+        assert_eq!(
+            validate(&req),
+            Err("expires_in_min must be greater than 0".into())
+        );
+        req.expires_in_min = Some(u64::MAX);
+        assert_eq!(
+            validate(&req),
+            Err("expires_in_min is too large to represent as a deadline".into())
+        );
     }
 
     #[test]
@@ -485,7 +801,32 @@ mod tests {
     }
 
     #[test]
-    fn awaiting_result_tells_the_model_to_wait_for_the_answer() {
+    fn awaiting_result_carries_the_open_question_metadata() {
+        let req: AskRequest = serde_json::from_value(json!({
+            "questions": [{
+                "header": "Checks",
+                "question": "What should happen?",
+                "options": [
+                    { "label": "Retry", "recommended": true },
+                    { "label": "Stop" }
+                ]
+            }],
+            "about": { "ticket": "KAN-1", "class": "routine", "why": "Keep CI moving." },
+            "expires_in_min": 5,
+            "on_expiry": { "answer": "Retry" }
+        }))
+        .unwrap();
+
+        let details = awaiting_result("sess_1", "turn_1", "call_1", &req).details;
+        assert_eq!(details["about"]["ticket"], "KAN-1");
+        assert_eq!(details["about"]["class"], "routine");
+        assert_eq!(details["questions"][0]["options"][0]["recommended"], true);
+        assert_eq!(details["expires_in_min"], 5);
+        assert_eq!(details["on_expiry"]["answer"], "Retry");
+    }
+
+    #[test]
+    fn awaiting_result_tells_the_model_the_question_stays_open() {
         let req = request(vec![valid_question()]);
         let result = awaiting_result("sess_1", "turn_3", "call_7", &req);
         let text = only_text(&result).to_lowercase();
@@ -496,7 +837,8 @@ mod tests {
             "(skipped)",
             "dismiss",
             "do not repeat the questions",
-            "end your turn now",
+            "keep working if you can",
+            "withdraw the question",
         ] {
             assert!(text.contains(phrase), "missing {phrase:?} in {text:?}");
         }

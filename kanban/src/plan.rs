@@ -49,6 +49,7 @@ pub struct ProjectView {
     pub total: u64,
     /// Of those, the ones in the done column.
     pub done: u64,
+    pub open_questions: u64,
     pub counts: Counts,
 }
 
@@ -58,6 +59,7 @@ pub struct ReleaseProjectCount {
     pub project_id: Option<String>,
     pub total: u64,
     pub done: u64,
+    pub open_questions: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -69,6 +71,7 @@ pub struct ReleaseView {
     pub status: ReleaseStatus,
     pub total: u64,
     pub done: u64,
+    pub open_questions: u64,
     pub counts: Counts,
     /// Not-done live tickets of a released release (0 while it is not released).
     pub reopened: u64,
@@ -118,12 +121,11 @@ fn tally<'a>(
 pub fn project_view(board: &Board, project: &Project, context: &BoardContext) -> ProjectView {
     // ponytail: one scan of the board per project; fine for tens of projects, group in one pass beyond that.
     let id = project.id.clone();
-    let (total, done, counts) = tally(
-        live(board, move |ticket| {
-            ticket.project_id.as_deref() == Some(id.as_str())
-        }),
-        context,
-    );
+    let members: Vec<&Ticket> = live(board, move |ticket| {
+        ticket.project_id.as_deref() == Some(id.as_str())
+    })
+    .collect();
+    let (total, done, counts) = tally(members.iter().copied(), context);
     ProjectView {
         status: if project.archived_at.is_some() {
             ProjectStatus::Archived
@@ -133,6 +135,10 @@ pub fn project_view(board: &Board, project: &Project, context: &BoardContext) ->
         project: project.clone(),
         total,
         done,
+        open_questions: members
+            .iter()
+            .map(|ticket| crate::questions::open_questions(ticket))
+            .sum(),
         counts,
     }
 }
@@ -155,11 +161,12 @@ pub fn release_view(board: &Board, release: &Release, context: &BoardContext) ->
     } else {
         ReleaseStatus::Planned
     };
-    let mut per_project: HashMap<Option<&str>, (u64, u64)> = HashMap::new();
+    let mut per_project: HashMap<Option<&str>, (u64, u64, u64)> = HashMap::new();
     for ticket in &members {
         let entry = per_project.entry(ticket.project_id.as_deref()).or_default();
         entry.0 += u64::from(!context.is_canceled(&ticket.status));
         entry.1 += u64::from(ticket.status == context.done_status);
+        entry.2 += crate::questions::open_questions(ticket);
     }
     let name_of = |id: Option<&str>| {
         id.and_then(|id| board.projects.get(id))
@@ -167,11 +174,14 @@ pub fn release_view(board: &Board, release: &Release, context: &BoardContext) ->
     };
     let mut projects: Vec<ReleaseProjectCount> = per_project
         .into_iter()
-        .map(|(project_id, (total, done))| ReleaseProjectCount {
-            project_id: project_id.map(String::from),
-            total,
-            done,
-        })
+        .map(
+            |(project_id, (total, done, open_questions))| ReleaseProjectCount {
+                project_id: project_id.map(String::from),
+                total,
+                done,
+                open_questions,
+            },
+        )
         .collect();
     projects.sort_by(|a, b| {
         b.total.cmp(&a.total).then_with(|| {
@@ -196,6 +206,10 @@ pub fn release_view(board: &Board, release: &Release, context: &BoardContext) ->
         release: release.clone(),
         total,
         done,
+        open_questions: members
+            .iter()
+            .map(|ticket| crate::questions::open_questions(ticket))
+            .sum(),
         counts,
         projects,
     }
@@ -316,6 +330,26 @@ fn clean_color(raw: &str) -> Result<Option<String>, String> {
     ))
 }
 
+fn clean_repos(repos: &[String]) -> Result<Vec<String>, String> {
+    for repo in repos {
+        let Some((owner, name)) = repo.split_once('/') else {
+            return Err(format!("repository must be owner/name, got {repo}"));
+        };
+        if owner.is_empty()
+            || name.is_empty()
+            || name.contains('/')
+            || repo
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+            || matches!(owner, "." | "..")
+            || matches!(name, "." | "..")
+        {
+            return Err(format!("repository must be owner/name, got {repo}"));
+        }
+    }
+    Ok(repos.to_vec())
+}
+
 /// `YYYY-MM-DD`, a real calendar day, nothing else.
 fn clean_target(raw: &str) -> Result<Option<String>, String> {
     let Some(raw) = trimmed(Some(raw)) else {
@@ -330,13 +364,14 @@ fn clean_target(raw: &str) -> Result<Option<String>, String> {
 /* ── projects ─────────────────────────────────────────────────────────── */
 
 /// Fields of `kanban::project::create` / `update`. `None` = leave alone;
-/// `Some(None)` = clear (`lead`, `color`).
+/// `Some(None)` = clear (`lead`, `color`, `repos`).
 #[derive(Debug, Clone, Default)]
 pub struct ProjectFields {
     pub name: Option<String>,
     pub description: Option<String>,
     pub lead: Option<Option<String>>,
     pub color: Option<Option<String>>,
+    pub repos: Option<Option<Vec<String>>>,
 }
 
 pub fn create_project(
@@ -358,6 +393,12 @@ pub fn create_project(
         Some(Some(color)) => clean_color(color)?,
         _ => None,
     };
+    let repos = fields
+        .repos
+        .as_ref()
+        .and_then(|repos| repos.as_deref())
+        .map(clean_repos)
+        .transpose()?;
     let project = Project {
         id: crate::board::new_id(),
         name,
@@ -372,6 +413,7 @@ pub fn create_project(
             .as_ref()
             .and_then(|lead| trimmed(lead.as_deref())),
         color,
+        repos,
         source_label: None,
         created_at: at.to_string(),
         updated_at: at.to_string(),
@@ -414,6 +456,11 @@ pub fn update_project(
         Some(None) => Some(None),
         None => None,
     };
+    let repos = match &fields.repos {
+        Some(Some(repos)) => Some(Some(clean_repos(repos)?)),
+        Some(None) => Some(None),
+        None => None,
+    };
     let project = board.projects.get_mut(&id).expect("resolved id exists");
     let mut changed = false;
     let mut set = |field: &mut String, value: Option<String>| {
@@ -438,6 +485,10 @@ pub fn update_project(
         fields.lead.as_ref().map(|lead| trimmed(lead.as_deref())),
     );
     set_optional(&mut project.color, color);
+    if let Some(repos) = repos.filter(|repos| *repos != project.repos) {
+        project.repos = repos;
+        changed = true;
+    }
     if changed {
         project.updated_at = at.to_string();
     }
@@ -902,6 +953,7 @@ pub fn apply_convert(
                             description: description.clone(),
                             lead: None,
                             color: None,
+                            repos: None,
                             source_label: Some(plan.label.clone()),
                             created_at: at.to_string(),
                             updated_at: at.to_string(),

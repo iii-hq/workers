@@ -94,6 +94,13 @@ A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's
 once a read of `sandbox::adapter::info` succeeds, at startup and on each registry change. If it
 fails, for example because RBAC refuses it, the harness logs a warning and the adapter's ids stay
 callable until a later read succeeds.
+
+A session whose metadata contains `side_chat_question` is additionally capped by the configured
+`side_chat_functions`, regardless of the policy supplied by a later send. Its default ceiling is
+`session::get`, `session::messages-tail`, `harness::status`, `kanban::ticket::get`,
+`kanban::ticket::list`, `kanban::question::list`, `coder::read-file`, and `memory::recall`.
+An explicit `options.functions` may narrow that list but cannot widen it.
+
 Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
 schema rejects is parsed. When the optional
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles
@@ -576,9 +583,18 @@ from a model turn, not directly`.
     "question": "When the agent asks, does the turn pause or end?",
     "multi_select": false,
     "options": [
-      { "label": "Pause the turn", "description": "Like AskUserQuestion" },
+      { "label": "Pause the turn", "description": "Like AskUserQuestion", "recommended": true },
       { "label": "End the turn", "description": "The answer becomes the next message" }
-    ] } ] }
+    ] } ],
+  "about": {
+    "ticket": "KAN-597",
+    "blocks": ["KAN-598"],
+    "class": "run_health",
+    "why": "The release cannot finish until its build policy is settled."
+  },
+  "expires_in_min": 30,
+  "on_expiry": { "answer": "Pause the turn" }
+}
 ```
 
 - 1–4 questions per call and 2–4 options per question.
@@ -589,21 +605,35 @@ from a model turn, not directly`.
   per question).
 - Limits count characters, not bytes. A value that is only whitespace counts
   as empty, and labels are compared after trimming.
-- `multi_select` defaults to `false`; `description` is optional.
+- `multi_select` and `recommended` default to `false`; `description` is
+  optional. At most one option in each question may be recommended.
 - The UI adds a free-text "Other" choice, so the model must not include one.
+- `about` is optional. Its `class` is `security`, `publish`, `external_cost`,
+  `data`, `scope`, `run_health`, or `routine`, and defaults to `scope`.
+  `ticket` names the card the question concerns, `blocks` names other cards
+  waiting on it, and `why` is the paragraph shown above the choices.
+- `expires_in_min` is optional and must be a positive integer number of minutes. With
+  no expiry the question waits until it is answered or withdrawn.
+- `on_expiry` defaults to `"block"`. `{ "answer": "<option label>" }` is
+  accepted only for one single-select `run_health` or `routine` question, and
+  must name one of that question's labels exactly. Invalid defaults are
+  refused when the ask is made.
 
 An accepted ask is answered at once with a function result whose `details` is
 the card:
 
 ```json
 { "status": "awaiting_answer", "question_id": "<function call id>",
-  "session_id": "…", "turn_id": "…", "questions": [ … ] }
+  "session_id": "…", "turn_id": "…", "questions": [ … ],
+  "about": { … }, "expires_in_min": 30,
+  "on_expiry": { "answer": "Pause the turn" } }
 ```
 
 In `questions`, `multi_select` is always present and `description` is omitted
-when absent. The model reads one text block telling it the questions are shown,
-the answer arrives as the user's next message, and it must not repeat them in
-text.
+when absent. Default optional metadata is omitted. The model reads one text
+block telling it the questions are shown, the answer will arrive as a message,
+and it must not repeat them in text. It may keep working and withdraw the ask
+if it stops needing the answer.
 
 **The turn ends on the question.** A step that accepted an ask finalizes the
 turn without another model call, through the same path as a text-only step:
@@ -640,11 +670,46 @@ argument reconciliation still apply too. `pre_call` and `post_call` hooks
 are **not** consulted. An approval gate could only hold the ask, and a held
 call's release goes to the registered handler, which cannot show the card.
 
-**Answering.** The answer is simply the user's next message, so any client
-that can send one can answer. The console renders the call as a card:
-checkboxes (a single-select ticks one), each option's description, an "Other"
-field, a Skip toggle per question, and Dismiss and Send for the card. Send
-submits the answer through the composer, one line per question:
+**Lifecycle and answering.** An accepted ask creates a durable `harness_ask`
+entry keyed by `session_id/question_id`. This private scope is claimed at boot;
+transitions use the harness's own compare-and-set accessor. Its state is `open`, then
+`answering` while delivery is reserved, and finally `answered`, `dismissed`,
+`withdrawn`, or `expired`. An `expired` question used the blocking expiry and
+still accepts a late answer. Closed entries retain the question, `about`,
+answer text, `by`, and outcome until the session is deleted.
+
+People answer through `harness::ask::answer { session_id, question_id,
+answers | dismissed, by }`. `answers` has one row per question, in question order:
+
+```json
+{ "answers": [
+    { "header": "Approach", "choice": "Pause the turn" },
+    { "header": "Channels", "choices": ["Console", "Slack"] },
+    { "header": "Region", "other": "eu-west-2" },
+    { "header": "Budget", "skipped": true }
+  ],
+  "by": { "channel": "control-plane", "user": "Ada" }
+}
+```
+
+`by.channel` is `chat`, `control-plane`, `kanban`, or `expiry`. The first answer
+reserves the entry, delivers the same text as the chat card with idempotency
+key `ask:<session_id>/<question_id>`, and closes it. Concurrent or later
+answers fail with `already answered by <channel>`. The delivery reservation
+survives a restart and is retried with the same key, so the message is
+delivered at most once. Ask deliveries set `options.require_existing_session: true`
+on `harness::send`: that send refuses a missing session and skips session
+creation, including when deletion races the delivery. A missing session closes
+the ask with outcome `not_delivered`. Failed delivery/expiry attempts get five
+bounded retries with backoff;
+there is no periodic sweep. `dismissed: true` is available only for `scope`,
+`routine`, and `run_health` questions.
+
+The console renders the call as a card: checkboxes (a single-select ticks one),
+each option's description, an "Other" field, a Skip toggle per question, and
+Let the agent decide (where allowed) and Send for the card. Send calls
+`harness::ask::answer`; cards created before durable ask entries existed fall back to submitting the answer through
+the composer. Answer text is one line per question:
 
 - a single choice sends `Approach: End the turn`;
 - a multi-select sends `Channels: Console, Slack`;
@@ -652,19 +717,48 @@ submits the answer through the composer, one line per question:
 - a skipped question sends `Approach: (skipped)`: the model decides that
   one itself.
 
-Dismiss sends a notice instead of answers (`I dismissed your questions
+Dismiss delivers a notice instead of answers (`I dismissed your questions
 without answering them. Go on with your best judgement; …`). The ask result
 tells the model both may happen.
 
-**Settling.** Only the card's own Send or Dismiss closes it. Once the send
-landed (the text parked in the queue, or the session moved on a turn or a
-step), the console records the outcome with `harness::ask::settle
-{ session_id, question_id, outcome: answered | dismissed }` and every card
-reads `harness::ask::settlements { session_id }` (the session's newest 32
-settlements) on mount and on focus, so a card settled in another tab closes
-too. The session moving to a later turn does not settle a card: a reply
-typed in the composer may have been about something else, so the card says
-the chat moved on and still takes an answer, or a dismissal.
+`harness::ask::withdraw { question_id }` closes an open question for the
+calling agent's own session. Agents cannot supply another session id. Use it
+as soon as later work makes the decision unnecessary.
+
+`harness::ask::list { session_id?, state?, limit?, cursor? }` lists durable
+entries, including closed ones. Pages sort by `session_id/question_id`; `limit`
+defaults to 100 (1–200), and `cursor` is the previous page's last key, exclusive.
+Entries carry `session_id`, `question_id`, `turn_id`, `questions`, `about`,
+`asked_at` (epoch ms), `state`, `on_expiry`, optional `expires_in_min` and
+`expires_at` (epoch ms), plus `answers`, `answer_text`, `by`, `outcome`, and
+`settled_at` (epoch ms) when present. Optional `asked_by` identifies the asking
+agent profile, captured from the session's `metadata.agent_profile.id`.
+Outcomes are `answered`, `dismissed`,
+`withdrawn`, `expired_default`, and `not_delivered`.
+
+`harness::on-ask` fires when an entry is
+accepted and `harness::on-ask-settled` fires with the whole entry after an
+answer, dismissal, withdrawal, or default expiry answer. `harness::status`
+and `harness::on-turn-completed` expose `open_asks`, counting entries in
+`open` or `expired`.
+
+At a blocking expiry, the entry moves to `expired` and the harness sends the
+agent a message that it must not decide for the person, using idempotency key
+`ask-expiry:<session_id>/<question_id>`. A valid default-answer expiry is
+delivered as if the expiry channel answered it, with `(no answer within <n>
+min; default applied)` appended.
+
+**Agent rules.** Ask from a depth-0/root session; a sub-agent reports its
+blocked question to its parent, which consolidates and asks. When work is on
+a card, set `about` and explain `about.why`, and mark the option you recommend.
+Link the work on a card with `harness::link-card { ticket }`; a call from a
+sub-agent links its root session while preserving the root's other metadata.
+Keep working when the answer does not block the next step. Withdraw a question
+that no longer needs an answer. When a run-health issue prevents progress
+(repeated check timeouts or an unavailable service), ask a `run_health` question
+with a valid default instead of ending `blocked`. Neither `harness::ask::answer` nor
+`kanban::question::answer` can be granted to an agent by policy; only a person
+through a console/operator surface answers.
 
 ## Observable functions
 
@@ -677,8 +771,10 @@ observes only `harness::on-timer` and its own post-turn validator.
 | Function | Args | Filter on | Event |
 |---|---|---|---|
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
+| `harness::on-ask` | none | `input.session_id`, `input.question_id` | The whole durable ask entry when a question is accepted. |
+| `harness::on-ask-settled` | none | `input.session_id`, `input.question_id` | The whole durable ask entry after it closes. |
 | `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
-| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. A reseed continues the exchange in a new turn, so its terminal completion can carry another `turn_id` than the one `harness::send` returned: correlate on `session_id`. A finalize interrupted before its reseed (the process died), or whose reseed and settle both failed, is finished by a redelivery of the same step: the queue's, or the orphan redrive's, which re-delivers a finished turn that still promises a continuation, or still owes the completion a failed settle or stop left unsent, as it does a running one. |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, open_asks, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. A reseed continues the exchange in a new turn, so its terminal completion can carry another `turn_id` than the one `harness::send` returned: correlate on `session_id`. A finalize interrupted before its reseed (the process died), or whose reseed and settle both failed, is finished by a redelivery of the same step: the queue's, or the orphan redrive's, which re-delivers a finished turn that still promises a continuation, or still owes the completion a failed settle or stop left unsent, as it does a running one. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |

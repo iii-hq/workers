@@ -120,6 +120,17 @@ afterEach(() => {
 })
 
 describe('ChatPanel side chats', () => {
+  it('leaves decision copies to their question lifecycle even when old or the original is gone', async () => {
+    const decision = side('decision', 'gone', {
+      updatedAt: Date.now() - 3 * HOUR,
+      sessionMetadata: { side_chat_of: 'gone', side_chat_question: 'gone/q' },
+    })
+    const ctx = makeCtx([chat('main'), decision], 'main', ['gone'])
+    mocks.ctx = ctx
+    render()
+    await settle()
+    expect(ctx.remove).not.toHaveBeenCalled()
+  })
   it('keeps them when the conversation is left', async () => {
     const list = [chat('a'), chat('b'), side('mine', 'a')]
     sideChatsMadeHere.add('mine')

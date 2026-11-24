@@ -158,7 +158,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::list",
-        "List sessions with pagination, ordering, and status/metadata filters.",
+        "List sessions with pagination, ordering, and status/kinds/roots/metadata filters.",
         false,
         |d, r| async move { list::handle(&d, r).await },
     );

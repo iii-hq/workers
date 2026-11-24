@@ -1,0 +1,85 @@
+.decision-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.decision-side-chat {
+  font-size: 13px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-sidebar);
+}
+.decision-side-chat-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+.decision-side-chat-heading,
+.decision-side-chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.decision-side-chat-heading {
+  flex: 1;
+  min-width: 0;
+}
+.decision-side-chat-actions {
+  flex-shrink: 0;
+}
+.decision-side-chat-header h2 {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.decision-side-chat-heading > .decision-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.decision-side-chat-note,
+.decision-use-answer {
+  flex-shrink: 0;
+  margin: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.decision-use-answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.decision-side-chat > .conversation-surface {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.decision-inline-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+.decision-inline-note > svg {
+  flex-shrink: 0;
+}
+
+.decision-muted {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}

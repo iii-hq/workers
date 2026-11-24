@@ -2,7 +2,7 @@ import { ShadcnCard } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
 import { ArrowUpRight, ChevronRight, ListTree, MessageSquare } from 'lucide-react'
 import { type DragEvent, memo } from 'react'
-import { type AgentProfile, type Column, Pills, type TicketSummary } from '../shared'
+import { type AgentProfile, type Column, NeedsYouMark, Pills, type TicketSummary } from '../shared'
 import { AssigneeAvatar } from '../ui/avatar'
 import { PriorityIcon } from '../ui/glyphs'
 import { IconAction } from '../ui/icon-action'
@@ -89,6 +89,7 @@ export const TicketCard = memo(function TicketCard({
         `${ticket.key}: ${ticket.title}`,
         parentKey ? `subtask of ${parentKey}` : '',
         subsLabel,
+        ticket.open_questions > 0 ? 'needs you' : '',
         changed ? 'changed since your last visit' : '',
       ]
         .filter(Boolean)
@@ -114,6 +115,7 @@ export const TicketCard = memo(function TicketCard({
     >
       <div className="tw:flex tw:min-w-0 tw:items-center tw:gap-1.5">
         <span className={KEY}>{ticket.key}</span>
+        <NeedsYouMark count={ticket.open_questions} />
         {parentKey ? (
           <span
             className={`tw:flex tw:min-w-0 tw:items-center tw:gap-1 ${MUTED}`}

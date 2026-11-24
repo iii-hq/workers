@@ -1723,14 +1723,21 @@ async fn generate_step(
 
     // Re-acquire the lock before any further turn-record write, then refresh
     // the durable fields allowed to change while generation held no lock:
-    // abort, an explicit skill filter from a raced send, and a wake merged
-    // into this turn. The frozen skill baseline remains the one used for this
+    // abort, function policy, an explicit skill filter from a raced send, and a
+    // wake merged into this turn. The frozen skill baseline remains the one used for this
     // generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let durable_record =
         crate::state::get_turn_unhydrated(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
             .await?;
     let durable_abort = durable_record.as_ref().is_some_and(|record| record.abort);
+    if let Some(durable) = durable_record
+        .as_ref()
+        .filter(|durable| durable.turn_id == record.turn_id)
+    {
+        record.options.functions = durable.options.functions.clone();
+        record.functions_acknowledged = durable.functions_acknowledged.clone();
+    }
     crate::skills::refresh_filter(
         &mut record.options.skill_context,
         durable_record
@@ -2191,12 +2198,22 @@ async fn finish_step(
                 // One ask per step, persisted on the record so a redelivered
                 // step still refuses a second ask and still ends on the first.
                 let mut data = match gate_ask(&mut record, strategy.is_json(), call_args) {
-                    Ok(req) => crate::ask::awaiting_result(
-                        &record.session_id,
-                        &record.turn_id,
-                        &call.id,
-                        &req,
-                    ),
+                    Ok(req) => {
+                        crate::ask_store::accept(
+                            deps,
+                            &record.session_id,
+                            &record.turn_id,
+                            &call.id,
+                            &req,
+                        )
+                        .await?;
+                        crate::ask::awaiting_result(
+                            &record.session_id,
+                            &record.turn_id,
+                            &call.id,
+                            &req,
+                        )
+                    }
                     Err(msg) => crate::ask::refused(&msg),
                 };
                 let mut ask_annotations = serde_json::Map::new();
@@ -2907,6 +2924,7 @@ async fn settle_unreseeded(
             record.display_parent_session_id.as_deref(),
             terminal,
             record.context_snapshot.as_ref(),
+            crate::ask_store::open_count(deps, &record.session_id).await?,
         )
         .await;
     // A failed write leaves the marker: the completion can repeat, never be lost.
@@ -3217,6 +3235,7 @@ async fn finalize_completed(
             record.display_parent_session_id.as_deref(),
             terminal,
             record.context_snapshot.as_ref(),
+            crate::ask_store::open_count(deps, &record.session_id).await?,
         )
         .await;
     // An exhausted step cap is reported as its own outcome: `completed` alone
@@ -3532,6 +3551,7 @@ async fn finalize_failed(
             record.display_parent_session_id.as_deref(),
             terminal,
             record.context_snapshot.as_ref(),
+            crate::ask_store::open_count(deps, &record.session_id).await?,
         )
         .await;
     crate::usage_report::report(deps, record, "failed", Some(failure_class(failure))).await;
@@ -3717,6 +3737,7 @@ pub(crate) async fn finalize_cancelled(
             record.display_parent_session_id.as_deref(),
             terminal,
             record.context_snapshot.as_ref(),
+            crate::ask_store::open_count(deps, &record.session_id).await?,
         )
         .await;
     crate::usage_report::report(deps, record, "cancelled", None).await;
@@ -3858,6 +3879,7 @@ pub(crate) async fn end_stopped_exchange(
             record.display_parent_session_id.as_deref(),
             true,
             record.context_snapshot.as_ref(),
+            crate::ask_store::open_count(deps, &record.session_id).await?,
         )
         .await;
     record.exchange_finished = true;

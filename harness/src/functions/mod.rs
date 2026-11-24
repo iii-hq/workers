@@ -10,6 +10,7 @@ pub mod delete_session_tree;
 pub mod filesystem;
 pub mod function_call;
 pub mod function_resolve;
+pub mod link_card;
 pub mod metrics;
 pub mod observe;
 pub mod observer_deliver;
@@ -58,10 +59,12 @@ pub const SPAWN_DESC: &str = "Spawn a sub-agent in a child session (never an obs
 pub const ASK_ID: &str = "harness::ask";
 pub const ASK_DESC: &str = "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
      the UI adds a free-text \"Other\" choice, so do not include one. The questions are shown \
-     as a clickable card in the chat, your turn ends, and the answer arrives as the user's next \
-     message (one `Header: answer` line per question; a skipped question reads `(skipped)`, and \
+     as a clickable card in the chat and stay open while you do other work. The answer arrives as a \
+     user message (one `Header: answer` line per question; a skipped question reads `(skipped)`, and \
      a dismissed card sends a notice instead of answers), so do not repeat the questions in \
-     text. Not available to sub-agents or structured-output turns.";
+     text. Set `about.class` to `security` for credentials or permissions, `publish` for a release \
+     or deployment, `external_cost` for paid spend, or `data` for data access, migration, or deletion. \
+     It defaults to `scope` for other questions. Not available to sub-agents or structured-output turns.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
@@ -319,6 +322,34 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, ASK_ID, ASK_DESC, |_d, r| async move {
         crate::ask::direct_handle(r).await
     });
+    register_internal(
+        iii,
+        deps,
+        crate::ask_store::ANSWER_ID,
+        "Answer a durable ask; only human console/operator calls may answer.",
+        |d, r| async move { crate::ask_store::answer(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        crate::ask_store::WITHDRAW_ID,
+        "Withdraw a question that no longer needs an answer. Agent calls always target their own session.",
+        |d, r| async move { crate::ask_store::withdraw(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        crate::ask_store::LIST_ID,
+        "List durable asks, including closed entries, with optional session and state filters.",
+        |d, r| async move { crate::ask_store::list(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        link_card::ID,
+        "Link the calling session tree's root to a kanban card without replacing other session metadata.",
+        |d, r| async move { link_card::handle(&d, r).await },
+    );
     // Catalog-visible so the model finds the observe controls; the turn loop
     // intercepts the calls, and these handlers only answer direct calls
     // (always an error).
@@ -524,7 +555,20 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 
 #[cfg(test)]
 mod tests {
-    use super::SPAWN_DESC;
+    use super::{ASK_DESC, SPAWN_DESC};
+
+    #[test]
+    fn ask_tool_description_tells_the_model_to_classify_escalated_questions() {
+        for guidance in [
+            "`security` for credentials or permissions",
+            "`publish` for a release or deployment",
+            "`external_cost` for paid spend",
+            "`data` for data access, migration, or deletion",
+            "defaults to `scope`",
+        ] {
+            assert!(ASK_DESC.contains(guidance), "missing {guidance}");
+        }
+    }
 
     #[test]
     fn spawn_tool_description_includes_a_one_shot_child_health_cue() {

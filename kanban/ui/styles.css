@@ -3,6 +3,7 @@
 @import "./src/filter-bar.css";
 @import "./src/list.css";
 @import "./src/ticket.css";
+@import "./src/ticket/question-card.css";
 @import "./src/tree.css";
 
 /* The kanban worker's console stylesheet. Every rule sits under
@@ -11,6 +12,16 @@
  * and hues: Inter for everything a person reads, Geist Mono for ticket keys,
  * the neutral surface ramp, and the six glyph hues for status, priority,
  * labels and avatars. */
+
+[data-iii-ui="kanban"] .kb-needs-you {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink);
+  font-size: 12px;
+  white-space: nowrap;
+}
 
 /* --- status palette ------------------------------------------------------ */
 
