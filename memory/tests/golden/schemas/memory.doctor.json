@@ -145,6 +145,12 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "saturated": {
+            "description": "Pieces whose memories reached `max_memories_per_turn`: the model may have left facts out to stay under it, and nothing else shows that.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "superseded": {
             "format": "uint64",
             "minimum": 0.0,
@@ -160,6 +166,7 @@
           "reinforced",
           "returned",
           "rules",
+          "saturated",
           "superseded"
         ],
         "type": "object"

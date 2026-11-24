@@ -3083,6 +3083,41 @@ mod productive {
         );
     }
 
+    #[tokio::test]
+    async fn a_piece_whose_memories_reach_the_cap_counts_as_saturated() {
+        let facts = |piece: &str, n: usize| {
+            (0..n)
+                .map(|i| fact(&format!("Crate {piece}-{i} ships on dock {i}."))[0].clone())
+                .collect::<Vec<_>>()
+        };
+        // The first piece returns exactly its share of eight and drops none.
+        // The second returns seven memories, a rule and an item for an agent
+        // nobody listed: only memories count toward the share.
+        let mut second = facts("b", 7);
+        second.push(json!({"text":"Always label crates before shipping.",
+            "scope":"project","kind":"rule"}));
+        second.push(
+            json!({"text":"Kiln logs go to the night shift.","entities":["fixture"],
+            "scope":"agent","agent":"nobody","kind":"memory"}),
+        );
+        let filler = (0..600)
+            .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
+            .collect::<String>();
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("end", &filler)],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([json!(facts("a", 8)), json!(second)]),
+            ..Script::default()
+        })
+        .await;
+        let (result, tallied) = stack.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 2);
+        let tally = tallied.unwrap().tally;
+        assert_eq!(tally.saturated, 1);
+        assert!(!tally.dropped.contains_key("over_cap"), "{tally:?}");
+    }
+
     /// One project memory on `text`, tagged `handle`.
     fn tagged_fact(text: &str, handle: &str) -> Value {
         json!([{"text":text,"entities":[handle],"scope":"project","kind":"memory"}])
