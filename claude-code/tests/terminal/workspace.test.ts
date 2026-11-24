@@ -171,6 +171,7 @@ describe('preparing the terminal host', () => {
       'SessionEnd',
       'SessionStart',
       'Stop',
+      'StopFailure',
       'UserPromptSubmit',
     ]);
     const command = hooks.PreToolUse[0].hooks[0].command;

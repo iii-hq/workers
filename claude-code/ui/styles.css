@@ -1,1 +1,139 @@
 @import "@iii-workers/agent-terminal-ui/styles.css";
+
+/*
+ * The Sessions rail beside the terminal. Rows are the console's ListItem;
+ * this file only lays the rail out and sets the machine values in mono.
+ */
+
+[data-iii-ui="claude"] {
+  .claude-sessions {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .claude-sessions-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 4px 6px 12px;
+  }
+
+  /* Groups breathe more than the rows inside them. */
+  .claude-sessions-scroll .iii-ui-list-group + .iii-ui-list-group {
+    margin-top: 12px;
+  }
+
+  .claude-sessions-count {
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .claude-sessions-id {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The name is the button; its overlay makes the whole row the target. */
+  .claude-sessions-open {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+  }
+
+  .claude-sessions-open::after {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius-sm);
+    content: "";
+  }
+
+  .claude-sessions-open:focus-visible {
+    outline: none;
+  }
+
+  .claude-sessions-open:focus-visible::after {
+    outline: 2px solid var(--color-rule-focus);
+    outline-offset: -1px;
+  }
+
+  /* Above that overlay. */
+  .claude-sessions-actions {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  /* Opens under its row, indented past the status dot so it reads as the row's. */
+  .claude-sessions-composer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 4px 8px 12px 30px;
+  }
+
+  .claude-sessions-composer-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .claude-sessions-notices {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 8px 0;
+  }
+
+  .claude-sessions-note {
+    margin: 12px 10px 0;
+    color: var(--color-ink-faint);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .claude-sessions-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .claude-sessions-skeleton-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .claude-sessions-skeleton-dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-top: 6px;
+    border-radius: 9999px;
+  }
+
+  .claude-sessions-skeleton-lines {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .claude-sessions-skeleton-line {
+    display: block;
+    height: 12px;
+    border-radius: 6px;
+  }
+
+  .claude-sessions-skeleton-line-short {
+    width: 60%;
+  }
+}
