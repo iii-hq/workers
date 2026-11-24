@@ -294,13 +294,16 @@ pub(crate) fn forbidden_step(
             .filter(|(_, pair)| *pair == b"::")
             .map(|(index, _)| &function_id[index + 2..]),
     );
-    for id in ids {
+    for (index, id) in ids.enumerate() {
         // A catalog read ends the scan: the `provider::list` tail of
         // `router::provider::list` is not a provider call.
         if ROUTER_READS.contains(&id) {
             return None;
         }
-        if let Some(reason) = forbidden_unprefixed_step(id, approval_gate_running) {
+        // Checks that read the whole id run once, on the first (whole) id: a
+        // tail cannot match them unless the whole id does.
+        let whole = index == 0;
+        if let Some(reason) = forbidden_unprefixed_step(id, whole, approval_gate_running) {
             return Some(reason);
         }
     }
@@ -309,6 +312,7 @@ pub(crate) fn forbidden_step(
 
 fn forbidden_unprefixed_step(
     function_id: &str,
+    whole: bool,
     approval_gate_running: bool,
 ) -> Option<&'static str> {
     // Private accessors validate their scope, not the caller. A pipe must not
@@ -465,13 +469,14 @@ fn forbidden_unprefixed_step(
     // Event hooks: `on-config-change`, `on-secret-change`, `on_secret_changed`, …
     // Only after a `::`, or the bare tail of a gate-only database hook would
     // refuse it.
-    if function_id
-        .rsplit_once("::")
-        .is_some_and(|(_, last)| last.starts_with("on-") || last.starts_with("on_"))
+    if whole
+        && function_id
+            .rsplit_once("::")
+            .is_some_and(|(_, last)| last.starts_with("on-") || last.starts_with("on_"))
     {
         return Some("lifecycle hooks are engine-dispatched, never pipe steps");
     }
-    if function_id.contains("::terminal::")
+    if (whole && function_id.contains("::terminal::"))
         || function_id.starts_with("shell::pty::")
         || function_id.starts_with("shell::ui-state::")
         || function_id.ends_with("::ui-content")
@@ -1827,6 +1832,17 @@ mod tests {
         assert!(err.starts_with("pipe refused, 201 problem(s)"), "{err}");
         assert!(err.contains("and 169 more"), "{err}");
         assert!(err.len() < 12_000, "{}", err.len());
+    }
+
+    #[test]
+    fn a_long_nested_function_id_is_judged_in_linear_time() {
+        // 100k `::` tails of a 300 KB id: a scan of the whole tail per suffix
+        // would read about 15 GB.
+        let id = format!("{}x", "a::".repeat(100_000));
+        let start = std::time::Instant::now();
+        assert!(forbidden_step(&id, false).is_none());
+        assert!(forbidden_step(&id, true).is_none());
+        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
     }
 
     #[test]
