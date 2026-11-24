@@ -1,13 +1,16 @@
-import { AtSign, NotebookPen } from 'lucide-react'
+import { AtSign, Brain, NotebookPen } from 'lucide-react'
 import { useState } from 'react'
+import { Button } from '@/components/shadcn/button'
 import {
   CollapsibleCard,
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
 import { CardHighlight } from '@/components/ui/Surface'
+import type { MemoryNote } from '@/lib/memory-note'
 import { cn } from '@/lib/utils'
 import type { ModelNote, ModelNoteMention, SystemMessage } from '@/types/chat'
+import { MemoryList } from './MemoryList'
 import { WorkerMentionPill } from './mentions/WorkerMentionPill'
 import { TimelineActivityDisclosure } from './TimelineActivityTrail'
 
@@ -22,7 +25,8 @@ const ROW_PILLS = 3
  *
  * The judge's `<mentions>` note reads as the mentions themselves (pills on
  * the row; each item's summary and pre-verified details call inside), not
- * as the raw block.
+ * as the raw block. A memory note reads as what was recalled (the count on
+ * the row, the memories inside), with the exact block one click away.
  */
 export function ModelNoteMarker({
   message,
@@ -32,7 +36,9 @@ export function ModelNoteMarker({
   note: ModelNote
 }) {
   const [open, setOpen] = useState(false)
+  const [exact, setExact] = useState(false)
   const mentions = note.mentions
+  const memory = note.memory
   return (
     <article
       className="w-full"
@@ -60,10 +66,17 @@ export function ModelNoteMarker({
             <span
               aria-hidden="true"
               className="activity-status-icon"
-              data-note-glyph={mentions ? 'mentions' : 'note'}
+              data-note-glyph={
+                mentions ? 'mentions' : memory ? 'memory' : 'note'
+              }
             >
               {mentions ? (
                 <AtSign
+                  strokeWidth={2.5}
+                  className="size-4 stroke-muted-foreground"
+                />
+              ) : memory ? (
+                <Brain
                   strokeWidth={2.5}
                   className="size-4 stroke-muted-foreground"
                 />
@@ -80,6 +93,8 @@ export function ModelNoteMarker({
             >
               {mentions ? (
                 <MentionsSummary mentions={mentions} />
+              ) : memory ? (
+                <MemorySummary memory={memory} />
               ) : (
                 <span className="truncate">
                   Note to the model
@@ -95,13 +110,37 @@ export function ModelNoteMarker({
 
         <CollapsibleCardContent>
           <div className="flex flex-col gap-3 border-t border-edge p-3">
-            <p className="font-sans text-[12.5px] text-ink-faint">
-              {mentions
-                ? 'What the agent was told about the items this message mentions. It reads the full item only when the summary is not enough.'
-                : 'Text the agent was shown at this point in the turn. Nothing to act on; it explains what the agent did next.'}
-            </p>
+            {memory ? (
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <p className="font-sans text-[12.5px] text-ink-faint">
+                    {memory.rulesUpdate !== null
+                      ? 'The memory rules the agent follows from this point on.'
+                      : 'What the agent read from memory at this point in the turn.'}
+                  </p>
+                  <MemoryMeta memory={memory} />
+                </div>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  aria-pressed={exact}
+                  onClick={() => setExact((v) => !v)}
+                  className="shrink-0 text-ink-faint aria-pressed:bg-surface-selected aria-pressed:text-ink"
+                >
+                  Exact text
+                </Button>
+              </div>
+            ) : (
+              <p className="font-sans text-[12.5px] text-ink-faint">
+                {mentions
+                  ? 'What the agent was told about the items this message mentions. It reads the full item only when the summary is not enough.'
+                  : 'Text the agent was shown at this point in the turn. Nothing to act on; it explains what the agent did next.'}
+              </p>
+            )}
             {mentions ? (
               <MentionsDetail mentions={mentions} />
+            ) : memory && !exact ? (
+              <MemoryDetail memory={memory} />
             ) : (
               <CardHighlight className="p-3">
                 <pre
@@ -187,6 +226,74 @@ function MentionsDetail({ mentions }: { mentions: ModelNoteMention[] }) {
           )
         })}
       </ul>
+    </CardHighlight>
+  )
+}
+
+function memoryCount(n: number) {
+  return `${n} ${n === 1 ? 'memory' : 'memories'}`
+}
+
+function MemorySummary({ memory }: { memory: MemoryNote }) {
+  if (memory.rulesUpdate !== null) {
+    return <span className="truncate">Memory rules updated</span>
+  }
+  const lead =
+    memory.memories.length > 0
+      ? `Recalled ${memoryCount(memory.memories.length)}`
+      : 'Memory rules reminder'
+  const tail = [
+    memory.bank,
+    memory.memories.length > 0 && memory.reminder !== null
+      ? 'rules reminder'
+      : null,
+  ].filter(Boolean)
+  return (
+    <span className="truncate">
+      {lead}
+      {tail.length > 0 ? (
+        <span className="text-ink-ghost"> · {tail.join(' · ')}</span>
+      ) : null}
+    </span>
+  )
+}
+
+/** The day the recall ran: a machine value, in mono. */
+function MemoryMeta({ memory }: { memory: MemoryNote }) {
+  // The bank is on the row already; the day dates "last stated" below.
+  if (!memory.recalled) return null
+  return (
+    <p className="truncate font-mono text-meta leading-4 text-ink-ghost">
+      recalled {memory.recalled}
+    </p>
+  )
+}
+
+function MemoryDetail({ memory }: { memory: MemoryNote }) {
+  const rules = memory.rulesUpdate ?? memory.reminder
+  return (
+    <CardHighlight className="flex flex-col gap-4 p-3">
+      {memory.memories.length > 0 ? (
+        <MemoryList
+          items={memory.memories.map((m, i) => ({
+            key: `${i}`,
+            text: m.text,
+            date: m.date,
+          }))}
+        />
+      ) : null}
+      {rules ? (
+        <section className="flex flex-col gap-1.5">
+          {memory.memories.length > 0 ? (
+            <h4 className="font-sans text-xs font-medium text-ink-faint">
+              Rules repeated with this reply
+            </h4>
+          ) : null}
+          <p className="whitespace-pre-wrap text-pretty wrap-break-word font-sans text-[12.5px] leading-5 text-ink-faint">
+            {rules}
+          </p>
+        </section>
+      ) : null}
     </CardHighlight>
   )
 }

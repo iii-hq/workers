@@ -33,6 +33,7 @@
  */
 
 import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
+import { parseMemoryNote } from '@/lib/memory-note'
 import { isProvidersNote, parseMentionsNote } from '@/lib/mentions/notes'
 import { parseSkillUpdate } from '@/lib/skill-update'
 import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
@@ -130,6 +131,7 @@ function modelNotice(
   // The list of mention names an agent may write: bookkeeping, every session.
   if (isProvidersNote(d.text)) return []
   const mentions = parseMentionsNote(d.text)
+  const memory = mentions ? null : parseMemoryNote(d.text)
   const label = mentions ? 'mentions' : noteLabel(d.text, d.kind)
   return [
     {
@@ -146,6 +148,7 @@ function modelNotice(
         label,
         text: d.text,
         ...(mentions ? { mentions } : {}),
+        ...(memory ? { memory } : {}),
       },
       createdAt: timestamp,
     },
