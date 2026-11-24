@@ -85,6 +85,7 @@ import {
   tailScrollTarget,
   tailStateAfterScroll,
 } from './tail-scroll'
+import { mergeThoughtRuns } from './thought-runs'
 import {
   agentMovedPast,
   estimateRowSlot,
@@ -565,8 +566,10 @@ export function MessageList({
   )
   const rows = useMemo(
     () =>
-      groupTimelineActivities(
-        observerActivityRows(functionCallGroups(messages)),
+      mergeThoughtRuns(
+        groupTimelineActivities(
+          observerActivityRows(functionCallGroups(messages)),
+        ),
       ),
     [messages],
   )

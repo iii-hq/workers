@@ -38,8 +38,11 @@ export function ThoughtMessage({ message }: ThoughtMessageProps) {
   const explicitLineCount = message.content.split('\n').length
 
   // Streaming ended: fold the thought so the answer below it has the room.
+  // A run of thoughts shares one fold, so the next thought joining it opens
+  // it again while that one streams.
   useEffect(() => {
     if (wasStreamingRef.current && !streaming) setOpen(false)
+    if (!wasStreamingRef.current && streaming) setOpen(true)
     wasStreamingRef.current = streaming
   }, [streaming])
 
