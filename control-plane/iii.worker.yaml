@@ -15,6 +15,8 @@ scripts:
   install: if [ -f src/index.ts ]; then pnpm install --frozen-lockfile && pnpm run build:bundle; fi
   start: node ./dist/bundle/index.mjs
 
+# ADE hosts the optional page and GitHub provides optional PR data. Neither is
+# a direct startup dependency; only declare workers the backend relies on here.
 dependencies:
   configuration: "latest"
   harness: "latest"
