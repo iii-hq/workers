@@ -31,11 +31,6 @@
       "count": 32
     }
   },
-  "src/components/chat/AddProjectDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 8
-    }
-  },
   "src/components/chat/AddProviderPanel.tsx": {
     "shadcn/no-restyle": {
       "count": 1
@@ -64,7 +59,7 @@
   },
   "src/components/chat/ChatAside.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 5
+      "count": 3
     },
     "shadcn/no-inline-styles": {
       "count": 3
@@ -191,7 +186,7 @@
       "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 27
+      "count": 16
     },
     "shadcn/no-unknown-classes": {
       "count": 1
@@ -256,17 +251,6 @@
   "src/components/chat/ObserverDetailDialog.tsx": {
     "shadcn/no-restyle": {
       "count": 15
-    }
-  },
-  "src/components/chat/OpenProjectPicker.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 9
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 48
     }
   },
   "src/components/chat/PinnedModelMenu.tsx": {
@@ -644,15 +628,7 @@
       "count": 11
     }
   },
-  "src/components/sidebar/ConversationGroupHeader.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    }
-  },
   "src/components/sidebar/ConversationRow.tsx": {
-    "shadcn/no-restyle": {
-      "count": 27
-    },
     "shadcn/require-static-classes": {
       "count": 1
     }
@@ -666,14 +642,6 @@
     },
     "shadcn/no-restyle": {
       "count": 2
-    }
-  },
-  "src/components/sidebar/RenameConversationDialog.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
-    "shadcn/no-restyle": {
-      "count": 11
     }
   },
   "src/components/ui/Annotations.tsx": {

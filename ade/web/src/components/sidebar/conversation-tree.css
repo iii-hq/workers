@@ -194,14 +194,19 @@
 
 /* The open menu's rows: 14px Inter with an icon column, on the popover
    canon; the destructive row keeps its own tone. */
-.conversation-row-menu [data-slot="dropdown-menu-item"] svg {
+[data-row-menu] [data-slot="dropdown-menu-item"] svg {
   color: var(--color-ink-faint);
 }
 
-.conversation-row-menu
+[data-row-menu]
   [data-slot="dropdown-menu-item"][data-variant="destructive"]
   svg {
   color: inherit;
+}
+
+/* A row with a second line (the description or the status) stands taller. */
+.iii-ui-tree-item[data-two-line] {
+  --iii-ui-tree-row: 3.25rem;
 }
 
 /* ── project sections ─────────────────────────────────────────────── */
@@ -233,12 +238,12 @@
 
 /* The plus shows with the pointer on the project; touch keeps it visible. */
 @media (hover: hover) and (pointer: fine) {
-  .conversation-project-header .conversation-project-new {
+  .conversation-project-header [data-project-new] {
     opacity: 0;
   }
 
-  .conversation-project-header:hover .conversation-project-new,
-  .conversation-project-header:focus-within .conversation-project-new {
+  .conversation-project-header:hover [data-project-new],
+  .conversation-project-header:focus-within [data-project-new] {
     opacity: 1;
   }
 }
@@ -246,13 +251,12 @@
 /* A chat project's ⋯ shows with the pointer on it, like the plus; touch and
    an open menu keep it visible. */
 @media (hover: hover) and (pointer: fine) {
-  .conversation-project-header
-    .conversation-project-menu:not([data-menu-open]) {
+  .conversation-project-header [data-project-menu]:not([data-menu-open]) {
     opacity: 0;
   }
 
-  .conversation-project-header:hover .conversation-project-menu,
-  .conversation-project-header:focus-within .conversation-project-menu {
+  .conversation-project-header:hover [data-project-menu],
+  .conversation-project-header:focus-within [data-project-menu] {
     opacity: 1;
   }
 }

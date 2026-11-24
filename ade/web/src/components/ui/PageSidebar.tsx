@@ -639,7 +639,16 @@ export function PageSidebar({
       data-resizing={isResizing ? '' : undefined}
       data-narrow={effectiveNarrow ? '' : undefined}
       data-drawer={hostDrawer ? (drawerOpen ? 'open' : 'closed') : undefined}
-      style={{ ...style, width: effectiveWidth }}
+      style={
+        {
+          ...style,
+          width: effectiveWidth,
+          // Where the drawer's scrim, panel and toggle start (0 unset).
+          '--page-sidebar-drawer-top': drawerOffsetTop
+            ? `${drawerOffsetTop}px`
+            : undefined,
+        } as React.CSSProperties
+      }
       className={cn(
         'relative shrink-0 min-h-0 bg-sidebar',
         side === 'left'
@@ -677,13 +686,10 @@ export function PageSidebar({
           tabIndex={-1}
           aria-label={`close ${label}`}
           className={cn(
-            'absolute inset-y-0 z-10 cursor-default bg-ink/25',
+            'absolute top-[var(--page-sidebar-drawer-top,0px)] bottom-0 z-10 cursor-default bg-ink/25',
             side === 'left' ? 'left-0' : 'right-0',
           )}
-          style={{
-            width: containerWidth > 0 ? containerWidth : '100vw',
-            top: drawerOffsetTop,
-          }}
+          style={{ width: containerWidth > 0 ? containerWidth : '100vw' }}
           onClick={() => setDrawer(false)}
         />
       ) : null}
@@ -693,12 +699,12 @@ export function PageSidebar({
         tabIndex={-1}
         inert={effectiveCollapsed || undefined}
         aria-hidden={effectiveCollapsed || undefined}
-        style={{
-          width: panelWidth,
-          ...(hostDrawer ? { top: drawerOffsetTop } : {}),
-        }}
+        style={{ width: panelWidth }}
         className={cn(
-          'absolute inset-y-0 flex min-h-0 flex-col overflow-hidden',
+          'absolute flex min-h-0 flex-col overflow-hidden',
+          hostDrawer
+            ? 'top-[var(--page-sidebar-drawer-top,0px)] bottom-0'
+            : 'inset-y-0',
           side === 'left' ? 'left-0' : 'right-0',
           hostDrawer &&
             cn(
@@ -784,13 +790,14 @@ export function PageSidebar({
             drawerToggleOffset === undefined
               ? undefined
               : side === 'left'
-                ? { left: drawerToggleOffset + 4, top: drawerOffsetTop + 8 }
-                : { right: drawerToggleOffset + 4, top: drawerOffsetTop + 8 }
+                ? { left: drawerToggleOffset + 4 }
+                : { right: drawerToggleOffset + 4 }
           }
           className={cn(
-            'absolute top-2 z-30 size-7',
-            drawerToggleOffset === undefined &&
-              (toggleAtLeft ? 'left-1' : 'right-1'),
+            'absolute z-30 size-7',
+            drawerToggleOffset === undefined
+              ? cn('top-2', toggleAtLeft ? 'left-1' : 'right-1')
+              : 'top-[calc(var(--page-sidebar-drawer-top,0px)+0.5rem)]',
           )}
         >
           <span className="relative block size-4" aria-hidden>

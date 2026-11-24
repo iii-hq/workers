@@ -1,15 +1,19 @@
 import type { RefObject } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Button } from '@/components/shadcn/button'
-import { Dialog, DialogContent, DialogTitle } from '@/components/shadcn/dialog'
+import { Dialog } from '@/components/shadcn/dialog'
 import {
   Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
   SelectValue,
 } from '@/components/shadcn/select'
 import { Switch } from '@/components/shadcn/switch'
+import {
+  FormDialogContent,
+  FormDialogTitle,
+  FormSelectTrigger,
+} from '@/components/ui/FormDialog'
 import { type ChatProject, NO_PROJECT } from '@/lib/backend/projects'
 import {
   type ConversationDetailsDraft,
@@ -52,7 +56,7 @@ interface ConversationDetailsDialogProps {
 }
 
 const FIELD =
-  'w-full rounded-lg bg-muted px-3 text-sm text-foreground ring-1 ring-transparent outline-none transition-[box-shadow] duration-[var(--motion-duration-control)] selection:bg-primary selection:text-primary-foreground placeholder:text-ink-ghost focus-visible:ring-ring/50'
+  'w-full rounded-lg bg-muted px-3 text-sm text-foreground ring-1 ring-transparent outline-none transition-shadow duration-(--motion-duration-control) selection:bg-primary selection:text-primary-foreground placeholder:text-ink-ghost focus-visible:ring-ring/50'
 
 /**
  * "Conversation details" (chat-projects §1.3.5), in place of the old Rename
@@ -139,8 +143,8 @@ export function ConversationDetailsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="w-[min(30rem,calc(100vw-2rem))] gap-0 bg-dialog-surface p-0 text-foreground ring-1 ring-dialog-edge [--dialog-max-width:30rem]"
+      <FormDialogContent
+        className="w-[min(30rem,calc(100vw-2rem))] [--dialog-max-width:30rem]"
         initialFocus={nameRef}
         finalFocus={returnFocusTo}
         // The dialog portals to the body but stays inside the row's React
@@ -156,9 +160,10 @@ export function ConversationDetailsDialog({
             void submit()
           }}
         >
-          <DialogTitle className="pr-8 text-[15px] leading-5 font-semibold">
+          {/* Clear of the dialog's close button. */}
+          <FormDialogTitle className="mr-8">
             Conversation details
-          </DialogTitle>
+          </FormDialogTitle>
 
           <div className="flex flex-col gap-1.5">
             <label
@@ -304,13 +309,13 @@ export function ConversationDetailsDialog({
                 }
                 items={projectItems}
               >
-                <SelectTrigger
+                <FormSelectTrigger
                   id={`${ids}-project`}
                   aria-label="Project"
-                  className="h-9 min-w-44 border-border bg-card"
+                  className="h-9 min-w-44"
                 >
                   <SelectValue />
-                </SelectTrigger>
+                </FormSelectTrigger>
                 <SelectContent align="end">
                   {projectItems.map((item) => (
                     <SelectItem key={item.value} value={item.value}>
@@ -342,7 +347,7 @@ export function ConversationDetailsDialog({
             </Button>
           </div>
         </form>
-      </DialogContent>
+      </FormDialogContent>
     </Dialog>
   )
 }

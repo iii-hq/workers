@@ -18,16 +18,18 @@ import { ConversationDetailsDialog } from '@/components/chat/ConversationDetails
 import { ProjectDot } from '@/components/projects/ProjectDot'
 import {
   DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
+import {
+  ChatMenuContent,
+  ChatMenuItem,
+  ChatMenuRadioItem,
+  ChatMenuSubContent,
+  ChatMenuSubTrigger,
+} from '@/components/ui/ChatMenu'
 import { Hint } from '@/components/ui/Hint'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -52,10 +54,6 @@ const menuActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12
  through the menu, so the shortcut drops off coarse pointers. A pinned
  chat's pin stays on show in the same place, hovered or not. */
 const pinActionClassName = `${uiClasses.treeItemAction} conversation-row__pin`
-
-/* Menu rows on the console's popover canon: Inter 14px, 36px tall, an
- icon then its label, generous inset so the list breathes. */
-const MENU_ITEM_CLASS = 'gap-2.5 rounded-lg px-2.5 py-2 text-sm'
 
 interface ConversationRowProps {
   conversation: Conversation
@@ -269,12 +267,8 @@ export function ConversationRow({
       aria-current={active ? 'page' : undefined}
       aria-label={`open ${conversation.title}`}
       className={uiClasses.treeItem}
-      style={
-        {
-          '--iii-ui-tree-depth': depth,
-          ...(twoLines ? { '--iii-ui-tree-row': '3.25rem' } : {}),
-        } as CSSProperties
-      }
+      style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
+      // A second line stands the row taller (conversation-tree.css).
       data-two-line={twoLines || undefined}
       data-menu-open={menuOpen || undefined}
       data-pinned={pinned || undefined}
@@ -440,25 +434,23 @@ export function ConversationRow({
                   <Ellipsis aria-hidden />
                 </DropdownMenuTrigger>
               </Hint>
-              <DropdownMenuContent
+              <ChatMenuContent
                 align="end"
                 sideOffset={6}
-                className="conversation-row-menu min-w-44 p-1.5"
+                data-row-menu=""
+                className="min-w-44"
               >
-                <DropdownMenuItem
-                  className={MENU_ITEM_CLASS}
-                  onClick={() => setRenaming(true)}
-                >
+                <ChatMenuItem onClick={() => setRenaming(true)}>
                   <Pencil aria-hidden />
                   Conversation details…
-                </DropdownMenuItem>
+                </ChatMenuItem>
                 {projects && onMoveToProject && depth === 0 ? (
                   <DropdownMenuSub>
-                    <DropdownMenuSubTrigger className={MENU_ITEM_CLASS}>
+                    <ChatMenuSubTrigger>
                       <FolderInput aria-hidden />
                       Move to project
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="conversation-row-menu min-w-48 p-1.5">
+                    </ChatMenuSubTrigger>
+                    <ChatMenuSubContent data-row-menu="" className="min-w-48">
                       <DropdownMenuRadioGroup
                         value={currentProject}
                         onValueChange={(value) => {
@@ -471,63 +463,52 @@ export function ConversationRow({
                         }}
                       >
                         {projects.map((project) => (
-                          <DropdownMenuRadioItem
+                          <ChatMenuRadioItem
                             key={project.id}
                             value={project.id}
-                            className={MENU_ITEM_CLASS}
                           >
                             <ProjectDot color={project.color} />
                             <span className="truncate">{project.name}</span>
-                          </DropdownMenuRadioItem>
+                          </ChatMenuRadioItem>
                         ))}
-                        <DropdownMenuRadioItem
-                          value={NO_PROJECT}
-                          className={MENU_ITEM_CLASS}
-                        >
+                        <ChatMenuRadioItem value={NO_PROJECT}>
                           No project
-                        </DropdownMenuRadioItem>
+                        </ChatMenuRadioItem>
                       </DropdownMenuRadioGroup>
-                    </DropdownMenuSubContent>
+                    </ChatMenuSubContent>
                   </DropdownMenuSub>
                 ) : null}
-                <DropdownMenuItem
-                  className={MENU_ITEM_CLASS}
+                <ChatMenuItem
                   disabled={!onTogglePin}
                   onClick={() => onTogglePin?.()}
                 >
                   <PinIcon aria-hidden />
                   {pinned ? 'Unpin' : 'Pin'}
-                </DropdownMenuItem>
+                </ChatMenuItem>
                 {reorder ? (
                   <>
-                    <DropdownMenuItem
-                      className={MENU_ITEM_CLASS}
+                    <ChatMenuItem
                       disabled={!reorder.canMoveUp}
                       onClick={() => reorder.onMove(-1)}
                     >
                       <ArrowUp aria-hidden />
                       Move up
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      className={MENU_ITEM_CLASS}
+                    </ChatMenuItem>
+                    <ChatMenuItem
                       disabled={!reorder.canMoveDown}
                       onClick={() => reorder.onMove(1)}
                     >
                       <ArrowDown aria-hidden />
                       Move down
-                    </DropdownMenuItem>
+                    </ChatMenuItem>
                   </>
                 ) : null}
                 <DropdownMenuSeparator className="my-1.5" />
-                <DropdownMenuItem
-                  variant="destructive"
-                  className={MENU_ITEM_CLASS}
-                  onClick={onRemove}
-                >
+                <ChatMenuItem variant="destructive" onClick={onRemove}>
                   <Trash2 aria-hidden />
                   Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
+                </ChatMenuItem>
+              </ChatMenuContent>
             </DropdownMenu>
           </span>
         </span>

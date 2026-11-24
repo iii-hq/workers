@@ -2,11 +2,13 @@ import { Plus } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
-  DialogHeader,
   DialogTitle,
 } from '@/components/shadcn/dialog'
+import {
+  PanelDialogContent,
+  PanelDialogHeader,
+} from '@/components/ui/FormDialog'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { upsertSavedFolder } from '@/lib/backend/folders'
 import { errMsg, validateWorkspaceDir } from '@/lib/working-dir'
@@ -72,12 +74,12 @@ export function AddFolderDialog({
         onOpenChange(next)
       }}
     >
-      <DialogContent
-        className="flex h-[min(38rem,calc(100dvh-2rem))] w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col gap-0 overflow-hidden p-0"
+      <PanelDialogContent
+        className="flex h-[min(38rem,calc(100dvh-2rem))] w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col overflow-hidden"
         // No keyboard to type with: don't raise the on-screen one.
         initialFocus={pointerFine ? undefined : () => false}
       >
-        <DialogHeader className="flex-row items-start gap-3 border-b border-border px-5 py-4 pr-14">
+        <PanelDialogHeader className="flex-row items-start">
           <span
             aria-hidden
             className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground"
@@ -91,7 +93,7 @@ export function AddFolderDialog({
               next chat can pick it in one click.
             </DialogDescription>
           </div>
-        </DialogHeader>
+        </PanelDialogHeader>
         <FolderBrowser
           wide={!phone}
           keyboard={pointerFine}
@@ -100,7 +102,7 @@ export function AddFolderDialog({
           onUse={(dir) => void use(dir)}
           onCancel={() => onOpenChange(false)}
         />
-      </DialogContent>
+      </PanelDialogContent>
     </Dialog>
   )
 }

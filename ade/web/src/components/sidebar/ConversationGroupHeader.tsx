@@ -3,13 +3,13 @@ import type { ReactNode } from 'react'
 import { ProjectDot } from '@/components/projects/ProjectDot'
 import {
   DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuGroup,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
+import { ChatMenuContent, ChatMenuItem } from '@/components/ui/ChatMenu'
 import { Hint } from '@/components/ui/Hint'
+import { QuietIconButton } from '@/components/ui/QuietIconButton'
 import { type ChatProject, tildePath } from '@/lib/backend/projects'
 import { cn } from '@/lib/utils'
 
@@ -93,7 +93,7 @@ export function ConversationGroupHeader({
       title={title}
       onClick={onToggle}
       className={cn(
-        'conversation-group-header iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-inter font-medium text-ink-ghost transition-colors hover:bg-surface-hover hover:text-ink-faint focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-1 focus-visible:ring-ring/50',
+        'conversation-group-header iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-2.5 text-left font-inter font-medium text-ink-ghost transition-colors hover:bg-surface-hover hover:text-ink-faint focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-1 focus-visible:ring-ring/50',
         narrow ? 'min-h-11 text-sm' : 'min-h-8 text-sm',
       )}
     >
@@ -140,9 +140,9 @@ function ChatProjectHeader({
   menu?: ReactNode
 }) {
   const folders = project.folders.length
-  const plusClass = cn(
-    'conversation-project-new flex shrink-0 items-center justify-center rounded-sm text-ink-faint transition-[opacity,color,background-color] duration-[var(--motion-duration-control)] hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
-    narrow ? 'size-11' : 'size-7',
+  // The header shows it with the pointer on the project (conversation-tree.css).
+  const plus = (
+    <QuietIconButton data-project-new="" size={narrow ? 'touch' : 'default'} />
   )
   const plusLabel = `New conversation in ${project.name}`
   return (
@@ -184,35 +184,27 @@ function ChatProjectHeader({
       </button>
       {onCreateIn && folders === 1 ? (
         <Hint label={plusLabel} disabled={narrow}>
-          <button
-            type="button"
+          <QuietIconButton
+            data-project-new=""
+            size={narrow ? 'touch' : 'default'}
             aria-label={plusLabel}
             onClick={() => onCreateIn(project.folders[0])}
-            className={plusClass}
           >
             <Plus className="size-4" aria-hidden />
-          </button>
+          </QuietIconButton>
         </Hint>
       ) : onCreateIn && folders > 1 ? (
         <DropdownMenu>
           <Hint label={plusLabel} disabled={narrow}>
-            <DropdownMenuTrigger aria-label={plusLabel} className={plusClass}>
+            <DropdownMenuTrigger aria-label={plusLabel} render={plus}>
               <Plus className="size-4" aria-hidden />
             </DropdownMenuTrigger>
           </Hint>
-          <DropdownMenuContent
-            align="end"
-            sideOffset={6}
-            className="min-w-56 p-1.5"
-          >
+          <ChatMenuContent align="end" sideOffset={6} className="min-w-56">
             <DropdownMenuGroup>
               <DropdownMenuLabel>Choose a folder</DropdownMenuLabel>
               {project.folders.map((folder) => (
-                <DropdownMenuItem
-                  key={folder}
-                  className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
-                  onClick={() => onCreateIn(folder)}
-                >
+                <ChatMenuItem key={folder} onClick={() => onCreateIn(folder)}>
                   <Folder aria-hidden className="text-ink-faint" />
                   <span
                     data-keep-mono=""
@@ -220,10 +212,10 @@ function ChatProjectHeader({
                   >
                     {tildePath(folder)}
                   </span>
-                </DropdownMenuItem>
+                </ChatMenuItem>
               ))}
             </DropdownMenuGroup>
-          </DropdownMenuContent>
+          </ChatMenuContent>
         </DropdownMenu>
       ) : null}
       {menu}
@@ -283,17 +275,14 @@ function ProjectHeader({
       </button>
       {onCreate ? (
         <Hint label={`New chat in ${label}`} disabled={narrow}>
-          <button
-            type="button"
+          <QuietIconButton
+            data-project-new=""
+            size={narrow ? 'touch' : 'default'}
             onClick={onCreate}
             aria-label={`New chat in ${label}`}
-            className={cn(
-              'conversation-project-new flex shrink-0 items-center justify-center rounded-sm text-ink-faint transition-[opacity,color,background-color] duration-[var(--motion-duration-control)] hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
-              narrow ? 'size-11' : 'size-7',
-            )}
           >
             <Plus className="size-4" aria-hidden />
-          </button>
+          </QuietIconButton>
         </Hint>
       ) : null}
     </div>

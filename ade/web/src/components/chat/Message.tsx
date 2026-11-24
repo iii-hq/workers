@@ -20,10 +20,9 @@ import { ObserverActivityCard } from '@/components/observer-activity/ObserverAct
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import {
   DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
+import { ChatMenuContent, ChatMenuItem } from '@/components/ui/ChatMenu'
 import { Chip } from '@/components/ui/Chip'
 import { Hint } from '@/components/ui/Hint'
 import { Prompt } from '@/components/ui/Prompt'
@@ -958,23 +957,15 @@ function ReplyFooter({
             <Ellipsis className="size-4 shrink-0" aria-hidden />
           </DropdownMenuTrigger>
         </Hint>
-        <DropdownMenuContent
-          align="start"
-          sideOffset={6}
-          className="min-w-52 p-1.5"
-        >
+        <ChatMenuContent align="start" sideOffset={6} className="min-w-52">
           {forkHere ? (
-            <DropdownMenuItem
-              className="gap-2.5 rounded-lg px-2.5 py-2 text-sm sm:hidden"
-              onClick={forkHere}
-            >
+            <ChatMenuItem className="sm:hidden" onClick={forkHere}>
               <MessagesSquare aria-hidden />
               Side chat
-            </DropdownMenuItem>
+            </ChatMenuItem>
           ) : null}
           {sideChat && message.content ? (
-            <DropdownMenuItem
-              className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
+            <ChatMenuItem
               onClick={() =>
                 sideChat.ask({
                   messageId: message.id,
@@ -985,16 +976,13 @@ function ReplyFooter({
             >
               <MessageSquareQuote aria-hidden />
               Ask about this in side chat
-            </DropdownMenuItem>
+            </ChatMenuItem>
           ) : null}
-          <DropdownMenuItem
-            className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
-            onClick={() => downloadReply(message)}
-          >
+          <ChatMenuItem onClick={() => downloadReply(message)}>
             <Download aria-hidden />
             Download as Markdown
-          </DropdownMenuItem>
-        </DropdownMenuContent>
+          </ChatMenuItem>
+        </ChatMenuContent>
       </DropdownMenu>
       {visible.map((file) => (
         <ChangedFileChip key={file.path} file={file} onOpen={open} />

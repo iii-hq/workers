@@ -2,18 +2,15 @@ import { Ellipsis, Pencil, SquarePen, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import {
   DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
+import { ChatMenuContent, ChatMenuItem } from '@/components/ui/ChatMenu'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Hint } from '@/components/ui/Hint'
+import { QuietIconButton } from '@/components/ui/QuietIconButton'
 import { refreshChatProjects } from '@/hooks/use-chat-projects'
 import { type ChatProject, deleteProject } from '@/lib/backend/projects'
-import { cn } from '@/lib/utils'
-
-const MENU_ITEM_CLASS = 'gap-2.5 rounded-lg px-2.5 py-2 text-sm'
 
 /** "Its 4 conversations stay, under No project." */
 export function deleteProjectText(count: number): string {
@@ -54,41 +51,37 @@ export function ProjectMenu({
         <Hint label="More" disabled={narrow}>
           <DropdownMenuTrigger
             aria-label={`more actions for project ${project.name}`}
-            data-menu-open={menuOpen || undefined}
-            className={cn(
-              'conversation-project-menu flex shrink-0 items-center justify-center rounded-sm text-ink-faint transition-[opacity,color,background-color] duration-[var(--motion-duration-control)] hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
-              narrow ? 'size-11' : 'size-7',
-            )}
+            render={
+              <QuietIconButton
+                // The header shows it with the pointer on the project; an
+                // open menu keeps it (conversation-tree.css).
+                data-project-menu=""
+                data-menu-open={menuOpen || undefined}
+                size={narrow ? 'touch' : 'default'}
+              />
+            }
           >
             <Ellipsis aria-hidden className="size-4" />
           </DropdownMenuTrigger>
         </Hint>
-        <DropdownMenuContent
-          align="end"
-          sideOffset={6}
-          className="min-w-48 p-1.5"
-        >
-          <DropdownMenuItem
-            className={MENU_ITEM_CLASS}
-            onClick={onNewConversation}
-          >
+        <ChatMenuContent align="end" sideOffset={6} className="min-w-48">
+          <ChatMenuItem onClick={onNewConversation}>
             <SquarePen aria-hidden />
             New conversation
-          </DropdownMenuItem>
-          <DropdownMenuItem className={MENU_ITEM_CLASS} onClick={onEdit}>
+          </ChatMenuItem>
+          <ChatMenuItem onClick={onEdit}>
             <Pencil aria-hidden />
             Edit project…
-          </DropdownMenuItem>
+          </ChatMenuItem>
           <DropdownMenuSeparator className="my-1.5" />
-          <DropdownMenuItem
+          <ChatMenuItem
             variant="destructive"
-            className={MENU_ITEM_CLASS}
             onClick={() => setConfirming(true)}
           >
             <Trash2 aria-hidden />
             Delete project…
-          </DropdownMenuItem>
-        </DropdownMenuContent>
+          </ChatMenuItem>
+        </ChatMenuContent>
       </DropdownMenu>
       <ConfirmDialog
         open={confirming}

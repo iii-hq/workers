@@ -3,12 +3,12 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { Button } from '@/components/shadcn/button'
 import { Checkbox } from '@/components/shadcn/checkbox'
+import { Dialog } from '@/components/shadcn/dialog'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/shadcn/dialog'
+  FormDialogContent,
+  FormDialogDescription,
+  FormDialogTitle,
+} from '@/components/ui/FormDialog'
 import { refreshChatProjects } from '@/hooks/use-chat-projects'
 import {
   type ChatProject,
@@ -226,8 +226,8 @@ export function ProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="w-[min(32rem,calc(100vw-2rem))] gap-0 bg-dialog-surface p-0 text-foreground ring-1 ring-dialog-edge [--dialog-max-width:32rem]"
+      <FormDialogContent
+        className="w-[min(32rem,calc(100vw-2rem))] [--dialog-max-width:32rem]"
         initialFocus={nameRef}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
@@ -241,12 +241,12 @@ export function ProjectDialog({
           }}
         >
           <div className="flex flex-col gap-1 pr-8">
-            <DialogTitle className="text-[15px] leading-5 font-semibold">
+            <FormDialogTitle>
               {editing ? 'Edit project' : 'New project'}
-            </DialogTitle>
-            <DialogDescription className="text-body text-muted-foreground">
+            </FormDialogTitle>
+            <FormDialogDescription>
               A project groups folders and the conversations started in them.
-            </DialogDescription>
+            </FormDialogDescription>
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -411,7 +411,7 @@ export function ProjectDialog({
             </Button>
           </div>
         </form>
-      </DialogContent>
+      </FormDialogContent>
     </Dialog>
   )
 }

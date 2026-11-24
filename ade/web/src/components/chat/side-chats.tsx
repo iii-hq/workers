@@ -7,7 +7,13 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import { createPortal } from 'react-dom'
 import {
   DropdownMenu,
@@ -19,6 +25,7 @@ import {
 import { Sheet, SheetPortal } from '@/components/shadcn/sheet'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { IconButton } from '@/components/ui/IconButton'
+import { QuietIconButton } from '@/components/ui/QuietIconButton'
 import { useVisualViewportFit } from '@/hooks/use-visual-viewport-fit'
 import type { SideChatLock } from '@/lib/chat-aside'
 import { PortalScope } from '@/lib/ui-scope'
@@ -129,14 +136,15 @@ export function SideChatMenu({
   onSummarize,
   onKeep,
   onDelete,
-  triggerClassName,
+  size,
 }: {
   label?: string
   busy?: boolean
   onSummarize: () => void
   onKeep: () => void
   onDelete: () => void
-  triggerClassName?: string
+  /** The trigger's target: `page` in a phone page's header. */
+  size?: ComponentProps<typeof QuietIconButton>['size']
 }) {
   const [confirm, setConfirm] = useState(false)
   return (
@@ -145,10 +153,7 @@ export function SideChatMenu({
         <DropdownMenuTrigger
           aria-label={label}
           data-side-chat-menu=""
-          className={
-            triggerClassName ??
-            'flex size-7 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
-          }
+          render={<QuietIconButton size={size} />}
         >
           <EllipsisVertical aria-hidden className="size-4" />
         </DropdownMenuTrigger>
@@ -306,7 +311,7 @@ function SideChatPageContent({
       aria-describedby={undefined}
       aria-label={`Sidechat of ${parentTitle}`}
       data-side-chat-page=""
-      className="fixed inset-0 z-50 flex h-dvh w-screen flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] font-sans text-ink transition-transform duration-[var(--motion-duration-panel)] ease-[var(--motion-ease-enter)] focus:outline-none data-ending-style:translate-x-full data-starting-style:translate-x-full motion-reduce:transition-none"
+      className="fixed inset-0 z-50 flex h-dvh w-screen flex-col bg-background font-sans text-ink transition-transform duration-(--motion-duration-panel) ease-(--motion-ease-enter) focus:outline-none side-panel-safe-area data-ending-style:translate-x-full data-starting-style:translate-x-full motion-reduce:transition-none"
     >
       <header className="flex h-14 shrink-0 items-center gap-1 px-1">
         <IconButton

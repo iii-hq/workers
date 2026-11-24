@@ -247,7 +247,7 @@ function ImageGridTile({
           <img
             src={src}
             alt=""
-            className="size-full object-cover outline -outline-offset-1 outline-black/10 dark:outline-white/10"
+            className="size-full object-cover outline -outline-offset-1 outline-foreground/10"
           />
         ) : (
           <ImageIcon aria-hidden className="size-4 text-ink-faint" />

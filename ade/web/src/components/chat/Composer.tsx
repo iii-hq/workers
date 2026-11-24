@@ -21,6 +21,7 @@ import {
 } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { Hint } from '@/components/ui/Hint'
+import { LockedModelLabel } from '@/components/ui/LockedModelLabel'
 import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import {
   type DraftAttachmentChange,
@@ -66,7 +67,6 @@ import './conversation-design.css'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
-import { LockedModelLabel } from './LockedModelLabel'
 import {
   $insertAttachmentNodes,
   AttachmentNode,
@@ -1186,11 +1186,15 @@ export function Composer({
                   {agentPicker}
                 </ComposerActionsSlot>
                 {lockedModel ? (
-                  <LockedModelLabel
-                    label={lockedModel.label}
-                    hint={lockedModel.hint}
-                    className="composer-mobile-model min-w-0 shrink"
-                  />
+                  // The narrowest panes shed it like the picker (the
+                  // `composer-mobile-model` rule).
+                  <span className="composer-mobile-model flex min-w-0 shrink">
+                    <LockedModelLabel
+                      label={lockedModel.label}
+                      hint={lockedModel.hint}
+                      className="min-w-0"
+                    />
+                  </span>
                 ) : (
                   <ModelPicker
                     value={model}

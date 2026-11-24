@@ -110,9 +110,20 @@ describe('PageSidebar collapseRequest', () => {
     const toggle = aside().querySelector<HTMLElement>(
       'button[aria-label="collapse side"]',
     )
-    expect(scrim?.style.top).toBe('44px')
-    expect(panel?.style.top).toBe('44px')
-    expect(toggle?.style.top).toBe('52px')
+    // The offset rides a CSS variable the scrim, the panel and the toggle
+    // (8px lower) start from.
+    expect(aside().style.getPropertyValue('--page-sidebar-drawer-top')).toBe(
+      '44px',
+    )
+    expect(scrim?.className).toContain(
+      'top-[var(--page-sidebar-drawer-top,0px)]',
+    )
+    expect(panel?.className).toContain(
+      'top-[var(--page-sidebar-drawer-top,0px)]',
+    )
+    expect(toggle?.className).toContain(
+      'top-[calc(var(--page-sidebar-drawer-top,0px)+0.5rem)]',
+    )
   })
 
   it('leaves the caret where it was when the shortcut came from outside', () => {

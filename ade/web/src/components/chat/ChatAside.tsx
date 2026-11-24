@@ -21,12 +21,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Badge } from '@/components/shadcn/badge'
 import { Button } from '@/components/shadcn/button'
-import {
-  Sheet,
-  SheetClose,
-  SheetOverlay,
-  SheetPortal,
-} from '@/components/shadcn/sheet'
+import { Sheet, SheetClose, SheetPortal } from '@/components/shadcn/sheet'
 import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
 import {
   Tooltip,
@@ -38,6 +33,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
 import { PageSidebar } from '@/components/ui/PageChrome'
+import { SheetScrim } from '@/components/ui/SheetScrim'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useVisualViewportFit } from '@/hooks/use-visual-viewport-fit'
@@ -1181,11 +1177,7 @@ export function ChatAside({
       onSummarize={() => void summarizeSide(id)}
       onKeep={() => void keepSide(id)}
       onDelete={() => deleteSide(id)}
-      triggerClassName={
-        phone
-          ? 'flex size-12 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
-          : undefined
-      }
+      size={phone ? 'page' : 'default'}
     />
   )
   const sideErrorPanel = sideError ? (
@@ -1873,7 +1865,7 @@ function PhonePanel({
     >
       <SheetPortal>
         <PortalScope>
-          <SheetOverlay className="bg-black/30" />
+          <SheetScrim />
           <PhonePanelContent
             title={title}
             tabs={tabs}
@@ -1944,7 +1936,7 @@ function PhonePanelContent({
       onPointerCancel={() => {
         swipe.current = null
       }}
-      className="fixed top-0 right-0 z-50 flex h-dvh w-[min(calc(100vw-48px),380px)] flex-col bg-popover pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] font-sans text-ink shadow-floating transition-transform duration-[var(--motion-duration-panel)] ease-[var(--motion-ease-enter)] focus:outline-none data-ending-style:translate-x-full data-starting-style:translate-x-full motion-reduce:transition-none"
+      className="fixed top-0 right-0 z-50 flex h-dvh w-[min(calc(100vw-48px),380px)] flex-col bg-popover font-sans text-ink shadow-floating transition-transform duration-(--motion-duration-panel) ease-(--motion-ease-enter) focus:outline-none side-panel-safe-area data-ending-style:translate-x-full data-starting-style:translate-x-full motion-reduce:transition-none"
     >
       <div className="flex h-12 shrink-0 items-center gap-1 pr-1 pl-4">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
