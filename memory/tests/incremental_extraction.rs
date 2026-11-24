@@ -1731,6 +1731,73 @@ mod productive {
     }
 
     #[tokio::test]
+    async fn a_reply_with_no_array_is_asked_once_more() {
+        let amber = "Amber instruments require copper calibration.";
+        let stack = |replies: Vec<Value>| {
+            Boundary::new(Script {
+                path: vec![message("anchor", ""), message("end", amber)],
+                cursor: Some("anchor".into()),
+                model_items: VecDeque::from(replies),
+                ..Script::default()
+            })
+        };
+        let two_calls = PassTally {
+            calls: 2,
+            input_tokens: 240,
+            output_tokens: 20,
+            no_array: 1,
+            ..PassTally::default()
+        };
+        // The retry answers in JSON: its item is kept.
+        let retried = stack(vec![json!("Noted, nothing to add."), json!(fact(amber))]).await;
+        let (result, tally) = retried.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(
+            tally.map(|t| t.tally),
+            Some(PassTally {
+                returned: 1,
+                created: 1,
+                ..two_calls.clone()
+            })
+        );
+        let inputs = retried.script.lock().unwrap().inputs();
+        assert!(!inputs[0].contains("Extraction note"), "{}", inputs[0]);
+        assert!(
+            inputs[1].starts_with(&inputs[0]),
+            "the retry repeats the input"
+        );
+        assert!(inputs[1].ends_with("`[]` when nothing above is worth keeping."));
+        // A second slip reads as nothing: no third call, and the cursor moves
+        // past the turn, so the queue never retries or dead-letters it.
+        let slipped = stack(vec![json!("Noted."), json!("Still nothing.")]).await;
+        let (result, tally) = slipped.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(
+            tally.map(|t| t.tally),
+            Some(PassTally {
+                no_array: 2,
+                ..two_calls
+            })
+        );
+        assert_eq!(slipped.script.lock().unwrap().count("router::complete"), 2);
+        assert_eq!(
+            slipped.script.lock().unwrap().cursor.as_deref(),
+            Some("end")
+        );
+        assert_eq!(slipped.commits(), 0);
+        // An empty array is an answer: asked once, and the cursor moves.
+        let empty = stack(vec![json!([])]).await;
+        let (result, tally) = empty.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(
+            tally.map(|t| (t.tally.calls, t.tally.no_array)),
+            Some((1, 0))
+        );
+        assert_eq!(empty.script.lock().unwrap().cursor.as_deref(), Some("end"));
+        assert_eq!(empty.commits(), 0);
+    }
+
+    #[tokio::test]
     async fn a_replayed_plan_counts_its_drops_once() {
         let stack = Boundary::new(Script {
             path: vec![
@@ -1780,27 +1847,6 @@ mod productive {
         );
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
         assert_eq!(stack.commits(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_reply_with_no_array_is_counted_and_still_moves_the_cursor() {
-        // `json!("noted")` reaches the parser as the text `"noted"`.
-        for (reply, no_array) in [(json!("noted"), 1), (json!([]), 0)] {
-            let stack = Boundary::new(Script {
-                model_items: VecDeque::from([reply]),
-                ..one_line_span(None)
-            })
-            .await;
-            let (result, tallied) = stack.run_tallied(&job("end")).await;
-            result.unwrap();
-            let tally = tallied.expect("the model was asked").tally;
-            assert_eq!(
-                (tally.calls, tally.returned, tally.no_array, tally.created),
-                (1, 0, no_array, 0)
-            );
-            assert_eq!(stack.script.lock().unwrap().cursor.as_deref(), Some("end"));
-            assert_eq!(stack.commits(), 0);
-        }
     }
 
     #[tokio::test]
