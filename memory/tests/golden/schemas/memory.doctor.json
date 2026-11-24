@@ -118,7 +118,7 @@
             "type": "integer"
           },
           "no_array": {
-            "description": "Replies with no JSON array (prose, one word, no text), read as nothing to keep; a `[]` reply is not one.",
+            "description": "Replies with no JSON array (prose, one word, no text); a `[]` reply is not one. The call is asked once more after one, and a second reads as nothing to keep.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"

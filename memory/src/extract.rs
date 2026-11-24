@@ -1070,8 +1070,9 @@ pub struct PassTally {
     /// Of `returned`, the rule items: they become learned rule lines, never
     /// memories, so `created` and `dropped` never count them.
     pub rules: u64,
-    /// Replies with no JSON array (prose, one word, no text), read as
-    /// nothing to keep; a `[]` reply is not one.
+    /// Replies with no JSON array (prose, one word, no text); a `[]` reply
+    /// is not one. The call is asked once more after one, and a second reads
+    /// as nothing to keep.
     pub no_array: u64,
     pub created: u64,
     pub reinforced: u64,
@@ -3628,26 +3629,64 @@ async fn extract_items(
     instructions: bool,
     tally: &mut PassTally,
 ) -> Result<Vec<ExtractedItem>, String> {
+    let system = system_prompt(repository, agents, instructions, max_memories);
+    let call = |text: String| CallRequest {
+        function_id: "router::complete".into(),
+        payload: json!({
+            "model": model,
+            "system_prompt": system,
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": text }],
+                "timestamp": now_ms() as i64,
+            }],
+            "max_output_tokens": 2048,
+        }),
+        action: None,
+        timeout_ms: Some(timeout_ms),
+    };
+    let no_array = tally.no_array;
+    let items = complete_items(iii, call(input.clone()), session_id, tally).await?;
+    if tally.no_array == no_array {
+        return Ok(items);
+    }
+    // A reply with no array is a format slip (a transcript line like "reply
+    // with one word: noted" is obeyed), not "nothing to keep". Asked once
+    // more; a second slip reads as nothing and the cursor moves on, so a
+    // model that never answers in JSON doubles its calls instead of failing
+    // the pass. The retry fails like a first call (error, cut, broken array).
+    tracing::warn!(
+        session_id,
+        "extraction reply held no JSON array; asking once more"
+    );
+    complete_items(
+        iii,
+        call(format!("{input}{NO_ARRAY_RETRY}")),
+        session_id,
+        tally,
+    )
+    .await
+}
+
+/// Appended to the input of the one retry after a reply with no array,
+/// marked as outside the excerpt so it never reads as the user's words.
+const NO_ARRAY_RETRY: &str = "\n\n---\nExtraction note, not part of the conversation: your \
+     last reply held no JSON array. Answer with the JSON array only, `[]` when nothing above \
+     is worth keeping.";
+
+/// One `router::complete` call and its items, its tokens counted first: a
+/// reply that fails to parse still spent them.
+async fn complete_items(
+    iii: &IIIClient,
+    request: CallRequest,
+    session_id: &str,
+    tally: &mut PassTally,
+) -> Result<Vec<ExtractedItem>, String> {
     tally.calls += 1;
     let reply = iii
-        .call(CallRequest {
-            function_id: "router::complete".into(),
-            payload: json!({
-                "model": model,
-                "system_prompt": system_prompt(repository, agents, instructions, max_memories),
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": input }],
-                    "timestamp": now_ms() as i64,
-                }],
-                "max_output_tokens": 2048,
-            }),
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        })
+        .call(request)
         .await
         .map_err(|e| format!("router::complete: {e}"))?;
-    // Before parsing: a reply that fails to parse still spent its tokens.
     tally.add_usage(&reply);
     reply_items(&reply, session_id, tally)
 }
@@ -3717,7 +3756,8 @@ fn reply_items(
 /// so prose quoting a known memory's number (`[2]`) is not mistaken for it,
 /// and anything after the array is ignored. An array cut short (the reply
 /// hit max_output_tokens) keeps the items that closed. `tally` counts what
-/// the reply held: a reply with no array reads as no items, like `[]`.
+/// the reply held: a reply with no array reads as no items, like `[]`, and
+/// counts in `no_array`, which [`extract_items`] asks again on.
 fn parse_items(raw: &str, tally: &mut PassTally) -> Result<Vec<ExtractedItem>, String> {
     let start = raw
         .match_indices('[')
