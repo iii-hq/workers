@@ -67,6 +67,20 @@ export interface ContextImageItem {
   block_index: number
 }
 
+/** A side chat of the conversation (phase 2, D81), most recently active first. */
+export interface ContextSideChatItem {
+  session_id: string
+  title: string
+  /** The side chat's own messages, after the fork. */
+  message_count: number
+  created_at_ms: number
+  updated_at_ms: number
+  /** The conversation's entry it was forked at; absent before phase 2. */
+  from_entry_id?: string
+  status: string
+  running: boolean
+}
+
 export interface ContextItems {
   session_id: string
   message_count: number
@@ -76,8 +90,7 @@ export interface ContextItems {
   links: ContextLinkItem[]
   attachments: ContextAttachmentItem[]
   images: ContextImageItem[]
-  /** Phase 2; counted, not drawn, in phase 1. */
-  side_chats: unknown[]
+  side_chats: ContextSideChatItem[]
   truncated: { links?: boolean; attachments?: boolean; images?: boolean }
 }
 
@@ -188,7 +201,23 @@ export function parseContextItems(raw: unknown): ContextItems {
       entry_id: str(i.entry_id) ?? '',
       block_index: num(i.block_index) ?? 0,
     })),
-    side_chats: Array.isArray(r.side_chats) ? r.side_chats : [],
+    side_chats: list(r.side_chats).flatMap((s) => {
+      const id = str(s.session_id)
+      if (!id) return []
+      const created = num(s.created_at_ms) ?? 0
+      return [
+        {
+          session_id: id,
+          title: str(s.title) ?? 'Side chat',
+          message_count: num(s.message_count) ?? 0,
+          created_at_ms: created,
+          updated_at_ms: num(s.updated_at_ms) ?? created,
+          from_entry_id: str(s.from_entry_id),
+          status: str(s.status) ?? 'done',
+          running: s.running === true,
+        } satisfies ContextSideChatItem,
+      ]
+    }),
     truncated: {
       ...(record(r.truncated).links === true ? { links: true } : {}),
       ...(record(r.truncated).attachments === true
@@ -241,8 +270,9 @@ export interface UseContextItemsOptions {
   enabled: boolean
   /** The pane or drawer is in sight. */
   visible: boolean
-  /** Changes when a message lands (the transcript length, say). */
-  messageTick: number
+  /** Changes when a message lands (the transcript length, say, plus what
+   *  moved in its side chats). */
+  messageTick: number | string
 }
 
 export interface ContextItemsState {

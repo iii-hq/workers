@@ -66,6 +66,7 @@ import './conversation-design.css'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
+import { LockedModelLabel } from './LockedModelLabel'
 import {
   $insertAttachmentNodes,
   AttachmentNode,
@@ -214,6 +215,11 @@ interface ComposerProps {
   modelPickerOpenRequest?: number
   /** Agent profile owns model + effort for this session. */
   modelLocked?: boolean
+  /**
+   * A side chat's lock (chat-projects §2.3.2): the model label with a lock
+   * instead of the picker, and what a tap on it says.
+   */
+  lockedModel?: { label: string; hint: string }
   /**
    * Per-conversation permission mode (manual / auto / full). Owned by
    * the backend `approval_settings` scope; ChatView passes the loaded
@@ -406,6 +412,7 @@ export function Composer({
   catalogLoading,
   modelPickerOpenRequest,
   modelLocked,
+  lockedModel,
   permissionMode,
   permissionModeLoading,
   showPermissionMode = true,
@@ -842,7 +849,7 @@ export function Composer({
   // menu's footer names the chord and does the same on click.
   const selectedOption = modelOptions.find((option) => option.id === model)
   const cycleEffort = useCallback(() => {
-    if (optionsDisabled || modelLocked) return
+    if (optionsDisabled || modelLocked || lockedModel) return
     const levels = effortOptionsFor(selectedOption).filter(
       (option) => !option.disabled,
     )
@@ -853,6 +860,7 @@ export function Composer({
   }, [
     optionsDisabled,
     modelLocked,
+    lockedModel,
     selectedOption,
     thinkingLevel,
     onThinkingLevelChange,
@@ -1096,19 +1104,27 @@ export function Composer({
                   {agentPicker}
                 </ComposerActionsSlot>
                 {composerControls}
-                <ModelPicker
-                  value={model}
-                  options={modelOptions}
-                  openRequest={modelPickerOpenRequest}
-                  thinkingLevel={thinkingLevel}
-                  onChange={onModelChange}
-                  onThinkingLevelChange={onThinkingLevelChange}
-                  disabled={optionsDisabled || modelLocked}
-                  loading={catalogLoading}
-                  showRefresh={false}
-                  triggerAppearance="subtle"
-                  className="composer-mobile-model min-w-0 shrink"
-                />
+                {lockedModel ? (
+                  <LockedModelLabel
+                    label={lockedModel.label}
+                    hint={lockedModel.hint}
+                    className="composer-mobile-model min-w-0 shrink"
+                  />
+                ) : (
+                  <ModelPicker
+                    value={model}
+                    options={modelOptions}
+                    openRequest={modelPickerOpenRequest}
+                    thinkingLevel={thinkingLevel}
+                    onChange={onModelChange}
+                    onThinkingLevelChange={onThinkingLevelChange}
+                    disabled={optionsDisabled || modelLocked}
+                    loading={catalogLoading}
+                    showRefresh={false}
+                    triggerAppearance="subtle"
+                    className="composer-mobile-model min-w-0 shrink"
+                  />
+                )}
                 <span aria-hidden className="min-w-2 flex-1" />
                 {composerActions ? (
                   <div className="flex shrink-0 items-center">
@@ -1146,19 +1162,27 @@ export function Composer({
  drops to its icon — and the send button stays in view. */}
           <div className="composer-desktop-toolbar hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
             <div className="flex min-w-0 flex-1 items-center gap-1">
-              <ModelPicker
-                value={model}
-                options={modelOptions}
-                openRequest={modelPickerOpenRequest}
-                thinkingLevel={thinkingLevel}
-                onChange={onModelChange}
-                onThinkingLevelChange={onThinkingLevelChange}
-                disabled={optionsDisabled || modelLocked}
-                loading={catalogLoading}
-                showRefresh={false}
-                triggerAppearance="subtle"
-                className="min-w-0 max-w-[24rem]"
-              />
+              {lockedModel ? (
+                <LockedModelLabel
+                  label={lockedModel.label}
+                  hint={lockedModel.hint}
+                  className="max-w-[24rem]"
+                />
+              ) : (
+                <ModelPicker
+                  value={model}
+                  options={modelOptions}
+                  openRequest={modelPickerOpenRequest}
+                  thinkingLevel={thinkingLevel}
+                  onChange={onModelChange}
+                  onThinkingLevelChange={onThinkingLevelChange}
+                  disabled={optionsDisabled || modelLocked}
+                  loading={catalogLoading}
+                  showRefresh={false}
+                  triggerAppearance="subtle"
+                  className="min-w-0 max-w-[24rem]"
+                />
+              )}
               <ComposerActionsSlot layout="wide">
                 {agentPicker}
               </ComposerActionsSlot>
@@ -1256,7 +1280,7 @@ export function Composer({
         defaultWorkingDir={defaultWorkingDir}
         worktreePicker={worktreePicker}
         disabled={optionsDisabled}
-        modelDisabled={modelLocked}
+        modelDisabled={modelLocked || lockedModel !== undefined}
         onModelChange={onModelChange}
         onMemoryBankChange={onMemoryBankChange}
         onWorkingDirChange={onWorkingDirChange}

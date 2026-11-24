@@ -17,6 +17,7 @@ import { useChatProjects } from '@/hooks/use-chat-projects'
 import { useChatSettings } from '@/hooks/use-chat-settings'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { closeSideChat } from '@/lib/backend/side-chats'
 import {
   endSideChat,
   isSideChat,
@@ -86,7 +87,11 @@ interface ChatPanelProps {
  * stays aligned with Tailwind's `sm` breakpoint.
  */
 const NARROW_BELOW = 560
-/** A side chat untouched this long ends (see the effect below)… */
+/**
+ * A side chat untouched this long ends (see the effect below)… On an engine
+ * with side chats that only ever ends an empty one: `close` keeps a side
+ * chat with messages (chat-projects §2.4).
+ */
 const SIDE_CHAT_IDLE_MS = 2 * 60 * 60 * 1000
 /** …checked this often while the ADE stays open. */
 const SIDE_CHAT_SWEEP_MS = 5 * 60 * 1000
@@ -261,6 +266,15 @@ export function ChatPanel({
     [ownKey],
   )
 
+  // With the engine's side chats, every ending below goes through
+  // `harness::side-chat::close`, which deletes a side chat only when nothing
+  // was sent in it; one with messages stays until it is deleted or kept.
+  const engineSideChats = chatCaps.sideChats
+  const endWith = useCallback(
+    (id: string): Promise<void> =>
+      engineSideChats ? closeSideChat(id).then(() => undefined) : remove(id),
+    [engineSideChats, remove],
+  )
   // Side chats end, besides Discard: two hours untouched, with their main
   // chat (deleted here, in another tab or elsewhere: the list marks it
   // missing), and when every ADE tab of this browser is closed. Leaving a
@@ -270,8 +284,12 @@ export function ChatPanel({
     () => (displayedId ? markDisplayed(displayedId) : undefined),
     [displayedId],
   )
-  // The server's list, not the local draft the list boots with.
-  const listed = !conversationsLoading && !conversationsError
+  // The server's list, not the local draft the list boots with — and, on a
+  // real engine, its catalogue: whether an ending deletes or asks `close`.
+  const listed =
+    !conversationsLoading &&
+    !conversationsError &&
+    (!realBackend || chatCaps.loaded)
   useEffect(() => {
     if (!listed) return
     // Never one still working, nor one any tab of the browser shows.
@@ -288,7 +306,7 @@ export function ChatPanel({
       for (const conversation of idle) {
         const main = sideChatOf(conversation)
         if (main !== null && !shown.has(main) && !shown.has(conversation.id)) {
-          endSideChat(conversation.id, remove)
+          endSideChat(conversation.id, endWith)
         }
       }
     }
@@ -297,7 +315,7 @@ export function ChatPanel({
     queueMicrotask(() => void sweep())
     const timer = window.setInterval(() => void sweep(), SIDE_CHAT_SWEEP_MS)
     return () => window.clearInterval(timer)
-  }, [listed, remove])
+  }, [listed, endWith])
   const [leftByClosedTabs, setLeftByClosedTabs] = useState<readonly string[]>(
     [],
   )
@@ -309,20 +327,21 @@ export function ChatPanel({
     for (const id of leftByClosedTabs) {
       const conversation = conversations.find((c) => c.id === id)
       if (!conversation) continue
-      if (isSideChat(conversation)) endSideChat(id, remove)
+      if (isSideChat(conversation)) endSideChat(id, endWith)
       // Kept in another browser: not a side chat any more.
       else sideChatsMadeHere.delete(id)
     }
-  }, [listed, leftByClosedTabs, conversations, remove])
+  }, [listed, leftByClosedTabs, conversations, endWith])
   useEffect(() => {
-    if (!missingConversationIds?.size) return
+    // The engine deletes a conversation's side chats with its tree.
+    if (!listed || engineSideChats || !missingConversationIds?.size) return
     for (const conversation of conversations) {
       const main = sideChatOf(conversation)
       if (main !== null && missingConversationIds.has(main)) {
         endSideChat(conversation.id, remove)
       }
     }
-  }, [conversations, missingConversationIds, remove])
+  }, [listed, conversations, missingConversationIds, remove, engineSideChats])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const surfaceRef = useRef<HTMLDivElement | null>(null)

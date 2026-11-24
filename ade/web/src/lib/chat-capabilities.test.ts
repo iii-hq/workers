@@ -28,6 +28,7 @@ const INTERNAL = [
   'harness::chat-settings::get',
   'harness::chat-settings::set',
   'session::patch-meta',
+  'harness::side-chat::open',
 ]
 function engineList(payload: { include_internal?: boolean } = {}) {
   const ids = payload.include_internal
@@ -56,6 +57,7 @@ describe('chat capabilities (spec §0.2)', () => {
       setDescription: true,
       contextItems: true,
       chatSettings: true,
+      sideChats: true,
     })
   })
 
@@ -66,6 +68,7 @@ describe('chat capabilities (spec §0.2)', () => {
         { function_id: 'harness::projects::create' },
         { function_id: 'harness::projects::list' },
         { function_id: 'harness::context-items' },
+        { function_id: 'harness::side-chat::open' },
       ],
     })
     expect(caps).toEqual({
@@ -76,6 +79,7 @@ describe('chat capabilities (spec §0.2)', () => {
       setDescription: false,
       contextItems: true,
       chatSettings: false,
+      sideChats: true,
     })
   })
 

@@ -50,6 +50,15 @@ import {
 import type { ContextItems } from '@/lib/backend/context-items'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
 import {
+  closeSideChat,
+  describeSideChatError,
+  keepSideChat,
+  openSideChat,
+  summarizeSideChat,
+} from '@/lib/backend/side-chats'
+import {
+  appendToDraft,
+  bringBackBlock,
   DISMISSED_PRS_KEY,
   dismissedPullRequests,
   findSideChat,
@@ -60,14 +69,19 @@ import {
   SIDE_CHAT_KEY,
   SIDE_CHAT_QUOTES_KEY,
   type SideChatQuote,
+  sideChatForkPoint,
   sideChatFrom,
+  sideChatLock,
   sideChatMessages,
   sideChatMetadata,
   sideChatQuotes,
+  sideChatRows,
+  sideChatSummaries,
   sideChatsMadeHere,
   withSideChatQuote,
 } from '@/lib/chat-aside'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import { composerForSession, insertIntoComposer } from '@/lib/composer-insert'
 import {
   allGroupsFolded,
   foldAllGroups,
@@ -79,13 +93,28 @@ import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
 import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
-import { deleteSession, setSessionMeta } from '@/lib/sessions/api'
+import {
+  deleteSession,
+  setSessionDraft,
+  setSessionMeta,
+} from '@/lib/sessions/api'
+import { belongsToEntry } from '@/lib/sessions/entry-mapper'
 import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import { PortalScope } from '@/lib/ui-scope'
 import type { Conversation, SystemMessage } from '@/types/chat'
 import { ChatContextPanel } from './ChatContextPanel'
 import { ChatView } from './ChatView'
 import { ContextSectionsMenu } from './ContextSectionsMenu'
+import {
+  ConfirmSideChatDelete,
+  forkStripText,
+  lockPresentation,
+  SideChatForkStrip,
+  SideChatHeader,
+  SideChatMenu,
+  SideChatPage,
+  SideChatToast,
+} from './side-chats'
 
 export type AsideTab = 'context' | 'side-chat'
 
@@ -97,7 +126,16 @@ export interface AsideRequest {
   quote?: SideChatQuote
   /** A Context section to unfold and scroll to (`observers`). */
   section?: string
+  /** Engine side chats: open a new one forked at this entry ("Side chat"). */
+  fork?: { entryId?: string }
+  /** Engine side chats: open this one (its mark in the transcript). */
+  openId?: string
 }
+
+/** A side chat open in the pane widens it to this, when there is room (§0.5). */
+const SIDE_CHAT_PANE_WIDTH = 460
+/** What the conversation keeps beside a widened pane (§0.5). */
+const MIN_CHAT_WIDTH = 480
 
 const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
 /** The pane's stored geometry and open state (`PageSidebar`), per device. */
@@ -188,6 +226,14 @@ interface ChatAsideProps {
   }) => void
   /** The pane or drawer came into sight or left it (the header's button). */
   onVisibleChange?: (visible: boolean) => void
+  /**
+   * The engine has side chats (`harness::side-chat::open`): several per
+   * conversation, listed in the Context pane, opened in a side-chat view
+   * (a page on phones). Off: the pane's own one-fork Side chat tab.
+   */
+  engineSideChats?: boolean
+  /** The side chats changed here: re-read the context items. */
+  onSideChatsChanged?: () => void
 }
 
 /**
@@ -217,6 +263,8 @@ export function ChatAside({
   itemCount = 0,
   onShowInConversation,
   onVisibleChange,
+  engineSideChats = false,
+  onSideChatsChanged,
 }: ChatAsideProps) {
   const ctx = useConversationsCtx()
   const [tab, setTabState] = useState<AsideTab>(readStoredTab)
@@ -292,7 +340,8 @@ export function ChatAside({
     findSideChat(
       ctx.conversations.filter((c) => !discarding.has(c.id)),
       conversation.id,
-    )
+    )[0] ??
+    null
   // Forked, but its session::on-created has not reached the list yet.
   const forkPending = forkId !== null && !listed && !discarding.has(forkId)
   const forkRef = useRef(fork)
@@ -391,6 +440,214 @@ export function ChatAside({
     return run
   }, [conversation.id, conversation.title])
 
+  // ── engine side chats (chat-projects §2.3): several per conversation ──
+  const engine = engineSideChats
+  const [openId, setOpenId] = useState<string | null>(null)
+  const openIdRef = useRef(openId)
+  openIdRef.current = openId
+  const [opening, setOpening] = useState(false)
+  const openingRef = useRef(false)
+  const [sideError, setSideError] = useState<{
+    headline: string
+    detail: string
+  } | null>(null)
+  // Closed, kept or deleted here: out of the list while the engine catches up.
+  const [sideHidden, setSideHidden] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [toast, setToast] = useState<{
+    seq: number
+    text: string
+    action?: { label: string; run: () => void }
+  } | null>(null)
+  const sideChangedRef = useRef(onSideChatsChanged)
+  sideChangedRef.current = onSideChatsChanged
+  const sideRows = engine
+    ? sideChatRows(
+        contextItems?.side_chats,
+        ctx.conversations,
+        conversation.id,
+        sideHidden,
+      )
+    : []
+  const openChat =
+    engine && openId
+      ? (ctx.conversations.find((c) => c.id === openId) ?? null)
+      : null
+  useEffect(
+    () => (engine && openId ? watchConversation(openId) : undefined),
+    [engine, openId, watchConversation],
+  )
+  const hideSide = useCallback((id: string, on: boolean) => {
+    setSideHidden((current) => {
+      const next = new Set(current)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
+  const openNewSideChat = useCallback(
+    async (target: { entryId?: string; quote?: SideChatQuote }) => {
+      if (openingRef.current) return
+      openingRef.current = true
+      setOpening(true)
+      setSideError(null)
+      setKept(null)
+      setFocusSide(true)
+      try {
+        const opened = await openSideChat({
+          sessionId: conversation.id,
+          ...target,
+        })
+        setOpenId(opened.session_id)
+        sideChangedRef.current?.()
+      } catch (error) {
+        setSideError({
+          headline: 'Side chat not started',
+          detail: describeSideChatError(error),
+        })
+      } finally {
+        openingRef.current = false
+        setOpening(false)
+      }
+    },
+    [conversation.id],
+  )
+  const openExistingSideChat = useCallback((id: string) => {
+    setSideError(null)
+    setKept(null)
+    setFocusSide(true)
+    setOpenId(id)
+  }, [])
+
+  const openSince = openChat ? (openChat.createdAt ?? 0) : 0
+  const openFrom = sideChatFrom(openChat)
+  const openOwn = openChat
+    ? sideChatMessages(openChat.messages, openSince, openFrom)
+    : []
+  // Leaving a side chat in which nothing was sent discards it, without
+  // asking (§2.3.2): `close` deletes it only when it is empty.
+  const leaveSideChat = () => {
+    const target = openChat
+    setOpenId(null)
+    setSideError(null)
+    onPendingQuoteChange(null)
+    if (
+      !target ||
+      target.hydrated === false ||
+      target.status === 'working' ||
+      openOwn.some((message) => message.role === 'user')
+    ) {
+      return
+    }
+    hideSide(target.id, true)
+    void closeSideChat(target.id).then(
+      (result) => {
+        if (!result?.deleted) hideSide(target.id, false)
+        sideChangedRef.current?.()
+      },
+      () => hideSide(target.id, false),
+    )
+  }
+  const leaveRef = useRef(leaveSideChat)
+  leaveRef.current = leaveSideChat
+
+  const keepSide = async (id: string) => {
+    setBusyId(id)
+    setSideError(null)
+    try {
+      await keepSideChat(id)
+    } catch (error) {
+      setSideError({
+        headline: 'Side chat not kept',
+        detail: describeSideChatError(error),
+      })
+      return
+    } finally {
+      setBusyId(null)
+    }
+    hideSide(id, true)
+    sideChatsMadeHere.delete(id)
+    if (openIdRef.current === id) {
+      setOpenId(null)
+      onPendingQuoteChange(null)
+    }
+    setKept({ id })
+    sideChangedRef.current?.()
+  }
+  const deleteSide = (id: string) => {
+    hideSide(id, true)
+    sideChatsMadeHere.delete(id)
+    if (openIdRef.current === id) {
+      setOpenId(null)
+      onPendingQuoteChange(null)
+    }
+    void ctx.remove(id).then(
+      () => sideChangedRef.current?.(),
+      (error) => {
+        hideSide(id, false)
+        setSideError({
+          headline: 'Side chat not deleted',
+          detail: errText(error),
+        })
+      },
+    )
+  }
+  const summarizeSide = async (id: string) => {
+    setBusyId(id)
+    setSideError(null)
+    try {
+      await summarizeSideChat(id)
+    } catch (error) {
+      setSideError({
+        headline: 'No summary asked for',
+        detail: describeSideChatError(error),
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // "Bring back": the reply goes into the conversation's draft, unsent
+  // (§2.3.2). Its composer, when mounted, takes it as paragraphs of their
+  // own and saves the draft (`session::set-draft`); otherwise the draft is
+  // written here. Wide: the composer takes the caret; phone: the toast
+  // offers the way back.
+  const openTitleRef = useRef(openChat?.title ?? 'Side chat')
+  openTitleRef.current = openChat?.title ?? 'Side chat'
+  const { getDraftText, setDraftText } = ctx
+  const bringBack = useCallback(
+    (reply: string) => {
+      const block = bringBackBlock(openTitleRef.current, reply)
+      const composerId = composerForSession(conversation.id)
+      if (composerId) {
+        // The composer writes one line per paragraph: a paragraph per line
+        // keeps the text as it is, and an empty one before it is the blank
+        // line after a draft that has text.
+        const lines = block.split('\n')
+        if ((getDraftText(conversation.id) ?? '').trim()) lines.unshift('')
+        for (const line of lines) {
+          insertIntoComposer(line, { composerId, focus: !phone })
+        }
+      } else {
+        const merged = appendToDraft(getDraftText(conversation.id), block)
+        setDraftText(conversation.id, merged)
+        void setSessionDraft(conversation.id, merged).catch(() => {})
+      }
+      setToast((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        text: `Added to the ${conversation.title} composer`,
+        ...(phone
+          ? { action: { label: 'Open', run: () => leaveRef.current() } }
+          : {}),
+      }))
+    },
+    [conversation.id, conversation.title, phone, getDraftText, setDraftText],
+  )
+
   // Auto-fix rounds while this chat is open: one tab at a time (a Web Lock
   // per chat), never while the agent is working, and what was reported
   // kept in the session so every tab shares it (lib/auto-fix).
@@ -468,9 +725,10 @@ export function ChatAside({
       // Choosing the side chat is choosing to type in it.
       setFocusSide(true)
       // Not before the list is in: an existing side chat would go unseen.
-      if (!listLoading) void ensureFork()
+      // The engine's side chats open from the pane instead.
+      if (!listLoading && !engine) void ensureFork()
     },
-    [setTab, phone, onSheetOpenChange, listLoading, ensureFork],
+    [setTab, phone, onSheetOpenChange, listLoading, ensureFork, engine],
   )
 
   // An outside request (a message's "Ask in side chat", the palette).
@@ -478,6 +736,22 @@ export function ChatAside({
   useEffect(() => {
     if (!request || request.seq === handledRequest.current) return
     handledRequest.current = request.seq
+    if (engine && request.tab === 'side-chat') {
+      // The side-chat view: in the pane (wide) or a page (phone), never the
+      // drawer.
+      if (phone) onSheetOpenChange(false)
+      else setExpandSeq((seq) => seq + 1)
+      if (request.openId) openExistingSideChat(request.openId)
+      else if (request.fork) {
+        void openNewSideChat({ entryId: request.fork.entryId })
+      } else if (request.quote) {
+        // Into the side chat on screen, else a new one that opens about it.
+        if (openIdRef.current) setComposerKey((key) => key + 1)
+        else void openNewSideChat({ quote: request.quote })
+      } else if (!openIdRef.current) void openNewSideChat({})
+      return
+    }
+    if (engine && openIdRef.current) leaveRef.current()
     show(request.tab)
     const section = request.section
     if (section) {
@@ -514,7 +788,16 @@ export function ChatAside({
       // question about the quote, whatever was typed there stays.
       if (id) setComposerKey((key) => key + 1)
     })
-  }, [request, show, ensureFork])
+  }, [
+    request,
+    show,
+    ensureFork,
+    engine,
+    phone,
+    onSheetOpenChange,
+    openExistingSideChat,
+    openNewSideChat,
+  ])
 
   // Kept only once the server dropped the tag: a write lost on the way
   // would bring it back, hidden, for the sweep to delete.
@@ -641,73 +924,95 @@ export function ChatAside({
     </Tabs>
   )
 
+  // The engine side chat on screen (or opening): the pane's side-chat view.
+  const sideOpen = engine && (openId !== null || opening)
   const sectionIds = useContextSections().map((section) => section.id)
   const allFolded = allGroupsFolded(useFoldedGroups(), sectionIds)
-  const foldAll =
-    tab === 'context' ? (
-      <IconButton
-        label={allFolded ? 'Expand all groups' : 'Collapse all groups'}
-        className="size-7 shrink-0"
-        onClick={() => foldAllGroups(!allFolded, sectionIds)}
-      >
-        {allFolded ? (
-          <ChevronsUpDown aria-hidden />
-        ) : (
-          <ChevronsDownUp aria-hidden />
-        )}
-      </IconButton>
-    ) : null
+  const foldAll = (engine ? !sideOpen : tab === 'context') ? (
+    <IconButton
+      label={allFolded ? 'Expand all groups' : 'Collapse all groups'}
+      className="size-7 shrink-0"
+      onClick={() => foldAllGroups(!allFolded, sectionIds)}
+    >
+      {allFolded ? (
+        <ChevronsUpDown aria-hidden />
+      ) : (
+        <ChevronsDownUp aria-hidden />
+      )}
+    </IconButton>
+  ) : null
 
+  const contextPanel = (
+    <ChatContextPanel
+      sideChats={
+        engine
+          ? {
+              rows: sideRows,
+              opening,
+              onOpen: (id) => {
+                if (phone) onSheetOpenChange(false)
+                openExistingSideChat(id)
+              },
+              onNew: () => {
+                if (phone) onSheetOpenChange(false)
+                void openNewSideChat({})
+              },
+              onKeep: (id) => void keepSide(id),
+              onDelete: setConfirmDeleteId,
+            }
+          : undefined
+      }
+      conversation={conversation}
+      conversations={ctx.conversations}
+      connectionState={ctx.connectionState}
+      observers={observers}
+      observerEvents={observerEvents}
+      observersListed={observersListed}
+      onDisposeObserver={onDisposeObserver}
+      onOpenConversation={ctx.openConversationInPanel}
+      shellAvailable={ctx.shellAvailable}
+      githubAvailable={ctx.githubAvailable}
+      kanbanAvailable={ctx.kanbanAvailable}
+      onAskAgent={onAskAgent}
+      onAutoFixChange={(key, seen) => {
+        const { [key]: _old, ...rest } = autoFixState(conversation)
+        ctx.setSessionMetadata(conversation.id, {
+          [AUTO_FIX_KEY]: seen ? { ...rest, [key]: seen } : rest,
+        })
+      }}
+      onDismissPullRequest={(key) =>
+        ctx.setSessionMetadata(conversation.id, {
+          [DISMISSED_PRS_KEY]: [...dismissedPullRequests(conversation), key],
+        })
+      }
+      landBlocked={landBlocked}
+      active={visible}
+      items={contextItems}
+      phone={phone}
+      onShowInConversation={
+        onShowInConversation
+          ? (target) => {
+              if (!phone || !sheetOpen) {
+                onShowInConversation(target)
+                return
+              }
+              // On a phone the drawer closes first (§1.3.6).
+              pendingShowRef.current = target
+              if (pendingShowTimerRef.current !== null)
+                window.clearTimeout(pendingShowTimerRef.current)
+              pendingShowTimerRef.current = window.setTimeout(
+                landPendingShow,
+                DRAWER_CLOSE_FALLBACK_MS,
+              )
+              onSheetOpenChange(false)
+            }
+          : undefined
+      }
+    />
+  )
   const content =
     tab === 'context' ? (
-      <ChatContextPanel
-        conversation={conversation}
-        conversations={ctx.conversations}
-        connectionState={ctx.connectionState}
-        observers={observers}
-        observerEvents={observerEvents}
-        observersListed={observersListed}
-        onDisposeObserver={onDisposeObserver}
-        onOpenConversation={ctx.openConversationInPanel}
-        shellAvailable={ctx.shellAvailable}
-        githubAvailable={ctx.githubAvailable}
-        kanbanAvailable={ctx.kanbanAvailable}
-        onAskAgent={onAskAgent}
-        onAutoFixChange={(key, seen) => {
-          const { [key]: _old, ...rest } = autoFixState(conversation)
-          ctx.setSessionMetadata(conversation.id, {
-            [AUTO_FIX_KEY]: seen ? { ...rest, [key]: seen } : rest,
-          })
-        }}
-        onDismissPullRequest={(key) =>
-          ctx.setSessionMetadata(conversation.id, {
-            [DISMISSED_PRS_KEY]: [...dismissedPullRequests(conversation), key],
-          })
-        }
-        landBlocked={landBlocked}
-        active={visible}
-        items={contextItems}
-        phone={phone}
-        onShowInConversation={
-          onShowInConversation
-            ? (target) => {
-                if (!phone || !sheetOpen) {
-                  onShowInConversation(target)
-                  return
-                }
-                // On a phone the drawer closes first (§1.3.6).
-                pendingShowRef.current = target
-                if (pendingShowTimerRef.current !== null)
-                  window.clearTimeout(pendingShowTimerRef.current)
-                pendingShowTimerRef.current = window.setTimeout(
-                  landPendingShow,
-                  DRAWER_CLOSE_FALLBACK_MS,
-                )
-                onSheetOpenChange(false)
-              }
-            : undefined
-        }
-      />
+      contextPanel
     ) : (
       <div className="flex min-h-0 flex-1 flex-col">
         {actionError ? (
@@ -827,98 +1132,335 @@ export function ChatAside({
       </div>
     )
 
+  // ── the engine side chats' views (chat-projects §2.3.2) ──
+  // The pane widens to 460 while a side chat is open, when the chat keeps
+  // its 480 beside it (§0.5); the drawer beside a narrow chat keeps its own.
+  const [hostWidth, setHostWidth] = useState(0)
+  useEffect(() => {
+    if (phone || !engine) return
+    const host = contentRef.current?.closest('aside')?.parentElement
+    if (!host) return
+    const update = () => setHostWidth(host.getBoundingClientRect().width)
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(update)
+    observer.observe(host)
+    return () => observer.disconnect()
+  }, [phone, engine])
+  const widen =
+    sideOpen && !phone && hostWidth >= SIDE_CHAT_PANE_WIDTH + MIN_CHAT_WIDTH
+
+  // Where it was forked, for the strip: the conversation's own entry when
+  // it is loaded here, else the side chat's copy of it.
+  const forkPoint = sideChatForkPoint(openChat)
+  const forkEntry =
+    (forkPoint
+      ? [...conversation.messages]
+          .reverse()
+          .find((m) => belongsToEntry(m.id, forkPoint.entryId))
+      : undefined) ??
+    (openChat && openFrom
+      ? [...openChat.messages]
+          .reverse()
+          .find((m) => belongsToEntry(m.id, openFrom))
+      : undefined)
+  const lock = openChat
+    ? lockPresentation(
+        sideChatLock(openChat),
+        {
+          model: openChat.model ?? conversation.model,
+          thinkingLevel:
+            openChat.thinkingLevel ?? conversation.thinkingLevel ?? null,
+        },
+        ctx.modelOptions,
+      )
+    : null
+  const sideMenu = (id: string) => (
+    <SideChatMenu
+      busy={busyId === id}
+      onSummarize={() => void summarizeSide(id)}
+      onKeep={() => void keepSide(id)}
+      onDelete={() => deleteSide(id)}
+      triggerClassName={
+        phone
+          ? 'flex size-12 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
+          : undefined
+      }
+    />
+  )
+  const sideErrorPanel = sideError ? (
+    <StatusPanel
+      variant="alert"
+      role="alert"
+      className="mx-2 mb-2"
+      headline={sideError.headline}
+      detail={sideError.detail}
+    />
+  ) : null
+  const sideView = sideOpen ? (
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      data-side-chat-view={openId ?? ''}
+    >
+      {sideErrorPanel}
+      {openChat && lock ? (
+        <>
+          <SideChatForkStrip
+            text={forkStripText({
+              at: forkEntry?.createdAt ?? openSince,
+              fromUser: forkEntry?.role === 'user',
+              parentTitle: conversation.title,
+              compact: phone,
+            })}
+          />
+          <ChatView
+            key={`${openChat.id}:${composerKey}`}
+            conversation={openChat}
+            side={{
+              since: openSince,
+              fromEntry: openFrom,
+              empty: null,
+              autoFocus: focusSide,
+              quote: pendingQuote,
+              onRemoveQuote: () => onPendingQuoteChange(null),
+              onQuoteSent: (quote) => {
+                ctx.setSessionMetadata(openChat.id, {
+                  [SIDE_CHAT_QUOTES_KEY]: withSideChatQuote(
+                    sideChatQuotes(openChat),
+                    quote,
+                  ),
+                })
+                onPendingQuoteChange(null)
+              },
+              quotes: sideChatQuotes(openChat),
+              onJumpToQuote: (quote) => onJumpToMessage(quote.messageId),
+              // A page of its own on a phone: the full composer row, where
+              // the locked model label sits (§2.3.2).
+              compact: false,
+              locked: {
+                label: phone ? lock.short : lock.label,
+                ...(lock.model ? { model: lock.model } : {}),
+              },
+              placeholder: 'Ask aside…',
+              metaLine: phone ? null : lock.meta,
+              summaries: sideChatSummaries(openChat),
+              onBringBack: bringBack,
+              bringBackLabel: phone
+                ? `Bring back to ${conversation.title}`
+                : 'Bring back',
+            }}
+            backend={ctx.backend}
+            modelOptions={ctx.modelOptions}
+            catalogLoading={ctx.catalogLoading}
+            density="dock"
+            onUpdateModel={ctx.setModel}
+            onUpdateThinkingLevel={ctx.setThinkingLevel}
+            onUpdateWorkingDir={ctx.setWorkingDir}
+            onAppendMessage={ctx.appendMessage}
+            onPatchMessage={ctx.updateMessage}
+            onCompactConversation={ctx.compactConversation}
+          />
+        </>
+      ) : (
+        <div className="flex flex-col gap-2 px-4 py-3" aria-busy="true">
+          <Skeleton className="h-3 w-48" />
+          <Skeleton className="h-3 w-32" />
+        </div>
+      )}
+    </div>
+  ) : null
+  const listView = (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {sideOpen ? null : sideErrorPanel}
+      {kept ? (
+        <StatusPanel
+          variant="success"
+          role="status"
+          className="mx-2 mb-2"
+          headline="Kept as a conversation"
+          detail="It is in the list with the other chats, in this chat's project."
+          action={
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => ctx.openConversationInPanel(kept.id)}
+            >
+              Open
+            </Button>
+          }
+        />
+      ) : null}
+      {contextPanel}
+    </div>
+  )
+  // The pane's title without the tabs: the engine's side chats live in the
+  // Context pane, so there is one view to name.
+  const contextHeading = (
+    <div
+      data-context-heading=""
+      className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch px-2 font-inter text-body font-medium text-foreground"
+    >
+      <Layers aria-hidden className="size-4" />
+      Context
+      {itemCount > 0 ? (
+        <span
+          data-context-count=""
+          data-keep-mono=""
+          className="font-mono text-meta font-normal text-ink-faint tabular-nums"
+        >
+          {itemCount}
+          <span className="sr-only">
+            {itemCount === 1 ? ' item' : ' items'}
+          </span>
+        </span>
+      ) : null}
+    </div>
+  )
+  const sideExtras = engine ? (
+    <>
+      <ConfirmSideChatDelete
+        open={confirmDeleteId !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteId(null)
+        }}
+        onConfirm={() => {
+          if (confirmDeleteId) deleteSide(confirmDeleteId)
+        }}
+      />
+      <SideChatToast toast={toast} onDismiss={() => setToast(null)} />
+    </>
+  ) : null
+
   if (phone) {
     return (
-      <PhonePanel
-        open={sheetOpen}
-        onOpenChange={onSheetOpenChange}
-        onClosed={landPendingShow}
-        title={conversation.title}
-        tabs={tabs}
-        options={
-          tab === 'side-chat' && fork ? (
-            <SideChatOptions
-              since={since}
-              keeping={keeping}
-              onKeep={() => void keep()}
-              onDiscard={() =>
-                own.some((message) => message.role === 'user')
-                  ? setConfirmDiscard(true)
-                  : discard()
-              }
-            />
-          ) : tab === 'context' ? (
-            <ContextSectionsMenu phone />
-          ) : null
-        }
-      >
-        {content}
-      </PhonePanel>
+      <>
+        <PhonePanel
+          open={sheetOpen}
+          onOpenChange={onSheetOpenChange}
+          onClosed={landPendingShow}
+          title={conversation.title}
+          tabs={engine ? contextHeading : tabs}
+          options={
+            engine ? (
+              <ContextSectionsMenu phone />
+            ) : tab === 'side-chat' && fork ? (
+              <SideChatOptions
+                since={since}
+                keeping={keeping}
+                onKeep={() => void keep()}
+                onDiscard={() =>
+                  own.some((message) => message.role === 'user')
+                    ? setConfirmDiscard(true)
+                    : discard()
+                }
+              />
+            ) : tab === 'context' ? (
+              <ContextSectionsMenu phone />
+            ) : null
+          }
+        >
+          {engine ? listView : content}
+        </PhonePanel>
+        {engine ? (
+          <SideChatPage
+            open={sideOpen}
+            onBack={leaveSideChat}
+            parentTitle={conversation.title}
+            title={openChat?.title ?? 'Side chat'}
+            menu={openChat ? sideMenu(openChat.id) : null}
+          >
+            {sideView}
+          </SideChatPage>
+        ) : null}
+        {sideExtras}
+      </>
     )
   }
 
   return (
-    <PageSidebar
-      label="Context pane"
-      side={side}
-      // A hairline where the panel meets the chat, on the edge it shares.
-      className={
-        side === 'left' ? 'border-r border-edge' : 'border-l border-edge'
-      }
-      storageKey={ASIDE_STORAGE_KEY}
-      defaultWidth={340}
-      minWidth={280}
-      maxWidth={480}
-      collapsible
-      resizable
-      // Inline only while the chat keeps its own 560px beside the panel's 340.
-      narrowBelow={900}
-      narrowMode="drawer"
-      closeDrawerOnSelect={false}
-      expandRequest={expandSeq}
-      collapseRequest={hideRequest}
-      // Beside a narrow chat the drawer opens under the chat's 44px header
-      // (PageHeader beside a pane), so the pane button that opened it, now
-      // "Hide context pane", stays in reach to close it.
-      drawerOffsetTop={CHAT_HEADER_PX}
-      header={
-        <>
-          {tabs}
-          {tab === 'context' ? <ContextSectionsMenu phone={false} /> : null}
-          {foldAll}
-        </>
-      }
-      collapsedActions={
-        <>
-          <IconButton
-            label="Context"
-            tooltipSide={side === 'right' ? 'left' : 'right'}
-            className="size-7"
-            onClick={() => show('context')}
-          >
-            <Layers aria-hidden />
-          </IconButton>
-          <IconButton
-            label={unread ? 'Side chat, new reply' : 'Side chat'}
-            tooltipSide={side === 'right' ? 'left' : 'right'}
-            className="relative size-7"
-            onClick={() => show('side-chat')}
-          >
-            <MessagesSquare aria-hidden />
-            {unread ? (
-              <span
-                aria-hidden
-                className="absolute top-1 right-1 size-1.5 rounded-full bg-accent"
+    <>
+      <PageSidebar
+        label="Context pane"
+        side={side}
+        // A hairline where the panel meets the chat, on the edge it shares.
+        className={
+          side === 'left' ? 'border-r border-edge' : 'border-l border-edge'
+        }
+        storageKey={ASIDE_STORAGE_KEY}
+        defaultWidth={340}
+        minWidth={280}
+        maxWidth={480}
+        width={widen ? SIDE_CHAT_PANE_WIDTH : undefined}
+        collapsible
+        resizable
+        // Inline only while the chat keeps its own 560px beside the panel's 340.
+        narrowBelow={900}
+        narrowMode="drawer"
+        closeDrawerOnSelect={false}
+        expandRequest={expandSeq}
+        collapseRequest={hideRequest}
+        // Beside a narrow chat the drawer opens under the chat's 44px header
+        // (PageHeader beside a pane), so the pane button that opened it, now
+        // "Hide context pane", stays in reach to close it.
+        drawerOffsetTop={CHAT_HEADER_PX}
+        header={
+          engine ? (
+            sideOpen ? (
+              <SideChatHeader
+                title={openChat?.title ?? 'Side chat'}
+                onBack={leaveSideChat}
+                menu={openChat ? sideMenu(openChat.id) : null}
               />
-            ) : null}
-          </IconButton>
-        </>
-      }
-    >
-      <div ref={contentRef} className="flex min-h-0 flex-1 flex-col">
-        {content}
-      </div>
-    </PageSidebar>
+            ) : (
+              <>
+                {contextHeading}
+                <ContextSectionsMenu phone={false} />
+                {foldAll}
+              </>
+            )
+          ) : (
+            <>
+              {tabs}
+              {tab === 'context' ? <ContextSectionsMenu phone={false} /> : null}
+              {foldAll}
+            </>
+          )
+        }
+        collapsedActions={
+          <>
+            <IconButton
+              label="Context"
+              tooltipSide={side === 'right' ? 'left' : 'right'}
+              className="size-7"
+              onClick={() => show('context')}
+            >
+              <Layers aria-hidden />
+            </IconButton>
+            {engine ? null : (
+              <IconButton
+                label={unread ? 'Side chat, new reply' : 'Side chat'}
+                tooltipSide={side === 'right' ? 'left' : 'right'}
+                className="relative size-7"
+                onClick={() => show('side-chat')}
+              >
+                <MessagesSquare aria-hidden />
+                {unread ? (
+                  <span
+                    aria-hidden
+                    className="absolute top-1 right-1 size-1.5 rounded-full bg-accent"
+                  />
+                ) : null}
+              </IconButton>
+            )}
+          </>
+        }
+      >
+        <div ref={contentRef} className="flex min-h-0 flex-1 flex-col">
+          {engine ? (sideView ?? listView) : content}
+        </div>
+      </PageSidebar>
+      {sideExtras}
+    </>
   )
 }
 

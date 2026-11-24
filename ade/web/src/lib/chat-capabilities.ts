@@ -12,6 +12,7 @@
  * | `setDescription` | `harness::set-description`  | descriptions by hand; no agent switch         |
  * | `contextItems`   | `harness::context-items`    | the pane parses the loaded transcript         |
  * | `chatSettings`   | `harness::chat-settings::get` | no Session descriptions setting             |
+ * | `sideChats`      | `harness::side-chat::open`  | the ADE's own client-side fork, one per chat  |
  *
  * The control-plane functions are internal (chat-projects D37): only
  * `harness::projects::list`, `harness::set-description` and the two
@@ -36,6 +37,7 @@ export interface ChatCapabilities {
   setDescription: boolean
   contextItems: boolean
   chatSettings: boolean
+  sideChats: boolean
 }
 
 export const CAPABILITY_FUNCTIONS = {
@@ -45,6 +47,7 @@ export const CAPABILITY_FUNCTIONS = {
   setDescription: 'harness::set-description',
   contextItems: 'harness::context-items',
   chatSettings: 'harness::chat-settings::get',
+  sideChats: 'harness::side-chat::open',
 } as const satisfies Record<Exclude<keyof ChatCapabilities, 'loaded'>, string>
 
 export const NO_CHAT_CAPABILITIES: ChatCapabilities = {
@@ -55,6 +58,7 @@ export const NO_CHAT_CAPABILITIES: ChatCapabilities = {
   setDescription: false,
   contextItems: false,
   chatSettings: false,
+  sideChats: false,
 }
 
 const WATCH_FN = 'ade::chat-capabilities-watch'
@@ -103,6 +107,7 @@ export function capabilitiesFromCatalog(response: unknown): ChatCapabilities {
     setDescription: ids.has(CAPABILITY_FUNCTIONS.setDescription),
     contextItems: ids.has(CAPABILITY_FUNCTIONS.contextItems),
     chatSettings: ids.has(CAPABILITY_FUNCTIONS.chatSettings),
+    sideChats: ids.has(CAPABILITY_FUNCTIONS.sideChats),
   }
 }
 
@@ -173,6 +178,18 @@ export function useChatCapabilities(enabled = true): ChatCapabilities {
   useEffect(() => {
     if (enabled) startChatCapabilities()
   }, [enabled])
+  return useSyncExternalStore(
+    subscribeChatCapabilities,
+    getChatCapabilities,
+    getChatCapabilities,
+  )
+}
+
+/**
+ * The capabilities as last read, without starting a read: for a surface that
+ * only follows what the chat already asked for (the Sections menu).
+ */
+export function useKnownChatCapabilities(): ChatCapabilities {
   return useSyncExternalStore(
     subscribeChatCapabilities,
     getChatCapabilities,

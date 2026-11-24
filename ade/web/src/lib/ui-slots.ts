@@ -88,6 +88,7 @@ export interface RegisteredContextSection extends ContextSectionRegistration {
  * requests, Links, Attachments, Images — then the ADE's own.
  */
 export const CONTEXT_PANEL_GROUPS = [
+  'sidechats',
   'subagents',
   'prs',
   'links',

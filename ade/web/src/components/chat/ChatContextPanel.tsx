@@ -1,6 +1,7 @@
 import { formatRelative } from '@iii-dev/console-ui/format'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
+  BookmarkPlus,
   ChevronDown,
   ChevronRight,
   ChevronsUp,
@@ -22,8 +23,11 @@ import {
   Globe,
   ImageIcon,
   Layers,
+  MessagesSquare,
+  Plus,
   SquareTerminal,
   Ticket,
+  Trash2,
   TriangleAlert,
   X,
 } from 'lucide-react'
@@ -101,6 +105,8 @@ import {
   readKanbanBoard,
   readPullRequests,
   runPullRequestAction,
+  type SideChatRow,
+  sideChatRowMeta,
   type TicketRow,
   ticketRows,
 } from '@/lib/chat-aside'
@@ -117,6 +123,7 @@ import { openChatFile } from '@/lib/file-navigation'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { entryIdOfMessage } from '@/lib/sessions/entry-mapper'
+import { shortAge } from '@/lib/short-age'
 import {
   type RegisteredContextSection,
   useExtContextSections,
@@ -217,6 +224,19 @@ interface ChatContextPanelProps {
   }) => void
   /** The phone drawer: the filter chips under the header. */
   phone?: boolean
+  /**
+   * The engine's side chats (chat-projects §2.3): the Sidechats section,
+   * first, with "+ New". Absent: no section (the pane's own side chat tab).
+   */
+  sideChats?: {
+    rows: readonly SideChatRow[]
+    onOpen: (id: string) => void
+    onNew: () => void
+    onKeep: (id: string) => void
+    onDelete: (id: string) => void
+    /** A side chat is being opened: "+ New" waits. */
+    opening?: boolean
+  }
 }
 
 /** A link row, from the engine or the local parse. */
@@ -232,6 +252,7 @@ interface LinkRow {
 /** The phone drawer's filter chips (§1.3.6), and the sections each shows. */
 type ContextFilter =
   | 'all'
+  | 'sidechats'
   | 'subagents'
   | 'prs'
   | 'links'
@@ -239,6 +260,7 @@ type ContextFilter =
   | 'images'
 
 const COMMON_SECTIONS: readonly Exclude<ContextFilter, 'all'>[] = [
+  'sidechats',
   'subagents',
   'prs',
   'links',
@@ -247,6 +269,7 @@ const COMMON_SECTIONS: readonly Exclude<ContextFilter, 'all'>[] = [
 ]
 
 const FILTER_LABELS: Record<Exclude<ContextFilter, 'all'>, string> = {
+  sidechats: 'Side',
   subagents: 'Agents',
   prs: 'PRs',
   links: 'Links',
@@ -312,6 +335,7 @@ export function ChatContextPanel({
   items = null,
   onShowInConversation,
   phone = false,
+  sideChats,
 }: ChatContextPanelProps) {
   const [filter, setFilter] = useState<ContextFilter>('all')
   const workingDir = conversation.workingDir ?? null
@@ -1288,6 +1312,90 @@ export function ChatContextPanel({
           />
         </Section>
       ) : null,
+    sidechats: sideChats ? (
+      <Section
+        id="sidechats"
+        label="Sidechats"
+        count={sideChats.rows.length || undefined}
+        extra={
+          sideChats.rows.some((row) => row.running) ? (
+            <span className="flex items-center gap-1.5 text-meta font-normal text-ink">
+              <StatusDot tone="accent" pulse />
+              {sideChats.rows.filter((row) => row.running).length} running
+            </span>
+          ) : null
+        }
+        action={
+          <button
+            type="button"
+            data-side-chat-new=""
+            disabled={sideChats.opening}
+            onClick={sideChats.onNew}
+            className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 font-inter text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 pointer-coarse:h-11"
+          >
+            <Plus aria-hidden className="size-4" />
+            New
+          </button>
+        }
+      >
+        {sideChats.rows.length === 0 ? (
+          <p className="px-2 py-1.5 font-inter text-xs text-ink-faint">
+            No side chats yet. “Side chat” on a reply, or New, starts one.
+          </p>
+        ) : null}
+        {sideChats.rows.map((row) => (
+          <Row
+            key={row.id}
+            data-side-chat-row={row.id}
+            icon={
+              row.running ? (
+                <StatusDot tone="accent" pulse />
+              ) : (
+                <MessagesSquare aria-hidden />
+              )
+            }
+            label={row.title}
+            title={row.title}
+            ariaLabel={`Open side chat ${row.title}${row.running ? ' (running)' : ''}`}
+            onActivate={() => sideChats.onOpen(row.id)}
+            meta={
+              <span className={uiClasses.treeItemMeta} data-keep-mono="">
+                {sideChatRowMeta(row, (at) => shortAge(at))}
+              </span>
+            }
+            actions={
+              <ItemMenu
+                label={`Actions for ${row.title}`}
+                entries={[
+                  {
+                    label: 'Open',
+                    icon: menuIcons.open,
+                    onSelect: () => sideChats.onOpen(row.id),
+                  },
+                  {
+                    label: 'Keep as a conversation',
+                    icon: (
+                      <BookmarkPlus
+                        aria-hidden
+                        className="size-4 text-ink-faint"
+                      />
+                    ),
+                    onSelect: () => sideChats.onKeep(row.id),
+                  },
+                  {
+                    label: 'Delete…',
+                    icon: (
+                      <Trash2 aria-hidden className="size-4 text-ink-faint" />
+                    ),
+                    onSelect: () => sideChats.onDelete(row.id),
+                  },
+                ]}
+              />
+            }
+          />
+        ))}
+      </Section>
+    ) : null,
     subagents:
       subagentTotal > 0 ? (
         <Section
@@ -1547,12 +1655,14 @@ export function ChatContextPanel({
   // The six common sections' counts (Sidechats join in phase 2): the empty
   // pane, and the phone drawer's chips.
   const commonCounts = {
+    sidechats: sideChats?.rows.length ?? 0,
     subagents: subagentTotal,
     prs: listedPrs.length,
     links: links.length,
     attachments: attachmentCount,
     images: images.length,
     total:
+      (sideChats?.rows.length ?? 0) +
       subagentTotal +
       listedPrs.length +
       links.length +
@@ -2018,10 +2128,13 @@ function Section({
   brief,
   hidden,
   keepMounted,
+  action,
   children,
 }: {
   id: string
   label: string
+  /** A control beside the header ("+ New"), outside its fold button. */
+  action?: ReactNode
   /** The worker that adds it. */
   source?: string
   count?: number
@@ -2081,6 +2194,7 @@ function Section({
             )}
           />
         </button>
+        {action}
         {onMove ? (
           <ReorderHandle
             label={label}

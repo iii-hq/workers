@@ -541,7 +541,7 @@ function ClearOnDemandPlugin({ token }: { token: number }) {
 function ExternalInsertPlugin({ composerId }: { composerId?: string }) {
   const [editor] = useLexicalComposerContext()
   useEffect(() => {
-    return onComposerInsert(({ text, inline, submit }) => {
+    return onComposerInsert(({ text, inline, submit, focus }) => {
       editor.update(() => {
         const root = $getRoot()
         // A send (an ask card's answer, say) never joins what the person is
@@ -569,9 +569,9 @@ function ExternalInsertPlugin({ composerId }: { composerId?: string }) {
         const paragraph = $createParagraphNode()
         paragraph.append($createTextNode(text))
         root.append(paragraph)
-        paragraph.selectEnd()
+        if (focus !== false) paragraph.selectEnd()
       })
-      editor.focus()
+      if (focus !== false) editor.focus()
     }, composerId)
   }, [editor, composerId])
   return null

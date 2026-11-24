@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Conversation, Message } from '@/types/chat'
 import {
+  appendToDraft,
+  bringBackBlock,
   capRows,
   collectChatImages,
   collectChatLinks,
@@ -11,6 +13,7 @@ import {
   ghSource,
   githubWorkerGh,
   hideSideChats,
+  isSummaryPrompt,
   type KanbanBoard,
   lastSpokenEntry,
   parseGithubRemote,
@@ -20,10 +23,16 @@ import {
   readGitSummary,
   readPullRequests,
   runPullRequestAction,
+  SIDE_CHAT_SUMMARY_PROMPT,
+  sideChatForkPoint,
+  sideChatLock,
   sideChatMessages,
   sideChatMetadata,
   sideChatQuote,
   sideChatQuotes,
+  sideChatRowMeta,
+  sideChatRows,
+  sideChatSummaries,
   splitQuotedMessage,
   summarizeChecks,
   ticketRows,
@@ -51,15 +60,138 @@ const say = (
 ): Message => ({ id: `${role}-${createdAt}`, role, content, createdAt })
 
 describe('side chats', () => {
-  it('finds the newest side chat of a conversation and ignores the rest', () => {
+  it('lists the side chats of a conversation, newest first, and ignores the rest', () => {
     const list = [
       chat('main', 1),
       chat('old', 2, { side_chat_of: 'main' }),
       chat('new', 3, { side_chat_of: 'main' }),
       chat('other', 4, { side_chat_of: 'elsewhere' }),
     ]
-    expect(findSideChat(list, 'main')?.id).toBe('new')
-    expect(findSideChat(list, 'nobody')).toBeNull()
+    expect(findSideChat(list, 'main').map((c) => c.id)).toEqual(['new', 'old'])
+    expect(findSideChat(list, 'nobody')).toEqual([])
+  })
+
+  it('reads the lock, the fork point and the summaries the engine writes', () => {
+    const side = chat('s', 1, {
+      side_chat_of: 'main',
+      side_chat_lock: {
+        model: 'claude-opus-5-5',
+        provider: 'anthropic',
+        thinking_level: 'high',
+      },
+      side_chat_fork_point: { entry_id: 'e-12', message_count: 6 },
+      side_chat_summaries: ['e-40', 7, '', 'e-52'],
+    })
+    expect(sideChatLock(side)).toEqual({
+      model: 'claude-opus-5-5',
+      provider: 'anthropic',
+      thinkingLevel: 'high',
+    })
+    expect(sideChatForkPoint(side)).toEqual({
+      entryId: 'e-12',
+      messageCount: 6,
+    })
+    expect(sideChatSummaries(side)).toEqual(['e-40', 'e-52'])
+    // An ADE side chat from before phase 2 has none of them.
+    const old = chat('o', 1, { side_chat_of: 'main' })
+    expect(sideChatLock(old)).toBeNull()
+    expect(sideChatForkPoint(old)).toBeNull()
+    expect(sideChatSummaries(old)).toEqual([])
+  })
+
+  it('knows the summary prompt', () => {
+    expect(isSummaryPrompt(`  ${SIDE_CHAT_SUMMARY_PROMPT}\n`)).toBe(true)
+    expect(isSummaryPrompt('Summarize this')).toBe(false)
+  })
+
+  it('brings a reply back after a blank line, only when the draft has text', () => {
+    const block = bringBackBlock('Why 5 attempts?', ' Keep five. \n')
+    expect(block).toBe('From side chat “Why 5 attempts?”:\n\nKeep five.')
+    expect(appendToDraft('', block)).toBe(block)
+    expect(appendToDraft('   \n', block)).toBe(block)
+    expect(appendToDraft(undefined, block)).toBe(block)
+    expect(appendToDraft('Also log it.\n', block)).toBe(
+      `Also log it.\n\n${block}`,
+    )
+  })
+
+  it('lists several side chats from the engine, live from the session list', () => {
+    const list = [
+      chat('main', 1),
+      {
+        ...chat('a', 2, { side_chat_of: 'main' }),
+        title: 'Renamed live',
+        status: 'working' as const,
+        updatedAt: 900,
+      },
+      chat('kept', 3),
+      chat('fresh', 4, {
+        side_chat_of: 'main',
+        side_chat_fork_point: { entry_id: 'e-9', message_count: 3 },
+      }),
+    ]
+    const items = [
+      {
+        session_id: 'a',
+        title: 'Why five?',
+        message_count: 4,
+        created_at_ms: 2,
+        updated_at_ms: 500,
+        from_entry_id: 'e-1',
+        running: false,
+      },
+      {
+        session_id: 'kept',
+        title: 'Kept one',
+        message_count: 2,
+        created_at_ms: 3,
+        updated_at_ms: 600,
+        running: false,
+      },
+      {
+        session_id: 'gone',
+        title: 'Deleting',
+        message_count: 1,
+        created_at_ms: 1,
+        updated_at_ms: 100,
+        running: false,
+      },
+    ]
+    const rows = sideChatRows(items, list, 'main', new Set(['gone']))
+    expect(rows.map((row) => row.id)).toEqual(['a', 'fresh'])
+    expect(rows[0]).toMatchObject({
+      title: 'Renamed live',
+      messageCount: 4,
+      updatedAt: 900,
+      fromEntryId: 'e-1',
+      running: true,
+    })
+    // Opened here, not listed by the engine yet: its fork point marks it.
+    expect(rows[1]).toMatchObject({
+      fromEntryId: 'e-9',
+      messageCount: 0,
+      running: false,
+    })
+  })
+
+  it('reads a row as "6 messages · 10m"', () => {
+    const age = () => '10m'
+    expect(sideChatRowMeta({ messageCount: 6, updatedAt: 0 }, age)).toBe(
+      '6 messages · 10m',
+    )
+    expect(sideChatRowMeta({ messageCount: 1, updatedAt: 0 }, age)).toBe(
+      '1 message · 10m',
+    )
+    expect(sideChatRowMeta({ messageCount: null, updatedAt: 0 }, age)).toBe(
+      '10m',
+    )
+  })
+
+  it('records a quote the engine already recorded only once', () => {
+    const quote = { messageId: 'm1', text: 'five attempts' }
+    expect(withSideChatQuote([quote], quote)).toEqual([
+      { message_id: 'm1', text: 'five attempts' },
+    ])
   })
 
   it('shows only what came after the fork', () => {

@@ -38,6 +38,29 @@ export interface SideChatQuote {
 export const AskInSideChatContext = createContext<{
   ask: (quote: SideChatQuote) => void
   quotedIds: ReadonlySet<string>
+  /** "Side chat" on a reply: fork at its entry (engine side chats). */
+  fork?: (entryId: string) => void
+  /** The side chats forked at each message, by message id: the marks. */
+  marks?: ReadonlyMap<string, readonly SideChatMark[]>
+  /** Open a side chat from its mark. */
+  open?: (sideChatId: string) => void
+} | null>(null)
+
+/** "Sidechat from here · <title>" under the message a side chat forked at. */
+export interface SideChatMark {
+  id: string
+  title: string
+}
+
+/**
+ * Set by an engine side chat's transcript: its summary replies (entry ids)
+ * and "Bring back", which hands a reply to the conversation's composer.
+ */
+export const SideChatRepliesContext = createContext<{
+  summaries: ReadonlySet<string>
+  bringBack: (text: string) => void
+  /** "Bring back", or "Bring back to <title>" on a phone. */
+  bringBackLabel: string
 } | null>(null)
 
 /** Set by a side chat: the quotes it sent, and the way back to their source. */
@@ -70,16 +93,25 @@ export function sideChatQuotes(
   return quotes
 }
 
-/** The metadata value after recording `quote`, newest last, bounded. */
+/**
+ * The metadata value after recording `quote`, newest last, bounded. A quote
+ * already there (the engine's `open` records the one it opened with) is not
+ * added twice.
+ */
 export function withSideChatQuote(
   quotes: readonly SideChatQuote[],
   quote: SideChatQuote,
 ): Record<string, string>[] {
-  return [...quotes, quote].slice(-QUOTES_KEPT).map((q) => ({
-    message_id: q.messageId,
-    text: q.text,
-    ...(q.agent ? { agent: q.agent } : {}),
-  }))
+  const known = quotes.some(
+    (q) => q.messageId === quote.messageId && q.text === quote.text,
+  )
+  return (known ? [...quotes] : [...quotes, quote])
+    .slice(-QUOTES_KEPT)
+    .map((q) => ({
+      message_id: q.messageId,
+      text: q.text,
+      ...(q.agent ? { agent: q.agent } : {}),
+    }))
 }
 
 /**
@@ -469,19 +501,205 @@ export function useQuoteHighlights(
   }, [rootRef, quotes, version])
 }
 
-/** The newest side chat still attached to `mainId`. */
+/**
+ * The side chats still attached to `mainId`, newest first (by when they were
+ * made; the client-side fork shows the first one).
+ */
 export function findSideChat(
   conversations: readonly Conversation[],
   mainId: string,
-): Conversation | null {
-  let found: Conversation | null = null
-  for (const conversation of conversations) {
-    if (sideChatOf(conversation) !== mainId) continue
-    if (!found || (conversation.createdAt ?? 0) > (found.createdAt ?? 0)) {
-      found = conversation
-    }
+): Conversation[] {
+  return conversations
+    .filter((conversation) => sideChatOf(conversation) === mainId)
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+}
+
+/** Session metadata key: the lock the engine shows for display (§0.4). */
+export const SIDE_CHAT_LOCK_KEY = 'side_chat_lock'
+/** Session metadata key: the conversation's entry and copied count (D79). */
+export const SIDE_CHAT_FORK_POINT_KEY = 'side_chat_fork_point'
+/** Session metadata key: entry ids of the summary replies, newest last. */
+export const SIDE_CHAT_SUMMARIES_KEY = 'side_chat_summaries'
+
+/** The fixed prompt `harness::side-chat::summarize` sends (§2.2). */
+export const SIDE_CHAT_SUMMARY_PROMPT =
+  'Summarize what we concluded in this side conversation for the main conversation, in at most five short lines. Plain text, no preamble.'
+
+/** What a tap on the locked model label says (§2.3.2). */
+export const SIDE_CHAT_LOCK_HINT =
+  "A side chat keeps its conversation's model and effort, to reuse its cache."
+
+/** The model, provider and effort a side chat runs on (`side_chat_lock`). */
+export interface SideChatLock {
+  model: string
+  provider?: string
+  thinkingLevel?: string
+  account?: string
+}
+
+function metaRecord(
+  conversation: Pick<Conversation, 'sessionMetadata'> | null | undefined,
+  key: string,
+): Record<string, unknown> | null {
+  const value = conversation?.sessionMetadata?.[key]
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+/** The side chat's lock, as the engine wrote it for display; null before. */
+export function sideChatLock(
+  conversation: Pick<Conversation, 'sessionMetadata'> | null | undefined,
+): SideChatLock | null {
+  const lock = metaRecord(conversation, SIDE_CHAT_LOCK_KEY)
+  const model = nonEmpty(lock?.model)
+  if (!lock || !model) return null
+  const provider = nonEmpty(lock.provider)
+  const thinkingLevel = nonEmpty(lock.thinking_level)
+  const account = nonEmpty(lock.account)
+  return {
+    model,
+    ...(provider ? { provider } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+    ...(account ? { account } : {}),
   }
-  return found
+}
+
+/** Where in its conversation the side chat was forked (D79). */
+export function sideChatForkPoint(
+  conversation: Pick<Conversation, 'sessionMetadata'> | null | undefined,
+): { entryId: string; messageCount?: number } | null {
+  const point = metaRecord(conversation, SIDE_CHAT_FORK_POINT_KEY)
+  const entryId = nonEmpty(point?.entry_id)
+  if (!point || !entryId) return null
+  const count = point.message_count
+  return {
+    entryId,
+    ...(typeof count === 'number' && Number.isFinite(count)
+      ? { messageCount: count }
+      : {}),
+  }
+}
+
+/** The entry ids of the side chat's summary replies (`side_chat_summaries`). */
+export function sideChatSummaries(
+  conversation: Pick<Conversation, 'sessionMetadata'> | null | undefined,
+): string[] {
+  const raw = conversation?.sessionMetadata?.[SIDE_CHAT_SUMMARIES_KEY]
+  return Array.isArray(raw)
+    ? raw.filter((id): id is string => typeof id === 'string' && id !== '')
+    : []
+}
+
+/** Whether a user message is the summary prompt (drawn as one line). */
+export function isSummaryPrompt(content: string): boolean {
+  return content.trim() === SIDE_CHAT_SUMMARY_PROMPT
+}
+
+/** What "Bring back" adds to the conversation's draft (§2.3.2). */
+export function bringBackBlock(title: string, reply: string): string {
+  return `From side chat “${title}”:\n\n${reply.trim()}`
+}
+
+/** The draft with `block` after it, past a blank line when it has text. */
+export function appendToDraft(
+  draft: string | null | undefined,
+  block: string,
+): string {
+  const kept = (draft ?? '').trimEnd()
+  return kept.trim() ? `${kept}\n\n${block}` : block
+}
+
+/** One row of the pane's Sidechats section. */
+export interface SideChatRow {
+  id: string
+  title: string
+  /** Its own messages, after the fork; null while unknown. */
+  messageCount: number | null
+  createdAt: number
+  updatedAt: number
+  /** The conversation's entry it was forked at. */
+  fromEntryId?: string
+  running: boolean
+}
+
+/** The engine's row, as `harness::context-items` lists it (D81). */
+export interface SideChatItem {
+  session_id: string
+  title: string
+  message_count: number
+  created_at_ms: number
+  updated_at_ms: number
+  from_entry_id?: string
+  running: boolean
+}
+
+/**
+ * The Sidechats section's rows: the engine's list, kept live by the session
+ * list this tab holds (title, a running turn, the last activity), plus the
+ * ones the list has that the engine has not listed yet (just opened). A
+ * side chat kept as a conversation, or being deleted (`hidden`), is left
+ * out. Most recently active first.
+ */
+export function sideChatRows(
+  items: readonly SideChatItem[] | null | undefined,
+  conversations: readonly Conversation[],
+  mainId: string,
+  hidden: ReadonlySet<string> = new Set(),
+): SideChatRow[] {
+  const byId = new Map(conversations.map((c) => [c.id, c]))
+  const rows = new Map<string, SideChatRow>()
+  for (const item of items ?? []) {
+    if (hidden.has(item.session_id)) continue
+    const live = byId.get(item.session_id)
+    if (live && sideChatOf(live) !== mainId) continue
+    rows.set(item.session_id, {
+      id: item.session_id,
+      title: live?.title || item.title,
+      messageCount: item.message_count,
+      createdAt: item.created_at_ms,
+      updatedAt: Math.max(item.updated_at_ms, live?.updatedAt ?? 0),
+      ...(item.from_entry_id ? { fromEntryId: item.from_entry_id } : {}),
+      running: item.running || live?.status === 'working',
+    })
+  }
+  for (const conversation of findSideChat(conversations, mainId)) {
+    if (rows.has(conversation.id) || hidden.has(conversation.id)) continue
+    const point = sideChatForkPoint(conversation)
+    const own =
+      conversation.hydrated !== false
+        ? sideChatMessages(
+            conversation.messages,
+            conversation.createdAt ?? 0,
+            sideChatFrom(conversation),
+          ).filter((m) => m.role === 'user' || m.role === 'assistant').length
+        : null
+    rows.set(conversation.id, {
+      id: conversation.id,
+      title: conversation.title,
+      messageCount: own,
+      createdAt: conversation.createdAt ?? 0,
+      updatedAt: conversation.updatedAt,
+      ...(point ? { fromEntryId: point.entryId } : {}),
+      running: conversation.status === 'working',
+    })
+  }
+  return [...rows.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/** "6 messages · 10m": what was said in the side chat, and when last. */
+export function sideChatRowMeta(
+  row: Pick<SideChatRow, 'messageCount' | 'updatedAt'>,
+  age: (at: number) => string,
+): string {
+  const when = age(row.updatedAt)
+  if (row.messageCount === null) return when
+  const count = `${row.messageCount} ${row.messageCount === 1 ? 'message' : 'messages'}`
+  return `${count} · ${when}`
 }
 
 /**

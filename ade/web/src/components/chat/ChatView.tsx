@@ -89,12 +89,17 @@ import {
   AskInSideChatContext,
   dismissedPullRequests,
   findSideChat,
+  SIDE_CHAT_LOCK_HINT,
+  SIDE_CHAT_QUOTES_KEY,
+  type SideChatMark,
   type SideChatQuote,
   SideChatQuotesContext,
+  SideChatRepliesContext,
   selectionQuote,
   sideChatMessages,
   sideChatQuote,
   sideChatQuotes,
+  sideChatRows,
   useQuoteHighlights,
 } from '@/lib/chat-aside'
 import { useChatCapabilities } from '@/lib/chat-capabilities'
@@ -115,7 +120,11 @@ import {
 } from '@/lib/onboarding/open'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
-import { entryIdOfMessage, isCallSettled } from '@/lib/sessions/entry-mapper'
+import {
+  belongsToEntry,
+  entryIdOfMessage,
+  isCallSettled,
+} from '@/lib/sessions/entry-mapper'
 import {
   expandSlashInvocations,
   loadedSkillIds,
@@ -328,6 +337,22 @@ interface ChatViewProps {
     onJumpToQuote?: (quote: SideChatQuote) => void
     /** On a phone: the one-row composer and a one-line quote. */
     compact?: boolean
+    /**
+     * An engine side chat (chat-projects §2.3.2): the model label with a
+     * lock instead of the picker, and sends that name no model or option
+     * (the harness runs the side chat on its lock).
+     */
+    locked?: { label: string; model?: string } | null
+    /** The composer's idle placeholder ("Ask aside…"). */
+    placeholder?: string
+    /** A quiet line above the composer: model, effort and account. */
+    metaLine?: string | null
+    /** Entry ids of the summary replies, drawn as summary cards. */
+    summaries?: readonly string[]
+    /** "Bring back" on every reply: the text goes to the conversation's composer. */
+    onBringBack?: (text: string) => void
+    /** "Bring back", or "Bring back to <title>" on a phone. */
+    bringBackLabel?: string
   }
   /** The pane edge the side panel hugs: opposite the conversation list. */
   asideSide?: 'left' | 'right'
@@ -439,11 +464,27 @@ export function ChatView({
   const chatCaps = useChatCapabilities(realBackend)
   const chatProjects = useChatProjects(realBackend)
   const chatSettings = useChatSettings(realBackend)
+  // The conversation's side chats as this tab's session list has them:
+  // their activity re-reads the context items (titles, counts, running).
+  const listedConversations = conversationsCtx?.conversations
+  const sideChatsHere = useMemo(
+    () =>
+      asideEnabled && listedConversations
+        ? findSideChat(listedConversations, conversation.id)
+        : [],
+    [asideEnabled, listedConversations, conversation.id],
+  )
+  const sideTick = sideChatsHere
+    .map((c) => `${c.id}:${c.updatedAt}:${c.status ?? ''}:${c.title}`)
+    .join('|')
   const contextItems = useContextItems(conversation.id, {
     enabled: asideEnabled && chatCaps.contextItems,
     visible: asideVisible,
-    messageTick: conversation.messages.length,
+    messageTick: `${conversation.messages.length}|${sideTick}`,
   })
+  // Side chats from the engine (`harness::side-chat::*`), several per
+  // conversation; without them the pane keeps its own one-fork side chat.
+  const engineSideChats = asideEnabled && chatCaps.sideChats
   const conversationMetadata = conversation.sessionMetadata
   const dismissedPrKeys = useMemo(
     () =>
@@ -504,29 +545,96 @@ export function ChatView({
     },
     [showAside],
   )
-  // Keyed on the side chat's metadata object: the context value is rebuilt
-  // on every render, the metadata only when it changes, so the marks (and
-  // every message reading them) stay put while a reply streams.
-  const sideChatMetadata =
-    asideEnabled && conversationsCtx
-      ? findSideChat(conversationsCtx.conversations, conversation.id)
-          ?.sessionMetadata
-      : undefined
-  const heldQuotes = useMemo(() => {
-    const sent = sideChatQuotes(
-      sideChatMetadata ? { sessionMetadata: sideChatMetadata } : null,
-    )
-    return pendingQuote ? [...sent, pendingQuote] : sent
-  }, [sideChatMetadata, pendingQuote])
+  // The quotes every side chat of this chat sent (and the one waiting):
+  // their source messages stay marked here while a side chat holds them.
+  // Keyed on the quotes themselves, so the marks (and every message reading
+  // them) stay put while a reply streams.
+  const sentQuotesKey = JSON.stringify(
+    sideChatsHere.map((c) => c.sessionMetadata?.[SIDE_CHAT_QUOTES_KEY] ?? null),
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sentQuotesKey stands for the side chats' quotes
+  const sentQuotes = useMemo(
+    () => sideChatsHere.flatMap((c) => sideChatQuotes(c)),
+    [sentQuotesKey],
+  )
+  const heldQuotes = useMemo(
+    () => (pendingQuote ? [...sentQuotes, pendingQuote] : sentQuotes),
+    [sentQuotes, pendingQuote],
+  )
+  // Engine side chats (chat-projects §2.3.1): "Side chat" on a reply forks
+  // at it, and the mark under each forked message opens its side chat.
+  const forkSideChat = useCallback(
+    (entryId: string) =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab: 'side-chat',
+        fork: { entryId },
+      })),
+    [],
+  )
+  const openSideChat = useCallback(
+    (id: string) =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab: 'side-chat',
+        openId: id,
+      })),
+    [],
+  )
+  const markPairs: [string, SideChatMark[]][] = []
+  if (engineSideChats) {
+    const rows = sideChatRows(
+      contextItems.items?.side_chats,
+      conversationsCtx?.conversations ?? [],
+      conversation.id,
+    ).sort((a, b) => a.createdAt - b.createdAt)
+    const byMessage = new Map<string, SideChatMark[]>()
+    for (const row of rows) {
+      const entryId = row.fromEntryId
+      if (!entryId) continue
+      // The last row the entry rendered: a reply split around its calls
+      // carries the mark under its end.
+      let target: string | null = null
+      for (const message of conversation.messages) {
+        if (belongsToEntry(message.id, entryId)) target = message.id
+      }
+      if (!target) continue
+      byMessage.set(target, [
+        ...(byMessage.get(target) ?? []),
+        { id: row.id, title: row.title },
+      ])
+    }
+    markPairs.push(...byMessage)
+  }
+  const markKey = JSON.stringify(markPairs)
+  const sideChatMarks = useMemo(
+    () => new Map<string, SideChatMark[]>(JSON.parse(markKey)),
+    [markKey],
+  )
   const sideChatValue = useMemo(
     () =>
       asideEnabled
         ? {
             ask: askInSideChat,
             quotedIds: new Set(heldQuotes.map((quote) => quote.messageId)),
+            ...(engineSideChats
+              ? {
+                  fork: forkSideChat,
+                  marks: sideChatMarks,
+                  open: openSideChat,
+                }
+              : {}),
           }
         : null,
-    [asideEnabled, askInSideChat, heldQuotes],
+    [
+      asideEnabled,
+      askInSideChat,
+      heldQuotes,
+      engineSideChats,
+      forkSideChat,
+      sideChatMarks,
+      openSideChat,
+    ],
   )
   // A quote card's way back: land this transcript on its source message.
   const [quoteFocusId, setQuoteFocusId] = useState<string | null>(null)
@@ -539,6 +647,23 @@ export function ChatView({
           }
         : null,
     [side],
+  )
+  // An engine side chat's replies: summary cards and "Bring back".
+  const sideSummariesKey = (side?.summaries ?? []).join('\n')
+  const onBringBack = side?.onBringBack
+  const bringBackLabel = side?.bringBackLabel ?? 'Bring back'
+  const sideRepliesValue = useMemo(
+    () =>
+      onBringBack
+        ? {
+            summaries: new Set(
+              sideSummariesKey ? sideSummariesKey.split('\n') : [],
+            ),
+            bringBack: onBringBack,
+            bringBackLabel,
+          }
+        : null,
+    [onBringBack, sideSummariesKey, bringBackLabel],
   )
   const sideSince = side?.since
   const sideFrom = side?.fromEntry
@@ -1811,6 +1936,10 @@ export function ChatView({
     },
     [conversationsCtx, conversation.id],
   )
+  // An engine side chat sends no model or option: the harness runs it on
+  // its lock (chat-projects §2.2), and refuses a different value.
+  const sideLocked = Boolean(side?.locked)
+  const sideLockedModel = side?.locked?.model ?? null
   const submit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (submitBlockedRef.current) return
@@ -1862,7 +1991,7 @@ export function ChatView({
       // catalog-resolved id goes first: a profile's plain router id
       // (`claude-code/claude-haiku-5-5`) would otherwise reach the backend
       // without its provider, which then guesses one from the name.
-      const model = effectiveModel ?? conversation.model
+      const model = effectiveModel ?? conversation.model ?? sideLockedModel
       if (!model) {
         onAppendMessage(
           conversationId,
@@ -2228,6 +2357,7 @@ export function ChatView({
               ...(agentId ? { agent: agentId } : {}),
               workingDir: workingDirForSend,
               approvalGateAvailable: approvalEnabled,
+              ...(sideLocked ? { sideChatLocked: true } : {}),
               ...(attachedBlocks && attachedBlocks.length > 0
                 ? { attachedBlocks }
                 : {}),
@@ -2282,6 +2412,7 @@ export function ChatView({
             ...(agentId ? { agent: agentId } : {}),
             workingDir: workingDirForSend,
             approvalGateAvailable: approvalEnabled,
+            ...(sideLocked ? { sideChatLocked: true } : {}),
             approvalSessionMatcher,
             approvalEventsExternallyManaged: true,
             ...(attachedBlocks && attachedBlocks.length > 0
@@ -2622,6 +2753,8 @@ export function ChatView({
       reconcileWorkingDir,
       workingDirEnabled,
       markQuoteSent,
+      sideLocked,
+      sideLockedModel,
     ],
   )
 
@@ -3661,58 +3794,62 @@ export function ChatView({
           >
             <AskInSideChatContext.Provider value={sideChatValue}>
               <SideChatQuotesContext.Provider value={sideQuotesValue}>
-                <MessageList
-                  messages={shownMessages}
-                  header={
-                    side && shownMessages.length === 0 ? side.empty : undefined
-                  }
-                  agentName={conversation.agentProfile?.name}
-                  sessionId={conversation.id}
-                  spawnContext={{
-                    title: conversation.title,
-                    model: effectiveModel,
-                    appearance: conversation.subagentAppearance,
-                  }}
-                  transcriptHydrated={conversation.hydrated !== false}
-                  isThinking={isThinking || waitingOnAnswer}
-                  waitingOnPerson={waitingOnAnswer}
-                  turnVisualPhase={turnVisualState.phase}
-                  turnKey={turnVisualState.turnKey}
-                  thinkingDetail={
-                    waitingOnAnswer
-                      ? WAITING_ON_ANSWER_LABEL
-                      : conversation.status === 'working' &&
-                          conversation.statusReason
-                        ? conversation.statusReason
-                        : (phaseDetail ?? waitingFallback)
-                  }
-                  density={density}
-                  onResolveApproval={resolveApproval}
-                  onAlwaysAllow={handleAlwaysAllow}
-                  onResolveFilesystemAccess={handleFilesystemResolve}
-                  onManageFilesystemAccess={handleManageFilesystemAccess}
-                  onConfigureProvider={handleConfigureProvider}
-                  workingDir={conversation.workingDir ?? null}
-                  onWorkingDirChange={
-                    workingDirEnabled ? handleWorkingDirChange : undefined
-                  }
-                  defaultWorkingDir={defaultWorkingDir}
-                  worktreePicker={
-                    worktreeEnabled
-                      ? { enabled: true, onPick: handlePickWorktree }
-                      : undefined
-                  }
-                  observersById={observersById}
-                  focusMessageId={quoteFocusId ?? focusMessageId}
-                  onFocusMessageHandled={() => {
-                    setQuoteFocusId(null)
-                    handleFocusMessageHandled()
-                  }}
-                  history={side ? undefined : conversation.history}
-                  onLoadOlder={side ? undefined : handleLoadOlder}
-                  onLoadActivityEntries={handleLoadActivityEntries}
-                  onShowObservers={asideEnabled ? showObservers : undefined}
-                />
+                <SideChatRepliesContext.Provider value={sideRepliesValue}>
+                  <MessageList
+                    messages={shownMessages}
+                    header={
+                      side && shownMessages.length === 0
+                        ? side.empty
+                        : undefined
+                    }
+                    agentName={conversation.agentProfile?.name}
+                    sessionId={conversation.id}
+                    spawnContext={{
+                      title: conversation.title,
+                      model: effectiveModel,
+                      appearance: conversation.subagentAppearance,
+                    }}
+                    transcriptHydrated={conversation.hydrated !== false}
+                    isThinking={isThinking || waitingOnAnswer}
+                    waitingOnPerson={waitingOnAnswer}
+                    turnVisualPhase={turnVisualState.phase}
+                    turnKey={turnVisualState.turnKey}
+                    thinkingDetail={
+                      waitingOnAnswer
+                        ? WAITING_ON_ANSWER_LABEL
+                        : conversation.status === 'working' &&
+                            conversation.statusReason
+                          ? conversation.statusReason
+                          : (phaseDetail ?? waitingFallback)
+                    }
+                    density={density}
+                    onResolveApproval={resolveApproval}
+                    onAlwaysAllow={handleAlwaysAllow}
+                    onResolveFilesystemAccess={handleFilesystemResolve}
+                    onManageFilesystemAccess={handleManageFilesystemAccess}
+                    onConfigureProvider={handleConfigureProvider}
+                    workingDir={conversation.workingDir ?? null}
+                    onWorkingDirChange={
+                      workingDirEnabled ? handleWorkingDirChange : undefined
+                    }
+                    defaultWorkingDir={defaultWorkingDir}
+                    worktreePicker={
+                      worktreeEnabled
+                        ? { enabled: true, onPick: handlePickWorktree }
+                        : undefined
+                    }
+                    observersById={observersById}
+                    focusMessageId={quoteFocusId ?? focusMessageId}
+                    onFocusMessageHandled={() => {
+                      setQuoteFocusId(null)
+                      handleFocusMessageHandled()
+                    }}
+                    history={side ? undefined : conversation.history}
+                    onLoadOlder={side ? undefined : handleLoadOlder}
+                    onLoadActivityEntries={handleLoadActivityEntries}
+                    onShowObservers={asideEnabled ? showObservers : undefined}
+                  />
+                </SideChatRepliesContext.Provider>
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
           </RegisteredObserverStatusProvider>
@@ -3829,9 +3966,22 @@ export function ChatView({
                     ' The working-directory picker requires the shell worker.'}
                 </p>
               )}
+              {side?.metaLine ? (
+                <p
+                  data-side-chat-meta=""
+                  className="mb-1 truncate px-1 font-inter text-xs text-ink-faint"
+                >
+                  {side.metaLine}
+                </p>
+              ) : null}
               <Composer
                 key={composerGeneration}
-                model={effectiveModel}
+                model={effectiveModel ?? side?.locked?.model ?? null}
+                lockedModel={
+                  side?.locked
+                    ? { label: side.locked.label, hint: SIDE_CHAT_LOCK_HINT }
+                    : undefined
+                }
                 modelOptions={modelOptions}
                 catalogLoading={catalogLoading}
                 modelPickerOpenRequest={modelPickerOpenRequest}
@@ -3913,10 +4063,13 @@ export function ChatView({
                     />
                   ) : undefined
                 }
-                idlePlaceholder={idleComposerPlaceholder(
-                  conversation.agentProfile,
-                  conversation.messages.length > 0,
-                )}
+                idlePlaceholder={
+                  side?.placeholder ??
+                  idleComposerPlaceholder(
+                    conversation.agentProfile,
+                    conversation.messages.length > 0,
+                  )
+                }
                 blockedPlaceholder={
                   conversationsCtx
                     ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
@@ -3970,6 +4123,8 @@ export function ChatView({
             onPendingQuoteChange={setPendingQuote}
             contextItems={contextItems.items}
             itemCount={contextCount}
+            engineSideChats={engineSideChats}
+            onSideChatsChanged={contextItems.refresh}
             onShowInConversation={showInConversation}
             onVisibleChange={setAsideVisible}
             onJumpToMessage={(id) => {

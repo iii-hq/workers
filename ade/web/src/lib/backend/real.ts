@@ -213,6 +213,8 @@ async function buildSendRequest(
   messageId: string,
   opts?: ChatStreamOptions,
 ): Promise<HarnessSendRequest> {
+  if (opts?.sideChatLocked)
+    return buildLockedSendRequest(prompt, sessionId, messageId, opts)
   const { provider, model: modelId } = resolveRunParams(model)
   const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
   const providerOptions = toProviderOptions(provider, opts?.thinkingLevel)
@@ -253,6 +255,34 @@ async function buildSendRequest(
       ...(providerOptions ? { provider_options: providerOptions } : {}),
       ...(reasoning ? { reasoning } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
+    },
+  }
+}
+
+/**
+ * A side chat's send on an engine with side chats: the message and the
+ * tracing ids only. Everything the lock holds is left out, so the harness
+ * fills it from the lock (and the first request reads the conversation's
+ * prompt cache).
+ */
+export function buildLockedSendRequest(
+  prompt: string,
+  sessionId: string,
+  messageId: string,
+  opts?: ChatStreamOptions,
+): HarnessSendRequest {
+  return {
+    session_id: sessionId,
+    message: buildMessageInput(
+      prompt,
+      opts?.attachedBlocks ?? [],
+      opts?.attachedImages ?? [],
+      opts?.attachedFiles ?? [],
+    ),
+    idempotency_key: messageId,
+    session: { metadata: { surface: 'console' } },
+    options: {
+      metadata: { session_id: sessionId, message_id: messageId },
     },
   }
 }

@@ -146,6 +146,11 @@ export interface ComposerInsert {
    * tour's step, say — where the click WAS the decision to send.
    */
   submit?: boolean
+  /**
+   * Leave the caret where it is (default: the composer takes it). A side
+   * chat on a phone fills the conversation's draft under its own page.
+   */
+  focus?: boolean
 }
 
 type ComposerInsertListener = (insert: ComposerInsert) => void
@@ -154,13 +159,19 @@ const inserts = bufferedBus<ComposerInsert>()
 
 export function insertIntoComposer(
   text: string,
-  options: { inline?: boolean; submit?: boolean; composerId?: string } = {},
+  options: {
+    inline?: boolean
+    submit?: boolean
+    focus?: boolean
+    composerId?: string
+  } = {},
 ): void {
   inserts.publish(
     {
       text,
       inline: options.inline === true,
       submit: options.submit === true,
+      ...(options.focus === false ? { focus: false } : {}),
     },
     options.composerId ?? composerTarget(),
   )

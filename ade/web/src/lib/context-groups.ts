@@ -1,4 +1,5 @@
 import { useMemo, useSyncExternalStore } from 'react'
+import { useKnownChatCapabilities } from '@/lib/chat-capabilities'
 import { CONTEXT_PANEL_GROUPS, useExtContextSections } from '@/lib/ui-slots'
 
 /** The Context panel's own groups, in their default order. */
@@ -6,6 +7,7 @@ export const CONTEXT_GROUPS = CONTEXT_PANEL_GROUPS
 export type ContextGroup = (typeof CONTEXT_GROUPS)[number]
 
 const GROUP_LABELS: Record<ContextGroup, string> = {
+  sidechats: 'Sidechats',
   subagents: 'Subagents',
   prs: 'Pull requests',
   links: 'Links',
@@ -184,9 +186,13 @@ export function resetSectionOrder() {
 export function useContextSections(): ContextSectionInfo[] {
   const workers = useExtContextSections()
   const stored = useSyncExternalStore(order.subscribe, order.read, order.read)
+  // Sidechats is a section only where the engine has side chats.
+  const sideChats = useKnownChatCapabilities().sideChats
   return useMemo(() => {
     const known: (ContextSectionInfo & { rank: number })[] = [
-      ...CONTEXT_GROUPS.map((id, index) => ({
+      ...CONTEXT_GROUPS.flatMap((id, index) =>
+        id === 'sidechats' && !sideChats ? [] : [{ id, index }],
+      ).map(({ id, index }) => ({
         id,
         label: GROUP_LABELS[id],
         rank: (index + 1) * 100,
@@ -209,7 +215,7 @@ export function useContextSections(): ContextSectionInfo[] {
         ? [{ id: section.id, label: section.label, source: section.source }]
         : []
     })
-  }, [workers, stored])
+  }, [workers, stored, sideChats])
 }
 
 /** Tests start from a clean slate. */

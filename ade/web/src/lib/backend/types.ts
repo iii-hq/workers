@@ -221,6 +221,13 @@ export interface ChatStreamOptions {
    * delivering the same pending card while that watcher is active.
    */
   approvalEventsExternallyManaged?: boolean
+  /**
+   * A side chat on an engine with side chats (chat-projects §2.2): the send
+   * names no model, provider, effort, functions, skills, prompt, agent or
+   * folder. The harness runs it on the side chat's lock, and refuses a
+   * different value with `side_chat_locked`.
+   */
+  sideChatLocked?: boolean
 }
 
 /** Events that an approval watcher can deliver outside a running turn. */
