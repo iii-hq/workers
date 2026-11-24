@@ -136,9 +136,10 @@ the `ide` worker's `fs.exec_confinement` switch.
 
 A `harness::hook::on-post-call` target may move the working directory by
 answering `mutations.fs_scope.root` on a `shell::*` / `coder::*` call; the
-`ide` worker does so after a `git worktree add` (and back, after removing the
-worktree the session is rooted in). Only a `shell::*` / `coder::*` target is
-heard: a filter, not authentication. The step's later calls and later turns
+`ide` worker does so after a `git worktree add`, unless the call passes
+`follow_worktree: false` (and back, after removing the worktree the session is
+rooted in). Only a `shell::*` / `coder::*` target is heard: a filter, not
+authentication. The step's later calls and later turns
 run in the new root, and session metadata gets `fs_scope { root, moved_from }`.
 Under `workspace` an approved `git worktree add` moves the boundary too, for
 sub-agents as well. A send that names a root still wins, so a client must
