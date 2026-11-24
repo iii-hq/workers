@@ -114,6 +114,21 @@ def test_the_shared_model_case_table_runs_memory_consolidate(
     assert "memory-consolidate" not in payload["source_changed"]
 
 
+@pytest.mark.parametrize(
+    "path", ["iii-permissions.yaml", "approval-gate/Cargo.toml", "approval-gate/src/decision.rs"]
+)
+def test_the_root_policy_and_the_gate_matcher_run_fp(
+    path: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(discover, "changed_files", lambda base, head: [path])
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "fp" in payload["changed_workers"]
+    assert "fp" not in payload["source_changed"]
+
+
 def test_package_dependents_find_workers_whose_sub_projects_depend_on_the_package(tmp_path: Path) -> None:
     files = {
         "packages/native-ui/package.json": '{"name": "@iii-dev/native-ui"}',

@@ -133,6 +133,11 @@ CRATE_FIXTURE_PREFIXES = {
 SHARED_TEST_SUPPORT = {
     "judge-typesafe/tests/support/": ("judge", "judge-openai"),
     "memory/tests/fixtures/automatic-model-cases.json": ("memory-consolidate",),
+    # fp's policy drift test reads the root file with the approval gate's
+    # matcher, and fp/Cargo.lock locks the gate's dependencies.
+    "iii-permissions.yaml": ("fp",),
+    "approval-gate/Cargo.toml": ("fp",),
+    "approval-gate/src/": ("fp",),
 }
 
 # Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's

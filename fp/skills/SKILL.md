@@ -46,9 +46,11 @@ for small values).
   `secrets::list`/`get`/`status`/`detect`), model spend via
   `router::*`/`provider::*` (but `router::models::list`/`get`/`budget`/`supports`
   and `router::provider::list` are allowed), turn control via `harness::*`/`run::*`, bus
-  internals) — call those directly. So is `workflow::start`, which needs the
+  internals, event hooks (`*::on-*`), terminals and console UI, and every
+  other call the agent policy denies) — call those directly. So is `workflow::start`, which needs the
   caller stamp a direct call gets; `workflow::status`/`stop` are allowed. Session reads (`session::get-attachment`,
-  `session::messages-tail`, …) and `state::*` stay allowed on purpose.
+  `session::messages-tail`, …), `state::*` and the kanban planning writes
+  (not deletes) stay allowed on purpose.
 - While the approval gate runs, a step naming another namespace is refused;
   call it directly with `namespace`.
 - The first pipe step receives no threaded value — start with a producer
