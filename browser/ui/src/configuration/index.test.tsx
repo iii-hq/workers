@@ -4,8 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
   BrowserConfigEditor,
+  BrowserConfigForm,
   browserConfigurationValue,
-  focusBrowserNarrowPane,
   migrateBrowserConfiguration,
   numberFromInput,
 } from '.'
@@ -87,6 +87,30 @@ vi.mock('@iii-dev/console-ui', () => ({
   StatusPanel: () => null,
   ConfirmDialog: () => null,
   Switch: (props: ComponentProps<'input'>) => <input {...props} type="checkbox" />,
+  // Base UI tabs, flattened: the list and every trigger render, and each
+  // panel renders whatever the form put in it.
+  Tabs: ({ children, className }: { children?: ReactNode; className?: string }) => (
+    <div className={className}>{children}</div>
+  ),
+  TabsList: ({ children, ...props }: ComponentProps<'div'>) => (
+    <div role="tablist" {...props}>
+      {children}
+    </div>
+  ),
+  TabsTrigger: ({ children, icon: _icon, value, ...props }: ComponentProps<'button'> & { icon?: ReactNode }) => (
+    <button type="button" role="tab" data-value={value} {...props}>
+      {children}
+    </button>
+  ),
+  TabsContent: ({ children, value, className }: { children?: ReactNode; value: string; className?: string }) => (
+    <div role="tabpanel" data-value={value} className={className}>
+      {children}
+    </div>
+  ),
+}))
+
+vi.mock('@iii-dev/console-ui/hooks', () => ({
+  useContainerNarrow: () => ({ ref: () => {}, narrow: false }),
 }))
 
 const value = {
@@ -143,8 +167,6 @@ function renderSection(selection: Parameters<typeof BrowserConfigEditor>[0]['sel
       selection={selection}
       value={value}
       errors={new Map()}
-      narrow={false}
-      onBack={() => {}}
       onChange={() => {}}
     />,
   )
@@ -196,8 +218,6 @@ describe('BrowserConfigEditor schema parity', () => {
         selection="viewport"
         value={unset}
         errors={new Map()}
-        narrow={false}
-        onBack={() => {}}
         onChange={() => {}}
       />,
     )
@@ -283,8 +303,6 @@ describe('BrowserConfigEditor schema parity', () => {
           browser: { ...value, executable: '/legacy/chrome' },
         })}
         errors={new Map()}
-        narrow={false}
-        onBack={() => {}}
         onChange={() => {}}
       />,
     )
@@ -302,8 +320,6 @@ describe('BrowserConfigEditor schema parity', () => {
           headless: '${HEADLESS:false}',
         }}
         errors={new Map()}
-        narrow={false}
-        onBack={() => {}}
         onChange={() => {}}
       />,
     )
@@ -317,20 +333,16 @@ describe('BrowserConfigEditor schema parity', () => {
     expect(booleanLiteralForRawValue('${HEADLESS:false}', true)).toBe(false)
   })
 
-  it('transfers focus into the narrow editor and restores it to the selected navigation row', () => {
-    const editor = { focus: vi.fn(), scrollIntoView: vi.fn() }
-    const nav = { focus: vi.fn(), scrollIntoView: vi.fn() }
-    const root = {
-      querySelector: vi.fn((selector: string) => (selector === '.br-cfg-editor' ? editor : nav)),
-    }
-
-    expect(focusBrowserNarrowPane(root as unknown as HTMLElement, 'editor', 'access')).toBe(true)
-    expect(editor.focus).toHaveBeenCalledWith({ preventScroll: true })
-    expect(editor.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
-
-    expect(focusBrowserNarrowPane(root as unknown as HTMLElement, 'nav', 'access')).toBe(true)
-    expect(root.querySelector).toHaveBeenLastCalledWith('[data-config-section="access"]')
-    expect(nav.focus).toHaveBeenCalledWith({ preventScroll: true })
-    expect(nav.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+  it('lays the sections out as tabs, with only the selected one rendered', () => {
+    const html = renderToStaticMarkup(
+      <BrowserConfigForm id="browser" schema={{}} value={value} errors={new Map()} onChange={() => {}} />,
+    )
+    const tabs = [...html.matchAll(/role="tab"[^>]*>([^<]*)</g)].map((match) => match[1])
+    expect(tabs).toEqual(['Launch', 'Viewport', 'Capture limits', 'Behavior', 'Access policy', 'Scraping'])
+    expect(html).toContain('aria-label="Browser settings"')
+    expect(html.match(/role="tabpanel"/g)).toHaveLength(6)
+    expect(html).toContain('data-field="engine"')
+    expect(html).not.toContain('data-field="viewport_width"')
+    expect(html).toContain('title="headless · 4 live tabs"')
   })
 })

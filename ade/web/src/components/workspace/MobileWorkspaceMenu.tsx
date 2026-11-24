@@ -1,6 +1,7 @@
 import { Check, PanelsTopLeft, Plus, Search, Settings, X } from 'lucide-react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { SheetPage } from '@/components/ui/SheetNavigation'
+import { EngineIndicator } from '@/components/workspace/EngineIndicator'
 import type { UseWorkspaceTabsReturn } from '@/hooks/use-workspace-tabs'
 import { tabLimitReachedTitle } from '@/lib/tab-limit'
 import { cn } from '@/lib/utils'
@@ -43,6 +44,9 @@ export function MobileWorkspaceMenu({
           contentClassName="flex flex-col overflow-hidden"
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-3">
+            {/* The phone header has no room for the engine: it is named
+ here, where a phone goes looking for everything else. */}
+            <EngineIndicator variant="row" className="mb-2" />
             {/* The same search the header opens, repeated here because this
  sheet is where a phone goes looking for everything else. */}
             <button

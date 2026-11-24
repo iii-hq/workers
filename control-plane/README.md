@@ -7,10 +7,17 @@ kanban projects, cards, releases and questions, and pull requests from repositor
 declared on projects.
 
 The worker requires configuration, harness, session-manager, kanban, state and
-iii-directory. ADE hosts its page. The optional GitHub worker supplies pull
-requests for repositories set on a Kanban project's Overview.
+iii-directory. ADE hosts the page but is not required to start the backend.
+The optional GitHub worker supplies pull requests for repositories set on a
+Kanban project's Overview.
 
 ## Configuration
+
+The worker connects to `III_URL`, or `III_ENGINE_URL` if `III_URL` is unset.
+If neither is set, it uses the SDK default. For WebSocket URLs with the exact
+IPv4 wildcard host `0.0.0.0`, the worker connects to `127.0.0.1` instead,
+without changing the port, path or query. This does not change where the
+engine listens.
 
 The worker registers the id provided by Compose in `III_CONFIG_NAME`, with
 `control-plane` as the default. Open the gear in the Control plane page to set the

@@ -41,6 +41,7 @@ const schemaEntry = {
 const call = vi.fn()
 const client: Awaited<ReturnType<typeof getIiiClient>> = {
   browserId: 'configuration-reference-test',
+  connection: { wsUrl: 'ws://configuration-reference.test/ws' },
   call,
   trigger: call,
   on: () => () => {},

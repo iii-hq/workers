@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11
+
+- **The judge reads the goal as you wrote it.** To pick a run's project, the Workflow agent sends the goal to the `judge` worker. It used to send a short sentence of its own, and the judge was often not sure enough about it. A focused run whose goal no theme covers then went under the repository's project instead of a new theme project. The agent now sends the first 200 characters of the goal, word for word: never a summary or a translation. It leaves out the `args:` line and a sentence that only asks for a workflow run. This is what the README already said a hosted judge provider receives; a local judge, or `project=`, keeps it on the machine. For a goal that is a ticket, the agent sends the first 200 characters of the ticket's title and description, and the README now says so.
+
 ## 0.1.10
 
 - **Runs are filed under fewer projects.** A run on the board no longer creates a project of its own: it goes under an active project that fits its goal, and a project stands for a product or a theme. With the `judge` worker, the Workflow agent asks it once which project fits. A confident answer is used, a goal that fits none gets one new project named after its theme, and an unsure answer is one more question on a full run's interview card. Without the judge, or when its call fails, the run goes under the repository's project, named after the repository and created once. A repository's project is never one of the judge's choices, so a goal no theme covers gets a new theme project. With the judge installed and no theme project on the board yet, the run opens one without asking. `project=` still wins, a goal ticket keeps its project, and a resumed run keeps the run ticket's. A name that belongs to an archived project is not reused: the run goes without a project and the run ticket says how to fix it. Until now every run added a project named `workflow: <goal> · <session>`; those are never picked, so archive them.

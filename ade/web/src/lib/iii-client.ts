@@ -77,8 +77,23 @@ export interface CallOptions {
   namespace?: string
 }
 
+/**
+ * Where this page's client is connected: the WebSocket it opened (the ADE
+ * worker's `/ws` proxy, or a build-time override), the namespace it joined,
+ * and — when the ADE worker reports it on `/runtime` — the engine that
+ * proxy forwards to, credentials stripped. What the header's engine
+ * indicator shows.
+ */
+export interface EngineConnectionInfo {
+  wsUrl: string
+  namespace?: string
+  engineUrl?: string
+}
+
 export interface IiiClient {
   browserId: string
+  /** Where this client is connected; fixed for the client's life. */
+  connection: EngineConnectionInfo
   /**
    * Call an iii function and await its result. Thin wrapper over the SDK's
    * `call({ function_id, payload })`.
@@ -133,6 +148,8 @@ interface Deps {
 
 let _clientPromise: Promise<IiiClient> | null = null
 let _deps: Deps = defaultDeps()
+/** The engine URL the ADE worker reported on `/runtime`, if it did. */
+let _runtimeEngineUrl: string | undefined
 
 function defaultDeps(): Deps {
   return {
@@ -178,6 +195,7 @@ export function __setIiiClientDepsForTests(overrides: Partial<Deps>): void {
 export function __resetIiiClientForTests(): void {
   _deps = defaultDeps()
   _clientPromise = null
+  _runtimeEngineUrl = undefined
 }
 
 async function bootstrap(deps: Deps): Promise<IiiClient> {
@@ -188,10 +206,22 @@ async function bootstrap(deps: Deps): Promise<IiiClient> {
     wsUrl,
     namespace === undefined ? undefined : { namespace },
   )
-  return wrapSdk(sdk, browserId)
+  // `/runtime` names the engine behind the ADE's `/ws` proxy. A socket
+  // pointed elsewhere (`VITE_ENGINE_WS_URL`) is its own engine, so the
+  // proxy's upstream would name the wrong one.
+  const engineUrl = engineWsOverride() ? undefined : _runtimeEngineUrl
+  return wrapSdk(sdk, browserId, {
+    wsUrl,
+    ...(namespace === undefined ? {} : { namespace }),
+    ...(engineUrl === undefined ? {} : { engineUrl }),
+  })
 }
 
-export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
+export function wrapSdk(
+  sdk: ISdk,
+  browserId: string,
+  connection: EngineConnectionInfo = { wsUrl: '' },
+): IiiClient {
   // Track per-functionId unregister fns so dispose() can clean them all up
   // even if individual `on()` callers forgot.
   const handlerUnregisters = new Set<() => void>()
@@ -356,6 +386,7 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
 
   return {
     browserId,
+    connection,
     call,
     trigger: call,
     on,
@@ -374,11 +405,16 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
  *      to the engine.
  * Outside a browser (tests), default to `ws://127.0.0.1:49134`.
  */
-function resolveWsUrl(): string {
+function engineWsOverride(): string | undefined {
   const override = import.meta.env?.VITE_ENGINE_WS_URL as string | undefined
-  if (typeof override === 'string' && override.length > 0) {
-    return override
-  }
+  return typeof override === 'string' && override.length > 0
+    ? override
+    : undefined
+}
+
+function resolveWsUrl(): string {
+  const override = engineWsOverride()
+  if (override) return override
   if (typeof window !== 'undefined' && window.location) {
     const url = new URL('./ws', window.location.href)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -412,7 +448,16 @@ async function resolveNamespace(): Promise<string | undefined> {
       `Runtime namespace request failed with HTTP ${response.status}; refusing to connect to default`,
     )
   }
-  const value = (await response.json()) as { namespace?: unknown }
+  const value = (await response.json()) as {
+    namespace?: unknown
+    engine_url?: unknown
+  }
+  // Older ADE workers do not report the engine; the indicator then names
+  // the proxy it reached instead.
+  _runtimeEngineUrl =
+    typeof value.engine_url === 'string' && value.engine_url.length > 0
+      ? value.engine_url
+      : undefined
   if (value.namespace === null || value.namespace === undefined)
     return undefined
   if (typeof value.namespace === 'string' && value.namespace.length > 0) {
