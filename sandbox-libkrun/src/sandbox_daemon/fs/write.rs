@@ -624,9 +624,7 @@ mod tests {
             content: Some(WriteContent::Utf8("console.log('hi')\n".into())),
             content_b64: None,
         };
-        let resp = handle_write(req, &reg, &runner)
-            .await
-            .unwrap();
+        let resp = handle_write(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.bytes_written, "console.log('hi')\n".len() as u64);
         assert_eq!(*captured.lock().await, b"console.log('hi')\n");
     }
@@ -652,9 +650,7 @@ mod tests {
             content: None,
             content_b64: Some(b64),
         };
-        let resp = handle_write(req, &reg, &runner)
-            .await
-            .unwrap();
+        let resp = handle_write(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.bytes_written, payload.len() as u64);
         assert_eq!(&*captured.lock().await, payload);
     }
@@ -674,9 +670,7 @@ mod tests {
             content: None,
             content_b64: Some("not!valid!base64!".into()),
         };
-        let err = handle_write(req, &reg, &runner)
-            .await
-            .unwrap_err();
+        let err = handle_write(req, &reg, &runner).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("not valid base64"), "got: {err}");
     }
@@ -696,9 +690,7 @@ mod tests {
             content: Some(WriteContent::Utf8("a".into())),
             content_b64: Some("YQ==".into()),
         };
-        let err = handle_write(req, &reg, &runner)
-            .await
-            .unwrap_err();
+        let err = handle_write(req, &reg, &runner).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("not both"), "got: {err}");
     }
@@ -718,9 +710,7 @@ mod tests {
             content: None,
             content_b64: None,
         };
-        let err = handle_write(req, &reg, &runner)
-            .await
-            .unwrap_err();
+        let err = handle_write(req, &reg, &runner).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("missing file body"), "got: {err}");
     }

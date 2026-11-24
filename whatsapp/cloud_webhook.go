@@ -53,7 +53,7 @@ func registerCloudWebhooks(client *iii.Client, manager *Manager, engineURL strin
 		if err := json.Unmarshal(input.Raw, &req); err != nil {
 			return cloudHTTPText(400, "Invalid webhook request"), nil
 		}
-		return receiveCloudWebhook(ctx, manager, engineURL, req), nil
+		return receiveCloudWebhook(ctx, manager, client, req), nil
 	}, metadata); err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func observeHTTPRoute(client *iii.Client, method, path, function string) error {
 
 // readCloudChannel reads an HTTP request's original body up to limit bytes. A
 // non-zero status is 400 (no readable channel), 413 (too large) or 503 (read failed).
-func readCloudChannel(ctx context.Context, engineURL string, ref *iii.StreamChannelRef, limit int) ([]byte, int) {
+func readCloudChannel(ctx context.Context, client *iii.Client, ref *iii.StreamChannelRef, limit int) ([]byte, int) {
 	if ref == nil || ref.Direction != iii.ChannelRead || ref.ChannelID == "" || ref.AccessKey == "" {
 		return nil, 400
 	}
@@ -125,6 +125,10 @@ func readCloudChannel(ctx context.Context, engineURL string, ref *iii.StreamChan
 	var body iii.InputStream
 	if err := json.Unmarshal(data, &body); err != nil {
 		return nil, 400
+	}
+	// The client names the engine the stream dials.
+	if client != nil {
+		body.Bind(client)
 	}
 	raw := []byte{}
 	// Leaving the loop early (413) cancels the stream.
@@ -142,7 +146,7 @@ func readCloudChannel(ctx context.Context, engineURL string, ref *iii.StreamChan
 	}
 	return raw, 0
 }
-func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL string, req cloudReceiveRequest) cloudHTTPResponse {
+func receiveCloudWebhook(parent context.Context, manager *Manager, client *iii.Client, req cloudReceiveRequest) cloudHTTPResponse {
 	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
 	defer cancel()
 	select {
@@ -165,7 +169,7 @@ func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL str
 	if size, err := strconv.ParseInt(cloudHeader(req.Headers, "content-length"), 10, 64); err == nil && size > cloudWebhookMaxBody {
 		return cloudHTTPText(413, "Payload too large")
 	}
-	raw, status := readCloudChannel(ctx, engineURL, req.RequestBody, cloudWebhookMaxBody)
+	raw, status := readCloudChannel(ctx, client, req.RequestBody, cloudWebhookMaxBody)
 	if status != 0 {
 		return cloudHTTPText(status, map[int]string{400: "Original request body is required", 413: "Payload too large", 503: "Unable to read delivery; retry later"}[status])
 	}

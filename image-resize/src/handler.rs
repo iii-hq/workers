@@ -3,9 +3,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
+use iii_sdk::errors::Error;
 use iii_sdk::protocol::{ChannelItem, StreamChannelRef, extract_channel_refs};
 use iii_sdk::{InputStream, OutputStream};
-use iii_sdk::errors::Error;
 use serde::Deserialize;
 use serde_json::Value;
 

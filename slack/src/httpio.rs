@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use iii_sdk::protocol::{ChannelDirection, extract_channel_refs};
 use iii_sdk::{InputStream, OutputStream};
-use iii_sdk::errors::Error;
 use serde_json::{Value, json};
 
 pub struct Incoming {

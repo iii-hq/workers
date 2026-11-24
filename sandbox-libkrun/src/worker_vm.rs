@@ -2379,6 +2379,14 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Opens a forwarded write ref as the stream this adapter writes (0.27: a
+/// write ref deserializes to an `OutputStream`).
+fn open_writer(r: &iii_sdk::protocol::StreamChannelRef) -> Result<OutputStream, SandboxError> {
+    serde_json::to_value(r)
+        .and_then(serde_json::from_value)
+        .map_err(|e| SandboxError::InvalidRequest(format!("stream ref: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5048,12 +5056,4 @@ mod tests {
         assert!(vm_id("a").bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(vm_id("a"), vm_id("b"));
     }
-}
-
-/// Opens a forwarded write ref as the stream this adapter writes (0.27: a
-/// write ref deserializes to an `OutputStream`).
-fn open_writer(r: &iii_sdk::protocol::StreamChannelRef) -> Result<OutputStream, SandboxError> {
-    serde_json::to_value(r)
-        .and_then(serde_json::from_value)
-        .map_err(|e| SandboxError::InvalidRequest(format!("stream ref: {e}")))
 }

@@ -8,8 +8,8 @@
 use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -336,7 +336,7 @@ async fn read_cut_mid_stream_is_an_error_for_the_reader() {
         delivered.messages
     );
     let error = delivered.end.expect_err("a cut read must not end cleanly");
-    assert!(error.contains("1011"), "{error}");
+    assert!(error.contains("aborted"), "{error}");
 }
 
 /// The writer's first dial fails, so nothing was sent; reporting that dials
@@ -354,5 +354,5 @@ async fn failed_first_write_is_an_error_for_the_reader() {
     let error = delivered
         .end
         .expect_err("a lost file must not read as empty");
-    assert!(error.contains("1011"), "{error}");
+    assert!(error.contains("aborted"), "{error}");
 }

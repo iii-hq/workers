@@ -208,15 +208,7 @@ where
     // own and best-effort-stops the sandbox when a sub-step fails. So
     // handle_run just propagates the result verbatim — there's nothing
     // for an outer cleanup arm to do.
-    run_inner(
-        req,
-        create_resp,
-        registry,
-        runner,
-        fs_runner,
-        stopper,
-    )
-    .await
+    run_inner(req, create_resp, registry, runner, fs_runner, stopper).await
 }
 
 async fn run_inner<S: VmStopper>(
