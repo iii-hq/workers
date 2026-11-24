@@ -26,6 +26,11 @@ const object = (properties: Record<string, unknown>, required = Object.keys(prop
   properties,
   required,
 })
+/** Internal trigger handlers: an engine event in, nothing out. Typed, so the release interface check accepts them. */
+const eventHandler = {
+  request_format: { type: 'object' as const, description: 'The engine event payload.' },
+  response_format: object({}),
+}
 
 export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []) {
   const configurationId = process.env.III_CONFIG_NAME?.trim() || 'control-plane'
@@ -391,7 +396,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
       read.onSource(input)
       return {}
     },
-    { metadata: { internal: true } },
+    { ...eventHandler, metadata: { internal: true } },
   )
   iii.registerFunction(
     'control-plane::turn-started',
@@ -399,7 +404,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
       read.onSource(input, true)
       return {}
     },
-    { metadata: { internal: true } },
+    { ...eventHandler, metadata: { internal: true } },
   )
   iii.registerFunction(
     'control-plane::turn-completed',
@@ -408,7 +413,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
       await writer.onCompleted(input)
       return {}
     },
-    { metadata: { internal: true } },
+    { ...eventHandler, metadata: { internal: true } },
   )
   iii.registerFunction(
     'control-plane::configuration-id',
@@ -435,7 +440,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
         await emit(scope, new Date().toISOString(), ['summary', 'configuration'])
       return {}
     },
-    { metadata: { internal: true } },
+    { ...eventHandler, metadata: { internal: true } },
   )
   iii.registerFunction(
     'control-plane::availability-updated',
@@ -450,7 +455,7 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
       }
       return {}
     },
-    { metadata: { internal: true } },
+    { ...eventHandler, metadata: { internal: true } },
   )
   const sources = [
     ...['harness::on-ask', 'harness::on-ask-settled', 'kanban::on-change'].map(
