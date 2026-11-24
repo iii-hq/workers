@@ -633,6 +633,100 @@ async fn deletion_takes_the_side_chats_of_every_deleted_session_and_their_trees(
     );
 }
 
+/// P29: a side chat closed (`harness::side-chat::close`, which deletes it
+/// through delete-session-tree) and then its conversation deleted, back to
+/// back. The conversation's run that comes while the side chat's deletion
+/// still owns the side chat is a real overlap and is refused; once the side
+/// chat's deletion completed, the conversation's retry is accepted and
+/// completes. The refused attempt's candidate members (the side chat among
+/// them) must not outlive it as an overlap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_conversation_deleted_right_after_closing_its_side_chat_is_not_held_by_it() {
+    let stack = Stack::new("running").await;
+    stack.side_chat("side", "child2", "completed");
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("side")
+        .unwrap()["metadata"]["side_chat_fork_point"] =
+        json!({"entry_id": "e_1", "message_count": 0});
+    let closed = harness::side_chat::close(
+        &stack.deps,
+        harness::side_chat::SideChatRequest {
+            session_id: "side".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(closed.deleted);
+    let side = closed.operation_id.unwrap();
+    let conversation = stack.request("child2").await;
+    assert_eq!(conversation.status, DeletionStatus::Deleting);
+
+    // The side chat's deletion still owns it: overlapping, refused, nothing
+    // erased.
+    let refused = stack.run(&conversation.operation_id).await;
+    assert_eq!(refused.status, DeletionStatus::Failed, "{refused:?}");
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("overlapping deletion of side")),
+        "{refused:?}"
+    );
+    assert!(refused.deleted_session_ids.is_empty());
+    {
+        let mut store = stack.store.lock().unwrap();
+        assert!(store.sessions.contains_key("child2"));
+        // The refused attempt planned nothing and owns no members.
+        let stored = store.state("harness_deletion", &conversation.operation_id);
+        assert_eq!(stored["planned"], json!(false));
+        assert_eq!(stored["members"], json!([]), "{stored}");
+        // An operation a harness from before this fix refused still holds
+        // its candidates: they must not count on its retry either.
+        let mut legacy = stored;
+        legacy["members"] = json!(["child2", "grandchild1", "side"]);
+        store.put("harness_deletion", &conversation.operation_id, legacy);
+    }
+
+    let side = stack.run(&side).await;
+    assert_eq!(side.status, DeletionStatus::Completed, "{side:?}");
+    assert_eq!(side.deleted_session_ids, vec!["side"]);
+
+    // After it completed, the retry is accepted and completes.
+    let retried = stack.request("child2").await;
+    assert_eq!(retried.status, DeletionStatus::Deleting, "{retried:?}");
+    assert_eq!(retried.attempt, 2);
+    let done = stack.run(&retried.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store.sessions.keys().cloned().collect::<Vec<_>>(),
+        vec!["child1", "parent"]
+    );
+}
+
+/// P29, the order that always worked: the side chat's deletion reported
+/// completed, then the conversation's, at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_conversation_deleted_after_its_side_chats_deletion_completed_goes_through() {
+    let stack = Stack::new("running").await;
+    stack.side_chat("side", "child2", "completed");
+    let side = stack.request("side").await;
+    assert_eq!(
+        stack.run(&side.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let conversation = stack.request("child2").await;
+    assert_eq!(conversation.status, DeletionStatus::Deleting);
+    let done = stack.run(&conversation.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+}
+
 /// P14 (KAN-74): with approval-gate on the stack, deleting a tree finishes.
 /// approval-gate 1.1.7 reads `approval::on-session-deleted`'s request as the
 /// `Observed` envelope of `session::on-deleted`, and a gate from before

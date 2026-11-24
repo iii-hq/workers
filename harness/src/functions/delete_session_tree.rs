@@ -368,7 +368,10 @@ async fn release_unplanned_ancestors(deps: &Deps, op: &Operation) -> Result<(), 
 
 /// Bidirectional conflict check BEFORE a root tombstone. The lock order is
 /// operation -> topology; regular session work never acquires an operation lock.
-/// Planned members supplement the live tree on partial-delete recovery.
+/// Planned members supplement the live tree on partial-delete recovery. An
+/// attempt refused before it planned never owned its candidates (P29): they
+/// are left out, or a side chat's tombstone, kept once its own deletion
+/// completed, would refuse every retry of its conversation's deletion.
 async fn reserve_root(deps: &Deps, op: &Operation) -> Result<(), HarnessError> {
     release_unplanned_ancestors(deps, op).await?;
     let mut conflict = guard_owner_uncached(deps, &op.snapshot.session_id)
@@ -383,7 +386,7 @@ async fn reserve_root(deps: &Deps, op: &Operation) -> Result<(), HarnessError> {
             .sessions
             .into_iter()
             .map(|node| node.session_id)
-            .chain(op.members.iter().cloned())
+            .chain(op.members.iter().filter(|_| op.planned).cloned())
             .collect();
         let timeout = deps.cfg().await.session_timeout_ms;
         for id in ids {
@@ -496,8 +499,10 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
             return Err(failure("incomplete durable session tree"));
         }
         let members = tree.sessions.into_iter().map(|n| n.session_id).collect();
-        // A conversation's side chats go with it (chat-projects §2.2).
-        op.members = with_side_chats(deps, members).await?;
+        // A conversation's side chats go with it (chat-projects §2.2). They
+        // become the operation's members only once validated below: a
+        // refused attempt records no members it does not own (P29).
+        let members = with_side_chats(deps, members).await?;
         op.parent = metadata
             .as_ref()
             .and_then(|m| m.get("parent_session_id"))
@@ -513,12 +518,13 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
             .unwrap_or_else(|| op.snapshot.session_id.clone());
         // Validate the whole set before claiming descendants: overlapping
         // operations fail observably rather than erase or notify twice.
-        for id in &op.members {
+        for id in &members {
             let guard = state::state_get(&deps.iii, GUARDS, id, timeout).await?;
             if !guard.is_null() && guard.as_str() != Some(&op.snapshot.operation_id) {
                 return Err(failure(format!("overlapping deletion of {id}: {guard}")));
             }
         }
+        op.members = members;
         op.planned = true;
         save(deps, op).await?;
     }
