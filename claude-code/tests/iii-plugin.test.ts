@@ -74,6 +74,11 @@ describe('worker plugin files', () => {
     expect(own.PreToolUse.slice(1)).toEqual(shipped.PreToolUse);
   });
 
+  it('report StopFailure, which fires instead of Stop on an API error', () => {
+    const hooks = JSON.parse(file('http://x/mcp', 'hooks/hooks.json') || '{}').hooks;
+    expect(hooks.StopFailure[0].hooks[0].command).toContain('claude::terminal::activity');
+  });
+
   it('point the session at the mcp-server the worker found', () => {
     expect(JSON.parse(file('http://127.0.0.1:3211/mcp', '.mcp.json') || '{}')).toEqual({
       mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3211/mcp' } },

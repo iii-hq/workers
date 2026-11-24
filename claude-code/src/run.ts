@@ -34,6 +34,7 @@ import {
 } from './session-link.js';
 import { ChildTranscript, type TurnSink } from './session-writer.js';
 import { runTurnSpan } from './trace.js';
+import { markHeadless, recordTurn, type TurnSettle } from './turns.js';
 import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
 
 const ContentBlockSchema = z.object({ type: z.string() }).passthrough();
@@ -52,6 +53,14 @@ const RunPayloadSchema = z.object({
     .optional()
     .describe(
       'The session delegating this run. Written to the child session metadata, which is what nests it under its parent in the console — the same link a harness sub-agent carries.',
+    ),
+  turn_id: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe(
+      'Names this turn; echoed in its claude_turns settle so an observer registered before the call can filter on it. Minted when omitted.',
     ),
   prompt: z.string().optional().describe('The user prompt for this turn'),
   messages: z
@@ -117,7 +126,7 @@ const SessionIdSchema = z.object({
 // The registry's publish validator has no `$schema` meta-schema registered, so
 // the draft-2020-12 `$schema` key z.toJSONSchema stamps at the root fails
 // publish. Strip it; the schema body is what the engine + registry consume.
-function jsonSchema(schema: z.ZodType): Record<string, unknown> {
+export function jsonSchema(schema: z.ZodType): Record<string, unknown> {
   const out = z.toJSONSchema(schema) as Record<string, unknown>;
   delete out.$schema;
   return out;
@@ -143,10 +152,13 @@ const SessionRecordSchema = z.object({
   total_cost_usd: z.number(),
   usage: UsageSchema.nullable(),
   updated_at_ms: z.number(),
+  turn_id: z.string().optional(),
+  stop_reason: z.string().optional(),
 });
 const RUN_RESPONSE_FORMAT = jsonSchema(
   z.object({
     session_id: z.string(),
+    turn_id: z.string().optional(),
     claude_session_id: z.string().nullable().optional(),
     result: z.string().optional(),
     stop_reason: z.string().optional(),
@@ -161,8 +173,10 @@ const RUN_RESPONSE_FORMAT = jsonSchema(
 const START_RESPONSE_FORMAT = jsonSchema(
   z.object({
     session_id: z.string(),
+    turn_id: z.string().optional(),
     started: z.boolean(),
-    // A follow-up while the previous run is still saving: not started.
+    // A follow-up while the previous run is still saving, or while another
+    // process has the conversation open: not started.
     busy: z.boolean().optional(),
     reason: z.string().optional(),
   }),
@@ -191,6 +205,11 @@ let trackingSinceBoot = true;
 /** Whether this worker has run (or is running) a turn in `sessionId` since it started. */
 export function ranSinceStart(sessionId: string): boolean {
   return live.has(sessionId) || ranSinceBoot.has(sessionId);
+}
+
+/** Whether a run holds `sessionId`'s slot right now. */
+export function isLive(sessionId: string): boolean {
+  return live.has(sessionId);
 }
 
 /** The startup scan is over: stop remembering. */
@@ -259,8 +278,11 @@ export async function executeRun(
   emit: Emit,
   emitRaw: Emit,
   payload: RunPayload,
+  /** Why this turn may not resume its conversation; never rejects. */
+  refusal?: Promise<string | undefined>,
 ): Promise<Record<string, unknown>> {
   const session_id = payload.session_id ?? randomUUID();
+  const turn_id = payload.turn_id ?? randomUUID();
   const prompt = extractPrompt(payload);
   // One live run per session. Reserve the slot atomically: the has-check and
   // the set happen with NO await between them, so two concurrent same-session
@@ -276,8 +298,18 @@ export async function executeRun(
     },
   };
   live.set(session_id, handle);
+  // With the slot held: a stop meanwhile is honored, and a terminal opening
+  // the session meanwhile sees it live.
+  const refused = await refusal;
+  if (refused) {
+    live.delete(session_id);
+    return { session_id, busy: true, reason: refused };
+  }
   if (trackingSinceBoot) ranSinceBoot.add(session_id);
 
+  let settle: Omit<TurnSettle, 'id' | 'source' | 'turn_id' | 'settled_at_ms'> = {
+    status: 'error',
+  };
   try {
     // A run that names a parent is a sub-agent: give it a linked session first,
     // because `parent_session_id` only applies on creation, and that link is
@@ -336,11 +368,22 @@ export async function executeRun(
       'claude::run turn',
       {
         sessionId: session_id,
-        turnId: randomUUID(),
+        turnId: turn_id,
         kind: 'claude.run',
         message: prompt,
       },
-      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle, writer),
+      () =>
+        runReserved(
+          iii,
+          cfg,
+          emit,
+          emitRaw,
+          { ...payload, turn_id },
+          session_id,
+          prompt,
+          handle,
+          writer,
+        ),
     ).catch(async (err) => {
       writer?.note('error', String(err));
       await finish('error', String(err));
@@ -358,9 +401,31 @@ export async function executeRun(
       result.is_error === true ? 'error' : 'done',
       result.is_error === true ? said : stop === 'interrupted' ? 'stopped' : undefined,
     );
-    return result;
+    const stopped = stop === 'interrupted';
+    settle = {
+      status: stopped ? 'stopped' : result.is_error === true ? 'error' : 'completed',
+      stop_reason: stop,
+      ...(typeof result.claude_session_id === 'string'
+        ? { claude_session_id: result.claude_session_id }
+        : {}),
+      ...(typeof result.result === 'string' ? { result: result.result } : {}),
+      ...(!stopped && result.is_error === true ? { error: said } : {}),
+    };
+    return { ...result, turn_id };
+  } catch (err) {
+    settle = { status: 'error', error: String(err) };
+    throw err;
   } finally {
     if (live.get(session_id) === handle) live.delete(session_id);
+    // Last, after the final status and the slot: an observer woken by it can
+    // start the next turn on this session at once.
+    await recordTurn(iii, {
+      id: session_id,
+      source: 'run',
+      turn_id,
+      ...settle,
+      settled_at_ms: Date.now(),
+    });
   }
 }
 
@@ -479,6 +544,7 @@ async function runReserved(
     // persist `working` only once the query + live handle exist, so a throw
     // during setup never leaves the record stuck in `working`
     record.status = 'working';
+    record.turn_id = payload.turn_id;
     record.updated_at_ms = Date.now();
     await saveSession(iii, record);
 
@@ -504,6 +570,7 @@ async function runReserved(
         if (msg.type === 'result') stoppedAtOutcome = handle.stopped === true;
         await rawFeed(session_id, msg);
         if (msg.type === 'system' && msg.subtype === 'init') {
+          markHeadless(msg.session_id);
           record.claude_session_id = msg.session_id;
           await saveSession(iii, record);
         } else if (msg.type === 'assistant') {
@@ -586,6 +653,7 @@ async function runReserved(
     // slot release is handled by executeRun's finally (covers setup throws too)
 
     record.status = isError ? 'error' : 'done';
+    record.stop_reason = stopReason;
     record.updated_at_ms = Date.now();
     await saveSession(iii, record);
 
@@ -621,14 +689,38 @@ async function runReserved(
   }
 }
 
-export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {
+export function register(
+  iii: IIIClient,
+  getCfg: () => Config,
+  emit: Emit,
+  emitRaw: Emit,
+  heldElsewhere: (claudeSessionId: string) => Promise<boolean> = async () => false,
+): void {
+  // A turn resumes its conversation beside any process that has it open, and
+  // both would write one transcript. `live` only knows the runs of this worker.
+  const refuse = async (session_id: string | undefined, options: RunPayload['options']) => {
+    if (!session_id || options?.resume || options?.forkSession) return undefined;
+    try {
+      const record = await loadSession(iii, session_id);
+      if (record?.claude_session_id && (await heldElsewhere(record.claude_session_id))) {
+        return 'the conversation is open in another process, such as a terminal; exit Claude there, or pass options.forkSession: true to continue in a copy';
+      }
+    } catch (err) {
+      console.warn(`claude-code: could not check who has ${session_id} open: ${String(err)}`);
+    }
+    return undefined;
+  };
+
   iii.registerFunction(
     'claude::run',
-    async (payload: unknown) =>
-      executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
+    async (payload: unknown) => {
+      const parsed = RunPayloadSchema.parse(payload ?? {});
+      const refusal = refuse(parsed.session_id, parsed.options);
+      return executeRun(iii, getCfg(), emit, emitRaw, parsed, refusal);
+    },
     {
       description:
-        'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; publishes raw Claude Code messages on claude::on-raw-event and AgentEvent frames on claude::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; publishes raw Claude Code messages on claude::on-raw-event and AgentEvent frames on claude::on-agent-event (observe with args { session_id }), writes the turn settle to state scope `claude_turns` (key: session_id), and returns {session_id, turn_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: RUN_RESPONSE_FORMAT,
     },
@@ -639,6 +731,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     async (payload: unknown) => {
       const parsed = RunPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
+      const turn_id = parsed.turn_id ?? randomUUID();
       // Refuse here, not in the background: a busy result from executeRun
       // would be discarded and the caller told `started: true` for a prompt
       // that never runs (a follow-up sent on `agent_end` lands in the window
@@ -651,19 +744,21 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
           reason: 'a run is already active for this session',
         };
       }
-      void executeRun(iii, getCfg(), emit, emitRaw, { ...parsed, session_id }).catch(
-        async (err) => {
-          console.error(`claude::start background run failed for ${session_id}: ${String(err)}`);
-          // never leave the record stuck in `working`: a failure inside the
-          // turn's own terminal save lands here, so mark it error best-effort
-          await markSessionError(iii, session_id);
-        },
-      );
-      return { session_id, started: true };
+      const refusal = refuse(parsed.session_id, parsed.options);
+      const run: RunPayload = { ...parsed, session_id, turn_id };
+      void executeRun(iii, getCfg(), emit, emitRaw, run, refusal).catch(async (err) => {
+        console.error(`claude::start background run failed for ${session_id}: ${String(err)}`);
+        // never leave the record stuck in `working`: a failure inside the
+        // turn's own terminal save lands here, so mark it error best-effort
+        await markSessionError(iii, session_id);
+      });
+      const reason = await refusal;
+      if (reason) return { session_id, started: false, busy: true, reason };
+      return { session_id, turn_id, started: true };
     },
     {
       description:
-        'Start a Claude Code turn and return immediately; observe claude::on-agent-event with args { session_id } for progress and turn_end.',
+        'Start a Claude Code turn and return immediately with {session_id, turn_id}; observe claude::on-agent-event with args { session_id } for progress and turn_end. The settle lands in state scope `claude_turns` (key: session_id): observe state::on-changed filtered on input.scope, input.key and input.new_value.turn_id BEFORE calling, passing your own turn_id, to be woken when it ends.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
@@ -679,6 +774,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     async (payload: unknown) => {
       const parsed = TaskPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
+      const turn_id = parsed.turn_id ?? randomUUID();
       if (live.has(session_id)) {
         return {
           session_id,
@@ -690,6 +786,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       const run: RunPayload = {
         ...parsed,
         session_id,
+        turn_id,
         prompt: parsed.task,
       };
       // Fire-and-forget, and REACTIVE: the caller is not held open for the
@@ -698,8 +795,11 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // orchestrator observes (`state::on-changed`) and gets woken by — the same
       // shape a harness sub-agent uses, with no polling and no blocking call.
       // The transcript itself is persisted by executeRun, like any linked run.
-      void executeRun(iii, getCfg(), emit, emitRaw, run)
+      const refusal = refuse(parsed.session_id, parsed.options);
+      void executeRun(iii, getCfg(), emit, emitRaw, run, refusal)
         .then(async (result) => {
+          // Refused, as answered below: no task ran, so there is no outcome.
+          if (result.busy === true) return;
           // An SDK error result resolves normally: the outcome follows it,
           // since the orchestrator reads this record as the task's outcome.
           const text = typeof result.result === 'string' ? result.result : undefined;
@@ -729,11 +829,13 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
             updated_at_ms: Date.now(),
           });
         });
-      return { session_id, started: true };
+      const reason = await refusal;
+      if (reason) return { session_id, started: false, busy: true, reason };
+      return { session_id, turn_id, started: true };
     },
     {
       description:
-        'Delegate one task to Claude Code and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so observe state::on-changed with filters on input.scope and input.key BEFORE calling and be woken by it; progress arrives on claude::on-agent-event (observe with args { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
+        'Delegate one task to Claude Code and return its session id and turn id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so observe state::on-changed with filters on input.scope and input.key BEFORE calling and be woken by it; progress arrives on claude::on-agent-event (observe with args { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
       request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },

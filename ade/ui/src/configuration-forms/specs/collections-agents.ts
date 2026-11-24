@@ -108,6 +108,11 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
           text('events_stream', 'Events stream'),
           text('raw_events_stream', 'Raw events stream'),
           toggle('iii_context', 'Prepend iii context', undefined, { defaultValue: true }),
+          toggle(
+            'external_sessions',
+            'External sessions',
+            'List every Claude Code session on the terminal host, not only this worker’s, and let background ones there be opened and stopped.',
+          ),
         ],
       },
       {
@@ -136,6 +141,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'raw_events_stream',
       'iii_context',
       'claude_executable',
+      'external_sessions',
       'terminal.executable',
       'terminal.args[]',
       'terminal.workspace_dir',
