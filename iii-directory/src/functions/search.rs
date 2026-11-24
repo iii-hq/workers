@@ -16,8 +16,7 @@ use crate::functions::registry::{
     self, RegistryCache, Worker, WorkerInfoInput, WorkerInfoOutput, WorkerListInput,
 };
 use crate::functions::search_index::{
-    Bm25Index, ToolSchema, canonical_tools, compact_query, excluded_from_search, searchable_text,
-    tool_fingerprint,
+    Bm25Index, ToolSchema, canonical_tools, compact_query, excluded_from_search, tool_fingerprint,
 };
 use crate::functions::search_judge::{
     JUDGE_SHORTLIST, JudgeCorpus, JudgeFailure, JudgeOptions, JudgeOutcome, JudgeSearch,
@@ -2411,10 +2410,27 @@ fn pool_info_entries(
 
 /// Build the catalog from pooled entries: one row per distinct copy of an
 /// id, ids in first-listed order and the rows of one id adjacent, in sorted
-/// namespace order. Copies a search cannot tell apart (equal
-/// `searchable_text`) share one row naming all their namespaces.
+/// namespace order. Copies a search cannot tell apart (equal first
+/// description sentence and parameter names) share one row naming all their
+/// namespaces.
 /// Resilient by design: an errored, missing, or malformed entry only drops
 /// THAT copy — the surviving contracts still make a working catalog.
+/// What a search reads of a copy of one id: its first description sentence
+/// and its parameter names, sorted.
+fn copy_key(tool: &ToolSchema) -> (String, Vec<&str>) {
+    let mut names: Vec<&str> = tool
+        .parameters
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    names.sort_unstable();
+    (
+        crate::functions::search_index::slim_description(&tool.description),
+        names,
+    )
+}
+
 fn catalog_from_entries(
     listed: &[(String, String)],
     entries: &HashMap<(String, String), Value>,
@@ -2473,11 +2489,10 @@ fn catalog_from_entries(
                     .unwrap_or_else(|| json!({ "type": "object" })),
                 namespaces: vec![namespace.to_string()],
             };
-            let text = searchable_text(&tool);
-            match catalog[first..]
-                .iter_mut()
-                .find(|row| searchable_text(row) == text)
-            {
+            // Field by field, not the joined `searchable_text`: "Send email"
+            // with no parameters must not pass for "Send" with `email`.
+            let key = copy_key(&tool);
+            match catalog[first..].iter_mut().find(|row| copy_key(row) == key) {
                 Some(row) => row.namespaces.push(namespace.to_string()),
                 None => catalog.push(tool),
             }
@@ -4760,6 +4775,40 @@ mod tests {
             tool_fingerprint(&catalog),
             tool_fingerprint(&catalog_with("run on the laptop"))
         );
+    }
+
+    /// Copies are compared field by field: "Send email" with no parameters
+    /// and "Send" with an `email` parameter read the same as joined text, but
+    /// are two copies, so `alpha`'s never stands in for `default`'s.
+    #[test]
+    fn copies_whose_joined_text_collides_keep_a_row_each() {
+        let listed = listed_functions(&json!({ "functions": [
+            { "function_id": "ops::run", "namespace": "alpha" },
+            { "function_id": "ops::run", "namespace": "default" },
+        ]}))
+        .unwrap();
+        let mut entries = HashMap::new();
+        pool_info_entries(
+            "alpha",
+            &json!({ "functions": [{ "function_id": "ops::run", "description": "Send email" }]}),
+            &mut entries,
+        );
+        pool_info_entries(
+            "default",
+            &json!({ "functions": [{
+                "function_id": "ops::run",
+                "description": "Send",
+                "parameters": { "type": "object", "properties": { "email": { "type": "string" } } },
+            }]}),
+            &mut entries,
+        );
+        let catalog = Arc::new(catalog_from_entries(&listed, &entries));
+        assert_eq!(catalog.len(), 2, "{catalog:?}");
+        let picked = search_copies(&catalog, Some("default"), "default");
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].description, "Send");
+        // The selected row still lists every namespace that holds the id.
+        assert_eq!(picked[0].namespaces, ["alpha", "default"]);
     }
 
     #[test]
