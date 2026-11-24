@@ -106,7 +106,8 @@ pub struct ObserverHandles {
 }
 
 /// Observe the always-on harness functions (turn-completed → wake, pre-call
-/// hook → stamp-reply, post-turn hook → validate-result). One shot: an
+/// hook → stamp-reply, post-turn hook → validate-result, pre-generate hook →
+/// inject-result-contract). One shot: an
 /// observer of a function the harness has not registered yet stays `pending`
 /// and becomes active when the harness registers it, and again across harness
 /// restarts. Nothing to watch
@@ -116,10 +117,12 @@ pub struct ObserverHandles {
 pub fn setup_harness_hooks(iii: &IIIClient) -> ObserverHandle {
     observe_turn_completed(iii);
     observe_post_turn_hook(iii);
+    observe_result_contract_hook(iii);
     let stamp = observe_pre_call_hook(iii);
     tracing::info!(
         "workflow harness observers created: on-turn-completed → wake, hook::on-pre-call → \
-         stamp-reply, hook::on-post-turn → validate-result"
+         stamp-reply, hook::on-post-turn → validate-result, hook::on-pre-generate → \
+         inject-result-contract"
     );
     stamp
 }
@@ -143,6 +146,30 @@ fn observe_post_turn_hook(iii: &IIIClient) -> ObserverHandle {
     iii.observe(
         Source::function(POST_TURN_HOOK_FN).args(post_turn_hook_args()),
         crate::functions::validate_result::VALIDATE_RESULT_ID,
+    )
+}
+
+/// The args of the `workflow::inject-result-contract` observer of the
+/// pre-generate hook: node sessions only, and only the prompt as input (the
+/// whole input carries every message and tool schema). `on_error: fail_open`
+/// (pre_generate defaults to fail-closed): a missing contract must never abort
+/// a node's generation; `workflow::validate-result` still holds the settling
+/// turn and repeats the schema on a deny.
+pub fn result_contract_hook_args() -> Value {
+    json!({
+        "sessions": [format!("{}*", crate::functions::wake::SESSION_PREFIX)],
+        "on_error": "fail_open",
+        "timeout_ms": 5000,
+        "input": ["generate.system_prompt"],
+    })
+}
+
+/// Observe `harness::hook::on-pre-generate` with `workflow::inject-result-contract`:
+/// a JSON node's result contract joins its system prompt on every generation.
+fn observe_result_contract_hook(iii: &IIIClient) -> ObserverHandle {
+    iii.observe(
+        Source::function(PRE_GENERATE_HOOK_FN).args(result_contract_hook_args()),
+        crate::functions::inject_result_contract::RESULT_CONTRACT_ID,
     )
 }
 
@@ -373,6 +400,19 @@ mod tests {
         assert_eq!(
             turn_completed_filters(),
             json!({ "input.session_id": { "$prefix": "wf_" } })
+        );
+    }
+
+    #[test]
+    fn result_contract_observer_selects_node_sessions_and_reads_only_the_prompt() {
+        assert_eq!(
+            result_contract_hook_args(),
+            json!({
+                "sessions": ["wf_*"],
+                "on_error": "fail_open",
+                "timeout_ms": 5000,
+                "input": ["generate.system_prompt"]
+            })
         );
     }
 

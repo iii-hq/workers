@@ -235,34 +235,30 @@ fn node_title(node_uid: &str, node: &NodeDef) -> String {
     format!("{node_uid} · {agent}")
 }
 
-/// The output instruction a JSON node's opening ends with. The node runs under
-/// the harness's text contract, so the model gets no `submit_result` tool; the
-/// `workflow::validate-result` post-turn hook holds the turn that settles the
-/// node to this. Pure.
-fn json_output_instruction(node: &NodeDef) -> Option<String> {
-    let output = node.agent.json_output()?;
-    let schema = match crate::reconcile::output_schema(output) {
-        Some(schema) => format!(
-            "\nThe value must match this JSON Schema:\n{}",
-            serde_json::to_string(schema).unwrap_or_default()
-        ),
-        None => String::new(),
-    };
-    Some(format!(
-        "Result: deliver it by calling workflow-result::submit once with {{\"result\": <your \
-         result as a JSON value>}}. An error names what to fix: call it again. Once it is \
-         accepted, end the turn with one short line, not the JSON: the node is then finished; \
-         if a wake is still armed, this session and its background jobs are stopped, so \
-         submit last. A turn that ends before the result is submitted, waiting on a wake you armed \
-         with harness::observe, may end with a status line instead.{schema}"
-    ))
+/// A node's opening message: its task, then its input fenced as data. It never
+/// carries the result contract of a JSON node: that is in the system prompt
+/// (`inject_result_contract`). Pure.
+fn node_opening(node: &NodeDef, input: &Value) -> String {
+    // The operator template is trusted prose; the input is UNTRUSTED (caller
+    // run_input or verbatim upstream LLM output), so `build_opening` fences it.
+    let from_dep = node
+        .input
+        .from
+        .sources()
+        .iter()
+        .any(|s| s.starts_with("node:"));
+    build_opening(
+        node.input.template.as_deref(),
+        &serde_json::to_string(input).unwrap_or_default(),
+        from_dep,
+    )
 }
 
 /// The `harness::send` payload for a node's opening turn. `model`/`provider` are
 /// top level, not in `options`; `model` is left out when empty so the profile's
 /// pin applies. A JSON node is sent without its output contract (the harness
 /// would attach `submit_result` for a model without native structured output);
-/// its opening carries [`json_output_instruction`] instead. Pure.
+/// its system prompt carries the result contract instead (`inject_result_contract`). Pure.
 fn node_send_payload(
     node: &NodeDef,
     def: &WorkflowDef,
@@ -485,23 +481,7 @@ pub(crate) async fn fire_node(
     // BEFORE the .await so we don't hold a borrow across the await point.
     let input_val = node_input(def, record, node, node_uid, results);
 
-    // Build the opening message text (owned String). The operator template is
-    // trusted instruction prose; the input value is UNTRUSTED (caller run_input or
-    // verbatim upstream LLM output), so `build_opening` fences it as data.
-    let from_dep = node
-        .input
-        .from
-        .sources()
-        .iter()
-        .any(|s| s.starts_with("node:"));
-    let mut opening = build_opening(
-        node.input.template.as_deref(),
-        &serde_json::to_string(&input_val).unwrap_or_default(),
-        from_dep,
-    );
-    if let Some(instruction) = json_output_instruction(node) {
-        opening = format!("{opening}\n\n{instruction}");
-    }
+    let opening = node_opening(node, &input_val);
 
     let send_payload = node_send_payload(node, def, record, node_uid, &sid, opening);
     if let Some(cp) = record.nodes.get_mut(node_uid) {
@@ -1652,7 +1632,7 @@ mod tests {
     }
 
     #[test]
-    fn json_node_is_sent_with_a_text_contract_and_an_answer_instruction() {
+    fn json_node_is_sent_with_a_text_contract() {
         let schema = json!({"type": "object", "required": ["verdict"]});
         let mut node = node_with(None);
         node.agent.output = Some(json!({"type": "json", "schema": schema}));
@@ -1666,22 +1646,8 @@ mod tests {
         );
         // No JSON contract reaches the harness, so it attaches no submit_result tool.
         assert!(payload["options"]["output"].is_null(), "{payload}");
-        let instruction = json_output_instruction(&node).expect("a JSON node gets one");
-        assert!(
-            instruction.contains(r#"{"required":["verdict"],"type":"object"}"#),
-            "{instruction}"
-        );
-        assert!(instruction.contains("harness::observe"), "{instruction}");
 
-        // Without a schema the instruction asks for any JSON value.
-        node.agent.output = Some(json!({"type": "json"}));
-        let instruction = json_output_instruction(&node).expect("a JSON node gets one");
-        assert!(
-            instruction.contains("workflow-result::submit") && !instruction.contains("JSON Schema"),
-            "{instruction}"
-        );
-
-        // A text node keeps its contract and gets no instruction.
+        // A text node keeps its contract.
         node.agent.output = Some(json!({"type": "text"}));
         let payload = node_send_payload(
             &node,
@@ -1692,7 +1658,21 @@ mod tests {
             "go".into(),
         );
         assert_eq!(payload["options"]["output"], json!({"type": "text"}));
-        assert!(json_output_instruction(&node).is_none());
+    }
+
+    #[test]
+    fn a_json_nodes_opening_is_its_task_and_input_only() {
+        let mut node = node_with(None);
+        node.agent.output = Some(json!({"type": "json", "schema": {"type": "object"}}));
+        node.input.template = Some("Do the task.".into());
+        assert_eq!(node_opening(&node, &Value::Null), "Do the task.");
+
+        let opening = node_opening(&node, &json!({"a": 1}));
+        assert!(opening.ends_with("</workflow_input>"), "{opening}");
+        assert!(
+            !opening.contains("workflow-result::submit") && !opening.contains("JSON Schema"),
+            "{opening}"
+        );
     }
 
     #[test]

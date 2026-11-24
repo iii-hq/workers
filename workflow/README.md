@@ -7,7 +7,8 @@ ids so duplicate deliveries are idempotent.
 
 The always-on harness observers (`harness::on-turn-completed` → wake,
 `harness::hook::on-pre-call` → stamp-reply, `harness::hook::on-post-turn` →
-validate-result) are created once at startup. An
+validate-result, `harness::hook::on-pre-generate` → inject-result-contract)
+are created once at startup. An
 observer created before the harness is up stays `pending` and becomes active
 when the harness registers its function, and again after a harness restart.
 `workflow::start` is registered at boot, but answers "not ready, retry" until
@@ -197,9 +198,12 @@ Three `critic` copies start when `draft` is done; `final` receives
 ### JSON nodes
 
 A JSON node (one with `schema`) runs under the harness's text contract, so its
-session has no `submit_result` tool. Its opening message ends with the schema
-and asks the node to deliver its result by calling `workflow-result::submit`
-with `{"result": <value>}`; the value is checked against the schema, and an
+session has no `submit_result` tool. Its system prompt carries the result
+contract: the schema, and the instruction to deliver the result by calling
+`workflow-result::submit` with `{"result": <value>}`.
+`workflow::inject-result-contract`, a pre-generate hook on node sessions,
+appends it on every generation of the node's live attempt, so the opening
+message is only the task and its input; the value is checked against the schema, and an
 invalid one is refused with the cause so the node calls again.
 `workflow::validate-result` observes the harness's post-turn hook for node
 sessions: a turn that submitted passes, and so does a final message that is
@@ -520,6 +524,7 @@ to wait for one run, use args, never filters.
 | `harness::on-turn-completed` | filters `{ "input.session_id": { "$prefix": "wf_" } }` | `workflow::wake` | `TurnCompletedEvent` of a node session (`capture: [output]`, read as `payload.output`) |
 | `harness::hook::on-pre-call` | args `{ functions: ["workflow::start", "workflow::list", "workflow-result::submit"], on_error: "fail_closed", timeout_ms: 30000 }` | `workflow::stamp-reply` | the pre-call hook input; returns the hook decision, with the caller's session stamped as `caller_session_id` and, on `workflow::start` without a `title`, the call's `description` as `title`. A hook error or timeout refuses the agent's call |
 | `harness::hook::on-post-turn` | args `{ sessions: ["wf_*"], on_error: "fail_open", timeout_ms: 30000, retry_prompt: <answer-format nudge> }` | `workflow::validate-result` | the post-turn hook input; returns `deny` with a reason for a JSON node's answer that is not a JSON value matching its schema, unless a wake is armed. An error or timeout passes the turn, and reconcile still checks the result |
+| `harness::hook::on-pre-generate` | args `{ sessions: ["wf_*"], on_error: "fail_open", timeout_ms: 5000, input: ["generate.system_prompt"] }` | `workflow::inject-result-contract` | the envelope and the system prompt; returns the prompt with the JSON node's result contract appended, or no mutation for a text node, a finished or stale attempt and any failed read. An error or timeout leaves the prompt as it is |
 | `harness::hook::on-pre-generate` | args `{ on_error: "fail_open", inject_prompt: <workflow guidance> }`, only while `inject_guidance` is on | `workflow::inject-guidance` | not called: the harness joins `inject_prompt` into the system prompt |
 | `configuration::on-updated` | filters on `input.id` and `input.event_type` (through `iii-config-client`) | `workflow::on-config-change` | the configuration event (`capture: [output]`, read as `payload.output`) |
 

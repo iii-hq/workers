@@ -1,8 +1,8 @@
 //! `workflow::validate-result` — the post_turn hook that holds a JSON node to
 //! delivering its result, without the harness's `submit_result` tool.
 //!
-//! A JSON node is sent with a text contract and an opening that asks it to
-//! deliver the value with `workflow-result::submit` (`tick::json_output_instruction`,
+//! A JSON node is sent with a text contract, and its system prompt asks it to
+//! deliver the value with `workflow-result::submit` (`inject_result_contract`,
 //! `submit`). This hook observes `harness::hook::on-post-turn` for node sessions
 //! (`configuration::observe_post_turn_hook`): a turn whose attempt submitted
 //! passes; otherwise a final message that is itself a valid JSON value passes
@@ -94,7 +94,11 @@ where
 /// The JSON output contract of the live node attempt running in `session_id`
 /// and whether that attempt submitted its result, or `None` (a text node, a
 /// stale attempt, a finished run, not a node session, or a failed read).
-async fn node_output(deps: &Deps, session_id: &str) -> Option<(Value, bool)> {
+/// Shared by the validate-result and inject-result-contract hooks, with the
+/// selection `workflow-result::submit` uses, so the session that is told to
+/// submit is the one that may. Takes no run lock: a tick holds it across
+/// `harness::send`.
+pub(crate) async fn node_output(deps: &Deps, session_id: &str) -> Option<(Value, bool)> {
     if !crate::functions::wake::is_workflow_session(session_id) {
         return None;
     }
@@ -105,22 +109,20 @@ async fn node_output(deps: &Deps, session_id: &str) -> Option<(Value, bool)> {
         let Some(record) = crate::state::get_run(&deps.iii, &run_id).await? else {
             return Ok(None);
         };
-        let found = record.nodes.iter().find_map(|(uid, cp)| {
-            (cp.is_live() && cp.session_id.as_deref() == Some(session_id))
-                .then_some((uid, cp.submitted))
-        });
-        let Some((uid, submitted)) = found.filter(|_| !record.status.is_terminal()) else {
+        let Some(def) = crate::state::get_def(&deps.iii, &run_id).await? else {
             return Ok(None);
         };
-        let def = crate::state::get_def(&deps.iii, &run_id).await?;
-        let base_id = uid.split('#').next().unwrap_or(uid);
-        Ok::<_, crate::error::WorkflowError>(def.and_then(|def| {
-            let output = def.nodes.get(base_id)?.agent.json_output()?.clone();
-            Some((output, submitted))
-        }))
+        Ok::<_, crate::error::WorkflowError>(
+            crate::functions::submit::submitting_node(&record, &def, session_id)
+                .ok()
+                .map(|(uid, output)| {
+                    let submitted = record.nodes.get(&uid).is_some_and(|cp| cp.submitted);
+                    (output.clone(), submitted)
+                }),
+        )
     };
     lookup.await.unwrap_or_else(|e| {
-        tracing::warn!(session_id, error = %e, "validate-result: node lookup failed; passing the turn");
+        tracing::warn!(session_id, error = %e, "workflow node lookup failed; the hook does nothing");
         None
     })
 }
@@ -193,7 +195,7 @@ mod tests {
             miss.contains("output schema") && miss.contains("answer"),
             "{miss}"
         );
-        // The schema rides on every deny: the opening that carried it may be compacted away.
+        // The schema rides on every deny: the system-prompt contract is fail-open, so a step may lack it.
         let schema = output()["schema"].to_string();
         assert!(
             prose.ends_with(&schema) && miss.ends_with(&schema),
