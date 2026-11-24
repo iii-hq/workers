@@ -64,6 +64,7 @@ pub(super) struct Scenario {
     probe_actions: Vec<crate::fixtures::ProbeAction>,
     harness_env: Vec<(String, String)>,
     await_target_calls: Option<usize>,
+    await_generations: bool,
     traces_override: Option<usize>,
     intervention: Option<ScenarioIntervention>,
     agent_files: Vec<(String, String)>,
@@ -97,6 +98,7 @@ impl Scenario {
             probe_actions: Vec::new(),
             harness_env: Vec::new(),
             await_target_calls: None,
+            await_generations: false,
             traces_override: None,
             intervention: None,
             agent_files: Vec::new(),
@@ -235,6 +237,15 @@ impl Scenario {
     pub(super) fn await_target_calls(mut self, count: usize) -> Self {
         assert!(count > 0, "await_target_calls must be positive");
         self.await_target_calls = Some(count);
+        self
+    }
+
+    /// After every terminal turn arrived, additionally await until the
+    /// router served every scripted generation. A turn in a session the run
+    /// does not track (a side chat the Console opens and sends in) reaches no
+    /// completion observer of the run; this is how the run waits for it.
+    pub(super) fn await_generations(mut self) -> Self {
+        self.await_generations = true;
         self
     }
 
@@ -441,6 +452,7 @@ impl Scenario {
             probe_actions: self.probe_actions,
             harness_env: self.harness_env,
             await_target_calls: self.await_target_calls,
+            await_generations: self.await_generations,
             traces_override: self.traces_override,
             intervention: self.intervention,
             agent_files: self.agent_files,

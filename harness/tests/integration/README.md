@@ -59,6 +59,8 @@ No provider key or network access is required.
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
 | UI-004 | `console-openai-chat-error` | playground | an OpenAI Chat Completions permanent provider failure is shown and the chat recovers |
 | UI-005 | `console-openai-responses-error` | playground | an OpenAI Responses permanent provider failure is shown and the chat recovers |
+| UI-006 | `console-set-description` | playground | a Console turn whose reply comes with `harness::set-description`: the description reaches the header and the sidebar, the transcript shows no call, and the turn makes one model call |
+| UI-007 | `console-side-chat` | playground | after the conversation's turn, the Console opens a side chat at its reply (`harness::side-chat::open`) and sends in it with no model or effort; the run waits for that second generation (`await_generations`). Its request carries the conversation's system prompt, system sections and tools, its history starts with the conversation's, nothing reaches the conversation, and the run makes exactly two model calls |
 | UI-SEC-001 | `adversarial-content-rendering` | playground | hostile-looking user, model, function-argument, and function-result content remains inert across persistence, rendering, and reload |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
@@ -133,6 +135,16 @@ scenario, model, message, controlled function ids, compiled direct send, and
 result path. There is no separate start signal: Playwright either invokes the
 compiled send through the SDK or submits through the Console UI.
 
+UI-007 (`console-side-chat`) needs two stimuli. After the manifest's `send`
+completes (reply `Five attempts cover the provider's usual outage window.`),
+the Console opens a side chat of the manifest's session at that reply
+(`harness::side-chat::open`: "Side chat" on the reply, or "+ New" in the
+Sidechats section) and sends `Why five attempts and not eight?` in it
+through `harness::send` with no `model`, `provider` or effort option. The
+scripted provider answers `Eight would outlast the delivery receipt's
+expiry.` The run holds until that second generation was served, then takes
+the shutdown and grades it.
+
 ## Validate fixtures
 
 ```bash
@@ -143,7 +155,7 @@ cargo clippy --manifest-path harness/Cargo.toml \
 ```
 
 `validate --scenario all` checks every fixture. `run --scenario all` executes
-all direct scenarios; UI-001 through UI-005 and UI-SEC-001 must use
+all direct scenarios; UI-001 through UI-007 and UI-SEC-001 must use
 `playground`. INT-003 produces
 two terminal turns from one send: generation 1
 steers a message into the running session (it parks durably) and then fails,

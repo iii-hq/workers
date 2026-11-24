@@ -14,18 +14,135 @@ use serde_json::{Value, json};
 
 use super::ScenarioDriver;
 use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
+use crate::evidence_data::RunEvidence;
 use crate::fixtures::{SIDE_CHAT_ACTION, ScenarioFixture};
 
-const SET_DESCRIPTION: &str = "harness::set-description";
-const MESSAGE: &str = "The webhook retries five times before it gives up; explain why.";
-const REPLY: &str = "Five attempts cover the provider's usual outage window.";
-const SIDE_MESSAGE: &str = "Why five attempts and not eight?";
-const SIDE_REPLY: &str = "Eight would outlast the delivery receipt's expiry.";
+// Shared with UI-007 (`console_side_chat`), whose side chat the Console
+// opens and sends in instead of the probe.
+pub(super) const SET_DESCRIPTION: &str = "harness::set-description";
+pub(super) const MESSAGE: &str = "The webhook retries five times before it gives up; explain why.";
+pub(super) const REPLY: &str = "Five attempts cover the provider's usual outage window.";
+pub(super) const SIDE_MESSAGE: &str = "Why five attempts and not eight?";
+pub(super) const SIDE_REPLY: &str = "Eight would outlast the delivery receipt's expiry.";
+
+/// The conversation's generation: its only turn answers [`REPLY`].
+pub(super) fn conversation_generation() -> Generation {
+    Generation::new(1)
+        .expect(
+            Request::new()
+                .turn_request_step(0)
+                .system_prompt_sha256("{{system_prompt_sha256}}")
+                .messages_exact([Message::user(MESSAGE)])
+                .tools_subset([]),
+        )
+        .respond(Response::text(REPLY, 10, 6))
+}
+
+/// The side chat's generation: the opening request of a turn in another
+/// session, with the CONVERSATION's system prompt (its session id, not the
+/// side chat's) and history up to the reply; it answers [`SIDE_REPLY`].
+pub(super) fn side_chat_generation() -> Generation {
+    Generation::new(2)
+        .expect(
+            Request::new()
+                .turn_request_step(0)
+                .system_prompt_sha256("{{system_prompt_sha256}}")
+                .messages_subset([
+                    Message::user(MESSAGE),
+                    json!({ "role": "assistant",
+                            "content": [{ "type": "text", "text": REPLY }] }),
+                ])
+                .tools_subset([]),
+        )
+        .respond(Response::text(SIDE_REPLY, 12, 6))
+}
+
+/// The run's two router requests — the conversation's and the side chat's —
+/// carry the same system prompt, system sections, tools, model and
+/// provider; the side chat's history is the conversation's up to the reply,
+/// then [`SIDE_MESSAGE`]; nothing of the side chat reached the conversation;
+/// exactly two generations ran.
+pub(super) fn verify_side_chat(run: &RunEvidence) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        run.generations_consumed == 2 && run.generations_total == 2,
+        "expected the conversation's and the side chat's router calls, got {} of {}",
+        run.generations_consumed,
+        run.generations_total
+    );
+    let requests: Vec<&Value> = run
+        .router_evidence
+        .get("calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|call| call["outcome"] == "matched")
+        .filter_map(|call| call.get("request"))
+        .collect();
+    anyhow::ensure!(
+        requests.len() == 2,
+        "expected two matched router requests, got {}",
+        requests.len()
+    );
+    let main = requests
+        .iter()
+        .find(|request| request["session_id"] == run.session_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no router request of the conversation"))?;
+    let side = requests
+        .iter()
+        .find(|request| request["session_id"] != run.session_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no router request of the side chat"))?;
+    for key in ["system_prompt", "system_sections", "tools"] {
+        anyhow::ensure!(
+            main[key] == side[key],
+            "the side chat's {key} differs from the conversation's:\n{}\n---\n{}",
+            main[key],
+            side[key]
+        );
+    }
+    anyhow::ensure!(
+        main["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "the conversation offered no tools to compare: {}",
+        main["tools"]
+    );
+    anyhow::ensure!(
+        main["model"] == side["model"] && main["provider"] == side["provider"],
+        "the side chat ran on another model: {} / {}",
+        side["model"],
+        side["provider"]
+    );
+    let texts = |request: &Value| -> Vec<String> {
+        request["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(crate::evidence_data::message_text)
+            .collect()
+    };
+    let side_texts = texts(side);
+    anyhow::ensure!(
+        side_texts.first().map(String::as_str) == Some(MESSAGE)
+            && side_texts.get(1).map(String::as_str) == Some(REPLY)
+            && side_texts[2..]
+                .iter()
+                .any(|text| text.contains(SIDE_MESSAGE)),
+        "the side chat's history is not the conversation's up to the reply, then its \
+         message: {side_texts:?}"
+    );
+    // Nothing of the side chat reached the conversation.
+    let leaked = run.transcript.iter().any(|item| {
+        let text = crate::evidence_data::message_text(&item["message"]);
+        text.contains(SIDE_MESSAGE) || text.contains(SIDE_REPLY)
+    });
+    anyhow::ensure!(!leaked, "the side chat wrote into the conversation");
+    run.expect_assistant_texts([REPLY])?;
+    run.expect_no_duplicate_messages()
+}
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-046";
 
-    let model = Model::scripted("fixture-model");
     Scenario::new(
         ID,
         "side-chat-same-prefix",
@@ -34,112 +151,19 @@ pub(super) fn scenario() -> ScenarioFixture {
          tools, its history starting with the conversation's, and writes nothing into the \
          conversation.",
         ScenarioDriver::Direct,
-        model.clone(),
+        Model::scripted("fixture-model"),
     )
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-046")
             .allow_id(SET_DESCRIPTION),
     )
-    .generation(
-        Generation::new(1)
-            .expect(
-                Request::new()
-                    .turn_request_step(0)
-                    .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_exact([Message::user(MESSAGE)])
-                    .tools_subset([]),
-            )
-            .respond(Response::text(REPLY, 10, 6)),
-    )
+    .generation(conversation_generation())
     .probe_after(1, SIDE_CHAT_ACTION, json!({ "message": SIDE_MESSAGE }))
-    .generation(
-        Generation::new(2)
-            .expect(
-                Request::new()
-                    .turn_request_step(0)
-                    // The CONVERSATION's prompt: its session id, not the side chat's.
-                    .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_subset([
-                        Message::user(MESSAGE),
-                        json!({ "role": "assistant",
-                                "content": [{ "type": "text", "text": REPLY }] }),
-                    ])
-                    .tools_subset([]),
-            )
-            .respond(Response::text(SIDE_REPLY, 12, 6)),
-    )
+    .generation(side_chat_generation())
     // The side chat's turn traces under its own session, not the run's.
     .expect_traces(1)
-    .verify(|run| {
-        anyhow::ensure!(
-            run.generations_consumed == 2,
-            "expected the conversation's and the side chat's router calls, got {}",
-            run.generations_consumed
-        );
-        let requests: Vec<&Value> = run
-            .router_evidence
-            .get("calls")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|call| call["outcome"] == "matched")
-            .filter_map(|call| call.get("request"))
-            .collect();
-        let main = requests
-            .iter()
-            .find(|request| request["session_id"] == run.session_id.as_str())
-            .ok_or_else(|| anyhow::anyhow!("no router request of the conversation"))?;
-        let side = requests
-            .iter()
-            .find(|request| request["session_id"] != run.session_id.as_str())
-            .ok_or_else(|| anyhow::anyhow!("no router request of the side chat"))?;
-        for key in ["system_prompt", "system_sections", "tools"] {
-            anyhow::ensure!(
-                main[key] == side[key],
-                "the side chat's {key} differs from the conversation's:\n{}\n---\n{}",
-                main[key],
-                side[key]
-            );
-        }
-        anyhow::ensure!(
-            main["tools"]
-                .as_array()
-                .is_some_and(|tools| !tools.is_empty()),
-            "the conversation offered no tools to compare: {}",
-            main["tools"]
-        );
-        anyhow::ensure!(
-            main["model"] == side["model"] && main["provider"] == side["provider"],
-            "the side chat ran on another model: {} / {}",
-            side["model"],
-            side["provider"]
-        );
-        let texts = |request: &Value| -> Vec<String> {
-            request["messages"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(crate::evidence_data::message_text)
-                .collect()
-        };
-        let side_texts = texts(side);
-        anyhow::ensure!(
-            side_texts.first().map(String::as_str) == Some(MESSAGE)
-                && side_texts.get(1).map(String::as_str) == Some(REPLY)
-                && side_texts.iter().any(|text| text.contains(SIDE_MESSAGE)),
-            "the side chat's history is not the conversation's up to the reply, then its \
-             message: {side_texts:?}"
-        );
-        // Nothing of the side chat reached the conversation.
-        let leaked = run.transcript.iter().any(|item| {
-            let text = crate::evidence_data::message_text(&item["message"]);
-            text.contains(SIDE_MESSAGE) || text.contains(SIDE_REPLY)
-        });
-        anyhow::ensure!(!leaked, "the side chat wrote into the conversation");
-        run.expect_assistant_texts([REPLY])?;
-        run.expect_no_duplicate_messages()
-    })
+    .verify(verify_side_chat)
     .build()
 }
 
