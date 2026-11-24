@@ -166,6 +166,24 @@ function stopMenuTabPropagation(event: KeyboardEvent<HTMLElement>) {
 }
 
 /**
+ * The dropdown's typeahead claims every printable key that reaches its
+ * popup (Base UI calls preventDefault to jump to a matching item) and its
+ * list navigation claims the arrows, so a text field inside the picker (the
+ * model search, a provider's settings) could not be typed in. Keys pressed
+ * in a field stop at the pages; Escape still reaches the menu to close it.
+ */
+function keepKeysInTextFields(event: KeyboardEvent<HTMLElement>) {
+  if (event.key === 'Escape') return
+  const target = event.target
+  if (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || target.matches('input, textarea, select'))
+  ) {
+    event.stopPropagation()
+  }
+}
+
+/**
  * The Off entry sits right after Default. `supportsThinkingOff` true offers
  * it, `false` hides it (the model always reasons or the provider has no
  * switch), unknown shows it disabled so the gap is visible, not silent.
@@ -607,7 +625,11 @@ export function ModelPicker({
   // desktop popover to its rows; the subpages mount only when open, so
   // they add no height until then.
   const pickerPages = (
-    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] overflow-hidden">
+    // biome-ignore lint/a11y/noStaticElementInteractions: only shields its text fields' keys from the menu
+    <div
+      onKeyDown={mobileSheet ? undefined : keepKeysInTextFields}
+      className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] overflow-hidden"
+    >
       <div
         data-active={activePage === 'models'}
         aria-hidden={activePage !== 'models'}
@@ -702,6 +724,15 @@ export function ModelPicker({
           />
 
           <DropdownMenuContent
+            // Always above the trigger: the list changes height as you
+            // type, and a flipping popup jumped between above and below
+            // with each keystroke. It shrinks to the room above instead.
+            side="top"
+            collisionAvoidance={{
+              side: 'none',
+              align: 'shift',
+              fallbackAxisSide: 'none',
+            }}
             sideOffset={6}
             align="start"
             collisionPadding={12}

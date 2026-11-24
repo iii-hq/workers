@@ -217,3 +217,52 @@ describe('an automatic choice', () => {
     }
   })
 })
+
+describe('the dropdown search', () => {
+  it('takes typed characters instead of the menu typeahead', async () => {
+    const container = document.body.appendChild(document.createElement('div'))
+    const root = createRoot(container)
+    try {
+      await act(async () =>
+        root.render(
+          <TooltipProvider>
+            <ModelPicker
+              value="openai::gpt-5"
+              options={[
+                { id: 'openai::gpt-5', label: 'gpt-5' },
+                { id: 'openai::gpt-4.1', label: 'gpt-4.1' },
+              ]}
+              providers={[]}
+              thinkingLevel="default"
+              onChange={() => {}}
+              onThinkingLevelChange={() => {}}
+              showRefresh={false}
+            />
+          </TooltipProvider>,
+        ),
+      )
+      const trigger = container.querySelector<HTMLButtonElement>('button')
+      if (!trigger) throw new Error('trigger missing')
+      await act(async () => trigger.click())
+      const input = document.body.querySelector<HTMLInputElement>(
+        'input[aria-label="filter models"]',
+      )
+      if (!input) throw new Error('search missing')
+      for (const key of ['g', 'p', ' ', 'T']) {
+        const event = new KeyboardEvent('keydown', {
+          key,
+          bubbles: true,
+          cancelable: true,
+        })
+        act(() => {
+          input.dispatchEvent(event)
+        })
+        // A prevented keydown never inserts its character.
+        expect(event.defaultPrevented, key).toBe(false)
+      }
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+})

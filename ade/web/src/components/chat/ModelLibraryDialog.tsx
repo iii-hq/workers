@@ -1,10 +1,11 @@
-import { ArrowLeft, Check, GripVertical, Plus, X } from 'lucide-react'
+import { ArrowLeft, Check, GripVertical, Plus, Search, X } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
 import {
   type CSSProperties,
   type DragEvent,
   type UIEvent,
   useEffect,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -14,6 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/shadcn/dialog'
+import { Button } from '@/components/ui/Button'
 import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import {
   discoveryBlocksModels,
@@ -26,6 +28,7 @@ import {
   pinModel,
   unpinModel,
 } from '@/lib/pinned-models'
+import { bundledProviderMark } from '@/lib/provider-marks'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import type { ModelId, ModelOption, ThinkingLevel } from '@/types/chat'
@@ -124,6 +127,11 @@ export function ModelLibraryDialog({
   const [view, setView] = useState<LibraryView>({ kind: 'library' })
   const [dragId, setDragId] = useState<ModelId | null>(null)
   const [overSlot, setOverSlot] = useState<number | null>(null)
+  const [query, setQuery] = useState('')
+  // Registry providers matching the search (`null` while it loads), so
+  // "No match" waits for them.
+  const [registryMatches, setRegistryMatches] = useState<number | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
   // The catalog has scrolled under the sticky slots: a hairline then marks
   // the slots' edge so the rows visibly slide beneath it.
   const [scrolled, setScrolled] = useState(false)
@@ -153,7 +161,21 @@ export function ModelLibraryDialog({
   }, [open])
   const optionsById = new Map(options.map((option) => [option.id, option]))
   const providerById = new Map(providers.map((p) => [p.id, p]))
-  const columns = providerColumns(options, providers)
+  // Search: every word must appear in the model's name, its id or its
+  // provider's name, so "opus 4" or "copilot gpt" narrows across providers.
+  // A provider with nothing matching drops out of the columns.
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const searching = words.length > 0
+  const matches = (haystack: string) =>
+    words.every((word) => haystack.toLowerCase().includes(word))
+  const columns = providerColumns(options, providers).flatMap((column) => {
+    if (!searching) return [column]
+    if (!column.usable) return matches(column.label) ? [column] : []
+    const found = column.options.filter((option) =>
+      matches(`${formatModelLabel(option.label)} ${option.id} ${column.label}`),
+    )
+    return found.length > 0 ? [{ ...column, options: found }] : []
+  })
 
   const effortFor = (id: ModelId): ThinkingLevel =>
     pinned.find((entry) => entry.id === id)?.effort ??
@@ -167,6 +189,7 @@ export function ModelLibraryDialog({
     guard.tryNavigate(() => {
       setView({ kind: 'library' })
       setDragId(null)
+      setQuery('')
       onOpenChange(false)
     })
   }
@@ -225,18 +248,78 @@ export function ModelLibraryDialog({
             '--dialog-max-width': view.kind === 'library' ? '76rem' : '44rem',
           } as CSSProperties
         }
-        className="@container flex max-h-[min(88dvh,900px)] flex-col gap-0 overflow-hidden p-0"
+        // A fixed height, not a cap: the dialog is centred, so a box that
+        // shrank as the search narrowed the list moved the search field
+        // away from the caret on every keystroke.
+        className="@container flex h-[min(88dvh,900px)] flex-col gap-0 overflow-hidden p-0"
       >
         {view.kind === 'library' ? (
           <>
-            <DialogHeader className="shrink-0 px-6 pt-5 pb-2">
-              <DialogTitle>Models</DialogTitle>
-              <DialogDescription className="">
-                Pin up to five models for the quick menu. Drag to arrange them.
-                A new chat starts on your last chat&apos;s model, or the first
-                one here.
-              </DialogDescription>
-            </DialogHeader>
+            {/* Title leads, the dialog's two controls trail on the same row
+ (pr-14 clears the close button); in a narrow dialog they
+ wrap under the description instead of squeezing it. */}
+            <div className="flex shrink-0 flex-wrap items-start gap-x-6 gap-y-3 px-6 pt-5 pr-14 pb-2">
+              <DialogHeader className="min-w-[min(100%,24rem)] flex-1">
+                <DialogTitle>Models</DialogTitle>
+                <DialogDescription>
+                  Pin up to five models for the quick menu. Drag to arrange
+                  them. A new chat starts on your last chat&apos;s model, or the
+                  first one here.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex max-w-full shrink-0 items-center gap-2">
+                <div className="flex h-8 w-56 min-w-0 items-center gap-2 rounded-lg border border-border ps-2.5 pe-1 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20 dark:border-edge">
+                  <Search
+                    className="size-4 shrink-0 text-ink-faint"
+                    aria-hidden
+                  />
+                  <input
+                    ref={searchRef}
+                    type="search"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      // Escape with a query typed clears it; the next one
+                      // closes the dialog.
+                      if (event.key === 'Escape' && query !== '') {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setQuery('')
+                      }
+                    }}
+                    placeholder="Search models"
+                    aria-label="search models"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint [&::-webkit-search-cancel-button]:hidden"
+                  />
+                  {query ? (
+                    <button
+                      type="button"
+                      aria-label="Clear search"
+                      onClick={() => {
+                        setQuery('')
+                        searchRef.current?.focus()
+                      }}
+                      className="flex size-6 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    >
+                      <X className="size-4" aria-hidden />
+                    </button>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  aria-label="Add a provider"
+                  disabled={disabled}
+                  onClick={() => setView({ kind: 'add-provider' })}
+                  className="bg-transparent"
+                >
+                  <Plus aria-hidden className="text-ink-faint" />
+                  Add provider
+                </Button>
+              </div>
+            </div>
             <div
               className="min-h-0 flex-1 overflow-y-auto px-6 pb-6"
               onScroll={onCatalogScroll}
@@ -393,7 +476,10 @@ export function ModelLibraryDialog({
                   >
                     <h3 className="mb-3 flex h-6 items-center gap-2 text-sm text-ink-faint">
                       <ProviderIcon
-                        iconSvg={column.provider?.icon_svg}
+                        iconSvg={
+                          column.provider?.icon_svg ??
+                          bundledProviderMark(column.id)
+                        }
                         label={column.label}
                         providerId={column.id}
                         className="text-ink-faint"
@@ -479,21 +565,22 @@ export function ModelLibraryDialog({
                     )}
                   </section>
                 ))}
-                <section aria-label="add a provider" className="min-w-0">
-                  <h3 className="mb-3 flex h-6 items-center text-sm text-ink-faint">
-                    More providers
-                  </h3>
-                  <button
-                    type="button"
-                    aria-label="Add a provider"
+                {searching ? (
+                  <AddProviderPanel
+                    query={query}
+                    providers={providers}
+                    onMatchCount={setRegistryMatches}
                     disabled={disabled}
-                    onClick={() => setView({ kind: 'add-provider' })}
-                    className="flex h-11 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm text-ink-faint border border-dashed border-border dark:border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
-                  >
-                    <Plus className="size-4" aria-hidden />
-                    Add a provider
-                  </button>
-                </section>
+                    onConfigureProvider={(id) =>
+                      setView({ kind: 'provider', id })
+                    }
+                  />
+                ) : null}
+                {searching && columns.length === 0 && registryMatches === 0 ? (
+                  <p className="col-span-full py-10 text-center text-sm text-ink-faint">
+                    No model or provider matches &ldquo;{query.trim()}&rdquo;.
+                  </p>
+                ) : null}
               </section>
             </div>
           </>
