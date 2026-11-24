@@ -213,6 +213,21 @@ describe('worker functions without an engine', () => {
     ).toBe(false)
   })
 
+  it('registers every function with typed request and response schemas, as the release interface check requires', async () => {
+    const f = fake()
+    controlPlanes.push(await registerControlPlane(f.iii))
+    // The same rule as .github/scripts/collect_worker_interface.py: a schema needs a defining keyword.
+    const keys = ['type', 'properties', '$ref', 'allOf', 'anyOf', 'oneOf', 'enum', 'items', 'const']
+    const typed = (schema: unknown) =>
+      Boolean(schema && typeof schema === 'object' && keys.some((key) => key in schema))
+    const untyped = [...f.registrations].flatMap(([id, options]) =>
+      (['request_format', 'response_format'] as const)
+        .filter((field) => !typed(options?.[field]))
+        .map((field) => `${id}.${field}`),
+    )
+    expect(untyped).toEqual([])
+  })
+
   it('ensures, observes and reloads the Compose configuration id', async () => {
     const id = 'workers-qa-qa-control-plane'
     vi.stubEnv('III_CONFIG_NAME', ` ${id} `)
