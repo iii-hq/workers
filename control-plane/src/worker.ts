@@ -429,7 +429,14 @@ export async function registerControlPlane(iii: IIIClient, uiDirs: string[] = []
       description:
         "Open the scope's controller chat: one per project (and one for All projects) that reads everything and acts for the person after they confirm, with every function an agent may call. Creates the session on first use (and after the person deleted it) and returns its id for the console chat.",
       request_format: request(scopeInput),
-      response_format: object({ session_id: { type: 'string' }, created: { type: 'boolean' } }),
+      response_format: object(
+        {
+          session_id: { type: 'string' },
+          created: { type: 'boolean' },
+          thinking_level: { type: 'string' },
+        },
+        ['session_id', 'created'],
+      ),
     },
   )
   iii.registerFunction(

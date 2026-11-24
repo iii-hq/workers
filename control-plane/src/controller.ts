@@ -19,6 +19,13 @@ interface StoredController {
   created_at: string
 }
 
+export interface OpenedController {
+  session_id: string
+  created: boolean
+  /** The effort the new chat starts on, when one is set and the console accepts it. */
+  thinking_level?: string
+}
+
 export interface ControllerDeps {
   iii: Pick<ControlPlaneClient, 'call'>
   config: () => ControlPlaneConfig
@@ -28,11 +35,17 @@ export interface ControllerDeps {
 /** The model the controller runs on: its own, else the summary's. */
 export function controllerModel(config: ControlPlaneConfig) {
   const model = config.controller?.model ?? config.summary.model
-  const reasoning = config.controller?.model
-    ? config.controller.reasoning
-    : config.summary.reasoning
+  // An effort picked for the controller wins, also when its model follows the summary's.
+  const reasoning =
+    config.controller?.reasoning ??
+    (config.controller?.model ? undefined : config.summary.reasoning)
   return { model, reasoning }
 }
+
+/** The efforts the console chat accepts; any other value stays a provider option of the first send. */
+const CHAT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh']
+export const chatThinkingLevel = (reasoning: string | undefined) =>
+  reasoning && CHAT_LEVELS.includes(reasoning) ? reasoning : undefined
 
 /**
  * One controller chat per scope. The first open creates the session with a
@@ -42,11 +55,11 @@ export function controllerModel(config: ControlPlaneConfig) {
  * replaced on the next open.
  */
 export class ControllerSessions {
-  private readonly opening = new Map<string, Promise<{ session_id: string; created: boolean }>>()
+  private readonly opening = new Map<string, Promise<OpenedController>>()
 
   constructor(private readonly deps: ControllerDeps) {}
 
-  open(scope: string): Promise<{ session_id: string; created: boolean }> {
+  open(scope: string): Promise<OpenedController> {
     const running = this.opening.get(scope)
     if (running) return running
     const next = this.openOnce(scope).finally(() => this.opening.delete(scope))
@@ -54,7 +67,7 @@ export class ControllerSessions {
     return next
   }
 
-  private async openOnce(scope: string) {
+  private async openOnce(scope: string): Promise<OpenedController> {
     const { iii } = this.deps
     const key = `controller:${scope}`
     const stored = await iii.call<StoredController | null>('state::get', {
@@ -65,6 +78,7 @@ export class ControllerSessions {
       const existing = await iii
         .call<{ meta?: unknown } | null>('session::get', { session_id: stored.session_id })
         .catch(() => null)
+      // A reopened chat keeps the effort the person may have changed in it.
       if (existing) return { session_id: stored.session_id, created: false }
     }
     const { model, reasoning } = controllerModel(this.deps.config())
@@ -85,9 +99,7 @@ export class ControllerSessions {
         project_id: scope === 'all' ? null : scope,
         surface: 'console',
         model,
-        ...(reasoning && reasoning !== 'default' && reasoning !== 'lowest'
-          ? { thinking_level: reasoning }
-          : {}),
+        ...(chatThinkingLevel(reasoning) ? { thinking_level: chatThinkingLevel(reasoning) } : {}),
       },
     })
     const [provider, ...modelParts] = model.split('::')
@@ -111,6 +123,11 @@ export class ControllerSessions {
         created_at: new Date().toISOString(),
       } satisfies StoredController,
     })
-    return { session_id: sessionId, created: true }
+    const thinkingLevel = chatThinkingLevel(reasoning)
+    return {
+      session_id: sessionId,
+      created: true,
+      ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+    }
   }
 }

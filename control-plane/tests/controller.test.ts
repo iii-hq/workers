@@ -91,6 +91,25 @@ describe('controller chat sessions', () => {
     expect(controllerPolicy('all')).toEqual(['*'])
   })
 
+  it('starts the chat on the controller effort, also with the summary model, and only on levels the console accepts', async () => {
+    const own = fake(withModel({ controller: { reasoning: 'medium' } }))
+    expect(await own.controllers.open('assistente')).toMatchObject({ thinking_level: 'medium' })
+    expect(own.call.mock.calls.find(([id]) => id === 'session::ensure')?.[1]).toMatchObject({
+      metadata: { model: 'claude-code::claude-code/sonnet', thinking_level: 'medium' },
+    })
+    const max = fake(
+      withModel({ controller: { model: 'claude-code::claude-code/opus', reasoning: 'max' } }),
+    )
+    const opened = await max.controllers.open('assistente')
+    expect(opened).not.toHaveProperty('thinking_level')
+    expect(max.call.mock.calls.find(([id]) => id === 'session::ensure')?.[1]).not.toHaveProperty(
+      'metadata.thinking_level',
+    )
+    expect(max.sent()[0][1]).toMatchObject({
+      options: { provider_options: { 'claude-code': { reasoning_effort: 'max' } } },
+    })
+  })
+
   it('replaces a deleted session, shares a concurrent open, and asks for a model when none is set', async () => {
     const f = fake(withModel())
     const [a, b] = await Promise.all([

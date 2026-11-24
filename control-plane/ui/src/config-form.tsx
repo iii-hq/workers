@@ -131,7 +131,7 @@ export function ControlPlaneConfigForm({ host, value, onChange, errors }: Config
       <SettingsField
         label="Controller model"
         field="controller.model"
-        description="The model of the controller you chat with from the control plane, and its reasoning effort. Unset, it uses the summary model."
+        description="The model of the controller you chat with from the control plane, and the effort a new chat starts on (minimal to xhigh; another effort applies to its first reply only). Unset, it uses the summary's."
         error={errors?.get('/controller/model')}
         renderControl={() => (
           <ModelPicker

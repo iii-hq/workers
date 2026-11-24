@@ -182,8 +182,14 @@ function ControlPlaneScreenContent({
     if (!iii || controller.opening) return
     setController({ opening: true, error: null })
     try {
-      const { session_id } = await iii.call<{ session_id: string }>('control-plane::controller::open', { scope })
-      host.chat?.openConversation?.(session_id)
+      const opened = await iii.call<{ session_id: string; created?: boolean; thinking_level?: string }>(
+        'control-plane::controller::open',
+        { scope },
+      )
+      host.chat?.openConversation?.(opened.session_id)
+      // A new chat adopts the configured effort the way the console wants it: on the mounted conversation.
+      if (opened.created && opened.thinking_level)
+        host.chat?.requestThinkingLevelChange?.({ sessionId: opened.session_id, level: opened.thinking_level })
       setController({ opening: false, error: null })
     } catch (error) {
       setController({ opening: false, error: errorMessage(error) })

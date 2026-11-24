@@ -501,11 +501,13 @@ describe('canvas overview', () => {
 
   it('opens the scope controller chat from the header, and shows why when it cannot', async () => {
     vi.mocked(host.chat!.openConversation!).mockClear()
-    const call = vi.fn(async () => ({ session_id: 'lead-assistente-1', created: true }))
+    vi.mocked(host.chat!.requestThinkingLevelChange!).mockClear()
+    const call = vi.fn(async () => ({ session_id: 'lead-assistente-1', created: true, thinking_level: 'high' }))
     await render({ scope: 'assistente', iii: { call } as never })
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Chat with the controller"]')?.click())
     expect(call).toHaveBeenCalledWith('control-plane::controller::open', { scope: 'assistente' })
     expect(host.chat!.openConversation).toHaveBeenCalledWith('lead-assistente-1')
+    expect(host.chat!.requestThinkingLevelChange).toHaveBeenCalledWith({ sessionId: 'lead-assistente-1', level: 'high' })
 
     call.mockRejectedValueOnce(new Error('Pick a controller model (or a summary model) in the control plane settings.'))
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Chat with the controller"]')?.click())
