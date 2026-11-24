@@ -36,6 +36,11 @@ ids, then fetch their contracts in one batched `engine::functions::info` call.
   functions present there. Read contracts with
   `engine::functions::info { "function_ids": [...], "namespace": "<ns>" }` once per
   namespace and call with `namespace` next to `function`; omit it to use your own.
+  When copies of an id differ between namespaces, a search ranks and describes
+  one copy: that of the `namespace` it filters by, else the directory's own
+  namespace's, then `default`'s. A search with `namespace` does not skip
+  candidates already delivered, and the next search without it sends the ids
+  it showed again.
 - The response may also carry an `installable` section: workers from the
   public registry (verified authors only) whose functions match but are NOT
   installed. Those functions are not callable yet — confirm with the user,
