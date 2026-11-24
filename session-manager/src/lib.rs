@@ -46,6 +46,7 @@ pub mod pagination;
 pub mod reading;
 pub mod resync;
 pub mod runtime;
+pub mod search;
 pub mod service;
 pub mod store;
 pub mod surface;

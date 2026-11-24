@@ -107,8 +107,25 @@ export interface PaletteEntry {
    *  so a page looks the same here as it does in the attach menu; anything
    *  without one falls back to its category icon. */
   icon?: LucideIcon
+  /** Where the title matched, when the row's own search already knows
+   *  (a server-side fuzzy match the palette's scorer cannot reproduce). */
+  titleRanges?: readonly MatchRange[]
+  /** A line of the content that matched, shown under the title: the
+   *  message a chat was found by. Replaces `detail` on the row. */
+  snippet?: { text: string; ranges: readonly MatchRange[] }
   run: () => void
 }
+
+/**
+ * A first-party search the palette runs as the query is typed, beside the
+ * worker sources: rows whose answer lives on the server (a chat found by its
+ * messages). A row that shares an id with a local row replaces it, so the
+ * server's richer answer wins over the title-only one.
+ */
+export type PaletteLiveSearch = (input: {
+  text: string
+  signal: AbortSignal
+}) => Promise<PaletteEntry[]>
 
 export interface EngineSnapshot {
   workers: Array<{

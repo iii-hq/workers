@@ -82,6 +82,7 @@ import {
   matchRanges,
   type PaletteEntry,
   type PaletteKind,
+  type PaletteLiveSearch,
   parseQuery,
   readEngine,
 } from '@/lib/palette/sources'
@@ -143,6 +144,8 @@ const CHIP = cn(
   'h-6 shrink-0 px-2 text-xs text-muted-foreground',
 )
 
+/** A row's title: 16px on a phone, 14px at a desk. */
+const ROW_TITLE = 'truncate text-base text-foreground sm:text-sm'
 /** The glyph's tile: a hairline square, so rows read as a column of
  *  objects rather than a ragged edge of bare icons. */
 const TILE =
@@ -358,7 +361,14 @@ export interface CommandPaletteProps {
   conversationId?: string | null
   /** Text to open with; `#` lands in file mode. Read once per opening. */
   initialQuery?: string
+  /** First-party rows found on the server as you type (chats by what was
+   *  said in them). Must be a stable reference. */
+  liveSearch?: PaletteLiveSearch
 }
+
+/** Shortest query the live search is asked for: one letter matches half
+ *  of every transcript. */
+const LIVE_SEARCH_MIN = 2
 
 export function CommandPalette({
   open,
@@ -371,6 +381,7 @@ export function CommandPalette({
   workingDir = null,
   conversationId = null,
   initialQuery = '',
+  liveSearch,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<PaletteKind | 'all'>('all')
@@ -378,6 +389,7 @@ export function CommandPalette({
   const [engineEntries, setEngineEntries] = useState<PaletteEntry[]>([])
   const [engineError, setEngineError] = useState<string | null>(null)
   const [sourceEntries, setSourceEntries] = useState<PaletteEntry[]>([])
+  const [liveEntries, setLiveEntries] = useState<PaletteEntry[]>([])
   const [searching, setSearching] = useState(false)
   const [recents, setRecents] = useState<RecentEntry[]>([])
   const [numbering, setNumbering] = useState(false)
@@ -433,8 +445,13 @@ export function CommandPalette({
     if (!open) return
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      if (sources.length === 0) {
+      // The live search runs whatever the mode, so the Chats chip can count
+      // what the messages matched even while another filter is on.
+      const askLive =
+        liveSearch !== undefined && parsed.text.length >= LIVE_SEARCH_MIN
+      if (sources.length === 0 && !askLive) {
         setSourceEntries([])
+        setLiveEntries([])
         setSearching(false)
         return
       }
@@ -444,18 +461,29 @@ export function CommandPalette({
       controller.signal.addEventListener('abort', () =>
         window.clearTimeout(slow),
       )
-      void searchPaletteSources(sources, {
-        text: parsed.text,
-        prefix: parsed.prefix,
-        kinds: parsed.kinds,
-        workingDir,
-        conversationId,
-        signal: controller.signal,
-      })
-        .then((entries) => {
+      const fromSources =
+        sources.length === 0
+          ? Promise.resolve([])
+          : searchPaletteSources(sources, {
+              text: parsed.text,
+              prefix: parsed.prefix,
+              kinds: parsed.kinds,
+              workingDir,
+              conversationId,
+              signal: controller.signal,
+            })
+      // A live search that fails leaves the local rows standing.
+      const fromLive = askLive
+        ? liveSearch({ text: parsed.text, signal: controller.signal }).catch(
+            (): PaletteEntry[] => [],
+          )
+        : Promise.resolve([])
+      void Promise.all([fromSources, fromLive])
+        .then(([entries, live]) => {
           window.clearTimeout(slow)
           if (controller.signal.aborted) return
           setSourceEntries(entries)
+          setLiveEntries(live)
           setSearching(false)
         })
         .catch(() => {
@@ -468,7 +496,7 @@ export function CommandPalette({
       controller.abort()
       setSearching(false)
     }
-  }, [open, sources, parsed, workingDir, conversationId])
+  }, [open, sources, liveSearch, parsed, workingDir, conversationId])
 
   useEffect(() => {
     if (!open) return
@@ -514,17 +542,29 @@ export function CommandPalette({
     }
   }, [open, onOpenWorker, onOpenFunction, readInventory])
 
+  // A live row replaces the local row with its id (a chat found by its
+  // messages carries the snippet the title-only row lacks). Live rows only
+  // stand for the query they answered: a cleared query drops them.
+  const live = useMemo(
+    () => (parsed.text.length >= LIVE_SEARCH_MIN ? liveEntries : []),
+    [liveEntries, parsed],
+  )
+  const liveIds = useMemo(() => new Set(live.map((entry) => entry.id)), [live])
+  const searchable = useMemo(
+    () =>
+      [...localEntries, ...engineEntries].filter(
+        (entry) => !liveIds.has(entry.id),
+      ),
+    [localEntries, engineEntries, liveIds],
+  )
   const results = useMemo(
     () => [
-      ...filterEntries(
-        [...localEntries, ...engineEntries],
-        parsed.text,
-        parsed.kinds,
-      ),
-      // Source rows are already the source's answer to the query.
+      ...filterEntries(searchable, parsed.text, parsed.kinds),
+      // Live and source rows are already their search's answer to the query.
+      ...live.filter((entry) => !parsed.kinds || parsed.kinds.has(entry.kind)),
       ...sourceEntries,
     ],
-    [localEntries, engineEntries, sourceEntries, parsed],
+    [searchable, live, sourceEntries, parsed],
   )
   // Recents recall whatever was last chosen — a command included — even
   // though the bare palette only searches navigation.
@@ -547,12 +587,12 @@ export function CommandPalette({
   // hides is one Tab away, not invisible.
   const counts = useMemo(() => {
     if (!parsed.text || mode) return null
-    const tally = countKinds([...localEntries, ...engineEntries], parsed.text)
-    for (const entry of sourceEntries) {
+    const tally = countKinds(searchable, parsed.text)
+    for (const entry of [...live, ...sourceEntries]) {
       tally.set(entry.kind, (tally.get(entry.kind) ?? 0) + 1)
     }
     return tally
-  }, [localEntries, engineEntries, sourceEntries, parsed, mode])
+  }, [searchable, live, sourceEntries, parsed, mode])
   // Kinds with matches the current scope does not show, in chip order.
   const hidden = FILTERS.flatMap(({ id }): Array<[PaletteKind, number]> => {
     if (id === 'all' || parsed.kinds?.has(id)) return []
@@ -875,11 +915,9 @@ export function CommandPalette({
                   const Icon = entry.icon ?? KIND_ICON[entry.kind]
                   const selected = index === active
                   const digit = numbering && index < 9 ? index + 1 : null
-                  const titleRanges = matchRanges(
-                    entry.title,
-                    parsed.text,
-                    entry.kind,
-                  )
+                  const titleRanges =
+                    entry.titleRanges ??
+                    matchRanges(entry.title, parsed.text, entry.kind)
                   return (
                     <Item
                       key={entry.id}
@@ -911,32 +949,54 @@ export function CommandPalette({
                           />
                         ) : null}
                       </ItemMedia>
-                      <ItemContent className="min-w-0 flex-1 flex-row items-baseline gap-2">
-                        {entry.kind === 'function' ? (
-                          <FunctionId id={entry.title} ranges={titleRanges} />
-                        ) : (
-                          <span
-                            className={`max-w-[70%] shrink-0 truncate text-base text-foreground sm:text-sm ${
-                              entry.kind === 'worker'
-                                ? 'font-geist-mono font-medium tracking-[-0.02em] sm:text-body'
-                                : ''
-                            }`}
-                          >
+                      {entry.snippet ? (
+                        // Found by what it says: the title, and under it the
+                        // line that matched, so the row explains itself. The
+                        // margin keeps rows further apart than a row's own
+                        // two lines, so a snippet never reads as the next
+                        // row's.
+                        <ItemContent className="my-2 min-w-0 flex-1">
+                          <span className={ROW_TITLE}>
                             <Highlighted
                               text={entry.title}
                               ranges={titleRanges}
                             />
                           </span>
-                        )}
-                        {entry.detail ? (
-                          <span className="min-w-0 truncate text-sm text-ink-ghost">
+                          <span className="truncate text-sm text-ink-faint">
                             <Highlighted
-                              text={entry.detail}
-                              ranges={matchRanges(entry.detail, parsed.text)}
+                              text={entry.snippet.text}
+                              ranges={entry.snippet.ranges}
                             />
                           </span>
-                        ) : null}
-                      </ItemContent>
+                        </ItemContent>
+                      ) : (
+                        <ItemContent className="min-w-0 flex-1 flex-row items-baseline gap-2">
+                          {entry.kind === 'function' ? (
+                            <FunctionId id={entry.title} ranges={titleRanges} />
+                          ) : (
+                            <span
+                              className={`max-w-[70%] shrink-0 ${ROW_TITLE} ${
+                                entry.kind === 'worker'
+                                  ? 'font-geist-mono font-medium tracking-[-0.02em] sm:text-body'
+                                  : ''
+                              }`}
+                            >
+                              <Highlighted
+                                text={entry.title}
+                                ranges={titleRanges}
+                              />
+                            </span>
+                          )}
+                          {entry.detail ? (
+                            <span className="min-w-0 truncate text-sm text-ink-ghost">
+                              <Highlighted
+                                text={entry.detail}
+                                ranges={matchRanges(entry.detail, parsed.text)}
+                              />
+                            </span>
+                          ) : null}
+                        </ItemContent>
+                      )}
                       {/* The right-hand tag is the first thing to give up when
  the row has to fit a phone. Holding the pick key swaps it for
  the row's number. */}

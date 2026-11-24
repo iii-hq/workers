@@ -47,16 +47,18 @@ use crate::functions::messages::{
 use crate::functions::messages_range::{MessagesRangeRequest, MessagesRangeResponse};
 use crate::functions::messages_tail::{MessagesTailRequest, MessagesTailResponse, TailItem};
 use crate::functions::put_attachment::{PutAttachmentRequest, PutAttachmentResponse};
+use crate::functions::search::{MatchedIn, SearchHit, SearchRequest, SearchResponse};
 use crate::functions::set_active_leaf::{SetActiveLeafRequest, SetActiveLeafResponse};
 use crate::functions::set_draft::{SetDraftRequest, SetDraftResponse};
 use crate::functions::set_meta::{SetMetaRequest, SetMetaResponse};
 use crate::functions::set_status::{SetStatusRequest, SetStatusResponse};
 use crate::functions::update_message::{UpdateMessageRequest, UpdateMessageResponse};
 use crate::pagination::{self, BlockKind};
+use crate::search::{self as text_search, SearchDoc, Tier};
 use crate::store::SessionStore;
 use crate::types::{
-    AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry, SessionMeta,
-    SessionStatus, metadata_matches,
+    AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry, SessionKind,
+    SessionMeta, SessionStatus, metadata_matches,
 };
 
 /// Id generation, injected for deterministic tests.
@@ -102,6 +104,10 @@ impl Clock for SystemClock {
     }
 }
 
+/// A session's search text and the `(updated_at, message_count)` it was
+/// built from.
+type CachedSearchDoc = ((i64, u64), Arc<SearchDoc>);
+
 type ServiceResult<T> = Result<(T, Vec<EmittableEvent>), SessionError>;
 
 /// Wrap a config value in a fresh, standalone [`ConfigCell`] (not shared with
@@ -122,6 +128,10 @@ pub struct SessionService {
     /// lifetime (tens of bytes per touched session) — never removed, so
     /// two waiters can never end up serialized on different locks.
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// `session::search`'s per-session text, keyed by session id and
+    /// stamped with the `(updated_at, message_count)` it was built from: a
+    /// search re-reads only the sessions that changed since the last one.
+    search_docs: Mutex<HashMap<String, CachedSearchDoc>>,
 }
 
 impl SessionService {
@@ -159,6 +169,7 @@ impl SessionService {
             clock,
             config,
             locks: Mutex::new(HashMap::new()),
+            search_docs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -285,6 +296,98 @@ impl SessionService {
     /// candidate set `session::mention::search` ranks.
     pub async fn all_metas(&self) -> Result<Vec<SessionMeta>, SessionError> {
         Ok(self.store.list_metas().await?)
+    }
+
+    /// `session::search`: every session of the asked kinds whose title and
+    /// messages hold every query word (exact, prefix or one typo away),
+    /// best tier first and newest first within a tier.
+    pub async fn search(&self, req: SearchRequest) -> Result<SearchResponse, SessionError> {
+        let Some(query) = text_search::Query::parse(&req.query) else {
+            return Ok(SearchResponse {
+                results: Vec::new(),
+            });
+        };
+        let limit = req
+            .limit
+            .unwrap_or(crate::functions::search::DEFAULT_LIMIT)
+            .clamp(1, crate::functions::search::MAX_LIMIT);
+        let kinds = req.kinds.unwrap_or_else(|| vec![SessionKind::User]);
+        let roots = req.roots == Some(true);
+
+        let all = self.store.list_metas().await?;
+        let all_ids: HashSet<&str> = all.iter().map(|m| m.session_id.as_str()).collect();
+        let mut metas: Vec<&SessionMeta> = all.iter().filter(|m| kinds.contains(&m.kind)).collect();
+        if roots {
+            metas.retain(|m| {
+                m.metadata
+                    .as_ref()
+                    .is_none_or(|metadata| !metadata.contains_key("spawned_by"))
+            });
+        }
+
+        let mut hits: Vec<(Tier, SearchHit)> = Vec::new();
+        for meta in metas {
+            let doc = self.search_doc(meta).await?;
+            let Some(found) = text_search::match_doc(&query, &meta.title, &doc) else {
+                continue;
+            };
+            let matched_in = if found.snippet.is_some() {
+                MatchedIn::Content
+            } else {
+                MatchedIn::Title
+            };
+            hits.push((
+                found.tier,
+                SearchHit {
+                    session_id: meta.session_id.clone(),
+                    title: meta.title.clone(),
+                    status: meta.status,
+                    kind: meta.kind,
+                    updated_at: meta.updated_at,
+                    matched_in,
+                    title_ranges: found.title_ranges,
+                    snippet: found.snippet,
+                },
+            ));
+        }
+        // Forget sessions that are gone, so a deleted chat's text does not
+        // linger in memory.
+        self.search_docs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .retain(|id, _| all_ids.contains(id.as_str()));
+        hits.sort_by(|(a_tier, a), (b_tier, b)| {
+            a_tier
+                .cmp(b_tier)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| a.session_id.cmp(&b.session_id))
+        });
+        hits.truncate(limit);
+        Ok(SearchResponse {
+            results: hits.into_iter().map(|(_, hit)| hit).collect(),
+        })
+    }
+
+    /// The searchable text of one session, rebuilt only when the session
+    /// changed since it was last read.
+    async fn search_doc(&self, meta: &SessionMeta) -> Result<Arc<SearchDoc>, SessionError> {
+        let stamp = (meta.updated_at, meta.message_count);
+        if let Some((cached, doc)) = self
+            .search_docs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&meta.session_id)
+            && *cached == stamp
+        {
+            return Ok(doc.clone());
+        }
+        let entries = self.store.list_entries(&meta.session_id).await?;
+        let doc = Arc::new(SearchDoc::from_entries(&entries));
+        self.search_docs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(meta.session_id.clone(), (stamp, doc.clone()));
+        Ok(doc)
     }
 
     pub async fn list(&self, req: ListRequest) -> ServiceResult<ListResponse> {

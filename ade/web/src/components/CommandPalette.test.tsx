@@ -75,4 +75,79 @@ describe('CommandPalette row tags', () => {
     }
     expect(document.body.textContent).toContain('Chat')
   })
+
+  // Chats are found by what was said in them: a live hit replaces the
+  // title-only row with its id and shows the message that matched under the
+  // title, with the matched words marked.
+  it('replaces a chat row with its live hit and shows the snippet', async () => {
+    const asked: string[] = []
+    const liveSearch = async ({ text }: { text: string }) => {
+      asked.push(text)
+      return [
+        {
+          id: 'chat:s_1',
+          kind: 'chat',
+          title: 'Setup notes',
+          snippet: {
+            text: 'we streamlined the ADE setup',
+            ranges: [[3, 14]] as const,
+          },
+          run: () => {},
+        } satisfies PaletteEntry,
+      ]
+    }
+    const chats: PaletteEntry[] = [
+      ...entries,
+      { id: 'chat:s_1', kind: 'chat', title: 'Setup notes', run: () => {} },
+    ]
+    await act(async () => {
+      root.render(
+        <CommandPalette
+          open
+          onClose={() => {}}
+          localEntries={chats}
+          onOpenWorker={() => {}}
+          onOpenFunction={() => {}}
+          readInventory={readInventory}
+          liveSearch={liveSearch}
+          initialQuery="@stremlined"
+        />,
+      )
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+    expect(asked).toEqual(['stremlined'])
+    const rows = [...document.querySelectorAll('[data-palette-index]')]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].textContent).toContain('Setup notes')
+    expect(rows[0].textContent).toContain('we streamlined the ADE setup')
+    expect(rows[0].querySelector('mark')?.textContent).toBe('streamlined')
+  })
+
+  it('does not ask the live search for a one-letter query', async () => {
+    const asked: string[] = []
+    const liveSearch = async ({ text }: { text: string }) => {
+      asked.push(text)
+      return []
+    }
+    await act(async () => {
+      root.render(
+        <CommandPalette
+          open
+          onClose={() => {}}
+          localEntries={entries}
+          onOpenWorker={() => {}}
+          onOpenFunction={() => {}}
+          readInventory={readInventory}
+          liveSearch={liveSearch}
+          initialQuery="s"
+        />,
+      )
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+    expect(asked).toEqual([])
+  })
 })

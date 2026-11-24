@@ -54,6 +54,49 @@ export async function listSessions(): Promise<SessionMeta[]> {
   return resp?.sessions ?? []
 }
 
+/** A half-open `[start, end)` slice of a string, in UTF-16 code units. */
+export type TextRange = readonly [number, number]
+
+/** One `session::search` hit: a chat and why it matched. */
+export interface SessionSearchHit {
+  session_id: string
+  title: string
+  updated_at: number
+  matched_in: 'title' | 'content'
+  title_ranges: TextRange[]
+  /** The best-matching message, when the messages answered. */
+  snippet?: {
+    entry_id: string
+    role: 'user' | 'assistant'
+    text: string
+    ranges: TextRange[]
+  }
+}
+
+/**
+ * Find chats by what was said in them: fuzzy (word starts and typos match)
+ * over titles and message text, best first. A session-manager that predates
+ * `session::search` answers with an empty list rather than an error, so the
+ * palette falls back to its title match.
+ */
+export async function searchSessions(
+  query: string,
+  options: { limit?: number; timeoutMs?: number } = {},
+): Promise<SessionSearchHit[]> {
+  const client = await getIiiClient()
+  try {
+    const resp = await client.call<{ results?: SessionSearchHit[] }>(
+      'session::search',
+      { query, limit: options.limit ?? 20 },
+      { timeoutMs: options.timeoutMs ?? 5_000 },
+    )
+    return resp?.results ?? []
+  } catch (err) {
+    if (isMissingFunctionError(err)) return []
+    throw err
+  }
+}
+
 export async function getSession(
   sessionId: string,
 ): Promise<SessionMeta | null> {
