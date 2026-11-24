@@ -89,6 +89,12 @@ interface LexicalShellProps {
  the other way in. */
   onSubmit: () => void
   placeholder?: string
+  /**
+   * The textbox's accessible name (default `message composer`); its
+   * placeholder is exposed as `aria-placeholder` either way. A side chat's
+   * composer is named by its placeholder, "Ask aside…".
+   */
+  ariaLabel?: string
   disabled?: boolean
   /** Put the caret in the editor on mount. Off by default. */
   autoFocus?: boolean
@@ -799,6 +805,7 @@ export function LexicalShell({
   onChange,
   onSubmit,
   placeholder = 'Send a message…',
+  ariaLabel = 'message composer',
   disabled,
   autoFocus,
   externalInput = true,
@@ -840,7 +847,7 @@ export function LexicalShell({
             contentEditable={
               <ContentEditable
                 ref={editorRef}
-                aria-label="message composer"
+                aria-label={ariaLabel}
                 aria-placeholder={placeholder}
                 // The workspace's chords pass through the caret (a tab or
                 // pane switch from the composer, as from the page search).

@@ -291,6 +291,11 @@ interface ComposerProps {
    */
   idlePlaceholder?: string
   /**
+   * The editor's accessible name when it is not the chat's own composer (a
+   * side chat's: "Ask aside…"); default `message composer`.
+   */
+  inputLabel?: string
+  /**
    * Put the caret in the editor on mount. The caller decides, because only it
    * knows whether focus is welcome: on a touch device it raises the on-screen
    * keyboard over the conversation, which is worse than aiming once.
@@ -440,6 +445,7 @@ export function Composer({
   claimDraftSend,
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
+  inputLabel,
   autoFocus,
   externalInput = true,
   composerId: composerIdProp,
@@ -939,6 +945,7 @@ export function Composer({
     <ComposerAttachmentsContext.Provider value={attachmentsContext}>
       <LexicalShell
         lexicalEditorRef={lexicalEditorRef}
+        ariaLabel={inputLabel}
         onChange={(text) => {
           textRef.current = text
           setHasText(text.trim().length > 0)

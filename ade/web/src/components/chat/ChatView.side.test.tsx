@@ -128,6 +128,18 @@ describe('ChatView side chat quotes', () => {
   })
 })
 
+/** The attributes of the one element with `role="textbox"`, as a screen reader finds it. */
+function textbox(html: string): Record<string, string> | null {
+  const tag = html.match(/<div[^>]*role="textbox"[^>]*>/)?.[0]
+  if (!tag) return null
+  return Object.fromEntries(
+    [...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, key, value]) => [
+      key,
+      value,
+    ]),
+  )
+}
+
 describe('ChatView as an engine side chat (chat-projects §2.3.2)', () => {
   const engineSide = (
     extra: Partial<NonNullable<React.ComponentProps<typeof ChatView>['side']>>,
@@ -155,6 +167,17 @@ describe('ChatView as an engine side chat (chat-projects §2.3.2)', () => {
     // No model picker: its trigger names the (absent) model.
     expect(html).not.toContain('No model')
     expect(render(fork, { since: 20, empty: null })).toContain('No model')
+  })
+
+  it('names its textbox "Ask aside…" for screen readers; the main composer keeps its own name', () => {
+    const side = textbox(render(fork, engineSide({})))
+    expect(side).toMatchObject({
+      'aria-label': 'Ask aside…',
+      'aria-placeholder': 'Ask aside…',
+    })
+    const main = textbox(render(fork))
+    expect(main?.['aria-label']).toBe('message composer')
+    expect(main?.['aria-placeholder']).toBeTruthy()
   })
 
   it('draws the summary prompt as one line and its reply as the summary card', () => {

@@ -298,6 +298,28 @@ describe('ChatAside with the engine side chats', () => {
     expect(mocks.call).not.toHaveBeenCalled()
   })
 
+  it('names the default effort when the lock carries none (D97)', () => {
+    const plain = chat('plain', {
+      title: 'Why jitter?',
+      createdAt: 25,
+      updatedAt: 45,
+      messages: [
+        { id: 'p1', role: 'user', content: 'Why jitter?', createdAt: 30 },
+      ],
+      sessionMetadata: {
+        side_chat_of: 'main',
+        side_chat_lock: { model: 'claude-opus-5-5', provider: 'anthropic' },
+      },
+    })
+    mocks.ctx = makeCtx([main, why, logs, plain])
+    render({ seq: 1, tab: 'side-chat', openId: 'plain' })
+    expect(
+      document
+        .querySelector('[data-side-chat="plain"]')
+        ?.getAttribute('data-locked'),
+    ).toBe('Claude Opus 5.5 · Default')
+  })
+
   it('opens a new one through harness::side-chat::open and closes it when left empty', async () => {
     const fresh = chat('fresh', {
       title: 'Side chat',

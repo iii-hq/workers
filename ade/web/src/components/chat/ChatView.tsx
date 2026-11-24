@@ -4063,6 +4063,7 @@ export function ChatView({
                     />
                   ) : undefined
                 }
+                inputLabel={side?.placeholder}
                 idlePlaceholder={
                   side?.placeholder ??
                   idleComposerPlaceholder(

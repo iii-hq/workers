@@ -24,11 +24,8 @@ import type { SideChatLock } from '@/lib/chat-aside'
 import { PortalScope } from '@/lib/ui-scope'
 import type { ModelOption } from '@/types/chat'
 import { CATALOG_MODEL_KEY_SEP } from '@/types/chat'
-import {
-  formatEffortLabel,
-  formatModelLabel,
-  modelFamily,
-} from './model-picker-presentation'
+import { formatModelLabel, modelFamily } from './model-picker-presentation'
+import { effortStopLabel } from './ReasoningEffortSlider'
 
 /**
  * The engine side chat's pieces (chat-projects §2.3.2): the pane header, the
@@ -84,11 +81,13 @@ export function lockPresentation(
     !/^claude\b/i.test(shortName)
       ? `Claude ${shortName}`
       : shortName
-  const effort = formatEffortLabel(
-    lock ? (lock.thinkingLevel ?? '') : (fallback.thinkingLevel ?? ''),
-  )
-  const label = effort ? `${name} · ${effort}` : name
-  const short = effort ? `${shortName} · ${effort}` : shortName
+  // Always named (D97). A lock without `thinking_level` ran at the model's
+  // default effort, which the composer's model menu and effort slider call
+  // "Default" (`effortStopLabel`); the same word is used here.
+  const level = lock ? lock.thinkingLevel : fallback.thinkingLevel
+  const effort = effortStopLabel(level ? level : 'default')
+  const label = `${name} · ${effort}`
+  const short = `${shortName} · ${effort}`
   const meta = lock?.account ? `${label} · ${lock.account}` : label
   return { label, short, meta, ...(key ? { model: option?.id ?? key } : {}) }
 }
