@@ -1795,9 +1795,16 @@ async fn a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read() {
                     .unwrap();
             record.status = TurnStatus::Completed;
             record.continues = true;
-            // No other test reads this body, so no process cache answers for the store.
-            record.options.system_prompt =
-                Some("a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read".into());
+            // The body as another harness process (or this one before a
+            // restart) stored it: no process cache answers for the store.
+            let prompt = "a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read";
+            let digest = crate::state::prompt_digest(prompt);
+            let body = json!({ "body": prompt, "created_at": 1 });
+            let at = crate::state::PROMPT_SCOPE;
+            crate::state::state_set(&deps.iii, at, &digest, body, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            record.options.system_prompt_ref = Some(digest);
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
                 .await
                 .unwrap();

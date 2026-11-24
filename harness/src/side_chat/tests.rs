@@ -603,6 +603,38 @@ async fn open_while_the_conversation_runs_skips_the_reply_still_streaming() {
     assert_eq!(fake.calls_to("session::fork")[0]["entry_id"], "e_u3");
 }
 
+/// side-chat::open reads the conversation's prompt body. A conversation
+/// started minutes after the store lost that body (a state reset, a crash
+/// between scope files) references it, but this process skipped writing it
+/// again: it wrote it minutes ago. The side chat still opens, on that prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_on_a_conversation_whose_prompt_body_the_store_lost() {
+    let fake = Fake::with_conversation().await;
+    // Unique to this test: the bodies this process knows are process-wide.
+    let prompt = "open_on_a_conversation_whose_prompt_body_the_store_lost";
+    let digest = crate::state::prompt_digest(prompt);
+    let mut earlier = main_record();
+    earlier.session_id = "s_earlier".into();
+    earlier.options.system_prompt = Some(prompt.into());
+    fake.put_turn(&earlier).await;
+    fake.data
+        .lock()
+        .unwrap()
+        .state
+        .remove(&(crate::state::PROMPT_SCOPE.into(), digest.clone()));
+    let mut conversation = main_record();
+    conversation.options.system_prompt = Some(prompt.into());
+    fake.put_turn(&conversation).await;
+    assert!(
+        fake.state(crate::state::PROMPT_SCOPE, &digest).is_null(),
+        "the body was not written again"
+    );
+
+    let sid = fake.open().await.session_id;
+    let seeded = fake.turn(&sid).await.unwrap();
+    assert_eq!(seeded.options.system_prompt.as_deref(), Some(prompt));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_runs_on_the_lock_names_the_side_chat_and_refuses_another_model() {
     let fake = Fake::with_conversation().await;
