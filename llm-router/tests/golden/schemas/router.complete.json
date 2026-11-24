@@ -33,7 +33,7 @@
         "type": "object"
       }
     },
-    "description": "ChatRequest minus writer_ref (the sink arrives separately — the function handler wraps the looked-up writer, complete wraps its own).\n\n`messages` / `tools` / `response_format` / `thinking_level` / `provider_options` stay `Value`: they are forwarded to the provider verbatim, so the router intentionally does not re-validate their shape. The struct still derives `JsonSchema` so the SDK emits a real request schema (the freeform sub-fields surface as permissive sub-schemas).",
+    "description": "ChatRequest minus writer_ref (the sink arrives separately — the function handler wraps the looked-up writer, complete wraps its own).\n\n`messages` / `tools` / `response_format` / `thinking_level` / `provider_options` stay `Value`: they are forwarded to the provider verbatim, so the router does not re-validate their full types (`messages` only gets the shape check in `message_shape_problem`). The struct still derives `JsonSchema` so the SDK emits a real request schema (the freeform sub-fields surface as permissive sub-schemas).",
     "properties": {
       "cache_intent": {
         "anyOf": [
