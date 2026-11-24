@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/CollapsibleCard'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { observerNoticeHeadline } from '@/lib/observer-notice'
 import { timestampMilliseconds } from '@/lib/relative-time'
 import { cn } from '@/lib/utils'
 import type { SystemMessage, UserMessage } from '@/types/chat'
@@ -130,6 +131,12 @@ export function ObserverActivityCard({
   const [open, setOpen] = useState(!!defaultOpen)
 
   if (!activity) {
+    // The harness's own notice (expired, removed, not delivered): an iii
+    // headline over its full prose, which says what the agent does next.
+    const notificationText = notification?.content ?? record?.content
+    const noticeHeadline = notificationText
+      ? observerNoticeHeadline(notificationText)
+      : undefined
     return (
       <article
         className="flex items-start gap-3 rounded-xl bg-card p-4 ring-1 ring-card-edge sm:p-3"
@@ -141,8 +148,13 @@ export function ObserverActivityCard({
             className="size-5 shrink-0 fill-warn sm:size-4"
           />
         </div>
-        <div className="min-w-0 flex-1 font-sans text-base wrap-break-word text-ink sm:text-sm">
-          {notification?.content ?? record?.content ?? 'Observer activity'}
+        <div className="flex min-w-0 flex-1 flex-col gap-1 font-sans text-base wrap-break-word sm:text-sm">
+          {noticeHeadline ? (
+            <div className="font-semibold text-ink">{noticeHeadline}</div>
+          ) : null}
+          <div className={noticeHeadline ? 'text-ink-faint' : 'text-ink'}>
+            {notificationText ?? 'Observer activity'}
+          </div>
         </div>
       </article>
     )

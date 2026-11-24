@@ -2335,7 +2335,9 @@ describe('queuedRowText', () => {
         id: 'e_expire_sub_1',
         text: '[notification] wake expired unfired: workflow::on-run-completed (binding sub_1)',
       }),
-    ).toBe('Notification · wake expired unfired')
+    ).toBe(
+      'Notification · Stopped observing workflow::on-run-completed · expired before it fired',
+    )
     // Unlabeled: a colon inside the JSON is not a label.
     expect(
       queuedRowText({
@@ -2350,7 +2352,7 @@ describe('queuedRowText', () => {
         text: '[notification] binding sub_1 (was watching x::y) was RETIRED: gone',
         origin: { notification: true, binding: 'sub_1' },
       }),
-    ).toBe('Notification · binding sub_1 (was watching x::y) was RETIRED')
+    ).toBe('Notification · Stopped observing x::y')
   })
 
   it('leaves a queued user message unchanged', () => {

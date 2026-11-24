@@ -334,4 +334,24 @@ describe('ObserverActivityCard', () => {
     expect(html).toContain('remove it and observe again')
     expect(html).not.toContain('Observer fired</span>')
   })
+
+  it('heads a harness notice in iii words over its full prose', () => {
+    const message: UserMessage = {
+      id: 'e_condfail_sub_1',
+      role: 'user',
+      content:
+        '[notification] binding sub_1 `ready` observing `state::on-changed` args {"scope":"ops"} fired but was NOT delivered: condition timed out. The binding stays armed.',
+      notification: true,
+      observerId: 'sub_1',
+      createdAt: 1,
+    }
+    const html = renderToStaticMarkup(
+      createElement(ObserverActivityCard, { notification: message }),
+    )
+    expect(html).toContain(
+      'Observing state::on-changed · fired but not delivered',
+    )
+    // The prose stays: it tells the agent (and the reader) what to do next.
+    expect(html).toContain('condition timed out')
+  })
 })

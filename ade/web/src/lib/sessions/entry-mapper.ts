@@ -35,6 +35,7 @@
 import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
 import { parseMemoryNote } from '@/lib/memory-note'
 import { isProvidersNote, parseMentionsNote } from '@/lib/mentions/notes'
+import { observerNoticeHeadline } from '@/lib/observer-notice'
 import { parseSkillUpdate } from '@/lib/skill-update'
 import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
@@ -920,7 +921,8 @@ export function isNotificationEntryId(entryId: string): boolean {
 /**
  * A server-queued row's text in the queued strip. A queued notification shows
  * `Notification · <label>` (the text between `[notification] ` and the first
- * `: `), not its raw event JSON; any other row keeps its text.
+ * `: `), not its raw event JSON — or, for an observer notice, its headline
+ * (`observerNoticeHeadline`); any other row keeps its text.
  */
 export function queuedRowText(row: {
   id: string
@@ -931,6 +933,9 @@ export function queuedRowText(row: {
     (row.origin as { notification?: unknown } | undefined)?.notification ===
       true || isNotificationEntryId(row.id)
   if (!notification) return row.text || '(notification)'
+  // An observer notice the harness wrote for the agent reads in iii's words.
+  const headline = observerNoticeHeadline(row.text)
+  if (headline) return `Notification · ${headline}`
   const body = row.text.replace(/^\[notification\]\s*/, '')
   const cut = body.indexOf(': ')
   // An unlabeled event starts with its JSON; a colon inside it is no label.
