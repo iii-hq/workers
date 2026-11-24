@@ -39,10 +39,14 @@ rule; point-in-time information belongs in memories.
 
 - The header asks you to save — if `memory::save` is available to you, save
   what a later session would need: `memory::save { "text": "..." }`, one
-  self-contained sentence of 3 to 500 characters each. It is your note: it
-  lands in your session's bank with your session and turn as its source, at
-  most `max_memories_per_turn` new notes per turn; re-saving never duplicates
-  and does not make a memory more certain: only the user restating it does.
+  self-contained sentence of 3 to 500 characters each. Of what you find out,
+  save only what you found by running a command or a test, or reading or
+  changing the code: never a guess, nor what a wiki or other generated docs
+  say, even in the repository (reading those is not reading the code). It is
+  your note: it lands in your session's bank with your session and turn as its
+  source, at most `max_memories_per_turn` new notes per turn; re-saving never
+  duplicates and does not make a memory more certain: only the user restating
+  it does.
 - The user asks you to remember something (not in a scripted run) — in a
   captured session acknowledge it: extraction saves it after the turn, and no
   save call is needed. Where the header asks you to save, save it as a note.
