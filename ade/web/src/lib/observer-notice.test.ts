@@ -39,6 +39,28 @@ describe('observerNoticeHeadline', () => {
     }
   })
 
+  it('names the observed function, never a function-shaped label', () => {
+    // observer_deliver.rs: "binding {id}{label}{watch} fired but was NOT
+    // delivered" — the label comes first and may look like a function id.
+    expect(
+      observerNoticeHeadline(
+        '[notification] binding sub_1 `ops::ready` observing `state::on-changed` args {} fired but was NOT delivered: condition timed out',
+      ),
+    ).toBe('Observing state::on-changed · fired but not delivered')
+    // A labelled notice with no watch names no function at all.
+    expect(
+      observerNoticeHeadline(
+        '[notification] binding sub_2 `ops::ready` fired but was NOT delivered: condition timed out',
+      ),
+    ).toBe('Observer fired but was not delivered')
+    // migrate.rs words its watch "was watching".
+    expect(
+      observerNoticeHeadline(
+        '[notification] binding sub_3 (was watching x::y) was RETIRED: gone',
+      ),
+    ).toBe('Stopped observing x::y')
+  })
+
   it('leaves delivered events and typed text alone', () => {
     expect(
       observerNoticeHeadline('[notification] child-a-done: {"key":"child-a"}'),
