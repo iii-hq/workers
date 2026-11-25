@@ -41,7 +41,21 @@ export function registerArtifactSection(host: Host): (() => void) | undefined {
   })
 }
 
-function ArtifactSection({ host, setSummary }: ContextSectionProps & { host: Host }) {
+/**
+ * Reads only while the Context panel is open: the reader is mounted only
+ * when `active`, and the header keeps the last summary it reported.
+ */
+function ArtifactSection({ host, active, setSummary }: ContextSectionProps & { host: Host }) {
+  return active ? <ArtifactSectionReader host={host} setSummary={setSummary} /> : null
+}
+
+function ArtifactSectionReader({
+  host,
+  setSummary,
+}: {
+  host: Host
+  setSummary: ContextSectionProps['setSummary']
+}) {
   const api = useMemo(() => createApi(host), [host])
   const [showAll, setShowAll] = useState(false)
   const live = useWorkerLive<Snapshot>({

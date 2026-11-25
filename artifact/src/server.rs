@@ -73,6 +73,14 @@ impl Limiter {
         true
     }
 
+    /// Give back one hit, e.g. a reserved passcode attempt that turned out
+    /// right.
+    fn release(&self, key: &str) {
+        if let Some(slot) = self.windows.lock().expect("limiter lock").get_mut(key) {
+            slot.1 = slot.1.saturating_sub(1);
+        }
+    }
+
     /// Whether `key` has used up `limit` in its current window, without
     /// counting a hit.
     fn exhausted(&self, key: &str, limit: u32, window: i64, now: i64) -> bool {
@@ -98,7 +106,10 @@ struct PasscodeForm {
 /// Build the router of one listener over `store`.
 pub fn router(store: Arc<Store>, exposure: Exposure) -> Router {
     Router::new()
-        .route("/s/{token}", get(serve_get).post(serve_post))
+        .route(
+            "/s/{token}",
+            get(serve_get).post(serve_post).head(serve_head),
+        )
         .fallback(not_found)
         .with_state(AppState {
             store,
@@ -107,12 +118,30 @@ pub fn router(store: Arc<Store>, exposure: Exposure) -> Router {
         })
 }
 
+/// What a request may do with a share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Read the content (counts a view, consumes a single-view link).
+    Read,
+    /// `HEAD`: status and headers only. Link previewers and crawlers send
+    /// it; it must never consume a single-view link or count as a view.
+    Probe,
+}
+
 async fn serve_get(
     State(app): State<AppState>,
     Path(token): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    serve(&app, &token, &headers, None).await
+    serve(&app, &token, &headers, None, Mode::Read).await
+}
+
+async fn serve_head(
+    State(app): State<AppState>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    serve(&app, &token, &headers, None, Mode::Probe).await
 }
 
 async fn serve_post(
@@ -121,7 +150,7 @@ async fn serve_post(
     headers: HeaderMap,
     Form(form): Form<PasscodeForm>,
 ) -> Response {
-    serve(&app, &token, &headers, Some(form.passcode)).await
+    serve(&app, &token, &headers, Some(form.passcode), Mode::Read).await
 }
 
 async fn serve(
@@ -129,6 +158,7 @@ async fn serve(
     token: &str,
     headers: &HeaderMap,
     passcode: Option<String>,
+    mode: Mode,
 ) -> Response {
     if !is_token_shaped(token) {
         return not_found().await;
@@ -147,7 +177,7 @@ async fn serve(
     {
         return too_many();
     }
-    match handle(app, token, headers, passcode, now).await {
+    match handle(app, token, headers, passcode, mode, now).await {
         Ok(response) => response,
         Err(e) => {
             tracing::error!(error = %e, "share lookup failed");
@@ -166,6 +196,7 @@ async fn handle(
     token: &str,
     headers: &HeaderMap,
     passcode: Option<String>,
+    mode: Mode,
     now: i64,
 ) -> Result<Response, String> {
     let Some(share) = app.store.load_share(token).await? else {
@@ -183,26 +214,48 @@ async fn handle(
         return Ok(not_found().await);
     };
 
+    if mode == Mode::Probe {
+        let status = if share.passcode.is_some() {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::OK
+        };
+        return Ok(respond(
+            status,
+            "text/html; charset=utf-8",
+            CSP_STATIC,
+            String::new(),
+        ));
+    }
+
     if let Some(stored) = &share.passcode {
         let failures = format!("pass:{token}");
-        if app
+        let Some(attempt) = passcode else {
+            if app
+                .limiter
+                .exhausted(&failures, PASSCODE_FAILURES_PER_10_MIN, 600, now)
+            {
+                return Ok(too_many());
+            }
+            return Ok(prompt(&artifact.title, None));
+        };
+        // Reserve the attempt before hashing: concurrent guesses each take a
+        // slot up front, so no burst can exceed the limit. A cancelled
+        // request keeps its slot; only a right passcode gives it back.
+        if !app
             .limiter
-            .exhausted(&failures, PASSCODE_FAILURES_PER_10_MIN, 600, now)
+            .hit(&failures, PASSCODE_FAILURES_PER_10_MIN, 600, now)
         {
             return Ok(too_many());
         }
-        let Some(attempt) = passcode else {
-            return Ok(prompt(&artifact.title, None));
-        };
         let stored = stored.clone();
         let ok = tokio::task::spawn_blocking(move || verify_passcode(&attempt, &stored))
             .await
             .map_err(|e| format!("passcode check failed: {e}"))?;
         if !ok {
-            app.limiter
-                .hit(&failures, PASSCODE_FAILURES_PER_10_MIN, 600, now);
             return Ok(prompt(&artifact.title, Some("That passcode is not right.")));
         }
+        app.limiter.release(&failures);
     }
 
     let Some(content) = app.store.load_content(&artifact.id, share.version).await? else {
@@ -494,6 +547,41 @@ mod tests {
             "even the right one, once cut off"
         );
         assert_eq!(headers[header::RETRY_AFTER], "60");
+    }
+
+    #[tokio::test]
+    async fn a_head_request_never_consumes_or_counts() {
+        let mut once = share(true, unix_now() + 3600);
+        once.once = true;
+        let store = seeded(once).await;
+        let app = router(store.clone(), Exposure::Local);
+        let head = Request::head(format!("/s/{TOKEN}"))
+            .body(Body::empty())
+            .expect("request");
+        let (status, _, body) = call(app.clone(), head).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_empty());
+        assert_eq!(store.views(TOKEN).await.expect("views").count, 0);
+        let (get, _, _) = call(app, get_req(&format!("/s/{TOKEN}"))).await;
+        assert_eq!(get, StatusCode::OK, "the single view is still there");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_passcode_guesses_cannot_exceed_the_limit() {
+        let mut locked = share(true, unix_now() + 3600);
+        locked.passcode = Some(hash_passcode("hunter22").expect("hash"));
+        let app = router(seeded(locked).await, Exposure::Local);
+        let guesses: Vec<_> = (0..12)
+            .map(|_| tokio::spawn(call(app.clone(), post_req("guess"))))
+            .collect();
+        let mut checked = 0;
+        for guess in guesses {
+            let (status, _, _) = guess.await.expect("guess ran");
+            if status == StatusCode::UNAUTHORIZED {
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, PASSCODE_FAILURES_PER_10_MIN as usize);
     }
 
     #[tokio::test]

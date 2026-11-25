@@ -18,6 +18,7 @@ import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, Copy, Globe, Laptop, Link2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { ArtifactApi, ArtifactRecord, ShareLimits, ShareView } from '../lib/api'
+import { isWaitingForUrl, WAITING_POLL_MS } from '../lib/refresh'
 import { versionOptions } from './VersionSelect'
 
 /** Lifetimes offered, filtered by the configured maximum. */
@@ -111,11 +112,17 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
       started it. */
   const session = useRef(0)
 
+  // The version to preselect, read when the dialog opens and not after: a
+  // new version arriving while it is open must not wipe the draft (and with
+  // it a passcode the user typed).
+  const initialVersion = useRef(version ?? artifact.latest_version)
+  initialVersion.current = version ?? artifact.latest_version
+
   useEffect(() => {
     if (!open) return
     session.current += 1
     const current = session.current
-    setChosenVersion(String(version ?? artifact.latest_version))
+    setChosenVersion(String(initialVersion.current))
     setShare(null)
     setError(null)
     setBusy(false)
@@ -129,7 +136,26 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
       },
       (err) => session.current === current && setError(errorMessage(err)),
     )
-  }, [open, version, artifact.id, artifact.latest_version, api])
+  }, [open, artifact.id, api])
+
+  // A link made before its address resolved has no public URL yet: keep
+  // re-reading this share until it does, or until the dialog closes.
+  useEffect(() => {
+    if (!share || !isWaitingForUrl(share)) return
+    const current = session.current
+    const timer = window.setTimeout(() => {
+      api.shares(artifact.id).then(
+        (res) => {
+          if (session.current !== current) return
+          const fresh = res.shares.find((s) => s.token === share.token)
+          // A same-content copy still re-arms this effect for the next poll.
+          setShare(fresh ? { ...fresh } : { ...share })
+        },
+        () => session.current === current && setShare({ ...share }),
+      )
+    }, WAITING_POLL_MS)
+    return () => window.clearTimeout(timer)
+  }, [share, artifact.id, api])
 
   const passcodeTooShort = passcode.length > 0 && passcode.length < MIN_PASSCODE
 

@@ -107,16 +107,16 @@ async fn main() -> anyhow::Result<()> {
         },
     ));
 
-    let seed = cli
-        .config
-        .as_deref()
-        .and_then(|path| match WorkerConfig::from_file(path) {
-            Ok(cfg) => Some(cfg),
-            Err(e) => {
-                tracing::warn!(error = %e, path, "failed to parse config seed; ignoring it");
-                None
-            }
-        });
+    // An explicit seed that does not load is an operator error: falling back
+    // would persist the built-in defaults on first boot, and a corrected
+    // seed file never replaces a stored value afterwards.
+    let seed = match cli.config.as_deref() {
+        Some(path) => Some(
+            WorkerConfig::from_file(path)
+                .map_err(|e| anyhow::anyhow!("--config {path} is not a valid seed: {e}"))?,
+        ),
+        None => None,
+    };
 
     configuration::register_config(&iii, seed.as_ref())
         .await

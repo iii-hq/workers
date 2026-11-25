@@ -327,17 +327,19 @@ impl Store {
         self.set_typed(INDEX_KEY, &index).await
     }
 
-    /// Delete the record, every version's content and its index row.
+    /// Delete every version's content, then the index row, then the record.
+    /// The record goes last because it is the only handle that lists the
+    /// versions: a failure part-way leaves it in place for a retry, and
+    /// deleting an already-absent key is not an error.
     pub async fn delete_artifact(&self, record: &ArtifactRecord) -> Result<(), String> {
-        let mut index = self.index_raw().await?;
-        index.retain(|entry| entry.id != record.id);
-        self.set_typed(INDEX_KEY, &index).await?;
-        self.delete_raw(&artifact_key(&record.id)).await?;
         for meta in &record.versions {
             self.delete_raw(&content_key(&record.id, meta.version))
                 .await?;
         }
-        Ok(())
+        let mut index = self.index_raw().await?;
+        index.retain(|entry| entry.id != record.id);
+        self.set_typed(INDEX_KEY, &index).await?;
+        self.delete_raw(&artifact_key(&record.id)).await
     }
 
     /// Undo a create whose index write failed: drop the record and the
@@ -375,12 +377,29 @@ impl Store {
         Ok(self.get_typed(SHARES_KEY).await?.unwrap_or_default())
     }
 
+    /// Persist a share and its list row. A brand-new share whose row cannot be
+    /// written is taken back down, so a link never serves while it is
+    /// missing from the list (unlistable and unrevocable).
     pub async fn save_share(&self, share: &ShareRecord) -> Result<(), String> {
+        let existed = self.load_share(&share.token).await?.is_some();
         self.set_typed(&share_key(&share.token), share).await?;
-        let mut shares = self.shares().await?;
-        shares.retain(|s| s.token != share.token);
-        shares.push(share.clone());
-        self.set_typed(SHARES_KEY, &shares).await
+        let listed = async {
+            let mut shares = self.shares().await?;
+            shares.retain(|s| s.token != share.token);
+            shares.push(share.clone());
+            self.set_typed(SHARES_KEY, &shares).await
+        }
+        .await;
+        if let Err(e) = listed {
+            if !existed && let Err(rollback) = self.delete_raw(&share_key(&share.token)).await {
+                tracing::error!(
+                    error = %rollback,
+                    "a share that could not be listed could not be taken down either"
+                );
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Remove every share `drop` selects; returns the removed ones.

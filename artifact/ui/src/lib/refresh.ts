@@ -5,11 +5,11 @@
  * for its URL. The timer is cleared on unmount and on every new list.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { ShareView } from './api'
 
 /** How often a waiting public link is re-checked. */
-const WAITING_POLL_MS = 5_000
+export const WAITING_POLL_MS = 5_000
 /** Longest single timer, so a far expiry never overflows setTimeout. */
 const MAX_TIMER_MS = 6 * 3600 * 1000
 
@@ -25,12 +25,24 @@ export function nextRefreshMs(shares: readonly ShareView[], now = Date.now()): n
   return Math.min(Math.max(soonest - now + 1_000, 1_000), MAX_TIMER_MS)
 }
 
+/**
+ * Re-read the list on those clocks. Each fired timer bumps `attempt`, so the
+ * next timer is armed even when the read failed and the list did not change;
+ * a repeat with an unchanged list waits at least the poll interval.
+ */
 export function useShareRefresh(shares: readonly ShareView[] | undefined, refresh: () => void) {
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     if (!shares) return
     const delay = nextRefreshMs(shares)
     if (delay === null) return
-    const timer = window.setTimeout(refresh, delay)
+    const wait = attempt > 0 ? Math.max(delay, WAITING_POLL_MS) : delay
+    const timer = window.setTimeout(() => {
+      refresh()
+      setAttempt((n) => n + 1)
+    }, wait)
     return () => window.clearTimeout(timer)
-  }, [shares, refresh])
+  }, [shares, refresh, attempt])
+  // A new list starts the clock over.
+  useEffect(() => setAttempt(0), [shares])
 }
