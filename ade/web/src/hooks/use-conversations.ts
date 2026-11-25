@@ -82,6 +82,7 @@ import {
   clearTransientFlags,
   entryIdOfMessage,
   prependTranscript,
+  timeThought,
   transcriptToMessages,
 } from '@/lib/sessions/entry-mapper'
 import {
@@ -125,6 +126,7 @@ import {
   type SubagentColor,
   type SubagentIcon,
   type ThinkingLevel,
+  type ThoughtMessage,
 } from '@/types/chat'
 
 function uid(): string {
@@ -1476,7 +1478,15 @@ export function mergeHydratedTranscript(
       ...messages.slice(first).filter((m) => !belongsToEntry(m.id, entryId)),
     ]
   }
-  return messages
+  // The page never knows how long a thought took; the window may have timed
+  // it while it streamed (`timeThought`). Keep that through the re-read.
+  const liveThoughts = new Map<string, ThoughtMessage>()
+  for (const m of live) if (m.role === 'thought') liveThoughts.set(m.id, m)
+  if (liveThoughts.size === 0) return messages
+  return messages.map((m) => {
+    const prior = m.role === 'thought' ? liveThoughts.get(m.id) : undefined
+    return prior && m.role === 'thought' ? timeThought(m, prior) : m
+  })
 }
 
 /** Insert `rows` (all of entry `entryId`, absent from `messages`) where the

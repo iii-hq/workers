@@ -639,6 +639,16 @@ export function MessageList({
     knownRowKeysRef.current = new Set(flatRows.map((flat) => flat.key))
   }, [flatRows])
   const rowIndexById = useMemo(() => rowIndexByEntryId(flatRows), [flatRows])
+  // A thought folded into an earlier one has no row of its own: a jump to it
+  // lands on the fold, which carries the first thought's id.
+  const foldKeyById = useMemo(() => {
+    const keys = new Map<string, string>()
+    for (const flat of flatRows) {
+      if (flat.kind !== 'message') continue
+      for (const id of flat.absorbedIds ?? []) keys.set(id, flat.key)
+    }
+    return keys
+  }, [flatRows])
   // Placeholders a display renderer keeps visible in a folded batch (a
   // sub-agent card) are fetched when their page arrives, not when their row
   // mounts: a windowed row mounts as it scrolls in, and a card landing then
@@ -1338,9 +1348,10 @@ export function MessageList({
     // group items, group summaries) — not `data-message-id`, which is the
     // card-level attribute the approval jump uses. A row that absorbed a
     // wake notification carries both entry ids, space-separated.
+    const rowId = foldKeyById.get(focusMessageId) ?? focusMessageId
     const node = Array.from(
       content.querySelectorAll<HTMLElement>('[data-message-row]'),
-    ).find((el) => el.dataset.messageRow?.split(' ').includes(focusMessageId))
+    ).find((el) => el.dataset.messageRow?.split(' ').includes(rowId))
     if (!node) return
     focusAppliedRef.current = focusMessageId
     cancelTailAnimation()
@@ -1363,6 +1374,7 @@ export function MessageList({
     onFocusMessageHandled?.()
   }, [
     focusMessageId,
+    foldKeyById,
     transcriptHydrated,
     messages,
     onFocusMessageHandled,

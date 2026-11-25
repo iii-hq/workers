@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest'
-import type { Attachment, FunctionCallMessage, Message } from '@/types/chat'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type {
+  Attachment,
+  FunctionCallMessage,
+  Message,
+  ThoughtMessage,
+} from '@/types/chat'
 import {
   applyEntryUpsert,
   applyFcallPatch,
@@ -10,6 +15,7 @@ import {
   prependTranscript,
   queuedRowText,
   splitReactionTask,
+  timeThought,
   transcriptToMessages,
 } from './entry-mapper'
 import type { AgentMessage, TranscriptItem } from './types'
@@ -2356,5 +2362,109 @@ describe('queuedRowText', () => {
   it('leaves a queued user message unchanged', () => {
     const text = '[notification] typed: by hand'
     expect(queuedRowText({ id: 'e_idem_k1', text })).toBe(text)
+  })
+})
+
+/* The record keeps no thinking timing, so the window times a thought it
+   watches stream. An assistant entry's timestamp is when the model call
+   began, which is when a thought that opens the reply began too. */
+describe('thought timing', () => {
+  afterEach(() => vi.useRealTimers())
+
+  const thinking = { type: 'thinking' as const, text: 'pondering' }
+  const text = { type: 'text' as const, text: 'first, a word' }
+  const call = {
+    type: 'function_call' as const,
+    id: 'fc-1',
+    function_id: 'shell::run',
+    arguments: { command: 'ls' },
+  }
+  const live = { streaming: true, working: true }
+  // The model call behind entry `e-a` began at 9s.
+  const reply = (
+    content: Extract<AgentMessage, { role: 'assistant' }>['content'],
+    calledAt = 9_000,
+  ): TranscriptItem => {
+    const item = assistantItem('e-a', content, 'function_call')
+    return {
+      ...item,
+      message: { ...item.message, timestamp: calledAt } as AgentMessage,
+    }
+  }
+  const thoughtOf = (messages: Message[]) =>
+    messages.find((m): m is ThoughtMessage => m.role === 'thought')
+
+  it('times a thought that opens the reply from the model call to the frame that settles it', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    let messages = applyEntryUpsert([], reply([thinking]), live)
+    expect(thoughtOf(messages)).toMatchObject({
+      streaming: true,
+      startedAt: 9_000,
+      durationMs: 0,
+    })
+    vi.setSystemTime(12_000)
+    messages = applyEntryUpsert(
+      messages,
+      reply([{ ...thinking, text: 'pondering more' }]),
+      live,
+    )
+    expect(thoughtOf(messages)?.startedAt).toBe(9_000)
+    vi.setSystemTime(14_500)
+    messages = applyEntryUpsert(messages, reply([thinking, call]), live)
+    const settled = thoughtOf(messages)
+    expect(settled?.durationMs).toBe(5_500)
+    expect(settled?.streaming).toBeFalsy()
+    expect(settled && 'startedAt' in settled).toBe(false)
+
+    // A later re-read of the same entry keeps the measured duration.
+    vi.setSystemTime(20_000)
+    messages = applyEntryUpsert(messages, reply([thinking, call]))
+    expect(thoughtOf(messages)?.durationMs).toBe(5_500)
+  })
+
+  it('times a thought later in the reply from when it was first seen', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    let messages = applyEntryUpsert([], reply([text, thinking]), live)
+    expect(thoughtOf(messages)?.startedAt).toBe(10_000)
+    vi.setSystemTime(11_000)
+    messages = applyEntryUpsert(messages, reply([text, thinking, call]), live)
+    expect(thoughtOf(messages)?.durationMs).toBe(1_000)
+  })
+
+  it('does not trust a call time from a clock that disagrees with this one', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    const ahead = applyEntryUpsert([], reply([thinking], 60_000), live)
+    expect(thoughtOf(ahead)?.startedAt).toBe(10_000)
+    const stale = applyEntryUpsert([], reply([thinking], -3_600_000), live)
+    expect(thoughtOf(stale)?.startedAt).toBe(10_000)
+  })
+
+  it('leaves a thought it never saw stream without a duration', () => {
+    const messages = transcriptToMessages([reply([thinking, call])])
+    expect(thoughtOf(messages)?.durationMs).toBe(0)
+  })
+
+  it('settles a thought still streaming when the turn ends', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    const messages = applyEntryUpsert([], reply([thinking]), live)
+    vi.setSystemTime(12_000)
+    const settled = thoughtOf(clearTransientFlags(messages))
+    expect(settled).toMatchObject({ streaming: false, durationMs: 3_000 })
+    expect(settled && 'startedAt' in settled).toBe(false)
+  })
+
+  it('keeps a known duration over an unknown one', () => {
+    const prior: ThoughtMessage = {
+      id: 't',
+      role: 'thought',
+      content: 'x',
+      durationMs: 900,
+      createdAt: 0,
+    }
+    expect(timeThought({ ...prior, durationMs: 0 }, prior).durationMs).toBe(900)
   })
 })

@@ -39,7 +39,14 @@ export type FlatTimelineRow =
       message: AssistantMessage
       staggerIndex: number
     }
-  | { kind: 'message'; key: string; message: Message; staggerIndex: number }
+  | {
+      kind: 'message'
+      key: string
+      message: Message
+      staggerIndex: number
+      /** Thought ids folded into this row after its own (`mergeThoughtRuns`). */
+      absorbedIds?: readonly string[]
+    }
 
 /**
  * `knownKeys` are the keys already in use. A group is keyed by its first item,
@@ -81,6 +88,7 @@ export function flattenTimelineRows(
       key: message.id,
       message,
       staggerIndex: rowIndex,
+      ...(row.absorbedIds?.length ? { absorbedIds: row.absorbedIds } : {}),
     })
   })
   return flat
@@ -137,6 +145,9 @@ export function rowIndexByEntryId(
   const indexes = new Map<string, number>()
   flatRows.forEach((flat, index) => {
     indexes.set(flat.key, index)
+    if (flat.kind === 'message') {
+      for (const id of flat.absorbedIds ?? []) indexes.set(id, index)
+    }
     if (flat.kind !== 'activity-group') return
     for (const item of flat.row.items) {
       indexes.set(item.message.id, index)
