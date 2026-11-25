@@ -63,6 +63,11 @@ impl Default for ResizeConfig {
     }
 }
 
+pub fn check_quality(q: u8) -> Result<u8> {
+    anyhow::ensure!((1..=100).contains(&q), "quality must be 1-100, got {q}");
+    Ok(q)
+}
+
 pub fn load_config(path: &str) -> Result<ResizeConfig> {
     let contents = std::fs::read_to_string(path)?;
     let config: ResizeConfig = serde_yaml_ng::from_str(&contents)?;
@@ -99,6 +104,16 @@ quality:
         assert_eq!(config.strategy, ResizeStrategy::CropToFit);
         assert_eq!(config.quality.jpeg, 70);
         assert_eq!(config.quality.webp, 60);
+    }
+
+    #[test]
+    fn check_quality_bounds() {
+        for bad in [0, 101, 255] {
+            assert!(check_quality(bad).is_err(), "{bad}");
+        }
+        for good in [1, 50, 100] {
+            assert_eq!(check_quality(good).unwrap(), good);
+        }
     }
 
     #[test]

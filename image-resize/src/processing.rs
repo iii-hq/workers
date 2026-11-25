@@ -1,11 +1,12 @@
 use anyhow::{Result, anyhow, bail};
 use image::codecs::jpeg::JpegEncoder;
+use image::imageops::{self, FilterType};
 use image::metadata::Orientation;
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, imageops::FilterType};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
-use crate::config::{ResizeConfig, ResizeStrategy};
+use crate::config::{ResizeConfig, ResizeStrategy, check_quality};
 
 #[derive(Deserialize, Debug)]
 pub struct ImageMetadata {
@@ -71,7 +72,7 @@ pub fn resolve_params(config: &ResizeConfig, metadata: &ImageMetadata) -> Result
         target_width: metadata.target_width.unwrap_or(config.width),
         target_height: metadata.target_height.unwrap_or(config.height),
         strategy: metadata.strategy.unwrap_or(config.strategy),
-        quality: metadata.quality.unwrap_or(quality_default),
+        quality: check_quality(metadata.quality.unwrap_or(quality_default))?,
         input_format,
         output_format,
     })
@@ -111,6 +112,12 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage> {
     Ok(DynamicImage::from_decoder(decoder)?)
 }
 
+fn over_white(img: &DynamicImage) -> DynamicImage {
+    let mut bg = RgbaImage::from_pixel(img.width(), img.height(), Rgba([255; 4]));
+    imageops::overlay(&mut bg, img, 0, 0);
+    DynamicImage::ImageRgba8(bg)
+}
+
 pub fn resize_scale_to_fit(img: DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
     if img.width() <= max_w && img.height() <= max_h {
         return img;
@@ -145,6 +152,12 @@ pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicI
 pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>> {
     let mut img = decode(bytes, params.input_format)?;
     img.apply_orientation(exif_orientation(bytes));
+    // JPEG has no alpha. Flatten before the resize: the filter mixes straight
+    // alpha, so flattening afterwards would leave the hidden colour of
+    // transparent pixels in every edge.
+    if params.output_format == ImageFormat::Jpeg && img.color().has_alpha() {
+        img = over_white(&img);
+    }
 
     let thumbnail = match params.strategy {
         ResizeStrategy::ScaleToFit => {
@@ -158,15 +171,10 @@ pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>>
     let mut buf = Vec::new();
     match params.output_format {
         ImageFormat::Jpeg => {
-            let encoder = JpegEncoder::new_with_quality(&mut buf, params.quality);
-            thumbnail.to_rgb8().write_with_encoder(encoder)?;
-        }
-        ImageFormat::Png => {
-            let mut cursor = Cursor::new(&mut buf);
             thumbnail
-                .to_rgba8()
-                .write_to(&mut cursor, ImageFormat::Png)?;
+                .write_with_encoder(JpegEncoder::new_with_quality(&mut buf, params.quality))?;
         }
+        ImageFormat::Png => thumbnail.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)?,
         ImageFormat::WebP => {
             let mut cursor = Cursor::new(&mut buf);
             thumbnail
@@ -182,7 +190,7 @@ pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageEncoder, RgbImage, RgbaImage};
+    use image::{ImageEncoder, RgbImage};
 
     fn make_rgb_image(w: u32, h: u32, r: u8, g: u8, b: u8) -> DynamicImage {
         let mut img = RgbImage::new(w, h);
@@ -613,6 +621,78 @@ mod tests {
                 .to_string()
                 .contains("Unsupported format")
         );
+    }
+
+    #[test]
+    fn jpeg_flattens_alpha_before_resizing() {
+        let half = RgbaImage::from_fn(200, 200, |x, _| {
+            image::Rgba(if x < 100 { [255; 4] } else { [0; 4] })
+        });
+        let png = encode_image(&DynamicImage::ImageRgba8(half), ImageFormat::Png);
+        let out = run(
+            &png,
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ResizeStrategy::ScaleToFit,
+            50,
+            50,
+            85,
+        );
+        assert_eq!((out.width(), out.height()), (50, 50));
+        for (x, y, p) in out.to_rgb8().enumerate_pixels() {
+            assert!(
+                p.0.iter().all(|&c| c >= 250),
+                "pixel ({x}, {y}) is {:?}",
+                p.0
+            );
+        }
+    }
+
+    #[test]
+    fn png_output_keeps_gray() {
+        let gray =
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(40, 30, image::Luma([90])));
+        let mut png = Vec::new();
+        gray.write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        let out = run(
+            &png,
+            ImageFormat::Png,
+            ImageFormat::Png,
+            ResizeStrategy::ScaleToFit,
+            20,
+            20,
+            100,
+        );
+        assert_eq!((out.width(), out.height()), (20, 15));
+        assert_eq!(out.color(), image::ColorType::L8);
+    }
+
+    #[test]
+    fn resolve_params_rejects_bad_quality() {
+        let config = default_config();
+        let with_quality = |quality| ImageMetadata {
+            format: "jpeg".into(),
+            output_format: None,
+            width: 1,
+            height: 1,
+            quality: Some(quality),
+            strategy: None,
+            target_width: None,
+            target_height: None,
+        };
+        for bad in [0, 101] {
+            let err = resolve_params(&config, &with_quality(bad)).unwrap_err();
+            assert!(err.to_string().contains("quality must be 1-100"), "{err}");
+        }
+        for good in [1, 100] {
+            assert_eq!(
+                resolve_params(&config, &with_quality(good))
+                    .unwrap()
+                    .quality,
+                good
+            );
+        }
     }
 
     #[test]
