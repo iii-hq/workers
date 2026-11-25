@@ -231,17 +231,28 @@ iii call --function-id=directory::skills::download \
 
 The response is
 `{ namespace, skills_written, system_prompts_written, agents_written, agents_skipped?, source }`.
-The three `*_written` fields list the files materialised in this run.
+The three `*_written` fields list the files materialised in this run, the ones
+already identical on disk included.
 Registry entries shaped exactly as `agents/<id>.md` land in
 `<agents_folder>/<id>.md`; repo downloads do not install agent profiles.
-A registry entry whose profile id an installed kit owns (`kits.lock`) is not
-written — kit profiles take precedence — and is reported in
-`agents_skipped: [{ id, owned_by }]`.
+A registry entry is not written when the profile on disk belongs to an
+installed kit (`kits.lock`) or to another worker, or was made or edited in the
+project. It is reported in `agents_skipped: [{ id, owned_by }]`, where
+`owned_by` is the kit, `worker <name>` or `project`.
 
 A registry download (explicit or automatic) writes
 `<skills_folder>/<worker>/.iii-skill-complete` with the worker, the resolved
-`version` and, per agent profile it wrote, `agents: { <id>: <sha256> }`. That
-is how `directory::agents::list` attributes a profile to a worker.
+`version`, per agent profile it wrote `agents: { <id>: <sha256> }`, and per
+other file `files: { <path>: <sha256> }`. `agents` is how
+`directory::agents::list` attributes a profile to a worker. `files` is how the
+next download tells a skill or system prompt that was edited: it keeps that
+one's content next to it as `<file>.<sha>.bak` before replacing it. A file the
+marker does not record counts as edited.
+
+The automatic download writes a worker's bundle again when Compose runs another
+version than the marker records, or the marker records none. The engine's own
+`iii` skill is compared with the registry's `latest` at each boot. A bundle
+whose version is already on disk is not written again.
 
 After every successful download the worker calls
 `directory::skills::on-change`, `directory::system-prompts::on-change`,
@@ -407,7 +418,9 @@ The download function namespaces by source:
 
 Re-pulling the same source overwrites files **file-by-file** —
 existing siblings outside the response set are preserved (so
-hand-edited additions survive a re-pull).
+hand-edited additions survive a re-pull). A registry download keeps a `.bak`
+copy of a file edited since the last one, and leaves a profile made or edited
+in the project alone (see [Quickstart](#quickstart-download-some-skills)).
 
 ---
 

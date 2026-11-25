@@ -21,15 +21,17 @@ import {
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
+import { registerAgents } from './agents.js';
 import { pluginSourceLine } from './iii-plugin/install.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { ranSinceStart, register, startupScanDone } from './run.js';
 import { startStatusRecovery } from './session-link.js';
+import { settleStaleTurns } from './turns.js';
 import { registerActivity } from './terminal/activity.js';
 import { registerAuth } from './terminal/auth.js';
 import { registerTerminal } from './terminal/terminal.js';
 import { registerUi } from './terminal/ui.js';
-import { type HostPrepared, prepareHost } from './terminal/workspace.js';
+import { type HostPrepared, inventoryHost, prepareHost } from './terminal/workspace.js';
 
 const { values } = parseArgs({
   options: {
@@ -126,7 +128,13 @@ await observeConfigChanges(iii, refresh);
 const feeds = registerAgentFeeds(iii);
 const emit = feeds.agent.emit;
 const emitRaw = feeds.raw.emit;
-register(iii, () => holder.current, emit, emitRaw);
+register(
+  iii,
+  () => holder.current,
+  emit,
+  emitRaw,
+  (id) => agents.heldElsewhere(id),
+);
 // A session this worker left `working` (a lost final status, or a restart
 // mid-run) is settled now: nothing of ours can be running yet.
 // Statuses this worker could not write (a lost final status, or a restart
@@ -134,14 +142,25 @@ register(iii, () => holder.current, emit, emitRaw);
 // again whenever session-manager registers; runs since startup stay tracked
 // until the first scan that listed successfully.
 startStatusRecovery(iii, ranSinceStart, startupScanDone);
+// Run records left `working` by the previous process get their settle, so an
+// observer waiting on one of those turns is woken.
+void settleStaleTurns(iii, ranSinceStart);
 
-// The terminal half: the hook sink, what a session runs, who pays for it, and
+// The terminal half: the hook sink, the session inventory (which reads the
+// sink's sessions), what a session runs, who pays for it, and
 // the console page that opens it.
-registerActivity(iii, emit);
+const tracker = registerActivity(iii, emit);
+const agents = registerAgents(
+  iii,
+  () => inventoryHost(prepared),
+  () => holder.current.external_sessions,
+  tracker,
+);
 registerTerminal(
   iii,
   () => prepared,
   () => holder.current.terminal,
+  agents.resolveOpen,
 );
 registerAuth(iii, () => prepared);
 registerUi(iii);

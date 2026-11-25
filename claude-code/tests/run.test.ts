@@ -689,3 +689,81 @@ describe('event feed delivery during a turn', () => {
     }
   });
 });
+
+describe('turn settle in claude_turns', () => {
+  const settles = (fake: FakeIii) =>
+    fake.calls
+      .filter((c) => c.function_id === 'state::set' && c.payload.scope === 'claude_turns')
+      .map((c) => c.payload.value as Record<string, unknown>);
+
+  it('a finished turn settles completed with its turn_id, result and Claude session', async () => {
+    const { fake, result } = await runTurn({ prompt: 'x', session_id: 's1', turn_id: 't-1' });
+    expect(result.turn_id).toBe('t-1');
+    expect(settles(fake)).toHaveLength(1);
+    expect(fake.state.get('claude_turns/s1')).toMatchObject({
+      id: 's1',
+      source: 'run',
+      status: 'completed',
+      turn_id: 't-1',
+      claude_session_id: 'cs-1',
+      stop_reason: 'end',
+      result: 'done',
+    });
+    // Saved when the run started, so a restart can settle the same turn.
+    expect(fake.state.get('claude_sessions/s1')).toMatchObject({ turn_id: 't-1' });
+  });
+
+  it('mints a turn_id when none is given', async () => {
+    const { fake, result } = await runTurn({ prompt: 'x', session_id: 's1' });
+    expect(typeof result.turn_id).toBe('string');
+    expect(fake.state.get('claude_turns/s1')).toMatchObject({ turn_id: result.turn_id });
+  });
+
+  it('an error result settles error with its text', async () => {
+    const turn = [
+      { type: 'system', subtype: 'init', session_id: 'cs-1' },
+      { ...fullTurn[3], subtype: 'error_max_turns', is_error: true, result: 'too many turns' },
+    ];
+    const { fake } = await runTurn({ prompt: 'x', session_id: 's1' }, turn);
+    expect(settles(fake)).toHaveLength(1);
+    expect(fake.state.get('claude_turns/s1')).toMatchObject({
+      status: 'error',
+      stop_reason: 'error_max_turns',
+      error: 'too many turns',
+    });
+  });
+
+  it('a setup throw settles error and still rethrows', async () => {
+    const fake = fakeIii();
+    const cfg = await baseConfig();
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+    const realCall = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'state::get') throw new Error('store down');
+      return realCall(req as never);
+    };
+    const emit = (await observedFeeds(fake)).agent.emit;
+    await expect(
+      executeRun(
+        fake.iii,
+        cfg,
+        emit,
+        emit,
+        RunPayloadSchema.parse({ prompt: 'x', session_id: 's1', turn_id: 't-2' }),
+      ),
+    ).rejects.toThrow('store down');
+    expect(settles(fake)).toHaveLength(1);
+    expect(fake.state.get('claude_turns/s1')).toMatchObject({
+      id: 's1',
+      source: 'run',
+      status: 'error',
+      turn_id: 't-2',
+      error: 'Error: store down',
+    });
+  });
+
+  it('rejects an empty or oversized turn_id', () => {
+    expect(() => RunPayloadSchema.parse({ prompt: 'x', turn_id: '' })).toThrow();
+    expect(() => RunPayloadSchema.parse({ prompt: 'x', turn_id: 'x'.repeat(201) })).toThrow();
+  });
+});

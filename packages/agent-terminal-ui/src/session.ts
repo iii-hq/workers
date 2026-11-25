@@ -74,6 +74,8 @@ export interface SessionSummary {
   cwd?: string
   program: string | null
   status: string | { exited?: unknown }
+  /** Where output goes; null while detached. */
+  output_function_id?: string | null
   ui: string | null
 }
 

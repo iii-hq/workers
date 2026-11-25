@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::StreamChannelRef;
 use iii_sdk::{
     Call, CallRequest, Capture, IIIClient, Observer, ObserverOptions, RegisterFunction, Source,
     register_worker,
@@ -277,7 +277,6 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     let stream_calls = Arc::new(AtomicU64::new(0));
     let token_cell: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
 
-    let address = url.to_string();
     let wf = write_failed.clone();
     let fam = fail_at_ms.clone();
     let calls = stream_calls.clone();
@@ -286,7 +285,6 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     iii.register_function(
         "provider::real::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let (wf, fam) = (wf.clone(), fam.clone());
             let calls = calls.clone();
             async move {
@@ -294,11 +292,11 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                 let r: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
                         .map_err(|e| Error::Serde(e.to_string()))?;
-                let writer = iii_sdk::channel::ChannelWriter::new(&address, &r);
+                let writer = open_writer(&r);
                 let model = input["model"].clone();
                 let start = json!({ "type": "start", "partial": { "role": "assistant", "content": [], "stop_reason": "end", "model": model, "provider": "real", "timestamp": 1 } });
                 writer
-                    .send_message(&start.to_string())
+                    .send_text(&start.to_string())
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
                 if ping_forever {
@@ -306,7 +304,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                     loop {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         if writer
-                            .send_message(&json!({ "type": "ping" }).to_string())
+                            .send_text(&json!({ "type": "ping" }).to_string())
                             .await
                             .is_err()
                         {
@@ -334,7 +332,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                     json!({ "type": "done", "message": message }),
                 ] {
                     writer
-                        .send_message(&frame.to_string())
+                        .send_text(&frame.to_string())
                         .await
                         .map_err(|e| Error::Handler(e.to_string()))?;
                 }
@@ -443,20 +441,21 @@ async fn consumer_channel(
     Arc<std::sync::Mutex<Vec<String>>>,
     tokio::task::JoinHandle<()>,
 ) {
-    let channel = iii_sdk::helpers::create_channel(iii, None)
-        .await
-        .expect("channel");
+    let pipe = iii.pipe().await.expect("channel");
+    // The write end's ref goes to the router; its serialized form is the ref.
+    let writer_ref: iii_sdk::protocol::StreamChannelRef =
+        serde_json::from_value(serde_json::to_value(&pipe.output).expect("ref")).expect("ref");
     let frames = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let f2 = frames.clone();
-    channel
-        .reader
-        .on_message(move |m| {
-            f2.lock().unwrap().push(m);
-        })
-        .await;
-    let writer_ref = channel.writer_ref.clone();
+    let input = pipe.input;
     let pump = tokio::spawn(async move {
-        let _ = channel.reader.read_all().await; // drives text-message dispatch
+        use futures::StreamExt;
+        let mut items = input.frames();
+        while let Some(Ok(item)) = items.next().await {
+            if let iii_sdk::protocol::ChannelItem::Text(m) = item {
+                f2.lock().unwrap().push(m);
+            }
+        }
     });
     (writer_ref, frames, pump)
 }
@@ -622,20 +621,19 @@ async fn consumer_cancellation_propagates_to_the_provider() {
     .await;
 
     let consumer = register_worker(&engine.url, test_init_options());
-    let channel = iii_sdk::helpers::create_channel(&consumer, None)
-        .await
-        .expect("channel");
-    let reader = channel.reader;
+    let pipe = consumer.pipe().await.expect("channel");
+    let writer_ref = ref_of(&pipe.output);
+    let reader = pipe.input;
     let pump = tokio::spawn(async move {
-        // start reading, then drop the reader after 300ms = consumer walks away
+        // start reading, then cancel the reader after 300ms = consumer walks away
         let _ = tokio::time::timeout(Duration::from_millis(300), reader.read_all()).await;
-        let _ = reader.close().await;
+        reader.cancel().await;
         drop(reader);
     });
 
     let chat = {
         let consumer = consumer.clone();
-        let writer_ref = channel.writer_ref.clone();
+        let writer_ref = writer_ref.clone();
         tokio::spawn(async move {
             consumer
                 .call(CallRequest {
@@ -2508,11 +2506,9 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
     let resolution_keys = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let observed_calls = calls.clone();
     let observed_keys = resolution_keys.clone();
-    let address = engine.url.clone();
     provider.register_function(
         "provider::retryable::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let calls = observed_calls.clone();
             let resolution_keys = observed_keys.clone();
             async move {
@@ -2526,11 +2522,11 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
                 let writer_ref: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
                         .map_err(|error| Error::Serde(error.to_string()))?;
-                let writer = iii_sdk::channel::ChannelWriter::new(&address, &writer_ref);
+                let writer = open_writer(&writer_ref);
                 let model = input["model"].clone();
                 if attempt == 1 {
                     writer
-                        .send_message(
+                        .send_text(
                             &json!({
                                 "type": "error",
                                 "error": {
@@ -2575,7 +2571,7 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
                     json!({ "type": "done", "message": message }),
                 ] {
                     writer
-                        .send_message(&frame.to_string())
+                        .send_text(&frame.to_string())
                         .await
                         .map_err(|error| Error::Handler(error.to_string()))?;
                 }
@@ -2660,11 +2656,9 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
     let error_sent = Arc::new(tokio::sync::Semaphore::new(0));
     let observed_calls = calls.clone();
     let observed_error = error_sent.clone();
-    let address = engine.url.clone();
     provider.register_function(
         "provider::backoff::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let calls = observed_calls.clone();
             let error_sent = observed_error.clone();
             async move {
@@ -2672,9 +2666,9 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
                 let writer_ref: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
                         .map_err(|error| Error::Serde(error.to_string()))?;
-                let writer = iii_sdk::channel::ChannelWriter::new(&address, &writer_ref);
+                let writer = open_writer(&writer_ref);
                 writer
-                    .send_message(
+                    .send_text(
                         &json!({
                             "type": "error",
                             "error": {

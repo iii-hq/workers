@@ -114,7 +114,7 @@ describe('leaveSession: moving to another folder', () => {
   it('closes the running session (never just detaches it) and clears the lease', async () => {
     writeLease('p::', 't1', { sessionId: 's', reconnectToken: 'r', cwd: '/work/a' })
     const calls: [string, unknown][] = []
-    const call = async <T,>(fn: string, payload: unknown) => {
+    const call = async <T>(fn: string, payload: unknown) => {
       calls.push([fn, payload])
       return {} as T
     }
@@ -134,6 +134,6 @@ describe('leaveSession: moving to another folder', () => {
       't1',
     )
     expect(readLease('p::', 't1')).toBeNull()
-    await expect(leaveSession(async <T,>() => ({}) as T, null, 'p::', 't1')).resolves.toBeUndefined()
+    await expect(leaveSession(async <T>() => ({}) as T, null, 'p::', 't1')).resolves.toBeUndefined()
   })
 })

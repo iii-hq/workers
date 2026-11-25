@@ -6,7 +6,6 @@
 
 import { randomUUID } from 'node:crypto'
 import { type IIIClient, registerWorker } from 'iii-sdk'
-import { createChannel } from 'iii-sdk/helpers'
 import WebSocket from 'ws'
 import { middlewareCalls, TENANT1_TOKEN, TENANT2_TOKEN } from './support.ts'
 
@@ -536,20 +535,16 @@ export const CASES: TestCase[] = [
   {
     name: 'channel-roundtrip-through-proxy',
     async run({ down }) {
-      const ch = await createChannel(down)
-      // Read to completion via the Writable stream API: `stream.end()` flushes
-      // the buffered frame before closing (its `final` hook delays the close),
-      // avoiding the send/close race that drops a fire-and-forget sendMessage.
-      const readPromise = ch.reader.readAll()
-      ch.writer.stream.write(Buffer.from('ping'))
-      ch.writer.stream.end()
+      const ch = await down.pipe()
+      const readPromise = ch.input.bytes()
+      await ch.output.write(Buffer.from('ping'))
+      await ch.output.close()
       const buf = await Promise.race([
         readPromise,
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error('channel read timed out')), 8000)),
       ])
       const text = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf)
       if (!text.includes('ping')) throw new Error(`channel did not relay the frame: got ${JSON.stringify(text)}`)
-      ch.reader.close()
     },
   },
 

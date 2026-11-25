@@ -53,6 +53,31 @@ export type HostPrepared = {
   detail: string;
 };
 
+/**
+ * What the session inventory (`../agents.ts`) reads of the terminal host: the
+ * CLI it lists and stops sessions with, and the argv and folder it opens one
+ * from. Sessions are prepared one by one (`prepareSession`), so the argv is
+ * empty (the opened session's own prepared argv goes in front of a resume)
+ * and so is the folder (a session without one opens in the compose project).
+ */
+export type Prepared = {
+  workspace: string;
+  executable: string;
+  args: string[];
+  env: Record<string, string>;
+  detail: string;
+};
+
+export function inventoryHost(host: HostPrepared): Prepared {
+  return {
+    workspace: '',
+    executable: host.executable,
+    args: [],
+    env: host.env,
+    detail: host.detail,
+  };
+}
+
 export type SessionSpec = {
   program: string;
   args: string[];

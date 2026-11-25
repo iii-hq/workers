@@ -11,11 +11,13 @@ import { fullTurn, scriptedQuery, type QueryCapture } from './_helpers/fake-quer
 
 const queryMock = vi.mocked(query);
 
-async function registeredWorker(): Promise<FakeIii> {
+async function registeredWorker(
+  heldElsewhere?: (claudeSessionId: string) => Promise<boolean>,
+): Promise<FakeIii> {
   const fake = fakeIii();
   const cfg = await loadConfig('/nonexistent/config.yaml');
   const feeds = registerAgentFeeds(fake.iii);
-  register(fake.iii, () => cfg, feeds.agent.emit, feeds.raw.emit);
+  register(fake.iii, () => cfg, feeds.agent.emit, feeds.raw.emit, heldElsewhere);
   return fake;
 }
 
@@ -361,5 +363,206 @@ describe('register', () => {
       sessions: Array<{ session_id: string }>;
     };
     expect(res.sessions.map((s) => s.session_id).sort()).toEqual(['s1', 's2']);
+  });
+});
+
+describe('a conversation another process has open', () => {
+  const ran = { session_id: 'h', claude_session_id: 'cs-h', cwd: '', model: '', status: 'done' };
+  const calls: Array<[string, Record<string, unknown>]> = [
+    ['claude::run', { prompt: 'x' }],
+    ['claude::start', { prompt: 'x' }],
+    ['claude::task', { task: 'x' }],
+  ];
+  const invoke = async (fake: FakeIii, fn: string, payload: Record<string, unknown>) =>
+    (await fake.registered.get(fn)?.({ session_id: 'h', ...payload })) as Record<string, unknown>;
+
+  it.each(calls)('%s does not resume it', async (fn, payload) => {
+    const held = vi.fn(async () => true);
+    const fake = await registeredWorker(held);
+    fake.state.set('claude_sessions/h', ran);
+    const res = await invoke(fake, fn, payload);
+    expect(res).toMatchObject({ session_id: 'h', busy: true });
+    expect(res.reason).toContain('open in another process');
+    if (fn !== 'claude::run') expect(res.started).toBe(false);
+    expect(held).toHaveBeenCalledWith('cs-h');
+    expect(queryMock).not.toHaveBeenCalled();
+    // Nothing ran: no settle, no task outcome, and the slot is free.
+    expect(fake.calls.some((c) => c.function_id === 'state::set')).toBe(false);
+    const status = await invoke(fake, 'claude::status', {});
+    expect(status.live).toBe(false);
+  });
+
+  it.each(calls)('%s runs when nothing else has it open', async (fn, payload) => {
+    const fake = await registeredWorker(async () => false);
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+    fake.state.set('claude_sessions/h', ran);
+    expect((await invoke(fake, fn, payload)).busy).toBeUndefined();
+    await vi.waitFor(() => expect(fake.state.has('claude_turns/h')).toBe(true));
+    expect(queryMock).toHaveBeenCalledOnce();
+  });
+
+  it('takes a turn that writes elsewhere, a first turn, and one it could not check', async () => {
+    const held = vi.fn(async (id: string): Promise<boolean> => {
+      if (id === 'cs-odd') throw new Error('boom');
+      return true;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fake = await registeredWorker(held);
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+    fake.state.set('claude_sessions/h', ran);
+    fake.state.set('claude_sessions/odd', { ...ran, claude_session_id: 'cs-odd' });
+    for (const payload of [
+      { options: { forkSession: true } },
+      { options: { resume: 'cs-other' } },
+      { session_id: 'new' },
+      { session_id: 'odd' },
+    ]) {
+      const res = await invoke(fake, 'claude::run', { prompt: 'x', ...payload });
+      expect(res).toMatchObject({ result: 'done' });
+      fake.state.set('claude_sessions/h', ran);
+    }
+    expect(held.mock.calls).toEqual([['cs-odd']]);
+    warn.mockRestore();
+  });
+
+  it('honors a stop that arrives while it checks', async () => {
+    let release: ((held: boolean) => void) | undefined;
+    const fake = await registeredWorker(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    fake.state.set('claude_sessions/h', ran);
+    const run = invoke(fake, 'claude::run', { prompt: 'x' });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(await invoke(fake, 'claude::stop', {})).toMatchObject({ stopped: true });
+    release?.(false);
+    expect(await run).toMatchObject({ stop_reason: 'interrupted' });
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('turn settle through the registered functions', () => {
+  const settles = (fake: FakeIii) =>
+    fake.calls.filter((c) => c.function_id === 'state::set' && c.payload.scope === 'claude_turns');
+
+  it('claude::run, claude::start and claude::task return the turn_id the settle carries', async () => {
+    const fake = await registeredWorker();
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+
+    const run = (await fake.registered.get('claude::run')?.({
+      prompt: 'a',
+      session_id: 'r-1',
+      turn_id: 't-run',
+    })) as Record<string, unknown>;
+    expect(run.turn_id).toBe('t-run');
+
+    const start = (await fake.registered.get('claude::start')?.({
+      prompt: 'b',
+      session_id: 'st-1',
+    })) as Record<string, unknown>;
+    expect(start).toMatchObject({ session_id: 'st-1', started: true });
+    expect(typeof start.turn_id).toBe('string');
+
+    const task = (await fake.registered.get('claude::task')?.({
+      task: 'c',
+      session_id: 'tk-1',
+      turn_id: 't-task',
+    })) as Record<string, unknown>;
+    expect(task).toMatchObject({ session_id: 'tk-1', turn_id: 't-task', started: true });
+
+    await vi.waitFor(() => {
+      expect(fake.state.get('claude_turns/st-1')).toMatchObject({
+        status: 'completed',
+        turn_id: start.turn_id,
+      });
+      expect(fake.state.get('claude_turns/tk-1')).toMatchObject({
+        status: 'completed',
+        turn_id: 't-task',
+      });
+      // The task outcome is still published as before.
+      expect(fake.state.get('agent_tasks/tk-1')).toMatchObject({ status: 'done' });
+    });
+    expect(fake.state.get('claude_turns/r-1')).toMatchObject({ turn_id: 't-run' });
+  });
+
+  it('a stopped turn settles stopped', async () => {
+    const fake = await registeredWorker();
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const realCall = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload?: { key?: string };
+    }) => {
+      if (req.function_id === 'state::get' && req.payload?.key === 'stop-1') await held;
+      return realCall(req as never);
+    };
+    const run = fake.registered.get('claude::run')?.({ prompt: 'long', session_id: 'stop-1' });
+    await fake.registered.get('claude::stop')?.({ session_id: 'stop-1' });
+    release?.();
+    await run;
+    expect(fake.state.get('claude_turns/stop-1')).toMatchObject({
+      status: 'stopped',
+      stop_reason: 'interrupted',
+    });
+  });
+
+  it('a busy call writes no settle; the run holding the slot writes one', async () => {
+    const fake = await registeredWorker();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'system', subtype: 'init', session_id: 'cs-1' };
+        await gate;
+      },
+      interrupt: async () => release?.(),
+    })) as never);
+    await fake.registered.get('claude::start')?.({ prompt: 'first', session_id: 'busy-2' });
+    await vi.waitFor(() => {
+      expect(fake.state.has('claude_sessions/busy-2')).toBe(true);
+    });
+    const second = (await fake.registered.get('claude::run')?.({
+      prompt: 'second',
+      session_id: 'busy-2',
+    })) as Record<string, unknown>;
+    expect(second.busy).toBe(true);
+    expect(settles(fake)).toHaveLength(0);
+    release?.();
+    await vi.waitFor(() => expect(settles(fake)).toHaveLength(1));
+  });
+
+  it('lands after the slot is released and the record is final', async () => {
+    // An observer woken by the settle starts the next turn at once.
+    const fake = await registeredWorker();
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+    const realCall = fake.iii.call.bind(fake.iii);
+    let woken: { next?: unknown; status?: unknown } | undefined;
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: Record<string, unknown>;
+    }) => {
+      const out = await realCall(req as never);
+      if (!woken && req.function_id === 'state::set' && req.payload.scope === 'claude_turns') {
+        woken = {};
+        woken.status = await fake.registered.get('claude::status')?.({ session_id: 'next-1' });
+        woken.next = await fake.registered.get('claude::start')?.({
+          prompt: 'follow-up',
+          session_id: 'next-1',
+        });
+      }
+      return out;
+    };
+    await fake.registered.get('claude::run')?.({ prompt: 'first', session_id: 'next-1' });
+    expect(woken?.status).toMatchObject({ live: false, record: { status: 'done' } });
+    expect(woken?.next).toMatchObject({ session_id: 'next-1', started: true });
+    await vi.waitFor(() => expect(settles(fake)).toHaveLength(2));
   });
 });

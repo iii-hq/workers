@@ -18,6 +18,16 @@ vi.mock('@iii-dev/console-ui', () => {
     PageBody: Pass,
     PageMain: Pass,
     PageHeader: ({ title }: { title: string }) => <header>{title}</header>,
+    PageSidebar: Pass,
+    Chip: Pass,
+    Eyebrow: Pass,
+    ShadcnButton: ({ children }: { children?: unknown }) => <button type="button">{children as string}</button>,
+    StatusBar: ({ children, end, className }: { children?: unknown; end?: unknown; className?: string }) => (
+      <div className={className}>
+        {children as ReactElement}
+        {end as ReactElement}
+      </div>
+    ),
     DirectoryPicker: (props: Record<string, unknown>) => {
       picker.props.push(props)
       return (
@@ -62,10 +72,10 @@ describe('the claude page', () => {
     const { html } = mount(claude, { workingDir: '/chat/dir' })
     expect(html).toContain('data-testid="directory-picker"')
     expect(html).toContain('data-value="/chat/dir"')
-    // In the status bar, before the billing and font controls.
-    const bar = html.slice(html.indexOf('agent-terminal-statusbar'))
+    // In the status strip, before the billing and font controls.
+    const bar = html.slice(html.indexOf('agent-terminal-strip'))
     expect(bar).toContain('directory-picker')
-    expect(bar.indexOf('directory-picker')).toBeLessThan(bar.indexOf('agent-terminal-font'))
+    expect(bar.indexOf('directory-picker')).toBeLessThan(bar.indexOf('Terminal font size'))
   })
 
   it('shows the project folder label until the worker names the folder', () => {

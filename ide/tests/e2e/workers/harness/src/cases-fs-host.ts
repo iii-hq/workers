@@ -1,11 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChannelReader } from 'iii-sdk/channel';
-import { createChannel } from 'iii-sdk/helpers';
+import type { InputStream } from 'iii-sdk';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
-
-const URL = process.env.III_URL ?? 'ws://127.0.0.1:49134';
 
 function newWorkdir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `iii-shell-fs-${prefix}-`));
@@ -23,39 +20,18 @@ export async function fsWriteStream(
 ): Promise<{ bytes_written: number; path: string }> {
   const bytes =
     typeof args.bytes === 'string' ? Buffer.from(args.bytes, 'utf8') : args.bytes;
-  const channel = await createChannel(ctx.iii, 64);
-  if (bytes.length === 0) {
-    // SDK quirk: write(empty) doesn't trigger WS connect, making close()
-    // a no-op. sendMessage('') forces the socket open.
-    channel.writer.sendMessage('');
-    channel.writer.close();
-    return (await ctx.call('shell::fs::write', {
-      target: args.target ?? { kind: 'host' },
-      path: args.path,
-      mode: args.mode ?? '0644',
-      parents: args.parents ?? false,
-      content: channel.readerRef,
-    })) as { bytes_written: number; path: string };
-  }
-  const writePromise = new Promise<void>((resolve, reject) => {
-    channel.writer.stream.once('error', reject);
-    channel.writer.stream.write(bytes, (err: Error | null | undefined) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      channel.writer.stream.end(() => resolve());
-    });
-  });
+  // The payload carries the pipe's read end; the SDK sends its ref.
+  const pipe = await ctx.iii.pipe({ bufferSize: 64 });
   const callPromise = ctx.call('shell::fs::write', {
     target: args.target ?? { kind: 'host' },
     path: args.path,
     mode: args.mode ?? '0644',
     parents: args.parents ?? false,
-    content: channel.readerRef,
+    content: pipe.input,
   });
-  await writePromise;
-  channel.writer.close();
+  // An empty body still closes cleanly: a 0.27 writer opens its socket to close.
+  if (bytes.length > 0) await pipe.output.write(bytes);
+  await pipe.output.close();
   return (await callPromise) as { bytes_written: number; path: string };
 }
 
@@ -67,8 +43,8 @@ export async function fsReadStream(
     target: args.target ?? { kind: 'host' },
     path: args.path,
   });
-  const reader = new ChannelReader(URL, resp.content);
-  const data = await reader.readAll();
+  // A ref in a call result arrives as an InputStream.
+  const data = await (resp.content as InputStream).bytes();
   return { size: resp.size, mode: resp.mode, mtime: resp.mtime, data };
 }
 

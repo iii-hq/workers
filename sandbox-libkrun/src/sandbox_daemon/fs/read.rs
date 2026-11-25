@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use iii_sdk::RegisterFunction;
-use iii_sdk::channels::StreamChannelRef;
+use iii_sdk::protocol::StreamChannelRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -187,12 +187,15 @@ async fn stream_via_channel(
     body: Option<String>,
     _path: String,
 ) -> Result<ReadResponse, SandboxError> {
-    let channel = iii_sdk::helpers::create_channel(iii, Some(64))
+    let pipe = iii
+        .pipe()
         .await
         .map_err(|e| SandboxError::FsIo(format!("create_channel: {e}")))?;
-
-    let reader_ref = channel.reader_ref.clone();
-    let writer = channel.writer;
+    // The caller gets the read end's ref; a pipe's end serializes to it.
+    let reader_ref: StreamChannelRef = serde_json::to_value(&pipe.input)
+        .and_then(serde_json::from_value)
+        .map_err(|e| SandboxError::FsIo(format!("create_channel: {e}")))?;
+    let writer = pipe.output;
     let registry = registry.clone();
 
     // Pump bytes from the source AsyncRead into the channel on a background task.
@@ -210,7 +213,7 @@ async fn stream_via_channel(
                     registry.bump_last_exec(id).await;
                     if let Err(e) = writer.write(&buf[..n]).await {
                         let _ = writer
-                            .send_message(
+                            .send_text(
                                 &serde_json::json!({
                                     "error": format!("write to channel failed: {e}")
                                 })
@@ -226,7 +229,7 @@ async fn stream_via_channel(
                     // Not closed: a writer dropped unclosed reaches readers as
                     // close 1011, so one that only takes bytes sees the cut too.
                     let _ = writer
-                        .send_message(
+                        .send_text(
                             &serde_json::json!({
                                 "error": format!("read from supervisor failed: {e}"),
                                 "code": "S218",

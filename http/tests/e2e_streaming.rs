@@ -11,7 +11,6 @@ mod common;
 use std::sync::Arc;
 
 use common::{backend, engine, worker};
-use iii_sdk::channel::ChannelWriter;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{Value, json};
@@ -19,28 +18,24 @@ use serial_test::serial;
 
 use iii_http::types::HttpRequest;
 
-/// Register a function that streams its response: it opens a writer on the
-/// response channel ref, sends a `set_status` control message, writes two body
-/// chunks, closes the channel, and returns `null` (no buffered body). Serves
+/// Register a function that streams its response: it sends a `set_status`
+/// control message on the response stream, writes two body chunks, closes the
+/// stream, and returns `null` (no buffered body). Serves
 /// `api_path` + `http_method`.
 async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_method: &str) {
     let function_id = format!("test.stream {http_method} {api_path}");
-    let ws_url = engine::ws_url();
 
     iii.register_function(
         function_id.clone(),
-        RegisterFunction::new_async(move |req: HttpRequest| {
-            let ws_url = ws_url.clone();
-            async move {
-                let writer = ChannelWriter::new(&ws_url, &req.response);
-                writer
-                    .send_message(&json!({ "type": "set_status", "status_code": 201 }).to_string())
-                    .await?;
-                writer.write(b"chunk-1").await?;
-                writer.write(b"chunk-2").await?;
-                writer.close().await?;
-                Ok::<Value, Error>(Value::Null)
-            }
+        RegisterFunction::new_async(move |req: HttpRequest| async move {
+            let writer = req.response;
+            writer
+                .send(&json!({ "type": "set_status", "status_code": 201 }))
+                .await?;
+            writer.write(b"chunk-1").await?;
+            writer.write(b"chunk-2").await?;
+            writer.close().await?;
+            Ok::<Value, Error>(Value::Null)
         }),
     );
 
@@ -59,23 +54,21 @@ async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_meth
 /// early the client sees 200 instead of 201.
 async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_method: &str) {
     let function_id = format!("test.late_stream {http_method} {api_path}");
-    let ws_url = engine::ws_url();
 
     iii.register_function(
         function_id.clone(),
         RegisterFunction::new_async(move |req: HttpRequest| {
-            let ws_url = ws_url.clone();
-            let response_ref = req.response.clone();
+            // A received OutputStream closes when the handler returns; this one
+            // is written after the return, so keep it open.
+            let writer = req.response;
+            writer.keep_open();
             async move {
                 tokio::spawn(async move {
                     // Delay so the immediate `null` return wins the worker's
-                    // select race before any frame reaches the response channel.
+                    // select race before any frame reaches the response stream.
                     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                    let writer = ChannelWriter::new(&ws_url, &response_ref);
                     let _ = writer
-                        .send_message(
-                            &json!({ "type": "set_status", "status_code": 201 }).to_string(),
-                        )
+                        .send(&json!({ "type": "set_status", "status_code": 201 }))
                         .await;
                     let _ = writer.write(b"late-1").await;
                     let _ = writer.write(b"late-2").await;

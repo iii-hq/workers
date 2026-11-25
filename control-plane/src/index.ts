@@ -1,9 +1,11 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
+import { resolveEngineUrl } from './engine-url.js'
 import { registerControlPlane } from './worker.js'
 
-const iii = registerWorker(process.env.III_URL ?? process.env.III_ENGINE_URL, {
+const engineUrl = resolveEngineUrl(process.env.III_URL ?? process.env.III_ENGINE_URL)
+const iii = registerWorker(engineUrl, {
   workerName: 'control-plane',
   workerDescription: 'Project control plane and read-only summary scheduler.',
 })

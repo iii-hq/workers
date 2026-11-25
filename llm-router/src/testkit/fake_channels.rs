@@ -6,8 +6,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iii_sdk::channel::StreamChannelRef;
-use iii_sdk::helpers::ChannelDirection;
+use iii_sdk::protocol::ChannelDirection;
+use iii_sdk::protocol::StreamChannelRef;
 use tokio::sync::Notify;
 use uuid::Uuid;
 

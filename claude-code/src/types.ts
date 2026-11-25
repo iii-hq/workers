@@ -92,4 +92,8 @@ export type SessionRecord = {
   total_cost_usd: number;
   usage: Usage | null;
   updated_at_ms: number;
+  /** How the last turn ended (`interrupted` after claude::stop). */
+  stop_reason?: string;
+  /** The turn this record last started: what a restart settles it as. */
+  turn_id?: string;
 };
