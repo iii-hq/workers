@@ -177,10 +177,21 @@ impl ChatError {
             self.error_details = terminal_details.cloned();
         }
         if self.retryable.is_none() {
-            self.retryable = self.kind.map(ErrorKind::is_retryable);
+            self.retryable = retryable(self.kind, self.error_details.as_ref());
+        }
+        // A usage limit stays `rate_limited` (D147), yet no retry passes it
+        // before its reset, whatever the router said.
+        if ErrorDetails::usage_limit(self.error_details.as_ref()).is_some() {
+            self.retryable = Some(false);
         }
         self
     }
+}
+
+/// Whether an error of this kind may succeed on retry: a usage limit never
+/// does, though its kind is the retryable `rate_limited`.
+pub(crate) fn retryable(kind: Option<ErrorKind>, details: Option<&ErrorDetails>) -> Option<bool> {
+    kind.map(|kind| kind.is_retryable() && ErrorDetails::usage_limit(details).is_none())
 }
 
 /// The assembled result of one stream.
@@ -219,14 +230,29 @@ fn response_chat_error(response: &Value) -> Option<ChatError> {
 
 fn dispatch_chat_error(error: &iii_sdk::errors::Error) -> ChatError {
     match error {
-        iii_sdk::errors::Error::Remote { code, message, .. } => ChatError {
-            code: Some(code.clone()),
-            message: message.clone(),
-            detail: Some(error.to_string()),
-            kind: None,
-            retryable: None,
-            error_details: None,
-        },
+        iii_sdk::errors::Error::Remote { code, message, .. } => {
+            // A router that has more to say than `{ code, message }` sends its
+            // ErrorShape as one JSON object in the message (the harness's own
+            // refusal convention): its `error_details` carry a usage limit.
+            let shape = serde_json::from_str::<Value>(message)
+                .ok()
+                .filter(Value::is_object);
+            let field = |name: &str| shape.as_ref().and_then(|shape| shape.get(name)).cloned();
+            let kind: Option<ErrorKind> =
+                field("kind").and_then(|value| serde_json::from_value(value).ok());
+            let error_details: Option<ErrorDetails> =
+                field("error_details").and_then(|value| serde_json::from_value(value).ok());
+            ChatError {
+                code: Some(code.clone()),
+                message: field("message")
+                    .and_then(|value| value.as_str().map(str::to_string))
+                    .unwrap_or_else(|| message.clone()),
+                detail: Some(error.to_string()),
+                kind,
+                retryable: field("retryable").and_then(|value| value.as_bool()),
+                error_details,
+            }
+        }
         _ => ChatError {
             code: None,
             message: "The model request could not be completed.".into(),
@@ -236,6 +262,100 @@ fn dispatch_chat_error(error: &iii_sdk::errors::Error) -> ChatError {
             error_details: None,
         },
     }
+}
+
+/// What one stream ended with, from its final message (when it sent one),
+/// its terminal error frame's text and the `router::chat` response: whether
+/// it failed, the message to keep, and the error. A usage limit's
+/// `error_details` survive from whichever of them carried it.
+fn settle_outcome(
+    final_message: Option<AssistantMessage>,
+    terminal_error: Option<String>,
+    response: &Result<Value, iii_sdk::errors::Error>,
+    provider: &str,
+    model: &str,
+) -> (bool, AssistantMessage, Option<ChatError>) {
+    let terminal_kind = final_message
+        .as_ref()
+        .and_then(|message| message.error_kind);
+    let terminal_details = final_message
+        .as_ref()
+        .and_then(|message| message.error_details.clone());
+    let (ok, response_error) = match response {
+        Ok(v) => {
+            let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
+            (ok, response_chat_error(v))
+        }
+        Err(e) => (false, Some(dispatch_chat_error(e))),
+    };
+    let response_error = response_error.map(|error| {
+        error.with_terminal_fallback(
+            terminal_error.as_deref(),
+            terminal_kind,
+            terminal_details.as_ref(),
+        )
+    });
+
+    let mut message = final_message.unwrap_or_else(|| {
+        let mut m = empty_assistant(provider, model);
+        m.stop_reason = StopReason::Error;
+        m.error_message = response_error
+            .as_ref()
+            .map(|error| error.message.clone())
+            .or_else(|| terminal_error.clone())
+            .or_else(|| Some("The provider rejected this request.".to_string()));
+        // A dispatch/ack rejection (e.g. provider unavailable) is
+        // authoritative — retrying in-turn cannot help. Only a
+        // frame-less-but-acked stream stays classified transient.
+        m.error_kind = Some(if let Some(error) = &response_error {
+            error.kind.unwrap_or_else(|| {
+                if error.retryable == Some(true) {
+                    ErrorKind::Transient
+                } else {
+                    ErrorKind::Permanent
+                }
+            })
+        } else {
+            ErrorKind::Transient
+        });
+        m.error_details = response_error
+            .as_ref()
+            .and_then(|error| error.error_details.clone());
+        m
+    });
+
+    // Error terminal frames can carry raw provider/transport text. Once the
+    // held-open chat response arrives, its ErrorShape message is the public
+    // copy; retain the terminal text only on ChatError.detail.
+    if let Some(error) = &response_error
+        && message.stop_reason == StopReason::Error
+    {
+        message.error_message = Some(error.message.clone());
+        message.error_kind = error.kind.or(message.error_kind);
+        if error.error_details.is_some() {
+            message.error_details = error.error_details.clone();
+        }
+    }
+
+    // A frame-less-but-acked stream synthesizes an Error message above
+    // with no terminal_error/response_error set — derive the outcome
+    // error from it so the turn fails instead of completing "ok" around
+    // an empty error-stopped message.
+    let failed = !ok || message.stop_reason == StopReason::Error;
+    let error = failed.then(|| {
+        response_error.unwrap_or_else(|| {
+            let kind = message.error_kind;
+            ChatError {
+                code: None,
+                message: fallback_chat_message(kind).to_string(),
+                detail: terminal_error.or_else(|| message.error_message.clone()),
+                kind,
+                retryable: retryable(kind, message.error_details.as_ref()),
+                error_details: message.error_details.clone(),
+            }
+        })
+    });
+    (failed, message, error)
 }
 
 fn fallback_chat_message(kind: Option<ErrorKind>) -> &'static str {
@@ -641,92 +761,18 @@ impl RouterClient {
                 .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?,
         };
 
-        let terminal_kind = final_message
-            .as_ref()
-            .and_then(|message| message.error_kind);
-        let terminal_details = final_message
-            .as_ref()
-            .and_then(|message| message.error_details.clone());
-        let (ok, response_error) = match &response {
-            Ok(v) => {
-                let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
-                (ok, response_chat_error(v))
-            }
-            Err(e) => (false, Some(dispatch_chat_error(e))),
-        };
-        let response_error = response_error.map(|error| {
-            error.with_terminal_fallback(
-                terminal_error.as_deref(),
-                terminal_kind,
-                terminal_details.as_ref(),
-            )
-        });
-
-        let mut message = final_message.unwrap_or_else(|| {
-            let mut m = empty_assistant(params.provider.as_deref().unwrap_or(""), &params.model);
-            m.stop_reason = StopReason::Error;
-            m.error_message = response_error
-                .as_ref()
-                .map(|error| error.message.clone())
-                .or_else(|| terminal_error.clone())
-                .or_else(|| Some("The provider rejected this request.".to_string()));
-            // A dispatch/ack rejection (e.g. provider unavailable) is
-            // authoritative — retrying in-turn cannot help. Only a
-            // frame-less-but-acked stream stays classified transient.
-            m.error_kind = Some(if let Some(error) = &response_error {
-                error.kind.unwrap_or_else(|| {
-                    if error.retryable == Some(true) {
-                        ErrorKind::Transient
-                    } else {
-                        ErrorKind::Permanent
-                    }
-                })
-            } else {
-                ErrorKind::Transient
-            });
-            m.error_details = response_error
-                .as_ref()
-                .and_then(|error| error.error_details.clone());
-            m
-        });
-
-        // Error terminal frames can carry raw provider/transport text. Once the
-        // held-open chat response arrives, its ErrorShape message is the public
-        // copy; retain the terminal text only on ChatError.detail.
-        if let Some(error) = &response_error
-            && message.stop_reason == StopReason::Error
-        {
-            message.error_message = Some(error.message.clone());
-            message.error_kind = error.kind.or(message.error_kind);
-            if error.error_details.is_some() {
-                message.error_details = error.error_details.clone();
-            }
-        }
-
-        let stop_reason = Some(message.stop_reason);
-        // A frame-less-but-acked stream synthesizes an Error message above
-        // with no terminal_error/response_error set — derive the outcome
-        // error from it so the turn fails instead of completing "ok" around
-        // an empty error-stopped message.
-        let failed = !ok || message.stop_reason == StopReason::Error;
-        let error = failed.then(|| {
-            response_error.unwrap_or_else(|| {
-                let kind = message.error_kind;
-                ChatError {
-                    code: None,
-                    message: fallback_chat_message(kind).to_string(),
-                    detail: terminal_error.or_else(|| message.error_message.clone()),
-                    kind,
-                    retryable: kind.map(ErrorKind::is_retryable),
-                    error_details: message.error_details.clone(),
-                }
-            })
-        });
+        let (failed, message, error) = settle_outcome(
+            final_message,
+            terminal_error,
+            &response,
+            params.provider.as_deref().unwrap_or(""),
+            &params.model,
+        );
         Ok(ChatOutcome {
             generation_id,
             ok: !failed,
+            stop_reason: Some(message.stop_reason),
             message,
-            stop_reason,
             error,
         })
     }
@@ -1429,12 +1475,151 @@ mod error_contract_tests {
         }))
         .expect("legacy error")
         .with_terminal_fallback(None, Some(ErrorKind::RateLimited), Some(&limit));
-        assert_eq!(legacy.error_details, Some(limit));
+        assert_eq!(legacy.error_details, Some(limit.clone()));
         assert_eq!(
             legacy.retryable,
-            Some(true),
-            "the kind alone stays retryable"
+            Some(false),
+            "a usage limit is never retryable, though its kind is"
         );
+
+        // A router that calls the limit retryable is overruled.
+        let insisted = response_chat_error(&json!({
+            "ok": false,
+            "error": {
+                "message": "Limited.",
+                "kind": "rate_limited",
+                "retryable": true,
+                "error_details": { "usage_limit": true }
+            }
+        }))
+        .expect("structured error")
+        .with_terminal_fallback(None, None, None);
+        assert_eq!(insisted.retryable, Some(false));
+        assert_eq!(
+            retryable(Some(ErrorKind::RateLimited), None),
+            Some(true),
+            "a plain rate limit stays retryable"
+        );
+        assert_eq!(
+            retryable(Some(ErrorKind::RateLimited), Some(&limit)),
+            Some(false)
+        );
+    }
+
+    fn limit() -> ErrorDetails {
+        ErrorDetails {
+            usage_limit: true,
+            window: Some("five_hour".into()),
+            resets_at_ms: Some(1_800_000_000_000),
+        }
+    }
+
+    fn error_message(details: Option<ErrorDetails>) -> AssistantMessage {
+        let mut message = empty_assistant("claude-code", "claude-opus-4-8");
+        message.stop_reason = StopReason::Error;
+        message.error_message = Some("429 from the provider".into());
+        message.error_kind = Some(ErrorKind::RateLimited);
+        message.error_details = details;
+        message
+    }
+
+    #[test]
+    fn a_usage_limit_only_on_the_terminal_message_fails_the_turn_without_a_retry() {
+        // The router's ErrorShape says only rate_limited.
+        let response = Ok(json!({
+            "ok": false,
+            "error": {
+                "code": "router/provider_rate_limited",
+                "message": "The provider is rate-limiting requests.",
+                "kind": "rate_limited"
+            }
+        }));
+        let (failed, message, error) = settle_outcome(
+            Some(error_message(Some(limit()))),
+            Some("429 from the provider".into()),
+            &response,
+            "claude-code",
+            "claude-opus-4-8",
+        );
+        let error = error.expect("a failed stream has an error");
+        assert!(failed);
+        assert_eq!(error.error_details, Some(limit()));
+        assert_eq!(error.retryable, Some(false));
+        assert_eq!(message.error_details, Some(limit()));
+        assert_eq!(message.error_kind, Some(ErrorKind::RateLimited));
+    }
+
+    #[test]
+    fn a_usage_limit_only_on_the_error_shape_reaches_the_message() {
+        let response = Ok(json!({
+            "ok": false,
+            "error": {
+                "code": "router/provider_rate_limited",
+                "message": "This Claude Code account reached its usage limit.",
+                "kind": "rate_limited",
+                "error_details": {
+                    "usage_limit": true,
+                    "window": "five_hour",
+                    "resets_at_ms": 1_800_000_000_000u64
+                }
+            }
+        }));
+        let (failed, message, error) = settle_outcome(
+            Some(error_message(None)),
+            Some("429 from the provider".into()),
+            &response,
+            "claude-code",
+            "claude-opus-4-8",
+        );
+        let error = error.expect("a failed stream has an error");
+        assert!(failed);
+        assert_eq!(error.error_details, Some(limit()));
+        assert_eq!(error.retryable, Some(false));
+        assert_eq!(message.error_details, Some(limit()));
+    }
+
+    #[test]
+    fn a_usage_limit_only_on_a_dispatch_error_reaches_the_message() {
+        // No frame at all: the dispatch failed with the ErrorShape as JSON in
+        // the remote error's message.
+        let response = Err(Error::Remote {
+            code: "router/provider_rate_limited".into(),
+            message: json!({
+                "code": "router/provider_rate_limited",
+                "message": "This Claude Code account reached its usage limit.",
+                "kind": "rate_limited",
+                "error_details": {
+                    "usage_limit": true,
+                    "window": "five_hour",
+                    "resets_at_ms": 1_800_000_000_000u64
+                }
+            })
+            .to_string(),
+            stacktrace: None,
+        });
+        let (failed, message, error) =
+            settle_outcome(None, None, &response, "claude-code", "claude-opus-4-8");
+        let error = error.expect("a failed dispatch has an error");
+        assert!(failed);
+        assert_eq!(
+            error.message,
+            "This Claude Code account reached its usage limit."
+        );
+        assert_eq!(error.kind, Some(ErrorKind::RateLimited));
+        assert_eq!(error.error_details, Some(limit()));
+        assert_eq!(error.retryable, Some(false));
+        assert_eq!(message.error_kind, Some(ErrorKind::RateLimited));
+        assert_eq!(message.error_details, Some(limit()));
+
+        // A plain remote error keeps its text.
+        let plain = dispatch_chat_error(&Error::Remote {
+            code: "router/provider_unavailable".into(),
+            message: "No provider serves this model.".into(),
+            stacktrace: None,
+        });
+        assert_eq!(plain.message, "No provider serves this model.");
+        assert_eq!(plain.error_details, None);
+        assert_eq!(plain.kind, None);
     }
 
     #[test]

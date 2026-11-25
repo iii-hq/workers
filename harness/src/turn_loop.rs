@@ -59,6 +59,19 @@ impl FailureInfo<'_> {
     }
 }
 
+/// tmux, or the projects a pin may come from, could not be read when the
+/// turn started, and the transient resumes ran out. Retryable.
+const ACCOUNTS_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: crate::accounts::ACCOUNTS_UNAVAILABLE_CODE,
+    phase: "pre_turn",
+    retryable: true,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+    limit: None,
+};
+
 /// A turn pinned (by its conversation, project or side chat lock) to a
 /// Claude Code account that tmux no longer has.
 const UNKNOWN_ACCOUNT_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -71,6 +84,10 @@ const UNKNOWN_ACCOUNT_FAILURE: FailureInfo<'static> = FailureInfo {
     model: None,
     limit: None,
 };
+
+/// Pause before the first step runs again after tmux (or the projects)
+/// could not be read, per attempt.
+const ACCOUNT_RETRY_BACKOFF_MS: u64 = 500;
 
 const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.turn_internal",
@@ -717,7 +734,28 @@ async fn generate_step(
         // starts (a send, a reseed, a wake, `harness::retry`) meets.
         let resolution =
             Box::pin(crate::accounts::resolve_turn(deps, &session, &mut record)).await?;
-        if resolution != crate::accounts::TurnResolution::Unchanged {
+        if let crate::accounts::TurnResolution::Unavailable(detail) = &resolution
+            && transient_resume_allowed(
+                true,
+                record.transient_resumes,
+                record.options.max_transient_resumes,
+                record.turn_count,
+                record.options.max_turns,
+            )
+        {
+            return Box::pin(retry_account_resolution(
+                deps,
+                &session,
+                &mut record,
+                detail,
+            ))
+            .await
+            .map(PreparedStep::Finished);
+        }
+        if matches!(
+            resolution,
+            crate::accounts::TurnResolution::Changed | crate::accounts::TurnResolution::Unknown
+        ) {
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
         }
         deps.events
@@ -731,21 +769,39 @@ async fn generate_step(
                 record.account.as_ref(),
             )
             .await;
-        if resolution == crate::accounts::TurnResolution::Unknown {
-            let id = record
-                .account
-                .as_ref()
-                .map(|account| account.id.clone())
-                .unwrap_or_default();
-            return Box::pin(finalize_failed(
-                deps,
-                &session,
-                &mut record,
-                &crate::accounts::unknown_account_message(&id),
-                UNKNOWN_ACCOUNT_FAILURE,
-            ))
-            .await
-            .map(PreparedStep::Finished);
+        match &resolution {
+            crate::accounts::TurnResolution::Unknown => {
+                let id = record
+                    .account
+                    .as_ref()
+                    .map(|account| account.id.clone())
+                    .unwrap_or_default();
+                return Box::pin(finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    &crate::accounts::unknown_account_message(&id),
+                    UNKNOWN_ACCOUNT_FAILURE,
+                ))
+                .await
+                .map(PreparedStep::Finished);
+            }
+            // The resumes ran out: a retryable failure `harness::retry` can rerun.
+            crate::accounts::TurnResolution::Unavailable(detail) => {
+                return Box::pin(finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    crate::accounts::ACCOUNTS_UNAVAILABLE_MESSAGE,
+                    FailureInfo {
+                        detail: Some(detail),
+                        ..ACCOUNTS_UNAVAILABLE_FAILURE
+                    },
+                ))
+                .await
+                .map(PreparedStep::Finished);
+            }
+            _ => {}
         }
         if let Err(reason) = Box::pin(deps.hooks.run_pre_turn(&record, payload.step)).await {
             return finalize_failed(
@@ -1938,7 +1994,10 @@ async fn finish_step(
             message: "The provider rejected this request.".into(),
             detail: Some("generation failed".into()),
             kind: outcome.message.error_kind,
-            retryable: outcome.message.error_kind.map(ErrorKind::is_retryable),
+            retryable: crate::clients::router::retryable(
+                outcome.message.error_kind,
+                outcome.message.error_details.as_ref(),
+            ),
             error_details: outcome.message.error_details.clone(),
         });
         let failure = llm_failure_info(
@@ -3599,6 +3658,13 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
                 "Or wait until the limit resets, then retry the turn.",
             ],
         ),
+        crate::accounts::ACCOUNTS_UNAVAILABLE_CODE => (
+            "The Claude Code accounts could not be read.",
+            &[
+                "Check that the tmux worker is running and the projects file is readable.",
+                "Then retry the turn.",
+            ],
+        ),
         crate::accounts::UNKNOWN_ACCOUNT_CODE => (
             "The Claude Code account this conversation runs on no longer exists.",
             &[
@@ -3929,6 +3995,73 @@ fn preserve_assistant_partial(current: &mut Option<Value>, message: &AssistantMe
     if let Some(partial) = assistant_partial_result(message) {
         *current = Some(partial);
     }
+}
+
+/// The first step could not decide the turn's Claude Code account (tmux or
+/// the projects could not be read): spend one transient resume and run the
+/// first step again, after a pause. Nothing was generated, so the turn
+/// starts over from the transcript as it is.
+async fn retry_account_resolution(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    detail: &str,
+) -> Result<TurnStepResult, HarnessError> {
+    let cfg = deps.cfg().await;
+    let attempt = record.transient_resumes + 1;
+    tracing::warn!(
+        session_id = %record.session_id,
+        turn_id = %record.turn_id,
+        attempt,
+        detail,
+        "the turn's Claude Code account could not be decided; trying again"
+    );
+    record_recovery_telemetry(record, detail, attempt);
+    let _ = session
+        .append_custom(
+            &record.session_id,
+            "recovery",
+            json!({
+                "status": "recovering",
+                "summary": format!(
+                    "Reading the Claude Code accounts again ({attempt}/{}).",
+                    record.options.max_transient_resumes
+                ),
+                "reason": crate::accounts::ACCOUNTS_UNAVAILABLE_MESSAGE,
+                "detail": detail,
+                "code": crate::accounts::ACCOUNTS_UNAVAILABLE_CODE,
+                "phase": "pre_turn",
+                "attempt": attempt,
+                "max_attempts": record.options.max_transient_resumes,
+                "partial_result_available": false,
+                "timestamp": AgentMessage::now_ms(),
+            }),
+            &ids::transient_recovery_entry_id(&record.turn_id, attempt, "recovering"),
+            Some(&origin(&record.turn_id)),
+        )
+        .await;
+    record.transient_resumes = attempt;
+    record.updated_at = AgentMessage::now_ms();
+    crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(
+        ACCOUNT_RETRY_BACKOFF_MS * u64::from(attempt),
+    ))
+    .await;
+    enqueue_step(
+        &deps.iii,
+        &record.session_id,
+        &record.turn_id,
+        record.step,
+        record.message_preview.as_deref(),
+        record.depth,
+    )
+    .await?;
+    Ok(TurnStepResult {
+        session_id: record.session_id.clone(),
+        status: TurnStatus::Running,
+        next_step: Some(record.step),
+        skipped: false,
+    })
 }
 
 fn transient_resume_allowed(
