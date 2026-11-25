@@ -1,84 +1,128 @@
 # image-resize
 
-A high-performance image resizing worker built for production workloads.
+Downscales JPEG, PNG and WebP images to fit or fill a box. A caller streams
+the image in over an iii stream and gets the thumbnail back on another one,
+as JPEG, PNG or lossy WebP. The worker applies the EXIF orientation, never
+enlarges an image, and returns the output's dimensions together with the
+source's, so a caller can map a point on the thumbnail back to the original.
 
-## Installation
+## Install
 
 ```bash
 iii call compose::add worker=image-resize
 ```
 
-## Configuration
-
-The worker reads its settings from the YAML file passed with `--config`
-(default `./config.yaml`):
-
-```yaml
-height: 200
-quality:
-  jpeg: 85
-  webp: 80
-strategy: scale-to-fit
-width: 200
-```
-
-### Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `width` | number | 200 | Target width in pixels |
-| `height` | number | 200 | Target height in pixels |
-| `strategy` | string | `scale-to-fit` | Resize strategy: `scale-to-fit`, `crop`, `fill`, `contain` |
-| `quality.jpeg` | number | 85 | JPEG output quality (1-100) |
-| `quality.webp` | number | 80 | WebP output quality (1-100) |
-
-### Strategies
-
-- **scale-to-fit** — Resize to fit within the given dimensions, preserving aspect ratio
-- **crop** — Crop to exact dimensions from center
-- **fill** — Fill the area, stretching if necessary
-- **contain** — Contain within dimensions, adding padding if needed
-
-## Functions
-
-| Function | Input | Returns |
-|---|---|---|
-| `image_resize::resize` | `{ input_channel, output_channel, metadata? }`: the image bytes arrive on `input_channel` (a readable `StreamChannelRef`); `metadata` overrides `format`, `output_format`, `strategy`, `target_width`, `target_height` and `quality` | `{ format, width, height, strategy }`; the thumbnail is written to `output_channel` as a metadata text frame followed by the image bytes |
-
-## Usage
+## Quickstart
 
 ```typescript
-import { createChannel } from 'iii-sdk/helpers'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { InputStream, OutputStream, registerWorker } from 'iii-sdk'
 
-const input = await createChannel(iii)
-const output = await createChannel(iii)
-input.writer.stream.end(imageBuffer)
+const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
 
-const result = iii.call({
+// Fit a screenshot into a 1568 px box as WebP. The call resolves once the
+// file holds the whole image.
+const result = await iii.call({
   function_id: 'image_resize::resize',
   payload: {
-    input_channel: input.readerRef,
-    output_channel: output.writerRef,
-    metadata: { format: 'jpeg', target_width: 400, target_height: 300, strategy: 'crop-to-fit' },
+    input_channel: InputStream.from(createReadStream('screenshot.png')),
+    output_channel: OutputStream.to(createWriteStream('screenshot.webp')),
+    metadata: { output_format: 'webp', target_width: 1568, target_height: 1568 },
   },
   timeoutMs: 30_000,
 })
-// read the thumbnail from output.reader, then await result
+// → { format: 'webp', width: 1568, height: 1049, source_width: 3116, source_height: 2084, strategy: 'scale-to-fit' }
 ```
 
-[`example/`](example) serves `GET /health`, `POST /thumbnail` and `GET /image`
-through the http worker with this call.
+Every `metadata` key is optional:
 
-## Performance
+| Key | Values | Default |
+|---|---|---|
+| `output_format` | `jpeg`, `png`, `webp` | the input's format |
+| `target_width`, `target_height` | the box in pixels; the image is never enlarged | the configured box (200 x 200 out of the box) |
+| `strategy` | `scale-to-fit` fits the image inside the box; `crop-to-fit` centre-crops it to the box's aspect ratio, then shrinks it to the box | the configured strategy (`scale-to-fit`) |
+| `quality` | 1-100; ignored for `png` | the configured quality (jpeg 85, webp 80) |
 
-Benchmarks on a standard worker instance (2 vCPU, 512MB):
+Any other key in `metadata` is rejected with `INVALID_ARGS`. The input format
+is detected from the bytes. `output_channel` also carries the result as one
+JSON text frame before the image bytes; byte readers and sinks such as
+`OutputStream.to` never see it. [`example/`](example) is a small app that
+serves thumbnails over HTTP with this call.
 
-| Format | Avg Latency | Throughput |
-|--------|-------------|------------|
-| JPEG | 12ms | ~83 ops/s |
-| WebP | 18ms | ~55 ops/s |
-| PNG | 24ms | ~41 ops/s |
+## Configuration
+
+The worker owns one entry in the engine's `configuration` worker: id
+`image-resize`, or the name compose assigns through `III_CONFIG_NAME`. It
+holds the defaults for calls that leave an option out of `metadata`; per-call
+`metadata` always wins. Every key is optional:
+
+```yaml
+width: 200              # default box width, px
+height: 200             # default box height, px
+strategy: scale-to-fit  # or crop-to-fit
+quality:
+  jpeg: 85              # 1-100
+  webp: 80              # 1-100
+```
+
+Under compose, set `config_override` on the worker's container in
+`worker-compose.yaml`:
+
+```yaml
+containers:
+  image-resize:
+    # ...the lines compose::add wrote stay as they are
+    config_override:
+      width: 1568
+      height: 1568
+      quality: { webp: 75 }
+```
+
+On a bare engine the built-in defaults are stored on first boot in the engine
+project's `./config/<id>.yaml`; edit that file, use the Console's global
+Settings modal, or call `configuration::set`. `--config <file>` seeds the
+entry once, only while nothing is stored; a file that cannot be read or is
+invalid is ignored with a warning.
+
+Every key hot-reloads: a change applies to the calls that start after it.
+Each call takes one snapshot, so a call in flight keeps the values it started
+with, and nothing needs a restart. A value that does not match the schema (an
+unknown key, a 0 side, quality outside 1-100) is rejected: on a live change
+the previous configuration stays in use, and at start the worker does not
+start. A change moves the default output of every caller that relies on the
+defaults.
+
+## Limits and behaviour
+
+- Input up to 64 MiB and 50 megapixels.
+- One image per CPU core at a time; further calls queue.
+- WebP output is at most 16383 px per side, JPEG 65535.
+- EXIF orientation is applied; other metadata and colour profiles are dropped.
+- WebP output is lossy; use `png` for pixel-exact output such as line art.
+- JPEG output flattens transparency onto white.
+- Bad input fails with code `INVALID_ARGS` and aborts `output_channel`.
+
+## Migration notes
+
+- Options sent as a text frame on `input_channel` are rejected; pass them in
+  `metadata`.
+- `format`, `width`, `height` and any other unknown `metadata` key are
+  rejected with `INVALID_ARGS`. Remove them: the input format is detected.
+- `output_format: 'jpg'` is rejected; use `jpeg`.
+- Images are never enlarged, so crop-to-fit can return less than the box.
+- WebP output is lossy and honours `quality`.
+- Bad input returns `INVALID_ARGS` instead of `invocation_failed` and aborts
+  the output.
+- The result gains `source_width` and `source_height`.
+- PNG output keeps the source colour type.
+- `quality` outside 1-100 is an error.
+- Configuration moved to the `configuration` worker: `./config.yaml` is no
+  longer read and no longer shipped, `--config` only seeds an empty entry,
+  compose's `config_override` now takes effect, and the worker needs the
+  engine's configuration worker to start.
 
 ## License
 
 Apache 2.0 — see [LICENSE](https://github.com/iii-hq/workers/blob/main/LICENSE).
+Release binaries statically link libwebp
+([BSD-3-Clause, with Google's additional patent grant](https://chromium.googlesource.com/webm/libwebp/+/refs/heads/main/COPYING)).
