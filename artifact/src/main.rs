@@ -35,8 +35,8 @@ use artifact::{manifest, server, ui};
 /// How often expired shares are dropped and an idle tunnel released.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
-/// How long boot waits for the configuration observer to turn active before
-/// the catch-up read.
+/// How long boot waits for the configuration observer to turn active; past
+/// it, startup fails and the supervisor restarts the worker.
 const OBSERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Parser, Debug)]
@@ -188,20 +188,22 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // A change made between the boot read and the observer turning active
-    // would be missed: once it is active, read the configuration again
-    // through the same serialized path the observer uses.
+    // would be missed. Startup therefore waits for the observer, then reads
+    // the configuration once more through the same serialized path. Either
+    // step failing is a startup error: running on a snapshot that may be
+    // stale, with no observer to correct it, is worse than restarting.
     let observer = configuration::register_config_observer(&iii, cell.clone());
-    let catch_up_iii = iii.clone();
-    let catch_up_cell = cell.clone();
-    tokio::spawn(async move {
-        match tokio::time::timeout(OBSERVER_READY_TIMEOUT, observer.ready()).await {
-            Ok(Ok(())) => configuration::on_config_change(&catch_up_iii, &catch_up_cell).await,
-            Ok(Err(e)) => tracing::warn!(error = %e, "configuration observer did not activate"),
-            Err(_) => tracing::warn!(
-                "configuration observer still pending; changes may wait for the next update"
-            ),
-        }
-    });
+    match tokio::time::timeout(OBSERVER_READY_TIMEOUT, observer.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => anyhow::bail!("configuration observer did not activate: {e}"),
+        Err(_) => anyhow::bail!(
+            "configuration observer still pending after {}s",
+            OBSERVER_READY_TIMEOUT.as_secs()
+        ),
+    }
+    configuration::reload(&iii, &cell)
+        .await
+        .map_err(|e| anyhow::anyhow!("configuration catch-up read failed: {e}"))?;
 
     tracing::info!(url = %cli.url, "artifact worker ready");
 

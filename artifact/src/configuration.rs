@@ -174,23 +174,28 @@ fn config_updated_filters(id: &str) -> Value {
 /// `artifact::on-config-change` is a bus function, so trusting a `new_value` in
 /// the payload would let any caller lift the size ceiling without touching
 /// persisted state.
-pub async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
-    // One reload at a time: fetch and apply form a single step, so an older
-    // fetch can never land after a newer one.
+/// Re-read the authoritative configuration and swap it in, one reload at a
+/// time: fetch and apply form a single step, so an older fetch can never land
+/// after a newer one. On error the previous snapshot stays and the error is
+/// returned.
+pub async fn reload(iii: &IIIClient, cell: &ConfigCell) -> Result<(), String> {
     static RELOAD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _reload = RELOAD.lock().await;
-    let cfg = match fetch_config(iii).await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "config-change: failed to fetch authoritative configuration; keeping previous config"
-            );
-            return;
-        }
-    };
+    let cfg = fetch_config(iii).await?;
     apply_config(cell, cfg).await;
-    tracing::info!("artifact configuration reloaded");
+    Ok(())
+}
+
+/// The observer's reload: a failure keeps the previous snapshot and is
+/// logged; the next update retries.
+pub async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
+    match reload(iii, cell).await {
+        Ok(()) => tracing::info!("artifact configuration reloaded"),
+        Err(e) => tracing::error!(
+            error = %e,
+            "config-change: failed to fetch authoritative configuration; keeping previous config"
+        ),
+    }
 }
 
 /// `true` for the one error that is an answer rather than a failure: the entry
