@@ -1,38 +1,71 @@
-use anyhow::{Result, anyhow, bail};
+use iii_sdk::Error;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::{self, FilterType};
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, Rgba, RgbaImage};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
+use std::num::NonZeroU32;
 
 use crate::config::{ResizeConfig, ResizeStrategy, check_quality};
 
-#[derive(Deserialize, Debug)]
-pub struct ImageMetadata {
-    pub format: String,
-    #[serde(default)]
-    pub output_format: Option<String>,
-    #[allow(dead_code)] // Part of the channel protocol; source dimensions for logging/metadata
-    pub width: u32,
-    #[allow(dead_code)]
-    pub height: u32,
-    #[serde(default)]
-    pub quality: Option<u8>,
-    #[serde(default)]
-    pub strategy: Option<ResizeStrategy>,
-    #[serde(default)]
-    pub target_width: Option<u32>,
-    #[serde(default)]
-    pub target_height: Option<u32>,
+/// A caller fault. The SDK sends a `Remote` error's code as is; any other
+/// error reaches the caller as `invocation_failed`.
+pub fn invalid(msg: impl std::fmt::Display) -> Error {
+    Error::Remote {
+        code: "INVALID_ARGS".into(),
+        message: msg.to_string(),
+        stacktrace: None,
+    }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Deserialize, Serialize, JsonSchema, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Format {
+    Jpeg,
+    Png,
+    Webp,
+}
+
+impl Format {
+    fn image_format(self) -> ImageFormat {
+        match self {
+            Format::Jpeg => ImageFormat::Jpeg,
+            Format::Png => ImageFormat::Png,
+            Format::Webp => ImageFormat::WebP,
+        }
+    }
+}
+
+/// Per-call options. Every key is optional; any other key is rejected.
+#[derive(Deserialize, JsonSchema, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ImageMetadata {
+    /// Output format. Defaults to the input's format.
+    pub output_format: Option<Format>,
+    /// JPEG and WebP quality. Ignored for PNG. Defaults to the configured quality.
+    #[schemars(range(min = 1, max = 100))]
+    pub quality: Option<u8>,
+    /// `scale-to-fit` fits the image inside the box; `crop-to-fit` centre-crops it to the
+    /// box's aspect ratio, then shrinks it to the box. Defaults to the configured strategy.
+    pub strategy: Option<ResizeStrategy>,
+    /// Box width in pixels. The image is never enlarged. Defaults to the configured box.
+    pub target_width: Option<NonZeroU32>,
+    /// Box height in pixels. The image is never enlarged. Defaults to the configured box.
+    pub target_height: Option<NonZeroU32>,
+}
+
+/// The call result: the output's format and size, and the source's size after
+/// EXIF orientation.
+#[derive(Serialize, JsonSchema, Debug, PartialEq)]
 pub struct ThumbnailMetadata {
-    pub format: String,
+    pub format: Format,
     pub width: u32,
     pub height: u32,
-    pub strategy: String,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub strategy: ResizeStrategy,
 }
 
 #[derive(Debug)]
@@ -41,38 +74,42 @@ pub struct ProcessingParams {
     pub target_height: u32,
     pub strategy: ResizeStrategy,
     pub quality: u8,
-    pub input_format: ImageFormat,
-    pub output_format: ImageFormat,
+    pub input_format: Format,
+    pub output_format: Format,
 }
 
-fn parse_image_format(s: &str) -> Result<ImageFormat> {
-    match s {
-        "jpeg" | "jpg" => Ok(ImageFormat::Jpeg),
-        "png" => Ok(ImageFormat::Png),
-        "webp" => Ok(ImageFormat::WebP),
-        other => Err(anyhow!("Unsupported format: {}", other)),
+/// The input format, from the bytes: a caller's label is not trusted.
+pub fn sniff(bytes: &[u8]) -> Result<Format, Error> {
+    match image::guess_format(bytes) {
+        Ok(ImageFormat::Jpeg) => Ok(Format::Jpeg),
+        Ok(ImageFormat::Png) => Ok(Format::Png),
+        Ok(ImageFormat::WebP) => Ok(Format::Webp),
+        Ok(other) => Err(invalid(format!(
+            "unsupported input format {other:?}; send jpeg, png or webp"
+        ))),
+        Err(_) => Err(invalid(
+            "input is not a recognized image; send jpeg, png or webp",
+        )),
     }
 }
 
-pub fn resolve_params(config: &ResizeConfig, metadata: &ImageMetadata) -> Result<ProcessingParams> {
-    let input_format = parse_image_format(&metadata.format)?;
-
-    let output_format = match &metadata.output_format {
-        Some(fmt) => parse_image_format(fmt)?,
-        None => input_format,
-    };
-
-    let quality_default = match output_format {
-        ImageFormat::Jpeg => config.quality.jpeg,
-        ImageFormat::WebP => config.quality.webp,
-        _ => 100, // PNG is lossless
-    };
+pub fn resolve_params(
+    config: &ResizeConfig,
+    meta: &ImageMetadata,
+    input_format: Format,
+) -> Result<ProcessingParams, Error> {
+    let output_format = meta.output_format.unwrap_or(input_format);
+    let quality = meta.quality.unwrap_or(match output_format {
+        Format::Jpeg => config.quality.jpeg,
+        Format::Webp => config.quality.webp,
+        Format::Png => 100, // PNG is lossless
+    });
 
     Ok(ProcessingParams {
-        target_width: metadata.target_width.unwrap_or(config.width),
-        target_height: metadata.target_height.unwrap_or(config.height),
-        strategy: metadata.strategy.unwrap_or(config.strategy),
-        quality: check_quality(metadata.quality.unwrap_or(quality_default))?,
+        target_width: meta.target_width.map_or(config.width, NonZeroU32::get),
+        target_height: meta.target_height.map_or(config.height, NonZeroU32::get),
+        strategy: meta.strategy.unwrap_or(config.strategy),
+        quality: check_quality(quality).map_err(invalid)?,
         input_format,
         output_format,
     })
@@ -97,19 +134,23 @@ fn exif_orientation(bytes: &[u8]) -> Orientation {
 /// 16 bytes per source pixel, so this bounds memory per image.
 pub const MAX_PIXELS: u64 = 50_000_000;
 
-fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage> {
+fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
+    let undecodable =
+        |e: image::ImageError| invalid(format!("could not decode the {format:?} image: {e}"));
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
     // into_decoder does not charge the pixel buffer (checked below); this
     // bounds what a PNG's ancillary chunks may inflate to.
     limits.max_alloc = Some(64 << 20);
     reader.limits(limits);
-    let decoder = reader.into_decoder()?;
+    let decoder = reader.into_decoder().map_err(undecodable)?;
     let (w, h) = decoder.dimensions();
     if u64::from(w) * u64::from(h) > MAX_PIXELS {
-        bail!("image is {w}x{h}; the limit is {MAX_PIXELS} pixels");
+        return Err(invalid(format!(
+            "image is {w}x{h}; the limit is {MAX_PIXELS} pixels"
+        )));
     }
-    Ok(DynamicImage::from_decoder(decoder)?)
+    DynamicImage::from_decoder(decoder).map_err(undecodable)
 }
 
 fn over_white(img: &DynamicImage) -> DynamicImage {
@@ -149,13 +190,17 @@ pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicI
     }
 }
 
-pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>> {
-    let mut img = decode(bytes, params.input_format)?;
+pub fn process_image(
+    bytes: &[u8],
+    params: &ProcessingParams,
+) -> Result<(Vec<u8>, ThumbnailMetadata), Error> {
+    let mut img = decode(bytes, params.input_format.image_format())?;
     img.apply_orientation(exif_orientation(bytes));
+    let (source_width, source_height) = (img.width(), img.height());
     // JPEG has no alpha. Flatten before the resize: the filter mixes straight
     // alpha, so flattening afterwards would leave the hidden colour of
     // transparent pixels in every edge.
-    if params.output_format == ImageFormat::Jpeg && img.color().has_alpha() {
+    if params.output_format == Format::Jpeg && img.color().has_alpha() {
         img = over_white(&img);
     }
 
@@ -170,31 +215,41 @@ pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>>
 
     let (width, height) = (thumbnail.width(), thumbnail.height());
     let max_side = match params.output_format {
-        ImageFormat::Jpeg => 65_535,
-        ImageFormat::WebP => 16_383,
-        _ => u32::MAX,
+        Format::Jpeg => 65_535,
+        Format::Webp => 16_383,
+        Format::Png => u32::MAX,
     };
     if width.max(height) > max_side {
-        bail!(
+        return Err(invalid(format!(
             "{width}x{height} is too large for this output format (max {max_side} px per side); use a smaller box or png"
-        );
+        )));
     }
 
     let mut buf = Vec::new();
-    match params.output_format {
-        ImageFormat::Jpeg => {
-            thumbnail
-                .write_with_encoder(JpegEncoder::new_with_quality(&mut buf, params.quality))?;
+    let encoded = match params.output_format {
+        Format::Jpeg => {
+            thumbnail.write_with_encoder(JpegEncoder::new_with_quality(&mut buf, params.quality))
         }
-        ImageFormat::Png => thumbnail.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)?,
-        ImageFormat::WebP => buf = encode_webp(&thumbnail, params.quality)?,
-        _ => return Err(anyhow!("Unsupported output format")),
-    }
+        Format::Png => thumbnail.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png),
+        Format::Webp => {
+            buf = encode_webp(&thumbnail, params.quality)?;
+            Ok(())
+        }
+    };
+    encoded.map_err(|e| Error::Handler(format!("could not encode the output: {e}")))?;
 
-    Ok(buf)
+    let result = ThumbnailMetadata {
+        format: params.output_format,
+        width,
+        height,
+        source_width,
+        source_height,
+        strategy: params.strategy,
+    };
+    Ok((buf, result))
 }
 
-fn encode_webp(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+fn encode_webp(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, Error> {
     use std::ffi::c_int;
     // process_image rejected sides above 16383, so these casts are exact.
     let (w, h) = (img.width() as c_int, img.height() as c_int);
@@ -210,7 +265,7 @@ fn encode_webp(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
         }
     };
     if len == 0 {
-        bail!("libwebp could not encode the image");
+        return Err(Error::Handler("libwebp could not encode the image".into()));
     }
     // SAFETY: on success libwebp returns `len` bytes at `out`, ours until WebPFree.
     let bytes = unsafe { std::slice::from_raw_parts(out, len).to_vec() };
@@ -264,6 +319,10 @@ mod tests {
         buf
     }
 
+    fn is_invalid_args(err: &Error) -> bool {
+        matches!(err, Error::Remote { code, .. } if code == "INVALID_ARGS")
+    }
+
     fn default_config() -> ResizeConfig {
         serde_yaml_ng::from_str("{}").unwrap()
     }
@@ -272,32 +331,19 @@ mod tests {
     fn test_config_per_request_override() {
         let config = default_config();
         let metadata = ImageMetadata {
-            format: "jpeg".into(),
-            output_format: None,
-            width: 1000,
-            height: 500,
             quality: Some(50),
             strategy: Some(ResizeStrategy::CropToFit),
-            target_width: Some(100),
-            target_height: Some(100),
+            target_width: NonZeroU32::new(100),
+            target_height: NonZeroU32::new(100),
+            ..Default::default()
         };
-        let params = resolve_params(&config, &metadata).unwrap();
+        let params = resolve_params(&config, &metadata, Format::Jpeg).unwrap();
         assert_eq!(params.target_width, 100);
         assert_eq!(params.target_height, 100);
         assert_eq!(params.strategy, ResizeStrategy::CropToFit);
         assert_eq!(params.quality, 50);
 
-        let metadata_no_override = ImageMetadata {
-            format: "jpeg".into(),
-            output_format: None,
-            width: 1000,
-            height: 500,
-            quality: None,
-            strategy: None,
-            target_width: None,
-            target_height: None,
-        };
-        let params2 = resolve_params(&config, &metadata_no_override).unwrap();
+        let params2 = resolve_params(&config, &ImageMetadata::default(), Format::Jpeg).unwrap();
         assert_eq!(params2.target_width, 200);
         assert_eq!(params2.target_height, 200);
         assert_eq!(params2.strategy, ResizeStrategy::ScaleToFit);
@@ -346,8 +392,8 @@ mod tests {
 
     fn run(
         input: &[u8],
-        input_format: ImageFormat,
-        output_format: ImageFormat,
+        input_format: Format,
+        output_format: Format,
         strategy: ResizeStrategy,
         w: u32,
         h: u32,
@@ -361,8 +407,8 @@ mod tests {
             input_format,
             output_format,
         };
-        let output = process_image(input, &params).unwrap();
-        image::load_from_memory_with_format(&output, output_format).unwrap()
+        let (output, _) = process_image(input, &params).unwrap();
+        image::load_from_memory_with_format(&output, output_format.image_format()).unwrap()
     }
 
     #[test]
@@ -393,8 +439,8 @@ mod tests {
         let png = encode_image(&DynamicImage::ImageRgb8(columns), ImageFormat::Png);
         let out = run(
             &png,
-            ImageFormat::Png,
-            ImageFormat::Png,
+            Format::Png,
+            Format::Png,
             ResizeStrategy::CropToFit,
             100,
             100,
@@ -426,6 +472,7 @@ mod tests {
         let Err(err) = decode(&jpeg, ImageFormat::Jpeg) else {
             panic!("a 13000x13000 header must be rejected");
         };
+        assert!(is_invalid_args(&err), "{err}");
         assert!(err.to_string().contains("pixels"), "{err}");
     }
 
@@ -456,10 +503,10 @@ mod tests {
             target_height: 100,
             strategy: ResizeStrategy::ScaleToFit,
             quality: 85,
-            input_format: ImageFormat::Jpeg,
-            output_format: ImageFormat::Jpeg,
+            input_format: Format::Jpeg,
+            output_format: Format::Jpeg,
         };
-        let output = process_image(&bytes, &params).unwrap();
+        let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Jpeg).unwrap();
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
@@ -474,10 +521,10 @@ mod tests {
             target_height: 100,
             strategy: ResizeStrategy::ScaleToFit,
             quality: 100,
-            input_format: ImageFormat::Png,
-            output_format: ImageFormat::Png,
+            input_format: Format::Png,
+            output_format: Format::Png,
         };
-        let output = process_image(&bytes, &params).unwrap();
+        let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
         let rgba = decoded.to_rgba8();
         assert_eq!(rgba.sample_layout().channels, 4);
@@ -497,23 +544,23 @@ mod tests {
             target_height: 100,
             strategy: ResizeStrategy::ScaleToFit,
             quality: 80,
-            input_format: ImageFormat::WebP,
-            output_format: ImageFormat::WebP,
+            input_format: Format::Webp,
+            output_format: Format::Webp,
         };
-        let output = process_image(&bytes, &params).unwrap();
+        let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::WebP).unwrap();
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
     }
 
-    fn webp_params(w: u32, h: u32, quality: u8, input_format: ImageFormat) -> ProcessingParams {
+    fn webp_params(w: u32, h: u32, quality: u8, input_format: Format) -> ProcessingParams {
         ProcessingParams {
             target_width: w,
             target_height: h,
             strategy: ResizeStrategy::ScaleToFit,
             quality,
             input_format,
-            output_format: ImageFormat::WebP,
+            output_format: Format::Webp,
         }
     }
 
@@ -527,7 +574,7 @@ mod tests {
         });
         let png = encode_image(&DynamicImage::ImageRgb8(noise), ImageFormat::Png);
         let [low, high] = [20, 90].map(|q| {
-            let out = process_image(&png, &webp_params(256, 256, q, ImageFormat::Png)).unwrap();
+            let (out, _) = process_image(&png, &webp_params(256, 256, q, Format::Png)).unwrap();
             assert_eq!(&out[..4], b"RIFF", "q{q}");
             assert_eq!(&out[12..16], b"VP8 ", "q{q} must be lossy");
             let decoded = image::load_from_memory_with_format(&out, ImageFormat::WebP).unwrap();
@@ -543,7 +590,7 @@ mod tests {
             image::Rgba(if x < 32 { [200, 30, 30, 255] } else { [0; 4] })
         });
         let png = encode_image(&DynamicImage::ImageRgba8(half), ImageFormat::Png);
-        let out = process_image(&png, &webp_params(64, 64, 80, ImageFormat::Png)).unwrap();
+        let (out, _) = process_image(&png, &webp_params(64, 64, 80, Format::Png)).unwrap();
         let decoded = image::load_from_memory_with_format(&out, ImageFormat::WebP).unwrap();
         assert!(decoded.to_rgba8().pixels().any(|p| p.0[3] < 255));
     }
@@ -551,16 +598,10 @@ mod tests {
     #[test]
     fn webp_quality_defaults_to_config() {
         let metadata = ImageMetadata {
-            format: "png".into(),
-            output_format: Some("webp".into()),
-            width: 1,
-            height: 1,
-            quality: None,
-            strategy: None,
-            target_width: None,
-            target_height: None,
+            output_format: Some(Format::Webp),
+            ..Default::default()
         };
-        let params = resolve_params(&default_config(), &metadata).unwrap();
+        let params = resolve_params(&default_config(), &metadata, Format::Png).unwrap();
         assert_eq!(params.quality, 80);
     }
 
@@ -573,16 +614,18 @@ mod tests {
                 .unwrap();
             png
         };
-        let webp = webp_params(20_000, 1, 80, ImageFormat::Png);
+        let webp = webp_params(20_000, 1, 80, Format::Png);
         let err = process_image(&strip(16_384), &webp).unwrap_err();
+        assert!(is_invalid_args(&err), "{err}");
         assert!(err.to_string().contains("16383"), "{err}");
 
         let jpeg = ProcessingParams {
             target_width: 70_000,
-            output_format: ImageFormat::Jpeg,
+            output_format: Format::Jpeg,
             ..webp
         };
         let err = process_image(&strip(65_536), &jpeg).unwrap_err();
+        assert!(is_invalid_args(&err), "{err}");
         assert!(err.to_string().contains("65535"), "{err}");
     }
 
@@ -596,20 +639,20 @@ mod tests {
             target_height: 200,
             strategy: ResizeStrategy::ScaleToFit,
             quality: 50,
-            input_format: ImageFormat::Jpeg,
-            output_format: ImageFormat::Jpeg,
+            input_format: Format::Jpeg,
+            output_format: Format::Jpeg,
         };
         let params_high = ProcessingParams {
             target_width: 200,
             target_height: 200,
             strategy: ResizeStrategy::ScaleToFit,
             quality: 95,
-            input_format: ImageFormat::Jpeg,
-            output_format: ImageFormat::Jpeg,
+            input_format: Format::Jpeg,
+            output_format: Format::Jpeg,
         };
 
-        let output_low = process_image(&bytes, &params_low).unwrap();
-        let output_high = process_image(&bytes, &params_high).unwrap();
+        let (output_low, _) = process_image(&bytes, &params_low).unwrap();
+        let (output_high, _) = process_image(&bytes, &params_high).unwrap();
 
         assert!(
             output_low.len() < output_high.len(),
@@ -649,8 +692,8 @@ mod tests {
     fn png_out(input: &[u8]) -> DynamicImage {
         run(
             input,
-            ImageFormat::Png,
-            ImageFormat::Png,
+            Format::Png,
+            Format::Png,
             ResizeStrategy::ScaleToFit,
             200,
             200,
@@ -696,8 +739,8 @@ mod tests {
             .unwrap();
         let out = run(
             &jpeg,
-            ImageFormat::Jpeg,
-            ImageFormat::Png,
+            Format::Jpeg,
+            Format::Png,
             ResizeStrategy::ScaleToFit,
             200,
             200,
@@ -713,29 +756,6 @@ mod tests {
     }
 
     #[test]
-    fn test_unsupported_format_error() {
-        let config = default_config();
-        let metadata = ImageMetadata {
-            format: "gif".into(),
-            output_format: None,
-            width: 100,
-            height: 100,
-            quality: None,
-            strategy: None,
-            target_width: None,
-            target_height: None,
-        };
-        let result = resolve_params(&config, &metadata);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unsupported format")
-        );
-    }
-
-    #[test]
     fn jpeg_flattens_alpha_before_resizing() {
         let half = RgbaImage::from_fn(200, 200, |x, _| {
             image::Rgba(if x < 100 { [255; 4] } else { [0; 4] })
@@ -743,8 +763,8 @@ mod tests {
         let png = encode_image(&DynamicImage::ImageRgba8(half), ImageFormat::Png);
         let out = run(
             &png,
-            ImageFormat::Png,
-            ImageFormat::Jpeg,
+            Format::Png,
+            Format::Jpeg,
             ResizeStrategy::ScaleToFit,
             50,
             50,
@@ -769,8 +789,8 @@ mod tests {
             .unwrap();
         let out = run(
             &png,
-            ImageFormat::Png,
-            ImageFormat::Png,
+            Format::Png,
+            Format::Png,
             ResizeStrategy::ScaleToFit,
             20,
             20,
@@ -784,26 +804,17 @@ mod tests {
     fn resolve_params_rejects_bad_quality() {
         let config = default_config();
         let with_quality = |quality| ImageMetadata {
-            format: "jpeg".into(),
-            output_format: None,
-            width: 1,
-            height: 1,
             quality: Some(quality),
-            strategy: None,
-            target_width: None,
-            target_height: None,
+            ..Default::default()
         };
         for bad in [0, 101] {
-            let err = resolve_params(&config, &with_quality(bad)).unwrap_err();
+            let err = resolve_params(&config, &with_quality(bad), Format::Jpeg).unwrap_err();
+            assert!(is_invalid_args(&err), "{err}");
             assert!(err.to_string().contains("quality must be 1-100"), "{err}");
         }
         for good in [1, 100] {
-            assert_eq!(
-                resolve_params(&config, &with_quality(good))
-                    .unwrap()
-                    .quality,
-                good
-            );
+            let params = resolve_params(&config, &with_quality(good), Format::Jpeg).unwrap();
+            assert_eq!(params.quality, good);
         }
     }
 
@@ -816,10 +827,10 @@ mod tests {
             target_height: 100,
             strategy: ResizeStrategy::ScaleToFit,
             quality: 100,
-            input_format: ImageFormat::Jpeg,
-            output_format: ImageFormat::Png,
+            input_format: Format::Jpeg,
+            output_format: Format::Png,
         };
-        let output = process_image(&bytes, &params).unwrap();
+        let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
@@ -834,10 +845,10 @@ mod tests {
             target_height: 100,
             strategy: ResizeStrategy::ScaleToFit,
             quality: 85,
-            input_format: ImageFormat::Png,
-            output_format: ImageFormat::Jpeg,
+            input_format: Format::Png,
+            output_format: Format::Jpeg,
         };
-        let output = process_image(&bytes, &params).unwrap();
+        let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Jpeg).unwrap();
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
@@ -847,18 +858,12 @@ mod tests {
     fn test_resolve_params_with_output_format() {
         let config = default_config();
         let metadata = ImageMetadata {
-            format: "jpeg".into(),
-            output_format: Some("png".into()),
-            width: 1000,
-            height: 500,
-            quality: None,
-            strategy: None,
-            target_width: None,
-            target_height: None,
+            output_format: Some(Format::Png),
+            ..Default::default()
         };
-        let params = resolve_params(&config, &metadata).unwrap();
-        assert_eq!(params.input_format, ImageFormat::Jpeg);
-        assert_eq!(params.output_format, ImageFormat::Png);
+        let params = resolve_params(&config, &metadata, Format::Jpeg).unwrap();
+        assert_eq!(params.input_format, Format::Jpeg);
+        assert_eq!(params.output_format, Format::Png);
         // PNG is lossless, so quality defaults to 100
         assert_eq!(params.quality, 100);
     }

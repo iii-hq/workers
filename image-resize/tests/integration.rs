@@ -4,9 +4,8 @@
 //! `test-fixtures/`, the same way the worker handler would when driven by the
 //! iii engine over a channel — without booting the WebSocket runtime.
 
-use image::ImageFormat;
 use image_resize::config::ResizeStrategy;
-use image_resize::processing::{ProcessingParams, process_image};
+use image_resize::processing::{Format, ProcessingParams, process_image};
 use std::path::Path;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -18,8 +17,8 @@ fn fixture(name: &str) -> Vec<u8> {
 
 fn process(
     name: &str,
-    input_format: ImageFormat,
-    output_format: ImageFormat,
+    input_format: Format,
+    output_format: Format,
     strategy: ResizeStrategy,
     side: u32,
 ) -> (u32, u32) {
@@ -31,17 +30,22 @@ fn process(
         input_format,
         output_format,
     };
-    let out = process_image(&fixture(name), &params).expect("process fixture");
-    let decoded = image::load_from_memory_with_format(&out, output_format).expect("decode output");
-    (decoded.width(), decoded.height())
+    let (out, result) = process_image(&fixture(name), &params).expect("process fixture");
+    let decoded = image::load_from_memory(&out).expect("decode output");
+    assert_eq!(result.format, output_format);
+    assert_eq!(
+        (decoded.width(), decoded.height()),
+        (result.width, result.height)
+    );
+    (result.width, result.height)
 }
 
 #[test]
 fn small_source_is_not_enlarged() {
     let dims = process(
         "sample.jpg",
-        ImageFormat::Jpeg,
-        ImageFormat::Jpeg,
+        Format::Jpeg,
+        Format::Jpeg,
         ResizeStrategy::ScaleToFit,
         128,
     );
@@ -52,8 +56,8 @@ fn small_source_is_not_enlarged() {
 fn jpeg_fixture_scales_down_to_the_box() {
     let dims = process(
         "sample.jpg",
-        ImageFormat::Jpeg,
-        ImageFormat::Jpeg,
+        Format::Jpeg,
+        Format::Jpeg,
         ResizeStrategy::ScaleToFit,
         50,
     );
@@ -64,8 +68,8 @@ fn jpeg_fixture_scales_down_to_the_box() {
 fn png_fixture_crops_without_enlarging() {
     let dims = process(
         "sample.png",
-        ImageFormat::Png,
-        ImageFormat::Png,
+        Format::Png,
+        Format::Png,
         ResizeStrategy::CropToFit,
         96,
     );
@@ -76,8 +80,8 @@ fn png_fixture_crops_without_enlarging() {
 fn webp_to_jpeg_format_conversion() {
     let dims = process(
         "sample.webp",
-        ImageFormat::WebP,
-        ImageFormat::Jpeg,
+        Format::Webp,
+        Format::Jpeg,
         ResizeStrategy::ScaleToFit,
         64,
     );

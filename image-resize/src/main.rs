@@ -1,11 +1,11 @@
+use std::num::NonZero;
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
 use iii_sdk::{InitOptions, RegisterFunction, register_worker};
-use std::sync::Arc;
-
-mod config;
-mod handler;
-mod processing;
+use image_resize::{config, handler};
+use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
 #[command(name = "image-resize", about = "III engine image resize module")]
@@ -64,49 +64,18 @@ async fn main() -> Result<()> {
         },
     );
 
-    let resize_handler = handler::build_handler(config);
+    let permits = Arc::new(Semaphore::new(
+        std::thread::available_parallelism().map_or(1, NonZero::get),
+    ));
 
     let _fn_ref = iii.register_function(
         "image_resize::resize",
-        RegisterFunction::new_async(resize_handler)
-            .description("Resize an image to a target width and height (thumbnail) over channel I/O.")
-            .request_format(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "input_channel": {
-                        "type": "object",
-                        "description": "StreamChannelRef (read) carrying metadata text + image binary"
-                    },
-                    "output_channel": {
-                        "type": "object",
-                        "description": "StreamChannelRef (write) for thumbnail output"
-                    },
-                    "metadata": {
-                        "type": "object",
-                        "description": "Optional inline ImageMetadata override",
-                        "properties": {
-                            "format": { "type": "string", "enum": ["jpeg", "png", "webp"], "description": "Source image format" },
-                            "output_format": { "type": "string", "enum": ["jpeg", "png", "webp"], "description": "Desired output format (defaults to source format)" },
-                            "width": { "type": "integer" },
-                            "height": { "type": "integer" },
-                            "quality": { "type": "integer" },
-                            "strategy": { "type": "string", "enum": ["scale-to-fit", "crop-to-fit"] },
-                            "target_width": { "type": "integer" },
-                            "target_height": { "type": "integer" }
-                        }
-                    }
-                },
-                "required": ["input_channel", "output_channel"]
-            }))
-            .response_format(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "format": { "type": "string" },
-                    "width": { "type": "integer" },
-                    "height": { "type": "integer" },
-                    "strategy": { "type": "string" }
-                }
-            })),
+        RegisterFunction::new_async(move |req: handler::ResizeRequest| {
+            handler::resize(config.clone(), permits.clone(), req)
+        })
+        .description(
+            "Downscale a JPEG, PNG or WebP image read from input_channel to fit or fill a box, never enlarging it, and write JPEG, PNG or lossy WebP bytes to output_channel.",
+        ),
     );
 
     tracing::info!("image_resize::resize function registered, waiting for invocations");

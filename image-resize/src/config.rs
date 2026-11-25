@@ -1,4 +1,5 @@
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Debug, Clone)]
@@ -20,7 +21,7 @@ fn default_height() -> u32 {
     200
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Deserialize, Serialize, JsonSchema, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResizeStrategy {
     #[default]
