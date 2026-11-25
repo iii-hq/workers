@@ -356,6 +356,23 @@ mod tests {
     }
 
     #[test]
+    fn a_closing_text_after_another_counts_its_own_item() {
+        let reply = |texts: &[&str]| {
+            let content = texts
+                .iter()
+                .map(|text| ContentBlock::Text {
+                    text: text.to_string(),
+                })
+                .collect();
+            count("", vec![], vec![user("hi"), assistant(content)])
+        };
+        assert_eq!(
+            reply(&["looking", "ok fine"]) - reply(&["looking"]),
+            TOKENS_PER_ASSISTANT_ITEM + text_tokens("ok fine")
+        );
+    }
+
+    #[test]
     fn call_rounds_differ_by_what_the_responses_bill_charged() {
         let round = |turn: Vec<ContentBlock>, results: Vec<AgentMessage>| {
             let mut messages = vec![user("hi"), assistant(turn)];
