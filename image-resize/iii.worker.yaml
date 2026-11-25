@@ -8,3 +8,6 @@ license: Apache-2.0
 bin: image-resize
 tags: [image, resize, jpeg, png, webp, media]
 description: III engine image resize worker (JPEG/PNG/WebP, EXIF orient, scale-to-fit / crop-to-fit)
+
+dependencies:
+  configuration: "latest"

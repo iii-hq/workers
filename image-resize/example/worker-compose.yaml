@@ -19,7 +19,6 @@ containers:
       run: cargo run --release --bin http
 
   image-resize:
-    # Reads ../config.yaml (width, height, strategy, quality).
     worker: path://..
     scripts:
       run: cargo run --release --bin image-resize

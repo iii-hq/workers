@@ -106,8 +106,8 @@ pub fn resolve_params(
     });
 
     Ok(ProcessingParams {
-        target_width: meta.target_width.map_or(config.width, NonZeroU32::get),
-        target_height: meta.target_height.map_or(config.height, NonZeroU32::get),
+        target_width: meta.target_width.unwrap_or(config.width).get(),
+        target_height: meta.target_height.unwrap_or(config.height).get(),
         strategy: meta.strategy.unwrap_or(config.strategy),
         quality: check_quality(quality).map_err(invalid)?,
         input_format,

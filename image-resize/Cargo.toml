@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 futures-util = "0.3"
+iii-config-client = { path = "../crates/config-client" }
 iii-sdk = "=0.27.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 kamadak-exif = "0.6"
@@ -28,7 +29,9 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["io-util", "time"] }
+tokio = { version = "1", features = ["io-util", "time", "net"] }
+# A scripted engine for tests/process.rs; already in the graph through iii-sdk.
+tokio-tungstenite = "0.28"
 
 # Release profile for published binaries: thin LTO with one codegen unit runs
 # faster than Cargo's default, and strip drops the symbol table for a smaller

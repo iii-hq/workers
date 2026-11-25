@@ -442,6 +442,10 @@ rules:
   # other on-config-change denies.
   - '!pdf::on-config-change'
 
+  # image-resize: internal hot-reload hook, same pattern as the other
+  # on-config-change denies.
+  - '!image-resize::on-config-change'
+
   # document: internal target. The hot-reload hook follows the same pattern as
   # the other on-config-change denies.
   - '!document::on-config-change'

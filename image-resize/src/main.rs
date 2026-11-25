@@ -1,18 +1,18 @@
 use std::num::NonZero;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{InitOptions, RegisterFunction, register_worker};
-use image_resize::{config, handler};
+use image_resize::{config, configuration, handler};
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
 #[command(name = "image-resize", about = "III engine image resize module")]
 struct Cli {
-    /// Path to config.yaml file
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    /// YAML seed for the configuration entry, applied only while nothing is stored yet.
+    #[arg(long)]
+    config: Option<String>,
 
     /// WebSocket URL of the III engine (port 49134 = engine main WS)
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
@@ -35,33 +35,26 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let resize_config = match config::load_config(&cli.config) {
-        Ok(c) => {
-            tracing::info!(
-                width = c.width,
-                height = c.height,
-                strategy = ?c.strategy,
-                "loaded config from {}",
-                cli.config
-            );
-            c
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            config::ResizeConfig::default()
-        }
-    };
-
-    let config = Arc::new(resize_config);
-
     tracing::info!(url = %cli.url, namespace = ?cli.namespace, "connecting to III engine");
 
-    let iii = register_worker(
+    let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
             namespace: cli.namespace.clone(),
             ..Default::default()
         },
+    ));
+
+    let seed = cli.config.as_deref().and_then(config::load_seed);
+    configuration::register(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering the image-resize configuration")?;
+    let shared = configuration::shared(
+        configuration::fetch(&iii)
+            .await
+            .map_err(anyhow::Error::msg)
+            .context("reading the image-resize configuration")?,
     );
 
     let permits = Arc::new(Semaphore::new(
@@ -70,13 +63,19 @@ async fn main() -> Result<()> {
 
     let _fn_ref = iii.register_function(
         "image_resize::resize",
-        RegisterFunction::new_async(move |req: handler::ResizeRequest| {
-            handler::resize(config.clone(), permits.clone(), req)
+        RegisterFunction::new_async({
+            let shared = shared.clone();
+            move |req: handler::ResizeRequest| {
+                handler::resize(configuration::snapshot(&shared), permits.clone(), req)
+            }
         })
         .description(
             "Downscale a JPEG, PNG or WebP image read from input_channel to fit or fill a box, never enlarging it, and write JPEG, PNG or lossy WebP bytes to output_channel.",
         ),
     );
+
+    // Last, so the reload handler closes over fully built state.
+    configuration::bind_reload(&iii, shared).run().await;
 
     tracing::info!("image_resize::resize function registered, waiting for invocations");
 

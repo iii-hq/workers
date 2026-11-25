@@ -718,6 +718,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-config-client"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-filter"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -795,6 +807,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "iii-config-client",
  "iii-sdk",
  "image",
  "kamadak-exif",
@@ -804,6 +817,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
 ]
