@@ -29,13 +29,13 @@ import {
   descriptionHistory,
   detailsDraftOf,
 } from '@/lib/conversation-details'
+import { effectiveProvider } from '@/lib/conversation-provider'
 import { errText } from '@/lib/errors'
 import { shortAge } from '@/lib/short-age'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ByAgentPill } from './ByAgentPill'
 import { ConversationAccountRow } from './ConversationAccountRow'
-import { providerForModel } from './model-picker-presentation'
 
 /** A section the dialog can open on (the account chip). */
 export type ConversationDetailsSection = 'account'
@@ -51,7 +51,7 @@ interface ConversationDetailsDialogProps {
     | 'projectId'
     | 'sessionMetadata'
   > &
-    Partial<Pick<Conversation, 'model' | 'parentId'>>
+    Partial<Pick<Conversation, 'model' | 'parentId' | 'messages'>>
   onOpenChange: (open: boolean) => void
   /** Write the draft; a rejection keeps the dialog open with the error. */
   onSave: (draft: ConversationDetailsDraft) => Promise<void> | void
@@ -70,6 +70,11 @@ interface ConversationDetailsDialogProps {
   initialSection?: ConversationDetailsSection
   /** A side chat: the account row is text only (its account is locked, D2). */
   sideChat?: boolean
+  /**
+   * The provider of the conversation's next turn as the chat reads it (the
+   * account chip's); read from the conversation when absent.
+   */
+  provider?: string | null
 }
 
 const FIELD =
@@ -92,6 +97,7 @@ export function ConversationDetailsDialog({
   now,
   initialSection,
   sideChat = false,
+  provider,
 }: ConversationDetailsDialogProps) {
   const [draft, setDraft] = useState<ConversationDetailsDraft>(() =>
     detailsDraftOf(conversation),
@@ -108,7 +114,8 @@ export function ConversationDetailsDialog({
   const chatProjects = useChatProjects(realBackend && open)
   const showAccount =
     accounts.gate === 'full' &&
-    providerForModel(conversation.model ?? undefined) === CLAUDE_CODE_PROVIDER
+    (provider !== undefined ? provider : effectiveProvider(conversation)) ===
+      CLAUDE_CODE_PROVIDER
   const openOnAccount = initialSection === 'account' && showAccount
   const history = descriptionHistory(conversation.sessionMetadata)
 

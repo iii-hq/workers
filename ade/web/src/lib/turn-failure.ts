@@ -15,6 +15,13 @@
  * therefore win over the transport's class when they are unambiguous.
  */
 
+import {
+  LIMIT_WAIT_STEP,
+  type LockedAccount,
+  lockedAccountRemoved,
+  SIDE_CHAT_LIMIT_STEP,
+  SUB_AGENT_LIMIT_HINT,
+} from '@/lib/claude-accounts-words'
 import type { SystemMessage } from '@/types/chat'
 
 export type TurnFailureCategory =
@@ -210,6 +217,7 @@ function copyFor(
   code: string,
   provider: string | undefined,
   unreachable: boolean,
+  locked: LockedAccount,
 ): Copy {
   const name = provider ?? 'The provider'
   const lower = provider ?? 'the provider'
@@ -228,19 +236,31 @@ function copyFor(
         title: 'This Claude Code account reached its usage limit',
         ownership:
           'The account’s plan takes no more messages until its limit resets. This is the plan’s limit, not an iii or ADE failure.',
-        actions: [
-          'Continue in another account from the card above the composer.',
-          'Or wait until the limit resets, then try again.',
-        ],
+        // The notice stays in the transcript after the turn ran again in
+        // another account: step 1 still holds then. A side chat's or a
+        // sub-agent's card offers no other account (its account is locked).
+        actions: locked
+          ? [
+              LIMIT_WAIT_STEP,
+              locked === 'side-chat'
+                ? SIDE_CHAT_LIMIT_STEP
+                : SUB_AGENT_LIMIT_HINT,
+            ]
+          : [
+              'Another account can take over from the limit card above the composer.',
+              'Or wait until the limit resets, then try again.',
+            ],
       }
     case 'account':
       return {
         title: 'This conversation’s Claude Code account is gone',
         ownership:
           'The conversation or its project is pinned to an account that was removed from tmux.',
-        actions: [
-          'Choose another account from the card above the composer, or in Conversation details.',
-        ],
+        actions: locked
+          ? [lockedAccountRemoved(locked)]
+          : [
+              'Choose another account from the card above the composer, or in Conversation details.',
+            ],
       }
     case 'billing':
       return {
@@ -397,6 +417,11 @@ export function classifyTurnFailure(
     providerHint?: string
     /** How people name the provider (`OpenAI`); defaults to its id. */
     providerName?: string
+    /**
+     * The transcript's Claude Code account is locked (a side chat, a
+     * sub-agent): the account steps offer no other account.
+     */
+    lockedAccount?: LockedAccount
   } = {},
 ): TurnFailurePresentation {
   const details = message.technicalDetails
@@ -412,7 +437,13 @@ export function classifyTurnFailure(
   })
   const owner = OWNER_BY_CATEGORY[category]
   const provider = options.providerName ?? details?.provider
-  const copy = copyFor(category, code, provider, UNREACHABLE_PATTERN.test(text))
+  const copy = copyFor(
+    category,
+    code,
+    provider,
+    UNREACHABLE_PATTERN.test(text),
+    options.lockedAccount ?? null,
+  )
   const harnessActions = message.nextActions?.filter(
     (action) => action.trim().length > 0,
   )

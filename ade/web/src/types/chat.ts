@@ -159,6 +159,11 @@ export interface AssistantMessage extends BaseMessage {
    */
   agent?: string
   model?: ModelId
+  /**
+   * The provider that served it, as the transcript names it (`claude-code`);
+   * with a plain `model` id it says which catalog entry the reply was.
+   */
+  provider?: string
   streaming?: boolean
   /**
    * Why the provider ended this assistant entry. `function_call` marks an

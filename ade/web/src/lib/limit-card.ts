@@ -11,9 +11,21 @@
  * A failed card whose window has reset since stays, `reset`: "The limit has
  * reset" and "Try again"; a reading's card goes once its reset passed.
  */
+import { createContext } from 'react'
 import type { ClaudeAccount } from '@/lib/backend/claude-accounts'
-import { type LimitWindow, limitHit } from '@/lib/claude-accounts-words'
+import {
+  type LimitWindow,
+  type LockedAccount,
+  limitHit,
+} from '@/lib/claude-accounts-words'
 import type { Message, SystemMessage } from '@/types/chat'
+
+/**
+ * Set around a transcript whose Claude Code account is locked, and why (a
+ * side chat, D2, or a sub-agent): its limit card offers no other account,
+ * and the account notices in the transcript say so too.
+ */
+export const LockedAccountContext = createContext<LockedAccount>(null)
 
 /** The last turn's failure: a `turn-failure` row with nothing but notices after it. */
 export function lastTurnFailure(

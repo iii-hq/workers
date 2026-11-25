@@ -221,6 +221,39 @@ describe('the Claude Code account row (§4.3.5)', () => {
     expect(row()?.querySelector('button')).toBeNull()
   })
 
+  // Turns sent through harness::send by another client, sub-agents: no
+  // metadata.model, but the chip shows, so the row must too.
+  it("reads a conversation without a model from its last reply's provider", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: {
+        ...conversation,
+        model: null,
+        messages: [
+          {
+            id: 'a1',
+            role: 'assistant',
+            content: 'Done',
+            model: 'claude-opus-4-5',
+            provider: 'claude-code',
+            createdAt: NOW,
+          },
+        ],
+      },
+    })
+    expect(resolution()?.textContent).toContain('Runs on Work')
+  })
+
+  it("follows the chat's provider when it hands one", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({ conversation, provider: 'claude-code' })
+    expect(resolution()?.textContent).toContain('Runs on Work')
+    act(() => root?.unmount())
+    host?.remove()
+    render({ conversation: claudeCode, provider: 'openai' })
+    expect(row()).toBeNull()
+  })
+
   it('is absent for other providers and short of the whole feature (§4.3.6)', () => {
     seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
     render({ conversation: { ...conversation, model: 'openai::gpt-5.4' } })

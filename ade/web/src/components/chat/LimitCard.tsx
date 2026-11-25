@@ -19,13 +19,15 @@ import {
   HIDE_LIMIT,
   LIMIT_HAS_RESET,
   LIMIT_HINT,
+  type LockedAccount,
   limitResetLine,
   limitTitle,
+  lockedAccountRemoved,
+  lockedLimitHint,
   makeGlobal,
   mostRoom,
   OTHER,
   SCREEN_TITLE,
-  sideChatLimitHint,
   type TimeStyle,
   TRY_AGAIN,
   UNKNOWN_ACCOUNT_LINE,
@@ -40,8 +42,11 @@ export interface LimitCardProps {
   model: LimitCardModel
   data: ClaudeAccounts
   time: TimeStyle
-  /** A side chat: the title, the reset line and the X only (its account is locked, D2). */
-  sideChat?: boolean
+  /**
+   * The conversation can't choose its account (a side chat, D2, or a
+   * sub-agent): the title, the line, its hint and the X only.
+   */
+  locked?: LockedAccount
   /** The conversation follows the global account, and the limited one is it. */
   followsGlobal?: boolean
   /** Pin the conversation to `account` (`claude_account`, a patch of that key alone). */
@@ -64,8 +69,8 @@ type Outcome = 'retried' | 'done'
  * in Work" (the account with the most room, when one has room), "Other…"
  * (the accounts with their use), and "Make Work the global" when the
  * conversation follows the global. Once the window has reset: "The limit
- * has reset" and "Try again" on the same account. A side chat keeps its
- * account: only the title, the reset line and the X.
+ * has reset" and "Try again" on the same account. A side chat or a
+ * sub-agent keeps its account: only the title, the line, its hint and the X.
  *
  * A turn re-run keeps the buttons off until the card changes (the turn
  * starts and puts it away). A global switch tmux has to wait for shows its
@@ -75,7 +80,7 @@ export function LimitCard({
   model,
   data,
   time,
-  sideChat = false,
+  locked = null,
   followsGlobal = false,
   onPin,
   onSetGlobal,
@@ -106,10 +111,18 @@ export function LimitCard({
       : limitTitle(name, model.window)
   const line =
     model.kind === 'unknown'
-      ? UNKNOWN_ACCOUNT_LINE
+      ? locked
+        ? lockedAccountRemoved(locked)
+        : UNKNOWN_ACCOUNT_LINE
       : model.reset
         ? LIMIT_HAS_RESET
         : limitResetLine(model.resetsAtMs, time)
+  // A removed account's line already says why nothing can be chosen here.
+  const hint = !locked
+    ? LIMIT_HINT
+    : model.kind === 'unknown'
+      ? null
+      : lockedLimitHint(locked, name)
   const waitingText = pending
     ? waitingBanner(data.nameOf(pending.account), pending.waitingFor.length)
     : (waiting?.text ?? null)
@@ -228,7 +241,7 @@ export function LimitCard({
         </QuietIconButton>
       </div>
 
-      {sideChat ? null : (
+      {locked ? null : (
         <div className="flex flex-wrap items-center gap-2">
           {primary}
           <DropdownMenu>
@@ -278,7 +291,7 @@ export function LimitCard({
         </div>
       )}
 
-      {waitingText && !sideChat ? (
+      {waitingText && !locked ? (
         <p role="status" data-limit-waiting="" className="text-xs text-ink">
           {waitingText}
         </p>
@@ -288,9 +301,7 @@ export function LimitCard({
           {error}
         </p>
       ) : null}
-      <p className="text-xs text-ink-faint">
-        {sideChat ? sideChatLimitHint(name) : LIMIT_HINT}
-      </p>
+      {hint ? <p className="text-xs text-ink-faint">{hint}</p> : null}
     </section>
   )
 }

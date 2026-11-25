@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setChatCapabilitiesForTests } from '@/lib/chat-capabilities'
+import { clearTurnStartsForTests, turnStartedAt } from '@/lib/turn-starts'
 import {
   rawSplits,
   rawUsage,
@@ -10,7 +11,9 @@ import {
 import {
   ACCOUNT_SPLIT_FUNCTION_ID,
   getClaudeAccountsState,
+  RETRY_FUNCTION_ID,
   refreshClaudeAccounts,
+  retryTurn,
   seedClaudeAccountsForTests,
   TMUX_CHANGED_FUNCTION_ID,
   USAGE_READ_FUNCTION_ID,
@@ -170,5 +173,17 @@ describe('the accounts store', () => {
     vi.setSystemTime(NOW + 61_000)
     await act(() => refreshClaudeAccounts(true))
     expect(calls(ACCOUNT_SPLIT_FUNCTION_ID)).toHaveLength(2)
+  })
+
+  it('notes when the re-run turn it asked for started, for its reply’s duration', async () => {
+    engine.call.mockImplementation((id) =>
+      Promise.resolve(id === RETRY_FUNCTION_ID ? { turn_id: 't_9' } : {}),
+    )
+    clearTurnStartsForTests()
+    await expect(retryTurn('s1')).resolves.toEqual({ turnId: 't_9' })
+    expect(engine.call).toHaveBeenCalledWith(RETRY_FUNCTION_ID, {
+      session_id: 's1',
+    })
+    expect(turnStartedAt('t_9')).toBe(NOW)
   })
 })

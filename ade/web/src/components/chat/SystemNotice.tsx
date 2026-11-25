@@ -20,7 +20,7 @@ import {
   UserX,
   Wallet,
 } from 'lucide-react'
-import { Fragment, useId, useState } from 'react'
+import { Fragment, useContext, useId, useState } from 'react'
 import { Chip, type ChipTone } from '@/components/ui/Chip'
 import {
   CollapsibleCard,
@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/CollapsibleCard'
 import { Fact, FactList } from '@/components/ui/FactCard'
 import { Card, CardHighlight } from '@/components/ui/Surface'
+import { LockedAccountContext } from '@/lib/limit-card'
 import { rememberedProvider } from '@/lib/models-catalog'
 import { skillUpdateSummary } from '@/lib/skill-update'
 import {
@@ -180,7 +181,9 @@ function TurnFailureCard({ message }: { message: SystemMessage }) {
   const known = details?.provider
     ? rememberedProvider(details.provider)
     : undefined
+  const lockedAccount = useContext(LockedAccountContext)
   const presentation = classifyTurnFailure(message, {
+    lockedAccount,
     providerHint: known?.context_overflow_hint,
     providerName: details?.provider
       ? (known?.display_name ??
