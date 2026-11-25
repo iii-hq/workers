@@ -64,6 +64,8 @@ pub const JOURNAL: &str = "swap.json";
 /// which the gate inside one process can't tell it. The system lets go of
 /// it when its process ends, crashed or not.
 pub const SWAP_LOCK: &str = "swap.lock";
+/// How long [`Stores::hold_swap`] tries again before it answers busy.
+pub const SWAP_LOCK_GRACE: Duration = Duration::from_millis(200);
 /// The keys of a sign-in store that belong to the Anthropic account signed
 /// in there: Claude Code 2.1.322's logout removes exactly these (`E()` in
 /// its auth chunk) and revokes the three token chains among them
@@ -221,14 +223,32 @@ impl<'a> Stores<'a> {
             .read_raw(&self.dir(place), self.env_dir(place).as_deref())
     }
 
-    fn write(&self, place: &Place, raw: &Raw) -> Result<(), String> {
+    /// Replace `place`'s whole store with `raw`, atomically (a file is
+    /// written beside it and renamed; the Keychain item in one `security`
+    /// call). Only under `place`'s locks.
+    pub(crate) fn write(&self, place: &Place, raw: &Raw) -> Result<(), String> {
         self.secrets
             .write_raw(&self.dir(place), self.env_dir(place).as_deref(), raw)
     }
 
     /// Hold [`SWAP_LOCK`], or [`SwapError::Busy`] while another process
-    /// holds it.
+    /// holds it. A process this worker starts holds a copy of the lock's
+    /// descriptor until it runs its program (fork, then exec), so a lock
+    /// just let go may read as held for a moment: it is tried again for
+    /// [`SWAP_LOCK_GRACE`] first. Blocking.
     pub fn hold_swap(&self) -> Result<SwapHold, SwapError> {
+        let until = Instant::now() + SWAP_LOCK_GRACE;
+        loop {
+            match self.try_hold_swap() {
+                Err(SwapError::Busy) if Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                done => return done,
+            }
+        }
+    }
+
+    fn try_hold_swap(&self) -> Result<SwapHold, SwapError> {
         use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::io::AsRawFd;
         super::registry::make_private_dir(&self.paths.root).map_err(SwapError::Failed)?;
@@ -308,28 +328,42 @@ impl<'a> Stores<'a> {
         let slot = self.paths.claude_home.clone();
         super::registry::make_private_dir(&slot).map_err(SwapError::Failed)?;
         let storage = slot.join(lockdir::STORAGE);
-        let take = |dir: &Path, locks: &mut LockSet| -> Result<(), SwapError> {
-            locks.take(
-                &dir.join(lockdir::REFRESH),
-                lockdir::REFRESH_STALE,
-                deadline,
-            )?;
-            locks.take(&lockdir::legacy_path(dir), lockdir::LEGACY_STALE, deadline)?;
-            locks.take(
-                &dir.join(lockdir::STORAGE),
-                lockdir::STORAGE_STALE,
-                deadline,
-            )?;
-            Ok(())
-        };
-        take(&slot, &mut locks)?;
+        take_dir_locks(&slot, &mut locks, deadline)?;
         for place in folders {
             let dir = self.dir(place);
             super::registry::make_private_dir(&dir).map_err(SwapError::Failed)?;
-            take(&dir, &mut locks)?;
+            take_dir_locks(&dir, &mut locks, deadline)?;
         }
         Ok((locks, storage))
     }
+
+    /// Take `place`'s three locks alone, as a swap takes them (refresh,
+    /// legacy, storage), waiting until `deadline`: what a renewal of the
+    /// sign-in there holds (D141).
+    pub fn lock_place(&self, place: &Place, deadline: Instant) -> Result<LockSet, SwapError> {
+        let dir = self.dir(place);
+        super::registry::make_private_dir(&dir).map_err(SwapError::Failed)?;
+        let mut locks = LockSet::new();
+        take_dir_locks(&dir, &mut locks, deadline)?;
+        Ok(locks)
+    }
+}
+
+/// Config folder `dir`'s locks in Claude Code's order: its refresh lock,
+/// the legacy `realpath(dir).lock`, its store lock.
+fn take_dir_locks(dir: &Path, locks: &mut LockSet, deadline: Instant) -> Result<(), SwapError> {
+    locks.take(
+        &dir.join(lockdir::REFRESH),
+        lockdir::REFRESH_STALE,
+        deadline,
+    )?;
+    locks.take(&lockdir::legacy_path(dir), lockdir::LEGACY_STALE, deadline)?;
+    locks.take(
+        &dir.join(lockdir::STORAGE),
+        lockdir::STORAGE_STALE,
+        deadline,
+    )?;
+    Ok(())
 }
 
 /// `accountUuid` of a `.claude.json`'s `oauthAccount`.

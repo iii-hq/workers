@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use super::DEFAULT;
-use crate::model::{AccountSwitch, SwitchRules};
+use crate::model::{AccountSwitch, GlobalChange, SwitchRules};
 
 /// Colour tokens (agent-accounts D15); the apps map them.
 pub const COLORS: [&str; 5] = ["blue", "green", "violet", "orange", "pink"];
@@ -48,6 +48,8 @@ pub struct PendingSwitch {
 /// What `slot_version` says once the registry was brought to the global
 /// slot (G11).
 pub const SLOT_VERSION: u32 = 2;
+/// How many changes of the global account `global_history` keeps.
+pub const GLOBAL_HISTORY: usize = 50;
 
 /// A suggestion someone said "Not now" to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +86,11 @@ pub struct Registry {
     /// A switch that waits for windows to finish their turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_global: Option<PendingSwitch>,
+    /// The last [`GLOBAL_HISTORY`] changes of the global account, oldest
+    /// first, written with each one (chat-projects D134): the first entry
+    /// names the account global before them, at 0.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub global_history: Vec<GlobalChange>,
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -123,6 +130,7 @@ impl Default for Registry {
             revision: 0,
             slot_version: SLOT_VERSION,
             pending_global: None,
+            global_history: Vec::new(),
         }
     }
 }
@@ -172,6 +180,34 @@ impl Registry {
         self.accounts.iter().any(|entry| entry.id == id)
     }
 
+    /// Note that the global account changed from `from` to the one now
+    /// global, at `at_ms`: the first change also notes `from`, at 0, and
+    /// only the last [`GLOBAL_HISTORY`] are kept.
+    pub fn note_global_change(&mut self, from: &str, at_ms: u64) {
+        if self.global == from {
+            return;
+        }
+        if self.global_history.is_empty() {
+            self.global_history.push(GlobalChange {
+                account: from.to_string(),
+                at_ms: 0,
+            });
+        }
+        self.global_history.push(GlobalChange {
+            account: self.global.clone(),
+            at_ms,
+        });
+        let extra = self.global_history.len().saturating_sub(GLOBAL_HISTORY);
+        self.global_history.drain(..extra);
+    }
+
+    /// The account that was global at `at_ms`, as far as `global_history`
+    /// tells: the latest change at or before it; before the oldest change
+    /// kept, the oldest's account; without any, the global account now.
+    pub fn global_at(&self, at_ms: u64) -> &str {
+        global_at(&self.global_history, &self.global, at_ms)
+    }
+
     pub fn get(&self, id: &str) -> Option<&Entry> {
         self.accounts.iter().find(|entry| entry.id == id)
     }
@@ -198,6 +234,18 @@ impl Registry {
             })
             .find(|id| !taken(id))
             .expect("some suffix is free")
+    }
+}
+
+/// [`Registry::global_at`] over a history and the global account now.
+pub fn global_at<'a>(history: &'a [GlobalChange], now_global: &'a str, at_ms: u64) -> &'a str {
+    // Changes are written in order; the history is short.
+    match history.iter().rev().find(|change| change.at_ms <= at_ms) {
+        Some(change) => &change.account,
+        None => history
+            .first()
+            .map(|change| change.account.as_str())
+            .unwrap_or(now_global),
     }
 }
 
@@ -393,8 +441,12 @@ impl Store {
             Ok(None) => Registry::default(),
             Err(error) => return Err(error.clone()),
         };
+        let global_before = registry.global.clone();
         let out = change(&mut registry, self.generation)?;
         registry.normalize();
+        // Every change of the global account, however it came (a switch,
+        // a sign-in by hand, an upgrade, its account removed), is noted.
+        registry.note_global_change(&global_before, crate::model::now_ms());
         registry.revision = self.revision.wrapping_add(1);
         write_atomic(&self.path, &registry)?;
         self.loaded = false;
@@ -535,6 +587,72 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn every_global_change_is_kept_in_the_history() {
+        let dir = temp_dir("history");
+        let mut store = Store::new(dir.join("accounts.json"));
+        let add = |registry: &mut Registry, id: &str| {
+            registry.accounts.push(Entry {
+                id: id.into(),
+                name: id.into(),
+                color: "green".into(),
+                shared: vec![],
+                created_at_ms: 1,
+            });
+        };
+        // Changes that keep the global account note nothing.
+        store
+            .update(|registry| {
+                add(registry, "personal");
+                add(registry, "work");
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.current().global_history.is_empty());
+        assert_eq!(store.current().global_at(5), "default");
+        let before = crate::model::now_ms();
+        store
+            .update(|registry| {
+                registry.global = "personal".into();
+                Ok(())
+            })
+            .unwrap();
+        let registry = store.current();
+        assert_eq!(registry.global_history.len(), 2);
+        assert_eq!(registry.global_history[0].account, "default");
+        assert_eq!(registry.global_history[0].at_ms, 0);
+        assert_eq!(registry.global_history[1].account, "personal");
+        let switched = registry.global_history[1].at_ms;
+        assert!(switched >= before);
+        assert_eq!(registry.global_at(switched - 1), "default");
+        assert_eq!(registry.global_at(switched), "personal");
+        // Removing the global account makes `default` global: noted too.
+        store
+            .update(|registry| {
+                registry.accounts.retain(|entry| entry.id != "personal");
+                Ok(())
+            })
+            .unwrap();
+        let registry = store.current();
+        assert_eq!(registry.global, "default");
+        assert_eq!(registry.global_history.last().unwrap().account, "default");
+        // Only the last 50 stay, and the file round-trips them.
+        let mut long = registry.clone();
+        for at in 0..120u64 {
+            let from = long.global.clone();
+            long.global = if at % 2 == 0 { "work" } else { "default" }.into();
+            long.note_global_change(&from, 1_000 + at);
+        }
+        assert_eq!(long.global_history.len(), GLOBAL_HISTORY);
+        assert_eq!(long.global_history.last().unwrap().at_ms, 1_119);
+        // Before the oldest change kept: the oldest's account.
+        assert_eq!(long.global_at(0), long.global_history[0].account.as_str());
+        let text = serde_json::to_string(&long).unwrap();
+        let back: Registry = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.global_history, long.global_history);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

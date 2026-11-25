@@ -1,5 +1,5 @@
 {
-  "description": "The weekly usage of Claude Code (per account: 5-hour window, week, per-model weeks, each with when it resets) and of Codex (plan, 5-hour window, week, credits), with the Claude Code accounts, the global one, the rules and any suggestion. The same object the live feed carries as `usage`. Readings are at most five minutes old while the app watches; refresh asks again now (at most once a minute per account). Never returns a token.",
+  "description": "The weekly usage of Claude Code (per account: 5-hour window, week, per-model weeks, each with when it resets) and of Codex (plan, 5-hour window, week, credits), with the Claude Code accounts, the global one, the rules and any suggestion. The same object the live feed carries as `usage`. Readings are at most five minutes old while the app watches; refresh asks again now (at most once a minute per account). Never returns a token: only the internal tmux::accounts::credential does.",
   "function_id": "tmux::usage::read",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -166,7 +166,7 @@
             ]
           },
           "token_expired": {
-            "description": "Its sign-in expired; running Claude Code there renews it.",
+            "description": "Its access token expired. Claude Code renews it when it runs there, and so does the worker when `tmux::accounts::credential` asks for it.",
             "type": "boolean"
           },
           "usage": {
@@ -269,6 +269,14 @@
           "global": {
             "description": "Id of the global account: the sign-in of the slot (`~/.claude`), what plain `claude` uses anywhere.",
             "type": "string"
+          },
+          "global_history": {
+            "default": [],
+            "description": "The last 50 changes of the global account, oldest first: which account was global when (`tmux::usage::claude_outside` dates the spend of sessions tmux never ran with it).",
+            "items": {
+              "$ref": "#/definitions/GlobalChange"
+            },
+            "type": "array"
           },
           "last_switch": {
             "anyOf": [
@@ -535,6 +543,26 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      },
+      "GlobalChange": {
+        "description": "One change of the global account, as `global_history` keeps it.",
+        "properties": {
+          "account": {
+            "description": "The account that became global.",
+            "type": "string"
+          },
+          "at_ms": {
+            "description": "When. 0 on the first entry when it names the account that was global before the first switch recorded.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "account",
+          "at_ms"
         ],
         "type": "object"
       },

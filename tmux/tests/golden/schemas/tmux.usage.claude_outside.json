@@ -1,0 +1,119 @@
+{
+  "description": "The Claude Code spend on account `account` outside the Chat since `since_ms` (tmux windows and any other Claude Code on this computer), as tokens by model (`input`, `output`, `cache_read`, `cache_write`, `messages`), from Claude Code's own transcripts. A session tmux ran in a pane counts for that pane's account at each reply's time (or, on ~/.claude, the account global then); any other session counts for the account that was global when it replied (`global_history`), and `attributed` says how many replies were counted that way. Each reply counts once, by message and request id, wherever its transcript was copied. Read when asked and kept five minutes (`as_of_ms`). `global` names the account global now. Token counts only; never a token. Errors are one JSON object `{code, message}`: `unknown_account`.",
+  "function_id": "tmux::usage::claude_outside",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "account": {
+        "description": "An account id, or `global` for the account global now.",
+        "type": "string"
+      },
+      "since_ms": {
+        "description": "Count replies from this time on (milliseconds since the epoch), e.g. the account's week start: its `week.resets_at_ms` minus seven days.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "account",
+      "since_ms"
+    ],
+    "title": "ClaudeOutsideInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ModelSpend": {
+        "description": "The tokens of one model's replies, from Claude Code's transcripts.",
+        "properties": {
+          "cache_read": {
+            "description": "Input tokens read from the prompt cache.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "cache_write": {
+            "description": "Input tokens written to the prompt cache.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input": {
+            "description": "Input tokens not read from the cache.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "messages": {
+            "description": "Replies counted.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "model": {
+            "description": "The model's id as Claude Code recorded it, e.g. `claude-opus-4-5`.",
+            "type": "string"
+          },
+          "output": {
+            "description": "Output tokens.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cache_read",
+          "cache_write",
+          "input",
+          "messages",
+          "model",
+          "output"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "An account's Claude Code spend outside the Chat (`tmux::usage::claude_outside`).",
+    "properties": {
+      "account": {
+        "description": "The account (the one global now when `global` was asked).",
+        "type": "string"
+      },
+      "as_of_ms": {
+        "description": "When Claude Code's transcripts were read (at most five minutes ago).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "attributed": {
+        "description": "Replies of sessions tmux never ran, counted here because this account was global when they were written.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "by_model": {
+        "description": "The spend by model, by model id.",
+        "items": {
+          "$ref": "#/definitions/ModelSpend"
+        },
+        "type": "array"
+      },
+      "since_ms": {
+        "description": "Replies from this time on are counted.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "account",
+      "as_of_ms",
+      "attributed",
+      "by_model",
+      "since_ms"
+    ],
+    "title": "OutsideSpend",
+    "type": "object"
+  }
+}

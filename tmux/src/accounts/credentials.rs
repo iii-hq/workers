@@ -612,7 +612,7 @@ impl<T: Clone> FileCache<T> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const FILE: &str = r#"{"claudeAiOauth":{"accessToken":"demo-work","refreshToken":"r","expiresAt":1794443325000,
