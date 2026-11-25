@@ -121,6 +121,12 @@ pub struct ExecRequest {
     /// sandbox); omit to leave stdin at /dev/null.
     #[serde(default)]
     pub stdin: Option<String>,
+    /// Whether the session moves into a git worktree this call adds (default
+    /// true). Pass `false` to keep the session in its folder.
+    // The turn hook reads it from the raw call (`worktree_follow`).
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub follow_worktree: Option<bool>,
     /// Where to run the command. Defaults to the host worker; pass
     /// `{ kind: "sandbox", sandbox_id }` to forward the call to a microVM.
     #[serde(default)]

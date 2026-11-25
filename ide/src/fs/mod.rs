@@ -63,7 +63,7 @@ pub fn scope_boundary(scope: Option<&FsScope>) -> FsBoundary {
         .unwrap_or(FsBoundary::ConfiguredRoots)
 }
 
-/// Wire-identical mirror of `iii_sdk::channels::StreamChannelRef`. The SDK
+/// Wire-identical mirror of `iii_sdk::protocol::StreamChannelRef`. The SDK
 /// type lacks `JsonSchema` in 0.11.3, which would block typed registration
 /// of `shell::fs::write`/`read`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -85,27 +85,27 @@ pub enum ContentDirection {
     Write,
 }
 
-impl From<ContentRef> for iii_sdk::channels::StreamChannelRef {
+impl From<ContentRef> for iii_sdk::protocol::StreamChannelRef {
     fn from(c: ContentRef) -> Self {
-        iii_sdk::channels::StreamChannelRef {
+        iii_sdk::protocol::StreamChannelRef {
             channel_id: c.channel_id,
             access_key: c.access_key,
             direction: match c.direction {
-                ContentDirection::Read => iii_sdk::helpers::ChannelDirection::Read,
-                ContentDirection::Write => iii_sdk::helpers::ChannelDirection::Write,
+                ContentDirection::Read => iii_sdk::protocol::ChannelDirection::Read,
+                ContentDirection::Write => iii_sdk::protocol::ChannelDirection::Write,
             },
         }
     }
 }
 
-impl From<iii_sdk::channels::StreamChannelRef> for ContentRef {
-    fn from(c: iii_sdk::channels::StreamChannelRef) -> Self {
+impl From<iii_sdk::protocol::StreamChannelRef> for ContentRef {
+    fn from(c: iii_sdk::protocol::StreamChannelRef) -> Self {
         ContentRef {
             channel_id: c.channel_id,
             access_key: c.access_key,
             direction: match c.direction {
-                iii_sdk::helpers::ChannelDirection::Read => ContentDirection::Read,
-                iii_sdk::helpers::ChannelDirection::Write => ContentDirection::Write,
+                iii_sdk::protocol::ChannelDirection::Read => ContentDirection::Read,
+                iii_sdk::protocol::ChannelDirection::Write => ContentDirection::Write,
             },
         }
     }
@@ -241,7 +241,7 @@ fn default_true() -> bool {
 #[derive(Debug)]
 pub enum WriteContent {
     Inline(String),
-    Stream(iii_sdk::channels::StreamChannelRef),
+    Stream(iii_sdk::protocol::StreamChannelRef),
 }
 
 #[derive(Debug)]
@@ -857,7 +857,7 @@ pub struct WriteResponse {
 /// without conversion. Wire-facing reads serialize via `ReadResponseWire`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReadResponse {
-    pub content: iii_sdk::channels::StreamChannelRef,
+    pub content: iii_sdk::protocol::StreamChannelRef,
     pub size: u64,
     pub mode: String,
     pub mtime: i64,

@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Atomic worker initialization requires configuration::ensure (MOT-4736).
-  III_RELEASE_TAG: 'iii/v0.26.0'
+  III_RELEASE_TAG: 'iii/v0.27.0'
 
 jobs:
   scripts-tests:
@@ -166,6 +166,39 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      # prompts/default-mcp.md is generated from prompts/default.md by
+      # scripts/derive-default-mcp.py; --check fails when the committed file
+      # is stale or an edit anchor no longer matches default.md. It runs only
+      # when a change touches prompts/ or the generator.
+      - name: Detect prompt or generator changes (iii-directory)
+        id: derive-paths
+        if: matrix.worker == 'iii-directory'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PUSH_BEFORE: ${{ github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          elif [[ "$PUSH_BEFORE" =~ ^[0-9a-f]{40}$ && ! "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            base="$PUSH_BEFORE"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$base"
+          touched="$(git diff --name-only "$base" HEAD -- prompts scripts/derive-default-mcp.py)"
+          if [[ -n "$touched" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check default-mcp.md is up to date (iii-directory)
+        if: matrix.worker == 'iii-directory' && steps.derive-paths.outputs.changed == 'true'
+        run: python3 scripts/derive-default-mcp.py --check
+
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
@@ -1388,6 +1421,15 @@ jobs:
       fail-fast: false
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.binary) }}
+    # This job restores the `rust` job's target/ (same rust-cache key), which
+    # was built with RUSTC_WRAPPER=sccache. The cmake crate records that as
+    # CMAKE_C_COMPILER_LAUNCHER in the cached CMakeCache.txt, so a cmake build
+    # (llama.cpp in the judge workers) calls sccache here too: install it the
+    # same way, read-only.
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_GHA_VERSION: ci-rust-v1
+      SCCACHE_GHA_RW_MODE: READ_ONLY
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -1431,6 +1473,24 @@ jobs:
           shared-key: worker-${{ matrix.worker }}
           save-if: false
           workspaces: ${{ matrix.worker }} -> target
+
+      - name: Install sccache
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        with:
+          version: v0.19.0
+
+      - name: Enable sccache
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
+        run: |
+          echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
+          if sccache rustc -vV >/dev/null 2>&1; then
+            echo 'RUSTC_WRAPPER=sccache' >> "$GITHUB_ENV"
+          else
+            sccache --stop-server >/dev/null 2>&1 || true
+            echo '::warning::sccache unavailable; compiling without the shared cache'
+          fi
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'go-binary'

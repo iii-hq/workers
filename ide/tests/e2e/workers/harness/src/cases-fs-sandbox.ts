@@ -1,9 +1,5 @@
-import type { IIIClient } from 'iii-sdk';
-import { ChannelReader } from 'iii-sdk/channel';
-import { createChannel } from 'iii-sdk/helpers';
+import { InputStream, type IIIClient } from 'iii-sdk';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
-
-const URL = process.env.III_URL ?? 'ws://127.0.0.1:49134';
 
 interface CapturedCall {
   function_id: string;
@@ -77,8 +73,9 @@ export function setupSandboxMocks(sdk: IIIClient): void {
       nextErrorMessage = null;
       throw new Error(m);
     }
-    const reader: ChannelReader = payload.content;
-    const drained = await reader.readAll();
+    // A ref in handler input arrives as an InputStream.
+    const reader: InputStream = payload.content;
+    const drained = await reader.bytes();
     sandboxWriteDrainedBytes = drained;
     const r = nextResponse;
     nextResponse = null;
@@ -92,21 +89,19 @@ export function setupSandboxMocks(sdk: IIIClient): void {
       throw new Error(m);
     }
     const bytes = sandboxReadBytesToServe ?? Buffer.from('');
-    const channel = await createChannel(sdk, 64);
-    (async () => {
-      channel.writer.stream.write(bytes, (err: Error | null | undefined) => {
-        if (err) {
-          channel.writer.close();
-          return;
-        }
-        channel.writer.stream.end(() => channel.writer.close());
-      });
+    const pipe = await sdk.pipe({ bufferSize: 64 });
+    void (async () => {
+      try {
+        await pipe.output.write(bytes);
+      } finally {
+        await pipe.output.close();
+      }
     })();
     const r = nextResponse;
     nextResponse = null;
     return (
       r ?? {
-        content: channel.readerRef,
+        content: pipe.input,
         size: bytes.length,
         mode: '0644',
         mtime: 1700000000,
@@ -340,23 +335,16 @@ export const FS_SANDBOX_CASES: TestCase[] = [
     name: 'fs_sandbox_write_forwards_content_ref_and_passes_bytes_through',
     async run(ctx: CaseContext) {
       resetMocks();
-      const channel = await createChannel(ctx.iii, 64);
-      const writePromise = new Promise<void>((resolve, reject) => {
-        channel.writer.stream.once('error', reject);
-        channel.writer.stream.write(Buffer.from('hello sandbox'), (err) => {
-          if (err) { reject(err); return; }
-          channel.writer.stream.end(() => resolve());
-        });
-      });
+      const pipe = await ctx.iii.pipe({ bufferSize: 64 });
       const callPromise = ctx.call('shell::fs::write', {
         target: { kind: 'sandbox', sandbox_id: SANDBOX_ID },
         path: '/sb/x',
         mode: '0644',
         parents: false,
-        content: channel.readerRef,
+        content: pipe.input,
       });
-      await writePromise;
-      channel.writer.close();
+      await pipe.output.write(Buffer.from('hello sandbox'));
+      await pipe.output.close();
       const r = await callPromise;
       expectEqual(r.bytes_written, 13, 'bytes_written round-trips');
       expectEqual(r.path, '/sb/x', 'path forwarded');
@@ -368,8 +356,8 @@ export const FS_SANDBOX_CASES: TestCase[] = [
       const fwdedPayload = captured[0].payload;
       expectEqual(fwdedPayload.path, '/sb/x', 'forwarded payload.path');
       expectEqual(fwdedPayload.mode, '0644', 'forwarded payload.mode');
-      expect(fwdedPayload.content instanceof ChannelReader,
-        'forwarded payload.content resolved to ChannelReader by SDK',
+      expect(fwdedPayload.content instanceof InputStream,
+        'forwarded payload.content resolved to an InputStream by the SDK',
       );
     },
   },
@@ -384,11 +372,10 @@ export const FS_SANDBOX_CASES: TestCase[] = [
       });
       expectEqual(r.size, 15, 'size from engine');
       expectEqual(r.mode, '0644', 'mode from engine');
-      expect(r.content && typeof r.content.channel_id === 'string',
-        `engine response.content shape: ${JSON.stringify(r.content)}`,
+      expect(r.content instanceof InputStream,
+        'engine response.content resolved to an InputStream by the SDK',
       );
-      const reader = new ChannelReader(URL, r.content);
-      const data = await reader.readAll();
+      const data = await (r.content as InputStream).bytes();
       expectEqual(data.toString('utf8'), 'sandbox payload', 'streamed bytes');
       const fwdedPayload = captured[0].payload;
       expectEqual(fwdedPayload.path, '/sb/y', 'forwarded payload.path');

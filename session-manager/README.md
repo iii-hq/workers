@@ -139,13 +139,16 @@ asking chat's attachments (`context.session_id`), newest first, then by name;
 `session::attachments::mention::get` resolves an id alone to the pill (name,
 size), the card (type, size, added) and the summary, and names
 `session::read-attachment` as the details call. That function is how an agent
-reads any attachment by id (`session_id` optional): a text file comes back in
-character windows (`offset`, `max_chars`, `next_offset`); a PDF, an office
-document, an image or any other file comes back with `how_to_read`, the exact
-`fp::pipe` calls that convert it (`pdf::to-markdown`, `document::to-markdown`)
-or save it into the agent's working folder, checked against the functions the
-engine has (a missing worker is named instead). Agents may call it without
-approval; the two mention functions are denied to them.
+reads any attachment by id (`session_id` optional): a text file, or an office
+document as the markdown `document::to-markdown` makes of it, comes back in
+character windows (`offset`, `max_chars`, `next_offset`); a PDF, an image or
+any other file comes back with `how_to_read`, the exact `fp::pipe` calls that
+convert it (`pdf::to-markdown`) or save a copy in a temporary folder outside
+the agent's working folder, checked against the functions the engine has (a
+missing worker is named instead). A document without text says so, and one that
+does not convert comes back with the converter's reason, or the call that
+installs the `document` worker; both with the save call. Agents may call it
+without approval; the two mention functions are denied to them.
 
 ## Event functions
 

@@ -11,7 +11,6 @@ use iii_http::config::{CorsConfig, MiddlewareConfig, RestApiConfig, WebhookListe
 use iii_http::configuration;
 use iii_http::on_request::ON_REQUEST_FN;
 use iii_http::types::HttpRequest;
-use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, RegisterFunction};
 use serde_json::{Value, json};
@@ -74,13 +73,11 @@ async fn bind(
     public: Option<bool>,
 ) -> String {
     let id = format!("test::{method}:{path}");
-    let url = engine.url.clone();
     engine.iii.register_function(id.clone(), RegisterFunction::new_async(move |req: HttpRequest| {
-        let url = url.clone();
         async move {
-            // An empty body has no channel frames in the existing HTTP path.
+            // An empty body has no stream frames in the existing HTTP path.
             let raw = if req.headers.get("content-length").is_some_and(|s| s != "0") {
-                tokio::time::timeout(Duration::from_secs(3), ChannelReader::new(&url, &req.request_body).read_all())
+                tokio::time::timeout(Duration::from_secs(3), req.request_body.read_all())
                     .await.map_err(|e| Error::Handler(e.to_string()))??
             } else { Vec::new() };
             Ok::<Value, Error>(json!({"body": {"raw": raw, "headers": req.headers, "body": req.body, "method": req.method}}))

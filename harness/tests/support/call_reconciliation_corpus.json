@@ -437,6 +437,14 @@
       "null"
      ]
     },
+    "follow_worktree": {
+     "default": null,
+     "description": "Whether the session moves into a git worktree this call adds (default true). Pass `false` to keep the session in its folder.",
+     "type": [
+      "boolean",
+      "null"
+     ]
+    },
     "stdin": {
      "default": null,
      "description": "Bytes written to the program's stdin, then EOF (host only, S210 on sandbox); omit to leave stdin at /dev/null.",

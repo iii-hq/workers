@@ -44,9 +44,19 @@ export function formatProviderLabel(provider: string | null): string | null {
   const knownProviders: Record<string, string> = {
     anthropic: 'Anthropic',
     codex: 'Codex',
+    deepseek: 'DeepSeek',
+    elevenlabs: 'ElevenLabs',
+    gemini: 'Gemini',
+    'github-copilot': 'GitHub Copilot',
     google: 'Google',
+    llamacpp: 'llama.cpp',
     openai: 'OpenAI',
     'openai-codex': 'Codex',
+    'opencode-go': 'OpenCode Go',
+    sarvam: 'Sarvam AI',
+    openrouter: 'OpenRouter',
+    xai: 'xAI',
+    zai: 'Z.ai',
   }
   return (
     knownProviders[provider] ??

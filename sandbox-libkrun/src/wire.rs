@@ -11,7 +11,7 @@
 //! copied: only the router answers it.
 
 use hmac::{Hmac, KeyInit, Mac};
-use iii_sdk::channels::StreamChannelRef;
+use iii_sdk::protocol::StreamChannelRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;

@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use iii_sdk::IIIClient;
-use iii_sdk::channels::{ChannelDirection, StreamChannelRef};
+use iii_sdk::protocol::{ChannelDirection, StreamChannelRef};
 use sandbox_libkrun::sandbox_daemon::SandboxError;
 use sandbox_libkrun::wire::{
     LogRecord, WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse, WorkerDestroyRequest,

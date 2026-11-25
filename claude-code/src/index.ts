@@ -21,15 +21,17 @@ import {
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
+import { registerAgents } from './agents.js';
 import { pluginSourceLine } from './iii-plugin/install.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { ranSinceStart, register, startupScanDone } from './run.js';
 import { startStatusRecovery } from './session-link.js';
+import { settleStaleTurns } from './turns.js';
 import { registerActivity } from './terminal/activity.js';
 import { registerAuth } from './terminal/auth.js';
 import { registerTerminal } from './terminal/terminal.js';
 import { registerUi } from './terminal/ui.js';
-import { type Prepared, prepareWorkspace } from './terminal/workspace.js';
+import { type HostPrepared, inventoryHost, prepareHost } from './terminal/workspace.js';
 
 const { values } = parseArgs({
   options: {
@@ -70,18 +72,19 @@ try {
 // to it (or an empty value) re-runs the PATH lookup.
 const holder: ConfigHolder = { current: bootConfig };
 
-// What a terminal session runs. The prepare step talks to the `ide` worker
-// (install the CLI, equip the workspace, write the hooks) and can take minutes
-// on a cold host, so it is chained off the config reload rather than awaited:
-// `claude::*` must register whether or not there is a terminal host to prepare.
-let prepared: Prepared = {
-  workspace: bootConfig.terminal.workspace_dir,
+// The terminal host: the CLI (installed when missing), the `iii` CLI, the
+// user. It talks to the `ide` worker and can take minutes on a cold host, so
+// it is chained off the config reload rather than awaited: `claude::*` must
+// register whether or not there is a terminal host to prepare. Everything a
+// SESSION depends on (its folder, the plugin there, the http address,
+// default-mcp) is prepared when the session starts, by
+// claude::terminal::describe.
+let prepared: HostPrepared = {
+  home: bootConfig.terminal.workspace_dir,
   executable: '',
-  args: bootConfig.terminal.args,
   env: {},
   detail: 'the terminal host has not been prepared yet',
   bridge: '',
-  plugin: '',
 };
 let preparing: Promise<void> = Promise.resolve();
 // A queued reconcile must not let a slower, superseded preparation overwrite
@@ -93,11 +96,11 @@ const reconcileTerminal = () => {
   const config = holder.current.terminal;
   preparing = preparing
     .then(async () => {
-      const candidate = await prepareWorkspace(iii, config);
+      const candidate = await prepareHost(iii, config);
       if (generation !== preparationGeneration) return;
       prepared = candidate;
       if (prepared.detail) console.warn(`claude-code terminal: ${prepared.detail}`);
-      else console.log(`claude-code terminal: ${prepared.executable} in ${prepared.workspace}`);
+      else console.log(`claude-code terminal: ${prepared.executable} ready`);
     })
     .catch((err) => {
       if (generation !== preparationGeneration) return;
@@ -125,7 +128,13 @@ await observeConfigChanges(iii, refresh);
 const feeds = registerAgentFeeds(iii);
 const emit = feeds.agent.emit;
 const emitRaw = feeds.raw.emit;
-register(iii, () => holder.current, emit, emitRaw);
+register(
+  iii,
+  () => holder.current,
+  emit,
+  emitRaw,
+  (id) => agents.heldElsewhere(id),
+);
 // A session this worker left `working` (a lost final status, or a restart
 // mid-run) is settled now: nothing of ours can be running yet.
 // Statuses this worker could not write (a lost final status, or a restart
@@ -133,11 +142,26 @@ register(iii, () => holder.current, emit, emitRaw);
 // again whenever session-manager registers; runs since startup stay tracked
 // until the first scan that listed successfully.
 startStatusRecovery(iii, ranSinceStart, startupScanDone);
+// Run records left `working` by the previous process get their settle, so an
+// observer waiting on one of those turns is woken.
+void settleStaleTurns(iii, ranSinceStart);
 
-// The terminal half: the hook sink, what a session runs, who pays for it, and
+// The terminal half: the hook sink, the session inventory (which reads the
+// sink's sessions), what a session runs, who pays for it, and
 // the console page that opens it.
-registerActivity(iii, emit);
-registerTerminal(iii, () => prepared);
+const tracker = registerActivity(iii, emit);
+const agents = registerAgents(
+  iii,
+  () => inventoryHost(prepared),
+  () => holder.current.external_sessions,
+  tracker,
+);
+registerTerminal(
+  iii,
+  () => prepared,
+  () => holder.current.terminal,
+  agents.resolveOpen,
+);
 registerAuth(iii, () => prepared);
 registerUi(iii);
 

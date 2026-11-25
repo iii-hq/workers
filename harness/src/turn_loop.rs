@@ -3387,6 +3387,13 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
             "The provider disconnected before completing the response.",
             &["Retry the turn to continue."],
         ),
+        "router/stream_timeout" => (
+            "The response ran past the LLM Router stream time limit.",
+            &[
+                "Raise the stream timeout (stream_timeout_ms) in LLM Router settings, and keep the Harness router timeout (router_timeout_ms) above it.",
+                "Lower the thinking level (reasoning effort) or split the task, then retry the turn.",
+            ],
+        ),
         "router/provider_auth_expired" => (
             "The provider authentication needs attention.",
             &[
@@ -6626,6 +6633,27 @@ mod tests {
                 "Choose another available provider or model."
             ]
         );
+    }
+
+    /// Prevents: the router's own stream budget being resumed (every resume
+    /// meets the same budget) or shown as a provider rejection.
+    #[test]
+    fn router_stream_timeout_is_not_resumed_and_names_the_setting() {
+        let error = ChatError {
+            code: Some("router/stream_timeout".into()),
+            message: "raw router text".into(),
+            detail: None,
+            kind: Some(ErrorKind::Permanent),
+            retryable: Some(false),
+        };
+        let failure = super::llm_failure_info(Some(&error), None, Some("openai-codex"), Some("m"));
+        assert!(!transient_resume_allowed(failure.retryable, 0, 3, 1, 16));
+        let presentation = super::failure_presentation(&error.message, failure);
+        assert_eq!(
+            presentation.summary,
+            "The response ran past the LLM Router stream time limit."
+        );
+        assert!(presentation.next_actions[0].contains("stream_timeout_ms"));
     }
 
     #[test]

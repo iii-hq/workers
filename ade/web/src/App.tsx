@@ -1690,7 +1690,11 @@ function WorkspacePanes({
                   }}
                 />
               ) : null}
-              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-b-sm sm:border">
+              {/* On desktop the header's foot hairline is the pane's top
+                  edge: the active tab paints over it to open into the pane.
+                  A top border of the pane's own would run under that tab as
+                  a second line, so the surface draws its sides and foot. */}
+              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-b-sm sm:border sm:border-t-0">
                 {screen === null ? (
                   <EmptyPane
                     screenOptions={emptyPaneOptions}

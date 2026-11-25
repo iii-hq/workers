@@ -2,9 +2,10 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::channels::extract_channel_refs;
-use iii_sdk::channels::{ChannelReader, ChannelWriter, StreamChannelRef};
+use futures_util::StreamExt;
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::{ChannelItem, StreamChannelRef, extract_channel_refs};
+use iii_sdk::{InputStream, OutputStream};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -27,48 +28,47 @@ pub struct ResizeRequest {
 // handle_resize
 // ---------------------------------------------------------------------------
 
+/// Opens a ref found in the payload as the stream it stands for (0.27: a read
+/// ref deserializes to an `InputStream`, a write ref to an `OutputStream`).
+fn open<T: serde::de::DeserializeOwned>(channel: &StreamChannelRef) -> Result<T, Error> {
+    serde_json::to_value(channel)
+        .and_then(serde_json::from_value)
+        .map_err(|e| Error::Serde(e.to_string()))
+}
+
 pub async fn handle_resize(
-    engine_ws_base: &str,
     config: Arc<ResizeConfig>,
     input_ref: &StreamChannelRef,
     output_ref: &StreamChannelRef,
     metadata_override: Option<ImageMetadata>,
 ) -> Result<Value, Error> {
-    let reader = ChannelReader::new(engine_ws_base, input_ref);
-    let writer = ChannelWriter::new(engine_ws_base, output_ref);
+    let reader: InputStream = open(input_ref)?;
+    let writer: OutputStream = open(output_ref)?;
 
     let (metadata, image_bytes) = if let Some(meta) = metadata_override {
         // metadata provided inline: read binary directly
         let bytes = reader.read_all().await?;
         (meta, bytes)
     } else {
-        // read text message first (metadata JSON), then binary
-        let metadata_holder: Arc<std::sync::Mutex<Option<String>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let holder_clone = metadata_holder.clone();
-
-        reader
-            .on_message(move |msg| {
-                let holder = holder_clone.clone();
-                // on_message callback is sync — use std::sync::Mutex
-                let mut guard = holder.lock().unwrap();
-                if guard.is_none() {
-                    *guard = Some(msg);
+        // a text frame (metadata JSON) first, then the binary image frame
+        let mut meta_json: Option<String> = None;
+        let mut image_bytes: Option<Vec<u8>> = None;
+        let mut frames = reader.frames();
+        while let Some(frame) = frames.next().await {
+            match frame? {
+                ChannelItem::Text(text) => {
+                    meta_json.get_or_insert(text);
                 }
-            })
-            .await;
-
-        let binary: Option<Vec<u8>> = reader.next_binary().await?;
-        let image_bytes = binary
+                ChannelItem::Binary(data) => {
+                    image_bytes = Some(data);
+                    break;
+                }
+            }
+        }
+        let image_bytes = image_bytes
             .ok_or_else(|| Error::Handler("stream closed before binary frame".to_string()))?;
-
-        // Retrieve the metadata text that was dispatched to the callback
-        let meta_json = {
-            let guard = metadata_holder.lock().unwrap();
-            guard
-                .clone()
-                .ok_or_else(|| Error::Handler("no metadata text frame received".to_string()))?
-        };
+        let meta_json = meta_json
+            .ok_or_else(|| Error::Handler("no metadata text frame received".to_string()))?;
 
         let meta: ImageMetadata = serde_json::from_str(&meta_json)
             .map_err(|e| Error::Handler(format!("invalid metadata JSON: {e}")))?;
@@ -87,8 +87,8 @@ pub async fn process_and_write(
     config: Arc<ResizeConfig>,
     metadata: ImageMetadata,
     image_bytes: Vec<u8>,
-    writer: &ChannelWriter,
-    reader: &ChannelReader,
+    writer: &OutputStream,
+    reader: &InputStream,
 ) -> Result<Value, Error> {
     tracing::info!(
         format = %metadata.format,
@@ -138,14 +138,14 @@ pub async fn process_and_write(
     // Send metadata text frame
     let meta_json = serde_json::to_string(&thumb_meta)
         .map_err(|e| Error::Handler(format!("failed to serialize thumbnail metadata: {e}")))?;
-    writer.send_message(&meta_json).await?;
+    writer.send_text(&meta_json).await?;
 
     // Send binary thumbnail frame
     writer.write(&thumbnail_bytes).await?;
 
-    // Close both channels
+    // Close the output; stop reading whatever is left of the input
     writer.close().await?;
-    reader.close().await?;
+    reader.cancel().await;
 
     let result = serde_json::to_value(&thumb_meta)
         .map_err(|e| Error::Handler(format!("failed to convert metadata to Value: {e}")))?;
@@ -158,12 +158,10 @@ pub async fn process_and_write(
 // ---------------------------------------------------------------------------
 
 pub fn build_handler(
-    engine_ws_base: String,
     config: Arc<ResizeConfig>,
 ) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>> + Send + Sync + 'static
 {
     move |payload: Value| {
-        let engine_ws_base = engine_ws_base.clone();
         let config = config.clone();
 
         Box::pin(async move {
@@ -185,7 +183,7 @@ pub fn build_handler(
                 .get("metadata")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-            handle_resize(&engine_ws_base, config, &input_ref, &output_ref, metadata).await
+            handle_resize(config, &input_ref, &output_ref, metadata).await
         })
     }
 }
@@ -197,7 +195,7 @@ pub fn build_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::channels::ChannelDirection;
+    use iii_sdk::protocol::ChannelDirection;
     use serde_json::json;
 
     fn make_channel_ref(id: &str, dir: &str) -> Value {

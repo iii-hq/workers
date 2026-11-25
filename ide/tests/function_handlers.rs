@@ -324,6 +324,32 @@ fn exec_request_silently_drops_negative_or_float_timeout() {
     assert!(req.timeout_ms.is_none());
 }
 
+#[test]
+fn exec_request_takes_follow_worktree_as_an_optional_boolean() {
+    let absent: ExecRequest = typed(json!({"command": "echo"}));
+    assert_eq!(absent.follow_worktree, None);
+    for flag in [None, Some(true), Some(false)] {
+        let req: ExecRequest = typed(json!({"command": "echo", "follow_worktree": flag}));
+        assert_eq!(req.follow_worktree, flag);
+    }
+    for flag in [json!("false"), json!(0)] {
+        let err = parse_err::<ExecRequest>(json!({"command": "echo", "follow_worktree": flag}));
+        assert!(err.contains("expected a boolean"), "got: {err}");
+    }
+}
+
+#[test]
+fn exec_schema_exposes_an_optional_follow_worktree() {
+    let schema = serde_json::to_value(schemars::schema_for!(ExecRequest)).unwrap();
+    let flag = &schema["properties"]["follow_worktree"];
+    assert_eq!(flag["type"], json!(["boolean", "null"]));
+    assert!(flag["description"].as_str().is_some_and(|d| !d.is_empty()));
+    assert_eq!(schema["required"], json!(["command"]));
+    // A background job never moves its session.
+    let bg = serde_json::to_value(schemars::schema_for!(ExecBgRequest)).unwrap();
+    assert!(bg["properties"].get("follow_worktree").is_none());
+}
+
 #[tokio::test]
 async fn exec_handler_returns_truncated_flag_at_max_output_bytes() {
     let cfg = cfg_with_deny(&[]);
@@ -526,14 +552,14 @@ fn fs_host_backend() -> Arc<dyn ide::fs::FsBackend> {
     struct StubChan;
     #[async_trait::async_trait]
     impl ide::fs::host::ChannelMaker for StubChan {
-        async fn create_channel(
-            &self,
-            _: usize,
-        ) -> Result<iii_sdk::channel::Channel, iii_sdk::errors::Error> {
+        async fn pipe(&self) -> Result<iii_sdk::Pipe, iii_sdk::errors::Error> {
             Err(iii_sdk::errors::Error::Handler("stub channel".into()))
         }
-        fn engine_address(&self) -> String {
-            "ws://stub:0".into()
+        fn open_reader(
+            &self,
+            _: iii_sdk::protocol::StreamChannelRef,
+        ) -> Result<iii_sdk::InputStream, iii_sdk::errors::Error> {
+            Err(iii_sdk::errors::Error::Handler("stub channel".into()))
         }
     }
     impl fmt::Display for StubChan {

@@ -84,11 +84,13 @@ func runtimeWebhookFixture(t *testing.T) (*Manager, Config, *Inbox, string, clou
 
 func TestCloudWebhookDeadlineDoesNotLeaveAnArchiveJob(t *testing.T) {
 	manager, _, inbox, engineURL, req, entered := runtimeWebhookFixture(t)
+	client := iii.New(engineURL)
+	t.Cleanup(func() { _ = client.Close() })
 	inbox.mu.Lock()
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	done := make(chan cloudHTTPResponse, 1)
-	go func() { done <- receiveCloudWebhook(ctx, manager, engineURL, req) }()
+	go func() { done <- receiveCloudWebhook(ctx, manager, client, req) }()
 	<-entered
 	response := <-done
 	inbox.mu.Unlock()
@@ -108,19 +110,21 @@ func TestCloudWebhookDeadlineDoesNotLeaveAnArchiveJob(t *testing.T) {
 
 func TestCloudWebhookRejectsDeliveryWhenAdmissionIsFull(t *testing.T) {
 	manager, _, inbox, engineURL, req, entered := runtimeWebhookFixture(t)
+	client := iii.New(engineURL)
+	t.Cleanup(func() { _ = client.Close() })
 	inbox.mu.Lock()
 	ctx, cancel := context.WithCancel(context.Background())
 	var requests sync.WaitGroup
 	requests.Add(8)
 	for range 8 {
-		go func() { defer requests.Done(); receiveCloudWebhook(ctx, manager, engineURL, req) }()
+		go func() { defer requests.Done(); receiveCloudWebhook(ctx, manager, client, req) }()
 	}
 	for range 8 {
 		<-entered
 	}
 	full := req
 	full.RequestBody = nil
-	response := receiveCloudWebhook(context.Background(), manager, engineURL, full)
+	response := receiveCloudWebhook(context.Background(), manager, client, full)
 	cancel()
 	inbox.mu.Unlock()
 	requests.Wait()

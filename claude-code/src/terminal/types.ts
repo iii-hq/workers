@@ -26,4 +26,13 @@ export type HookEvent = {
   tool_use_id?: string;
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
+  /** Stop, StopFailure: the turn's final assistant text. */
+  last_assistant_message?: string;
+  /** Stop: in-flight background work; non-empty means paused, not finished. */
+  background_tasks?: unknown[];
+  /** StopFailure: the API error, and its details when the CLI has them. */
+  error?: unknown;
+  error_details?: string;
+  /** SessionEnd: why the session ended. */
+  reason?: string;
 };

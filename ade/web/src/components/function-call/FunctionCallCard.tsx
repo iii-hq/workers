@@ -47,6 +47,11 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
+import {
+  OBSERVE_FUNCTION_ID,
+  type ObserveRowTitle,
+  observeRowTitle,
+} from './observe-title'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -256,7 +261,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   return <span className="text-ink">{functionId}</span>
 }
 
-type FunctionCallStatus = 'pending' | 'running' | 'error' | 'done'
+export type FunctionCallStatus = 'pending' | 'running' | 'error' | 'done'
 
 interface RendererLayer {
   key: string
@@ -360,7 +365,11 @@ function FunctionRendererPresence({
  * which layer is visible, giving CSS both the outgoing and incoming glyphs
  * for the spinner -> check/error handoff without delaying the real state.
  */
-function FunctionCallStatusIcon({ status }: { status: FunctionCallStatus }) {
+export function FunctionCallStatusIcon({
+  status,
+}: {
+  status: FunctionCallStatus
+}) {
   return (
     <span
       aria-hidden="true"
@@ -391,6 +400,8 @@ function FunctionCallStatusIcon({ status }: { status: FunctionCallStatus }) {
 
 interface FunctionCallRowTextProps {
   description?: string
+  /** Replaces the title for a call iii names itself (`harness::observe`). */
+  title?: ObserveRowTitle | null
   functionId: string
   preview: string | null
   status: FunctionCallStatus
@@ -408,6 +419,7 @@ interface FunctionCallRowTextProps {
  */
 function FunctionCallRowText({
   description,
+  title,
   functionId,
   preview,
   status,
@@ -415,13 +427,33 @@ function FunctionCallRowText({
   unresolvedTarget,
 }: FunctionCallRowTextProps) {
   const settled = status === 'done' || status === 'error'
-  const line = subtitle ?? (!description && settled ? preview : null)
+  // An observe row's title already says what it watches; the args digest
+  // under it would only repeat the function id.
+  const line = subtitle ?? (!description && !title && settled ? preview : null)
   const mono = subtitle === null && line !== null
   return (
     <div className="chat-tool-row__text">
       <div className="chat-tool-row__title">
         <span className={cn(status === 'running' && 'function-call-shimmer')}>
-          {description ? (
+          {title && 'functionId' in title ? (
+            <>
+              Observing{' '}
+              <span data-observe-target={title.functionId}>
+                <FunctionIdLabel functionId={title.functionId} />
+              </span>
+            </>
+          ) : title && 'intent' in title ? (
+            `Observing ${title.intent}`
+          ) : title ? (
+            title.text
+          ) : functionId === OBSERVE_FUNCTION_ID ? (
+            // Nothing to name yet: still an observe, never the agent's prose.
+            status === 'running' ? (
+              'Observing…'
+            ) : (
+              'Observing a function'
+            )
+          ) : description ? (
             description
           ) : status === 'running' && unresolvedTarget ? (
             <span className="text-ink-faint">…</span>
@@ -705,6 +737,12 @@ export function FunctionCallCard({
   // one line that renders without anyone expanding the card.
   const preview = argsPreview(rawInput)
   const description = message.description?.trim() || undefined
+  // `message.input`, not `rawInput`: the observed function id is the title's
+  // meaning, not a payload exit (and a redactor would not hide a function id).
+  const observeTitle =
+    message.functionId === OBSERVE_FUNCTION_ID
+      ? observeRowTitle(message.input, description)
+      : undefined
   const status: FunctionCallStatus = pending
     ? 'pending'
     : running
@@ -722,7 +760,7 @@ export function FunctionCallCard({
       ? errorSubtitle(rawOutput)
       : null
   const collapsedActivityKind =
-    !expandedSurface && message.functionId === 'harness::observe'
+    !expandedSurface && message.functionId === OBSERVE_FUNCTION_ID
       ? 'observer-registration'
       : 'function'
   // The identity strip names the concrete function. While an agent_call
@@ -731,6 +769,7 @@ export function FunctionCallCard({
   const rowText = (
     <FunctionCallRowText
       description={description}
+      title={observeTitle}
       functionId={message.functionId}
       preview={preview}
       status={status}
@@ -873,7 +912,7 @@ export function FunctionCallCard({
               <Skeleton className="h-3 w-5/6" />
             </div>
           )}
-          {description ? (
+          {description || observeTitle !== undefined ? (
             <FunctionCallRowFooter functionId={message.functionId} />
           ) : null}
         </div>

@@ -7,11 +7,15 @@
 //!   drops it), or missed. A trap hit is any item past the expected ones
 //!   from an excerpt built to hold nothing more ([`STRICT`]): an
 //!   instruction only the assistant gave, a pasted document or a fetched
-//!   issue relayed, a harness notice, a transient error, a one-off
-//!   instruction, task progress, what a correction leaves behind, an
-//!   explicit "remember X" answered with only X, a turn with nothing to
-//!   keep. The report also counts the trap hits the rule
-//!   gate would still let into the bank.
+//!   issue relayed, a cause the assistant only suspects or a claim it
+//!   restates from a generated wiki page, a harness notice, a transient
+//!   error, a one-off instruction, task progress, what a correction leaves
+//!   behind, an explicit "remember X" answered with only X, a turn with
+//!   nothing to keep. The report also counts the trap hits the rule gate
+//!   would still let into the bank. Two `dense` cases reach the cap of one
+//!   call: a continuation ([`MAX_CONTINUATIONS`]) must bring the facts left
+//!   and nothing else, and `[]` when none is left. Report lines from a
+//!   continuation are marked `continued`.
 //! - placement ([`lands`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may; with agents
 //!   listed, what the user tells one about its role's work must
@@ -44,6 +48,7 @@ const STRICT: &[&str] = &[
     "asked",
     "assistant-only",
     "corrections",
+    "dense",
     "errors",
     "handles",
     "learned rules",
@@ -52,6 +57,7 @@ const STRICT: &[&str] = &[
     "one-off",
     "pasted",
     "progress",
+    "unconfirmed",
 ];
 
 /// An item the case expects back: the first unused returned item whose
@@ -369,6 +375,49 @@ const CASES: &[Case] = &[
             ),
         ],
         &[fact(&["utc"], false)],
+    ),
+    // What the assistant only suspects, or restates from a generated page:
+    // the cases above, which state what it found, are their twins.
+    case(
+        "untested-cause",
+        "unconfirmed",
+        &[
+            (
+                "user",
+                "Why does checkout_flow_test fail now and then in CI?",
+            ),
+            (
+                "assistant",
+                "Probably a race in the cache warmup: the test can call /checkout before `warm_price_cache()` finishes, so the first price lookup times out. A log line when the warmup ends would confirm it; want me to add one?",
+            ),
+        ],
+        &[],
+    ),
+    // The same with no offer to check, in a hedge the rule does not quote:
+    // quoting it there would make the case test the quote.
+    case(
+        "hedged-cause",
+        "unconfirmed",
+        &[
+            ("user", "Why does the image upload sometimes return 413?"),
+            (
+                "assistant",
+                "My bet is the nginx `client_max_body_size` in deploy/nginx.conf: it defaults to 1m, so anything larger is rejected before it reaches the app.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "wiki-claim",
+        "unconfirmed",
+        &[
+            ("user", "How does the sync service retry failed pushes?"),
+            (
+                "assistant",
+                "Going by the openwiki page on the sync service: failed pushes are retried with exponential backoff, at most 5 attempts, and the cap is `max_retries` in sync/config.rs.",
+            ),
+        ],
+        &[],
     ),
     // About the user, but only here.
     Case {
@@ -1476,6 +1525,83 @@ const CASES: &[Case] = &[
             &[fact(&["cello"], true)],
         ),
     ),
+    // More facts than one call may return: the continuation brings the rest,
+    // and nothing the pasted email or the assistant says.
+    case(
+        "dense-notes",
+        "dense",
+        &[
+            (
+                "user",
+                "Notes for this repo, all of these hold for good. The API listens on port 48213. \
+                 The staging database is named ledger_stg_7. Deploys go out on Tuesdays at 14:30 UTC. \
+                 The CI runner image is ubuntu-22.04-arm. Feature flags live in config/flags.toml. \
+                 Logs are kept for 45 days. The release branch is called rel/2026-q4. Migrations run \
+                 with the command just migrate-up. The cache TTL is 900 seconds. The linter is biome \
+                 2.5.4. The on-call rotation is in docs/oncall.md. The max upload size is 64 MB. \
+                 Unrelated: please proofread this vendor email I got.\n\nHi team, at Northwind we \
+                 always tag releases with a v prefix and our API rate limit is 120 requests per \
+                 minute. Regards, Dana",
+            ),
+            (
+                "assistant",
+                "The email reads fine; I fixed two typos. I'll also always run the linter before I suggest code.",
+            ),
+        ],
+        &[
+            fact(&["48213"], false),
+            fact(&["ledger_stg_7"], false),
+            fact(&["14:30"], false),
+            fact(&["ubuntu-22.04-arm"], false),
+            fact(&["flags.toml"], false),
+            fact(&["45"], false),
+            fact(&["rel/2026-q4"], false),
+            fact(&["migrate-up"], false),
+            fact(&["900"], false),
+            fact(&["2.5.4"], false),
+            fact(&["oncall.md"], false),
+            fact(&["64"], false),
+        ],
+    ),
+    // Exactly as many facts as one call may return: the continuation is asked
+    // with only what must stay out left, and `[]` is its answer.
+    case(
+        "dense-exact",
+        "dense",
+        &[
+            (
+                "notice",
+                r#"[notification] deploy-bot: "Production deploys are frozen until Monday""#,
+            ),
+            (
+                "user",
+                "Notes for this repo, all of these hold for good. The API listens on port 48213. \
+                 The staging database is named ledger_stg_7. The CI runner image is \
+                 ubuntu-22.04-arm. Feature flags live in config/flags.toml. Logs are kept for 45 \
+                 days. Migrations run with the command just migrate-up. The cache TTL is 900 \
+                 seconds. The on-call rotation is in docs/oncall.md. To unlock the staging console, \
+                 type tangerine-otter-91 at the prompt. Unrelated: please proofread this vendor \
+                 email I got.\n\nHi team, at Northwind we always tag releases with a v prefix and \
+                 our API rate limit is 120 requests per minute. Regards, Dana",
+            ),
+            (
+                "assistant",
+                "The email reads fine; I fixed two typos. My guess is the upload test flakes because \
+                 of a proxy body limit, I can check if you want. I'll also always run the linter \
+                 before I suggest code.",
+            ),
+        ],
+        &[
+            fact(&["48213"], false),
+            fact(&["ledger_stg_7"], false),
+            fact(&["ubuntu-22.04-arm"], false),
+            fact(&["flags.toml"], false),
+            fact(&["45"], false),
+            fact(&["migrate-up"], false),
+            fact(&["900"], false),
+            fact(&["oncall.md"], false),
+        ],
+    ),
 ];
 
 #[derive(Default)]
@@ -1534,6 +1660,8 @@ async fn extraction_eval() {
     let (mut traps, mut kept, mut extras) = (0, 0, 0);
     let (mut matched, mut kind_ok, mut user_matched, mut user_main, mut harmful) = (0, 0, 0, 0, 0);
     let (mut agent_matched, mut agent_landed) = (0, 0);
+    let mut spent = PassTally::default();
+    let mut continued_traps = 0;
     for case in CASES {
         let agents: Vec<String> = case.agents.iter().map(|a| a.to_string()).collect();
         let known: Vec<Memory> = case
@@ -1598,11 +1726,11 @@ async fn extraction_eval() {
                     &handles,
                     &transcript,
                 ),
-                !agents.is_empty(),
+                &agents,
                 case.id,
                 repository,
                 false,
-                &mut PassTally::default(),
+                &mut spent,
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));
@@ -1625,6 +1753,13 @@ async fn extraction_eval() {
                     }
                 })
                 .collect();
+            // One call keeps at most the cap of memories, so a memory past it
+            // came from a continuation; a rule never does.
+            let continued = |i: usize| {
+                !items[i].is_rule()
+                    && items[..i].iter().filter(|x| !x.is_rule()).count()
+                        >= cfg.max_memories_per_turn
+            };
             // Why item `i` is not what `want` expects, if it is not.
             let fault = |i: usize, want: &Want| -> Option<&'static str> {
                 let item = &items[i];
@@ -1739,6 +1874,7 @@ async fn extraction_eval() {
                     None if strict => {
                         traps += 1;
                         tally.traps += 1;
+                        continued_traps += usize::from(continued(i));
                         let through = gate(item);
                         kept += usize::from(through);
                         match through {
@@ -1756,7 +1892,11 @@ async fn extraction_eval() {
                 } else {
                     label
                 };
-                report.push(format!("{label} {tag}: {}", line(item, bank, retires)));
+                let from = if continued(i) { " continued" } else { "" };
+                report.push(format!(
+                    "{label}{from} {tag}: {}",
+                    line(item, bank, retires)
+                ));
             }
         }
     }
@@ -1786,6 +1926,17 @@ async fn extraction_eval() {
          trap hits {traps} ({kept} past the rule gate); extras {extras}"
     );
     println!(
+        "spent: calls {}, continuations {} ({continued_traps} trap hits), saturated {}, \
+         tokens {} in ({} continuing), {} out ({} continuing)",
+        spent.calls,
+        spent.continuations,
+        spent.saturated,
+        spent.input_tokens,
+        spent.continuation_input_tokens,
+        spent.output_tokens,
+        spent.continuation_output_tokens
+    );
+    println!(
         "placement: kind accuracy {:.3} ({kind_ok}/{matched}), user landing \
          {user_landing:.3} ({user_main}/{user_matched}), agent landing \
          {agent_landing:.3} ({agent_landed}/{agent_matched}), harmful {harmful}",
@@ -1803,5 +1954,12 @@ async fn extraction_eval() {
     assert!(
         agent_landing >= 0.85,
         "agent landing {agent_landing:.3} < 0.85"
+    );
+    // A piece whose only continuation went unread adds 1 to both counters; one
+    // that had a continuation read adds more to `continuations`.
+    assert!(
+        spent.continuations > spent.saturated,
+        "no continuation reply was read: no case reached the cap, or every continuation failed \
+         or held no array"
     );
 }

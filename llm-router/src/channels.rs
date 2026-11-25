@@ -1,21 +1,29 @@
-//! Real iii channel plumbing for the relay (no abstraction — these are the
-//! concrete bridges over `iii_sdk` channels).
-//! `create_router_channel` mints a router-owned iii channel via
-//! `iii_sdk::helpers::create_channel`; `open_sink` builds a `ChannelWriter`
-//! directly from a forwarded `writer_ref` (the Rust SDK does not hydrate refs
-//! in payloads).
+//! Real iii stream plumbing for the relay (no abstraction: these are the
+//! concrete bridges over `iii_sdk` streams).
+//! `create_router_channel` mints a router-owned engine pipe with
+//! `engine::channels::create` and keeps both refs: the relay reads the read
+//! end as an [`InputStream`], and the write end is either forwarded to a
+//! provider (`writer_ref`) or written here (`router::complete`). `open_sink`
+//! writes to a forwarded `writer_ref`.
 //!
-//! FrameSink::send is sync, bridging to the async ChannelWriter via an
-//! unbounded mpsc + forwarder task — a send failure is observed one frame
-//! late, same as the WebSocket behavior in the Node SDK. The SDK reader only
-//! dispatches text frames while `next_binary()` is polled, so a pump task
-//! drives it; pump exit (close/error) drops the sender → EOF for the relay.
+//! A write end is opened as an [`OutputStream`] only when this process writes
+//! to it, so a ref handed to a provider is never written (or closed) here.
+//! It is kept open past its handler's return: the forwarder task closes it
+//! after the last frame it queued.
+//!
+//! FrameSink::send is sync, bridging to the async OutputStream via an
+//! unbounded mpsc + forwarder task: a send failure is observed one frame
+//! late, same as the WebSocket behavior in the Node SDK. A pump task reads
+//! the read end's text frames into an mpsc; its exit (close/error) drops the
+//! sender, which is EOF for the relay.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
-use iii_sdk::{IIIClient, errors::Error};
+use futures::StreamExt;
+use iii_sdk::protocol::{ChannelItem, StreamChannelRef};
+use iii_sdk::{CallRequest, IIIClient, InputStream, OutputStream, errors::Error};
+use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
 
 use crate::chat::relay::{CallerGone, FrameSink, ReadEvent, RelayRead, RouterChannel};
@@ -48,16 +56,41 @@ impl FrameSink for SdkSink {
     }
 }
 
-/// Spawn the forwarder task that owns the async ChannelWriter.
-fn spawn_writer_forwarder(writer: ChannelWriter) -> Arc<SdkSink> {
+/// Opens the write end `r` as an [`OutputStream`] bound to `iii`, kept open
+/// past the current handler: its forwarder closes it.
+fn open_output(iii: &IIIClient, r: &StreamChannelRef) -> Result<OutputStream, Error> {
+    let value = serde_json::to_value(r).map_err(|e| Error::Serde(e.to_string()))?;
+    let output: OutputStream =
+        serde_json::from_value(value).map_err(|e| Error::Serde(e.to_string()))?;
+    output.bind(iii);
+    output.keep_open();
+    Ok(output)
+}
+
+/// Spawn the forwarder task that writes to the write end `r`. The end is
+/// opened on the first frame or close; a sink dropped unused leaves it
+/// untouched.
+fn spawn_writer_forwarder(iii: IIIClient, r: StreamChannelRef) -> Arc<SdkSink> {
     let (tx, mut rx) = mpsc::unbounded_channel::<SinkMsg>();
     let closed = Arc::new(AtomicBool::new(false));
     let closed_for_task = closed.clone();
     tokio::spawn(async move {
+        let mut writer: Option<OutputStream> = None;
         while let Some(msg) = rx.recv().await {
+            if writer.is_none() {
+                match open_output(&iii, &r) {
+                    Ok(output) => writer = Some(output),
+                    Err(error) => {
+                        tracing::warn!(%error, "router stream: opening the write end failed");
+                        closed_for_task.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                }
+            }
+            let Some(output) = writer.as_ref() else { break };
             match msg {
                 SinkMsg::Frame(m) => {
-                    if writer.send_message(&m).await.is_err() {
+                    if output.send_text(&m).await.is_err() {
                         closed_for_task.store(true, Ordering::SeqCst);
                         break;
                     }
@@ -65,7 +98,9 @@ fn spawn_writer_forwarder(writer: ChannelWriter) -> Arc<SdkSink> {
                 SinkMsg::Close => break,
             }
         }
-        let _ = writer.close().await;
+        if let Some(output) = writer {
+            let _ = output.close().await;
+        }
     });
     Arc::new(SdkSink { tx, closed })
 }
@@ -104,37 +139,51 @@ impl RelayRead for SdkReader {
     }
 }
 
+/// The `(writer, reader)` refs of a new engine pipe.
+async fn create_pipe_refs(iii: &IIIClient) -> Result<(StreamChannelRef, StreamChannelRef), Error> {
+    let mut result = iii
+        .call(CallRequest::new(
+            "engine::channels::create",
+            json!({ "buffer_size": Value::Null }),
+        ))
+        .await?;
+    let mut end = |key: &str| -> Result<StreamChannelRef, Error> {
+        let value = result
+            .get_mut(key)
+            .map(Value::take)
+            .ok_or_else(|| Error::Serde(format!("missing '{key}' in channel response")))?;
+        serde_json::from_value(value).map_err(|e| Error::Serde(e.to_string()))
+    };
+    let writer = end("writer")?;
+    let reader = end("reader")?;
+    Ok((writer, reader))
+}
+
 /// Mint a fresh router-owned iii channel for one provider attempt.
 pub async fn create_router_channel(iii: &IIIClient) -> Result<RouterChannel, Error> {
-    let channel = iii_sdk::helpers::create_channel(iii, None).await?;
+    let (writer_ref, reader_ref) = create_pipe_refs(iii).await?;
+    let input = InputStream::from_ref(reader_ref, iii)?;
 
-    // reader: bridge on_message + a pump task into an mpsc the relay can
-    // select on. The pump drives next_binary(), which is what dispatches
-    // text frames to the callback; Ok(None)/Err = channel closed.
+    // reader: a pump task forwards the text frames into an mpsc the relay
+    // can select on; end of stream or an error drops the sender (EOF).
     let (tx, rx) = mpsc::unbounded_channel::<String>();
     let cancel = Arc::new(Notify::new());
-    {
-        let cb_tx = tx.clone();
-        channel
-            .reader
-            .on_message(move |msg| {
-                let _ = cb_tx.send(msg);
-            })
-            .await;
-    }
-    drop(tx); // the callback inside the reader holds the only live sender
-    let reader_pump = channel.reader;
     let cancel_pump = cancel.clone();
     tokio::spawn(async move {
+        let mut frames = input.frames();
         loop {
             tokio::select! {
-                r = reader_pump.next_binary() => {
-                    if !matches!(r, Ok(Some(_))) {
-                        break; // closed or errored → reader (and sender) drop → EOF
+                frame = frames.next() => match frame {
+                    Some(Ok(ChannelItem::Text(text))) => {
+                        if tx.send(text).is_err() {
+                            break;
+                        }
                     }
-                }
+                    Some(Ok(ChannelItem::Binary(_))) => {}
+                    _ => break, // closed or errored -> sender drops -> EOF
+                },
                 _ = cancel_pump.notified() => {
-                    let _ = reader_pump.close().await;
+                    input.cancel().await;
                     break;
                 }
             }
@@ -142,18 +191,17 @@ pub async fn create_router_channel(iii: &IIIClient) -> Result<RouterChannel, Err
     });
 
     Ok(RouterChannel {
-        writer_ref: channel.writer_ref,
+        writer: spawn_writer_forwarder(iii.clone(), writer_ref.clone()),
+        writer_ref,
         reader: Box::new(SdkReader {
             rx,
             close_flag: Arc::new(AtomicBool::new(false)),
             cancel,
         }),
-        writer: spawn_writer_forwarder(channel.writer),
     })
 }
 
 /// Build a sink for a caller-supplied writer_ref; same forwarder-task bridge.
 pub async fn open_sink(iii: &IIIClient, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, Error> {
-    let writer = ChannelWriter::new(iii.address(), r);
-    Ok(spawn_writer_forwarder(writer))
+    Ok(spawn_writer_forwarder(iii.clone(), r.clone()))
 }

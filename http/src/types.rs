@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
-use iii_sdk::channel::StreamChannelRef;
+use iii_sdk::{InputStream, OutputStream};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -30,7 +30,7 @@ pub struct InboundRequest {
 
 /// What the target of the matched route's observer receives: the request,
 /// with the route's template as `path`, the values of its `:param` segments,
-/// and the request-body and response channels.
+/// and the request-body and response streams.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRequest {
     pub query_params: HashMap<String, String>,
@@ -44,9 +44,9 @@ pub struct HttpRequest {
     pub body: Value,
 
     /// The exact request bytes, for the target to read.
-    pub request_body: StreamChannelRef,
+    pub request_body: InputStream,
     /// A streamed response, for the target to write.
-    pub response: StreamChannelRef,
+    pub response: OutputStream,
 }
 
 /// Response built from a function's return value, eventually turned into an

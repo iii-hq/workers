@@ -2,7 +2,7 @@
 
 [package]
 name = "memory"
-version = "0.3.15"
+version = "0.3.17"
 edition = "2024"
 publish = false
 
@@ -18,8 +18,8 @@ path = "src/lib.rs"
 # The same exact pin as the `iii-console-ui` crate: both are `=` requirements
 # so they must resolve to a single version, and the injectable UI helper must
 # never drag a worker onto a different SDK build.
-iii-sdk = "=0.26.0"
-iii-helpers = "=0.26.0"
+iii-sdk = "=0.27.0"
+iii-helpers = "=0.27.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 # Worker-side injectable console UI (content function + one ade::ui::asset
 # observer per asset + hot-reload watcher) — direct path link, never published.

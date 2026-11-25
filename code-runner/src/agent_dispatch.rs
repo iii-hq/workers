@@ -3,6 +3,15 @@
 //! and observers. This is a host-bridge restriction, not an engine-wide
 //! sandbox or ACL.
 
+/// The secrets worker's metadata reads (masked hints, fingerprints, never a
+/// value). The rest grant access, resolve a value or change a credential.
+const SECRETS_READS: &[&str] = &[
+    "secrets::list",
+    "secrets::get",
+    "secrets::status",
+    "secrets::detect",
+];
+
 fn validate_function(function_id: &str) -> Result<(), String> {
     // Match the harness agent-call boundary. Scope guards on private state do
     // not authenticate the caller, and `internal` metadata is not authorization.
@@ -14,6 +23,7 @@ fn validate_function(function_id: &str) -> Result<(), String> {
     // own observers through the handle `iii.observe` returned.
     if function_id == "state::claim-namespace"
         || function_id == "engine::observers::dispose"
+        || (function_id.starts_with("secrets::") && !SECRETS_READS.contains(&function_id))
         || [
             "harness::state::",
             "provider::openai-codex::login::",

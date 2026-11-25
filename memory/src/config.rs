@@ -77,7 +77,8 @@ pub struct WorkerConfig {
 
     /// Extract new memories after each completed turn (a pass reads up to 4
     /// runs of 24,000 bytes of new messages, off the hot path; a longer user
-    /// message takes up to 4 `router::complete` calls of its own). Disable to
+    /// message is read in up to 4 pieces of its own, and a call whose memories
+    /// reach `max_memories_per_turn` is followed by up to 2 more). Disable to
     /// run memory as a purely manual store: turns that finish while it is off
     /// are stepped past, never read once it is back on. Off, each finished
     /// turn still steps the extraction cursor past itself (no model call; it
@@ -106,7 +107,9 @@ pub struct WorkerConfig {
     pub extraction_timeout_ms: u64,
 
     /// Cap on memories accepted from a single extraction call (a long span
-    /// is read in several), and on the new notes one turn may save.
+    /// is read in several, and a call that reaches the cap is followed by up
+    /// to 2 more for what it left out, so one piece may write up to three
+    /// times the cap), and on the new notes one turn may save.
     #[serde(default = "default_max_memories_per_turn")]
     pub max_memories_per_turn: usize,
 

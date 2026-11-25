@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use bytes::BytesMut;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use iii_sdk::channels::ChannelWriter;
+use iii_sdk::OutputStream;
 use mail_parser::MessageParser;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -115,7 +115,7 @@ pub async fn stream_part_bytes(
     session: &mut Session,
     uid: u32,
     part_id: &str,
-    writer: &ChannelWriter,
+    writer: &OutputStream,
 ) -> Result<()> {
     // Reject empty / whitespace-only part_id: BODY[] would fetch the
     // whole message, which silently bypasses the attachment contract.

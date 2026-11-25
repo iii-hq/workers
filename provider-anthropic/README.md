@@ -43,7 +43,7 @@ const res = await iii.call({
     model: 'claude-sonnet-4-6',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
   },
-  timeoutMs: 320_000, // outer timeout ≥ the router's 300s stream budget
+  timeoutMs: 1_520_000, // outer timeout ≥ the router's 1500s stream budget
 });
 // res: { message, usage, provider, model } — message is the final AssistantMessage
 ```

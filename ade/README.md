@@ -57,7 +57,7 @@ The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocke
 
 ### Bring up the chat stack
 
-Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation + the model catalog), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (the `/compact` summariser), [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) (human-in-the-loop approvals), and the provider workers — so a single command resolves and installs all of it:
+Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation + the model catalog), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (the `/compact` summariser), [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) (human-in-the-loop approvals), [`document`](https://github.com/iii-hq/workers/tree/main/document) (the text of attached office documents), and the provider workers — so a single command resolves and installs all of it:
 
 ```bash
 iii call compose::add worker=harness
@@ -129,6 +129,7 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 - **Attachments** — multi-file picker with text/image previews
 - **Function calls** — running / pending / error cards; consecutive calls collapse to the latest and expand as one tight stack, while rich code/screenshot displays, approvals, and live calls stay visible; intermediate agent prose summarizes the completed batch; pending approvals use **approve/deny** gating (`approval::resolve`)
 - **Streaming** — abortable mid-flight; live thought stream removed from the DOM on completion
+- **End of a turn** — a quiet row above the composer tells a turn that waits ("Waiting for a notification.") from one that ended ("Turn ended.", with a **Continue** button that sends `Continue`). It reads `harness::status` (`expects_wake`, `open_asks`) each time the chat comes to rest. It shows nothing after a failed or stopped turn, while a question card is up, and in side chats and sub-agent chats. A run or sub-agent that nobody observes does not count as waiting
 - **Markdown** — GFM, code blocks with [prism-react-renderer](https://github.com/FormidableLabs/prism-react-renderer), syntax-highlighted JSON inputs and outputs
 - **Conversation sidebar** — create, inline rename, delete, auto-title from the first message
 - **Context-usage meter** — token estimate with warn / danger thresholds and a `/compact` nudge

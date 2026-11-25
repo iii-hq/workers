@@ -1,6 +1,6 @@
 {
   "name": "control-plane",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "Read-only control plane backend and summary scheduler.",
   "license": "Apache-2.0",
@@ -21,15 +21,15 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.26.0",
-    "zod": "^4.0.0"
+    "iii-sdk": "0.27.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
-    "@types/node": "^22.10.0",
-    "esbuild": "^0.25.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   }
 }

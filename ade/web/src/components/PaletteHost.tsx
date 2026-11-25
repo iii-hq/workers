@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Download,
   Keyboard,
+  LayoutGrid,
   type LucideIcon,
   Moon,
   PanelLeft,
@@ -25,8 +26,11 @@ import {
   Sun,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CommandPalette } from '@/components/CommandPalette'
+import { ModelLibraryHost } from '@/components/chat/ModelLibraryHost'
+import { formatProviderLabel } from '@/components/chat/model-picker-presentation'
+import { ProviderIcon } from '@/components/chat/ProviderIcon'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import { hideSideChats } from '@/lib/chat-aside'
 import { useConversationsCtx } from '@/lib/conversations-context'
@@ -36,6 +40,7 @@ import {
   type KeybindingActionId,
   keybinding,
 } from '@/lib/keybindings/registry'
+import { requestModelLibrary } from '@/lib/model-library/open'
 import {
   checkChromiumMissing,
   useChromiumMissing,
@@ -48,9 +53,16 @@ import { usePageCommands } from '@/lib/page-commands'
 import { chatSearchEntries } from '@/lib/palette/chat-search'
 import { usePaletteSources } from '@/lib/palette/providers'
 import type { PaletteEntry, PaletteLiveSearch } from '@/lib/palette/sources'
+import { bundledProviderMark } from '@/lib/provider-marks'
 import { formatRelative } from '@/lib/relative-age'
 import { searchSessions } from '@/lib/sessions/api'
 import { useExtPages } from '@/lib/ui-slots'
+import {
+  fetchRegistryProviders,
+  providerIdForRegistryWorker,
+  type RegistryWorker,
+  registryWorkerMatchesProvider,
+} from '@/lib/workers-registry'
 import {
   type TabScreen,
   tabColumns,
@@ -166,8 +178,14 @@ export function PaletteHost({
   initialQuery,
 }: PaletteHostProps) {
   const { screenOptions, extPageTitles } = useScreenOptions()
-  const { conversations, select, createNew, active, backend } =
-    useConversationsCtx()
+  const {
+    conversations,
+    select,
+    createNew,
+    active,
+    backend,
+    presentProviders,
+  } = useConversationsCtx()
   const live = backend.id === 'real'
   const pageCommands = usePageCommands()
   const extPages = useExtPages()
@@ -177,6 +195,14 @@ export function PaletteHost({
   const chromiumMissing = useChromiumMissing()
   useEffect(() => {
     if (open && live) void checkChromiumMissing()
+  }, [open, live])
+  // The registry's providers, read once the palette first opens, so a
+  // provider not yet installed can be found by name and added.
+  const [registryProviders, setRegistryProviders] = useState<RegistryWorker[]>(
+    [],
+  )
+  useEffect(() => {
+    if (open && live) void loadRegistryProviders().then(setRegistryProviders)
   }, [open, live])
 
   // Both land on the workers page, filtered to what was picked: a worker by
@@ -350,6 +376,57 @@ export function PaletteHost({
       })
     }
 
+    // Providers: each installed one opens its settings; each the registry
+    // offers that is not installed opens the Models dialog searched for it,
+    // where its Add provider action is.
+    const providerMedia = (id: string, label: string, iconSvg?: string) => (
+      <ProviderIcon
+        iconSvg={iconSvg ?? bundledProviderMark(id)}
+        label={label}
+        providerId={id}
+      />
+    )
+    const installedProviderRows: PaletteEntry[] = presentProviders.map(
+      (provider) => {
+        const label =
+          provider.display_name ??
+          formatProviderLabel(provider.id) ??
+          provider.id
+        return {
+          id: `action:provider:${provider.id}`,
+          kind: 'action',
+          title: `Configure ${label}`,
+          detail: 'Provider credentials and settings',
+          meta: 'Provider',
+          keywords: [provider.id, label, 'provider', 'api key', 'models'],
+          media: providerMedia(provider.id, label, provider.icon_svg),
+          run: () =>
+            requestModelLibrary({ view: 'provider', providerId: provider.id }),
+        }
+      },
+    )
+    const addProviderRows: PaletteEntry[] = registryProviders
+      .filter(
+        (worker) =>
+          !presentProviders.some((provider) =>
+            registryWorkerMatchesProvider(worker.name, provider.id),
+          ),
+      )
+      .map((worker) => {
+        const id = providerIdForRegistryWorker(worker.name)
+        const label = formatProviderLabel(id) ?? worker.name
+        return {
+          id: `action:add-provider:${worker.name}`,
+          kind: 'action',
+          title: `Add ${label}`,
+          detail: 'Provider not installed',
+          meta: 'Provider',
+          keywords: [worker.name, id, label, 'provider', 'install'],
+          media: providerMedia(id, label),
+          run: () => requestModelLibrary({ view: 'library', query: label }),
+        }
+      })
+
     const actions: PaletteEntry[] = [
       ...workspaceActions,
       {
@@ -404,6 +481,26 @@ export function PaletteHost({
           ]
         : []),
       {
+        id: 'action:models',
+        kind: 'action',
+        title: 'Manage models',
+        detail: 'Pin and arrange models, configure providers',
+        keywords: ['models', 'favorites', 'pin', 'provider', 'llm'],
+        icon: LayoutGrid,
+        run: () => requestModelLibrary(),
+      },
+      {
+        id: 'action:add-provider',
+        kind: 'action',
+        title: 'Add a provider',
+        detail: 'Install a provider worker from the registry',
+        keywords: ['provider', 'install', 'registry', 'llm', 'models'],
+        icon: Plus,
+        run: () => requestModelLibrary({ view: 'add-provider' }),
+      },
+      ...installedProviderRows,
+      ...addProviderRows,
+      {
         id: 'action:shortcuts',
         kind: 'action',
         title: 'Show keyboard shortcuts',
@@ -451,20 +548,36 @@ export function PaletteHost({
     theme,
     onThemeChange,
     chromiumMissing,
+    presentProviders,
+    registryProviders,
   ])
 
   return (
-    <CommandPalette
-      open={open}
-      onClose={() => onOpenChange(false)}
-      localEntries={localEntries}
-      onOpenWorker={openWorker}
-      onOpenFunction={openFunction}
-      sources={sources}
-      workingDir={active?.workingDir ?? null}
-      conversationId={active?.id ?? null}
-      initialQuery={initialQuery}
-      liveSearch={liveSearch}
-    />
+    <>
+      <ModelLibraryHost />
+      <CommandPalette
+        open={open}
+        onClose={() => onOpenChange(false)}
+        localEntries={localEntries}
+        onOpenWorker={openWorker}
+        onOpenFunction={openFunction}
+        sources={sources}
+        workingDir={active?.workingDir ?? null}
+        conversationId={active?.id ?? null}
+        initialQuery={initialQuery}
+        liveSearch={liveSearch}
+      />
+    </>
   )
+}
+
+let registryRequest: Promise<RegistryWorker[]> | null = null
+
+/** The registry's provider workers, fetched once per session; a failed read is retried next time. */
+function loadRegistryProviders(): Promise<RegistryWorker[]> {
+  registryRequest ??= fetchRegistryProviders().catch(() => {
+    registryRequest = null
+    return []
+  })
+  return registryRequest
 }

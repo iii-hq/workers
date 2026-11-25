@@ -37,8 +37,10 @@ import {
   isTurnActive,
   sendTurn,
   stopTurn,
+  type TurnRest,
   toSkillOptions,
   toSystemPromptOptions,
+  turnRest,
 } from './harness-send'
 import {
   disposeSessionObserver,
@@ -534,6 +536,11 @@ async function realContextUsage(
     : null
 }
 
+async function realTurnRest(sessionId: string): Promise<TurnRest | null> {
+  const client = await getIiiClient()
+  return turnRest(await getTurnStatus(client, sessionId))
+}
+
 /** `harness::unqueue` — pull a still-parked message back out of the queue.
  *  `false` when it was no longer parked (it already went to the agent). */
 async function realRemoveQueued(
@@ -852,6 +859,7 @@ export const realBackend: ChatBackend = {
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
   contextUsage: realContextUsage,
+  turnRest: realTurnRest,
   removeQueued: realRemoveQueued,
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,

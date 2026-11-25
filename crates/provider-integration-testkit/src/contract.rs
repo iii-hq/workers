@@ -189,20 +189,22 @@ pub(crate) async fn chat(
     request_id: &str,
 ) -> anyhow::Result<ChatResult> {
     let consumer = register_worker(engine_url, test_init_options());
-    let channel = iii_sdk::helpers::create_channel(&consumer, None).await?;
+    let pipe = consumer.pipe().await?;
     let frames = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured = frames.clone();
-    channel
-        .reader
-        .on_message(move |message| {
-            if let Ok(frame) = serde_json::from_str(&message) {
+    // The router writes to the pipe's write end; the payload carries its ref.
+    let writer_ref = serde_json::to_value(&pipe.output)?;
+    let input = pipe.input;
+    let pump = tokio::spawn(async move {
+        use tokio_stream::StreamExt;
+        let mut items = input.frames();
+        while let Some(Ok(item)) = items.next().await {
+            if let iii_sdk::protocol::ChannelItem::Text(message) = item
+                && let Ok(frame) = serde_json::from_str(&message)
+            {
                 captured.lock().expect("frames lock").push(frame);
             }
-        })
-        .await;
-    let writer_ref = channel.writer_ref.clone();
-    let pump = tokio::spawn(async move {
-        let _ = channel.reader.read_all().await;
+        }
     });
     let response = call(
         &consumer,

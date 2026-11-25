@@ -31,12 +31,13 @@ pub fn build_http_client(timeout_ms: u64) -> Result<reqwest::Client, String> {
         .map_err(|e| format!("build http client: {e}"))
 }
 
-/// An agent profile a registry download did not write because a kit owns
-/// that id (`kits.lock`): kit profiles take precedence over worker ones.
+/// An agent profile a registry download did not write because the file on
+/// disk is not this worker's untouched copy.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct SkippedAgent {
     pub id: String,
-    /// The owning kit, `<handle>/<name>`.
+    /// The owning kit (`<handle>/<name>`), `worker <name>` for a profile
+    /// another worker wrote, or `project` for one made or edited here.
     pub owned_by: String,
 }
 
@@ -49,11 +50,15 @@ pub struct DownloadResult {
     pub skills_written: Vec<String>,
     pub system_prompts_written: Vec<String>,
     pub agents_written: Vec<String>,
-    /// Registry agent entries left alone because a kit owns the id.
+    /// Registry agent entries left alone: a kit, another worker or the
+    /// project owns the file on disk.
     pub agents_skipped: Vec<SkippedAgent>,
     /// sha256 of every agent profile written, by id — recorded in the
     /// worker's completion marker so profile origins can be told apart.
     pub agent_shas: BTreeMap<String, String>,
+    /// sha256 of every other file of the bundle, by namespace-relative path —
+    /// recorded in the marker so the next download can tell an edited file.
+    pub file_shas: BTreeMap<String, String>,
     /// Version the registry answered with, when it said.
     pub version: Option<String>,
 }
@@ -67,6 +72,7 @@ impl DownloadResult {
             agents_written: Vec::new(),
             agents_skipped: Vec::new(),
             agent_shas: BTreeMap::new(),
+            file_shas: BTreeMap::new(),
             version: None,
         }
     }
@@ -110,6 +116,27 @@ pub fn validate_relative_path(raw: &str) -> Result<PathBuf, String> {
         return Err(format!("path resolved to empty: {raw:?}"));
     }
     Ok(out)
+}
+
+/// A file's current bytes, `None` when there is no such file. Any other
+/// failure is an error: a file that cannot be read must not be replaced.
+pub fn read_existing(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
+    }
+}
+
+/// Copy `contents`, the current bytes of `path`, to `<file>.<sha>.bak` next
+/// to it. Named by content, so one backup never replaces another.
+pub fn back_up(path: &Path, contents: &[u8]) -> Result<PathBuf, String> {
+    let sha = crate::kits::lock::sha256_hex(contents);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.bak", &sha[..8]));
+    let backup = path.with_file_name(name);
+    std::fs::write(&backup, contents).map_err(|e| format!("write {}: {e}", backup.display()))?;
+    Ok(backup)
 }
 
 /// Atomically write `contents` to `dest` by writing to `dest.tmp` first

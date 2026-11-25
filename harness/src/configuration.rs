@@ -289,6 +289,16 @@ fn migrate_stored_config(value: &mut Value) -> bool {
         *expose = json!("agent_call");
         changed = true;
     }
+    // Every install seeded the old default into the store; left there it
+    // would cut router::chat before the router's longer stream budget.
+    // shortcut: a stored value of exactly 620000 cannot be kept (it is rewritten on every boot); drop this once no store predates the longer default.
+    if settings.get("router_timeout_ms").and_then(Value::as_u64) == Some(620_000) {
+        settings.insert(
+            "router_timeout_ms".into(),
+            json!(WorkerConfig::default().router_timeout_ms),
+        );
+        changed = true;
+    }
     changed
 }
 
@@ -673,6 +683,32 @@ mod tests {
             reconcile_migration_write(&mut expected, &first_write, native.clone()),
             Some(native)
         );
+    }
+
+    #[test]
+    fn seeded_old_router_timeout_migrates_to_the_current_default() {
+        let mut stored =
+            json!({ "router_timeout_ms": 620000, "default_max_turns": "${MAX_TURNS:37}" });
+        assert!(migrate_stored_config(&mut stored));
+        assert_eq!(
+            stored,
+            json!({
+                "router_timeout_ms": WorkerConfig::default().router_timeout_ms,
+                "default_max_turns": "${MAX_TURNS:37}"
+            })
+        );
+        assert!(
+            !migrate_stored_config(&mut stored),
+            "migration is idempotent"
+        );
+        for mut kept in [
+            json!({ "router_timeout_ms": 900000 }),
+            json!({ "router_timeout_ms": "${ROUTER_TIMEOUT_MS:620000}" }),
+        ] {
+            let original = kept.clone();
+            assert!(!migrate_stored_config(&mut kept));
+            assert_eq!(kept, original);
+        }
     }
 
     #[test]

@@ -245,7 +245,7 @@ export async function expandImageAttachments(
   const failures: AttachmentFailure[] = []
 
   const refuse = (attachment: Attachment, reason: string) => {
-    blocks.push(failureBlock(attachment.name, reason))
+    blocks.push(failureBlock(attachment.name, reason, attachment.attachmentId))
     failures.push({ name: attachment.name, reason })
   }
 

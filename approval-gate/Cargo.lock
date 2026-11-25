@@ -414,9 +414,9 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.10.0"
+version = "1.10.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -835,9 +835,9 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.26.0"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "100136ca50d80e9fc36d68e64524e7380f4a6d99e696d274879e6c8cc7efefb0"
+checksum = "5b604a16c2aae5f772ed729e20281a46da8ee837116e3ce0c3bdd35b47fee8c7"
 dependencies = [
  "serde",
  "serde_json",
@@ -845,9 +845,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.26.0"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46fc050a119fa7cc342e10b6b83737d0a85828ecca2e3517dbfd3ebfe3e0ae17"
+checksum = "1444aa9b12033257a6805fe119c3b494f486a9fe3cee65f2069354b595639a59"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -866,12 +866,13 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.26.0"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c29ef3d5d399ad8d71a478ac75d617ce42604956e9aa5e1a79989b5291798d84"
+checksum = "097a013cca4a5b5e4d1ce192b62eb80f88cbd427bb33288ff3449a5d4db7cf56"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "bytes",
  "futures-util",
  "hostname",
  "iii-filter",
@@ -2174,9 +2175,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

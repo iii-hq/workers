@@ -82,6 +82,7 @@ import {
   clearTransientFlags,
   entryIdOfMessage,
   prependTranscript,
+  timeThought,
   transcriptToMessages,
 } from '@/lib/sessions/entry-mapper'
 import {
@@ -125,6 +126,7 @@ import {
   type SubagentColor,
   type SubagentIcon,
   type ThinkingLevel,
+  type ThoughtMessage,
 } from '@/types/chat'
 
 function uid(): string {
@@ -1116,6 +1118,7 @@ export function mergeConversationMeta(
     ...mapped,
     messages: existing.messages,
     hydrated: existing.hydrated,
+    history: existing.history,
     // The server names the parked attachments again; keep the chip objects
     // this tab already hydrated (bytes, thumbnail) for the same ids.
     draftAttachments: reconcileDraftAttachments(
@@ -1214,10 +1217,14 @@ export function bumpSessionWatchEpoch(
   return next
 }
 
-/** Not a person's ask: any non-user row, or a client-handled command row
- *  (`/compact`), which starts no turn and does not name the chat. */
-function isNotAnAsk(m: Message): boolean {
-  return m.role !== 'user' || m.command === true
+/** No person's ask in the chat yet. A client-handled command row (`/compact`)
+ *  is not one: it starts no turn and does not name the chat. While older
+ *  pages are not loaded, the first ask may be in one of them. */
+function hasNoAsk(c: Conversation): boolean {
+  return (
+    c.history?.hasMore !== true &&
+    c.messages.every((m) => m.role !== 'user' || m.command === true)
+  )
 }
 
 export function appendMessageToConversation(
@@ -1254,7 +1261,7 @@ export function appendMessageToConversation(
     next.status = 'working'
     next.statusReason = undefined
   }
-  if (!c.titleManual && startsTurn && c.messages.every(isNotAnAsk)) {
+  if (!c.titleManual && startsTurn && hasNoAsk(c)) {
     next.title = deriveTitle(message.content)
   }
   return next
@@ -1476,7 +1483,15 @@ export function mergeHydratedTranscript(
       ...messages.slice(first).filter((m) => !belongsToEntry(m.id, entryId)),
     ]
   }
-  return messages
+  // The page never knows how long a thought took; the window may have timed
+  // it while it streamed (`timeThought`). Keep that through the re-read.
+  const liveThoughts = new Map<string, ThoughtMessage>()
+  for (const m of live) if (m.role === 'thought') liveThoughts.set(m.id, m)
+  if (liveThoughts.size === 0) return messages
+  return messages.map((m) => {
+    const prior = m.role === 'thought' ? liveThoughts.get(m.id) : undefined
+    return prior && m.role === 'thought' ? timeThought(m, prior) : m
+  })
 }
 
 /** Insert `rows` (all of entry `entryId`, absent from `messages`) where the
@@ -3193,7 +3208,7 @@ export function useConversations(
         !before.titleManual &&
         message.role === 'user' &&
         !message.command &&
-        before.messages.every(isNotAnAsk)
+        hasNoAsk(before)
       ) {
         requestHeading(
           id,

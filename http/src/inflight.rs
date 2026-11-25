@@ -6,8 +6,8 @@
 //! private, so only the server makes these calls). The hook reads from it what
 //! the call's input does not carry: which listener received the request and
 //! the request's exact bytes. When a route's target is about to run, the hook
-//! opens the request-body and response channels and hands the response
-//! channel's reader to the server, which streams what the target writes to
+//! opens the request-body and response pipes and hands the response pipe's
+//! read end to the server, which streams what the target writes to
 //! the client. The hook also records the matched route's template, which
 //! labels the request's span and metrics.
 
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Bytes;
 use dashmap::DashMap;
-use iii_sdk::channel::ChannelReader;
+use iii_sdk::InputStream;
 use tokio::sync::oneshot;
 
 /// Key of the call metadata that names the request in flight.
@@ -28,7 +28,7 @@ pub struct InFlight {
     public_webhooks_only: bool,
     body: Option<Bytes>,
     route: OnceLock<String>,
-    response: Mutex<Option<oneshot::Sender<ChannelReader>>>,
+    response: Mutex<Option<oneshot::Sender<InputStream>>>,
 }
 
 impl InFlight {
@@ -59,9 +59,9 @@ impl InFlight {
         self.route.get().map(String::as_str)
     }
 
-    /// Hands the server the response channel's reader. `false` when it was
-    /// handed over already or the server no longer waits for it.
-    pub fn hand_over(&self, reader: ChannelReader) -> bool {
+    /// Hands the server the read end of the response pipe. `false` when it
+    /// was handed over already or the server no longer waits for it.
+    pub fn hand_over(&self, reader: InputStream) -> bool {
         let sender = self
             .response
             .lock()
@@ -93,13 +93,13 @@ pub struct InFlightRequests(Arc<DashMap<String, Arc<InFlight>>>);
 
 impl InFlightRequests {
     /// Registers a request. It stays in flight until the returned [`Ticket`]
-    /// drops; the receiver yields the response channel's reader once the hook
-    /// opened the channels.
+    /// drops; the receiver yields the read end of the response pipe once the
+    /// hook opened the pipes.
     pub fn open(
         &self,
         public_webhooks_only: bool,
         body: Option<Bytes>,
-    ) -> (Ticket, oneshot::Receiver<ChannelReader>) {
+    ) -> (Ticket, oneshot::Receiver<InputStream>) {
         let (sender, receiver) = oneshot::channel();
         let request = Arc::new(InFlight {
             // `open` runs inside the request's instrumented HTTP span.
@@ -152,14 +152,9 @@ impl Drop for Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::channel::StreamChannelRef;
 
-    fn reader() -> ChannelReader {
-        let channel: StreamChannelRef = serde_json::from_value(serde_json::json!({
-            "channel_id": "c", "access_key": "k", "direction": "read"
-        }))
-        .unwrap();
-        ChannelReader::new("ws://127.0.0.1:9", &channel)
+    fn reader() -> InputStream {
+        InputStream::from_bytes(Vec::<u8>::new())
     }
 
     #[test]

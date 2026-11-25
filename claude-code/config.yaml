@@ -31,6 +31,12 @@ iii_context: true
 # set to an absolute path (or "claude") when running the single-file bundle.
 claude_executable: ""
 
+# claude::agents::list reads the terminal host's `claude agents --json`. Off:
+# it lists only this worker's runs and the sessions whose hooks reached it,
+# and counts the rest. On: every Claude Code session on that host, and
+# the background ones there may be opened and stopped.
+external_sessions: false
+
 # The console terminal page: what runs when a person opens `claude` in the
 # console. This is a DIFFERENT host from the settings above — the `shell`
 # worker owns the session, so the binary, the workspace, and the login are
@@ -38,6 +44,6 @@ claude_executable: ""
 terminal:
   executable: ""        # path to `claude` on the terminal host; empty = resolve on PATH there
   args: []              # extra argv for every terminal session
-  workspace_dir: ""     # empty = `claude-code` under shell's primary root
+  workspace_dir: ""     # the worker's own files (default-mcp.md); empty = `claude-code` under the ide root. Sessions run in the folder the page picks
   auto_install: true    # install Claude Code from https://claude.ai/install.sh when missing
-  setup_workspace: true # keep the iii skills, the engine notes, and the activity hooks in place
+  setup_workspace: true # install the iii plugin (iii@iii, scope local) in each session folder when missing; append default-mcp

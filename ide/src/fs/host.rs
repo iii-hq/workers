@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use iii_sdk::channel::Channel;
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::StreamChannelRef;
+use iii_sdk::{InputStream, OutputStream, Pipe};
 
 use crate::fs::error::FsError;
 use crate::path::{canonicalize_with_fallback, normalize_lexical};
@@ -36,10 +37,14 @@ impl Drop for TempGuard {
     }
 }
 
+/// Engine streams for the host backend: a pipe whose read end a file read
+/// hands to the caller, and the caller's read ref of a streamed write.
 #[async_trait]
 pub trait ChannelMaker: Send + Sync + std::fmt::Debug {
-    async fn create_channel(&self, buffer: usize) -> Result<Channel, Error>;
-    fn engine_address(&self) -> String;
+    /// Creates an engine pipe.
+    async fn pipe(&self) -> Result<Pipe, Error>;
+    /// Opens a read ref the caller sent as a stream to read.
+    fn open_reader(&self, channel: StreamChannelRef) -> Result<InputStream, Error>;
 }
 
 pub struct IiiChannelMaker {
@@ -62,11 +67,11 @@ impl IiiChannelMaker {
 
 #[async_trait]
 impl ChannelMaker for IiiChannelMaker {
-    async fn create_channel(&self, buffer: usize) -> Result<Channel, Error> {
-        iii_sdk::helpers::create_channel(&self.iii, Some(buffer)).await
+    async fn pipe(&self) -> Result<Pipe, Error> {
+        self.iii.pipe().await
     }
-    fn engine_address(&self) -> String {
-        self.iii.address().to_string()
+    fn open_reader(&self, channel: StreamChannelRef) -> Result<InputStream, Error> {
+        InputStream::from_ref(channel, &self.iii)
     }
 }
 
@@ -975,22 +980,14 @@ fn fs_entry_from_metadata(name: String, md: &std::fs::Metadata) -> FsEntry {
     }
 }
 
-async fn pump_file_to_channel(
-    path: &std::path::Path,
-    writer: &iii_sdk::channels::ChannelWriter,
-) -> Result<(), String> {
+async fn pump_file_to_channel(path: &std::path::Path, writer: &OutputStream) -> Result<(), String> {
     use tokio::io::AsyncReadExt;
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|e| format!("open failed: {e}"))?;
     let mut buf = vec![0u8; 64 * 1024];
-    // Open the WS connection eagerly: for a zero-byte file the loop exits
-    // without write(), leaving the sender never dropped and blocking the
-    // reader side forever. This empty write forces the connect.
-    writer
-        .write(&[])
-        .await
-        .map_err(|e| format!("channel connect failed: {e}"))?;
+    // A zero-byte file writes nothing: `close` still opens the socket, so the
+    // reader sees an empty stream instead of waiting for the pipe to expire.
     loop {
         let n = file
             .read(&mut buf)
@@ -1993,15 +1990,19 @@ impl FsBackend for HostFsBackend {
             }
             // Streaming path: drain the caller's write channel chunk by chunk.
             crate::fs::WriteContent::Stream(channel) => {
-                let reader =
-                    iii_sdk::channels::ChannelReader::new(&self.chan.engine_address(), channel);
+                use tokio::io::AsyncReadExt;
+                let mut reader = self
+                    .chan
+                    .open_reader(channel.clone())
+                    .map_err(|e| FsError::new("S216", format!("channel read failed: {e}")))?;
+                let mut buf = vec![0u8; 64 * 1024];
                 let mut total: u64 = 0;
                 // Per-chunk idle timeout: if the caller opens a write but never
                 // sends data and never closes the channel, the worker would hold
                 // the temp file open indefinitely. N parked writers = exhaustion.
                 let idle = std::time::Duration::from_secs(30);
                 loop {
-                    let next = match tokio::time::timeout(idle, reader.next_binary()).await {
+                    let next = match tokio::time::timeout(idle, reader.read(&mut buf)).await {
                         Ok(r) => r,
                         Err(_) => {
                             return Err(FsError::new(
@@ -2011,7 +2012,8 @@ impl FsBackend for HostFsBackend {
                         }
                     };
                     match next {
-                        Ok(Some(chunk)) => {
+                        Ok(n) if n > 0 => {
+                            let chunk = &buf[..n];
                             let new_total = total + chunk.len() as u64;
                             if cap > 0 && new_total > cap as u64 {
                                 return Err(FsError::new(
@@ -2022,12 +2024,12 @@ impl FsBackend for HostFsBackend {
                                     ),
                                 ));
                             }
-                            if let Err(e) = file.write_all(&chunk).await {
+                            if let Err(e) = file.write_all(chunk).await {
                                 return Err(FsError::from_io(&req.path, e));
                             }
                             total = new_total;
                         }
-                        Ok(None) => break,
+                        Ok(_) => break,
                         Err(e) => {
                             return Err(FsError::new("S216", format!("channel read failed: {e}")));
                         }
@@ -2096,20 +2098,23 @@ impl FsBackend for HostFsBackend {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let channel = self
+        let Pipe { input, output } = self
             .chan
-            .create_channel(64)
+            .pipe()
             .await
             .map_err(|e| FsError::new("S216", format!("create_channel: {e}")))?;
-        let reader_ref = channel.reader_ref.clone();
-        let writer = channel.writer;
+        // The caller gets the read end's ref; a pipe's end serializes to it.
+        let reader_ref: StreamChannelRef = serde_json::to_value(&input)
+            .and_then(serde_json::from_value)
+            .map_err(|e| FsError::new("S216", format!("create_channel: {e}")))?;
+        let writer = output;
         let path_for_pump = p;
 
         tokio::spawn(async move {
             let result = pump_file_to_channel(&path_for_pump, &writer).await;
             if let Err(msg) = result {
                 let _ = writer
-                    .send_message(&serde_json::json!({"error": msg}).to_string())
+                    .send_text(&serde_json::json!({"error": msg}).to_string())
                     .await;
             }
             let _ = writer.close().await;
@@ -2139,14 +2144,14 @@ mod tests {
     struct StubChan;
     #[async_trait::async_trait]
     impl super::ChannelMaker for StubChan {
-        async fn create_channel(
-            &self,
-            _: usize,
-        ) -> Result<iii_sdk::channel::Channel, iii_sdk::errors::Error> {
+        async fn pipe(&self) -> Result<iii_sdk::Pipe, iii_sdk::errors::Error> {
             Err(iii_sdk::errors::Error::Handler("stub".into()))
         }
-        fn engine_address(&self) -> String {
-            "ws://stub:0".into()
+        fn open_reader(
+            &self,
+            _: iii_sdk::protocol::StreamChannelRef,
+        ) -> Result<iii_sdk::InputStream, iii_sdk::errors::Error> {
+            Err(iii_sdk::errors::Error::Handler("stub".into()))
         }
     }
     fn stub_backend(cfg: HostFsConfig) -> HostFsBackend {
@@ -2262,11 +2267,11 @@ mod tests {
         assert_eq!(err.code, "S210");
     }
 
-    fn stub_ref() -> iii_sdk::channels::StreamChannelRef {
-        iii_sdk::channels::StreamChannelRef {
+    fn stub_ref() -> iii_sdk::protocol::StreamChannelRef {
+        iii_sdk::protocol::StreamChannelRef {
             channel_id: "c".into(),
             access_key: "k".into(),
-            direction: iii_sdk::helpers::ChannelDirection::Read,
+            direction: iii_sdk::protocol::ChannelDirection::Read,
         }
     }
 

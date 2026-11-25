@@ -26,6 +26,7 @@ import { worktreeFixtures } from '@/stories/fixtures/worktree-fixtures'
 import type { FunctionCallMessage as FCallType } from '@/types/chat'
 import { FileChangesCard } from '../../../../../ide/ui/src/function-call/FileChangesCard'
 import { summarizeFileChanges } from '../../../../../ide/ui/src/function-call/file-changes'
+import './tool-group.css'
 import '../../../../../ide/ui/styles.css'
 
 const fcallPendingSingle: FCallType = {
@@ -322,6 +323,41 @@ export const SubagentLiveStates: Story = {
 export const ObserverAddedWidget: Story = {
   name: 'observer added widget',
   args: { message: harnessObserveState },
+}
+
+/** The agent describes its observe in its own words ("Arming the wake …");
+ *  the row still reads "Observing <function>", and a paged placeholder with
+ *  no arguments yet reads the intent out of that description. */
+export const ObserverDescribedByAgent: Story = {
+  name: 'observer described by the agent',
+  render: () => (
+    <div className="flex max-w-xl flex-col gap-2">
+      <FunctionCallCard
+        message={{
+          ...harnessObserveState,
+          id: 'obs-described',
+          description: 'Arming the wake for round 2 wave 1 results',
+        }}
+      />
+      <FunctionCallCard
+        message={{
+          ...harnessObserveState,
+          id: 'obs-placeholder',
+          input: {},
+          output: undefined,
+          unloaded: true,
+          description: 'Arming the observer for sub-agent',
+        }}
+      />
+      <FunctionCallCard
+        message={{
+          ...harnessObserveRunning,
+          id: 'obs-running',
+          description: 'Arming the wake for round 2 wave 1 results',
+        }}
+      />
+    </div>
+  ),
 }
 
 export const ObserverAddedDetails: Story = {

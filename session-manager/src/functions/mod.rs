@@ -299,19 +299,20 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         true,
         |d, r| async move { delete_attachment::handle(&d, r).await },
     );
-    // The agent's way into an attached file: text in windows, a recipe for
-    // everything else. The recipes are offered only for functions the engine
-    // has, so the handler probes the engine through the worker's client.
-    let probe = Arc::new(read_attachment::EngineProbe::new(iii.clone()));
+    // The agent's way into an attached file: text and office documents in
+    // windows, a recipe for everything else. The handler converts a document
+    // and probes the engine for the recipes' functions through the worker's
+    // client.
+    let bus = Arc::new(read_attachment::EngineBus::new(iii.clone()));
     register(
         iii,
         state,
         read_attachment::FUNCTION_ID,
-        "Read a file attached to a chat by its attachment id (a_…; session_id optional): a text file as characters in windows (offset, max_chars, next_offset), and for a PDF, office document, image or any other file `how_to_read`, the exact calls that convert it to markdown or save it into your working folder on this engine. Null when unknown.",
+        "Read a file attached to a chat by its attachment id (a_…; session_id optional): a text file, or an office document as markdown, as characters in windows (offset, max_chars, next_offset), and for a PDF, image or any other file `how_to_read`, the exact calls that convert it to markdown or save a copy in a temporary folder outside your working folder on this engine. Null when unknown.",
         false,
         move |d, r| {
-            let probe = probe.clone();
-            async move { read_attachment::handle(&d, probe.as_ref(), r).await }
+            let bus = bus.clone();
+            async move { read_attachment::handle(&d, bus.as_ref(), r).await }
         },
     );
     register(

@@ -1,221 +1,321 @@
-import { mkdtemp, readdir, readFile as fsRead } from 'node:fs/promises';
-import { tmpdir as osTmp } from 'node:os';
-import { join as pjoin } from 'node:path';
+/**
+ * The published `iii` plugin, installed with Claude Code's own commands in
+ * the folder a session runs in (`src/iii-plugin/install.ts`). No copy of the
+ * plugin is written anywhere: the worker only asks Claude Code whether
+ * `iii@iii` already covers the folder, and installs it (scope local) when not.
+ */
+
 import { describe, expect, it } from 'vitest';
-import { PLUGIN_SOURCE, PLUGIN_STATIC_FILES } from '../src/iii-plugin/assets.generated.js';
 import {
-  atomicWrite,
-  buildId,
-  installWith,
+  ensurePlugin,
+  MARKETPLACE_NAME,
+  MARKETPLACE_SOURCE,
+  PLUGIN_ID,
+  pluginCoverage,
+  mcpEnv,
   pluginSourceLine,
+  readDefaultMcp,
   resolveWorkerMcp,
 } from '../src/iii-plugin/install.js';
-import { approveHookEntry, callApprovalHookEntry } from '../src/iii-plugin/shared/mode.js';
-import { pluginFiles } from '../src/plugin.js';
+import { CLAUDE, fakeClaude } from './_helpers/fake-claude.js';
 
-function memoryOps() {
-  const disk: Record<string, string> = {};
-  const writes: string[] = [];
-  const removes: string[] = [];
-  return {
-    disk,
-    writes,
-    removes,
-    ops: {
-      read: async (p: string) => disk[p] ?? null,
-      write: async (p: string, c: string) => {
-        writes.push(p);
-        disk[p] = c;
-      },
-      remove: async (p: string) => {
-        removes.push(p);
-        delete disk[p];
-      },
-    },
-  };
-}
-
-describe('the embedded plugin', () => {
-  it('comes from iii-hq/agent-plugins-claude, at the commit the build fetched', () => {
-    expect(PLUGIN_SOURCE.repo).toBe('https://github.com/iii-hq/agent-plugins-claude');
-    expect(PLUGIN_SOURCE.commit).toMatch(/^([0-9a-f]{40}|local:.+)$/);
+describe('the plugin the worker installs', () => {
+  it('is iii@iii from the iii marketplace, iii-hq/agent-plugins-claude', () => {
+    expect(PLUGIN_ID).toBe('iii@iii');
+    expect(MARKETPLACE_NAME).toBe('iii');
+    expect(MARKETPLACE_SOURCE).toBe('iii-hq/agent-plugins-claude');
   });
 
-  it('is named in one line at worker start', () => {
+  it('names the plugin source of the shared modules in one line at worker start', () => {
     expect(
-      pluginSourceLine({
-        repo: 'https://github.com/iii-hq/agent-plugins-claude',
-        commit: 'abc123',
-      }),
-    ).toBe('claude-code: iii plugin from https://github.com/iii-hq/agent-plugins-claude at abc123');
-    expect(pluginSourceLine()).toContain(PLUGIN_SOURCE.commit);
+      pluginSourceLine({ repo: 'https://github.com/iii-hq/agent-plugins-claude', commit: 'abc' }),
+    ).toBe(
+      'claude-code: iii plugin modules from https://github.com/iii-hq/agent-plugins-claude at abc',
+    );
   });
 });
 
-describe('worker plugin files', () => {
-  const files = (mcpUrl: string) => pluginFiles({ cli: 'iii', context: '', mcpUrl });
-  const file = (mcpUrl: string, path: string) =>
-    files(mcpUrl).find((f) => f.path === path)?.content ?? '';
-
-  it('carry the approval hooks after the activity hook', () => {
-    const hooks = JSON.parse(file('http://x/mcp', 'hooks/hooks.json') || '{}').hooks;
-    expect(hooks.PreToolUse[0].hooks[0].command).toContain('claude::terminal::activity');
-    expect(hooks.PreToolUse[1]).toEqual(approveHookEntry());
-    expect(hooks.PreToolUse[2]).toEqual(callApprovalHookEntry());
+describe('pluginCoverage', () => {
+  const entry = (over: Record<string, unknown>) => ({
+    id: 'iii@iii',
+    scope: 'local',
+    enabled: true,
+    projectPath: '/p/a',
+    ...over,
   });
 
-  it('carry every approval hook the embedded plugin ships, so directory reads never prompt', () => {
-    const own = JSON.parse(file('http://x/mcp', 'hooks/hooks.json') || '{}').hooks;
-    const shipped = JSON.parse(
-      PLUGIN_STATIC_FILES.find((f) => f.path === 'hooks/hooks.json')?.content ?? '{}',
-    ).hooks;
-    // The worker replaces the plugin's hooks.json: its activity hook aside,
-    // the PreToolUse approvals must be the plugin's own.
-    expect(own.PreToolUse.slice(1)).toEqual(shipped.PreToolUse);
+  it('counts a local or project install for this folder, enabled', () => {
+    expect(pluginCoverage([entry({})], '/p/a')).toBe('enabled');
+    expect(pluginCoverage([entry({ scope: 'project' })], '/p/a')).toBe('enabled');
   });
 
-  it('point the session at the mcp-server the worker found', () => {
-    expect(JSON.parse(file('http://127.0.0.1:3211/mcp', '.mcp.json') || '{}')).toEqual({
-      mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3211/mcp' } },
-    });
+  it('counts a user install for every folder', () => {
+    expect(pluginCoverage([entry({ scope: 'user', projectPath: undefined })], '/p/z')).toBe(
+      'enabled',
+    );
   });
 
-  it('have no session-start hook: the worker appends default-mcp itself', () => {
-    expect(file('http://127.0.0.1:3211/mcp', 'hooks/hooks.json')).not.toContain('session-start');
+  it("does not count another folder's install", () => {
+    expect(pluginCoverage([entry({ projectPath: '/p/b' })], '/p/a')).toBe('absent');
+  });
+
+  it('does not count another plugin, or a disabled one', () => {
+    expect(pluginCoverage([entry({ id: 'iii@other' })], '/p/a')).toBe('absent');
+    expect(pluginCoverage([entry({ enabled: false })], '/p/a')).toBe('disabled');
+    expect(pluginCoverage([entry({ scope: 'user', enabled: false })], '/p/a')).toBe('absent');
+  });
+
+  it('reads anything that is not a list as nothing installed', () => {
+    expect(pluginCoverage({ plugins: [] }, '/p/a')).toBe('absent');
+    expect(pluginCoverage(null, '/p/a')).toBe('absent');
   });
 });
 
-describe('installer', () => {
-  const embedded = [
-    { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
-    { path: '.mcp.json', content: '{}' },
-    { path: 'hooks/hooks.json', content: 'standalone sync hook' },
-    { path: 'commands/profile.md', content: 'p' },
-    { path: 'cli/index.mjs', content: 'x' },
-  ];
-  const options = {
-    cli: '/usr/bin/iii',
-    context: { text: '# iii runtime', detail: '' },
-    agents: [{ id: 'writer' }],
-    mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '', available: true },
-    defaultProfile: { id: 'default-mcp', system_prompt: 'The default-mcp prompt.' },
-  };
-
-  it('ships one plugin named iii inside the worker build', () => {
-    const paths = PLUGIN_STATIC_FILES.map((f) => f.path);
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        '.claude-plugin/plugin.json',
-        '.mcp.json',
-        'commands/profile.md',
-        'commands/skills.md',
-        'hooks/hooks.json',
-        'cli/index.mjs',
-      ]),
-    );
-    // No MCP server of its own: the plugin uses the mcp-server worker.
-    expect(paths.filter((p) => p.startsWith('server/'))).toEqual([]);
-    const manifest = PLUGIN_STATIC_FILES.find((f) => f.path === '.claude-plugin/plugin.json');
-    expect(JSON.parse(manifest?.content ?? '{}').name).toBe('iii');
-    // A `commands/skill.md` silently disables every command in the plugin.
-    expect(paths).not.toContain('commands/skill.md');
-    // Under the ide worker's common 1 MiB per-file cap.
-    for (const f of PLUGIN_STATIC_FILES)
-      expect(Buffer.byteLength(f.content)).toBeLessThan(1024 * 1024);
-  });
-
-  it('writes static files, the worker hooks and skill, and the profile commands', async () => {
-    const m = memoryOps();
-    expect(await installWith('/w/p', m.ops, options, embedded)).toEqual({
-      dir: '/w/p',
-      detail: '',
-      mode: 'The default-mcp prompt.',
-      mcp: true,
-    });
-    expect(m.disk['/w/p/cli/index.mjs']).toBe('x');
-    // The worker points the session at the mcp-server it found.
-    expect(JSON.parse(m.disk['/w/p/.mcp.json'])).toEqual({
-      mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3111/mcp' } },
-    });
-    expect(m.disk['/w/p/.build-id'].trim()).toBe(
-      // The worker writes its own hooks and .mcp.json.
-      buildId(embedded.filter((f) => !['hooks/hooks.json', '.mcp.json'].includes(f.path))),
-    );
-    // The worker's activity hooks replace the standalone sync hook.
-    expect(m.disk['/w/p/hooks/hooks.json']).toContain('claude::terminal::activity');
-    // With mcp-server, default-mcp guides the session, not the CLI-only text.
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
-    expect(m.disk['/w/p/commands/writer.md']).toContain('`writer`');
-
-    m.writes.length = 0;
-    await installWith('/w/p', m.ops, options, embedded);
-    expect(m.writes).toEqual([]);
-  });
-
-  it('keeps the existing commands and says so when profiles cannot be read', async () => {
-    const m = memoryOps();
-    const r = await installWith(
-      '/w/p',
-      m.ops,
-      { ...options, agents: null, agentsDetail: 'down' },
-      embedded,
-    );
-    expect(r.dir).toBe('/w/p');
-    expect(r.detail).toContain('down');
-  });
-
-  it('reports a build without the embedded plugin instead of installing half a plugin', async () => {
-    const m = memoryOps();
-    const r = await installWith('/w/p', m.ops, options, [embedded[2]]);
-    expect(r.dir).toBe('');
-    expect(r.detail).toContain('build:iii-plugin');
-    expect(m.writes).toEqual([]);
-  });
-});
-
-describe('installer review fixes', () => {
-  it('removes the runtime skill when the context becomes empty', async () => {
-    const m = memoryOps();
-    const embedded = [
-      { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
-      { path: '.mcp.json', content: '{}' },
-      { path: 'cli/index.mjs', content: 'x' },
-    ];
-    const base = {
-      cli: 'iii',
-      agents: [],
-      // The runtime skill is the session's guide only without mcp-server.
-      mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '', available: false },
-      defaultProfile: null,
-    };
-    await installWith(
-      '/w/p',
-      m.ops,
-      { ...base, context: { text: '# iii runtime', detail: '' } },
-      embedded,
-    );
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeDefined();
-    await installWith(
-      '/w/p',
-      m.ops,
-      { ...base, context: { text: '', detail: 'unavailable' } },
-      embedded,
-    );
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
-  });
-
-  it('writes files atomically: a temp file renamed into place, none left behind', async () => {
-    const dir = await mkdtemp(pjoin(osTmp(), 'iii-plugin-'));
-    const path = pjoin(dir, 'cli', 'index.mjs');
-    await atomicWrite(path, 'old');
-    // Two concurrent installers: the file is always one complete version.
-    await Promise.all([
-      atomicWrite(path, 'a'.repeat(100_000)),
-      atomicWrite(path, 'b'.repeat(100_000)),
+describe('ensurePlugin', () => {
+  it('installs iii@iii with scope local in the folder, and nothing else', async () => {
+    const claude = fakeClaude();
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status).toMatchObject({ state: 'installed', folder: '/p/a' });
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      `plugin install iii@iii --scope local --json`,
     ]);
-    const content = await fsRead(path, 'utf8');
-    expect(content === 'a'.repeat(100_000) || content === 'b'.repeat(100_000)).toBe(true);
-    expect(await readdir(pjoin(dir, 'cli'))).toEqual(['index.mjs']);
+    // Every command runs IN the folder: local scope is that folder's.
+    for (const run of claude.runs) expect(run.cwd).toBe('/p/a');
+    expect(claude.installs).toEqual([
+      { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a', version: '0.4.0' },
+    ]);
+  });
+
+  it('does not reinstall where iii@iii is installed and enabled: it updates it in place', async () => {
+    const claude = fakeClaude({
+      installs: [{ id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a' }],
+    });
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('present');
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      'plugin update iii@iii --scope local --json',
+    ]);
+    expect(claude.installs).toHaveLength(1);
+  });
+
+  it('updates a user-scope install at user scope, without installing locally', async () => {
+    const claude = fakeClaude({ installs: [{ id: 'iii@iii', scope: 'user', enabled: true }] });
+    expect((await ensurePlugin(claude.run, CLAUDE, '/p/a')).state).toBe('present');
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      'plugin update iii@iii --scope user --json',
+    ]);
+    expect(claude.installs).toHaveLength(1);
+    expect(claude.installs[0].version).toBe('0.4.0');
+  });
+
+  it('brings a stale install up to the published release: the local marketplace copy is refreshed first', async () => {
+    // The published plugin is 0.4.0, the local marketplace copy still offers
+    // 0.3.0 and the folder has 0.3.0: without the refresh, update finds
+    // nothing new.
+    const claude = fakeClaude({
+      catalog: '0.3.0',
+      latest: '0.4.0',
+      installs: [
+        { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a', version: '0.3.0' },
+      ],
+    });
+    await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(claude.installs[0].version).toBe('0.4.0');
+  });
+
+  it('installs the published release, not a stale marketplace copy', async () => {
+    const claude = fakeClaude({ catalog: '0.3.0', latest: '0.4.0' });
+    expect((await ensurePlugin(claude.run, CLAUDE, '/p/a')).state).toBe('installed');
+    expect(claude.installs[0].version).toBe('0.4.0');
+  });
+
+  it('still checks and installs when the marketplace refresh fails, saying so', async () => {
+    const claude = fakeClaude({ catalog: '0.3.0', latest: '0.4.0' });
+    claude.fail.add('plugin marketplace update');
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('installed');
+    expect(status.detail).toContain('could not be refreshed');
+    expect(claude.installs[0].version).toBe('0.3.0');
+  });
+
+  it('keeps an installed plugin when its update fails, saying so', async () => {
+    const claude = fakeClaude({
+      installs: [{ id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a' }],
+    });
+    claude.fail.add('plugin update');
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('present');
+    expect(status.detail).toContain('claude plugin update');
+  });
+
+  it('installs in a folder even when another folder has it', async () => {
+    const claude = fakeClaude({
+      installs: [{ id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/b' }],
+    });
+    expect((await ensurePlugin(claude.run, CLAUDE, '/p/a')).state).toBe('installed');
+    expect(claude.installs.map((i) => i.projectPath)).toEqual(['/p/b', '/p/a']);
+  });
+
+  it('adds the marketplace first, only when it is missing', async () => {
+    const claude = fakeClaude({ marketplaces: [] });
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('installed');
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace add iii-hq/agent-plugins-claude --json',
+      'plugin list --json',
+      `plugin install iii@iii --scope local --json`,
+    ]);
+  });
+
+  it('enables a local install that was disabled in this folder, instead of reinstalling', async () => {
+    const claude = fakeClaude({
+      installs: [{ id: 'iii@iii', scope: 'local', enabled: false, projectPath: '/p/a' }],
+    });
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('enabled');
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      'plugin update iii@iii --scope local --json',
+      'plugin enable iii@iii --scope local --json',
+    ]);
+    expect(claude.installs[0].enabled).toBe(true);
+    expect(claude.installs[0].version).toBe('0.4.0');
+  });
+
+  it('installs nothing when the list cannot be read, and says why', async () => {
+    const claude = fakeClaude();
+    claude.fail.add('plugin list');
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('failed');
+    expect(status.detail).toContain('claude plugin list');
+    expect(status.detail).toContain('plugin list failed');
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+    ]);
+  });
+
+  it('installs nothing when the list is not JSON (an older claude)', async () => {
+    const claude = fakeClaude();
+    claude.garbledList = true;
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('failed');
+    expect(status.detail).toContain('not JSON');
+    expect(claude.installs).toEqual([]);
+  });
+
+  it('reports a failed install with what Claude Code said', async () => {
+    const claude = fakeClaude();
+    claude.fail.add('plugin install');
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('failed');
+    expect(status.detail).toContain('plugin install failed');
+    expect(status.detail).toContain('/p/a');
+  });
+
+  it('reports a failed marketplace add and does not try to install', async () => {
+    const claude = fakeClaude({ marketplaces: [] });
+    claude.fail.add('plugin marketplace add');
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('failed');
+    expect(status.detail).toContain('marketplace');
+    expect(claude.claudeCalls().some((c) => c.startsWith('plugin install'))).toBe(false);
+  });
+
+  it('never throws when the runner itself throws', async () => {
+    const status = await ensurePlugin(
+      async () => {
+        throw new Error('S216 host exec error');
+      },
+      CLAUDE,
+      '/p/a',
+    );
+    expect(status.state).toBe('failed');
+    expect(status.detail).toContain('S216');
+  });
+
+  it('runs one check at a time per folder: two sessions starting together install once', async () => {
+    const claude = fakeClaude();
+    const slow = async (program: string, args: string[], cwd: string) => {
+      await new Promise((r) => setTimeout(r, 5));
+      return claude.run(program, args, cwd);
+    };
+    const [a, b] = await Promise.all([
+      ensurePlugin(slow, CLAUDE, '/p/a'),
+      ensurePlugin(slow, CLAUDE, '/p/a'),
+    ]);
+    expect([a.state, b.state].sort()).toEqual(['installed', 'present']);
+    expect(claude.installs).toHaveLength(1);
+  });
+});
+
+describe('mcpEnv: where one Claude process finds mcp-server', () => {
+  // The plugin's `.mcp.json` reads III_MCP_URL from the process environment;
+  // nothing is stored, so each process carries its own engine's address.
+  it('sets III_MCP_URL (and the released CLI hooks name) and III_CLI', () => {
+    expect(mcpEnv('http://127.0.0.1:4111/mcp', '/usr/local/bin/iii')).toEqual({
+      III_MCP_URL: 'http://127.0.0.1:4111/mcp',
+      III_PLUGIN_MCP_URL: 'http://127.0.0.1:4111/mcp',
+      III_CLI: '/usr/local/bin/iii',
+    });
+  });
+
+  it('leaves III_CLI out when there is no iii CLI, so the hooks fall back to PATH', () => {
+    expect(mcpEnv('http://127.0.0.1:3111/mcp', '')).not.toHaveProperty('III_CLI');
+  });
+
+  it('never configures the plugin: the install carries no --config', async () => {
+    const claude = fakeClaude();
+    await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    await ensurePlugin(claude.run, CLAUDE, '/p/b');
+    for (const call of claude.claudeCalls()) expect(call).not.toContain('--config');
+    expect(claude.claudeCalls().some((c) => c.startsWith('plugin configure'))).toBe(false);
+  });
+});
+
+describe('readDefaultMcp', () => {
+  const iiiWith = (answer: () => unknown) => ({ call: async () => answer() }) as never;
+
+  it("is default-mcp's prompt, with its skills to read", async () => {
+    const r = await readDefaultMcp(
+      iiiWith(() => ({
+        id: 'default-mcp',
+        system_prompt: 'You are an iii agent.',
+        skills: ['iii'],
+      })),
+    );
+    expect(r.text).toContain('You are an iii agent.');
+    expect(r.text).toContain('`iii`');
+    expect(r.detail).toBe('');
+  });
+
+  it('is empty, saying why, when iii-directory does not answer', async () => {
+    const r = await readDefaultMcp(
+      iiiWith(() => {
+        throw new Error('function_not_found');
+      }),
+    );
+    expect(r.text).toBe('');
+    expect(r.detail).toContain('function_not_found');
+  });
+
+  it('is empty when the profile has no prompt', async () => {
+    const r = await readDefaultMcp(iiiWith(() => ({ id: 'default-mcp' })));
+    expect(r.text).toBe('');
+    expect(r.detail).toContain('no prompt');
   });
 });
 
@@ -251,6 +351,17 @@ describe('resolveWorkerMcp', () => {
     });
   });
 
+  it('asks http::status every time: a new port shows on the next call', async () => {
+    let port = 3211;
+    const iii = fakeIii({
+      ...running,
+      'http::status': () => ({ url: `http://127.0.0.1:${port}` }),
+    });
+    expect((await resolveWorkerMcp(iii, {})).url).toBe('http://127.0.0.1:3211/mcp');
+    port = 4311;
+    expect((await resolveWorkerMcp(iii, {})).url).toBe('http://127.0.0.1:4311/mcp');
+  });
+
   it('lets III_PLUGIN_MCP_URL override the address (a custom api_path)', async () => {
     const r = await resolveWorkerMcp(fakeIii(running), {
       III_PLUGIN_MCP_URL: 'http://127.0.0.1:3211/team/mcp',
@@ -267,7 +378,6 @@ describe('resolveWorkerMcp', () => {
     expect(r.available).toBe(false);
     expect(r.detail).toContain('mcp-server is not running on this engine');
     expect(r.detail).toContain('rbac-proxy');
-    expect(r.detail).toContain('iii tools');
   });
 
   it('falls back to the default address when the http worker does not answer', async () => {
@@ -277,156 +387,5 @@ describe('resolveWorkerMcp', () => {
     );
     expect(r.url).toBe('http://127.0.0.1:3111/mcp');
     expect(r.detail).toContain('http::status');
-  });
-
-  it('passes the detail on through the installer', async () => {
-    const m = memoryOps();
-    const r = await installWith(
-      '/w/p',
-      m.ops,
-      {
-        cli: 'iii',
-        context: { text: '# iii runtime', detail: '' },
-        agents: [],
-        mcp: {
-          url: 'http://127.0.0.1:3111/mcp',
-          detail: 'mcp-server is not running on this engine',
-          available: false,
-        },
-      },
-      [
-        { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
-        { path: '.mcp.json', content: '{}' },
-      ],
-    );
-    expect(r.dir).toBe('/w/p');
-    expect(r.detail).toContain('mcp-server is not running on this engine');
-  });
-});
-
-describe('the iii agent and the mcp-server fallback', () => {
-  const STUB =
-    '---\nname: iii\ndescription: the iii agent\n---\n\nLoad default-mcp with iii_get_agent.\n';
-  const embedded = [
-    { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
-    {
-      path: '.mcp.json',
-      content: '{"mcpServers":{"iii":{"type":"http","url":"${user_config.mcp_url}"}}}',
-    },
-    { path: 'agents/iii.md', content: STUB },
-    { path: 'cli/index.mjs', content: 'x' },
-  ];
-  const profile = { id: 'default-mcp', system_prompt: 'You are an iii agent. Use iii_call.' };
-  const base = {
-    cli: 'iii',
-    context: { text: '# iii runtime', detail: '' },
-    agents: [],
-  };
-  const mcp = (available: boolean) => ({
-    url: 'http://127.0.0.1:3211/mcp',
-    detail: available ? '' : 'mcp-server is not running',
-    available,
-  });
-
-  it('with mcp-server: default-mcp is the agent and the appended text, and nothing hand-written is', async () => {
-    const m = memoryOps();
-    const r = await installWith(
-      '/w/p',
-      m.ops,
-      { ...base, mcp: mcp(true), defaultProfile: profile },
-      embedded,
-    );
-    expect(r.mcp).toBe(true);
-    expect(r.mode).toBe('You are an iii agent. Use iii_call.');
-    expect(m.disk['/w/p/default-mcp.md']).toBe('You are an iii agent. Use iii_call.\n');
-    expect(m.disk['/w/p/agents/iii.md']).toContain('name: iii');
-    expect(m.disk['/w/p/agents/iii.md']).toContain('You are an iii agent. Use iii_call.');
-    expect(JSON.parse(m.disk['/w/p/.mcp.json']).mcpServers.iii.url).toBe(
-      'http://127.0.0.1:3211/mcp',
-    );
-    // Appended by the worker, so no hook adds it a second time.
-    expect(m.disk['/w/p/hooks/hooks.json']).not.toContain('session-start');
-    // The CLI-only runtime skill would contradict it, and is not missed.
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
-    expect(r.detail).toBe('');
-  });
-
-  it("appends the profile's skills too: the worker installs no SessionStart hook", async () => {
-    const m = memoryOps();
-    const r = await installWith(
-      '/w/p',
-      m.ops,
-      { ...base, mcp: mcp(true), defaultProfile: { ...profile, skills: ['ide'] } },
-      embedded,
-    );
-    const line =
-      'read each of its skills with `iii_call` (`directory::skills::get`, `{ id }`): `ide`.';
-    expect(r.mode).toContain('You are an iii agent. Use iii_call.');
-    expect(r.mode).toContain(line);
-    expect(m.disk['/w/p/default-mcp.md']).toContain(line);
-    expect(m.disk['/w/p/agents/iii.md']).toContain(line);
-  });
-
-  it('removes a runtime skill left from before mcp-server was running', async () => {
-    const m = memoryOps();
-    await installWith(
-      '/w/p',
-      m.ops,
-      { ...base, mcp: mcp(false), defaultProfile: profile },
-      embedded,
-    );
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toContain('# iii runtime');
-
-    await installWith(
-      '/w/p',
-      m.ops,
-      { ...base, mcp: mcp(true), defaultProfile: profile },
-      embedded,
-    );
-
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
-  });
-
-  it('says so, and keeps the stub agent, when default-mcp cannot be read', async () => {
-    const m = memoryOps();
-    const r = await installWith(
-      '/w/p',
-      m.ops,
-      {
-        ...base,
-        mcp: mcp(true),
-        defaultProfile: null,
-        defaultProfileDetail: 'iii-directory did not answer',
-      },
-      embedded,
-    );
-    expect(r.mode).toBe('');
-    expect(r.detail).toContain('default-mcp');
-    expect(r.detail).toContain('iii-directory did not answer');
-    expect(m.disk['/w/p/agents/iii.md']).toBe(STUB);
-    expect(m.disk['/w/p/default-mcp.md']).toBeUndefined();
-  });
-
-  it('without mcp-server: no MCP server, nothing appended, the stub agent back, stale files removed', async () => {
-    const m = memoryOps();
-    m.disk['/w/p/.mcp.json'] = '{"mcpServers":{}}';
-    m.disk['/w/p/default-mcp.md'] = 'old profile';
-    m.disk['/w/p/agents/iii.md'] = 'an agent built from an older profile';
-    m.disk['/w/p/.build-id'] = 'stale';
-    const r = await installWith(
-      '/w/p',
-      m.ops,
-      { ...base, mcp: mcp(false), defaultProfile: profile },
-      embedded,
-    );
-    expect(r.dir).toBe('/w/p');
-    expect(r.mcp).toBe(false);
-    expect(r.mode).toBe('');
-    expect(m.disk['/w/p/.mcp.json']).toBeUndefined();
-    expect(m.disk['/w/p/default-mcp.md']).toBeUndefined();
-    expect(m.disk['/w/p/agents/iii.md']).toBe(STUB);
-    expect(r.detail).toContain('mcp-server is not running');
-    // The session's guide is then the CLI runtime skill.
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toContain('# iii runtime');
   });
 });

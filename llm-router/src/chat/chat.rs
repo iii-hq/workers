@@ -13,8 +13,8 @@ use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
 use crate::types::model::SpeechModality;
 use crate::types::router::{ChatResponse, ErrorShape, PromptCacheIntent, PromptSection};
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
-use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::StreamChannelRef;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -920,6 +920,9 @@ impl ChatPipeline {
                 } => {
                     last_partial = partial;
                     last_usage = usage.clone();
+                    // Only the SDK's caller-side timer yields `Error::Timeout`
+                    // here: the router's own stream budget ran out.
+                    let budget_spent = matches!(call_outcome, Some(Err(Error::Timeout)));
                     if let Some(Err(err)) = call_outcome
                         && !forwarded
                     {
@@ -965,6 +968,7 @@ impl ChatPipeline {
                     let is_idle = matches!(reason, NoTerminalReason::Idle);
                     let can_retry = !forwarded
                         && !is_idle
+                        && !budget_spent
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
@@ -976,9 +980,23 @@ impl ChatPipeline {
                         }
                         continue;
                     }
-                    let (code, message, detail) = if is_idle {
+                    let (code, kind, message, detail) = if budget_spent {
+                        (
+                            RouterCode::StreamTimeout,
+                            // Not retryable: the same request meets the same budget.
+                            ErrorKind::Permanent,
+                            format!(
+                                "Provider \"{provider}\" did not finish the response within the router's stream time limit. Raise stream_timeout_ms in LLM Router settings to allow longer responses."
+                            ),
+                            format!(
+                                "router stream_timeout_ms ({}ms) elapsed before provider {provider} finished",
+                                settings.stream_timeout_ms
+                            ),
+                        )
+                    } else if is_idle {
                         (
                             RouterCode::StreamIdleTimeout,
+                            ErrorKind::Transient,
                             format!(
                                 "Provider \"{provider}\" stopped responding before the answer completed. Try again."
                             ),
@@ -990,6 +1008,7 @@ impl ChatPipeline {
                     } else {
                         (
                             RouterCode::StreamIncomplete,
+                            ErrorKind::Transient,
                             format!(
                                 "Provider \"{provider}\" disconnected before completing the response. Try again."
                             ),
@@ -1001,7 +1020,7 @@ impl ChatPipeline {
                         &call.model,
                         provider,
                         &message,
-                        ErrorKind::Transient, // mid-stream no-terminal/idle: retryable
+                        kind,
                         usage,
                         now_ms(),
                     );
@@ -1012,7 +1031,7 @@ impl ChatPipeline {
                     return Ok(respond_err(
                         StopReason::Error,
                         code,
-                        ErrorKind::Transient,
+                        kind,
                         message,
                         Some(detail),
                         error.usage,
@@ -1266,6 +1285,7 @@ mod tests {
             RouterCode::StreamSetupFailed,
             RouterCode::StreamIdleTimeout,
             RouterCode::StreamIncomplete,
+            RouterCode::StreamTimeout,
             RouterCode::ProviderAuthExpired,
             RouterCode::ProviderRateLimited,
             RouterCode::ContextOverflow,

@@ -48,6 +48,20 @@ const callsAcrossCompletedThoughts: Message[] = [
   completedCall('phase-call-4', 'Lendo os arquivos selecionados'),
 ]
 
+// think → call, seven times over: every thought stacks under the one group
+// and folds into a single row that is live while the newest one streams.
+const thoughtRunUnderGroup: Message[] = [
+  ...Array.from({ length: 7 }, (_, index) => [
+    completedThought(`run-thought-${index + 1}`),
+    completedCall(`run-call-${index + 1}`, `Reading file ${index + 1}`),
+  ]).flat(),
+  {
+    ...completedThought('run-thought-live'),
+    durationMs: 0,
+    streaming: true,
+  },
+]
+
 function ThinkingToCallHandoffDemo({ priorCall }: { priorCall: boolean }) {
   const [settled, setSettled] = useState(false)
   const thought = completedThought('handoff-thought')
@@ -110,6 +124,11 @@ export const SevenCompletedCallsCollapsed: Story = {
 export const ConsecutiveCallsAcrossSettledThoughts: Story = {
   name: 'consecutive calls across settled thoughts',
   args: { messages: callsAcrossCompletedThoughts },
+}
+
+export const ThoughtRunUnderGroup: Story = {
+  name: 'thought run under a group',
+  args: { messages: thoughtRunUnderGroup, transcriptHydrated: true },
 }
 
 export const ThinkingToCallHandoff: Story = {

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::channel::StreamChannelRef;
+use iii_sdk::protocol::StreamChannelRef;
 
 #[derive(Debug)]
 pub enum ReadEvent {
@@ -101,8 +101,8 @@ pub struct RelayOpts {
 /// budget — a slow first token behind provider keepalives is legitimate
 /// (local llama.cpp prompt eval). Once content has started, only non-ping
 /// frames reset it: a provider pinging past a dead upstream must trip the
-/// idle guard, not zombie on until the engine's stream_timeout kills the
-/// call ("stream ended without a terminal frame").
+/// idle guard, not zombie on until the router's `stream_timeout_ms` ends the
+/// call as `router/stream_timeout`.
 pub async fn relay_frames(
     reader: &mut Box<dyn RelayRead>,
     sink: &dyn FrameSink,
@@ -481,8 +481,8 @@ mod loop_tests {
     #[tokio::test]
     async fn pings_do_not_extend_idle_once_content_started() {
         // A stalled upstream behind a pinging provider must trip the idle
-        // guard — not zombie on until the engine's stream_timeout kills the
-        // call as "stream ended without a terminal frame".
+        // guard — not zombie on until the router's `stream_timeout_ms` ends
+        // the call as `router/stream_timeout`.
         let provider = FakeChannel::new();
         let caller = FakeChannel::new();
         send(
