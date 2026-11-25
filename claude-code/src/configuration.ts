@@ -104,6 +104,27 @@ function hasCode(error: unknown, code: string): boolean {
   );
 }
 
+/** A lease on a confirmed live value, never on a seed or a fallback. Starting a
+ * refresh revokes outstanding leases before waiting on the configuration worker. */
+export class ReplyPermission {
+  private generation = 0;
+  epoch: number | null = null;
+
+  invalidate() {
+    this.generation++;
+    this.epoch = null;
+  }
+
+  async refresh(iii: IIIClient, updatesActive: () => boolean = () => true) {
+    this.invalidate();
+    const generation = this.generation;
+    const runtime = await fetchRuntime(iii);
+    if (generation !== this.generation) return undefined;
+    if (runtime?.external_sessions === true && updatesActive()) this.epoch = generation;
+    return { runtime };
+  }
+}
+
 /** Fetch the live runtime config; null when unset/unreachable. */
 export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null> {
   try {
@@ -130,8 +151,8 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
 export async function observeConfigChanges(
   iii: IIIClient,
   onChange: () => Promise<void>,
+  onWatchState?: (active: boolean) => void,
 ): Promise<void> {
-  await onChange();
   iii.registerFunction(
     CONFIG_FN_ID,
     async () => {
@@ -145,7 +166,7 @@ export async function observeConfigChanges(
       response_format: { type: 'null' },
     },
   );
-  iii.observe(
+  const watch = iii.observe(
     {
       function_id: ON_UPDATED_FN,
       filters: {
@@ -156,4 +177,14 @@ export async function observeConfigChanges(
     },
     CONFIG_FN_ID,
   );
+  // A disconnect can hide a disable/re-enable transition. Do not trust the
+  // previous value across that gap; reconcile again once updates can arrive.
+  if (onWatchState) {
+    watch.onStateChange((state) => {
+      onWatchState(state === 'active');
+      if (state === 'active') void onChange();
+    });
+    onWatchState(watch.state === 'active');
+  }
+  await onChange();
 }

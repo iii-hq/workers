@@ -64,7 +64,7 @@ const ConfigSchema = z.object({
     .boolean()
     .default(false)
     .describe(
-      "claude::agents::list shows every Claude Code session on the terminal host, not only this worker's runs and the sessions whose hooks reached it, and its background ones may be opened and stopped",
+      'List all Claude Code sessions on the terminal host, allow callers to read assistant reply text from listed terminal sessions, and allow opening and stopping background sessions',
     ),
   terminal: z
     .object({

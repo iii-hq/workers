@@ -261,6 +261,7 @@ export function registerAgents(
   external: () => boolean,
   tracker: { has(sessionId: string): boolean },
 ): {
+  replyRow: (id: string) => Promise<{ row: AgentRow; env: Prepared['env'] }>;
   /** How a terminal opens a listed session; throws why one cannot be. */
   resolveOpen: (id: string) => Promise<OpenSpec>;
   /** Whether a process on the terminal host has a conversation open, or is about to. */
@@ -269,18 +270,20 @@ export function registerAgents(
   const opening = new Map<string, number>();
   const isOpening = (claudeId: string) => (opening.get(claudeId) ?? 0) > Date.now();
 
-  const inventory = async (all: boolean) => {
-    const showAll = external();
+  const inventory = async (all: boolean, host = current(), replies = false) => {
+    const showAll = replies || external();
     const [records, snapshot, hooked, ptys] = await Promise.all([
       listSessions(iii),
-      cliSnapshot(iii, current(), all),
+      cliSnapshot(iii, host, all),
       showAll ? new Set<string>() : hookSessions(iii),
-      claudePtys(iii),
+      replies ? new Map<number, string>() : claudePtys(iii),
     ]);
     const merged = mergeInventory({
       records,
       isLive,
-      cliRows: snapshot.rows,
+      cliRows: replies
+        ? snapshot.rows.filter((row) => row.kind === 'interactive' || row.kind === 'background')
+        : snapshot.rows,
       known: (id) => tracker.has(id) || hooked.has(id),
       ptyOf: (pid) => ptys.get(pid),
       external: showAll,
@@ -396,5 +399,14 @@ export function registerAgents(
     );
   };
 
-  return { resolveOpen, heldElsewhere };
+  const replyRow = async (id: string) => {
+    const host = current();
+    const snapshot = await inventory(true, host, true).catch(() => null);
+    if (!snapshot || snapshot.detail) throw new Error('inventory unavailable');
+    const row = snapshot.agents.find((r) => r.kind !== 'headless' && r.claude_session_id === id);
+    if (!row) throw new Error('session not listed');
+    return { row, env: host.env };
+  };
+
+  return { resolveOpen, heldElsewhere, replyRow };
 }

@@ -1,0 +1,212 @@
+import { type IIIClient, ObserveRejection } from 'iii-sdk';
+import { z } from 'zod';
+import type { AgentRow } from './agents.js';
+import type { ReplyPermission } from './configuration.js';
+import { jsonSchema } from './run.js';
+import { readTranscript, Reply } from './terminal/external-transcript.js';
+
+const Args = z.strictObject({ claude_session_id: z.guid() });
+const Event = z.object({ claude_session_id: z.guid(), reply: Reply });
+const ON_REPLY = 'claude::agents::on-reply';
+type Row = (id: string) => Promise<{ row: AgentRow; env: Record<string, string> }>;
+type Schedule = (poll: () => Promise<void>) => () => void;
+const schedulePoll: Schedule = (poll) => {
+  const timer = setTimeout(poll, 2_000);
+  timer.unref();
+  return () => clearTimeout(timer);
+};
+
+function sessionId(args: unknown) {
+  const parsed = Args.safeParse(args);
+  if (!parsed.success) throw new Error('invalid Claude session id');
+  return parsed.data.claude_session_id;
+}
+
+type Watch = { epoch: number; cursor: string; active: boolean };
+type Group = {
+  watches: Map<string, Watch>;
+  tail: Promise<void>;
+  cancel?: () => void;
+};
+
+/** Each observer owns its admission boundary. Readers with the same boundary
+ * share a poll; a later admission never advances an earlier observer. */
+export function registerExternalReplies(
+  iii: IIIClient,
+  permission: ReplyPermission,
+  rowFor: Row,
+  schedule: Schedule = schedulePoll,
+) {
+  const groups = new Map<string, Group>();
+  let count = 0;
+  const guard = (epoch: number | null) => {
+    if (epoch === null || epoch !== permission.epoch) throw new Error('reply access disabled');
+    return epoch;
+  };
+  // Check also on rejection: even a negative inventory result reveals existence.
+  async function authorized<T>(epoch: number, read: () => Promise<T>) {
+    guard(epoch);
+    try {
+      return await read();
+    } finally {
+      guard(epoch);
+    }
+  }
+
+  iii.registerFunction(
+    'claude::agents::get',
+    async (args: unknown) => {
+      const epoch = guard(permission.epoch);
+      const id = sessionId(args);
+      const { row, env } = await authorized(epoch, () => rowFor(id));
+      const { replies } = await authorized(epoch, () => readTranscript(iii, env, id, 'last'));
+      guard(epoch);
+      return {
+        claude_session_id: id,
+        name: row.name ?? null,
+        cwd: row.cwd ?? null,
+        status: row.status,
+        last_reply: replies[0] ?? null,
+      };
+    },
+    {
+      description: 'Read a listed terminal session and its last active-branch assistant reply.',
+      observable: false,
+      metadata: { trace_hidden: true },
+      request_format: jsonSchema(Args),
+      response_format: jsonSchema(
+        z.object({
+          claude_session_id: z.guid(),
+          name: z.string().nullable(),
+          cwd: z.string().nullable(),
+          status: z.string(),
+          last_reply: Reply.nullable(),
+        }),
+      ),
+    },
+  );
+
+  function serialize<T>(g: Group, work: () => Promise<T>) {
+    const result = g.tail.then(work);
+    g.tail = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+
+  function remove(id: string, observer: string, watch?: Watch) {
+    const g = groups.get(id);
+    if (!g || (watch && g.watches.get(observer) !== watch) || !g.watches.delete(observer)) return;
+    count--;
+    if (!g.watches.size) {
+      g.cancel?.();
+      // Keep the lock until a read already on the host has actually returned.
+      void g.tail.then(() => {
+        if (!g.watches.size && groups.get(id) === g) groups.delete(id);
+      });
+      g.cancel = undefined;
+    }
+  }
+
+  async function poll(id: string, g: Group) {
+    const epoch = permission.epoch;
+    if (epoch === null) return;
+    const batches = new Map<string, Array<[string, Watch]>>();
+    for (const entry of g.watches) {
+      const w = entry[1];
+      if (!w.active) continue;
+      const cursor = w.epoch === epoch ? w.cursor : '';
+      const batch = batches.get(cursor) ?? [];
+      batch.push(entry);
+      batches.set(cursor, batch);
+    }
+    if (!batches.size) return;
+    const { env } = await authorized(epoch, () => rowFor(id));
+    for (const [cursor, batch] of batches) {
+      if (!batch.some(([key, w]) => g.watches.get(key) === w)) continue;
+      const next = await authorized(epoch, () =>
+        readTranscript(iii, env, id, cursor ? 'since' : 'baseline', cursor),
+      );
+      for (const [key, w] of batch) {
+        for (const reply of next.replies) {
+          guard(epoch);
+          if (g.watches.get(key) !== w) break;
+          await iii.call({
+            function_id: ON_REPLY,
+            metadata: { for_observer: key, epoch },
+            payload: { claude_session_id: id, reply },
+          });
+        }
+        w.cursor = next.cursor;
+        w.epoch = epoch;
+      }
+    }
+  }
+
+  function arm(id: string, g: Group) {
+    if (g.cancel || !Array.from(g.watches.values()).some((w) => w.active)) return;
+    const cancel = schedule(async () => {
+      try {
+        await serialize(g, () => poll(id, g));
+      } catch {
+        // No cursor advance on a failed read. Never log host or delivery errors.
+      } finally {
+        if (g.cancel === cancel) {
+          g.cancel = undefined;
+          arm(id, g);
+        }
+      }
+    });
+    g.cancel = cancel;
+  }
+
+  iii.registerFunction<z.infer<typeof Event>, z.infer<typeof Event>>(ON_REPLY, (event) => event, {
+    private: true,
+    metadata: { trace_hidden: true },
+    description: 'Observe new active-branch replies after a per-session transcript baseline.',
+    args_format: jsonSchema(Args),
+    request_format: jsonSchema(Event),
+    response_format: jsonSchema(Event),
+  })
+    .onObserverAdded(async (obs) => {
+      const epoch = guard(permission.epoch);
+      const id = sessionId(obs.args);
+      if (count >= 256) throw new ObserveRejection('OBSERVER_LIMIT', 'reply observer limit');
+      const g: Group = groups.get(id) ?? { watches: new Map(), tail: Promise.resolve() };
+      const w: Watch = { epoch, cursor: '', active: false };
+      g.watches.set(obs.id, w);
+      groups.set(id, g);
+      count++;
+      try {
+        await serialize(g, async () => {
+          const { env } = await authorized(epoch, () => rowFor(id));
+          const next = await authorized(epoch, () => readTranscript(iii, env, id, 'baseline'));
+          w.cursor = next.cursor;
+        });
+        guard(epoch);
+        void obs.accepted().then(
+          () => {
+            if (g.watches.get(obs.id) !== w) return;
+            w.active = true;
+            arm(id, g);
+          },
+          () => remove(id, obs.id, w),
+        );
+      } catch (err) {
+        remove(id, obs.id, w);
+        throw err;
+      }
+    })
+    .onObserverRemoved((obs) => remove(sessionId(obs.args), obs.id))
+    .onObservationMatch((obs, call) => {
+      const id = call.input.claude_session_id;
+      return (
+        obs.args.claude_session_id === id &&
+        obs.id === call.metadata?.for_observer &&
+        permission.epoch !== null &&
+        permission.epoch === call.metadata?.epoch &&
+        groups.get(id)?.watches.get(obs.id)?.active === true
+      );
+    });
+}

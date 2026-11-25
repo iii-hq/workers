@@ -294,6 +294,26 @@ resume the same id, and both would write to one transcript. Nothing is
 resumed while `claude agents --json` fails, since then nothing says whether a
 session is live.
 
+### Reading a terminal session’s replies
+
+Enable `external_sessions: true` only if callers may read assistant reply text on the terminal host. Use the full `claude_session_id` of an interactive or background row, even if idle. Neither API opens the session or needs a Stop hook. A headless-only row, a worker session alias, a CLI short ID or a conversation absent from `claude agents --json --all` is not a lookup key.
+
+```typescript
+const { last_reply, status } = await iii.call({
+  function_id: 'claude::agents::get', payload: { claude_session_id },
+});
+// last_reply is { id, text }, or null if the active branch has no assistant text.
+iii.registerFunction('consumer::on-reply', ({ output }) => handleReply(output.reply));
+const watch = iii.observe({
+  function_id: 'claude::agents::on-reply', args: { claude_session_id }, capture: ['output'],
+}, 'consumer::on-reply');
+await watch.ready(); // a readable transcript was required for admission
+```
+
+`invalid Claude session id`, `session not listed` and `inventory unavailable` distinguish a bad key, a successful inventory miss and a failed listing. `transcript unavailable` is an error, **not** `last_reply: null`. The terminal host needs POSIX directory-relative file access and Python 3 on PATH. The reader looks only in `projects/<project>/<UUID>.jsonl` under `CLAUDE_CONFIG_DIR` (default `~/.claude`). The projects root may point to a shared store; descendant links, ambiguous matches, unreadable files and unsupported or broken parent chains are refused. Unknown record layouts, compacted chains that require relinking and content-replacement records are not supported. Limits per read: 4,096 project entries, 8 MiB per file, 65,536 complete records, 1 MiB per record, 48 KiB of encoded output and five seconds. Only newline-complete records count. The last reply follows the latest non-sidechain conversation back through its parents; user messages, tool use/results, thinking and abandoned branches are not replies.
+
+At most 256 watches (including pending admissions) are allowed. Each watch starts at its **own** successful baseline; it does not send the current answer. Lookup and subscribe are not atomic: an answer between them can be missed. Polling is best effort, not a durable feed. Only newly appended replies still on the active branch at a successful poll are delivered. Failed reads leave the cursor unchanged; replacement, truncation or prefix changes establish a new baseline without replay. A closed or uncertain live setting pauses watches; renewed permission takes a fresh baseline. Worker restarts, branch switches, permission changes, limits and delivery failures can leave gaps. Use the reply’s record ID, not its text, to deduplicate. Dispose the watch when finished.
+
 ## The agent on the bus
 
 By default every turn's system prompt carries the iii runtime context: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii call engine::functions::list` to find function ids, `iii call <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `compose::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. The matching `Bash(iii *)` allow rule is added automatically so those calls run headless. Local file edits stay on Claude Code's native tools; backend actions go through registered functions.
@@ -515,7 +535,7 @@ defaults:
 approval_gate: false           # route tool permissions through policy::check_permissions
 claude_executable: ""          # path to the claude CLI; empty = SDK default resolution
 external_sessions: false       # claude::agents::list shows every session on the terminal host, and
-                               # its background ones may be opened and stopped
+                               # allows reading assistant replies and opening/stopping background sessions
 
 terminal:                      # the console terminal page — a DIFFERENT host: the ide worker's
   executable: ""               # path to `claude` there; empty = resolve on PATH there

@@ -16,12 +16,13 @@ import { registerWorker } from 'iii-sdk';
 import { type Config, loadConfig } from './config.js';
 import {
   type ConfigHolder,
-  fetchRuntime,
+  ReplyPermission,
   observeConfigChanges,
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
 import { registerAgents } from './agents.js';
+import { registerExternalReplies } from './external-replies.js';
 import { pluginSourceLine } from './iii-plugin/install.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { ranSinceStart, register, startupScanDone } from './run.js';
@@ -109,8 +110,12 @@ const reconcileTerminal = () => {
     });
 };
 
+const replyPermission = new ReplyPermission();
+let watchingConfig = false;
 const refresh = async () => {
-  const runtime = (await fetchRuntime(iii)) ?? undefined;
+  const latest = await replyPermission.refresh(iii, () => watchingConfig);
+  if (!latest) return;
+  const { runtime } = latest;
   const merged: Config = runtime
     ? { engine_url: bootConfig.engine_url, ...runtime }
     : { ...bootConfig };
@@ -120,7 +125,10 @@ const refresh = async () => {
   reconcileTerminal();
 };
 
-await observeConfigChanges(iii, refresh);
+await observeConfigChanges(iii, refresh, (active) => {
+  watchingConfig = active;
+  if (!active) replyPermission.invalidate();
+});
 
 // The two event feeds: claude::on-agent-event (AgentEvent frames) and
 // claude::on-raw-event (verbatim Claude Code messages), each with its own
@@ -156,6 +164,7 @@ const agents = registerAgents(
   () => holder.current.external_sessions,
   tracker,
 );
+registerExternalReplies(iii, replyPermission, agents.replyRow);
 registerTerminal(
   iii,
   () => prepared,

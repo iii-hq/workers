@@ -96,6 +96,8 @@ instead of bolting anything onto this one.
 - `claude::sessions::list` — every session this worker has run.
 - `claude::agents::list` — headless runs plus the terminal host's interactive
   and background Claude Code sessions, each with `kind`, `status` and `alive`.
+- `claude::agents::get` — read a listed terminal session’s status and last assistant reply without opening it; requires live `external_sessions` permission.
+- `claude::agents::on-reply` — observe later replies for one listed session after its transcript baseline; no Stop hook or replay.
 - `claude::agents::stop` — stop a live background session by its Claude Code
   session id (needs `external_sessions`); stop a headless run with
   `claude::stop`.
