@@ -17,7 +17,7 @@ pub const MAX_RETRY_MAX: u32 = 10;
 pub struct RouterSettings {
     pub default_provider: Option<String>,
     pub routing_heuristics: Vec<Heuristic>,
-    pub stream_timeout_ms: u64, // total budget for provider::<id>::stream (600s)
+    pub stream_timeout_ms: u64, // total budget for provider::<id>::stream (1500s, per attempt); callers' outer router::chat timeout must stay above it
     pub idle_timeout_ms: u64,   // max gap between frames, ping included (spec: 120s)
     pub retry_max: u32,         // further attempts after the first (spec: 2)
     /// Optional router-wide soft cap on output tokens. `None` (the default)
@@ -31,7 +31,7 @@ impl Default for RouterSettings {
         RouterSettings {
             default_provider: None,
             routing_heuristics: vec![],
-            stream_timeout_ms: 600_000,
+            stream_timeout_ms: 1_500_000,
             idle_timeout_ms: 120_000,
             retry_max: 2,
             output_token_max: None,

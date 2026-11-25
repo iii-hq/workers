@@ -81,6 +81,7 @@ const CONFIGURATION_CODES = new Set([
   'router/ambiguous_model',
   'router/structured_output_unsupported',
   'router/invalid_request',
+  'router/stream_timeout',
 ])
 
 const CONNECTION_CODES = new Set([
@@ -211,6 +212,16 @@ function copyFor(
         ],
       }
     case 'configuration': {
+      if (code === 'router/stream_timeout') {
+        return {
+          title: 'The reply ran past the stream time limit',
+          ownership: `${name} hadn’t finished the reply when LLM Router’s stream time limit ran out. Trying again unchanged will hit the same limit.`,
+          actions: [
+            'Raise the stream timeout in LLM Router settings.',
+            'Or lower the reasoning effort or split the task, then try again.',
+          ],
+        }
+      }
       const title =
         code === 'router/unknown_provider'
           ? `${name} isn’t set up anymore`
