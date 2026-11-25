@@ -126,6 +126,8 @@ interface PickerSubpageHeaderProps {
   description: string
   onBack?: () => void
   backButtonRef?: RefObject<HTMLButtonElement | null>
+  /** Held while the page waits on something (an add opening its settings). */
+  backDisabled?: boolean
 }
 
 function PickerSubpageHeader({
@@ -133,6 +135,7 @@ function PickerSubpageHeader({
   description,
   onBack,
   backButtonRef,
+  backDisabled,
 }: PickerSubpageHeaderProps) {
   return (
     <div className="flex shrink-0 items-start gap-2 px-4 py-3 pr-12">
@@ -141,8 +144,9 @@ function PickerSubpageHeader({
           ref={backButtonRef}
           type="button"
           aria-label="back to models"
+          disabled={backDisabled}
           onClick={onBack}
-          className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -161,8 +165,40 @@ function PickerSubpageHeader({
   )
 }
 
+/**
+ * Room the desktop picker needs above its trigger: the search, a few rows,
+ * the effort slider and the footer. With less above and more below, it
+ * opens below instead.
+ */
+const MENU_MIN_ROOM_ABOVE = 360
+
+export function pickMenuSide(trigger: HTMLElement | null): 'top' | 'bottom' {
+  if (!trigger) return 'top'
+  const rect = trigger.getBoundingClientRect()
+  const below = window.innerHeight - rect.bottom
+  return rect.top >= MENU_MIN_ROOM_ABOVE || rect.top >= below ? 'top' : 'bottom'
+}
+
 function stopMenuTabPropagation(event: KeyboardEvent<HTMLElement>) {
   if (event.key === 'Tab') event.stopPropagation()
+}
+
+/**
+ * The dropdown's typeahead claims every printable key that reaches its
+ * popup (Base UI calls preventDefault to jump to a matching item) and its
+ * list navigation claims the arrows, so a text field inside the picker (the
+ * model search, a provider's settings) could not be typed in. Keys pressed
+ * in a field stop at the pages; Escape still reaches the menu to close it.
+ */
+function keepKeysInTextFields(event: KeyboardEvent<HTMLElement>) {
+  if (event.key === 'Escape') return
+  const target = event.target
+  if (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || target.matches('input, textarea, select'))
+  ) {
+    event.stopPropagation()
+  }
 }
 
 /**
@@ -280,6 +316,10 @@ export function ModelPicker({
   const [addProviderOpen, setAddProviderOpen] = useState(false)
   // The library dialog behind Manage models: every model, the five slots.
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [menuSide, setMenuSide] = useState<'top' | 'bottom'>('top')
+  // An add on the Add a provider page waiting to open the new provider's
+  // settings holds the page's back button meanwhile.
+  const [addProviderBusy, setAddProviderBusy] = useState(false)
   const configurationGuard = useUnsavedGuard()
   // The favorites: up to five, remembered per model with the effort they
   // were last used at; pinned and arranged in the library dialog.
@@ -416,6 +456,7 @@ export function ModelPicker({
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
       playUiSound('tick')
+      setMenuSide(pickMenuSide(triggerRef.current))
       setOpen(true)
       return
     }
@@ -607,7 +648,11 @@ export function ModelPicker({
   // desktop popover to its rows; the subpages mount only when open, so
   // they add no height until then.
   const pickerPages = (
-    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] overflow-hidden">
+    // biome-ignore lint/a11y/noStaticElementInteractions: only shields its text fields' keys from the menu
+    <div
+      onKeyDown={mobileSheet ? undefined : keepKeysInTextFields}
+      className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] overflow-hidden"
+    >
       <div
         data-active={activePage === 'models'}
         aria-hidden={activePage !== 'models'}
@@ -632,9 +677,11 @@ export function ModelPicker({
               description="Provider workers from the workers registry."
               backButtonRef={addProviderBackRef}
               onBack={closeAddProvider}
+              backDisabled={addProviderBusy}
             />
             <AddProviderPanel
               disabled={disabled}
+              onBusyChange={setAddProviderBusy}
               onConfigureProvider={
                 showProviderConfiguration
                   ? openProviderConfiguration
@@ -702,6 +749,17 @@ export function ModelPicker({
           />
 
           <DropdownMenuContent
+            // The side is chosen once, when the picker opens (above the
+            // trigger unless there is too little room there, as for a
+            // quick-edit card near the top of the editor), and held while it
+            // is open: the list changes height as you type, and a popup free
+            // to flip jumped between above and below with each keystroke.
+            side={menuSide}
+            collisionAvoidance={{
+              side: 'none',
+              align: 'shift',
+              fallbackAxisSide: 'none',
+            }}
             sideOffset={6}
             align="start"
             collisionPadding={12}
