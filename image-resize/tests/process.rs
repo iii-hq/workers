@@ -2,7 +2,7 @@
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -102,22 +102,38 @@ async fn engine(fail_ensure: bool) -> (String, mpsc::UnboundedReceiver<Value>) {
     (url, rx)
 }
 
-fn worker(url: &str, extra: &[&str]) -> Worker {
-    Worker(
-        Command::new(env!("CARGO_BIN_EXE_image-resize"))
-            .args(["--url", url])
-            .args(extra)
-            // The SDK writes an `iii ps` marker under $HOME/.iii/run.
-            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-            .env("III_CONFIG_NAME", CONFIG_NAME)
-            .env_remove("III_URL")
-            .env_remove("III_NAMESPACE")
-            .env("RUST_LOG", "info")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    )
+/// `namespace` is the III_NAMESPACE the worker sees; `None` leaves it unset.
+fn worker(url: &str, extra: &[&str], namespace: Option<&str>) -> Worker {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_image-resize"));
+    command
+        .args(["--url", url])
+        .args(extra)
+        // The SDK writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("III_CONFIG_NAME", CONFIG_NAME)
+        .env_remove("III_URL")
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match namespace {
+        Some(namespace) => command.env("III_NAMESPACE", namespace),
+        None => command.env_remove("III_NAMESPACE"),
+    };
+    Worker(command.spawn().unwrap())
+}
+
+async fn exit_status(worker: &mut Worker, limit: Duration) -> ExitStatus {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = worker.0.try_wait().unwrap() {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker still running after {limit:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 fn lines(worker: &mut Worker) -> mpsc::UnboundedReceiver<String> {
@@ -138,7 +154,7 @@ async fn boot_registers_seeds_and_reloads_its_configuration() {
     let seed = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("boot-seed.yaml");
     std::fs::write(&seed, "width: 320\n").unwrap();
     let (url, mut frames) = engine(false).await;
-    let mut worker = worker(&url, &["--config", seed.to_str().unwrap()]);
+    let mut worker = worker(&url, &["--config", seed.to_str().unwrap()], None);
     let mut logs = lines(&mut worker);
 
     timeout(Duration::from_secs(20), async {
@@ -206,15 +222,8 @@ async fn boot_registers_seeds_and_reloads_its_configuration() {
 #[tokio::test]
 async fn boot_fails_when_the_configuration_service_fails() {
     let (url, _frames) = engine(true).await;
-    let mut worker = worker(&url, &[]);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let status = loop {
-        if let Some(status) = worker.0.try_wait().unwrap() {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "worker still running after 20 s");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
+    let mut worker = worker(&url, &[], None);
+    let status = exit_status(&mut worker, Duration::from_secs(20)).await;
     assert!(!status.success(), "{status}");
     let mut stderr = String::new();
     worker
@@ -225,4 +234,29 @@ async fn boot_fails_when_the_configuration_service_fails() {
         .read_to_string(&mut stderr)
         .unwrap();
     assert!(stderr.contains("image-resize configuration"), "{stderr}");
+}
+
+#[tokio::test]
+async fn sigterm_exits_cleanly_with_blank_namespace() {
+    let (url, _frames) = engine(false).await;
+    let mut worker = worker(&url, &[], Some(""));
+    let mut logs = lines(&mut worker);
+    timeout(Duration::from_secs(20), async {
+        while let Some(line) = logs.recv().await {
+            if line.contains("waiting for invocations") {
+                return;
+            }
+        }
+        panic!("worker exited before reporting ready");
+    })
+    .await
+    .expect("the worker reports ready");
+
+    let kill = Command::new("kill")
+        .args(["-TERM", &worker.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(kill.success());
+    let status = exit_status(&mut worker, Duration::from_secs(10)).await;
+    assert!(status.success(), "{status}");
 }
