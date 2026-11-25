@@ -282,6 +282,12 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       await expect(
         page.getByText('This Claude Code account reached its usage limit'),
       ).toBeVisible()
+      // Its steps still hold once another account has taken over.
+      await expect(
+        page.locator('[data-message-role="turn-failure"]'),
+      ).toContainText(
+        'Another account can take over from the limit card above the composer.',
+      )
       // The chip in the header says where the conversation runs.
       const chip = page.locator('[data-account-chip]')
       await expect(chip).toHaveText('Personal')

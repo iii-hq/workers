@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { LockedAccountContext } from '@/lib/limit-card'
 import { rememberProviderList } from '@/lib/models-catalog'
 import type { SystemMessage } from '@/types/chat'
 import { Message } from './Message'
@@ -333,5 +334,42 @@ describe('SystemNotice · one-line notices', () => {
       createdAt: 0,
     })
     expect(out).toContain('/compact not supported by this backend.')
+  })
+})
+
+describe('SystemNotice · a Claude Code usage limit', () => {
+  const limit: SystemMessage = {
+    id: 'e_limit',
+    role: 'system',
+    kind: 'turn-failure',
+    tone: 'error',
+    content: 'Claude Code usage limit reached.',
+    failure: {
+      summary: 'Claude Code usage limit reached.',
+      usageLimit: { window: 'five_hour', resetsAtMs: 1, account: 'personal' },
+    },
+    technicalDetails: { code: 'llm.usage_limit', provider: 'claude-code' },
+    createdAt: 0,
+  }
+
+  it('points at the limit card in the conversation', () => {
+    const out = html(limit)
+    expect(out).toContain(
+      'Another account can take over from the limit card above the composer.',
+    )
+    expect(out).toContain('Or wait until the limit resets, then try again.')
+  })
+
+  it("keeps a side chat on its account, as the side chat's card does", () => {
+    const out = renderToStaticMarkup(
+      <LockedAccountContext.Provider value>
+        <SystemNotice message={limit} />
+      </LockedAccountContext.Provider>,
+    )
+    expect(out).toContain('Wait until the limit resets, then try again.')
+    expect(out).toContain(
+      'This side chat stays on its account so it keeps the conversation&#x27;s cache.',
+    )
+    expect(out).not.toContain('Another account')
   })
 })

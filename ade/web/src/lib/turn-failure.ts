@@ -210,6 +210,7 @@ function copyFor(
   code: string,
   provider: string | undefined,
   unreachable: boolean,
+  lockedAccount: boolean,
 ): Copy {
   const name = provider ?? 'The provider'
   const lower = provider ?? 'the provider'
@@ -228,10 +229,18 @@ function copyFor(
         title: 'This Claude Code account reached its usage limit',
         ownership:
           'The account’s plan takes no more messages until its limit resets. This is the plan’s limit, not an iii or ADE failure.',
-        actions: [
-          'Continue in another account from the card above the composer.',
-          'Or wait until the limit resets, then try again.',
-        ],
+        // The notice stays in the transcript after the turn ran again in
+        // another account: step 1 still holds then. A side chat's card offers
+        // no other account (its account is locked, D2).
+        actions: lockedAccount
+          ? [
+              'Wait until the limit resets, then try again.',
+              "This side chat stays on its account so it keeps the conversation's cache.",
+            ]
+          : [
+              'Another account can take over from the limit card above the composer.',
+              'Or wait until the limit resets, then try again.',
+            ],
       }
     case 'account':
       return {
@@ -397,6 +406,11 @@ export function classifyTurnFailure(
     providerHint?: string
     /** How people name the provider (`OpenAI`); defaults to its id. */
     providerName?: string
+    /**
+     * The transcript's Claude Code account is locked (a side chat): the
+     * usage-limit steps offer no other account.
+     */
+    lockedAccount?: boolean
   } = {},
 ): TurnFailurePresentation {
   const details = message.technicalDetails
@@ -412,7 +426,13 @@ export function classifyTurnFailure(
   })
   const owner = OWNER_BY_CATEGORY[category]
   const provider = options.providerName ?? details?.provider
-  const copy = copyFor(category, code, provider, UNREACHABLE_PATTERN.test(text))
+  const copy = copyFor(
+    category,
+    code,
+    provider,
+    UNREACHABLE_PATTERN.test(text),
+    options.lockedAccount === true,
+  )
   const harnessActions = message.nextActions?.filter(
     (action) => action.trim().length > 0,
   )

@@ -1095,6 +1095,7 @@ function assistantSegments(
           content: block.text,
           agent: message.agent,
           model: message.model,
+          ...(message.provider ? { provider: message.provider } : {}),
           stopReason: message.stop_reason,
           createdAt: message.timestamp,
         })

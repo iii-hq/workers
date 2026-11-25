@@ -378,9 +378,11 @@ describe('Claude Code account failures (chat-projects D147)', () => {
     expect(presentation.title).toBe(
       'This Claude Code account reached its usage limit',
     )
-    expect(presentation.actions[0]).toBe(
-      'Continue in another account from the card above the composer.',
-    )
+    // Still true once the turn ran again in another account.
+    expect(presentation.actions).toEqual([
+      'Another account can take over from the limit card above the composer.',
+      'Or wait until the limit resets, then try again.',
+    ])
     const gone = classifyTurnFailure({
       content: 'unknown account',
       technicalDetails: { code: 'harness.unknown_account' },
@@ -388,5 +390,22 @@ describe('Claude Code account failures (chat-projects D147)', () => {
     })
     expect(gone.category).toBe('account')
     expect(gone.title).toBe('This conversation’s Claude Code account is gone')
+  })
+
+  it("offers no other account in a side chat, whose card doesn't", () => {
+    const presentation = classifyTurnFailure(
+      {
+        content: 'Claude AI usage limit reached',
+        technicalDetails: { code: 'llm.usage_limit' },
+        failure: {
+          usageLimit: { window: 'week', resetsAtMs: 1, account: 'personal' },
+        },
+      },
+      { lockedAccount: true },
+    )
+    expect(presentation.actions).toEqual([
+      'Wait until the limit resets, then try again.',
+      "This side chat stays on its account so it keeps the conversation's cache.",
+    ])
   })
 })

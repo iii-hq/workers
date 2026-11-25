@@ -28,6 +28,7 @@ import {
 import { errText } from '@/lib/errors'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { patchSessionMeta } from '@/lib/sessions/api'
+import { noteTurnStart } from '@/lib/turn-starts'
 
 export const ACCOUNTS_LIST_FUNCTION_ID = 'tmux::accounts::list'
 export const ACCOUNTS_GLOBAL_FUNCTION_ID = 'tmux::accounts::global'
@@ -611,12 +612,19 @@ export async function cancelLogin(loginId: string): Promise<void> {
 }
 
 /** Re-run the session's failed last turn on a newly resolved account. */
+/**
+ * Re-run the session's failed last turn. The new turn has no user message
+ * of its own: its start is noted here, for its reply's duration.
+ */
 export async function retryTurn(
   sessionId: string,
 ): Promise<{ turnId: string | null }> {
   const c = await client()
+  const asked = Date.now()
   const r = record(await c.call(RETRY_FUNCTION_ID, { session_id: sessionId }))
-  return { turnId: str(r.turn_id) }
+  const turnId = str(r.turn_id)
+  if (turnId) noteTurnStart(turnId, asked)
+  return { turnId }
 }
 
 export async function readAccountSplits(

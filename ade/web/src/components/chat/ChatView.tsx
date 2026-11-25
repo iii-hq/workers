@@ -116,6 +116,10 @@ import { useChatCapabilities } from '@/lib/chat-capabilities'
 import { ACCOUNT_ROW_LABEL, globalRefusal } from '@/lib/claude-accounts-words'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { claudeAccountOf } from '@/lib/conversation-details'
+import {
+  effectiveModel as effectiveModelOf,
+  effectiveProvider,
+} from '@/lib/conversation-provider'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { errText } from '@/lib/errors'
@@ -128,6 +132,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import {
   accountFailure,
   dismissLimit,
+  LockedAccountContext,
   lastTurnFailure,
   limitCardModel,
   limitDismissed,
@@ -237,7 +242,7 @@ import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { requestClaudeAccountsDialog } from './claude-accounts-dialog-request'
 import { LimitCard } from './LimitCard'
 import { MessageList } from './MessageList'
-import { formatModelLabel, providerForModel } from './model-picker-presentation'
+import { formatModelLabel } from './model-picker-presentation'
 import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
 import {
@@ -1271,33 +1276,25 @@ export function ChatView({
     [queuedDrafts, pendingQueueIds],
   )
 
-  // Discovered sessions (sub-agents especially) carry no client-side model
-  // choice — `conversation.model` is null. Fall back to the model the latest
-  // assistant reply actually used (transcript entries carry it), resolved
-  // against the catalog's composite ids so the picker preselects when it can.
-  // An agent profile may name a plain router id (`claude-opus-5-5`) rather
-  // than a catalog key; it resolves the same way, or the picker shows
-  // "Choose model" for a model the session is running.
-  const effectiveModel = useMemo(() => {
-    const toCatalog = (model: string) =>
-      modelOptions.find((o) => o.id === model || o.id.endsWith(`::${model}`))
-        ?.id ?? model
-    if (conversation.model) return toCatalog(conversation.model)
-    if (imported) return null
-    const last = [...conversation.messages]
-      .reverse()
-      .find(
-        (m): m is AssistantMessage =>
-          m.role === 'assistant' && Boolean(m.model),
-      )
-    if (!last?.model) return null
-    return toCatalog(last.model)
-  }, [conversation.model, conversation.messages, modelOptions, imported])
+  // Discovered sessions (sub-agents, turns other clients sent) carry no
+  // client-side model choice: the latest reply's model stands in, and its
+  // provider decides the Claude Code surfaces (the chip, the limit card and
+  // Details' account row read the same `chatProvider`).
+  const effectiveModel = useMemo(
+    () => effectiveModelOf(conversation, modelOptions),
+    [conversation, modelOptions],
+  )
+  const chatProvider = useMemo(
+    () =>
+      effectiveProvider(conversation, {
+        catalog: modelOptions,
+        lockedModel: side?.locked?.model,
+      }),
+    [conversation, modelOptions, side?.locked?.model],
+  )
 
   const claudeCodeChat =
-    claudeAccounts.gate === 'full' &&
-    providerForModel(effectiveModel ?? side?.locked?.model ?? undefined) ===
-      CLAUDE_CODE_PROVIDER
+    claudeAccounts.gate === 'full' && chatProvider === CLAUDE_CODE_PROVIDER
   const accountResolution = claudeCodeChat
     ? conversationResolution({
         choice: claudeAccountOf(conversation.sessionMetadata),
@@ -1335,6 +1332,9 @@ export function ChatView({
         now: Date.now(),
       })
     : null
+  // A side chat keeps its account (D2); so does a sub-agent here. The card
+  // and the transcript's usage-limit notice offer no other account then.
+  const lockedAccount = Boolean(side) || Boolean(conversation.parentId)
   const limitCard =
     limitModel && !readOnly && !limitDismissed(conversation.id, limitModel.key)
       ? limitModel
@@ -3886,6 +3886,7 @@ export function ChatView({
           }
           projects={chatProjects.available ? chatProjects.projects : undefined}
           agentSwitch={chatCaps.setDescription && chatSettings.agentWrites}
+          provider={chatProvider}
         />
       ) : null}
       {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (
@@ -3920,60 +3921,62 @@ export function ChatView({
             <AskInSideChatContext.Provider value={sideChatValue}>
               <SideChatQuotesContext.Provider value={sideQuotesValue}>
                 <SideChatRepliesContext.Provider value={sideRepliesValue}>
-                  <MessageList
-                    messages={shownMessages}
-                    header={
-                      side && shownMessages.length === 0
-                        ? side.empty
-                        : undefined
-                    }
-                    agentName={conversation.agentProfile?.name}
-                    sessionId={conversation.id}
-                    spawnContext={{
-                      title: conversation.title,
-                      model: effectiveModel,
-                      appearance: conversation.subagentAppearance,
-                    }}
-                    transcriptHydrated={conversation.hydrated !== false}
-                    isThinking={isThinking || waitingOnAnswer}
-                    waitingOnPerson={waitingOnAnswer}
-                    turnVisualPhase={turnVisualState.phase}
-                    turnKey={turnVisualState.turnKey}
-                    thinkingDetail={
-                      waitingOnAnswer
-                        ? WAITING_ON_ANSWER_LABEL
-                        : conversation.status === 'working' &&
-                            conversation.statusReason
-                          ? conversation.statusReason
-                          : (phaseDetail ?? waitingFallback)
-                    }
-                    density={density}
-                    onResolveApproval={resolveApproval}
-                    onAlwaysAllow={handleAlwaysAllow}
-                    onResolveFilesystemAccess={handleFilesystemResolve}
-                    onManageFilesystemAccess={handleManageFilesystemAccess}
-                    onConfigureProvider={handleConfigureProvider}
-                    workingDir={conversation.workingDir ?? null}
-                    onWorkingDirChange={
-                      workingDirEnabled ? handleWorkingDirChange : undefined
-                    }
-                    defaultWorkingDir={defaultWorkingDir}
-                    worktreePicker={
-                      worktreeEnabled
-                        ? { enabled: true, onPick: handlePickWorktree }
-                        : undefined
-                    }
-                    observersById={observersById}
-                    focusMessageId={quoteFocusId ?? focusMessageId}
-                    onFocusMessageHandled={() => {
-                      setQuoteFocusId(null)
-                      handleFocusMessageHandled()
-                    }}
-                    history={side ? undefined : conversation.history}
-                    onLoadOlder={side ? undefined : handleLoadOlder}
-                    onLoadActivityEntries={handleLoadActivityEntries}
-                    onShowObservers={asideEnabled ? showObservers : undefined}
-                  />
+                  <LockedAccountContext.Provider value={lockedAccount}>
+                    <MessageList
+                      messages={shownMessages}
+                      header={
+                        side && shownMessages.length === 0
+                          ? side.empty
+                          : undefined
+                      }
+                      agentName={conversation.agentProfile?.name}
+                      sessionId={conversation.id}
+                      spawnContext={{
+                        title: conversation.title,
+                        model: effectiveModel,
+                        appearance: conversation.subagentAppearance,
+                      }}
+                      transcriptHydrated={conversation.hydrated !== false}
+                      isThinking={isThinking || waitingOnAnswer}
+                      waitingOnPerson={waitingOnAnswer}
+                      turnVisualPhase={turnVisualState.phase}
+                      turnKey={turnVisualState.turnKey}
+                      thinkingDetail={
+                        waitingOnAnswer
+                          ? WAITING_ON_ANSWER_LABEL
+                          : conversation.status === 'working' &&
+                              conversation.statusReason
+                            ? conversation.statusReason
+                            : (phaseDetail ?? waitingFallback)
+                      }
+                      density={density}
+                      onResolveApproval={resolveApproval}
+                      onAlwaysAllow={handleAlwaysAllow}
+                      onResolveFilesystemAccess={handleFilesystemResolve}
+                      onManageFilesystemAccess={handleManageFilesystemAccess}
+                      onConfigureProvider={handleConfigureProvider}
+                      workingDir={conversation.workingDir ?? null}
+                      onWorkingDirChange={
+                        workingDirEnabled ? handleWorkingDirChange : undefined
+                      }
+                      defaultWorkingDir={defaultWorkingDir}
+                      worktreePicker={
+                        worktreeEnabled
+                          ? { enabled: true, onPick: handlePickWorktree }
+                          : undefined
+                      }
+                      observersById={observersById}
+                      focusMessageId={quoteFocusId ?? focusMessageId}
+                      onFocusMessageHandled={() => {
+                        setQuoteFocusId(null)
+                        handleFocusMessageHandled()
+                      }}
+                      history={side ? undefined : conversation.history}
+                      onLoadOlder={side ? undefined : handleLoadOlder}
+                      onLoadActivityEntries={handleLoadActivityEntries}
+                      onShowObservers={asideEnabled ? showObservers : undefined}
+                    />
+                  </LockedAccountContext.Provider>
                 </SideChatRepliesContext.Provider>
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
@@ -4104,7 +4107,7 @@ export function ChatView({
                   model={limitCard}
                   data={claudeAccounts}
                   time={{ now: Date.now() }}
-                  sideChat={Boolean(side) || Boolean(conversation.parentId)}
+                  sideChat={lockedAccount}
                   followsGlobal={
                     accountResolution?.source === 'global' &&
                     limitCard.account === claudeAccounts.claude?.global
