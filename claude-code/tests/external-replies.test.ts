@@ -58,6 +58,30 @@ describe('lookup', () => {
     });
   });
 
+  it('uses an idle CLI row even when an old headless record shares its UUID', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.records.push({ session_id: recordId(9), claude_session_id: id, status: 'done' });
+      expect(await lookup(s)).toEqual({
+        claude_session_id: id,
+        cwd: '/fixture',
+        name: 'fixture',
+        status: 'idle',
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+    });
+  });
+
+  it.each(['NaN', 'Infinity', '-Infinity'])(
+    'rejects the nonstandard JSON token %s in a complete active record',
+    async (token) => {
+      await withSyntheticHost(async (s) => {
+        const row = JSON.stringify(record(1, null, 'user', ['INVALID_NUMBER']));
+        await writeFile(s.file, row.replace('"INVALID_NUMBER"', token) + '\n');
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      });
+    },
+  );
+
   it('selects complete visible blocks on the active branch and never exports raw records', async () => {
     await withSyntheticHost(async (s) => {
       await writeFile(

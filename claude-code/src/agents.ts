@@ -279,7 +279,9 @@ export function registerAgents(
       replies ? new Map<number, string>() : claudePtys(iii),
     ]);
     const merged = mergeInventory({
-      records,
+      // Older headless records must not shadow an explicitly listed CLI row.
+      // Keep excluding CLI rows for headless runs this worker still owns.
+      records: replies ? records.filter((record) => isLive(record.session_id)) : records,
       isLive,
       cliRows: replies
         ? snapshot.rows.filter((row) => row.kind === 'interactive' || row.kind === 'background')

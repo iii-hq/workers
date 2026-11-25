@@ -36,6 +36,9 @@ def require(ok):
     if not ok:
         raise ValueError()
 
+def reject_constant(_):
+    raise ValueError()
+
 def transcript(sid, stack):
     base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
     path = os.path.realpath(os.path.join(base, 'projects'))
@@ -115,7 +118,7 @@ def scan(sid, mode, previous):
             break
         stop = data.index(b'\n', pos) + 1
         require(count < 65536 and stop - pos <= MAX_LINE)
-        row = json.loads(data[pos:stop].decode('utf-8'))
+        row = json.loads(data[pos:stop].decode('utf-8'), parse_constant=reject_constant)
         pos = stop
         require(isinstance(row, dict) and isinstance(row.get('type'), str))
         kind = row['type']
@@ -188,7 +191,7 @@ export async function readTranscript(
       const tag = createHmac('sha256', pad.subarray(0, TAG_BYTES)).update(masked).digest();
       if (timingSafeEqual(packet.subarray(0, TAG_BYTES), tag)) {
         const plain = masked.map((b, i) => b ^ pad[i + TAG_BYTES]);
-        return Snapshot.parse(JSON.parse(plain.toString('utf8')));
+        return Snapshot.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(plain)));
       }
     }
   } catch {
