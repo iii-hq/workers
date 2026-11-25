@@ -131,11 +131,19 @@ fn build_count_body(
     body
 }
 
-/// A count that failed, with the upstream status when there was one.
-#[derive(Debug)]
+/// A count that failed, with the upstream status when there was one. Its
+/// `Debug` shows the status only: the error carries the upstream's own text.
 struct CountFailure {
     status: Option<u16>,
     error: Error,
+}
+
+impl std::fmt::Debug for CountFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CountFailure")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CountFailure {
@@ -180,7 +188,8 @@ async fn post_count(
 
 /// One count; with an account source's token, one more after a 401 with the
 /// token the source gives when asked again (D140). A token refused twice is
-/// dropped from the source's cache.
+/// dropped from the source's cache; a source that gives none when asked
+/// again is its error.
 async fn post_count_for_account(
     http: &reqwest::Client,
     cfg: &mut ClaudeCodeConfig,
@@ -193,7 +202,10 @@ async fn post_count_for_account(
             let Some(refused) = account else {
                 return Err(failure.error);
             };
-            let Some(fresh) = accounts::ask_again(accounts, refused).await else {
+            let Some(fresh) = accounts::ask_again(accounts, refused)
+                .await
+                .map_err(|e| Error::Handler(e.message()))?
+            else {
                 return Err(failure.error);
             };
             cfg.credential_value = fresh.access_token;
@@ -657,6 +669,28 @@ mod tests {
             }
         });
         (format!("http://{addr}/v1/messages"), seen)
+    }
+
+    #[test]
+    fn debug_output_never_shows_the_token_or_the_upstream_text() {
+        let failure = CountFailure::new(
+            Some(401),
+            Error::Handler("provider/upstream_status: 401: sk-ant-oat01-secret".into()),
+        );
+        let shown = format!("{failure:?}");
+        assert!(
+            shown.contains("401") && !shown.contains("secret"),
+            "{shown}"
+        );
+        let config = ClaudeCodeConfig {
+            credential_value: "sk-ant-oat01-secret".into(),
+            ..cfg("http://127.0.0.1:1/v1/messages".into())
+        };
+        let shown = format!("{config:?}");
+        assert!(
+            !shown.contains("secret") && shown.contains("<redacted>"),
+            "{shown}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

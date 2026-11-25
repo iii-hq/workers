@@ -92,7 +92,11 @@ pub struct ErrorShape {
     pub detail: Option<String>,
     /// The provider's structured facts about the error, passed through from
     /// the terminal frame's `error_details`, such as an account's usage limit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::types::events::lenient_error_details"
+    )]
     pub error_details: Option<ErrorDetails>,
 }
 

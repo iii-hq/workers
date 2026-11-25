@@ -141,8 +141,15 @@ pub async fn declare_and_refresh(
     accounts: Arc<dyn AccountSource>,
 ) {
     declare_with_backoff(iii.clone(), lock).await;
-    if !accounts.available().await {
-        auth::import_claude_home_if_absent(&iii).await;
+    // Only a confirmed absence imports: a listing that could not be read
+    // (after its retries) may hide a tmux that holds the accounts.
+    match accounts.holds_accounts().await {
+        Ok(false) => auth::import_claude_home_if_absent(&iii).await,
+        Ok(true) => {}
+        Err(error) => eprintln!(
+            "[provider-claude-code] could not tell whether the tmux worker holds the Claude Code \
+             accounts ({error}); skipping the ~/.claude import"
+        ),
     }
     match refresh_models(&iii, &http, accounts.as_ref()).await {
         Ok(count) => println!("[provider-claude-code] catalog refreshed: {count} models"),

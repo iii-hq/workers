@@ -1401,6 +1401,23 @@ mod tests {
     }
 
     #[test]
+    fn an_error_shape_keeps_the_usage_limit_through_a_malformed_field() {
+        let shape: ErrorShape = serde_json::from_value(serde_json::json!({
+            "code": "router/provider_rate_limited",
+            "message": "m",
+            "error_details": { "usage_limit": true, "window": "week", "resets_at_ms": "soon" }
+        }))
+        .unwrap();
+        assert_eq!(
+            shape.error_details,
+            Some(crate::types::events::ErrorDetails::usage_limit(
+                Some(crate::types::events::UsageWindow::Week),
+                None
+            ))
+        );
+    }
+
+    #[test]
     fn a_plain_rate_limit_stays_retryable_without_details() {
         let busy = provider_error(Some(ErrorKind::RateLimited), None);
         assert!(busy.error_is_retryable());

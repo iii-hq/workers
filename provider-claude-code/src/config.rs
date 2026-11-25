@@ -19,13 +19,25 @@ pub fn upstream_model_id(router_id: &str) -> String {
         .to_string()
 }
 
-#[derive(Debug, Clone)]
+/// Its `Debug` leaves the token out.
+#[derive(Clone)]
 pub struct ClaudeCodeConfig {
     /// OAuth access token; sent as `authorization: Bearer <token>`.
     pub credential_value: String,
     pub model: String, // upstream model id (router id mapped)
     pub max_tokens: u64,
     pub api_url: String,
+}
+
+impl std::fmt::Debug for ClaudeCodeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaudeCodeConfig")
+            .field("credential_value", &"<redacted>")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("api_url", &self.api_url)
+            .finish()
+    }
 }
 
 /// Why an effective config could not be built — each becomes a permanent error
