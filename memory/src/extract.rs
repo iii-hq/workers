@@ -3658,7 +3658,9 @@ async fn extract_items(
                 "content": [{ "type": "text", "text": text }],
                 "timestamp": now_ms() as i64,
             }],
-            "max_output_tokens": 2048,
+            // Room for a reasoning model's thinking, which counts too: a cut
+            // reply fails the pass, or loses the items past the cut.
+            "max_output_tokens": 8192,
         }),
         action: None,
         timeout_ms: Some(timeout_ms),
