@@ -713,6 +713,7 @@ export function ConversationSidebar({
             : undefined
         }
         agentSwitch={agentSwitch}
+        conversations={conversations}
         secondLine={secondLine}
         folderTail={group.noProject === true}
         pinned={pinned.has(c.id)}

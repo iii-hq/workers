@@ -254,6 +254,43 @@ describe('the Claude Code account row (§4.3.5)', () => {
     expect(row()).toBeNull()
   })
 
+  // Opened from the sidebar, the dialog resolves a locked conversation itself.
+  it("reads a sub-agent on its parent's account and a side chat on its lock", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: { ...claudeCode, parentId: 'parent' },
+      conversations: [
+        {
+          id: 'parent',
+          title: 'Parent',
+          model: null,
+          messages: [],
+          createdAt: 0,
+          updatedAt: 0,
+          sessionMetadata: { claude_account: 'personal' },
+        },
+      ],
+    })
+    expect(resolution()?.textContent).toBe(
+      "Runs on Personal, its conversation's account.",
+    )
+    expect(row()?.querySelector('button')).toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+    render({
+      conversation: {
+        ...claudeCode,
+        sessionMetadata: {
+          side_chat_of: 'root',
+          side_chat_lock: { model: 'claude-code::x', account: 'personal' },
+        },
+      },
+    })
+    expect(resolution()?.textContent).toBe(
+      "Runs on Personal, locked to its conversation's account.",
+    )
+  })
+
   it('is absent for other providers and short of the whole feature (§4.3.6)', () => {
     seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
     render({ conversation: { ...conversation, model: 'openai::gpt-5.4' } })

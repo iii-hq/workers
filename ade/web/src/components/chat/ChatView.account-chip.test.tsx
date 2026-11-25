@@ -8,13 +8,18 @@ import { seedClaudeAccountsForTests } from '@/lib/backend/claude-accounts'
 import { usageFixture } from '@/stories/fixtures/claude-accounts-fixtures'
 import type { Conversation } from '@/types/chat'
 
+const mocks = vi.hoisted(() => ({
+  /** The tab's loaded conversations (a sub-agent's parent is looked up here). */
+  conversations: [] as unknown[],
+  call: vi.fn<(id: string, payload: unknown) => Promise<unknown>>(),
+}))
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ call: async () => null }),
+  getIiiClient: async () => ({ call: mocks.call }),
 }))
 vi.mock('@/lib/conversations-context', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useConversationsCtxOptional: () => ({
-    conversations: [],
+    conversations: mocks.conversations,
     connectionState: 'connected',
     harnessStatus: {
       present: true,
@@ -92,6 +97,8 @@ beforeEach(() => {
     removeEventListener: vi.fn(),
   }))
   seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+  mocks.conversations = []
+  mocks.call.mockReset().mockResolvedValue(null)
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -159,4 +166,91 @@ it('tells the transcript a side chat from a sub-agent', async () => {
   expect(locked()).toBe('sub-agent')
   await open({ ...sent, id: 'side' }, { side: { since: 1, empty: null } })
   expect(locked()).toBe('side-chat')
+})
+
+/* Locked conversations run where the engine runs them (the Android review):
+   the fixture's global is Work; Personal is at its 5-hour limit. */
+
+it('reads a side chat on the account its lock froze, not the global', async () => {
+  await open(
+    {
+      ...sent,
+      id: 'side',
+      sessionMetadata: {
+        side_chat_of: 'root',
+        side_chat_lock: {
+          model: 'claude-code::claude-opus-4-5',
+          account: 'personal',
+        },
+      },
+    },
+    { side: { since: 1, empty: null } },
+  )
+  // The card names the lock's account: Personal's reading is at 100 %.
+  const card = host.querySelector('[data-limit-card]')
+  expect(card?.querySelector('h3')?.textContent).toBe(
+    'Personal reached its 5-hour limit',
+  )
+  expect(card?.textContent).toContain(
+    "This side chat stays on Personal so it keeps the conversation's cache.",
+  )
+  // No chip in a side chat.
+  expect(host.querySelector('[data-account-chip]')).toBeNull()
+})
+
+it("reads a sub-agent on its parent's account", async () => {
+  mocks.conversations = [
+    {
+      ...sent,
+      id: 'parent',
+      messages: [],
+      sessionMetadata: { claude_account: 'personal' },
+    },
+  ]
+  await open({ ...sent, id: 'child', parentId: 'parent' })
+  const chip = host.querySelector<HTMLButtonElement>('[data-account-chip]')
+  expect(chip?.textContent).toBe('Personal')
+  expect(host.querySelector('[data-limit-card] h3')?.textContent).toBe(
+    'Personal reached its 5-hour limit',
+  )
+  await act(async () => chip?.click())
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(
+    document.body.querySelector('[data-account-resolution]')?.textContent,
+  ).toBe("Runs on Personal, its conversation's account.")
+  // The parent is loaded: no status read.
+  expect(mocks.call).not.toHaveBeenCalledWith(
+    'harness::status',
+    expect.anything(),
+  )
+})
+
+it("reads a sub-agent whose parent isn't loaded from the parent turn's status", async () => {
+  mocks.call.mockImplementation(async (id, payload) =>
+    id === 'harness::status' &&
+    (payload as { session_id?: string }).session_id === 'parent'
+      ? { account: { id: 'personal', source: 'project' } }
+      : null,
+  )
+  await open({ ...sent, id: 'child', parentId: 'parent' })
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(mocks.call).toHaveBeenCalledWith('harness::status', {
+    session_id: 'parent',
+    verbose: true,
+  })
+  expect(host.querySelector('[data-account-chip]')?.textContent).toBe(
+    'Personal',
+  )
+})
+
+it('falls back to its own account without the parent or its status', async () => {
+  await open({ ...sent, id: 'child', parentId: 'parent' })
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(host.querySelector('[data-account-chip]')?.textContent).toBe('Work')
 })

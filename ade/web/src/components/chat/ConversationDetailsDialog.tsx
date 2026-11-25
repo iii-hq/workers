@@ -21,6 +21,11 @@ import {
   useClaudeAccounts,
 } from '@/lib/backend/claude-accounts'
 import { type ChatProject, NO_PROJECT } from '@/lib/backend/projects'
+import type { AccountResolution } from '@/lib/claude-accounts-words'
+import {
+  chatAccountResolution,
+  lockedAccountOf,
+} from '@/lib/conversation-account'
 import {
   type ConversationDetailsDraft,
   claudeAccountOf,
@@ -51,7 +56,7 @@ interface ConversationDetailsDialogProps {
     | 'projectId'
     | 'sessionMetadata'
   > &
-    Partial<Pick<Conversation, 'model' | 'parentId' | 'messages'>>
+    Partial<Pick<Conversation, 'model' | 'parentId' | 'messages' | 'id'>>
   onOpenChange: (open: boolean) => void
   /** Write the draft; a rejection keeps the dialog open with the error. */
   onSave: (draft: ConversationDetailsDraft) => Promise<void> | void
@@ -75,6 +80,14 @@ interface ConversationDetailsDialogProps {
    * account chip's); read from the conversation when absent.
    */
   provider?: string | null
+  /**
+   * A side chat's or a sub-agent's account as the chat resolved it (the
+   * chip's and the limit card's); null for a conversation that chooses its
+   * own. Read from the loaded conversations when absent.
+   */
+  lockedResolution?: AccountResolution | null
+  /** The loaded conversations, where a sub-agent's parent is looked for. */
+  conversations?: readonly Conversation[]
 }
 
 const FIELD =
@@ -98,6 +111,8 @@ export function ConversationDetailsDialog({
   initialSection,
   sideChat = false,
   provider,
+  lockedResolution,
+  conversations,
 }: ConversationDetailsDialogProps) {
   const [draft, setDraft] = useState<ConversationDetailsDraft>(() =>
     detailsDraftOf(conversation),
@@ -116,6 +131,20 @@ export function ConversationDetailsDialog({
     accounts.gate === 'full' &&
     (provider !== undefined ? provider : effectiveProvider(conversation)) ===
       CLAUDE_CODE_PROVIDER
+  const locked = lockedAccountOf(conversation, sideChat)
+  const projectList = projects ?? chatProjects.projects
+  const resolution =
+    lockedResolution !== undefined
+      ? lockedResolution
+      : showAccount && locked
+        ? chatAccountResolution({
+            conversation,
+            sideChat,
+            projects: projectList,
+            global: accounts.claude?.global ?? null,
+            conversations,
+          })
+        : null
   const openOnAccount = initialSection === 'account' && showAccount
   const history = descriptionHistory(conversation.sessionMetadata)
 
@@ -378,12 +407,12 @@ export function ConversationDetailsDialog({
                 setDraft((current) => ({ ...current, claudeAccount }))
               }
               project={
-                (projects ?? chatProjects.projects).find(
-                  (project) => project.id === draft.projectId,
-                ) ?? null
+                projectList.find((project) => project.id === draft.projectId) ??
+                null
               }
               data={accounts}
-              readOnly={sideChat || Boolean(conversation.parentId)}
+              readOnly={locked !== null}
+              resolution={resolution}
               triggerRef={accountRef}
             />
           ) : null}
