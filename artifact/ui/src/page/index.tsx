@@ -20,7 +20,6 @@ import {
   PageShell,
   PageSidebar,
   SearchField,
-  Select,
   StatusPanel,
   Toolbar,
 } from '@iii-dev/console-ui'
@@ -30,6 +29,7 @@ import { FileCode2, Files, FileText, Image, Share2, Trash2, X } from 'lucide-rea
 import { useEffect, useMemo, useState } from 'react'
 import { ArtifactPreview } from '../components/ArtifactPreview'
 import { ShareDialog, ShareLinks } from '../components/ShareDialog'
+import { VersionSelect } from '../components/VersionSelect'
 import {
   type ArtifactFormat,
   type ArtifactRecord,
@@ -197,11 +197,6 @@ function ArtifactDetail({
   if (!record) return null
 
   const shown = version ?? record.latest_version
-  const versionOptions = [...record.versions].reverse().map((v) => ({
-    value: String(v.version),
-    label: `v${v.version}${v.version === record.latest_version ? ' (latest)' : ''}`,
-    description: v.note ?? undefined,
-  }))
 
   return (
     <div className="artifact-ui-detail">
@@ -220,13 +215,7 @@ function ArtifactDetail({
         }
       >
         <span className="artifact-ui-detail-title">{record.title}</span>
-        <Select
-          aria-label="Version"
-          appearance="inline"
-          value={String(shown)}
-          options={versionOptions}
-          onChange={(next) => setVersion(Number(next))}
-        />
+        <VersionSelect record={record} value={shown} onChange={setVersion} />
       </Toolbar>
       <ArtifactPreview api={api} id={record.id} version={shown} size="page" />
       <section className="artifact-ui-shares" aria-label="Live links">

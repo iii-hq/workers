@@ -17,6 +17,7 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { Check, Copy, Globe, Laptop, Link2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ArtifactApi, ArtifactRecord, ShareView } from '../lib/api'
+import { versionOptions } from './VersionSelect'
 
 const HOURS = ['1', '6', '24', '72'] as const
 type Hours = (typeof HOURS)[number]
@@ -115,11 +116,7 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
     }
   }
 
-  const versions = [...artifact.versions].reverse().map((v) => ({
-    value: String(v.version),
-    label: `v${v.version}${v.version === artifact.latest_version ? ' (latest)' : ''}`,
-    description: v.note ?? undefined,
-  }))
+  const versions = versionOptions(artifact)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

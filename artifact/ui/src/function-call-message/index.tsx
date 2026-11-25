@@ -20,6 +20,7 @@ import { PanelRight, Share2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { ArtifactPreview } from '../components/ArtifactPreview'
 import { ShareDialog, ShareLinks } from '../components/ShareDialog'
+import { VersionSelect } from '../components/VersionSelect'
 import { type ArtifactApi, type ArtifactRecord, createApi, isRecord, PAGE_ID, recordOf, shareOf } from '../lib/api'
 
 const RENDERED = new Set(['artifact::create', 'artifact::update', 'artifact::get', 'artifact::share'])
@@ -40,18 +41,19 @@ function ArtifactCard({
   version: number
 }) {
   const [sharing, setSharing] = useState(false)
+  const [shown, setShown] = useState(version)
   return (
     <div className="artifact-ui-card">
       <MetaRow
         items={[
           { label: 'artifact', value: record.title, tone: 'accent' },
           { label: 'kind', value: record.kind },
-          { label: 'version', value: `v${version}` },
           { label: 'format', value: record.format },
         ]}
       />
-      <ArtifactPreview api={api} id={record.id} version={version} size="card" />
+      <ArtifactPreview api={api} id={record.id} version={shown} size="card" />
       <div className="artifact-ui-card-actions">
+        <VersionSelect record={record} value={shown} onChange={setShown} />
         <Button variant="primary" size="sm" onClick={() => setSharing(true)}>
           <Share2 />
           Share…
@@ -66,7 +68,7 @@ function ArtifactCard({
       <ShareDialog
         api={api}
         artifact={record}
-        version={version}
+        version={shown}
         open={sharing}
         onOpenChange={setSharing}
       />
