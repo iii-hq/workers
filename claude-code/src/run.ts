@@ -47,7 +47,9 @@ const RunPayloadSchema = z.object({
   session_id: z
     .string()
     .optional()
-    .describe('iii session id; reuse to resume the same Claude Code conversation'),
+    .describe(
+      'iii session id. Choose one to observe its settle before the call, or reuse one to resume that Claude Code conversation. Minted when omitted.',
+    ),
   parent_session_id: z
     .string()
     .optional()
@@ -758,7 +760,7 @@ export function register(
     },
     {
       description:
-        'Start a Claude Code turn and return immediately with {session_id, turn_id}; observe claude::on-agent-event with args { session_id } for progress and turn_end. The settle lands in state scope `claude_turns` (key: session_id): observe state::on-changed filtered on input.scope, input.key and input.new_value.turn_id BEFORE calling, passing your own turn_id, to be woken when it ends.',
+        'Start a Claude Code turn and return immediately with {session_id, turn_id}; observe claude::on-agent-event with args { session_id } for progress. To be woken when it ends: choose a session_id and a turn_id, observe state::on-changed with filters { "input.scope": { "$eq": "claude_turns" }, "input.key": { "$eq": session_id }, "input.new_value.turn_id": { "$eq": turn_id } } BEFORE calling, then pass both ids here. An id you leave out is minted, and that observer never fires. The event\'s new_value is the settle: status, result, error.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
@@ -835,7 +837,7 @@ export function register(
     },
     {
       description:
-        'Delegate one task to Claude Code and return its session id and turn id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so observe state::on-changed with filters on input.scope and input.key BEFORE calling and be woken by it; progress arrives on claude::on-agent-event (observe with args { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
+        'Delegate one task to Claude Code and return its session id and turn id immediately — the sub-agent shape: it never parks the caller. To be woken when it ends: choose a session_id and a turn_id, observe state::on-changed with filters { "input.scope": { "$eq": "claude_turns" }, "input.key": { "$eq": session_id }, "input.new_value.turn_id": { "$eq": turn_id } } BEFORE calling, then pass both ids here with the task. An id you leave out is minted, and that observer never fires. The event\'s new_value is the settle: status, result, error; a worker restart settles it too. Progress arrives on claude::on-agent-event (observe with args { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
       request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },

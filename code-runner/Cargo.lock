@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "code-runner"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "arc-swap",

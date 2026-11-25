@@ -25,6 +25,15 @@ const FORBIDDEN: &[&str] = &[
     "engine::observers::dispose",
     "mcp-client::servers::approve",
     "mcp-client::login::start",
+    "secrets::resolve",
+    "secrets::set",
+    "secrets::compare-and-set",
+    "secrets::access",
+    "secrets::delete",
+    "secrets::import",
+    "secrets::on-config-change",
+    "secrets::on-changed",
+    "secrets::future-operation",
 ];
 
 async fn denied<T: std::fmt::Debug>(
@@ -98,6 +107,10 @@ async fn ordinary_calls_still_reach_the_transport() {
         "provider::openai-codex::stream",
         "provider::openai-codex::authenticate",
         "provider-openai-codex::state-info",
+        "secrets::list",
+        "secrets::get",
+        "secrets::status",
+        "secrets::detect",
     ] {
         for call in [
             node.call(target.into(), Value::Null, 1, None),

@@ -39,10 +39,13 @@ instead of bolting anything onto this one.
   `{session_id, turn_id, started}` immediately; observe `claude::on-raw-event` with
   args `{ session_id }` for raw progress or `claude::on-agent-event` for the
   rendered view;
-  interrupt with `claude::stop`. To be woken when it ends, observe
-  `state::on-changed` filtered on `input.scope == 'claude_turns'`,
-  `input.key == session_id` and `input.new_value.turn_id == turn_id`
-  BEFORE `claude::start { session_id, turn_id }`.
+  interrupt with `claude::stop`. To be woken when it ends, choose a
+  `session_id` and a `turn_id`, observe `state::on-changed` filtered on
+  `input.scope == 'claude_turns'`, `input.key == session_id` and
+  `input.new_value.turn_id == turn_id`, and only then call
+  `claude::start { session_id, turn_id, prompt }` or
+  `claude::task { session_id, turn_id, task }`. An id you leave out is minted,
+  and that observer never fires.
 - Act on the whole backend: turns carry the iii runtime context by default,
   so the agent discovers and calls any registered function through the iii
   CLI (engine::functions::list, `iii call <fn> --help`) with the

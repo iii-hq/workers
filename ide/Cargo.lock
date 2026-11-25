@@ -945,7 +945,7 @@ checksum = "913a7d294ad056474749152107309fdee3ec17d2482d1ab70fdc61a81c64b9a3"
 
 [[package]]
 name = "ide"
-version = "0.13.8"
+version = "0.13.9"
 dependencies = [
  "anyhow",
  "async-trait",

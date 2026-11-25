@@ -28,6 +28,7 @@ worker — by calling a function.
 
 ```bash
 iii call claude::task --json '{
+  "session_id": "<an id you choose>",
   "task": "Read src/auth.ts and list every caller of verifyToken",
   "parent_session_id": "<your own session id>",
   "cwd": "/path/to/repo"
@@ -51,8 +52,14 @@ tell you to do instead of polling.
 - key the child's `session_id`
 - value `{ session_id, parent_session_id, agent, task, status, result, error, updated_at_ms }`
 
-Observe before you delegate: `harness::observe { function_id: "state::on-changed",
+Choose the `session_id`, observe before you delegate, then pass that
+`session_id` in the call. Left out, it is minted and the observer never fires:
+`harness::observe { function_id: "state::on-changed",
 filters: { "input.scope": { "$eq": "agent_tasks" }, "input.key": { "$eq": "<child session_id>" } } }`.
+Set `lifecycle.expires_in_ms`: a child whose worker restarts writes no outcome.
+`claude::task` also settles in `claude_turns`, which a restart does write: see
+its description.
+
 Take the event's field names from `engine::functions::info function_id=state::on-changed`
 (its `response_format`), never from memory.
 

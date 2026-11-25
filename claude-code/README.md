@@ -96,7 +96,7 @@ Long turns: use `claude::start` to return immediately, then observe `claude::on-
 | --- | --- |
 | `claude::run` | Run one turn, wait, return the final result and its `turn_id` |
 | `claude::start` | Fire-and-forget turn; returns `session_id` and `turn_id` at once, progress arrives on `claude::on-agent-event`, the end in `claude_turns` (see [Waiting for a turn to finish](#waiting-for-a-turn-to-finish)) |
-| `claude::task` | Delegate one task as a SUB-AGENT: hand it off with a call or an observer, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and read the outcome from `agent_tasks/<session id>` in state — which is what an orchestrator observes (`state::on-changed`, filtered on `input.scope` and `input.key`) and is woken by |
+| `claude::task` | Delegate one task as a SUB-AGENT: hand it off with a call or an observer, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and be woken by its settle in `claude_turns` (see [Waiting for a turn to finish](#waiting-for-a-turn-to-finish)). The outcome is also written to `agent_tasks/<session id>`, the shape every agent worker shares, but only by the run itself: a worker restart settles `claude_turns` alone |
 | `claude::stop` | Interrupt a live run |
 | `claude::status` | Session state, live flag, usage, cost |
 | `claude::sessions::list` | All sessions this worker has run |
@@ -202,8 +202,10 @@ and be woken by it; no polling.
 }
 ```
 
-Register the observer BEFORE starting the turn, and pass your own `turn_id`
-so a settle of an earlier turn on the same session cannot wake you:
+Choose the `session_id` and the `turn_id` yourself, register the observer
+BEFORE starting the turn, and pass both: an id you leave out is minted, and
+the observer never fires. The `turn_id` keeps a settle of an earlier turn on
+the same session from waking you:
 
 ```ts
 iii.registerFunction('my::on-claude-turn', ({ output: event }) => {
