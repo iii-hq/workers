@@ -54,11 +54,19 @@ pub fn build_body(args: &BodyArgs) -> Value {
     build_chat_body(args)
 }
 
-pub fn build_headers(cfg: &OpenCodeGoConfig) -> Vec<(&'static str, String)> {
+pub fn build_headers(
+    cfg: &OpenCodeGoConfig,
+    session_id: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let session_id = session_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     vec![
         ("authorization", format!("Bearer {}", cfg.credential_value)),
         ("content-type", "application/json".to_string()),
         ("accept", "text/event-stream".to_string()),
+        ("x-opencode-session", session_id),
     ]
 }
 
@@ -120,6 +128,24 @@ mod tests {
     }
 
     #[test]
+    fn headers_include_conversation_session() {
+        let cfg = OpenCodeGoConfig {
+            credential_value: "sk-test".into(),
+            model: "test".into(),
+            max_tokens: 10,
+            api_url: "https://example.test/v1/chat/completions".into(),
+        };
+        let headers = build_headers(&cfg, Some("regression-session-123"));
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| *name == "x-opencode-session"
+                    && value == "regression-session-123"),
+            "missing x-opencode-session header"
+        );
+    }
+
+    #[test]
     fn headers_carry_bearer_auth() {
         let cfg = OpenCodeGoConfig {
             credential_value: "sk-test".into(),
@@ -127,7 +153,7 @@ mod tests {
             max_tokens: 4096,
             api_url: "https://opencode.ai/zen/go/v1/chat/completions".into(),
         };
-        let h = build_headers(&cfg);
+        let h = build_headers(&cfg, None);
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));
         assert!(h.contains(&("content-type", "application/json".to_string())));
     }

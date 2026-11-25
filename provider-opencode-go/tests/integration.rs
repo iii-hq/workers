@@ -68,7 +68,7 @@ const STUB_SSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nco
 const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
 const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"deepseek-v4-flash\",\"object\":\"model\"},{\"id\":\"opencode-go-test-model\",\"object\":\"model\"}]}";
 
-async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
+async fn stub_upstream(messages_response: &'static str, require_session: bool) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -83,6 +83,12 @@ async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
                 let head = String::from_utf8_lossy(&buf[..n]);
                 let response = if head.starts_with("GET /v1/models") {
                     STUB_MODELS
+                } else if require_session
+                    && !head
+                        .to_ascii_lowercase()
+                        .contains("x-opencode-session: regression-session-123\r\n")
+                {
+                    "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"type\":\"MissingSessionID\"}}"
                 } else {
                     messages_response
                 };
@@ -223,7 +229,7 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
 #[tokio::test(flavor = "multi_thread")]
 async fn chat_streams_end_to_end() {
     let engine = engine_or_skip!();
-    let stub = stub_upstream(STUB_SSE).await;
+    let stub = stub_upstream(STUB_SSE, true).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
     // catalog-ownership routing needs the live slice in place
@@ -236,6 +242,7 @@ async fn chat_streams_end_to_end() {
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "deepseek-v4-flash",
+                "session_id": "regression-session-123",
                 "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
             }),
             action: None,
@@ -262,7 +269,7 @@ async fn chat_streams_end_to_end() {
 #[tokio::test(flavor = "multi_thread")]
 async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let engine = engine_or_skip!();
-    let stub = stub_upstream(STUB_401).await;
+    let stub = stub_upstream(STUB_401, false).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
     let consumer = register_worker(&engine.url, test_init_options());
@@ -379,7 +386,7 @@ async fn abort_lands_mid_stream_and_cancels_the_upstream() {
 #[tokio::test(flavor = "multi_thread")]
 async fn refresh_models_reconciles_live_catalog() {
     let engine = engine_or_skip!();
-    let stub = stub_upstream(STUB_SSE).await;
+    let stub = stub_upstream(STUB_SSE, false).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
     refresh_and_wait(&router_iii, &provider_iii, "deepseek-v4-flash").await;
