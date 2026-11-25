@@ -11,7 +11,7 @@ const MAX_STDOUT_BYTES = 4 * Math.ceil((MAX_RESULT_BYTES + TAG_BYTES) / 3);
 // The IDE's pinned Rust SDK redacts env values with `secret` in the key,
 // but records stdout verbatim. Only the one-use pad goes in that field.
 const SECRET_PAD_ENV = 'CLAUDE_REPLY_SECRET_PAD';
-export type ReadMode = 'last' | 'baseline' | 'since';
+type ReadMode = 'last' | 'baseline' | 'since';
 
 // Runs on the *terminal* host. Paths and conversation records never leave it.
 // -I -S excludes user configuration, sitecustomize and PYTHONPATH from startup.
@@ -120,6 +120,8 @@ def message_content(row, role):
         require(isinstance(part, dict) and isinstance(part.get('type'), str))
         if part['type'] == 'text':
             require(isinstance(part.get('text'), str))
+        if part['type'] == 'tool_use':
+            require(isinstance(part.get('id'), str))
         if part['type'] == 'tool_result':
             require(isinstance(part.get('tool_use_id'), str))
             if 'content' in part:
