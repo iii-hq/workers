@@ -246,6 +246,15 @@ impl Service {
             }
             let result = async {
                 let changed = self.ensure_hook(&repo, url, &status.generation).await?;
+                if changed {
+                    // Best effort: a leftover hook only fails its deliveries,
+                    // so pruning it must never fail the watch.
+                    match self.prune_untracked_hooks(&repo, url).await {
+                        Ok(0) => {}
+                        Ok(pruned) => tracing::info!(%repo, pruned, "deleted untracked webhooks on this worker's public URL"),
+                        Err(error) => tracing::warn!(%repo, %error, "could not prune untracked webhooks"),
+                    }
+                }
                 if changed
                     || self.store()?.read()?.watches.values().any(|w| {
                         w.live() && w.spec.repo == repo && w.status == WatchState::Preparing
@@ -363,6 +372,69 @@ impl Service {
             Ok(())
         })?;
         Ok(true)
+    }
+    /// Deletes hooks in `repo` that target this worker's webhook route on the
+    /// current public URL but that this installation does not track.
+    ///
+    /// Only one installation serves `/webhooks/github/:endpoint_id` on the
+    /// listener, so such a hook is a leftover of this worker (lost state or an
+    /// interrupted cleanup) whose deliveries can only fail. OpenTunnel keeps the
+    /// public URL across restarts, so its leftovers keep matching it; with
+    /// cloudflared the URL changes per process and old leftovers cannot be
+    /// told apart from foreign hooks. Returns how many hooks were deleted.
+    pub(super) async fn prune_untracked_hooks(
+        &self,
+        repo: &str,
+        public_url: &str,
+    ) -> Result<usize> {
+        let prefix = format!("{}/webhooks/github/", public_url.trim_end_matches('/'));
+        let data = self.store()?.read()?;
+        // A create in flight has no hook id yet; its hook must not look stray.
+        if data
+            .repos
+            .values()
+            .any(|h| h.hook_id.is_none() && h.create_started)
+        {
+            return Ok(0);
+        }
+        let known_ids: std::collections::BTreeSet<u64> =
+            data.repos.values().filter_map(|h| h.hook_id).collect();
+        let known_urls: std::collections::BTreeSet<&str> = data
+            .repos
+            .values()
+            .flat_map(|h| [h.url.as_deref(), h.pending_url.as_deref()])
+            .flatten()
+            .collect();
+        let base = format!("repos/{repo}/hooks");
+        let mut endpoint = format!("{base}?per_page=100");
+        let mut seen = std::collections::BTreeSet::new();
+        let mut stale = Vec::new();
+        loop {
+            if seen.len() >= 5 || !seen.insert(endpoint.clone()) {
+                return Err(Failure::AmbiguousHook);
+            }
+            let output = self.api_output("GET", &endpoint, None, true).await?;
+            let (hooks, next) = hook_page(&output, &base)?;
+            for hook in hooks.as_array().ok_or(Failure::AmbiguousHook)? {
+                let id = hook["id"].as_u64().ok_or(Failure::AmbiguousHook)?;
+                let Some(url) = hook.pointer("/config/url").and_then(Value::as_str) else {
+                    continue;
+                };
+                if url.starts_with(&prefix) && !known_ids.contains(&id) && !known_urls.contains(url)
+                {
+                    stale.push(id);
+                }
+            }
+            match next {
+                Some(next) => endpoint = next,
+                // Only a complete listing proves which hooks are untracked.
+                None => break,
+            }
+        }
+        for id in &stale {
+            self.api("DELETE", &format!("{base}/{id}"), None).await?;
+        }
+        Ok(stale.len())
     }
     async fn reconcile_create(&self, repo: &str) -> Result<()> {
         let data = self.store()?.read()?;

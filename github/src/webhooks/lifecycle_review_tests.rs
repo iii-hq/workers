@@ -355,6 +355,52 @@ async fn paginated_listing_finds_hook_after_unrelated_first_page_and_cleanup_del
 }
 
 #[tokio::test]
+async fn prune_deletes_only_untracked_hooks_on_this_workers_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    tests::seed(&s);
+    s.ensure_hook("owner/repo", "https://one.example", "one")
+        .await
+        .unwrap();
+    configure_gh(
+        dir.path(),
+        json!({"hook_pages":[
+            ["managed", {"id":7,"config":{"url":"https://one.example/webhooks/github/lost"}}],
+            [
+                {"id":8,"config":{"url":"https://other.example/webhooks/github/lost"}},
+                {"id":9,"config":{"url":"https://one.example/elsewhere"}},
+                {"id":10,"config":{}}
+            ]
+        ]}),
+    );
+    let pruned = s
+        .prune_untracked_hooks("owner/repo", "https://one.example/")
+        .await
+        .unwrap();
+    assert_eq!(pruned, 1);
+    let deletes = gh_calls(dir.path(), "DELETE");
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0]["endpoint"], "repos/owner/repo/hooks/7");
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn prune_skips_listing_while_a_create_is_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    tests::seed(&s);
+    crash_intent(&s);
+    let pruned = s
+        .prune_untracked_hooks("owner/repo", "https://old.example")
+        .await
+        .unwrap();
+    assert_eq!(pruned, 0);
+    // The mock records nothing until gh is first called.
+    assert!(gh_state(dir.path()).get("calls").is_none());
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
 async fn incomplete_unsafe_and_duplicate_hook_listings_never_clear_or_mutate_intent() {
     for fields in [
         json!({"hook_pages":[[],[]],"fail_hook_page":2}),

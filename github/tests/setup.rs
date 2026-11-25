@@ -39,8 +39,9 @@ fn everything_present_is_ready() {
 }
 
 #[test]
-fn missing_quick_tunnel_offers_install_and_blocks_cloudflared() {
+fn missing_quick_tunnel_offers_install_and_blocks_the_tunnel_provider() {
     let checks = evaluate(&Err(TunnelProbe::NotInstalled), &listener_on());
+    assert_eq!(checks[1].id, "tunnel_provider");
     assert_eq!(
         states(&checks),
         [CheckState::Missing, CheckState::Blocked, CheckState::Ok]

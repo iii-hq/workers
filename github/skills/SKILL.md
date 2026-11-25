@@ -40,10 +40,10 @@ in order:
 
 1. `quick_tunnel` — the quick-tunnel worker is installed (fix: `install_worker`,
    `compose::add { worker: "quick-tunnel" }`; ask the user first).
-2. `cloudflared` — quick-tunnel found the cloudflared binary (fix: `open_url`,
-   Cloudflare's install page). Nothing downloads cloudflared; the user installs it.
-   When quick-tunnel uses its OpenTunnel provider this row is `tunnel_provider`,
-   always `ok`: no binary is needed.
+2. `tunnel_provider` — new quick-tunnel installs use OpenTunnel (stable URL, no
+   binary), so this row is always `ok`. When quick-tunnel still runs cloudflared
+   (an existing install) this row is `cloudflared`: quick-tunnel found the binary
+   (fix: `open_url`, Cloudflare's install page). Nothing downloads cloudflared.
 3. `http_listener` — the http worker's restricted webhook listener is on (fix:
    `enable_http_listener`, `github::setup::enable-http-listener`, default port 3112).
 

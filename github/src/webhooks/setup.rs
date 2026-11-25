@@ -185,7 +185,7 @@ pub fn evaluate(
             "quick_tunnel",
             "quick-tunnel worker",
             CheckState::Missing,
-            "PR webhooks need the quick-tunnel worker to publish a temporary public URL.".into(),
+            "PR webhooks need the quick-tunnel worker to publish a public URL (OpenTunnel by default: stable, no binary to install).".into(),
             Some(SetupFix::InstallWorker {
                 worker: QUICK_TUNNEL_WORKER.into(),
                 command: "compose::add { worker: \"quick-tunnel\" }".into(),
@@ -256,19 +256,21 @@ pub fn evaluate(
                 }),
             ),
         },
+        // Without a status the provider is unknown. A fresh quick-tunnel
+        // install defaults to OpenTunnel, so name the provider, not cloudflared.
         Err(TunnelProbe::NotInstalled) => check(
-            "cloudflared",
-            "cloudflared binary",
+            "tunnel_provider",
+            "tunnel provider",
             CheckState::Blocked,
-            "Install quick-tunnel first: it is the worker that runs cloudflared.".into(),
+            "Install quick-tunnel first: it runs the tunnel provider (OpenTunnel by default, no binary needed).".into(),
             None,
         ),
         // quick-tunnel exists but did not answer: unverifiable, never a blocker.
         Err(TunnelProbe::NotResponding(_) | TunnelProbe::Unconfirmed) => check(
-            "cloudflared",
-            "cloudflared binary",
+            "tunnel_provider",
+            "tunnel provider",
             CheckState::Unknown,
-            "quick-tunnel did not answer, so cloudflared could not be checked.".into(),
+            "quick-tunnel did not answer, so its tunnel provider could not be checked.".into(),
             None,
         ),
     };
