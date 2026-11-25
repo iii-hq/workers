@@ -66,6 +66,9 @@ interface AgentList {
 }
 
 const LIST_TIMEOUT_MS = 20_000;
+// Describe prepares the session in its folder, installing the iii plugin there
+// when it is missing (a marketplace clone): longer than a listing.
+const DESCRIBE_TIMEOUT_MS = 180_000;
 const ACTION_TIMEOUT_MS = 30_000;
 /** Above what claude::agents::stop may take: its listing plus `claude stop`. */
 const HOST_STOP_TIMEOUT_MS = 50_000;
@@ -241,7 +244,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         const spec = await host.iii.call(
           'claude::terminal::describe',
           { session: row.id },
-          { timeoutMs: LIST_TIMEOUT_MS },
+          { timeoutMs: DESCRIBE_TIMEOUT_MS },
         );
         const ok =
           !spec.copy ||

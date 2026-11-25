@@ -23,16 +23,42 @@
 .agent-terminal-viewport {
   flex: 1;
   min-height: 0;
-  padding: 8px 4px 8px 12px;
 }
 
+/* The inset is the terminal's own padding, not the viewport's: the fit addon
+   sizes the terminal from the viewport's computed size and subtracts only the
+   terminal element's padding, so a viewport padding (counted as room under
+   border-box sizing) would give it a row more than fits, drawn under the
+   strip. */
 .agent-terminal-viewport .xterm {
+  box-sizing: border-box;
   height: 100%;
+  padding: 8px 4px 8px 12px;
 }
 
 /* One line in the 28px strip, whatever the pane width: the status text and
    the plan name give way with an ellipsis before any control is pushed out. */
 .agent-terminal-strip > :first-child {
+  flex: 1 1 0;
+  min-width: 12ch;
+}
+
+/* The pane's folder: the console's DirectoryPicker trigger, first in the
+   strip when the page has one. It never grows and shrinks before the
+   controls, so a long path never pushes the font stepper out of a narrow
+   pane; the status text after it takes the grow the first child had. */
+.agent-terminal-folder {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.agent-terminal-strip > .agent-terminal-folder {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+}
+
+.agent-terminal-strip > .agent-terminal-folder + * {
   flex: 1 1 0;
   min-width: 12ch;
 }

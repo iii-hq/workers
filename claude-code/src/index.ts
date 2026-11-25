@@ -31,7 +31,7 @@ import { registerActivity } from './terminal/activity.js';
 import { registerAuth } from './terminal/auth.js';
 import { registerTerminal } from './terminal/terminal.js';
 import { registerUi } from './terminal/ui.js';
-import { type Prepared, prepareWorkspace } from './terminal/workspace.js';
+import { type HostPrepared, inventoryHost, prepareHost } from './terminal/workspace.js';
 
 const { values } = parseArgs({
   options: {
@@ -72,18 +72,19 @@ try {
 // to it (or an empty value) re-runs the PATH lookup.
 const holder: ConfigHolder = { current: bootConfig };
 
-// What a terminal session runs. The prepare step talks to the `ide` worker
-// (install the CLI, equip the workspace, write the hooks) and can take minutes
-// on a cold host, so it is chained off the config reload rather than awaited:
-// `claude::*` must register whether or not there is a terminal host to prepare.
-let prepared: Prepared = {
-  workspace: bootConfig.terminal.workspace_dir,
+// The terminal host: the CLI (installed when missing), the `iii` CLI, the
+// user. It talks to the `ide` worker and can take minutes on a cold host, so
+// it is chained off the config reload rather than awaited: `claude::*` must
+// register whether or not there is a terminal host to prepare. Everything a
+// SESSION depends on (its folder, the plugin there, the http address,
+// default-mcp) is prepared when the session starts, by
+// claude::terminal::describe.
+let prepared: HostPrepared = {
+  home: bootConfig.terminal.workspace_dir,
   executable: '',
-  args: bootConfig.terminal.args,
   env: {},
   detail: 'the terminal host has not been prepared yet',
   bridge: '',
-  plugin: '',
 };
 let preparing: Promise<void> = Promise.resolve();
 // A queued reconcile must not let a slower, superseded preparation overwrite
@@ -95,11 +96,11 @@ const reconcileTerminal = () => {
   const config = holder.current.terminal;
   preparing = preparing
     .then(async () => {
-      const candidate = await prepareWorkspace(iii, config);
+      const candidate = await prepareHost(iii, config);
       if (generation !== preparationGeneration) return;
       prepared = candidate;
       if (prepared.detail) console.warn(`claude-code terminal: ${prepared.detail}`);
-      else console.log(`claude-code terminal: ${prepared.executable} in ${prepared.workspace}`);
+      else console.log(`claude-code terminal: ${prepared.executable} ready`);
     })
     .catch((err) => {
       if (generation !== preparationGeneration) return;
@@ -151,11 +152,16 @@ void settleStaleTurns(iii, ranSinceStart);
 const tracker = registerActivity(iii, emit);
 const agents = registerAgents(
   iii,
-  () => prepared,
+  () => inventoryHost(prepared),
   () => holder.current.external_sessions,
   tracker,
 );
-registerTerminal(iii, () => prepared, agents.resolveOpen);
+registerTerminal(
+  iii,
+  () => prepared,
+  () => holder.current.terminal,
+  agents.resolveOpen,
+);
 registerAuth(iii, () => prepared);
 registerUi(iii);
 

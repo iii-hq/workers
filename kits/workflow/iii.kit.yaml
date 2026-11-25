@@ -1,6 +1,6 @@
 iii: v1
 name: iii/workflow
-version: 0.1.12
+version: 0.1.13
 iii_engine_version: ">=0.26.0"
 description: "Sizes a goal first: a small one is done directly, with no ticket and no run, one or two tickets as one workflow run each, and a broad one as multi-agent work on the kanban board, one workflow run per wave: the ticket strategy of iii/deepwork (a run ticket, subtask cards, bounded rounds, independent verification) with every phase as a workflow node, each one with its own profile and model, retried by the run's check loop. Code goals get a run branch, one run per ticket that runs alone, one worktree per ticket of a parallel wave and a kept branch. Installs beside iii/deepwork."
 license: Apache-2.0

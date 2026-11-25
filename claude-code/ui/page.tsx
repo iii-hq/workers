@@ -12,6 +12,9 @@ export default createAgentTerminalPage({
   worker: 'claude',
   title: 'claude',
   description: 'Claude Code on this engine',
+  // Its own folder pill: the session starts in the chat's folder, and a pick
+  // restarts Claude there (claude::terminal::describe takes { cwd }).
+  folderPicker: true,
   sidebar: {
     label: 'Sessions',
     storageKey: 'claude:sessions',

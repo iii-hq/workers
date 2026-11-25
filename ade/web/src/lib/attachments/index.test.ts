@@ -6,6 +6,7 @@ import {
   expandAttachments,
   hasExpandableAttachments,
 } from './index'
+import { failureBlock } from './shared'
 
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
@@ -207,6 +208,27 @@ describe('expandAttachments', () => {
     expect(result.blocks).toHaveLength(1)
     expect(result.blocks[0]).toContain('error=')
     expect(result.failures[0].reason).toContain('application/zip')
+  })
+
+  it('puts the stored id on the stubs it writes itself', async () => {
+    const { blocks, failures } = await expandAttachments(
+      [
+        {
+          ...attachment('shot.png', 'image/png'),
+          attachmentId: 'a_0',
+        },
+        {
+          ...attachment('archive.zip', 'application/zip'),
+          attachmentId: 'a_1',
+        },
+      ],
+      { vision: false },
+    )
+
+    expect(blocks).toEqual([
+      failureBlock('shot.png', failures[0].reason, 'a_0'),
+      failureBlock('archive.zip', failures[1].reason, 'a_1'),
+    ])
   })
 
   it('does no work when nothing carries its bytes', async () => {

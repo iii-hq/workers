@@ -551,6 +551,37 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_accepts_read_attachment() {
+        let calls: Vec<Value> = (0..14)
+            .map(|i| {
+                json!({ "function": "session::read-attachment",
+                        "payload": { "attachment_id": format!("a_{i}") } })
+            })
+            .collect();
+        let warnings = validate(&parse(json!({ "calls": calls }))).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("14 calls at once"), "{warnings:?}");
+        // The refusal of another session call names the read.
+        let req = parse(json!({ "calls": [{ "function": "session::put-attachment" }] }));
+        let err = validate(&req).unwrap_err();
+        assert!(
+            err.contains("get-attachment/list-attachments/read-attachment)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_window_the_guidance_names_fits_an_entry() {
+        // Three bytes a character, beside more metadata than a read carries.
+        let cut = |chars: usize| {
+            let read = json!({ "attachment": "m".repeat(2_000), "text": "\u{8a9e}".repeat(chars) });
+            capped(read, DEFAULT_MAX_ENTRY_BYTES).2
+        };
+        assert!(!cut(4_000));
+        assert!(cut(20_000));
+    }
+
+    #[test]
     fn batch_args_strip_remote_scope_and_preserve_local_stamping() {
         for trusted in [Some(json!({ "root": "/work/session-7" })), None] {
             for function in ["laptop::coder::read-file", "a::b::shell::exec"] {

@@ -1,7 +1,7 @@
 //! What an attached file is and how an agent reads it: the kind
 //! (`session::read-attachment`, the `@attachment` mention), the character
-//! window of a text file, the human size, and the recipes (`how_to_read`)
-//! for everything that is not text.
+//! window of a text, the human size, and the recipes (`how_to_read`) for
+//! everything that is not read as text.
 //!
 //! The kind follows the ADE's `classifyAttachment`
 //! (`ade/web/src/lib/attachments/`): a PDF, then an office document, then
@@ -28,10 +28,11 @@ pub enum AttachmentKind {
     /// A PDF, read through `pdf::to-markdown`.
     Pdf,
     /// An office document (Word, Excel, PowerPoint, OpenDocument, RTF, EPUB,
-    /// CSV), read through `document::to-markdown`.
+    /// CSV), converted by `document::to-markdown` and returned in character
+    /// windows.
     Document,
-    /// Anything else: saved into the working folder and opened with the
-    /// agent's own tools.
+    /// Anything else: saved in a temporary folder and opened with the agent's
+    /// own tools.
     Binary,
 }
 
@@ -121,8 +122,10 @@ pub const PREVIEW_CHARS: u64 = 8_000;
 /// offered.
 pub const FP_PIPE: &str = "fp::pipe";
 pub const PDF_TO_MARKDOWN: &str = "pdf::to-markdown";
-pub const DOCUMENT_TO_MARKDOWN: &str = "document::to-markdown";
 pub const SHELL_EXEC: &str = "shell::exec";
+
+/// What turns an office document into text for `session::read-attachment`.
+pub const DOCUMENT_TO_MARKDOWN: &str = "document::to-markdown";
 
 /// The lowercase extension after the last dot; empty for none, a leading
 /// dot only (`.env`) or a trailing dot (the ADE's `extensionOf`).
@@ -254,7 +257,6 @@ pub fn text_window(text: &str, offset: Option<u64>, max_chars: Option<u64>) -> T
 pub struct RecipeFunctions {
     pub fp_pipe: bool,
     pub pdf_to_markdown: bool,
-    pub document_to_markdown: bool,
     pub shell_exec: bool,
 }
 
@@ -262,7 +264,6 @@ impl RecipeFunctions {
     pub const ALL: RecipeFunctions = RecipeFunctions {
         fp_pipe: true,
         pdf_to_markdown: true,
-        document_to_markdown: true,
         shell_exec: true,
     };
 }
@@ -271,9 +272,8 @@ fn quoted(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-/// The name a saved copy gets in the working folder: the attachment's name
-/// with path separators and control characters replaced, never empty, `.`
-/// or `..`.
+/// The name a saved copy gets: the attachment's name with path separators and
+/// control characters replaced, never empty, `.` or `..`.
 pub fn saved_file_name(name: &str) -> String {
     let cleaned: String = name
         .trim()
@@ -300,68 +300,101 @@ fn fetch_steps(meta: &AttachmentMeta) -> String {
     )
 }
 
-/// `fp::pipe` that converts the file with `function` (`pdf::to-markdown` or
-/// `document::to-markdown`) and leaves the markdown as the receipt's
-/// preview.
-pub fn markdown_call(meta: &AttachmentMeta, function: &str) -> String {
-    let payload = if function == DOCUMENT_TO_MARKDOWN {
-        format!(r#"{{"file_name":{},"max_chars":0}}"#, quoted(&meta.name))
-    } else {
-        r#"{"max_chars":0}"#.to_string()
-    };
+/// `fp::pipe` that converts a PDF with `pdf::to-markdown` and leaves the
+/// markdown as the receipt's preview.
+pub fn markdown_call(meta: &AttachmentMeta) -> String {
     format!(
-        r#"fp::pipe {{"through":[{},{{"function":"{function}","payload":{payload},"into":"/bytes_base64"}},{{"function":"fp::get","payload":{{"path":"/body/text"}}}}],"preview_chars":{PREVIEW_CHARS}}}"#,
+        r#"fp::pipe {{"through":[{},{{"function":"{PDF_TO_MARKDOWN}","payload":{{"max_chars":0}},"into":"/bytes_base64"}},{{"function":"fp::get","payload":{{"path":"/body/text"}}}}],"preview_chars":{PREVIEW_CHARS}}}"#,
         fetch_steps(meta),
     )
 }
 
-/// `fp::pipe` that writes the bytes to `saved_file_name(name)` in the
-/// working folder of the session that runs it.
+/// Saves stdin (base64) as `$0` in a fresh temporary folder and prints the
+/// copy's path. A failed `shell::exec` is not a failed pipe step, so errors go
+/// to stdout too.
+const SAVE_SCRIPT: &str =
+    r#"exec 2>&1; d=$(mktemp -d) && base64 -d > "$d/$0" && printf "%s\n" "$d/$0""#;
+
+/// `fp::pipe` that writes the bytes to `saved_file_name(name)` in a fresh
+/// temporary folder and leaves the copy's path as the receipt's preview.
 pub fn save_call(meta: &AttachmentMeta) -> String {
     format!(
-        r#"fp::pipe {{"through":[{},{{"function":"shell::exec","payload":{{"command":"sh","args":["-c","base64 -d > \"$0\"",{}]}},"into":"/stdin"}}]}}"#,
+        r#"fp::pipe {{"through":[{},{{"function":"shell::exec","payload":{{"command":"sh","args":["-c",{},{}]}},"into":"/stdin"}},{{"function":"fp::get","payload":{{"path":"/stdout"}}}}]}}"#,
         fetch_steps(meta),
+        quoted(SAVE_SCRIPT),
         quoted(&saved_file_name(&meta.name)),
     )
 }
 
-fn markdown_sentence(
-    meta: &AttachmentMeta,
-    function: &str,
-    worker: &str,
-    f: &RecipeFunctions,
-) -> String {
-    let available = if function == PDF_TO_MARKDOWN {
-        f.pdf_to_markdown
-    } else {
-        f.document_to_markdown
-    };
-    if !available {
+fn markdown_sentence(meta: &AttachmentMeta, f: &RecipeFunctions) -> String {
+    if !f.pdf_to_markdown {
         return format!(
-            "Converting it needs {function}, which this engine does not have: install the {worker} worker."
+            "Converting it needs {PDF_TO_MARKDOWN}, which this engine does not have: install the pdf worker."
         );
     }
     format!(
         "Read it as markdown with {}: the receipt's value_preview holds the first {PREVIEW_CHARS} characters; for the next ones add {{\"function\":\"fp::drop\",\"payload\":{{\"n\":{PREVIEW_CHARS}}}}} as the last step (n {} after that, and so on).",
-        markdown_call(meta, function),
+        markdown_call(meta),
         PREVIEW_CHARS * 2,
     )
 }
 
-fn save_sentence(meta: &AttachmentMeta, lead: &str, f: &RecipeFunctions) -> String {
-    if !f.shell_exec {
-        return "Saving it into your working folder needs shell::exec, which this engine does not have: install the ide worker.".to_string();
+pub const SAVE_LEAD: &str = "To open it with your own tools, save a copy in a temporary folder outside your working folder:";
+
+/// `lead` and the call that saves a copy, or the worker to install first.
+pub fn save_sentence(meta: &AttachmentMeta, lead: &str, f: &RecipeFunctions) -> String {
+    for (present, function, worker) in [
+        (f.fp_pipe, FP_PIPE, "fp"),
+        (f.shell_exec, SHELL_EXEC, "ide"),
+    ] {
+        if !present {
+            return format!(
+                "Saving a copy needs {function}, which this engine does not have: install the {worker} worker."
+            );
+        }
     }
     format!(
-        "{lead} {} writes {} there.",
+        "{lead} {} prints the copy's path (or its error) as value_preview; open that path with tools run through shell::exec.",
         save_call(meta),
-        quoted(&saved_file_name(&meta.name)),
     )
 }
 
-/// The paragraph `session::read-attachment` answers for a file that is not
-/// text: the exact calls that read or save it on this engine, or which
-/// worker to install when a call's function is missing. `None` for text.
+/// What a converted office document's text does not say: the embedded images
+/// it leaves out, or that there is no text at all.
+pub fn document_note(meta: &AttachmentMeta, text: &str, images: u64) -> Option<String> {
+    let name = quoted(&meta.name);
+    match (text.trim().is_empty(), images) {
+        (false, 0) => None,
+        (false, 1) => Some("1 embedded image is not in this text.".to_string()),
+        (false, n) => Some(format!("{n} embedded images are not in this text.")),
+        (true, 0) => Some(format!("{name} holds no text.")),
+        (true, 1) => Some(format!("{name} holds no text, only 1 embedded image.")),
+        (true, n) => Some(format!("{name} holds no text, only {n} embedded images.")),
+    }
+}
+
+/// The paragraph for an office document that was not converted: the
+/// converter's reason (`None`: the engine has no converter, so the call that
+/// installs it) and the call that saves a copy.
+pub fn unconverted(meta: &AttachmentMeta, reason: Option<&str>, f: &RecipeFunctions) -> String {
+    let name = quoted(&meta.name);
+    let why = match reason {
+        Some(reason) => format!(
+            "{DOCUMENT_TO_MARKDOWN} could not convert it: {}.",
+            reason.trim_end_matches('.')
+        ),
+        None => format!(
+            r#"Reading it needs {DOCUMENT_TO_MARKDOWN}, which this engine does not have: install the document worker with compose::add {{"worker":"document"}}, then make this same call again."#
+        ),
+    };
+    let save = save_sentence(meta, SAVE_LEAD, f);
+    format!("{name} is an office document. {why} {save}")
+}
+
+/// The paragraph `session::read-attachment` answers for a file it does not
+/// read as text: the exact calls that read or save it on this engine, or which
+/// worker to install when a call's function is missing. `None` for text and
+/// office documents (see [`unconverted`]).
 pub fn how_to_read(
     kind: AttachmentKind,
     meta: &AttachmentMeta,
@@ -369,9 +402,8 @@ pub fn how_to_read(
 ) -> Option<String> {
     let name = quoted(&meta.name);
     let opening = match kind {
-        AttachmentKind::Text => return None,
+        AttachmentKind::Text | AttachmentKind::Document => return None,
         AttachmentKind::Pdf => format!("{name} is a PDF."),
-        AttachmentKind::Document => format!("{name} is an office document."),
         AttachmentKind::Image => format!(
             "{name} is an image: when you read images, it is in the user message as an image."
         ),
@@ -385,36 +417,20 @@ pub fn how_to_read(
     let mut sentences = vec![opening];
     match kind {
         AttachmentKind::Pdf => {
-            sentences.push(markdown_sentence(meta, PDF_TO_MARKDOWN, "pdf", f));
-            sentences.push(save_sentence(
-                meta,
-                "To open it with your own tools, save it into your working folder:",
-                f,
-            ));
-        }
-        AttachmentKind::Document => {
-            sentences.push(markdown_sentence(meta, DOCUMENT_TO_MARKDOWN, "document", f));
-            sentences.push(save_sentence(
-                meta,
-                "To open it with your own tools, save it into your working folder:",
-                f,
-            ));
+            sentences.push(markdown_sentence(meta, f));
+            sentences.push(save_sentence(meta, SAVE_LEAD, f));
         }
         AttachmentKind::Image => {
-            sentences.push(save_sentence(
-                meta,
-                "To open it with your own tools, save it into your working folder:",
-                f,
-            ));
+            sentences.push(save_sentence(meta, SAVE_LEAD, f));
         }
         AttachmentKind::Binary => {
             sentences.push(save_sentence(
                 meta,
-                "Save it into your working folder and open it with your own tools (unzip an archive, run a script over data):",
+                "Save a copy in a temporary folder outside your working folder and open it with your own tools (unzip an archive, run a script over data):",
                 f,
             ));
         }
-        AttachmentKind::Text => unreachable!("text returned above"),
+        AttachmentKind::Text | AttachmentKind::Document => unreachable!("returned above"),
     }
     Some(sentences.join(" "))
 }
@@ -530,18 +546,18 @@ mod tests {
         assert_eq!(saved_file_name("a\nb"), "a_b");
         assert_eq!(saved_file_name(" .. "), "attachment");
         assert_eq!(saved_file_name(""), "attachment");
+        assert!(save_call(&meta("../../etc/passwd", "")).contains(r#",".._.._etc_passwd"]"#));
     }
 
     #[test]
-    fn text_has_no_recipe() {
-        assert_eq!(
-            how_to_read(
-                AttachmentKind::Text,
-                &meta("n.md", "text/markdown"),
-                &RecipeFunctions::ALL
-            ),
-            None
-        );
+    fn text_and_documents_have_no_recipe() {
+        for (kind, name, mime) in [
+            (AttachmentKind::Text, "n.md", "text/markdown"),
+            (AttachmentKind::Document, "b.docx", ""),
+        ] {
+            let recipe = how_to_read(kind, &meta(name, mime), &RecipeFunctions::ALL);
+            assert_eq!(recipe, None);
+        }
     }
 
     #[test]
@@ -558,43 +574,112 @@ mod tests {
         ));
         assert!(text.contains(r#"{"function":"fp::drop","payload":{"n":8000}}"#));
         assert!(text.contains(
-            r#"{"function":"shell::exec","payload":{"command":"sh","args":["-c","base64 -d > \"$0\"","report.pdf"]},"into":"/stdin"}]}"#
+            r#"To open it with your own tools, save a copy in a temporary folder outside your working folder: fp::pipe {"through":[{"function":"session::get-attachment","payload":{"session_id":"s_1","attachment_id":"a_1"}},{"function":"fp::get","payload":{"path":"/data"}},{"function":"shell::exec","payload":{"command":"sh","args":["-c","exec 2>&1; d=$(mktemp -d) && base64 -d > \"$d/$0\" && printf \"%s\\n\" \"$d/$0\"","report.pdf"]},"into":"/stdin"},{"function":"fp::get","payload":{"path":"/stdout"}}]}"#
         ));
-        assert!(text.ends_with("writes \"report.pdf\" there."));
+        assert!(text.ends_with(
+            " prints the copy's path (or its error) as value_preview; open that path with tools run through shell::exec."
+        ));
     }
 
     #[test]
     fn every_pipe_in_a_recipe_is_valid_json() {
         for (kind, name, mime) in [
             (AttachmentKind::Pdf, "r \"q\".pdf", "application/pdf"),
-            (
-                AttachmentKind::Document,
-                "b.docx",
-                "application/octet-stream",
-            ),
             (AttachmentKind::Binary, "a b.zip", "application/zip"),
         ] {
             let m = meta(name, mime);
-            let calls = [
-                save_call(&m),
-                markdown_call(&m, PDF_TO_MARKDOWN),
-                markdown_call(&m, DOCUMENT_TO_MARKDOWN),
-            ];
-            for call in calls {
+            for call in [save_call(&m), markdown_call(&m)] {
                 let json = call.strip_prefix("fp::pipe ").expect("fp::pipe call");
                 let parsed: serde_json::Value = serde_json::from_str(json).expect("valid JSON");
                 assert_eq!(parsed["through"][0]["payload"]["attachment_id"], "a_1");
             }
             assert!(how_to_read(kind, &m, &RecipeFunctions::ALL).is_some());
         }
-        let doc = markdown_call(&meta("b.docx", ""), DOCUMENT_TO_MARKDOWN);
-        let parsed: serde_json::Value =
-            serde_json::from_str(doc.strip_prefix("fp::pipe ").unwrap()).unwrap();
-        assert_eq!(parsed["through"][2]["payload"]["file_name"], "b.docx");
+    }
+
+    /// The `shell::exec` step of `save_call`, run in `cwd` with `bytes` piped
+    /// in: the whole call and the step's stdout.
+    #[cfg(unix)]
+    fn run_save(
+        name: &str,
+        cwd: &std::path::Path,
+        bytes: &[u8],
+        path_var: &str,
+    ) -> (serde_json::Value, String) {
+        use base64::Engine as _;
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let call = save_call(&meta(name, ""));
+        let call: serde_json::Value =
+            serde_json::from_str(call.strip_prefix("fp::pipe ").unwrap()).unwrap();
+        let exec = call["through"][2]["payload"].clone();
+        assert_eq!(exec["command"], "sh");
+        let args = exec["args"].as_array().unwrap();
+        let mut sh = Command::new("/bin/sh")
+            .args(args.iter().map(|arg| arg.as_str().unwrap()))
+            .current_dir(cwd)
+            .env("PATH", path_var)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        // A script that stopped before reading closes the pipe.
+        let _ = sh.stdin.take().unwrap().write_all(data.as_bytes());
+        let out = sh.wait_with_output().unwrap();
+        (call, String::from_utf8(out.stdout).unwrap())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_save_call_leaves_the_folder_alone_and_prints_the_copys_path() {
+        let cwd = tempfile::tempdir().unwrap();
+        let name = "POP \"1:B\" $HOME `x`.docx";
+        std::fs::write(cwd.path().join(name), "the person edited this").unwrap();
+        let bytes = b"PK\x03\x04\x00\xff bytes";
+        let path_var = std::env::var("PATH").unwrap();
+
+        let (call, stdout) = run_save(name, cwd.path(), bytes, &path_var);
+
+        // The folder: one file, unchanged.
+        let held: Vec<_> = std::fs::read_dir(cwd.path()).unwrap().collect();
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(
+            std::fs::read(cwd.path().join(name)).unwrap(),
+            b"the person edited this"
+        );
+        // The copy: the same bytes under the same name, at the printed path.
+        let copy = std::path::Path::new(stdout.strip_suffix('\n').expect("one printed line"));
+        assert!(copy.is_absolute(), "{stdout}");
+        assert!(
+            !copy.starts_with(cwd.path().canonicalize().unwrap()),
+            "{stdout}"
+        );
+        assert_eq!(copy.file_name().unwrap(), name);
+        assert_eq!(std::fs::read(copy).unwrap(), bytes);
+        // The receipt's value is that path: the pipe ends on stdout.
+        assert_eq!(
+            call["through"][3],
+            serde_json::json!({ "function": "fp::get", "payload": { "path": "/stdout" } })
+        );
+        assert_eq!(call["through"].as_array().unwrap().len(), 4);
+        // Never recursive: a folder that was not fresh is not empty and stays.
+        std::fs::remove_file(copy).unwrap();
+        std::fs::remove_dir(copy.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_save_prints_its_error() {
+        let cwd = tempfile::tempdir().unwrap();
+        let (_, stdout) = run_save("a.docx", cwd.path(), b"PK", "/nonexistent");
+        assert!(stdout.contains("mktemp"), "{stdout}");
+        assert_eq!(stdout.lines().count(), 1, "{stdout}");
     }
 
     #[test]
-    fn images_and_binaries_are_saved_into_the_working_folder() {
+    fn images_and_binaries_are_saved_outside_the_working_folder() {
         let image = how_to_read(
             AttachmentKind::Image,
             &meta("p.png", "image/png"),
@@ -602,7 +687,7 @@ mod tests {
         )
         .unwrap();
         assert!(image.contains("it is in the user message as an image"));
-        assert!(image.contains("save it into your working folder"));
+        assert!(image.contains("save a copy in a temporary folder outside your working folder: "));
         let zip = how_to_read(
             AttachmentKind::Binary,
             &meta("bundle.zip", "application/zip"),
@@ -610,7 +695,7 @@ mod tests {
         )
         .unwrap();
         assert!(zip.starts_with(
-            "\"bundle.zip\" is not text (application/zip). Save it into your working folder"
+            "\"bundle.zip\" is not text (application/zip). Save a copy in a temporary folder outside your working folder and open it with your own tools (unzip an archive, run a script over data): fp::pipe "
         ));
         assert!(!zip.contains("to-markdown"));
     }
@@ -620,7 +705,6 @@ mod tests {
         let none = RecipeFunctions {
             fp_pipe: true,
             pdf_to_markdown: false,
-            document_to_markdown: false,
             shell_exec: false,
         };
         let pdf = how_to_read(
@@ -635,8 +719,6 @@ mod tests {
         assert!(pdf.contains(
             "needs shell::exec, which this engine does not have: install the ide worker."
         ));
-        let doc = how_to_read(AttachmentKind::Document, &meta("b.docx", ""), &none).unwrap();
-        assert!(doc.contains("install the document worker"));
         let no_fp = RecipeFunctions {
             fp_pipe: false,
             ..RecipeFunctions::ALL

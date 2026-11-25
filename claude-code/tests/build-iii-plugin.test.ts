@@ -10,7 +10,6 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   generate,
-  PLUGIN_FILES,
   PLUGIN_REPO,
   resolveSource,
   SHARED_MODULES,
@@ -19,7 +18,7 @@ import {
 /** A checkout of the plugin repo, as far as the worker reads it. */
 async function fixture(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'iii-plugin-source-'));
-  for (const path of PLUGIN_FILES) {
+  for (const path of ['.claude-plugin/plugin.json', '.mcp.json', 'hooks/hooks.json']) {
     await mkdir(dirname(join(dir, 'plugins/iii', path)), { recursive: true });
     await writeFile(join(dir, 'plugins/iii', path), `content of ${path}`);
   }
@@ -82,15 +81,18 @@ describe('the plugin source', () => {
 });
 
 describe('generate', () => {
-  it('embeds every plugin file and the source it came from', async () => {
+  it('records the source it came from, and embeds none of the plugin files', async () => {
+    // Claude Code installs the published plugin itself (`claude plugin
+    // install iii@iii`): the worker carries no copy of it.
     const dir = await fixture();
     const root = await out();
     await generate({ dir, commit: 'abc123' }, root);
-    const assets = await readFile(join(root, 'src/iii-plugin/assets.generated.ts'), 'utf8');
-    for (const path of PLUGIN_FILES) expect(assets).toContain(`content of ${path}`);
-    expect(assets).toContain(
+    const source = await readFile(join(root, 'src/iii-plugin/source.generated.ts'), 'utf8');
+    expect(source).toContain(
       `export const PLUGIN_SOURCE = ${JSON.stringify({ repo: PLUGIN_REPO, commit: 'abc123' })};`,
     );
+    expect(source).not.toContain('content of');
+    await expect(readFile(join(root, 'src/iii-plugin/assets.generated.ts'))).rejects.toThrow();
   });
 
   it('vendors the shared modules into src/iii-plugin/shared, marked as generated', async () => {
@@ -141,11 +143,11 @@ describe('generate', () => {
     );
   });
 
-  it('refuses a checkout without the plugin, naming the missing file', async () => {
+  it('takes a checkout even if the plugin folder changes shape: it reads only src/', async () => {
     const dir = await fixture();
     await rm(join(dir, 'plugins/iii/hooks/hooks.json'));
-    await expect(generate({ dir, commit: 'abc123' }, await out())).rejects.toThrow(
-      /plugins\/iii\/hooks\/hooks.json/,
-    );
+    await expect(generate({ dir, commit: 'abc123' }, await out())).resolves.toMatchObject({
+      commit: 'abc123',
+    });
   });
 });

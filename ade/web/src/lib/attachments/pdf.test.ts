@@ -5,9 +5,11 @@ import {
   CLASSIFY_FUNCTION_ID,
   expandPdfAttachments,
   isPdfAttachment,
+  MAX_PDF_BYTES,
   MAX_PDFS_PER_SEND,
   TO_MARKDOWN_FUNCTION_ID,
 } from './pdf'
+import { failureBlock } from './shared'
 
 function pdf(name = 'report.pdf', bytes = 'hello'): Attachment {
   return {
@@ -213,6 +215,20 @@ describe('expandPdfAttachments', () => {
     expect(blocks).toHaveLength(MAX_PDFS_PER_SEND + 2)
     expect(failures).toHaveLength(2)
     expect(failures[0].reason).toContain('per message')
+  })
+
+  it('puts the stored id on the stub of every PDF it did not read', async () => {
+    const [fn] = call({ [CLASSIFY_FUNCTION_ID]: new Error('boom') })
+    const many = Array.from({ length: MAX_PDFS_PER_SEND + 1 }, (_, i) => ({
+      ...pdf(`doc-${i}.pdf`),
+      attachmentId: `a_${i}`,
+    }))
+    many[0].size = MAX_PDF_BYTES + 1
+    const { blocks, failures } = await expandPdfAttachments(many, fn)
+
+    expect(blocks).toEqual(
+      many.map((p, i) => failureBlock(p.name, failures[i].reason, `a_${i}`)),
+    )
   })
 
   /**

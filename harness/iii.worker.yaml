@@ -26,3 +26,4 @@ dependencies:
   ide: "latest"
   ade: "latest"
   fp: "latest"
+  document: "latest"
