@@ -58,7 +58,6 @@ import {
   saveUiSoundsEnabled,
   subscribeUiSoundsPreference,
 } from '@/lib/ui-sounds'
-import { settingsFade } from '../components/motion'
 import {
   SettingsList,
   SettingsPageBody,
@@ -533,30 +532,27 @@ export function ConsoleSettingsTab({
                 </Select>
               }
             />
-            {defaultMode === 'auto' ? (
-              <SettingsRow
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={settingsFade}
-                id={GENERAL_ANCHOR.allowlist}
-                label="Auto-mode allowlist"
-                description="Functions that new conversations can run without asking."
-                meta={
-                  allowlist.length === 0
-                    ? 'No functions selected'
-                    : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
-                }
-                action={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setAllowlistOpen(true)}
-                  >
-                    Manage
-                  </Button>
-                }
-              />
-            ) : null}
+            {/* Always on view: a chat switched to Auto from its composer
+                runs this list too, whatever the default mode is. */}
+            <SettingsRow
+              id={GENERAL_ANCHOR.allowlist}
+              label="Auto-mode allowlist"
+              description="Functions a chat in Auto mode runs without asking."
+              meta={
+                allowlist.length === 0
+                  ? 'No functions selected'
+                  : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
+              }
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAllowlistOpen(true)}
+                >
+                  Manage
+                </Button>
+              }
+            />
           </SettingsList>
         </SettingsSection>
       ) : null}
