@@ -976,13 +976,15 @@
   flex-direction: column;
   gap: 2px;
 }
+/* No block padding: the row is as tall as its checkbox (32px here, the
+   console's 48px touch target on a phone), never that plus padding. */
 [data-iii-ui="harness"] .harness-ui-ask-option {
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 2px;
   min-height: 32px;
-  padding: 6px 8px;
+  padding: 0 8px;
   border-radius: var(--radius-sm);
   transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
 }
@@ -993,13 +995,12 @@
 [data-iii-ui="harness"] .harness-ui-ask-option:has(input:checked) {
   background: var(--color-surface-selected);
 }
+/* The box centres on its label's first line: a phone's 48px touch row
+   centres the label, so a top-pinned box sat above the word it ticks. */
 [data-iii-ui="harness"] .harness-ui-ask-choice {
   display: flex;
   width: 100%;
-  align-items: flex-start;
-}
-[data-iii-ui="harness"] .harness-ui-ask-choice .iii-ui-checkbox__control {
-  margin-top: 1px;
+  align-items: center;
 }
 [data-iii-ui="harness"] .harness-ui-ask-choice .iii-ui-checkbox__label {
   overflow-wrap: anywhere;
@@ -1044,9 +1045,18 @@
   align-items: center;
   gap: 8px 12px;
 }
+/* The note keeps at least 12rem beside the buttons; with less, it takes its
+   own line and the buttons stay at the end of the next one, instead of the
+   note squeezing into a column a word wide. An empty note claims nothing. */
 [data-iii-ui="harness"] .harness-ui-ask-foot .harness-ui-ask-note {
-  flex: 1;
+  flex: 1 1 12rem;
   min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-foot .harness-ui-ask-note:empty {
+  flex-basis: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-foot .harness-ui-ask-note + * {
+  margin-inline-start: auto;
 }
 /* Read-only questions (answered, or no composer to send through). */
 [data-iii-ui="harness"] .harness-ui-ask-summary {
@@ -1098,17 +1108,26 @@
   white-space: nowrap;
   border: 0;
 }
-/* Narrow pane (a phone or a narrow split): touch-sized option rows, and the
-   Other field under its label. Same container threshold as the chip. */
+/* Narrow pane (a narrow split): every control keeps a 44px touch target,
+   but nothing adds height on top of it. An option row is exactly its hit
+   area, and Other stays on one line beside its label. Same container
+   threshold as the chip. */
 @container (max-width: 30rem) {
-  [data-iii-ui="harness"] .harness-ui-ask-option,
+  [data-iii-ui="harness"] .harness-ui-ask {
+    gap: 10px;
+  }
+  [data-iii-ui="harness"] .harness-ui-ask-options {
+    gap: 0;
+  }
+  [data-iii-ui="harness"] .harness-ui-ask-option {
+    min-height: 44px;
+  }
   [data-iii-ui="harness"] .harness-ui-ask-skip,
   [data-iii-ui="harness"] .harness-ui-ask-foot button {
     min-height: 44px;
   }
-  [data-iii-ui="harness"] .harness-ui-ask-other {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-  }
+}
+/* A described option keeps room around its two lines at any width. */
+[data-iii-ui="harness"] .harness-ui-ask-option:has(.harness-ui-ask-desc) {
+  padding-block: 6px;
 }

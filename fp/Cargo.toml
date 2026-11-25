@@ -2,7 +2,7 @@
 
 [package]
 name = "fp"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2024"
 publish = false
 

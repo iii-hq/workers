@@ -16,7 +16,6 @@ import {
 } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
-import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { ProjectDot } from '@/components/projects/ProjectDot'
 import { requestProjectDialog } from '@/components/projects/project-dialog-request'
 import { Button } from '@/components/ui/Button'
@@ -246,6 +245,8 @@ import { requestClaudeAccountsDialog } from './claude-accounts-dialog-request'
 import { LimitCard } from './LimitCard'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
+import { QuestionNotice } from './QuestionNotice'
+import type { OffscreenQuestions, QuestionJumps } from './question-jump'
 import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
 import {
@@ -263,6 +264,7 @@ import {
 } from './system-prompt-selection'
 import { CONTINUE_MESSAGE, TurnRestRow } from './TurnRestRow'
 import { deriveTurnVisualState } from './turn-visual-state'
+import { useAwaitingQuestions } from './use-awaiting-questions'
 import { useModelSwitch } from './use-model-switch'
 import {
   type KeptReason,
@@ -3053,6 +3055,29 @@ export function ChatView({
     () => isWaitingOnAnswer(conversation, streamingIndicator),
     [conversation, streamingIndicator],
   )
+  // Question cards still waiting on the person: the list keeps them mounted
+  // and offers a jump to any that scrolled out of view.
+  const awaitingQuestions = useAwaitingQuestions({
+    backend,
+    sessionId: conversation.id,
+    messages: shownMessages,
+    waitingOnAnswer,
+  })
+  const awaitingQuestionIds = useMemo(
+    () => awaitingQuestions.map((question) => question.messageId),
+    [awaitingQuestions],
+  )
+  // Which of them the list has scrolled out of view, and its jumps: the
+  // notice in the composer's tray shows while any is hidden.
+  const [offscreenQuestions, setOffscreenQuestions] = useState<{
+    offscreen: OffscreenQuestions
+    jumps: QuestionJumps
+  } | null>(null)
+  const handleQuestionsOffscreen = useCallback(
+    (offscreen: OffscreenQuestions, jumps: QuestionJumps) =>
+      setOffscreenQuestions(offscreen.count > 0 ? { offscreen, jumps } : null),
+    [],
+  )
 
   // Pre-content phase text for the waiting indicator. Only trusted while the transcript
   // still ends at the user's message — on the real backend content arrives via
@@ -3932,11 +3957,6 @@ export function ChatView({
           lockedResolution={lockedAccount ? accountResolution : null}
         />
       ) : null}
-      {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (
-        <FullPermissionsBanner
-          onDisable={() => void approvalSettings.setMode('manual')}
-        />
-      ) : null}
       <div
         ref={conversationBodyRef}
         className="chat-conversation-body flex min-h-0 flex-1 flex-col"
@@ -4009,6 +4029,8 @@ export function ChatView({
                           : undefined
                       }
                       observersById={observersById}
+                      awaitingQuestionIds={awaitingQuestionIds}
+                      onQuestionsOffscreen={handleQuestionsOffscreen}
                       focusMessageId={quoteFocusId ?? focusMessageId}
                       onFocusMessageHandled={() => {
                         setQuoteFocusId(null)
@@ -4093,6 +4115,18 @@ export function ChatView({
                   ) : null}
                 </section>
               ) : null}
+              <QuestionNotice
+                questions={awaitingQuestions}
+                notice={
+                  offscreenQuestions
+                    ? {
+                        next: offscreenQuestions.offscreen.target,
+                        direction: offscreenQuestions.offscreen.direction,
+                        jumps: offscreenQuestions.jumps,
+                      }
+                    : null
+                }
+              />
               {sessionTurnSummaries ? (
                 <div
                   className="flex flex-wrap items-center justify-end gap-1.5 px-1"

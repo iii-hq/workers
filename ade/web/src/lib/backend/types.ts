@@ -402,6 +402,21 @@ export interface ChatBackend {
    */
   onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
   /**
+   * What the harness knows about the session's question cards
+   * (`harness::ask`), by question id: `true` while one still waits on the
+   * person, `false` once settled. Read from `harness::ask::list` (open or
+   * expired entries wait) and `harness::ask::settlements` (a card answered
+   * or dismissed through the chat). A card in neither is not in the map.
+   * Rejects when neither can be read.
+   */
+  askStates?(sessionId: string): Promise<ReadonlyMap<string, boolean>>
+  /**
+   * Observe `harness::on-ask` / `harness::on-ask-settled` and
+   * `harness::ask::settle` for a session: the signal to refetch `askStates`. Also fires on every reconnect, since
+   * events rung during an outage are gone. Returns an unsubscribe.
+   */
+  onAskChanged?(sessionId: string, onEvent: () => void): () => void
+  /**
    * The observers the session created — the harness's durable rows
    * (`harness::observers::list`), source-generic: the observed function
    * with its raw args and filters, delivery = notify-this-chat or
