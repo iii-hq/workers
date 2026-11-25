@@ -6,4 +6,5 @@ pub mod render;
 pub mod server;
 pub mod store;
 pub mod tunnel;
+pub mod ui;
 pub mod util;

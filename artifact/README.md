@@ -29,6 +29,20 @@ version through an expiring, token-guarded link.
 | `artifact::shares` | List live shares with their current URLs. |
 | `artifact::revoke` | Revoke a link at once. |
 
+## Console UI
+
+- **Chat card** for `artifact::create`, `update`, `get` and `share`: a
+  sandboxed live preview with **Share…** (version, lifetime, public or
+  local) and **Open**; a share shows its links with copy buttons.
+- **Artifacts page**: every artifact, any version's preview, Share…,
+  Delete, and the live links with Revoke.
+- **Context section** in the chat side panel: recent artifacts and their
+  live-link count; a row opens the artifact on the page.
+- **Settings form** for the `artifact` configuration entry.
+
+Previews run in an `<iframe sandbox>` without `allow-same-origin`, with the
+same Content-Security-Policy the share listener sends.
+
 ## Security model
 
 Shared content is untrusted (an agent wrote it) and is read by whoever holds

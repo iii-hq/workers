@@ -1,0 +1,157 @@
+/* Every rule is scoped under the worker's wrapper attribute. */
+
+[data-iii-ui="artifact"] .artifact-ui-shell {
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-muted {
+  color: var(--color-ink-faint);
+  font-size: 13px;
+}
+
+/* ---- preview ---------------------------------------------------------- */
+
+[data-iii-ui="artifact"] .artifact-ui-preview {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-preview-card {
+  height: 360px;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-preview-page {
+  flex: 1 1 auto;
+  min-height: 420px;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-preview-markdown {
+  overflow: auto;
+  padding: 16px 20px;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-preview-skeleton {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---- chat card -------------------------------------------------------- */
+
+[data-iii-ui="artifact"] .artifact-ui-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-card-actions,
+[data-iii-ui="artifact"] .artifact-ui-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-dialog-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* ---- links ------------------------------------------------------------ */
+
+[data-iii-ui="artifact"] .artifact-ui-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-link-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-share-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- page detail ------------------------------------------------------ */
+
+[data-iii-ui="artifact"] .artifact-ui-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+  padding-bottom: 16px;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-detail > .artifact-ui-preview,
+[data-iii-ui="artifact"] .artifact-ui-shares {
+  margin: 0 16px;
+  width: auto;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-detail-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+[data-iii-ui="artifact"] .artifact-ui-section-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="artifact"] .artifact-ui-share-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-top: 1px solid var(--color-rule);
+}
+
+[data-iii-ui="artifact"] .artifact-ui-share-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+}
+
+@container (max-width: 520px) {
+  [data-iii-ui="artifact"] .artifact-ui-preview-page {
+    min-height: 320px;
+  }
+}

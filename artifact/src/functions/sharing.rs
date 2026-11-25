@@ -167,7 +167,12 @@ pub async fn shares(
         .collect();
     shares.sort_by_key(|s| std::cmp::Reverse(s.created_at));
     let snapshot = if shares.iter().any(|s| s.public) {
-        Some(ctx.tunnel.status(&cfg.tunnel_id).await)
+        Some(
+            ctx.tunnel
+                .status(&cfg.tunnel_id)
+                .await
+                .map_err(|e| tunnel_hint(&cfg.tunnel_id, &e)),
+        )
     } else {
         None
     };

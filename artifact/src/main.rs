@@ -9,7 +9,7 @@
 //!    dependency)
 //! 3. bind the loopback share listener — a bind failure aborts, because
 //!    every share link would be dead
-//! 4. register the functions, start the expiry sweeper, observe
+//! 4. register the functions and the console UI, start the expiry sweeper, observe
 //!    configuration changes last
 //! 5. wait for a signal, then stop the listener and shut the SDK down
 
@@ -27,7 +27,7 @@ use artifact::configuration::{self, ConfigCell};
 use artifact::functions::{self, Ctx, sharing};
 use artifact::store::Store;
 use artifact::tunnel::Tunnel;
-use artifact::{manifest, server};
+use artifact::{manifest, server, ui};
 
 /// How often expired shares are dropped and an idle tunnel released.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
@@ -148,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     functions::register_all(&iii, &ctx, &cell);
+    ui::register(&iii);
 
     let sweeper_ctx = ctx.clone();
     let sweeper = tokio::spawn(async move {
