@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use image::codecs::jpeg::JpegEncoder;
+use image::metadata::Orientation;
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -76,42 +77,19 @@ pub fn resolve_params(config: &ResizeConfig, metadata: &ImageMetadata) -> Result
     })
 }
 
-/// Read the EXIF orientation value from image bytes.
-/// Returns 1 (identity/no rotation) if EXIF is missing or unreadable.
-pub fn read_exif_orientation(bytes: &[u8]) -> u16 {
-    let reader = exif::Reader::new();
-    let Ok(exif_data) = reader.read_from_container(&mut std::io::Cursor::new(bytes)) else {
-        return 1;
-    };
-    exif_data
-        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-        .and_then(|f| f.value.get_uint(0))
-        .map(|v| v as u16)
-        .unwrap_or(1)
-}
-
-/// Apply EXIF orientation transform to an image.
-///
-/// EXIF orientation values:
-///   1 = Normal (identity)
-///   2 = Flip horizontal
-///   3 = Rotate 180°
-///   4 = Flip vertical
-///   5 = Transpose (flip horizontal + rotate 270° CW)
-///   6 = Rotate 90° CW
-///   7 = Transverse (flip horizontal + rotate 90° CW)
-///   8 = Rotate 270° CW (= 90° CCW)
-pub fn apply_exif_orientation(img: DynamicImage, orientation: u16) -> DynamicImage {
-    match orientation {
-        2 => img.fliph(),
-        3 => img.rotate180(),
-        4 => img.flipv(),
-        5 => img.fliph().rotate270(),
-        6 => img.rotate90(),
-        7 => img.fliph().rotate90(),
-        8 => img.rotate270(),
-        _ => img,
-    }
+// Not ImageDecoder::orientation(): it allocates a WebP EXIF chunk from an unchecked header length.
+fn exif_orientation(bytes: &[u8]) -> Orientation {
+    exif::Reader::new()
+        .read_from_container(&mut Cursor::new(bytes))
+        .ok()
+        .and_then(|data| {
+            data.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
+                .value
+                .get_uint(0)
+        })
+        .and_then(|v| u8::try_from(v).ok())
+        .and_then(Orientation::from_exif)
+        .unwrap_or(Orientation::NoTransforms)
 }
 
 pub fn resize_scale_to_fit(img: DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
@@ -146,9 +124,8 @@ pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicI
 }
 
 pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>> {
-    let raw_img = image::load_from_memory_with_format(bytes, params.input_format)?;
-    let orientation = read_exif_orientation(bytes);
-    let img = apply_exif_orientation(raw_img, orientation);
+    let mut img = image::load_from_memory_with_format(bytes, params.input_format)?;
+    img.apply_orientation(exif_orientation(bytes));
 
     let thumbnail = match params.strategy {
         ResizeStrategy::ScaleToFit => {
@@ -186,7 +163,7 @@ pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{RgbImage, RgbaImage};
+    use image::{ImageEncoder, RgbImage, RgbaImage};
 
     fn make_rgb_image(w: u32, h: u32, r: u8, g: u8, b: u8) -> DynamicImage {
         let mut img = RgbImage::new(w, h);
@@ -499,53 +476,97 @@ mod tests {
         );
     }
 
-    // ── EXIF orientation tests ──────────────────────────────
+    // ── EXIF orientation ──────────────────────────────
 
-    #[test]
-    fn test_apply_exif_orientation_identity() {
-        let img = make_rgb_image(100, 50, 255, 0, 0);
-        let result = apply_exif_orientation(img, 1);
-        assert_eq!(result.width(), 100);
-        assert_eq!(result.height(), 50);
+    /// A minimal big-endian TIFF with one IFD entry: Orientation = n.
+    fn tiff_orientation(n: u8) -> Vec<u8> {
+        let mut tiff = b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0".to_vec();
+        tiff.extend([n, 0, 0, 0, 0, 0, 0]);
+        tiff
+    }
+
+    fn png_with_orientation(img: &DynamicImage, n: u8) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut enc = image::codecs::png::PngEncoder::new(&mut buf);
+        enc.set_exif_metadata(tiff_orientation(n)).unwrap();
+        img.write_with_encoder(enc).unwrap();
+        buf
+    }
+
+    const A: [u8; 4] = [255, 0, 0, 255];
+    const B: [u8; 4] = [0, 255, 0, 255];
+    const C: [u8; 4] = [0, 0, 255, 255];
+    const D: [u8; 4] = [255, 255, 0, 255];
+
+    /// [A B; C D]
+    fn quad() -> DynamicImage {
+        DynamicImage::ImageRgba8(RgbaImage::from_vec(2, 2, [A, B, C, D].concat()).unwrap())
+    }
+
+    fn png_out(input: &[u8]) -> DynamicImage {
+        run(
+            input,
+            ImageFormat::Png,
+            ImageFormat::Png,
+            ResizeStrategy::ScaleToFit,
+            200,
+            200,
+            100,
+        )
     }
 
     #[test]
-    fn test_apply_exif_orientation_rotate_180() {
-        let img = make_rgb_image(100, 50, 255, 0, 0);
-        let result = apply_exif_orientation(img, 3);
-        assert_eq!(result.width(), 100);
-        assert_eq!(result.height(), 50);
+    fn exif_orientation_all_eight() {
+        let expected = [
+            (1, [A, B, C, D]),
+            (2, [B, A, D, C]),
+            (3, [D, C, B, A]),
+            (4, [C, D, A, B]),
+            (5, [A, C, B, D]),
+            (6, [C, A, D, B]),
+            (7, [D, B, C, A]),
+            (8, [B, D, A, C]),
+        ];
+        for (n, pixels) in expected {
+            let out = png_out(&png_with_orientation(&quad(), n));
+            assert_eq!(
+                out.to_rgba8().into_raw(),
+                pixels.concat(),
+                "orientation {n}"
+            );
+        }
     }
 
     #[test]
-    fn test_apply_exif_orientation_rotate_90_cw() {
-        let img = make_rgb_image(100, 50, 255, 0, 0);
-        let result = apply_exif_orientation(img, 6);
-        assert_eq!(result.width(), 50);
-        assert_eq!(result.height(), 100);
+    fn orientation_6_swaps_dimensions() {
+        let out = png_out(&png_with_orientation(&make_rgb_image(2, 1, 1, 2, 3), 6));
+        assert_eq!((out.width(), out.height()), (1, 2));
     }
 
     #[test]
-    fn test_apply_exif_orientation_rotate_90_ccw() {
-        let img = make_rgb_image(100, 50, 255, 0, 0);
-        let result = apply_exif_orientation(img, 8);
-        assert_eq!(result.width(), 50);
-        assert_eq!(result.height(), 100);
+    fn orientation_is_read_from_jpeg() {
+        let mut jpeg = Vec::new();
+        let mut enc = JpegEncoder::new(&mut jpeg);
+        enc.set_exif_metadata(tiff_orientation(6)).unwrap();
+        make_rgb_image(2, 1, 1, 2, 3)
+            .write_with_encoder(enc)
+            .unwrap();
+        let out = run(
+            &jpeg,
+            ImageFormat::Jpeg,
+            ImageFormat::Png,
+            ResizeStrategy::ScaleToFit,
+            200,
+            200,
+            100,
+        );
+        assert_eq!((out.width(), out.height()), (1, 2));
     }
 
     #[test]
-    fn test_apply_exif_orientation_flip_horizontal() {
-        let img = make_rgb_image(100, 50, 255, 0, 0);
-        let result = apply_exif_orientation(img, 2);
-        assert_eq!(result.width(), 100);
-        assert_eq!(result.height(), 50);
-    }
-
-    #[test]
-    fn test_read_exif_orientation_no_exif() {
-        let img = make_rgb_image(100, 50, 255, 0, 0);
-        let bytes = encode_image(&img, ImageFormat::Png);
-        assert_eq!(read_exif_orientation(&bytes), 1);
+    fn no_exif_is_identity() {
+        let out = png_out(&encode_image(&quad(), ImageFormat::Png));
+        assert_eq!(out.to_rgba8().into_raw(), [A, B, C, D].concat());
     }
 
     #[test]
