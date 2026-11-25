@@ -36,6 +36,22 @@ const toolResultTranscript = (content: unknown) =>
     record(3, 2, 'user', [{ type: 'tool_result', tool_use_id: 'toolu_1', content }]),
     answer(4, 3, 'synthetic answer'),
   );
+const malformedToolResults = [
+  { name: 'numeric scalar', content: 42 },
+  { name: 'numeric block', content: [42] },
+  { name: 'unknown block type', content: [{ type: 'tool_use' }] },
+  { name: 'malformed text block', content: [{ type: 'text', text: 42 }] },
+  { name: 'malformed image block', content: [{ type: 'image', source: 42 }] },
+  {
+    name: 'malformed document source',
+    content: [{ type: 'document', source: { type: 'content', content: [42] } }],
+  },
+  {
+    name: 'malformed search result',
+    content: [{ type: 'search_result', source: 'synthetic', title: 'synthetic', content: [42] }],
+  },
+  { name: 'malformed tool reference', content: [{ type: 'tool_reference', tool_name: 42 }] },
+];
 const reads = (s: SyntheticHost) => s.host.calls.filter((c) => c.payload.command === 'python3');
 const seen = (s: SyntheticHost, observer: string) =>
   s.host.deliveries.filter((d) => d.observer === observer).map((d) => d.event.reply);
@@ -102,19 +118,37 @@ describe('lookup', () => {
     });
   });
 
-  it('rejects numeric tool result content in an active ancestor', async () => {
-    await withSyntheticHost(async (s) => {
-      await writeFile(s.file, toolResultTranscript(42));
-      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
-      expect(s.host.snapshots).toEqual([]);
-    });
-  });
+  it.each(malformedToolResults)(
+    'rejects invalid tool result content ($name) in an active ancestor',
+    async ({ content }) => {
+      await withSyntheticHost(async (s) => {
+        await writeFile(s.file, toolResultTranscript(content));
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+        expect(s.host.snapshots).toEqual([]);
+      });
+    },
+  );
 
   it('accepts string, block array and omitted tool result content', async () => {
     await withSyntheticHost(async (s) => {
       for (const content of [
         'synthetic result',
-        [{ type: 'text', text: 'synthetic result' }],
+        [],
+        [
+          { type: 'text', text: 'synthetic result' },
+          { type: 'image', source: { type: 'url', url: 'https://example.invalid/image.png' } },
+          {
+            type: 'document',
+            source: { type: 'content', content: [{ type: 'text', text: 'synthetic document' }] },
+          },
+          {
+            type: 'search_result',
+            title: 'synthetic result',
+            source: 'synthetic',
+            content: [{ type: 'text', text: 'synthetic result' }],
+          },
+          { type: 'tool_reference', tool_name: 'Read' },
+        ],
         undefined,
       ]) {
         await writeFile(s.file, toolResultTranscript(content));
@@ -444,13 +478,16 @@ describe('observation', () => {
     });
   });
 
-  it('rejects baseline admission with numeric tool result content in an active ancestor', async () => {
-    await withSyntheticHost(async (s) => {
-      await writeFile(s.file, toolResultTranscript(42));
-      await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
-      expect(s.timers.size).toBe(0);
-    });
-  });
+  it.each(malformedToolResults)(
+    'rejects baseline admission for invalid tool result content ($name)',
+    async ({ content }) => {
+      await withSyntheticHost(async (s) => {
+        await writeFile(s.file, toolResultTranscript(content));
+        await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
+        expect(s.timers.size).toBe(0);
+      });
+    },
+  );
 
   it('serializes admission with polling, rejects unreadable baselines and stops on last removal', async () => {
     await withSyntheticHost(async (s) => {

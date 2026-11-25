@@ -75,6 +75,40 @@ def transcript(sid, stack):
     finally:
         os.close(root)
 
+# Check the structural fields of tool result blocks without interpreting their payloads.
+def validate_tool_result_block(part, allowed):
+    require(isinstance(part, dict) and part.get('type') in allowed)
+    kind = part['type']
+    if kind == 'text':
+        require(isinstance(part.get('text'), str))
+    elif kind == 'tool_reference':
+        require(isinstance(part.get('tool_name'), str))
+    elif kind == 'search_result':
+        require(isinstance(part.get('source'), str) and isinstance(part.get('title'), str))
+        require(isinstance(part.get('content'), list))
+        for text in part['content']:
+            validate_tool_result_block(text, ('text',))
+    else:  # image or document
+        source = part.get('source')
+        require(isinstance(source, dict))
+        source_type = source.get('type')
+        if source_type == 'url':
+            require(isinstance(source.get('url'), str))
+        elif source_type == 'base64':
+            media_types = (('image/jpeg', 'image/png', 'image/gif', 'image/webp')
+                           if kind == 'image' else ('application/pdf',))
+            require(source.get('media_type') in media_types and isinstance(source.get('data'), str))
+        elif kind == 'document' and source_type == 'text':
+            require(source.get('media_type') == 'text/plain' and isinstance(source.get('data'), str))
+        elif kind == 'document' and source_type == 'content':
+            content = source.get('content')
+            require(isinstance(content, (str, list)))
+            if isinstance(content, list):
+                for block in content:
+                    validate_tool_result_block(block, ('text', 'image'))
+        else:
+            require(False)
+
 def message_content(row, role):
     message = row['message']
     require(isinstance(message, dict) and message.get('role', role) == role)
@@ -87,7 +121,11 @@ def message_content(row, role):
         if part['type'] == 'text':
             require(isinstance(part.get('text'), str))
         if part['type'] == 'tool_result' and 'content' in part:
-            require(isinstance(part['content'], (str, list)))
+            result = part['content']
+            require(isinstance(result, (str, list)))
+            if isinstance(result, list):
+                for block in result:
+                    validate_tool_result_block(block, ('text', 'image', 'search_result', 'document', 'tool_reference'))
     return content
 
 def visible(row):
