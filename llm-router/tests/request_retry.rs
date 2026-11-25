@@ -222,6 +222,168 @@ async fn retry_ceiling_is_frozen_for_an_inflight_turn() {
     router.shutdown();
 }
 
+/// Every dispatch answers a pre-content `rate_limited` error terminal, with
+/// `error_details` when given (an account's usage limit, D147).
+async fn rate_limited_provider(
+    url: &str,
+    id: &str,
+    error_details: Option<Value>,
+) -> (IIIClient, Arc<AtomicU64>) {
+    let provider = register_worker(url, test_init_options());
+    let calls = Arc::new(AtomicU64::new(0));
+    let observed = calls.clone();
+    let provider_id = id.to_string();
+    provider.register_function(
+        format!("provider::{id}::stream"),
+        RegisterFunction::new_async(move |input: Value| {
+            let (calls, details, provider_id) =
+                (observed.clone(), error_details.clone(), provider_id.clone());
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let writer_ref: StreamChannelRef =
+                    serde_json::from_value(input["writer_ref"].clone()).unwrap();
+                let writer = open_writer(&writer_ref);
+                let mut error = json!({
+                    "role": "assistant", "content": [],
+                    "stop_reason": "error", "model": input["model"],
+                    "provider": provider_id, "timestamp": 1,
+                    "error_message": "429 rate_limit_error",
+                    "error_kind": "rate_limited"
+                });
+                if let Some(details) = details {
+                    error["error_details"] = details;
+                }
+                writer
+                    .send_text(&json!({ "type": "error", "error": error }).to_string())
+                    .await
+                    .map_err(|error| Error::Handler(error.to_string()))?;
+                let _ = writer.close().await;
+                Ok::<Value, Error>(json!({ "ok": true }))
+            }
+        }),
+    );
+    call(
+        &provider,
+        "router::provider::register",
+        json!({
+            "id": id,
+            "models": [{
+                "id": format!("{id}-model"), "provider": id,
+                "context_window": 1_000, "max_output_tokens": 100
+            }]
+        }),
+    )
+    .await;
+    (provider, calls)
+}
+
+/// One streamed `router::chat` turn: the response and every terminal frame
+/// the caller received.
+async fn streamed_turn(consumer: &IIIClient, model: &str) -> (Value, Vec<Value>) {
+    let pipe = consumer.pipe().await.unwrap();
+    let payload = json!({
+        "model": model,
+        "messages": [],
+        "writer_ref": serde_json::to_value(ref_of(&pipe.output)).unwrap(),
+    });
+    let input = pipe.input;
+    let pump = tokio::spawn(async move {
+        use futures::StreamExt;
+        let mut terminals = Vec::new();
+        let mut items = input.frames();
+        while let Some(item) = items.next().await {
+            if let iii_sdk::protocol::ChannelItem::Text(message) = item? {
+                let frame: Value = serde_json::from_str(&message).unwrap();
+                if matches!(frame["type"].as_str(), Some("done" | "error")) {
+                    terminals.push(frame);
+                }
+            }
+        }
+        Ok::<Vec<Value>, Error>(terminals)
+    });
+    let response = call(consumer, "router::chat", payload).await;
+    let terminals = tokio::time::timeout(Duration::from_secs(3), pump)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    (response, terminals)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_usage_limit_is_not_retried_and_its_details_reach_the_caller() {
+    let engine = engine_or_skip!();
+    let router = start_router(&engine.url, 2).await;
+    let details = json!({
+        "usage_limit": true, "window": "five_hour", "resets_at_ms": 1_800_000_000_000u64
+    });
+    let (provider, calls) =
+        rate_limited_provider(&engine.url, "limit-fixture", Some(details.clone())).await;
+    let consumer = register_worker(&engine.url, test_init_options());
+
+    let (response, terminals) = streamed_turn(&consumer, "limit-fixture-model").await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a usage limit is never retried"
+    );
+    assert_eq!(response["ok"], false, "{response}");
+    let error = &response["error"];
+    assert_eq!(error["code"], "router/provider_rate_limited", "{response}");
+    assert_eq!(error["kind"], "rate_limited", "{response}");
+    assert_eq!(error["retryable"], false, "{response}");
+    assert_eq!(error["error_details"], details, "{response}");
+    assert_eq!(terminals.len(), 1, "{terminals:?}");
+    assert_eq!(terminals[0]["error"]["error_kind"], "rate_limited");
+    assert_eq!(terminals[0]["error"]["error_details"], details);
+
+    let completed = call(
+        &consumer,
+        "router::complete",
+        json!({ "model": "limit-fixture-model", "messages": [] }),
+    )
+    .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "complete does not retry either"
+    );
+    assert_eq!(
+        completed["message"]["error_details"], details,
+        "{completed}"
+    );
+
+    consumer.shutdown();
+    provider.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_rate_limit_is_still_retried() {
+    let engine = engine_or_skip!();
+    let router = start_router(&engine.url, 2).await;
+    let (provider, calls) = rate_limited_provider(&engine.url, "busy-fixture", None).await;
+    let consumer = register_worker(&engine.url, test_init_options());
+
+    let (response, terminals) = streamed_turn(&consumer, "busy-fixture-model").await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "first attempt plus two retries"
+    );
+    assert_eq!(response["error"]["retryable"], true, "{response}");
+    assert!(
+        response["error"].get("error_details").is_none(),
+        "{response}"
+    );
+    assert_eq!(terminals.len(), 1, "{terminals:?}");
+    assert!(terminals[0]["error"].get("error_details").is_none());
+
+    consumer.shutdown();
+    provider.shutdown();
+    router.shutdown();
+}
+
 #[test]
 fn retry_ceiling_survives_the_public_request_wire_contract() {
     for limit in [None, Some(0), Some(1), Some(u32::MAX)] {

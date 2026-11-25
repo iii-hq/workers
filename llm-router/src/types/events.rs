@@ -24,10 +24,77 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    /// One retry policy, in the router, nowhere else (spec § Retries).
+    /// One retry policy, in the router, nowhere else (spec § Retries). A
+    /// `rate_limited` whose [`ErrorDetails::usage_limit`] is set is the
+    /// exception: see [`crate::types::messages::AssistantMessage::error_is_retryable`].
     pub fn is_retryable(self) -> bool {
         matches!(self, ErrorKind::RateLimited | ErrorKind::Transient)
     }
+}
+
+/// The usage window an account's limit belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageWindow {
+    /// The rolling five-hour window.
+    FiveHour,
+    /// The weekly window (any of the plan's seven-day limits).
+    Week,
+}
+
+/// What an error's kind alone does not say. Optional on the assistant message
+/// and on the router's `ErrorShape`, and serialized only when present, so
+/// every reader that does not know it ignores it: `ErrorKind` itself keeps its
+/// five values, because its copies elsewhere deserialize it strictly.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ErrorDetails {
+    /// The account's usage limit is reached: a `rate_limited` that waiting a
+    /// moment does not fix, so the router never retries it.
+    #[serde(default)]
+    pub usage_limit: bool,
+    /// Which limit was reached, when the provider said so. An unknown value
+    /// reads as absent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_window"
+    )]
+    pub window: Option<UsageWindow>,
+    /// When that limit resets, in milliseconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<u64>,
+}
+
+impl ErrorDetails {
+    /// An account's usage limit, with what the provider knew of it.
+    pub fn usage_limit(window: Option<UsageWindow>, resets_at_ms: Option<u64>) -> Self {
+        Self {
+            usage_limit: true,
+            window,
+            resets_at_ms,
+        }
+    }
+}
+
+/// A window this router does not know is absent, not a malformed frame.
+fn lenient_window<'de, D>(deserializer: D) -> Result<Option<UsageWindow>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+/// Details this router cannot read are absent: a terminal frame is never
+/// dropped as malformed because of them.
+pub(crate) fn lenient_error_details<'de, D>(
+    deserializer: D,
+) -> Result<Option<ErrorDetails>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -185,6 +252,7 @@ mod tests {
             native_stop_reason: None,
             error_message: None,
             error_kind: None,
+            error_details: None,
             warnings: None,
             usage: None,
             model: "m".into(),
@@ -327,6 +395,68 @@ mod tests {
             .is_content()
         );
         assert!(!AssistantMessageEvent::Done { message: partial() }.is_content());
+    }
+
+    #[test]
+    fn error_details_wire_shape() {
+        let details =
+            ErrorDetails::usage_limit(Some(UsageWindow::FiveHour), Some(1_800_000_000_000));
+        assert_eq!(
+            serde_json::to_value(&details).unwrap(),
+            serde_json::json!({
+                "usage_limit": true, "window": "five_hour", "resets_at_ms": 1_800_000_000_000u64
+            })
+        );
+        // Optional facts are omitted, never null.
+        assert_eq!(
+            serde_json::to_value(ErrorDetails::usage_limit(None, None)).unwrap(),
+            serde_json::json!({ "usage_limit": true })
+        );
+        let week: ErrorDetails =
+            serde_json::from_value(serde_json::json!({ "usage_limit": true, "window": "week" }))
+                .unwrap();
+        assert_eq!(week.window, Some(UsageWindow::Week));
+    }
+
+    #[test]
+    fn an_unknown_window_reads_as_absent() {
+        let details: ErrorDetails = serde_json::from_value(serde_json::json!({
+            "usage_limit": true, "window": "month", "resets_at_ms": 5
+        }))
+        .unwrap();
+        assert_eq!(details, ErrorDetails::usage_limit(None, Some(5)));
+    }
+
+    #[test]
+    fn error_frame_carries_details_and_keeps_them_through_error() {
+        let mut limited = partial();
+        limited.error_details = Some(ErrorDetails::usage_limit(Some(UsageWindow::Week), None));
+        let ev = AssistantMessageEvent::error(limited, ErrorKind::RateLimited, "limit");
+        let wire = serde_json::to_value(&ev).unwrap();
+        assert_eq!(wire["error"]["error_kind"], "rate_limited");
+        assert_eq!(
+            wire["error"]["error_details"],
+            serde_json::json!({ "usage_limit": true, "window": "week" })
+        );
+        let back: AssistantMessageEvent = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn unreadable_details_never_drop_the_frame() {
+        let wire = serde_json::json!({
+            "type": "error",
+            "error": {
+                "role": "assistant", "content": [], "stop_reason": "error",
+                "error_kind": "rate_limited", "error_details": "limit",
+                "model": "m", "provider": "p", "timestamp": 1
+            }
+        });
+        let AssistantMessageEvent::Error { error } = serde_json::from_value(wire).unwrap() else {
+            panic!("not an error frame")
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::RateLimited));
+        assert_eq!(error.error_details, None);
     }
 
     #[test]

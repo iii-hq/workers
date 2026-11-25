@@ -10,6 +10,7 @@ pub fn empty_partial(model: &str, provider: &str, now_ms: i64) -> AssistantMessa
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        error_details: None,
         warnings: None,
         usage: None,
         model: model.to_string(),
@@ -33,6 +34,9 @@ pub fn synthesize_error(
     base.stop_reason = StopReason::Error;
     base.error_kind = Some(error_kind);
     base.error_message = Some(message.to_string());
+    // The router's own failure: nothing the provider said about an earlier
+    // error applies to it.
+    base.error_details = None;
     base.usage = usage.or(base.usage); // partial usage survives a synthesized terminal
     base.timestamp = now_ms;
     AssistantMessageEvent::Error { error: base }

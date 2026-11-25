@@ -132,6 +132,7 @@ mod tests {
             native_stop_reason: None,
             error_message: None,
             error_kind: None,
+            error_details: None,
             warnings: None,
             usage: None,
             model: "gemini-3.8-flash".into(),

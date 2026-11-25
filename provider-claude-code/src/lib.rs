@@ -1,17 +1,21 @@
 //! provider-claude-code: Claude Code (Pro/Max subscription) Messages API
-//! provider behind llm-router. Reuses the Claude Code CLI's OAuth credentials
-//! (auth-credentials vault, or a local ~/.claude/.credentials.json dev
-//! fallback) and calls the Anthropic Messages API with a Bearer token — the
+//! provider behind llm-router. Uses the OAuth token of each turn's Claude Code
+//! account from the tmux worker when it holds the accounts (`accounts`), else
+//! the Claude Code CLI's own credentials (auth-credentials vault, or a local
+//! ~/.claude/.credentials.json dev fallback), and calls the Anthropic Messages
+//! API with a Bearer token — the
 //! subscription analog of provider-openai-codex. API keys belong on
 //! provider-anthropic.
 //! Spec: tech-specs/2026-06-agentic/llm-router.md § The provider protocol.
 
+pub mod accounts;
 pub mod auth;
 pub mod config;
 pub mod count_tokens;
 pub mod curated;
 pub mod discovery;
 pub mod errors;
+pub mod limits;
 pub mod manifest;
 pub mod register;
 pub mod request;
