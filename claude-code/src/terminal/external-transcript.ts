@@ -1,15 +1,22 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import { exec } from './host.js';
 
 export const Reply = z.object({ id: z.guid(), text: z.string().min(1) });
-const Snapshot = z.object({ cursor: z.string(), replies: z.array(Reply) });
+const Snapshot = z.strictObject({ cursor: z.string(), replies: z.array(Reply.strict()) });
+const MAX_RESULT_BYTES = 48 * 1024;
+const TAG_BYTES = 32;
+const MAX_STDOUT_BYTES = 4 * Math.ceil((MAX_RESULT_BYTES + TAG_BYTES) / 3);
+// The IDE's pinned Rust SDK redacts env values with `secret` in the key,
+// but records stdout verbatim. Only the one-use pad goes in that field.
+const SECRET_PAD_ENV = 'CLAUDE_REPLY_SECRET_PAD';
 export type ReadMode = 'last' | 'baseline' | 'since';
 
 // Runs on the *terminal* host. Paths and conversation records never leave it.
 // -I -S excludes user configuration, sitecustomize and PYTHONPATH from startup.
 const READER = String.raw`
-import hashlib, json, os, re, stat, sys
+import base64, hashlib, hmac, json, os, re, stat, sys
 from contextlib import ExitStack
 
 UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
@@ -146,7 +153,12 @@ def scan(sid, mode, previous):
     return out
 
 try:
-    print(scan(*sys.argv[1:]))
+    pad = base64.b64decode(os.environ.pop('${SECRET_PAD_ENV}'), validate=True)
+    require(len(pad) == MAX_RESULT + 32)
+    plain = scan(*sys.argv[1:]).encode('ascii')
+    masked = bytes(a ^ b for a, b in zip(plain, pad[32:]))
+    tag = hmac.new(pad[:32], masked, hashlib.sha256).digest()
+    sys.stdout.write(base64.b64encode(tag + masked).decode('ascii'))
 except Exception:
     sys.exit(1)
 `;
@@ -159,13 +171,25 @@ export async function readTranscript(
   cursor = '',
 ) {
   try {
+    // A fresh random pad for each read keeps the recorded stdout opaque even
+    // when IDE payload tracing is on. Authenticate before decoding the JSON.
+    const pad = randomBytes(MAX_RESULT_BYTES + TAG_BYTES);
     const r = await exec(iii, 'python3', {
       args: ['-I', '-S', '-B', '-c', READER, id, mode, cursor],
-      env,
+      env: { ...env, [SECRET_PAD_ENV]: pad.toString('base64') },
       timeoutMs: 5_000,
     });
-    if (r.exit_code === 0 && r.stdout.length <= 48 * 1024 + 1) {
-      return Snapshot.parse(JSON.parse(r.stdout));
+    if (r.exit_code === 0 && r.stdout.length <= MAX_STDOUT_BYTES) {
+      const packet = Buffer.from(r.stdout, 'base64');
+      if (packet.length <= TAG_BYTES || packet.length > pad.length) {
+        throw new Error('invalid host packet');
+      }
+      const masked = packet.subarray(TAG_BYTES);
+      const tag = createHmac('sha256', pad.subarray(0, TAG_BYTES)).update(masked).digest();
+      if (timingSafeEqual(packet.subarray(0, TAG_BYTES), tag)) {
+        const plain = masked.map((b, i) => b ^ pad[i + TAG_BYTES]);
+        return Snapshot.parse(JSON.parse(plain.toString('utf8')));
+      }
     }
   } catch {
     // Never propagate host diagnostics, paths or raw conversation contents.

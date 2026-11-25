@@ -38,6 +38,9 @@ export function registerExternalReplies(
   rowFor: Row,
   schedule: Schedule = schedulePoll,
 ) {
+  // The pinned SDK records invocation payloads independently of observable
+  // and trace_hidden. There is no function-level payload switch in 0.27.
+  process.env.III_DISABLE_TRACE_PAYLOADS = '1';
   const groups = new Map<string, Group>();
   let count = 0;
   const guard = (epoch: number | null) => {

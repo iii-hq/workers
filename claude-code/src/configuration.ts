@@ -119,9 +119,10 @@ export class ReplyPermission {
     this.invalidate();
     const generation = this.generation;
     const runtime = await fetchRuntime(iii);
-    if (generation !== this.generation) return undefined;
-    if (runtime?.external_sessions === true && updatesActive()) this.epoch = generation;
-    return { runtime };
+    if (generation === this.generation && runtime?.external_sessions === true && updatesActive()) {
+      this.epoch = generation;
+    }
+    return runtime;
   }
 }
 
@@ -186,9 +187,33 @@ export async function observeConfigChanges(
   if (onWatchState) {
     watch.onStateChange((state) => {
       onWatchState(state === 'active');
-      if (state === 'active') void onChange();
+      if (state === 'active') void onChange(false);
     });
     onWatchState(watch.state === 'active');
   }
   await onChange();
+}
+
+/** Settings and reply permission share a read, but not a supersession policy.
+ * Lifecycle events and watch gaps revoke reply leases without changing which
+ * configuration update is eligible to apply ordinary settings. */
+export function observeReplyConfig(
+  iii: IIIClient,
+  permission: ReplyPermission,
+  applySettings: (runtime: RuntimeConfig | null) => void,
+) {
+  let watching = false;
+  let settingsGeneration = 0;
+  return observeConfigChanges(
+    iii,
+    async (reloadSettings = true) => {
+      const generation = reloadSettings ? ++settingsGeneration : undefined;
+      const runtime = await permission.refresh(iii, () => watching);
+      if (generation !== undefined && generation === settingsGeneration) applySettings(runtime);
+    },
+    (active) => {
+      watching = active;
+      if (!active) permission.invalidate();
+    },
+  );
 }

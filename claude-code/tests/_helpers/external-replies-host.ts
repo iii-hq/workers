@@ -13,7 +13,7 @@ import type {
   RemovedHook,
 } from 'iii-sdk';
 import { type CliRow, registerAgents } from '../../src/agents.js';
-import { observeConfigChanges, ReplyPermission } from '../../src/configuration.js';
+import { observeReplyConfig, ReplyPermission } from '../../src/configuration.js';
 import { registerExternalReplies } from '../../src/external-replies.js';
 
 export const id = '11111111-1111-4111-8111-111111111111';
@@ -48,7 +48,10 @@ type Result = {
   status: string;
   last_reply: { id: string; text: string } | null;
 };
+type ListResult = { agents: Array<{ claude_session_id?: string }> };
 type Event = { claude_session_id: string; reply: NonNullable<Result['last_reply']> };
+type Handler = (value: unknown) => unknown;
+type WrapHandler = (fn: string, handler: Handler) => Handler;
 type Hooks = {
   added?: AddedHook;
   removed?: RemovedHook;
@@ -56,7 +59,7 @@ type Hooks = {
   deliver?: DeliverHook;
 };
 
-async function makeHost(root: string, confirmed: boolean) {
+async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHandler) {
   const projects = join(root, 'projects');
   const project = join(projects, 'synthetic');
   const file = join(project, `${id}.jsonl`);
@@ -75,10 +78,12 @@ async function makeHost(root: string, confirmed: boolean) {
     inventoryOK: true,
     socketOpen: true,
     outputs: [] as string[],
+    snapshots: [] as string[],
+    hostOutput: (stdout: string) => stdout,
     calls: [] as Request[],
     deliveries: [] as Array<{ observer: string; event: Event }>,
   };
-  const functions = new Map<string, (v: unknown) => unknown>();
+  const functions = new Map<string, Handler>();
   const hooks = new Map<string, Hooks>();
   const observers = new Map<string, Observer>();
   const timers = new Set<() => Promise<void>>();
@@ -89,8 +94,8 @@ async function makeHost(root: string, confirmed: boolean) {
       configWatch = { source, target };
       return { state: 'active', onStateChange() {} };
     },
-    registerFunction(fn: string, handler: (v: unknown) => unknown) {
-      functions.set(fn, handler);
+    registerFunction(fn: string, handler: Handler) {
+      functions.set(fn, wrapHandler?.(fn, handler) ?? handler);
       const h: Hooks = {};
       hooks.set(fn, h);
       const ref = {
@@ -123,10 +128,14 @@ async function makeHost(root: string, confirmed: boolean) {
       host.calls.push(request);
       const { function_id: fn, payload } = request;
       if (fn === 'configuration::get') return { value: await host.config() };
-      if (fn === 'state::list' && payload.scope === 'claude_sessions') return host.records;
+      if (fn === 'state::list') {
+        if (payload.scope === 'claude_sessions') return host.records;
+        if (payload.scope === 'claude_turns') return [];
+      }
       if (fn === 'shell::pty::sessions') return { sessions: [] };
       if (fn === 'shell::exec') {
-        if ((payload.env as Record<string, string>)?.CLAUDE_CONFIG_DIR !== root) {
+        const env = payload.env as Record<string, string>;
+        if (env?.CLAUDE_CONFIG_DIR !== root) {
           throw new Error('missing synthetic configuration directory');
         }
         if (payload.command === "'fixture-cli' agents --json --all") {
@@ -140,14 +149,20 @@ async function makeHost(root: string, confirmed: boolean) {
         if (payload.command !== 'python3') throw new Error('unexpected host command');
         await host.beforeRead();
         const r = spawnSync('python3', payload.args as string[], {
-          env: { PATH: '/usr/bin:/bin', HOME: root, CLAUDE_CONFIG_DIR: root },
+          env: { ...env, PATH: '/usr/bin:/bin', HOME: root },
           cwd: root,
           encoding: 'utf8',
           timeout: Number(payload.timeout_ms),
-          maxBuffer: 65536,
+          maxBuffer: 128 * 1024,
         });
         host.outputs.push(r.stdout ?? '', r.stderr ?? '');
-        return { exit_code: r.status, stdout: r.stdout, stderr: r.stderr };
+        if (r.status === 0 && r.stdout) {
+          // Inspect the actual host boundary, not the lookup's filtered result.
+          const pad = Buffer.from(env.CLAUDE_REPLY_SECRET_PAD, 'base64');
+          const ciphertext = Buffer.from(r.stdout, 'base64').subarray(32);
+          host.snapshots.push(ciphertext.map((byte, i) => byte ^ pad[32 + i]).toString('utf8'));
+        }
+        return { exit_code: r.status, stdout: host.hostOutput(r.stdout ?? ''), stderr: r.stderr };
       }
       const handler = functions.get(fn);
       if (!handler) throw new Error(`unexpected function: ${fn}`);
@@ -173,8 +188,9 @@ async function makeHost(root: string, confirmed: boolean) {
     },
   };
   const iii = backend as unknown as IIIClient;
-  let permission = new ReplyPermission();
+  const permission = new ReplyPermission();
   const refresh = () => permission.refresh(iii);
+  let external = true;
   // An enabled seed for ordinary inventory never authorizes the reply surface.
   const agents = registerAgents(
     iii,
@@ -185,7 +201,7 @@ async function makeHost(root: string, confirmed: boolean) {
       detail: '',
       workspace: '',
     }),
-    () => true,
+    () => external,
     { has: () => false },
   );
   const register = () =>
@@ -195,15 +211,9 @@ async function makeHost(root: string, confirmed: boolean) {
     });
   register();
   if (!confirmed) host.config = async () => null;
-  await observeConfigChanges(
-    iii,
-    async () => {
-      await refresh();
-    },
-    (active) => {
-      if (!active) permission.invalidate();
-    },
-  );
+  await observeReplyConfig(iii, permission, (runtime) => {
+    external = runtime?.external_sessions ?? true;
+  });
   const client = {
     call: (r: Request) => backend.call(r) as Promise<Result>,
     async observe(fn: string, key: string, session: string) {
@@ -230,6 +240,11 @@ async function makeHost(root: string, confirmed: boolean) {
     host,
     client,
     refresh,
+    list: () =>
+      backend.call({
+        function_id: 'claude::agents::list',
+        payload: { all: true },
+      }) as Promise<ListResult>,
     root,
     project,
     projects,
@@ -248,7 +263,7 @@ async function makeHost(root: string, confirmed: boolean) {
     async restart() {
       timers.clear();
       observers.clear();
-      permission = new ReplyPermission();
+      permission.invalidate();
       register();
       await refresh();
     },
@@ -267,11 +282,15 @@ export type SyntheticHost = Awaited<ReturnType<typeof makeHost>>;
 export async function withSyntheticHost<T>(
   run: (s: SyntheticHost) => Promise<T>,
   confirmed = true,
+  wrapHandler?: WrapHandler,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'claude-synthetic-'));
+  const originalTracePolicy = process.env.III_DISABLE_TRACE_PAYLOADS;
   try {
-    return await run(await makeHost(root, confirmed));
+    return await run(await makeHost(root, confirmed, wrapHandler));
   } finally {
+    if (originalTracePolicy === undefined) delete process.env.III_DISABLE_TRACE_PAYLOADS;
+    else process.env.III_DISABLE_TRACE_PAYLOADS = originalTracePolicy;
     await rm(root, { recursive: true, force: true });
   }
 }

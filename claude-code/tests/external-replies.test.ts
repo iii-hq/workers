@@ -9,7 +9,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { context, trace } from '@opentelemetry/api';
+import { registerWorker } from 'iii-sdk';
+import { describe, expect, it, vi } from 'vitest';
 import {
   deferred,
   id,
@@ -76,7 +78,10 @@ describe('lookup', () => {
         ) + JSON.stringify(answer(7, 5, 'not yet')),
       );
       expect((await lookup(s)).last_reply).toEqual({ id: recordId(3), text: 'first\nsecond' });
-      expect(s.host.outputs.join('')).not.toMatch(/secret|not yet|message|parentUuid/);
+      expect(JSON.parse(s.host.snapshots[0])).toEqual({
+        cursor: expect.any(String),
+        replies: [{ id: recordId(3), text: 'first\nsecond' }],
+      });
       await appendFile(s.file, '\n');
       expect((await lookup(s)).last_reply).toEqual({ id: recordId(7), text: 'not yet' });
     });
@@ -102,7 +107,7 @@ describe('lookup', () => {
         ),
       );
       expect((await lookup(s)).last_reply).toBeNull();
-      expect(s.host.outputs.join('')).not.toMatch(/abandoned|private|hello|teammate/);
+      expect(s.host.snapshots.join('')).not.toMatch(/abandoned|private|hello|teammate/);
     });
   });
 
@@ -129,6 +134,86 @@ describe('lookup', () => {
 });
 
 describe('host reader', () => {
+  it('keeps reply text out of both shell exec payloads and rejects modified output', async () => {
+    await withSyntheticHost(async (s) => {
+      const text = 'fixture answer';
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(1), text });
+      expect((await lookup(s)).last_reply?.text).toBe(text);
+      const [first, , second] = s.host.outputs;
+      expect(first).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+      expect(second).not.toBe(first);
+      expect(s.host.outputs.join('')).not.toContain(text);
+      for (const { payload } of reads(s)) {
+        // The Rust SDK's payload redactor masks values under keys containing
+        // "secret", but stdout and argv are recorded verbatim.
+        expect(payload.env).toHaveProperty('CLAUDE_REPLY_SECRET_PAD');
+        expect(JSON.stringify(payload)).not.toContain(text);
+      }
+      s.host.hostOutput = (stdout) => `${stdout[0] === 'A' ? 'B' : 'A'}${stdout.slice(1)}`;
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('keeps lookup and poll text out of recording Node SDK spans', async () => {
+    type Handler = (value: unknown) => unknown;
+    type WrappedHandler = (value: unknown) => Promise<unknown>;
+    let wrap!: (fn: string, handler: Handler) => WrappedHandler;
+    vi.stubEnv('III_DISABLE_TRACE_PAYLOADS', undefined);
+    try {
+      await withSyntheticHost(
+        async (s) => {
+          vi.stubEnv('HOME', s.root);
+          const sdk = registerWorker('ws://127.0.0.1:0', {
+            enableMetricsReporting: false,
+            reconnectionConfig: { maxRetries: 0 },
+            otel: {
+              enabled: true,
+              fetchInstrumentationEnabled: false,
+              metricsEnabled: false,
+              reconnectionConfig: { maxRetries: 0 },
+            },
+          });
+          const { wrapHandler } = sdk as unknown as {
+            wrapHandler: (fn: string, handler: Handler) => WrappedHandler;
+          };
+          wrap = wrapHandler.bind(sdk);
+          const probe = trace.getTracer('reply-privacy-test').startSpan('recorder probe');
+          const addEvent = vi.spyOn(Object.getPrototypeOf(probe), 'addEvent');
+          const policy = process.env.III_DISABLE_TRACE_PAYLOADS;
+          try {
+            expect(probe.isRecording()).toBe(true);
+            // Positive control: the pinned SDK records plaintext if enabled.
+            delete process.env.III_DISABLE_TRACE_PAYLOADS;
+            await context.with(trace.setSpan(context.active(), probe), () =>
+              wrap('test::recorder-control', () => ({ text: 'recorder control' }))({}),
+            );
+            expect(JSON.stringify(addEvent.mock.calls)).toContain('recorder control');
+            if (policy !== undefined) process.env.III_DISABLE_TRACE_PAYLOADS = policy;
+            addEvent.mockClear();
+
+            expect((await lookup(s)).last_reply?.text).toBe('fixture answer');
+            await observe(s, 'A');
+            await appendFile(s.file, lines(answer(2, 1, 'synthetic later answer')));
+            await s.poll();
+            expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'synthetic later answer' }]);
+            const spanEvents = JSON.stringify(addEvent.mock.calls);
+            expect(spanEvents).not.toMatch(/fixture answer|synthetic later answer/);
+          } finally {
+            probe.end();
+            addEvent.mockRestore();
+            await sdk.shutdown();
+            trace.disable();
+            context.disable();
+          }
+        },
+        true,
+        (fn, handler) => (value) => wrap(fn, handler)(value),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('pins the configured shared projects store, using the inventory environment, not cwd', async () => {
     await withSyntheticHost(async (s) => {
       const shared = join(s.root, 'shared store');
@@ -216,7 +301,7 @@ describe('observation', () => {
       s.host.cli.push({ kind: 'background', sessionId: other });
       await writeFile(join(s.project, `${other}.jsonl`), '');
       await observe(s, 'other', other);
-      expect(s.host.outputs.join('')).not.toMatch(/sibling|fixture answer/);
+      expect(s.host.snapshots.join('')).not.toMatch(/sibling|fixture answer/);
       await s.poll();
       expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'new sibling' }]);
       expect(seen(s, 'B')).toEqual([]);
@@ -233,7 +318,7 @@ describe('observation', () => {
       expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'new sibling' }, ...both]);
       expect(seen(s, 'B')).toEqual(both);
       expect(seen(s, 'other')).toEqual([]);
-      expect(s.host.outputs.join('')).not.toContain('not active');
+      expect(s.host.snapshots.join('')).not.toContain('not active');
       expect(
         s.host.calls.filter((c) => c.function_id === ON).map((c) => c.metadata?.for_observer),
       ).toEqual(['A', 'A', 'A', 'B', 'B']);
@@ -330,6 +415,29 @@ async function setPermission(s: SyntheticHost, enabled: boolean) {
 }
 
 describe('authorization', () => {
+  it.each([
+    'configuration:deleted',
+    'configuration:registered',
+  ])('does not let %s discard an in-flight settings update', async (event) => {
+    await withSyntheticHost(async (s) => {
+      expect((await s.list()).agents).toHaveLength(1);
+      const response = deferred<unknown>();
+      const captured = deferred<void>();
+      s.host.config = () => {
+        captured.resolve();
+        return response.promise;
+      };
+      const update = s.configEvent('configuration:updated');
+      await captured.promise;
+      s.host.config = async () => null;
+      await s.configEvent(event);
+      expect((await s.list()).agents).toHaveLength(1);
+      response.resolve({ external_sessions: false });
+      await update;
+      expect((await s.list()).agents).toEqual([]);
+      await expect(lookup(s)).rejects.toThrow('reply access disabled');
+    });
+  });
   it('closes on deletion during an older refresh and rebaselines after registration', async () => {
     await withSyntheticHost(async (s) => {
       await observe(s, 'A');

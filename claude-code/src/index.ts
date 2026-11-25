@@ -17,7 +17,7 @@ import { type Config, loadConfig } from './config.js';
 import {
   type ConfigHolder,
   ReplyPermission,
-  observeConfigChanges,
+  observeReplyConfig,
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
@@ -111,11 +111,7 @@ const reconcileTerminal = () => {
 };
 
 const replyPermission = new ReplyPermission();
-let watchingConfig = false;
-const refresh = async (reloadSettings = true) => {
-  const latest = await replyPermission.refresh(iii, () => watchingConfig);
-  if (!latest || !reloadSettings) return;
-  const { runtime } = latest;
+await observeReplyConfig(iii, replyPermission, (runtime) => {
   const merged: Config = runtime
     ? { engine_url: bootConfig.engine_url, ...runtime }
     : { ...bootConfig };
@@ -123,11 +119,6 @@ const refresh = async (reloadSettings = true) => {
   holder.current = merged;
   // A new workspace or binary applies to the next session, without a restart.
   reconcileTerminal();
-};
-
-await observeConfigChanges(iii, refresh, (active) => {
-  watchingConfig = active;
-  if (!active) replyPermission.invalidate();
 });
 
 // The two event feeds: claude::on-agent-event (AgentEvent frames) and
