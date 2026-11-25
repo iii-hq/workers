@@ -51,6 +51,7 @@ const malformedToolUses = [
   { name: 'missing ID', fields: { id: undefined } },
   { name: 'numeric name', fields: { name: 42 } },
   { name: 'missing name', fields: { name: undefined } },
+  { name: 'empty name', fields: { name: '' } },
   { name: 'missing input', fields: { input: undefined } },
 ];
 const malformedToolResults = [

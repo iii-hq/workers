@@ -129,16 +129,17 @@ And the full output side is available raw: every message Claude Code emits (`sys
 
 ## Event feeds
 
-The worker hosts two event feeds and publishes every turn on them (headless
-runs, `claude::task` sub-agents, and the console terminal). Both are private functions: only this worker calls them, and anyone
-may observe them.
+Only the worker calls these private functions. The two turn feeds publish frames from headless runs, `claude::task` sub-agents, and the console terminal. The external reply watch polls the selected terminal session instead.
 
-| Function | Args | Delivery | `event` carries |
+| Function | Args | Delivery | What observers receive |
 | --- | --- | --- | --- |
 | `claude::on-agent-event` | `{ session_id }` | iii, to the observers of that session | translated AgentEvent frames (`message_complete`, `function_execution_start/end`, `turn_end`, `agent_end`) |
 | `claude::on-raw-event` | `{ session_id }` | iii, to the observers of that session | every Claude Code message verbatim (`system/init`, `assistant`, `user`, `result`, `stream_event`) |
+| `claude::agents::on-reply` | `{ claude_session_id }` (full UUID) | To the matching observer when a poll finds a newly completed active-branch reply after its baseline | `{ claude_session_id, reply: { id, text } }` |
 
-`session_id` is required, non-empty and at most 512 characters; the engine
+For a reply watch, enable `external_sessions` and follow the [lookup and subscription example](#reading-a-terminal-sessions-replies).
+
+For the two turn feeds, `session_id` is required, non-empty and at most 512 characters; the engine
 rejects any other arg with `INVALID_ARGS`. Each feed accepts up to 256
 observers; one more is rejected with `OBSERVER_LIMIT`. A frame of a session
 nobody observes is not sent.
@@ -151,7 +152,7 @@ iii.observe(
 );
 ```
 
-With `capture: ['output']` your function receives one call per frame,
+With `capture: ['output']` a turn-feed observer receives one call per frame,
 fire-and-forget: the `Observed` envelope, whose `output` is the frame:
 
 ```jsonc
