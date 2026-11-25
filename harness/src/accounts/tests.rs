@@ -146,7 +146,15 @@ fn the_session_pins_before_its_project_and_the_project_before_the_global() {
     );
     assert_eq!(pin(json!({ "project_id": "prj_b" })).account, None);
     assert_eq!(pin(json!({ "project_id": "none" })), Pin::default());
-    assert_eq!(pin(json!({ "project_id": "prj_gone" })), Pin::default());
+    // A project gone from the store pins nothing; its tokens count under
+    // its id, which the split shows as no project.
+    assert_eq!(
+        pin(json!({ "project_id": "prj_gone" })),
+        Pin {
+            account: None,
+            project_id: Some("prj_gone".into()),
+        }
+    );
     assert_eq!(pin(json!({ "claude_account": "  " })), Pin::default());
 }
 
@@ -245,6 +253,68 @@ fn a_model_is_priced_under_its_anthropic_id() {
         "claude-opus-4-8"
     );
     assert_eq!(anthropic_model("claude-haiku-4-5"), "claude-haiku-4-5");
+    // Any id is safe to cut, a non-ASCII one included.
+    for id in [
+        "modèle-é",
+        "ç",
+        "ççççççççç",
+        "claude-ünïcødé-x",
+        "-2025092",
+        "x-2025092é",
+    ] {
+        assert_eq!(anthropic_model(id), id);
+    }
+    assert_eq!(anthropic_model("modèle-20250929"), "modèle");
+}
+
+#[test]
+fn a_long_prompt_counts_apart_and_prices_on_its_long_card() {
+    let short = Tokens {
+        input: 40_000,
+        cache_read: 60_000,
+        ..Tokens::default()
+    };
+    assert_eq!(
+        ledger_model("claude-code/claude-haiku-5-5", &short),
+        "claude-haiku-5-5"
+    );
+    let long = Tokens {
+        cache_write: 1,
+        ..short
+    };
+    assert_eq!(
+        ledger_model("claude-code/claude-haiku-5-5", &long),
+        "claude-haiku-5-5#long"
+    );
+    assert_eq!(
+        ledger_model("claude-opus-4-8", &long),
+        "claude-opus-4-8",
+        "no long-prompt card"
+    );
+
+    let mut doc = LedgerDay {
+        account: "work".into(),
+        project_id: None,
+        day: 0,
+        hours: BTreeMap::new(),
+    };
+    add_to_ledger(&mut doc, 0, "claude-haiku-5-5", short);
+    add_to_ledger(&mut doc, 0, "claude-haiku-5-5", long);
+    let models = &doc.hours[&0];
+    assert_eq!(models["claude-haiku-5-5"], short);
+    assert_eq!(models["claude-haiku-5-5#long"], long);
+
+    let prices = price_models(&models.keys().cloned().collect(), &BTreeMap::new());
+    assert_eq!(prices["claude-haiku-5-5"], Price::new(0.10, 0.50, 0.01));
+    assert_eq!(
+        prices["claude-haiku-5-5#long"],
+        Price::new(0.50, 2.50, 0.05)
+    );
+    // The short prompt on the short card; the long one, its cache write
+    // included, on the long card. Per MTok.
+    let expected =
+        (40_000.0 * 0.10 + 60_000.0 * 0.01) + (40_000.0 * 0.50 + 60_000.0 * 0.05 + 0.50 * 1.25);
+    assert!((cost_of(models, &prices) - expected / 1e6).abs() < 1e-12);
 }
 
 #[test]
@@ -266,29 +336,31 @@ fn a_model_without_a_list_price_takes_its_nearest_relatives() {
         Some(Price::new(2.0, 8.0, 0.2)),
     )]);
     let prices = price_models(&models, &catalog);
-    assert_eq!(prices["claude-opus-4-8"], Some(Price::new(5.0, 25.0, 0.50)));
+    assert_eq!(prices["claude-opus-4-8"], Price::new(5.0, 25.0, 0.50));
     assert_eq!(
         prices["claude-opus-4-9"],
-        Some(Price::new(5.0, 25.0, 0.50)),
+        Price::new(5.0, 25.0, 0.50),
         "4.9 is nearest 4.8"
     );
     assert_eq!(
         prices["claude-opus-7"],
-        Some(Price::new(4.0, 20.0, 0.20)),
+        Price::new(4.0, 20.0, 0.20),
         "7 is nearest 5.5"
     );
     assert_eq!(
         prices["claude-sonnet-6"],
-        Some(Price::new(2.0, 10.0, 0.20)),
+        Price::new(2.0, 10.0, 0.20),
         "6 is nearest 5.5"
     );
     assert_eq!(
         prices["claude-haiku-4-5"],
-        Some(Price::new(2.0, 8.0, 0.2)),
+        Price::new(2.0, 8.0, 0.2),
         "the router's catalog wins over the built-in list"
     );
-    assert_eq!(prices["claude-custom-1"], None, "no family to go by");
-    assert_eq!(prices["gpt-5"], None);
+    // No family to go by: the default (Sonnet) price, never free.
+    let sonnet = list_price(DEFAULT_PRICE_MODEL).unwrap();
+    assert_eq!(prices["claude-custom-1"], sonnet);
+    assert_eq!(prices["gpt-5"], sonnet);
 }
 
 #[test]
@@ -402,6 +474,23 @@ fn the_week_starts_seven_days_before_its_reset() {
     assert_eq!(week.start_ms, now - DAY_MS);
     assert_eq!(week.resets_at_ms, Some(past + WEEK_MS as u64));
     assert_eq!(week.percent, 0.0);
+    // tmux drops the reset it passed: the new week starts now, unmeasured.
+    let week = week_of(
+        Some(&TmuxLimit {
+            used_percent: 0.0,
+            resets_at_ms: None,
+            reset_since_read: true,
+        }),
+        now,
+    );
+    assert_eq!(
+        week,
+        Week {
+            start_ms: now,
+            resets_at_ms: None,
+            percent: 0.0,
+        }
+    );
     assert_eq!(week_of(None, now).start_ms, now - WEEK_MS);
 }
 
@@ -469,6 +558,8 @@ struct Data {
     calls: Vec<(String, Value)>,
     /// `tmux::accounts::list`'s answer; `None`: no tmux worker.
     tmux: Option<Value>,
+    /// tmux is there but `tmux::accounts::list` fails (a timeout, say).
+    tmux_fails: bool,
     /// `tmux::usage::claude_outside`'s answers by account; a missing one fails.
     outside: BTreeMap<String, Value>,
 }
@@ -548,6 +639,9 @@ impl Data {
                 let entries = self.entries.entry(sid).or_default();
                 entries.push(json!({ "entry_id": p["entry_id"], "message": p["message"] }));
                 json!({ "entry_id": p["entry_id"] })
+            }
+            "tmux::accounts::list" if self.tmux_fails => {
+                return Err(("timeout".to_string(), "tmux did not answer".to_string()));
             }
             "tmux::accounts::list" => match &self.tmux {
                 Some(list) => list.clone(),
@@ -697,6 +791,10 @@ impl Fake {
 
     fn tmux(&self, list: Option<Value>) {
         self.data.lock().unwrap().tmux = list;
+    }
+
+    fn tmux_fails(&self, fails: bool) {
+        self.data.lock().unwrap().tmux_fails = fails;
     }
 
     fn session(&self, id: &str, metadata: Value) {
@@ -888,37 +986,214 @@ async fn another_provider_never_keeps_an_inherited_account() {
     assert!(fake.calls_to("tmux::accounts::list").is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_sub_agent_runs_on_its_parents_account() {
-    let fake = Fake::with_accounts(json!({})).await;
-    let mut parent = claude_turn();
-    parent.session_id = "s_parent".into();
-    parent.account = Some(turn_account(
-        "personal",
-        AccountSource::Project,
-        Some("prj_x"),
-    ));
-    crate::state::put_turn(&fake.deps.iii, &parent, TIMEOUT)
-        .await
-        .unwrap();
+fn child_of(parent: &TurnRecord, inherited: &str) -> TurnRecord {
     let mut child = claude_turn();
     child.session_id = "s_child".into();
     child.depth = 1;
     child.parent = Some(ParentLink {
-        session_id: "s_parent".into(),
+        session_id: parent.session_id.clone(),
         turn_id: parent.turn_id.clone(),
         function_call_id: "fc_1".into(),
     });
-    set_account_option(&mut child.options.provider_options, "personal");
+    set_account_option(&mut child.options.provider_options, inherited);
+    child
+}
+
+fn parent_turn(account: Option<TurnAccount>) -> TurnRecord {
+    let mut parent = claude_turn();
+    parent.session_id = "s_parent".into();
+    parent.account = account;
+    parent
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agent_runs_on_its_parents_account() {
+    let fake = Fake::with_accounts(json!({})).await;
+    fake.session("s_child", json!({}));
+    let parent = parent_turn(Some(turn_account(
+        "personal",
+        AccountSource::Project,
+        Some("prj_x"),
+    )));
+    crate::state::put_turn(&fake.deps.iii, &parent, TIMEOUT)
+        .await
+        .unwrap();
+    let mut child = child_of(&parent, "personal");
     fake.resolve(&mut child).await;
     assert_eq!(child.account, parent.account);
     assert_eq!(
         account_option(child.options.provider_options.as_ref()),
         Some("personal")
     );
+
+    // tmux gone since: no account goes to the provider, the inherited one
+    // is dropped (the provider fails a pinned id it cannot run).
+    fake.tmux(None);
+    let mut child = child_of(&parent, "personal");
+    assert_eq!(fake.resolve(&mut child).await, TurnResolution::Changed);
+    assert_eq!(child.account, None);
+    assert_eq!(
+        account_option(child.options.provider_options.as_ref()),
+        None
+    );
+
+    // The parent's account removed from tmux: the child fails like a pin.
+    fake.tmux(Some(json!({ "available": true, "global": "work",
+        "accounts": [{ "id": "work" }] })));
+    let mut child = child_of(&parent, "personal");
+    assert_eq!(fake.resolve(&mut child).await, TurnResolution::Unknown);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agent_follows_its_parents_current_account_after_a_switch() {
+    let fake = Fake::with_accounts(json!({})).await;
+    fake.session("s_child", json!({}));
+    // Spawned on `personal`; the global moved to `work` since, and the
+    // parent's current turn (the one waking the child) runs on it.
+    let parent = parent_turn(Some(turn_account("work", AccountSource::Global, None)));
+    crate::state::put_turn(&fake.deps.iii, &parent, TIMEOUT)
+        .await
+        .unwrap();
+    let mut child = child_of(&parent, "personal");
+    assert_eq!(fake.resolve(&mut child).await, TurnResolution::Changed);
+    assert_eq!(
+        child.account,
+        Some(turn_account("work", AccountSource::Global, None))
+    );
+    assert_eq!(
+        account_option(child.options.provider_options.as_ref()),
+        Some("work")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agent_keeps_the_inherited_id_only_when_its_parent_has_no_turn() {
+    let fake = Fake::with_accounts(json!({})).await;
+    fake.session("s_child", json!({}));
+    let parent = parent_turn(None);
+    let mut child = child_of(&parent, "personal");
+    fake.resolve(&mut child).await;
+    assert_eq!(
+        child.account,
+        Some(turn_account("personal", AccountSource::Session, None))
+    );
+
+    // A parent turn with no account (another provider): the child resolves
+    // as a conversation of its own, on the global.
+    crate::state::put_turn(&fake.deps.iii, &parent, TIMEOUT)
+        .await
+        .unwrap();
+    let mut child = child_of(&parent, "personal");
+    fake.resolve(&mut child).await;
+    assert_eq!(
+        child.account,
+        Some(turn_account("work", AccountSource::Global, None))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tmux_that_cannot_answer_leaves_the_turn_unresolved() {
+    let fake = Fake::with_accounts(json!({})).await;
+    fake.tmux_fails(true);
+    let mut record = claude_turn();
+    let before = record.clone();
+    assert!(matches!(
+        fake.resolve(&mut record).await,
+        TurnResolution::Unavailable(detail) if detail.contains("tmux did not answer")
+    ));
+    assert_eq!(record, before, "nothing is decided, nothing is dropped");
+
+    // Once tmux answers, the same turn resolves.
+    fake.tmux_fails(false);
+    assert_eq!(fake.resolve(&mut record).await, TurnResolution::Changed);
+    assert_eq!(record.account.as_ref().unwrap().id, "work");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_whose_account_cannot_be_decided_resumes_then_fails_retryable() {
+    let fake = Fake::with_accounts(json!({})).await;
+    fake.tmux_fails(true);
+    let mut record = claude_turn();
+    record.options.max_transient_resumes = 1;
+    crate::state::put_turn(&fake.deps.iii, &record, TIMEOUT)
+        .await
+        .unwrap();
+    let step = || crate::turn_loop::TurnStepPayload {
+        session_id: S.into(),
+        turn_id: record.turn_id.clone(),
+        step: 0,
+        message_preview: None,
+        depth: 0,
+    };
+
+    // First: one transient resume, the first step queued again.
+    let first = crate::turn_loop::run_step(&fake.deps, step())
+        .await
+        .unwrap();
+    assert_eq!(first.status, TurnStatus::Running);
+    assert_eq!(first.next_step, Some(0));
+    let stored = crate::state::get_turn_unhydrated(&fake.deps.iii, S, TIMEOUT)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.transient_resumes, 1);
+    assert_eq!(stored.account, None);
+    let queued = fake.calls_to("harness::turn");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0]["step"], 0);
+    let appended = fake.calls_to("session::append");
     assert!(
-        fake.calls_to("tmux::accounts::list").is_empty(),
-        "a child does not resolve"
+        appended.iter().any(|entry| {
+            entry["entry_id"] == "e_t_new_transient_recovery_1_recovering"
+                && entry.to_string().contains(ACCOUNTS_UNAVAILABLE_CODE)
+        }),
+        "a recovery entry says why: {appended:?}"
+    );
+
+    // The resumes spent: a retryable failure.
+    let second = crate::turn_loop::run_step(&fake.deps, step())
+        .await
+        .unwrap();
+    assert_eq!(second.status, TurnStatus::Failed);
+    let stored = crate::state::get_turn_unhydrated(&fake.deps.iii, S, TIMEOUT)
+        .await
+        .unwrap()
+        .unwrap();
+    let failure = stored.failure.clone().unwrap();
+    assert_eq!(failure.code, ACCOUNTS_UNAVAILABLE_CODE);
+    assert!(failure.retryable);
+    assert!(
+        retry_gate(Some(&stored), S).is_ok(),
+        "harness::retry takes it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unreadable_projects_leave_a_project_conversation_unresolved() {
+    let fake = Fake::with_accounts(json!({ "project_id": "prj_a" })).await;
+    let path = fake.deps.cfg().await.projects_file_path.clone();
+    std::fs::write(&path, b"{ not json").unwrap();
+    let mut record = claude_turn();
+    assert!(matches!(
+        fake.resolve(&mut record).await,
+        TurnResolution::Unavailable(detail) if detail.contains("projects")
+    ));
+    assert!(record.account.is_none());
+
+    // A conversation with an account of its own never reads its project.
+    fake.session(
+        S,
+        json!({ "project_id": "prj_a", "claude_account": "personal" }),
+    );
+    let mut record = claude_turn();
+    fake.resolve(&mut record).await;
+    assert_eq!(
+        record.account,
+        Some(turn_account(
+            "personal",
+            AccountSource::Session,
+            Some("prj_a")
+        ))
     );
 }
 
@@ -966,6 +1241,48 @@ async fn a_side_chat_runs_on_its_locks_account() {
         Some(turn_account("personal", AccountSource::Project, None)),
         "the lock's, not the conversation's current one"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_side_chat_keeps_its_locks_account_when_tmux_cannot_answer() {
+    let fake = Fake::with_accounts(json!({})).await;
+    fake.session("s_side", json!({ "side_chat_of": S }));
+    let locked = turn_account("personal", AccountSource::Session, None);
+    save_side_lock(&fake, &side_lock(Some(locked.clone()))).await;
+    fake.tmux_fails(true);
+    let mut record = claude_turn();
+    record.session_id = "s_side".into();
+    fake.resolve(&mut record).await;
+    assert_eq!(record.account, Some(locked));
+    assert_eq!(
+        account_option(record.options.provider_options.as_ref()),
+        Some("personal")
+    );
+
+    // No tmux at all: the side chat runs with no account, the lock's dropped
+    // from the options sent.
+    fake.tmux_fails(false);
+    fake.tmux(None);
+    let mut record = claude_turn();
+    record.session_id = "s_side".into();
+    fake.resolve(&mut record).await;
+    assert_eq!(record.account, None);
+    assert_eq!(
+        account_option(record.options.provider_options.as_ref()),
+        None
+    );
+
+    // An old lock with no account has nothing to fall back on.
+    fake.tmux(Some(json!({ "available": true, "global": "work",
+        "accounts": [{ "id": "work" }, { "id": "personal" }] })));
+    fake.tmux_fails(true);
+    save_side_lock(&fake, &side_lock(None)).await;
+    let mut record = claude_turn();
+    record.session_id = "s_side".into();
+    assert!(matches!(
+        fake.resolve(&mut record).await,
+        TurnResolution::Unavailable(_)
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1057,6 +1374,85 @@ async fn retry_starts_a_turn_from_the_transcript_with_no_account_yet() {
     .await
     .unwrap_err();
     assert_eq!(busy.rejected_code().as_deref(), Some("busy"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_runs_on_the_options_a_plain_send_would_take() {
+    let fake = Fake::with_accounts(json!({})).await;
+    let cfg = fake.deps.cfg().await;
+    let mut failed = failed_turn(false);
+    // What the failed turn's own send asked, beyond the session's options.
+    failed.options.max_turns = 3;
+    failed.options.max_transient_resumes = 0;
+    failed.options.max_output_tokens = Some(512);
+    failed.options.metadata = Some(json!({ "fs_scope": { "root": "/w/acme" }, "trace": "x" }));
+    failed.options.thinking_level = Some(crate::types::model::ThinkingLevel::High);
+    crate::state::put_turn(&fake.deps.iii, &failed, TIMEOUT)
+        .await
+        .unwrap();
+    retry(
+        &fake.deps,
+        RetryRequest {
+            session_id: S.into(),
+        },
+    )
+    .await
+    .unwrap();
+    let record = crate::state::get_turn(&fake.deps.iii, S, TIMEOUT)
+        .await
+        .unwrap()
+        .unwrap();
+    let options = &record.options;
+    assert_eq!(options.model, failed.options.model);
+    assert_eq!(options.provider, failed.options.provider);
+    assert_eq!(options.thinking_level, failed.options.thinking_level);
+    assert_eq!(options.system_prompt, failed.options.system_prompt);
+    assert_eq!(options.functions, failed.options.functions);
+    assert_eq!(options.max_turns, cfg.default_max_turns);
+    assert_eq!(options.max_transient_resumes, cfg.max_transient_resumes);
+    assert_eq!(options.max_output_tokens, None);
+    assert_eq!(
+        options.metadata,
+        Some(json!({ "fs_scope": { "root": "/w/acme" } })),
+        "only the working folder outlives its send"
+    );
+    assert_eq!(account_option(options.provider_options.as_ref()), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agents_retry_resolves_from_its_parents_current_turn() {
+    let fake = Fake::with_accounts(json!({})).await;
+    fake.session("s_child", json!({}));
+    let parent = parent_turn(Some(turn_account("personal", AccountSource::Session, None)));
+    crate::state::put_turn(&fake.deps.iii, &parent, TIMEOUT)
+        .await
+        .unwrap();
+    let mut failed = failed_turn(false);
+    failed.session_id = "s_child".into();
+    failed.depth = 1;
+    failed.parent = child_of(&parent, "work").parent;
+    crate::state::put_turn(&fake.deps.iii, &failed, TIMEOUT)
+        .await
+        .unwrap();
+    retry(
+        &fake.deps,
+        RetryRequest {
+            session_id: "s_child".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let mut record = crate::state::get_turn(&fake.deps.iii, "s_child", TIMEOUT)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.parent, failed.parent);
+    assert_eq!(record.account, None);
+    fake.resolve(&mut record).await;
+    assert_eq!(
+        record.account, parent.account,
+        "not the `work` it failed on"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1193,6 +1589,26 @@ async fn the_ledger_and_the_outside_split_the_accounts_week() {
     assert_eq!(got.len(), 2);
     assert!(close(got[0].1, 40.0) && close(got[1].1, 20.0), "{got:?}");
 
+    // The week reset since tmux read it, and tmux dropped the reset: a week
+    // that starts now, with nothing used and nothing to split.
+    let before = AgentMessage::now_ms();
+    fake.tmux(Some(
+        json!({ "available": true, "global": "work", "accounts": [
+        { "id": "work", "usage": { "week": {
+            "used_percent": 0.0, "resets_at_ms": null, "reset_since_read": true } } }
+    ] }),
+    ));
+    let split = account_split(&fake.deps, AccountSplitRequest {})
+        .await
+        .unwrap();
+    assert_eq!(split[0].week_percent, 0.0);
+    assert_eq!(split[0].resets_at_ms, None);
+    assert!(split[0].segments.is_empty());
+    let since = fake.calls_to("tmux::usage::claude_outside").last().unwrap()["since_ms"]
+        .as_i64()
+        .unwrap();
+    assert!(since >= before, "no outside window of the week before");
+
     // No tmux: no accounts to split.
     fake.tmux(None);
     assert!(
@@ -1210,11 +1626,12 @@ async fn the_ledger_forgets_days_past_its_window() {
     let old = LedgerDay {
         account: "work".into(),
         project_id: None,
-        day: today - LEDGER_DAYS - 1,
+        day: today - LEDGER_DAYS,
         hours: BTreeMap::from([(1, BTreeMap::from([("claude-opus-4-8".into(), tokens(1))]))]),
     };
+    // Today and the 34 days before it: 35 days.
     let kept = LedgerDay {
-        day: today - LEDGER_DAYS,
+        day: today - (LEDGER_DAYS - 1),
         ..old.clone()
     };
     for doc in [&old, &kept] {
@@ -1228,6 +1645,16 @@ async fn the_ledger_forgets_days_past_its_window() {
         .await
         .unwrap();
     }
+    // An unreadable document is skipped, not deleted, and fails nothing.
+    crate::state::state_set(
+        &fake.deps.iii,
+        LEDGER_SCOPE,
+        "garbled",
+        json!({ "day": "?" }),
+        TIMEOUT,
+    )
+    .await
+    .unwrap();
     let ledger = load_ledger(&fake.deps, AgentMessage::now_ms())
         .await
         .unwrap();
@@ -1235,4 +1662,42 @@ async fn the_ledger_forgets_days_past_its_window() {
     let data = fake.data.lock().unwrap();
     assert!(data.get(LEDGER_SCOPE, &old.key()).is_null());
     assert!(!data.get(LEDGER_SCOPE, &kept.key()).is_null());
+    assert!(!data.get(LEDGER_SCOPE, "garbled").is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unreadable_ledger_day_is_moved_aside_not_counted_over() {
+    let fake = Fake::with_accounts(json!({})).await;
+    let mut record = claude_turn();
+    record.account = Some(turn_account("work", AccountSource::Global, None));
+    let day = AgentMessage::now_ms().div_euclid(DAY_MS);
+    let key = ledger_key(day, "work", None);
+    let garbled = json!({ "account": "work", "day": day, "hours": "lost" });
+    crate::state::state_set(&fake.deps.iii, LEDGER_SCOPE, &key, garbled.clone(), TIMEOUT)
+        .await
+        .unwrap();
+    record_usage(
+        &fake.deps,
+        &record,
+        &usage_message("claude-opus-4-8", 10, 5),
+    )
+    .await;
+    let data = fake.data.lock().unwrap();
+    let aside: Vec<_> = data
+        .state
+        .iter()
+        .filter(|((scope, _), _)| scope == LEDGER_UNREADABLE_SCOPE)
+        .collect();
+    assert_eq!(aside.len(), 1);
+    assert!(aside[0].0.1.starts_with(&format!("{key}@")));
+    assert_eq!(aside[0].1, &garbled);
+    let doc: LedgerDay = serde_json::from_value(data.get(LEDGER_SCOPE, &key)).unwrap();
+    assert_eq!(
+        doc.hours.values().next().unwrap()["claude-opus-4-8"],
+        Tokens {
+            input: 10,
+            output: 5,
+            ..Tokens::default()
+        }
+    );
 }

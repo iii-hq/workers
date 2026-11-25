@@ -962,11 +962,23 @@ harness resolves the account once and freezes it on the turn:
 The id goes into `provider_options["claude-code"].account` after the preset,
 the inherited options and any named options, and a client's own `account`
 there is dropped. The turn record keeps `account { id, source }`, `source`
-being `session`, `project` or `global`. A sub-agent runs on its parent turn's
-account and a side chat on its lock's. A pin to an account tmux no longer
-lists fails the turn before any model call with `harness.unknown_account`.
-With no tmux worker (or tmux reporting Claude unavailable) no account is set
-and the provider keeps its single sign-in.
+being `session`, `project` or `global`. A sub-agent runs on the account of
+its parent's current turn, whatever it inherited when it was spawned (only a
+parent with no turn record leaves it the inherited id), and a side chat on
+its lock's. A pin, a parent's or a lock's account that tmux no longer lists
+fails the turn before any model call with `harness.unknown_account`. With no
+tmux worker (or tmux reporting Claude unavailable) no account is set, an
+inherited one is dropped, and the provider keeps its single sign-in.
+
+When tmux is there but cannot answer (an error or a timeout), or the projects
+file cannot be read for a conversation whose project may pin its account, the
+account cannot be decided: the turn's first step runs again after a short
+pause, spending one of its transient resumes (a `recovery` entry with `code:
+"harness.accounts_unavailable"`, phase `pre_turn`). When they run out, the
+turn fails with `harness.accounts_unavailable`, retryable, before any model
+call, and `harness::retry` can run it again. A side chat whose lock holds an
+account, and a sub-agent whose parent's turn has one, keep it while tmux
+cannot answer.
 
 The verbose `harness::status` and `harness::on-turn-started` /
 `harness::on-turn-completed` carry `account { id, source }`; the lean status
@@ -974,7 +986,9 @@ does not.
 
 **The usage limit.** The router reports an account's plan limit as a
 `rate_limited` error whose `error_details` are `{ usage_limit: true, window?:
-"five_hour" | "week", resets_at_ms? }`. The turn is not resumed (no transient
+"five_hour" | "week", resets_at_ms? }`, on the response, on its terminal
+message, or on the error of a call that could not be dispatched (its message
+then a JSON object carrying them). The turn is not resumed (no transient
 resume runs) and fails with `llm.usage_limit`, not retryable; the turn's
 `failure.details` and the transcript's error entry carry `{ usage_limit,
 window?, resets_at_ms?, account }`. The lean status leaves `details` out.
@@ -987,9 +1001,13 @@ window?, resets_at_ms?, account }`. The lean status leaves `details` out.
 Both are internal, and agents are denied them.
 
 **`harness::retry`** runs a session's failed last turn again, as a new turn
-with the same user message (no second one is appended) and a newly resolved
-account, so a client that wrote `claude_account` first ("Continue in …")
-runs it there. A turn that had streamed part of an answer continues with the
+with the same user message (no second one is appended), on the session's
+current options and a newly resolved account, so a client that wrote
+`claude_account` first ("Continue in …") runs it there. The options are
+those a send naming nothing would take: the last turn's model, provider,
+reasoning, prompt, skills and policy, the configured per-turn limits, and its
+working folder but none of its send's own metadata; the failed turn's output
+contract stays. A sub-agent's account resolves from its parent's current turn. A turn that had streamed part of an answer continues with the
 same nudge as a transient resume. Refusals: `nothing_to_retry` (no turn, or
 the last one did not fail) and `busy` (a turn is running).
 
@@ -997,7 +1015,12 @@ the last one did not fail) and `busy` (a turn is running).
 tokens (`input`, `output`, `cache_read`, `cache_write`) are added to the
 `state` scope `harness_account_usage`, one document per day, account and
 project (`<day>:<account>:<project id | none>`), by hour and Anthropic model.
-Days older than 35 are deleted.
+A response whose prompt (input, cache reads and cache writes) passes its
+model's long-prompt threshold (Haiku 5.5: 100,000 tokens) counts under
+`<model>#long`, priced on the long-prompt card. A day is kept for 35 days (the
+day and the 34 after it), then deleted. A day's document that cannot be read
+is moved to `harness_account_usage_unreadable` (`<key>@<unix ms>`) before the
+day is counted again, and the split skips one it cannot read.
 
 **`harness::metrics::account-split`** answers, for each account
 `tmux::usage::read` lists, its weekly percentage split into `segments`:
@@ -1006,9 +1029,11 @@ Days older than 35 are deleted.
 seven days before its reset. The Chat's tokens since then (the ledger) and the
 tokens tmux measured outside the Chat (`tmux::usage::claude_outside`) are
 priced at the Anthropic list price (`router::models::get`, else a built-in
-table, else the nearest model of the same family), and each segment gets
-`week_percent × its cost ÷ the total cost`. A project deleted since counts as
-no project. When tmux cannot measure the outside, `outside_measured` is false
+table, else the nearest model of the same family, else Sonnet 5.5's, logged
+once per model), and each segment gets `week_percent × its cost ÷ the total
+cost`. A project deleted since counts as no project. A week that reset after
+tmux read it is at 0% with no segments; when tmux no longer knows its reset,
+it starts now. When tmux cannot measure the outside, `outside_measured` is false
 and the Chat's segments share the whole week. With no tmux worker the answer
 is `[]`; a failing tmux is `tmux_unavailable`.
 

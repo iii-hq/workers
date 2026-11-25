@@ -229,9 +229,6 @@ rules:
   # Re-runs a failed turn on another Claude Code account: the person's
   # call from the limit card (chat-projects phase 4).
   - '!harness::retry'
-  # Re-runs a failed turn on another Claude Code account: the person's
-  # call from the limit card (chat-projects phase 4).
-  - '!harness::retry'
   - '!harness::compact'
   - '!harness::run'
   - '!harness::turn'
@@ -272,9 +269,6 @@ rules:
   - '!harness::side-chat::close'
   - '!harness::side-chat::keep'
   - '!harness::side-chat::summarize'
-  # The accounts' week split by project reads tmux's measure of the usage
-  # outside the Chat, which agents are denied (chat-projects phase 4).
-  - '!harness::metrics::account-split'
   # The accounts' week split by project reads tmux's measure of the usage
   # outside the Chat, which agents are denied (chat-projects phase 4).
   - '!harness::metrics::account-split'

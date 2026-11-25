@@ -46,6 +46,9 @@ pub const SESSION_KEY: &str = "claude_account";
 pub const GLOBAL: &str = "global";
 
 pub const UNKNOWN_ACCOUNT_CODE: &str = "harness.unknown_account";
+/// tmux, or the projects a pin may come from, could not be read when the
+/// turn started: retryable.
+pub const ACCOUNTS_UNAVAILABLE_CODE: &str = "harness.accounts_unavailable";
 pub const USAGE_LIMIT_CODE: &str = "llm.usage_limit";
 
 const ACCOUNTS_LIST_ID: &str = "tmux::accounts::list";
@@ -249,23 +252,29 @@ fn is_not_registered(error: &iii_sdk::errors::Error) -> bool {
     error.to_string().contains("function_not_found")
 }
 
-/// tmux's accounts, or `None` when there is no tmux to run a turn on one
-/// (absent, unreadable, or no Claude Code on its computer).
-async fn tmux_accounts(deps: &Deps) -> Option<TmuxClaude> {
+/// What tmux says about the Claude Code accounts.
+#[derive(Debug, Clone)]
+enum Tmux {
+    /// No tmux to run a turn on an account: no tmux worker (or one that
+    /// predates the accounts), or no Claude Code on its computer.
+    Absent,
+    Accounts(TmuxClaude),
+}
+
+/// tmux's accounts. `Err` when tmux is there but could not answer (an
+/// error, a timeout, an answer of an unknown shape): unlike an absent tmux,
+/// that is no reason to run a pinned turn on the provider's own sign-in.
+async fn tmux_accounts(deps: &Deps) -> Result<Tmux, String> {
     match call_optional(deps, ACCOUNTS_LIST_ID, json!({}), TMUX_TIMEOUT_MS).await {
         Ok(Some(value)) => match serde_json::from_value::<TmuxClaude>(value) {
-            Ok(list) if list.available => Some(list),
-            Ok(_) => None,
-            Err(error) => {
-                tracing::warn!(%error, "tmux::accounts::list answered an unknown shape; no account set");
-                None
-            }
+            Ok(list) if list.available => Ok(Tmux::Accounts(list)),
+            Ok(_) => Ok(Tmux::Absent),
+            Err(error) => Err(format!(
+                "{ACCOUNTS_LIST_ID} answered an unknown shape: {error}"
+            )),
         },
-        Ok(None) => None,
-        Err(error) => {
-            tracing::warn!(%error, "tmux::accounts::list failed; the turn runs with no account set");
-            None
-        }
+        Ok(None) => Ok(Tmux::Absent),
+        Err(error) => Err(format!("{ACCOUNTS_LIST_ID} failed: {error}")),
     }
 }
 
@@ -279,10 +288,12 @@ enum Resolved {
     Account(TurnAccount),
     /// The pin names an account tmux no longer has.
     Unknown(TurnAccount),
+    /// tmux, or the projects a pin may come from, could not be read.
+    Unavailable(String),
 }
 
 /// What [`resolve_turn`] did to the record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnResolution {
     /// Nothing changed.
     Unchanged,
@@ -291,6 +302,10 @@ pub enum TurnResolution {
     /// The turn is pinned to an account that no longer exists: fail it with
     /// [`UNKNOWN_ACCOUNT_CODE`]. `record.account` names that account.
     Unknown,
+    /// The account could not be decided now (tmux or the projects could not
+    /// be read): retry, then fail with [`ACCOUNTS_UNAVAILABLE_CODE`]. The
+    /// record is unchanged.
+    Unavailable(String),
 }
 
 /// The pin a session's metadata and its project make, and the project.
@@ -315,21 +330,27 @@ pub fn pinned_account(account: &Value) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// The order of D139: the session's own account, else its project's pin.
-/// `"global"` in the session follows the global even in a pinned project.
-fn pin_of(metadata: &Map<String, Value>, projects: &[Project]) -> Pin {
-    let project =
-        project_id_of(metadata).and_then(|id| projects.iter().find(|project| project.id == id));
-    let project_id = project.map(|project| project.id.clone());
-    let session = metadata
+/// What the session's own `claude_account` says, when it says anything:
+/// an account id, or [`GLOBAL`].
+fn session_choice(metadata: &Map<String, Value>) -> Option<&str> {
+    metadata
         .get(SESSION_KEY)
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|id| !id.is_empty());
-    let account = match session {
+        .filter(|id| !id.is_empty())
+}
+
+/// The order of D139: the session's own account, else its project's pin.
+/// `"global"` in the session follows the global even in a pinned project.
+/// The project the tokens count under is the session's `project_id`.
+fn pin_of(metadata: &Map<String, Value>, projects: &[Project]) -> Pin {
+    let project_id = project_id_of(metadata).map(str::to_string);
+    let account = match session_choice(metadata) {
         Some(GLOBAL) => None,
         Some(id) => Some((id.to_string(), AccountSource::Session)),
-        None => project
+        None => project_id
+            .as_deref()
+            .and_then(|id| projects.iter().find(|project| project.id == id))
             .and_then(|project| pinned_account(&project.account))
             .map(|id| (id.to_string(), AccountSource::Project)),
     };
@@ -362,50 +383,82 @@ fn pick(list: &TmuxClaude, pin: Pin) -> Resolved {
     }
 }
 
-/// The projects, for a session that names one (best effort: an unreadable
-/// store pins nothing).
-async fn projects_for(deps: &Deps, metadata: &Map<String, Value>) -> Vec<Project> {
-    if project_id_of(metadata).is_none() {
-        return Vec::new();
+/// The projects, when the session's project may pin its account: it names
+/// a project and no account of its own. `Err` when the store cannot be read
+/// then: the pin it may hold is unknown.
+async fn projects_for(deps: &Deps, metadata: &Map<String, Value>) -> Result<Vec<Project>, String> {
+    if session_choice(metadata).is_some() || project_id_of(metadata).is_none() {
+        return Ok(Vec::new());
     }
     let path = deps.cfg().await.projects_file_path.clone();
-    match deps.projects.list(&path).await {
-        Ok(document) => document.projects,
+    deps.projects
+        .list(&path)
+        .await
+        .map(|document| document.projects)
+        .map_err(|error| format!("the projects could not be read: {error}"))
+}
+
+async fn resolve_session(deps: &Deps, metadata: &Map<String, Value>) -> Resolved {
+    let list = match tmux_accounts(deps).await {
+        Ok(Tmux::Accounts(list)) => list,
+        Ok(Tmux::Absent) => return Resolved::None,
+        Err(error) => return Resolved::Unavailable(error),
+    };
+    match projects_for(deps, metadata).await {
+        Ok(projects) => pick(&list, pin_of(metadata, &projects)),
+        Err(error) => Resolved::Unavailable(error),
+    }
+}
+
+/// An account decided elsewhere (a side chat's lock, a sub-agent's parent),
+/// checked against tmux: gone from tmux, it is unknown; with no tmux at
+/// all, the turn runs with no account (the provider's own sign-in, as
+/// before accounts); a tmux that cannot answer does not take it away.
+fn settled(tmux: Result<Tmux, String>, account: TurnAccount, session_id: &str) -> Resolved {
+    match tmux {
+        Ok(Tmux::Accounts(list)) if !list.has(&account.id) => Resolved::Unknown(account),
+        Ok(Tmux::Accounts(_)) => Resolved::Account(account),
+        Ok(Tmux::Absent) => Resolved::None,
         Err(error) => {
-            tracing::warn!(%error, "projects unreadable; the turn's account ignores its project");
-            Vec::new()
+            tracing::warn!(session_id, %error, account = %account.id, "tmux could not list the accounts; the turn keeps the account it was given");
+            Resolved::Account(account)
         }
     }
 }
 
-async fn resolve_session(deps: &Deps, metadata: &Map<String, Value>) -> Resolved {
-    let Some(list) = tmux_accounts(deps).await else {
-        return Resolved::None;
-    };
-    let projects = projects_for(deps, metadata).await;
-    pick(&list, pin_of(metadata, &projects))
-}
-
-/// A sub-agent runs on its parent's account (it inherited the parent's
-/// provider options, the account among them): only the source and the
-/// project are read back from the parent's record.
-async fn inherited(deps: &Deps, parent: &ParentLink, id: &str) -> TurnAccount {
+/// A sub-agent runs on its parent's account: the one the parent's CURRENT
+/// turn runs on, whatever the sub-agent inherited when it was spawned (the
+/// global may have moved since, and a woken sub-agent follows it). Only a
+/// parent with no turn record leaves the inherited id; a parent turn with
+/// no account (another provider, no tmux) leaves the sub-agent to resolve
+/// as a conversation of its own.
+async fn inherited(
+    deps: &Deps,
+    session_id: &str,
+    parent: &ParentLink,
+    inherited_id: Option<&str>,
+    metadata: impl std::future::Future<Output = Result<Map<String, Value>, HarnessError>>,
+) -> Result<Resolved, HarnessError> {
     let timeout = deps.cfg().await.session_timeout_ms;
-    let parent_account = crate::state::get_turn_unhydrated(&deps.iii, &parent.session_id, timeout)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|record| record.account)
-        .filter(|account| account.id == id);
-    parent_account.unwrap_or_else(|| TurnAccount {
-        id: id.to_string(),
-        source: AccountSource::Session,
-        project_id: None,
+    let parent_record =
+        crate::state::get_turn_unhydrated(&deps.iii, &parent.session_id, timeout).await?;
+    let account = match parent_record {
+        Some(record) => record.account,
+        None => inherited_id.map(|id| TurnAccount {
+            id: id.to_string(),
+            source: AccountSource::Session,
+            project_id: None,
+        }),
+    };
+    Ok(match account {
+        Some(account) => settled(tmux_accounts(deps).await, account, session_id),
+        None => resolve_session(deps, &metadata.await?).await,
     })
 }
 
-/// A side chat runs on its lock's account (D80): it skips resolution. A lock
-/// made before phase 4 has none; the side chat's next turn takes the
+/// A side chat runs on its lock's account (D80): it skips resolution, and
+/// a tmux that cannot answer does not take the account away. A lock made
+/// before phase 4 has none; the side chat's next turn takes the
 /// conversation's resolution then and stores it in the lock.
 async fn side_chat_account(
     deps: &Deps,
@@ -418,9 +471,6 @@ async fn side_chat_account(
         // Unlocked (its conversation had no turn), it runs as a conversation.
         return Ok(resolve_session(deps, metadata).await);
     };
-    let Some(list) = tmux_accounts(deps).await else {
-        return Ok(Resolved::None);
-    };
     let locked = lock.account.clone().or_else(|| {
         lock.account_id().map(|id| TurnAccount {
             id: id.to_string(),
@@ -429,15 +479,10 @@ async fn side_chat_account(
         })
     });
     if let Some(account) = locked {
-        return Ok(if list.has(&account.id) {
-            Resolved::Account(account)
-        } else {
-            Resolved::Unknown(account)
-        });
+        return Ok(settled(tmux_accounts(deps).await, account, session_id));
     }
     let parent_metadata = session.metadata_of(parent).await?.unwrap_or_default();
-    let projects = projects_for(deps, &parent_metadata).await;
-    let resolved = pick(&list, pin_of(&parent_metadata, &projects));
+    let resolved = resolve_session(deps, &parent_metadata).await;
     if let Resolved::Account(account) = &resolved {
         lock.account = Some(account.clone());
         set_account_option(&mut lock.provider_options, &account.id);
@@ -446,11 +491,19 @@ async fn side_chat_account(
     Ok(resolved)
 }
 
+async fn session_metadata(
+    session: &SessionClient,
+    session_id: &str,
+) -> Result<Map<String, Value>, HarnessError> {
+    Ok(session.metadata_of(session_id).await?.unwrap_or_default())
+}
+
 /// Resolve the account of a turn that is starting (its first step), once:
 /// a record that has one keeps it. Writes the account into the turn's
 /// provider options and `record.account`; a turn that is not on
 /// `claude-code`, or has no tmux to run on, gets none (an inherited one is
-/// dropped).
+/// dropped). When tmux or the projects cannot be read, the record is left
+/// as it is and the caller retries.
 pub async fn resolve_turn(
     deps: &Deps,
     session: &SessionClient,
@@ -472,28 +525,32 @@ pub async fn resolve_turn(
         });
     }
     let inherited_id = account_option(options.provider_options.as_ref()).map(str::to_string);
-    let resolved = match (record.parent.as_ref(), inherited_id) {
-        (Some(parent), Some(id)) => Resolved::Account(inherited(deps, parent, &id).await),
-        _ => {
-            let metadata = session
-                .metadata_of(&record.session_id)
-                .await?
-                .unwrap_or_default();
+    let session_id = record.session_id.clone();
+    let resolved = match record.parent.as_ref() {
+        Some(parent) => {
+            let metadata = session_metadata(session, &session_id);
+            inherited(deps, &session_id, parent, inherited_id.as_deref(), metadata).await?
+        }
+        None => {
+            let metadata = session_metadata(session, &session_id).await?;
             match crate::side_chat::side_chat_parent(&metadata) {
                 Some(parent) => {
-                    side_chat_account(deps, session, &record.session_id, parent, &metadata).await?
+                    side_chat_account(deps, session, &session_id, parent, &metadata).await?
                 }
                 None => resolve_session(deps, &metadata).await,
             }
         }
     };
+    if let Resolved::Unavailable(error) = resolved {
+        return Ok(TurnResolution::Unavailable(error));
+    }
     let options = &mut record.options;
     let stripped = options
         .provider_options
         .as_mut()
         .is_some_and(strip_account_option);
     match resolved {
-        Resolved::None => Ok(if stripped {
+        Resolved::None | Resolved::Unavailable(_) => Ok(if stripped {
             TurnResolution::Changed
         } else {
             TurnResolution::Unchanged
@@ -514,6 +571,10 @@ pub async fn resolve_turn(
 pub fn unknown_account_message(id: &str) -> String {
     format!("The Claude Code account {id} no longer exists.")
 }
+
+/// The public message of a turn whose account could not be decided.
+pub const ACCOUNTS_UNAVAILABLE_MESSAGE: &str =
+    "The Claude Code account for this turn could not be decided.";
 
 // ── harness::retry ──
 
@@ -582,10 +643,10 @@ pub async fn retry(deps: &Deps, req: RetryRequest) -> Result<RetryResponse, Harn
     let failed = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     retry_gate(failed.as_ref(), session_id)?;
     let failed = failed.expect("the gate refuses a missing turn");
-    let mut options = failed.options.clone();
-    if let Some(provider_options) = options.provider_options.as_mut() {
-        strip_account_option(provider_options);
-    }
+    // The session's current options, as a send naming nothing would take
+    // them; the account resolves anew when the turn starts (a sub-agent's
+    // from its parent's current turn).
+    let options = crate::functions::send::next_turn_options(deps, &cfg, &failed).await?;
     let lineage = crate::functions::send::TurnLineage::continuing(&failed);
     let started = crate::functions::send::seed_new(
         deps,
@@ -611,8 +672,11 @@ pub async fn retry(deps: &Deps, req: RetryRequest) -> Result<RetryResponse, Harn
 
 /// One document per account, project and UTC day (`<day>:<account>:<project>`).
 const LEDGER_SCOPE: &str = "harness_account_usage";
-/// Days a ledger document is kept.
+/// Days a ledger document is kept: its own and the 34 after it.
 const LEDGER_DAYS: i64 = 35;
+/// Where a ledger document that cannot be read is moved, under
+/// `<key>@<unix ms>`, instead of being counted over from zero.
+const LEDGER_UNREADABLE_SCOPE: &str = "harness_account_usage_unreadable";
 const NO_PROJECT_KEY: &str = "none";
 
 /// Tokens of one model.
@@ -673,15 +737,45 @@ pub fn anthropic_model(model: &str) -> String {
     base_id(bare).to_string()
 }
 
-/// A model id without its `-YYYYMMDD` release date.
+/// A model id without its `-YYYYMMDD` release date. Any id is safe: one
+/// whose last nine bytes cut a character keeps its whole id.
 fn base_id(id: &str) -> &str {
-    if id.len() > 9 {
-        let (head, tail) = id.split_at(id.len() - 9);
-        if tail.starts_with('-') && tail[1..].chars().all(|c| c.is_ascii_digit()) {
-            return head;
+    let Some(cut) = id.len().checked_sub(9).filter(|cut| *cut > 0) else {
+        return id;
+    };
+    match id.get(cut..) {
+        Some(tail)
+            if tail.starts_with('-') && tail[1..].bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            &id[..cut]
         }
+        _ => id,
     }
-    id
+}
+
+/// The ledger key of tokens one generation billed on its model's
+/// long-prompt card: `<model>#long`.
+const LONG_PROMPT_SUFFIX: &str = "#long";
+
+/// The prompt a generation sent: what the long-prompt threshold measures.
+fn prompt_tokens(tokens: &Tokens) -> u64 {
+    tokens
+        .input
+        .saturating_add(tokens.cache_read)
+        .saturating_add(tokens.cache_write)
+}
+
+/// The ledger key a generation's tokens count under: its Anthropic id, with
+/// [`LONG_PROMPT_SUFFIX`] when its prompt passed the model's long-prompt
+/// threshold (per generation, so it is decided as it is counted).
+fn ledger_model(model: &str, tokens: &Tokens) -> String {
+    let model = anthropic_model(model);
+    match long_prompt_card(&model) {
+        Some((threshold, _)) if prompt_tokens(tokens) > threshold => {
+            format!("{model}{LONG_PROMPT_SUFFIX}")
+        }
+        _ => model,
+    }
 }
 
 fn usage_tokens(message: &AssistantMessage) -> Option<Tokens> {
@@ -700,7 +794,7 @@ fn add_to_ledger(doc: &mut LedgerDay, at_ms: i64, model: &str, tokens: Tokens) {
     doc.hours
         .entry(hour)
         .or_default()
-        .entry(anthropic_model(model))
+        .entry(ledger_model(model, &tokens))
         .or_default()
         .add(tokens);
 }
@@ -729,12 +823,33 @@ pub async fn record_usage(deps: &Deps, record: &TurnRecord, message: &AssistantM
     let written = async {
         let _guard = deps.locks.guard(&format!("account_usage:{key}")).await;
         let stored = crate::state::state_get(&deps.iii, LEDGER_SCOPE, &key, timeout).await?;
-        let mut doc = serde_json::from_value::<LedgerDay>(stored).unwrap_or(LedgerDay {
+        let new = || LedgerDay {
             account: account.id.clone(),
             project_id: account.project_id.clone(),
             day,
             hours: BTreeMap::new(),
-        });
+        };
+        let mut doc = match stored {
+            Value::Null => new(),
+            stored => match serde_json::from_value::<LedgerDay>(stored.clone()) {
+                Ok(doc) => doc,
+                // Kept aside, not counted over from zero: if it cannot be
+                // moved, this response goes uncounted and the day stays.
+                Err(error) => {
+                    let aside = format!("{key}@{now}");
+                    crate::state::state_set(
+                        &deps.iii,
+                        LEDGER_UNREADABLE_SCOPE,
+                        &aside,
+                        stored,
+                        timeout,
+                    )
+                    .await?;
+                    tracing::warn!(%error, key, aside, "unreadable account usage moved aside");
+                    new()
+                }
+            },
+        };
         add_to_ledger(&mut doc, now, model, tokens);
         let value = serde_json::to_value(&doc)
             .map_err(|e| HarnessError::State(format!("account usage serialize: {e}")))?;
@@ -749,11 +864,20 @@ pub async fn record_usage(deps: &Deps, record: &TurnRecord, message: &AssistantM
     }
 }
 
-/// The ledger's documents, after deleting those past [`LEDGER_DAYS`].
+/// The ledger's documents, after deleting those past [`LEDGER_DAYS`]. One
+/// that cannot be read is left where it is and skipped.
 async fn load_ledger(deps: &Deps, now: i64) -> Result<Vec<LedgerDay>, HarnessError> {
     let timeout = deps.cfg().await.session_timeout_ms;
-    let docs: Vec<LedgerDay> = crate::state::list_values(&deps.iii, LEDGER_SCOPE, timeout).await?;
-    let oldest = now.div_euclid(DAY_MS) - LEDGER_DAYS;
+    let rows: Vec<Value> = crate::state::list_values(&deps.iii, LEDGER_SCOPE, timeout).await?;
+    let docs: Vec<LedgerDay> = rows
+        .into_iter()
+        .filter_map(|row| {
+            serde_json::from_value(row)
+                .inspect_err(|error| tracing::warn!(%error, "unreadable account usage skipped"))
+                .ok()
+        })
+        .collect();
+    let oldest = now.div_euclid(DAY_MS) - (LEDGER_DAYS - 1);
     let (kept, stale): (Vec<_>, Vec<_>) = docs.into_iter().partition(|doc| doc.day >= oldest);
     for doc in stale {
         if let Err(error) =
@@ -849,6 +973,39 @@ fn list_price(model: &str) -> Option<Price> {
     })
 }
 
+/// Models billed on a second card once a generation's prompt (input, cache
+/// reads and cache writes) passes a size (`provider-anthropic`'s
+/// `long_prompt_card`): `(threshold tokens, long-prompt card)`.
+fn long_prompt_card(model: &str) -> Option<(u64, Price)> {
+    match model {
+        "claude-haiku-5-5" => Some((100_000, Price::new(0.50, 2.50, 0.05))),
+        _ => None,
+    }
+}
+
+/// The price of a model with no family to go by: the newest Sonnet's, the
+/// family most turns run on.
+const DEFAULT_PRICE_MODEL: &str = "claude-sonnet-5-5";
+
+/// The models already logged as priced at [`DEFAULT_PRICE_MODEL`]: once
+/// each per process.
+static DEFAULT_PRICED: std::sync::LazyLock<std::sync::Mutex<BTreeSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn warn_default_price(model: &str) {
+    let first = DEFAULT_PRICED
+        .lock()
+        .map(|mut seen| seen.insert(model.to_string()))
+        .unwrap_or(false);
+    if first {
+        tracing::warn!(
+            model,
+            priced_as = DEFAULT_PRICE_MODEL,
+            "a model with no family to price it by counts at the default price"
+        );
+    }
+}
+
 /// Every model the built-in list prices.
 const LISTED_MODELS: [&str; 18] = [
     "claude-opus-5-5",
@@ -899,11 +1056,16 @@ fn nearest_price(model: &str, priced: &BTreeMap<String, Price>) -> Option<Price>
         .map(|(_, price)| price)
 }
 
-/// The list price of each model: the router's `anthropic/<model>` entry,
-/// else the built-in list, else the nearest model of its family. `None`
-/// for a model with no family to go by.
-async fn price_book(deps: &Deps, models: &BTreeSet<String>) -> BTreeMap<String, Option<Price>> {
-    let lookups = models.iter().map(|model| async move {
+/// The list price of each ledger model: the router's `anthropic/<model>`
+/// entry, else the built-in list, else the nearest model of its family,
+/// else [`DEFAULT_PRICE_MODEL`]'s. A `#long` key prices at its model's
+/// long-prompt card.
+async fn price_book(deps: &Deps, models: &BTreeSet<String>) -> BTreeMap<String, Price> {
+    let bases: BTreeSet<&str> = models
+        .iter()
+        .map(|model| model.strip_suffix(LONG_PROMPT_SUFFIX).unwrap_or(model))
+        .collect();
+    let lookups = bases.into_iter().map(|model| async move {
         let catalog = call_optional(
             deps,
             ROUTER_MODEL_GET_ID,
@@ -917,7 +1079,7 @@ async fn price_book(deps: &Deps, models: &BTreeSet<String>) -> BTreeMap<String, 
         .and_then(|model| serde_json::from_value::<crate::types::model::Model>(model).ok())
         .and_then(|model| model.pricing)
         .and_then(|pricing| Price::from_catalog(&pricing));
-        (model.clone(), catalog)
+        (model.to_string(), catalog)
     });
     let catalog: BTreeMap<String, Option<Price>> = futures_util::future::join_all(lookups)
         .await
@@ -929,7 +1091,7 @@ async fn price_book(deps: &Deps, models: &BTreeSet<String>) -> BTreeMap<String, 
 fn price_models(
     models: &BTreeSet<String>,
     catalog: &BTreeMap<String, Option<Price>>,
-) -> BTreeMap<String, Option<Price>> {
+) -> BTreeMap<String, Price> {
     let mut priced: BTreeMap<String, Price> = LISTED_MODELS
         .iter()
         .filter_map(|model| Some((model.to_string(), list_price(model)?)))
@@ -939,22 +1101,33 @@ fn price_models(
             priced.insert(model.clone(), *price);
         }
     }
+    let default = priced
+        .get(DEFAULT_PRICE_MODEL)
+        .copied()
+        .expect("the built-in list prices the default model");
     models
         .iter()
-        .map(|model| {
-            let price = priced
-                .get(model)
-                .copied()
-                .or_else(|| nearest_price(model, &priced));
-            (model.clone(), price)
+        .map(|key| {
+            let (model, long) = match key.strip_suffix(LONG_PROMPT_SUFFIX) {
+                Some(model) => (model, long_prompt_card(model).map(|(_, card)| card)),
+                None => (key.as_str(), None),
+            };
+            let price = long
+                .or_else(|| priced.get(model).copied())
+                .or_else(|| nearest_price(model, &priced))
+                .unwrap_or_else(|| {
+                    warn_default_price(model);
+                    default
+                });
+            (key.clone(), price)
         })
         .collect()
 }
 
-fn cost_of(models: &BTreeMap<String, Tokens>, prices: &BTreeMap<String, Option<Price>>) -> f64 {
+fn cost_of(models: &BTreeMap<String, Tokens>, prices: &BTreeMap<String, Price>) -> f64 {
     models
         .iter()
-        .filter_map(|(model, tokens)| Some(prices.get(model).copied().flatten()?.cost(tokens)))
+        .filter_map(|(model, tokens)| Some(prices.get(model)?.cost(tokens)))
         .sum()
 }
 
@@ -1013,11 +1186,13 @@ struct Week {
 }
 
 /// The week starts at `resets_at_ms − 7 days`. A window that reset after
-/// tmux read it has started again: nothing used yet.
+/// tmux read it has started again: nothing used yet. tmux drops the reset
+/// it passed (`resets_at_ms: None`); the new week then starts now, so no
+/// Chat or outside tokens of the old one are measured against it.
 fn week_of(limit: Option<&TmuxLimit>, now: i64) -> Week {
     match limit {
         Some(limit) if limit.reset_since_read => Week {
-            start_ms: limit.resets_at_ms.map_or(now - WEEK_MS, |at| at as i64),
+            start_ms: limit.resets_at_ms.map_or(now, |at| at as i64),
             resets_at_ms: limit.resets_at_ms.map(|at| at + WEEK_MS as u64),
             percent: 0.0,
         },
@@ -1045,11 +1220,14 @@ fn segments(
     no_project: f64,
     outside: Option<f64>,
 ) -> Vec<SplitSegment> {
+    if week_percent <= 0.0 {
+        return Vec::new();
+    }
     let total: f64 =
         projects.iter().map(|(_, cost)| cost).sum::<f64>() + no_project + outside.unwrap_or(0.0);
     if total <= 0.0 {
         return match outside {
-            Some(_) if week_percent > 0.0 => vec![SplitSegment::Outside {
+            Some(_) => vec![SplitSegment::Outside {
                 percent: week_percent,
             }],
             _ => Vec::new(),

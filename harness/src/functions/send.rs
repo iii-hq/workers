@@ -1599,6 +1599,45 @@ fn build_options(
     }
 }
 
+/// The options a send that names nothing would start the session's next
+/// turn on, after `prev`: its model, provider, reasoning, prompt, agent
+/// identity, skills, policy, budget and language, with the configured
+/// per-turn limits and none of the last send's own metadata (`seed_new`
+/// keeps its working folder). `harness::retry` runs a failed turn again on
+/// them (chat-projects §4.2.4), with the failed turn's output contract, the
+/// part of the exchange it re-runs. The Claude Code account is left for the
+/// turn's first step to resolve.
+pub(crate) async fn next_turn_options(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    prev: &TurnRecord,
+) -> Result<TurnOptions, HarnessError> {
+    let req = SendRequest {
+        session_id: Some(prev.session_id.clone()),
+        message: MessageInput::Text(String::new()),
+        model: None,
+        provider: None,
+        idempotency_key: None,
+        session: None,
+        options: None,
+    };
+    let functions = send_functions(cfg, &req, prev.options.functions.as_ref()).cloned();
+    let (model, provider) = resolve_model_route(None, &req, Some(&prev.options), None)?;
+    // The prompt is inherited below: no identity is resolved for it.
+    let mut options = build_options(cfg, &req, model, provider, None, "");
+    options.functions = functions;
+    inherit_prior_system_prompt(&mut options, &prev.options);
+    inherit_prior_reasoning(&mut options, &prev.options);
+    prepare_skill_context(deps, &mut options, Some(&prev.options), None, true).await?;
+    options.response_language = prev.options.response_language.clone();
+    options.output = prev.options.output.clone();
+    crate::budget::prepare_root(deps, &prev.session_id, &mut options, Some(prev)).await?;
+    if let Some(provider_options) = options.provider_options.as_mut() {
+        crate::accounts::strip_account_option(provider_options);
+    }
+    Ok(options)
+}
+
 /// Merge the frozen agent display/configuration snapshot into session
 /// metadata without disturbing console-owned or tenancy keys.
 pub(crate) fn session_metadata_with_agent(

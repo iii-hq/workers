@@ -405,6 +405,9 @@ pub fn seeded_record(parent: &TurnRecord, session_id: &str) -> TurnRecord {
     record.result_error = None;
     record.stop_reason = None;
     record.failure = None;
+    // The account was the conversation's turn's: the side chat's first turn
+    // takes its lock's (D80).
+    record.account = None;
     record.validation_retries = 0;
     record.transient_resumes = 0;
     record.ask_step = None;
