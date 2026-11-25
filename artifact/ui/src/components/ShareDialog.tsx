@@ -139,9 +139,10 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
   }, [open, artifact.id, api])
 
   // A link made before its address resolved has no public URL yet: keep
-  // re-reading this share until it does, or until the dialog closes.
+  // re-reading this share while the dialog is open, until it has one. The
+  // dialog stays mounted when closed, so `open` gates the polling.
   useEffect(() => {
-    if (!share || !isWaitingForUrl(share)) return
+    if (!open || !share || !isWaitingForUrl(share)) return
     const current = session.current
     const timer = window.setTimeout(() => {
       api.shares(artifact.id).then(
@@ -155,7 +156,7 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
       )
     }, WAITING_POLL_MS)
     return () => window.clearTimeout(timer)
-  }, [share, artifact.id, api])
+  }, [open, share, artifact.id, api])
 
   const passcodeTooShort = passcode.length > 0 && passcode.length < MIN_PASSCODE
 

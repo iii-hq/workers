@@ -73,10 +73,29 @@ impl Limiter {
         true
     }
 
-    /// Give back one hit, e.g. a reserved passcode attempt that turned out
-    /// right.
-    fn release(&self, key: &str) {
-        if let Some(slot) = self.windows.lock().expect("limiter lock").get_mut(key) {
+    /// Like [`Self::hit`], returning the start of the window the hit landed
+    /// in, so [`Self::release`] can give it back to that window only.
+    fn reserve(&self, key: &str, limit: u32, window: i64, now: i64) -> Option<i64> {
+        let mut windows = self.windows.lock().expect("limiter lock");
+        let slot = windows.entry(key.to_string()).or_insert((now, 0));
+        if now - slot.0 >= window {
+            *slot = (now, 0);
+        }
+        if slot.1 >= limit {
+            return None;
+        }
+        slot.1 += 1;
+        Some(slot.0)
+    }
+
+    /// Give back a reservation, e.g. a passcode attempt that turned out right,
+    /// but only to the window that took it: once that window has closed, the
+    /// current window's count belongs to other requests and stays as is.
+    fn release(&self, key: &str, window_start: i64) {
+        let mut windows = self.windows.lock().expect("limiter lock");
+        if let Some(slot) = windows.get_mut(key)
+            && slot.0 == window_start
+        {
             slot.1 = slot.1.saturating_sub(1);
         }
     }
@@ -242,12 +261,12 @@ async fn handle(
         // Reserve the attempt before hashing: concurrent guesses each take a
         // slot up front, so no burst can exceed the limit. A cancelled
         // request keeps its slot; only a right passcode gives it back.
-        if !app
-            .limiter
-            .hit(&failures, PASSCODE_FAILURES_PER_10_MIN, 600, now)
-        {
+        let Some(window_start) =
+            app.limiter
+                .reserve(&failures, PASSCODE_FAILURES_PER_10_MIN, 600, now)
+        else {
             return Ok(too_many());
-        }
+        };
         let stored = stored.clone();
         let ok = tokio::task::spawn_blocking(move || verify_passcode(&attempt, &stored))
             .await
@@ -255,7 +274,7 @@ async fn handle(
         if !ok {
             return Ok(prompt(&artifact.title, Some("That passcode is not right.")));
         }
-        app.limiter.release(&failures);
+        app.limiter.release(&failures, window_start);
     }
 
     let Some(content) = app.store.load_content(&artifact.id, share.version).await? else {
@@ -612,6 +631,24 @@ mod tests {
             let (status, _, _) = call(router(store.clone(), Exposure::Local), get_req(&path)).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         }
+    }
+
+    #[test]
+    fn a_release_only_refunds_the_window_that_reserved() {
+        let limiter = Limiter::default();
+        let start = limiter.reserve("k", 5, 600, 599).expect("reserved");
+        assert!(limiter.hit("k", 5, 600, 1200), "a later window opens");
+        limiter.release("k", start);
+        assert!(
+            limiter.exhausted("k", 1, 600, 1200),
+            "the new window keeps the failure it recorded"
+        );
+        let same = limiter.reserve("k", 5, 600, 1201).expect("reserved");
+        limiter.release("k", same);
+        assert!(
+            !limiter.exhausted("k", 2, 600, 1201),
+            "refunded in its own window"
+        );
     }
 
     #[test]
