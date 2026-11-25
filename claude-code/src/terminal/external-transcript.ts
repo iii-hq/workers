@@ -120,12 +120,14 @@ def message_content(row, role):
         require(isinstance(part, dict) and isinstance(part.get('type'), str))
         if part['type'] == 'text':
             require(isinstance(part.get('text'), str))
-        if part['type'] == 'tool_result' and 'content' in part:
-            result = part['content']
-            require(isinstance(result, (str, list)))
-            if isinstance(result, list):
-                for block in result:
-                    validate_tool_result_block(block, ('text', 'image', 'search_result', 'document', 'tool_reference'))
+        if part['type'] == 'tool_result':
+            require(isinstance(part.get('tool_use_id'), str))
+            if 'content' in part:
+                result = part['content']
+                require(isinstance(result, (str, list)))
+                if isinstance(result, list):
+                    for block in result:
+                        validate_tool_result_block(block, ('text', 'image', 'search_result', 'document', 'tool_reference'))
     return content
 
 def visible(row):

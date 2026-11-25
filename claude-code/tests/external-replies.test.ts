@@ -29,28 +29,35 @@ const observe = (s: SyntheticHost, key: string, session = id) => s.client.observ
 const lines = (...rows: unknown[]) => rows.map((r) => `${JSON.stringify(r)}\n`).join('');
 const answer = (n: number, parent: number | null, text: string) =>
   record(n, parent, 'assistant', text);
-const toolResultTranscript = (content: unknown) =>
+const toolResultTranscript = (fields: { content?: unknown; tool_use_id?: unknown }) =>
   lines(
     record(1, null, 'user', 'synthetic prompt'),
     record(2, 1, 'assistant', [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }]),
-    record(3, 2, 'user', [{ type: 'tool_result', tool_use_id: 'toolu_1', content }]),
+    record(3, 2, 'user', [{ type: 'tool_result', tool_use_id: 'toolu_1', ...fields }]),
     answer(4, 3, 'synthetic answer'),
   );
 const malformedToolResults = [
-  { name: 'numeric scalar', content: 42 },
-  { name: 'numeric block', content: [42] },
-  { name: 'unknown block type', content: [{ type: 'tool_use' }] },
-  { name: 'malformed text block', content: [{ type: 'text', text: 42 }] },
-  { name: 'malformed image block', content: [{ type: 'image', source: 42 }] },
+  { name: 'numeric content', fields: { content: 42 } },
+  { name: 'numeric block', fields: { content: [42] } },
+  { name: 'unknown block type', fields: { content: [{ type: 'tool_use' }] } },
+  { name: 'malformed text block', fields: { content: [{ type: 'text', text: 42 }] } },
+  { name: 'malformed image block', fields: { content: [{ type: 'image', source: 42 }] } },
   {
     name: 'malformed document source',
-    content: [{ type: 'document', source: { type: 'content', content: [42] } }],
+    fields: { content: [{ type: 'document', source: { type: 'content', content: [42] } }] },
   },
   {
     name: 'malformed search result',
-    content: [{ type: 'search_result', source: 'synthetic', title: 'synthetic', content: [42] }],
+    fields: {
+      content: [{ type: 'search_result', source: 'synthetic', title: 'synthetic', content: [42] }],
+    },
   },
-  { name: 'malformed tool reference', content: [{ type: 'tool_reference', tool_name: 42 }] },
+  {
+    name: 'malformed tool reference',
+    fields: { content: [{ type: 'tool_reference', tool_name: 42 }] },
+  },
+  { name: 'numeric tool use ID', fields: { tool_use_id: 42, content: 'synthetic result' } },
+  { name: 'missing tool use ID', fields: { tool_use_id: undefined } },
 ];
 const reads = (s: SyntheticHost) => s.host.calls.filter((c) => c.payload.command === 'python3');
 const seen = (s: SyntheticHost, observer: string) =>
@@ -118,16 +125,13 @@ describe('lookup', () => {
     });
   });
 
-  it.each(malformedToolResults)(
-    'rejects invalid tool result content ($name) in an active ancestor',
-    async ({ content }) => {
-      await withSyntheticHost(async (s) => {
-        await writeFile(s.file, toolResultTranscript(content));
-        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
-        expect(s.host.snapshots).toEqual([]);
-      });
-    },
-  );
+  it.each(malformedToolResults)('rejects an active tool result with $name', async ({ fields }) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript(fields));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
+    });
+  });
 
   it('accepts string, block array and omitted tool result content', async () => {
     await withSyntheticHost(async (s) => {
@@ -151,7 +155,7 @@ describe('lookup', () => {
         ],
         undefined,
       ]) {
-        await writeFile(s.file, toolResultTranscript(content));
+        await writeFile(s.file, toolResultTranscript({ content }));
         expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
       }
     });
@@ -193,8 +197,10 @@ describe('lookup', () => {
         lines(
           record(1, null, 'user', 'hello'),
           answer(2, 1, 'abandoned'),
-          record(3, 1, 'assistant', [{ type: 'tool_use', input: 'private' }]),
-          record(4, 3, 'user', [{ type: 'tool_result', content: 'private' }]),
+          record(3, 1, 'assistant', [{ type: 'tool_use', id: 'toolu_1', input: 'private' }]),
+          record(4, 3, 'user', [
+            { type: 'tool_result', tool_use_id: 'toolu_1', content: 'private' },
+          ]),
         ),
       );
       expect((await lookup(s)).last_reply).toBeNull();
@@ -478,16 +484,13 @@ describe('observation', () => {
     });
   });
 
-  it.each(malformedToolResults)(
-    'rejects baseline admission for invalid tool result content ($name)',
-    async ({ content }) => {
-      await withSyntheticHost(async (s) => {
-        await writeFile(s.file, toolResultTranscript(content));
-        await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
-        expect(s.timers.size).toBe(0);
-      });
-    },
-  );
+  it.each(malformedToolResults)('rejects a baseline tool result with $name', async ({ fields }) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript(fields));
+      await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.timers.size).toBe(0);
+    });
+  });
 
   it('serializes admission with polling, rejects unreadable baselines and stops on last removal', async () => {
     await withSyntheticHost(async (s) => {
