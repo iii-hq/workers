@@ -13,7 +13,9 @@ dependencies:
 config:
   # Only keys the 0.2.2 schema knows: compose validates these defaults against
   # the previously registered schema before the new version can start.
-  # `provider` (cloudflared) and `proxy_protocol` stay at their code defaults.
+  # `provider` and `proxy_protocol` stay out: a missing `provider` resolves at
+  # boot to opentunnel on a fresh install and to cloudflared on a worker that
+  # already ran on it (see config::provider_for_unnamed).
   targets:
     webhooks: http://127.0.0.1:3112
   cloudflared: cloudflared

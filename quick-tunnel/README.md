@@ -1,6 +1,6 @@
 # quick-tunnel
 
-Worker binário Rust do iii que gerencia túneis públicos por leases independentes e persistidas, com um provider por instância: **processos filhos cloudflared Quick Tunnel** (`provider: cloudflared`, padrão) ou **OpenTunnel dentro do processo** (`provider: opentunnel`). Não implementa servidor HTTP, não substitui os workers HTTP/queue e não instala nem baixa cloudflared.
+Worker binário Rust do iii que gerencia túneis públicos por leases independentes e persistidas, com um provider por instância: **OpenTunnel dentro do processo** (`provider: opentunnel`, padrão em instalações novas, sem binário externo) ou **processos filhos cloudflared Quick Tunnel** (`provider: cloudflared`). Não implementa servidor HTTP, não substitui os workers HTTP/queue e não instala nem baixa cloudflared.
 
 ## Pré-requisito e segurança
 
@@ -15,7 +15,7 @@ O filho usa `env_clear`, HOME temporário privado, configuração YAML vazia exp
 ## Provider OpenTunnel
 
 ```yaml
-provider: opentunnel            # omitido = cloudflared
+provider: opentunnel            # padrão em instalações novas
 targets:
   webhooks: http://127.0.0.1:3112
   mesh: http://127.0.0.1:49180
@@ -45,8 +45,10 @@ Segurança, leia antes de habilitar:
 
 O worker usa a configuração central (`configuration`), via `iii-config-client`, com ID `III_CONFIG_NAME` ou `quick-tunnel`. `--config arquivo.yaml` é seed somente se o registro ainda não tiver valor; falhas da configuração central não viram defaults silenciosos. Mudanças exigem **reinício**: reconfiguração ao vivo de provider/destinos/executável não é suportada para evitar trocar a autorização de leases ativas. `--local-config` é alternativa explícita para desenvolvimento/testes isolados.
 
+**Provider omitido.** Uma configuração sem `provider` (gravada antes da chave existir, ou os defaults do pacote injetados pelo Compose, que não podem trazê-la) é resolvida no boot: se `<diretório de state_path>/opentunnel/` existe, `opentunnel`; senão, se o arquivo `state_path` já existe (o worker já rodou antes, com cloudflared), `cloudflared`; senão (instalação nova), `opentunnel`. Assim quem já usava cloudflared continua nele e quem instala agora começa no OpenTunnel. O provider escolhido vai para o log (`info`). Para fixar, grave `provider` explicitamente; para migrar uma instalação existente, use `provider: opentunnel`.
+
 ```yaml
-provider: cloudflared        # ou opentunnel
+provider: opentunnel         # ou cloudflared; omitido: ver acima
 targets:
   webhooks: http://127.0.0.1:3112
 proxy_protocol: []           # só com opentunnel

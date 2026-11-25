@@ -1,7 +1,11 @@
 #![cfg(unix)]
 
 use chrono::Utc;
-use quick_tunnel::{api::*, config::Config, manager::Manager};
+use quick_tunnel::{
+    api::*,
+    config::{Config, ProviderKind},
+    manager::Manager,
+};
 use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
 use tokio::sync::broadcast;
 
@@ -21,6 +25,7 @@ fn fixture(mode: &str) -> (tempfile::TempDir, Config) {
     }
     std::fs::write(dir.path().join("mode"), mode).unwrap();
     let config = Config {
+        provider: ProviderKind::Cloudflared,
         cloudflared: executable.to_str().unwrap().into(),
         state_path: dir.path().join("leases.json"),
         startup_timeout_ms: 500,

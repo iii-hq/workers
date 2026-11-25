@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use schemars::JsonSchema;
@@ -27,6 +27,10 @@ pub fn config_id() -> &'static str {
 }
 
 /// Which tunnel service publishes the targets. One per worker instance.
+///
+/// The enum default stays `Cloudflared` because it is also the wire meaning of a
+/// `status` response without `provider`. A new configuration defaults to
+/// `Opentunnel` through [`Config::default`]; see [`fill_missing_provider`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
@@ -71,7 +75,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            provider: ProviderKind::Cloudflared,
+            provider: ProviderKind::Opentunnel,
             targets: BTreeMap::from([("webhooks".into(), "http://127.0.0.1:3112".into())]),
             proxy_protocol: BTreeSet::new(),
             cloudflared: "cloudflared".into(),
@@ -175,6 +179,46 @@ impl Config {
     }
 }
 
+/// The provider for a stored configuration that names none.
+///
+/// Configurations written before `provider` existed leave it out, and so do
+/// Compose-injected package defaults (the manifest cannot carry the key, see
+/// `package_defaults_use_only_keys_the_0_2_2_schema_accepts`). A worker that
+/// already ran on cloudflared keeps it: switching would change its public URL
+/// and could refuse targets OpenTunnel cannot carry. A fresh worker gets
+/// OpenTunnel, which needs no binary.
+///
+/// The OpenTunnel state directory is created before the lease file on every
+/// OpenTunnel boot, so it marks a worker that already chose OpenTunnel.
+pub fn provider_for_unnamed(state_path: &Path) -> ProviderKind {
+    let parent = crate::manager::state_parent(state_path);
+    if parent.join("opentunnel").is_dir() || !state_path.exists() {
+        ProviderKind::Opentunnel
+    } else {
+        ProviderKind::Cloudflared
+    }
+}
+
+/// Writes the resolved provider into a raw configuration that omits it, before
+/// it is parsed. Returns the provider it filled in, if any.
+pub fn fill_missing_provider(value: &mut serde_json::Value) -> Option<ProviderKind> {
+    let map = value.as_object_mut()?;
+    if map.get("provider").is_some_and(|p| !p.is_null()) {
+        return None;
+    }
+    let state_path = map
+        .get("state_path")
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(|| Config::default().state_path, PathBuf::from);
+    let kind = provider_for_unnamed(&state_path);
+    let name = match kind {
+        ProviderKind::Cloudflared => "cloudflared",
+        ProviderKind::Opentunnel => "opentunnel",
+    };
+    map.insert("provider".into(), serde_json::Value::from(name));
+    Some(kind)
+}
+
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -196,13 +240,59 @@ mod tests {
     }
 
     #[test]
-    fn provider_defaults_to_cloudflared_and_stored_configs_without_it_load() {
-        assert_eq!(Config::default().provider, ProviderKind::Cloudflared);
+    fn new_configs_default_to_opentunnel() {
+        assert_eq!(Config::default().provider, ProviderKind::Opentunnel);
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn missing_provider_is_opentunnel_on_a_fresh_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("leases.json");
+        assert_eq!(provider_for_unnamed(&state), ProviderKind::Opentunnel);
+    }
+
+    #[test]
+    fn missing_provider_keeps_cloudflared_for_a_worker_that_already_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("leases.json");
+        std::fs::write(&state, "[]").unwrap();
+        assert_eq!(provider_for_unnamed(&state), ProviderKind::Cloudflared);
+    }
+
+    #[test]
+    fn missing_provider_keeps_opentunnel_once_its_state_directory_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("leases.json");
+        std::fs::write(&state, "[]").unwrap();
+        std::fs::create_dir(dir.path().join("opentunnel")).unwrap();
+        assert_eq!(provider_for_unnamed(&state), ProviderKind::Opentunnel);
+    }
+
+    #[test]
+    fn fill_missing_provider_uses_the_configured_state_path_and_keeps_an_explicit_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("leases.json");
+        std::fs::write(&state, "[]").unwrap();
+        let mut legacy = serde_json::json!({ "state_path": state });
+        assert_eq!(
+            fill_missing_provider(&mut legacy),
+            Some(ProviderKind::Cloudflared)
+        );
+        let parsed: Config = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.provider, ProviderKind::Cloudflared);
+        let mut explicit = serde_json::json!({ "provider": "opentunnel", "state_path": state });
+        assert_eq!(fill_missing_provider(&mut explicit), None);
+        assert_eq!(explicit["provider"], "opentunnel");
+    }
+
+    #[test]
+    fn stored_configs_without_provider_still_load() {
         let stored: Config = serde_yaml_ng::from_str(
             "targets:\n  webhooks: http://127.0.0.1:3112\ncloudflared: cloudflared\n",
         )
         .unwrap();
-        assert_eq!(stored.provider, ProviderKind::Cloudflared);
+        assert_eq!(stored.provider, ProviderKind::Opentunnel);
         assert!(stored.validate().is_ok());
         let chosen: Config = serde_yaml_ng::from_str("provider: opentunnel\n").unwrap();
         assert_eq!(chosen.provider, ProviderKind::Opentunnel);
@@ -235,7 +325,7 @@ mod tests {
         }
         // Absent keys fall back to their code defaults.
         let shipped: Config = serde_yaml_ng::from_value(manifest["config"].clone()).unwrap();
-        assert_eq!(shipped.provider, ProviderKind::Cloudflared);
+        assert_eq!(shipped.provider, ProviderKind::Opentunnel);
         assert!(shipped.validate().is_ok());
     }
 
@@ -267,6 +357,7 @@ mod tests {
         }
         // cloudflared keeps accepting what it accepted before.
         let https = Config {
+            provider: ProviderKind::Cloudflared,
             targets: BTreeMap::from([("Web_hooks".into(), "https://127.0.0.1:3112".into())]),
             ..Config::default()
         };

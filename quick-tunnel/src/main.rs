@@ -55,7 +55,9 @@ async fn main() -> Result<()> {
         .config
         .map(|p| -> Result<Config> {
             let text = std::fs::read_to_string(p).context("reading config seed")?;
-            let config: Config = serde_yaml_ng::from_str(&text).context("parsing config seed")?;
+            let raw: serde_json::Value =
+                serde_yaml_ng::from_str(&text).context("parsing config seed")?;
+            let config = parse_config(raw).context("parsing config seed")?;
             config.validate().map_err(anyhow::Error::msg)?;
             Ok(config)
         })
@@ -74,6 +76,17 @@ async fn main() -> Result<()> {
     let result = run(&cli.local_config, seed, iii.clone()).await;
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
     result
+}
+
+/// Parses a raw configuration, choosing the provider when it names none.
+fn parse_config(mut raw: serde_json::Value) -> Result<Config> {
+    if let Some(provider) = config::fill_missing_provider(&mut raw) {
+        tracing::info!(
+            ?provider,
+            "configuration names no provider; set `provider` to choose explicitly"
+        );
+    }
+    Ok(serde_json::from_value(raw)?)
 }
 
 async fn run(
@@ -102,7 +115,7 @@ async fn run(
             .await
             .map_err(anyhow::Error::msg)?
             .context("missing quick-tunnel config")?;
-        serde_json::from_value(value)?
+        parse_config(value)?
     };
     let targets = config.targets.keys().cloned().collect();
     // Restored leases can spawn children immediately, before we start waiting.

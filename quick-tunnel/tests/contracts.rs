@@ -1,6 +1,11 @@
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::{InitOptions, register_worker};
-use quick_tunnel::{api::*, config::Config, manager::Manager, service};
+use quick_tunnel::{
+    api::*,
+    config::{Config, ProviderKind},
+    manager::Manager,
+    service,
+};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{net::TcpListener, sync::mpsc};
@@ -122,6 +127,7 @@ async fn interface_registers_without_cloudflared_and_observers_receive_snapshots
     std::fs::create_dir_all(&root).unwrap();
     let dir = tempfile::tempdir_in(root).unwrap();
     let manager = Manager::open(Config {
+        provider: ProviderKind::Cloudflared,
         cloudflared: "/nonexistent/cloudflared".into(),
         state_path: dir.path().join("leases.json"),
         max_retries: 0,
