@@ -235,6 +235,10 @@ fn remote_code(err: &Error) -> &str {
 #[derive(Clone, Default)]
 struct ProviderOptions {
     ping_forever: bool,
+    /// Send no `start` frame, so nothing reaches the caller before the pings.
+    skip_start: bool,
+    /// Close the stream right after `start`, with no terminal frame.
+    eof_after_start: bool,
     /// Keep the function handler alive after the terminal frame. A compliant
     /// router must complete from the stream terminal, not this RPC lifetime.
     done_linger_ms: Option<u64>,
@@ -281,6 +285,8 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     let fam = fail_at_ms.clone();
     let calls = stream_calls.clone();
     let ping_forever = opts.ping_forever;
+    let skip_start = opts.skip_start;
+    let eof_after_start = opts.eof_after_start;
     let done_linger_ms = opts.done_linger_ms;
     iii.register_function(
         "provider::real::stream",
@@ -295,10 +301,16 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                 let writer = open_writer(&r);
                 let model = input["model"].clone();
                 let start = json!({ "type": "start", "partial": { "role": "assistant", "content": [], "stop_reason": "end", "model": model, "provider": "real", "timestamp": 1 } });
-                writer
-                    .send_text(&start.to_string())
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+                if !skip_start {
+                    writer
+                        .send_text(&start.to_string())
+                        .await
+                        .map_err(|e| Error::Handler(e.to_string()))?;
+                }
+                if eof_after_start {
+                    let _ = writer.close().await;
+                    return Ok(json!({ "ok": true }));
+                }
                 if ping_forever {
                     let begun = Instant::now();
                     loop {
@@ -3139,6 +3151,114 @@ async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
     consumer.shutdown();
     provider.iii.shutdown();
     router.shutdown();
+}
+
+/// One `router::chat` against the fake provider under a 1 s stream budget with
+/// two in-router retries allowed: checks the error contract, that the provider
+/// was dispatched once, and that the caller saw exactly one terminal frame.
+/// The idle guard sits above the budget so a slow ping cannot end the call first.
+async fn assert_chat_error_under_a_one_second_budget(
+    opts: ProviderOptions,
+    code: &str,
+    kind: &str,
+) {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, test_init_options());
+    register_entry(&router, &BTreeMap::new()).await.unwrap();
+    write_entry_value(
+        &router,
+        json!({ "settings": { "stream_timeout_ms": 1_000, "idle_timeout_ms": 5_000, "retry_max": 2 } }),
+    )
+    .await
+    .unwrap();
+    register_router(router.clone()).await.expect("router boots");
+    let provider = start_live_provider(&engine.url, opts).await;
+
+    let consumer = register_worker(&engine.url, test_init_options());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let response = consumer
+        .call(CallRequest {
+            function_id: "router::chat".into(),
+            payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
+            action: None,
+            timeout_ms: Some(15_000),
+        })
+        .await
+        .expect("a stream without a terminal frame still answers router::chat");
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel EOF")
+        .expect("channel pump joins");
+
+    assert_eq!(response["error"]["code"], code, "{response}");
+    assert_eq!(response["error"]["kind"], kind, "{response}");
+    assert_eq!(
+        response["error"]["retryable"],
+        kind == "transient",
+        "{response}"
+    );
+    assert_eq!(
+        provider.stream_calls.load(Ordering::SeqCst),
+        1,
+        "the router must not dispatch the provider again"
+    );
+    let terminals: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(frame).ok())
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .collect();
+    assert_eq!(terminals.len(), 1, "frames: {:?}", frames.lock().unwrap());
+    assert_eq!(terminals[0]["error"]["error_kind"], kind);
+
+    consumer.shutdown();
+    provider.iii.shutdown();
+    router.shutdown();
+}
+
+/// Prevents: the router's own budget cutting a healthy stream and reporting it
+/// as a provider disconnect that callers then retry into the same budget.
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_budget_expiry_mid_stream_is_a_permanent_stream_timeout() {
+    assert_chat_error_under_a_one_second_budget(
+        ProviderOptions {
+            ping_forever: true,
+            ..Default::default()
+        },
+        "router/stream_timeout",
+        "permanent",
+    )
+    .await;
+}
+
+/// Prevents: a budget expiry before the first forwarded frame being retried
+/// in-router, one whole budget per attempt.
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_budget_expiry_before_any_frame_is_not_retried() {
+    assert_chat_error_under_a_one_second_budget(
+        ProviderOptions {
+            ping_forever: true,
+            skip_start: true,
+            ..Default::default()
+        },
+        "router/stream_timeout",
+        "permanent",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_eof_without_a_terminal_frame_stays_stream_incomplete() {
+    assert_chat_error_under_a_one_second_budget(
+        ProviderOptions {
+            eof_after_start: true,
+            ..Default::default()
+        },
+        "router/stream_incomplete",
+        "transient",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

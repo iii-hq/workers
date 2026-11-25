@@ -52,7 +52,7 @@ pub fn make_complete(
             };
             let response = loop {
                 tokio::select! {
-                    // outer ≥ inner budget, always
+                    // a max gap between frames, not a total: the idle guard (idle_timeout_ms) ends a silent stream first
                     ev = reader.next(Duration::from_secs(600)) => match ev {
                         ReadEvent::Msg(m) => collect(&mut terminal, &m),
                         _ => break chat_task.await.map_err(|e| Error::Handler(e.to_string()))??,

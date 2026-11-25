@@ -38,14 +38,14 @@ const res = await iii.call({
     model: 'claude-sonnet-4',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
   },
-  timeoutMs: 620_000, // outer timeout ≥ the router's 600s stream budget
+  timeoutMs: 1_520_000, // outer timeout ≥ the router's 1500s stream budget
 });
 // res: { ok, provider, model, stop_reason, usage }
 ```
 
 The streaming contract: every stream ends with exactly one terminal frame
 (`done` or `error`). When the router has to kill a stream itself (idle
-timeout, provider crash), it synthesizes the terminal frame and attaches the
+timeout, stream budget, provider crash), it synthesizes the terminal frame and attaches the
 partial content, so consumers never hang on a half-open stream.
 
 Both `router::chat` and `router::complete` accept an optional `retry_max`:
@@ -93,9 +93,15 @@ on `code` and `retryable`, never parse the prose.
 
 The main recovery codes are `router/provider_unavailable`,
 `router/capacity_exceeded`, `router/stream_idle_timeout`,
-`router/stream_incomplete`, `router/provider_auth_expired`,
-`router/provider_rate_limited`, `router/context_overflow`, and
-`router/provider_rejected`.
+`router/stream_incomplete`, `router/stream_timeout`,
+`router/provider_auth_expired`, `router/provider_rate_limited`,
+`router/context_overflow`, and `router/provider_rejected`.
+
+`router/stream_timeout` means the router's own `stream_timeout_ms` budget ran
+out before the provider finished. It is `permanent` and not retryable, because
+the same request would meet the same budget; raise `stream_timeout_ms` (and
+keep the caller's outer `router::chat` timeout above it) for longer
+generations.
 
 A malformed request fails before any provider call as a permanent
 `router/invalid_request` naming the first bad field. For `messages`, the router
@@ -186,7 +192,7 @@ request handlers never poll `configuration::get`.
   },
   "routing_heuristics": [{ "pattern": "^gpt-", "provider": "openai" }],
   "settings": {
-    "stream_timeout_ms": 600000,
+    "stream_timeout_ms": 1500000,
     "idle_timeout_ms": 120000,
     "retry_max": 2,
     "output_token_max": 32000
@@ -196,7 +202,7 @@ request handlers never poll `configuration::get`.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `stream_timeout_ms` | `600000` | Hard budget for one streamed turn. |
+| `stream_timeout_ms` | `1500000` | Hard budget for one provider stream attempt. Expiry ends the turn with `router/stream_timeout` and is not retried. |
 | `idle_timeout_ms` | `120000` | Max silence between provider frames before the attempt is cut. |
 | `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame (`0`–`10`). |
 | `output_token_max` | unset | Optional ceiling on `max_output_tokens`. Unset forwards each model's own output ceiling, so providers run without an artificial limit; set it only to cap spend. |
