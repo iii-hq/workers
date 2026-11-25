@@ -233,19 +233,44 @@ describe('executeRun', () => {
   });
 
   it("points the turn's Claude process at mcp-server with III_MCP_URL, and III_CLI for the hooks", async () => {
-    const { capture } = await runTurn(
-      { prompt: 'x', session_id: 's1', cwd: '/repo/a' },
-      fullTurn,
-      {},
-      true,
-    );
-    expect(capture.options?.settings).toBeUndefined();
-    const env = capture.options?.env as Record<string, string>;
-    expect(env.III_MCP_URL).toBe('http://127.0.0.1:3111/mcp');
-    expect(env.III_PLUGIN_MCP_URL).toBe('http://127.0.0.1:3111/mcp');
-    expect(env.III_CLI).toBeTruthy();
-    // The worker's own environment still reaches the CLI.
-    expect(env.PATH).toBe(process.env.PATH);
+    // The worker's own III_CLI, so the test does not depend on an `iii` on
+    // the PATH of the machine running it.
+    vi.stubEnv('III_CLI', '/opt/iii/bin/iii');
+    try {
+      const { capture } = await runTurn(
+        { prompt: 'x', session_id: 's1', cwd: '/repo/a' },
+        fullTurn,
+        {},
+        true,
+      );
+      expect(capture.options?.settings).toBeUndefined();
+      const env = capture.options?.env as Record<string, string>;
+      expect(env.III_MCP_URL).toBe('http://127.0.0.1:3111/mcp');
+      expect(env.III_PLUGIN_MCP_URL).toBe('http://127.0.0.1:3111/mcp');
+      expect(env.III_CLI).toBe('/opt/iii/bin/iii');
+      // The worker's own environment still reaches the CLI.
+      expect(env.PATH).toBe(process.env.PATH);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('leaves III_CLI out when the worker has no iii CLI, and still sets III_MCP_URL', async () => {
+    vi.stubEnv('III_CLI', '');
+    vi.stubEnv('PATH', '/nonexistent-iii-test-path');
+    try {
+      const { capture } = await runTurn(
+        { prompt: 'x', session_id: 's1-nocli', cwd: '/repo/a' },
+        fullTurn,
+        {},
+        true,
+      );
+      const env = capture.options?.env as Record<string, string>;
+      expect(env.III_MCP_URL).toBe('http://127.0.0.1:3111/mcp');
+      expect('III_CLI' in env && env.III_CLI !== '').toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('reads the http address fresh for every turn', async () => {
