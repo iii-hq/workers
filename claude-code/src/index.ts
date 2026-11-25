@@ -112,9 +112,9 @@ const reconcileTerminal = () => {
 
 const replyPermission = new ReplyPermission();
 let watchingConfig = false;
-const refresh = async () => {
+const refresh = async (reloadSettings = true) => {
   const latest = await replyPermission.refresh(iii, () => watchingConfig);
-  if (!latest) return;
+  if (!latest || !reloadSettings) return;
   const { runtime } = latest;
   const merged: Config = runtime
     ? { engine_url: bootConfig.engine_url, ...runtime }

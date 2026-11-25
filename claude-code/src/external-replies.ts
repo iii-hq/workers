@@ -1,4 +1,4 @@
-import { type IIIClient, ObserveRejection } from 'iii-sdk';
+import { type Call, type IIIClient, type Observer, ObserveRejection } from 'iii-sdk';
 import { z } from 'zod';
 import type { AgentRow } from './agents.js';
 import type { ReplyPermission } from './configuration.js';
@@ -7,6 +7,7 @@ import { readTranscript, Reply } from './terminal/external-transcript.js';
 
 const Args = z.strictObject({ claude_session_id: z.guid() });
 const Event = z.object({ claude_session_id: z.guid(), reply: Reply });
+type ReplyEvent = z.infer<typeof Event>;
 const ON_REPLY = 'claude::agents::on-reply';
 type Row = (id: string) => Promise<{ row: AgentRow; env: Record<string, string> }>;
 type Schedule = (poll: () => Promise<void>) => () => void;
@@ -86,6 +87,26 @@ export function registerExternalReplies(
     },
   );
 
+  // iii-sdk 0.27 queues invocations made on a closed socket for reconnect.
+  // Its public connection state changes on the close event, after CLOSING.
+  // Use its synchronous socket check and fail closed if the SDK lacks it.
+  function requireOpenSocket() {
+    if (!('isOpen' in iii && typeof iii.isOpen === 'function' && iii.isOpen())) {
+      throw new Error('reply delivery unavailable');
+    }
+  }
+
+  function matchesWatch(obs: Observer, call: Call<ReplyEvent, ReplyEvent>) {
+    const id = call.input.claude_session_id;
+    return (
+      obs.args.claude_session_id === id &&
+      obs.id === call.metadata?.for_observer &&
+      permission.epoch !== null &&
+      permission.epoch === call.metadata?.epoch &&
+      groups.get(id)?.watches.get(obs.id)?.active === true
+    );
+  }
+
   function serialize<T>(g: Group, work: () => Promise<T>) {
     const result = g.tail.then(work);
     g.tail = result.then(
@@ -132,6 +153,7 @@ export function registerExternalReplies(
         for (const reply of next.replies) {
           guard(epoch);
           if (g.watches.get(key) !== w) break;
+          requireOpenSocket();
           await iii.call({
             function_id: ON_REPLY,
             metadata: { for_observer: key, epoch },
@@ -161,14 +183,16 @@ export function registerExternalReplies(
     g.cancel = cancel;
   }
 
-  iii.registerFunction<z.infer<typeof Event>, z.infer<typeof Event>>(ON_REPLY, (event) => event, {
-    private: true,
-    metadata: { trace_hidden: true },
-    description: 'Observe new active-branch replies after a per-session transcript baseline.',
-    args_format: jsonSchema(Args),
-    request_format: jsonSchema(Event),
-    response_format: jsonSchema(Event),
-  })
+  iii
+    .registerFunction<ReplyEvent, ReplyEvent>(ON_REPLY, (event) => event, {
+      private: true,
+      metadata: { trace_hidden: true },
+      description:
+        'Observe new active-branch replies after a per-session transcript baseline. Targets receive captured call fields (output is the reply event); the private poller receives no result.',
+      args_format: jsonSchema(Args),
+      request_format: jsonSchema(Event),
+      response_format: jsonSchema(Event),
+    })
     .onObserverAdded(async (obs) => {
       const epoch = guard(permission.epoch);
       const id = sessionId(obs.args);
@@ -199,14 +223,17 @@ export function registerExternalReplies(
       }
     })
     .onObserverRemoved((obs) => remove(sessionId(obs.args), obs.id))
-    .onObservationMatch((obs, call) => {
-      const id = call.input.claude_session_id;
-      return (
-        obs.args.claude_session_id === id &&
-        obs.id === call.metadata?.for_observer &&
-        permission.epoch !== null &&
-        permission.epoch === call.metadata?.epoch &&
-        groups.get(id)?.watches.get(obs.id)?.active === true
-      );
+    .onObservationMatch(matchesWatch)
+    .onObservationDeliver(async (call, matched) => {
+      // Do not leave reply text in the SDK's deferred observation reporter.
+      // A match is a snapshot, not authorization to dispatch later.
+      for (const observer of matched) {
+        if (!observer.matches(call) || !matchesWatch(observer, call)) continue;
+        const payload = Object.fromEntries(
+          observer.capture.filter((key) => call[key] !== undefined).map((key) => [key, call[key]]),
+        );
+        requireOpenSocket();
+        await iii.call({ observer, payload, action: { type: 'void' } });
+      }
     });
 }

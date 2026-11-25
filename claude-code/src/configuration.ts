@@ -146,17 +146,21 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
 /**
  * Register the change handler and observe `configuration::on-updated` for this
  * entry. `onChange` is called once now (reconcile) and on every
- * `configuration:updated`.
+ * `configuration:updated`. When tracking reply permission, also reconcile it
+ * on registration and deletion without reconfiguring unrelated settings.
  */
 export async function observeConfigChanges(
   iii: IIIClient,
-  onChange: () => Promise<void>,
+  onChange: (reloadSettings?: boolean) => Promise<void>,
   onWatchState?: (active: boolean) => void,
 ): Promise<void> {
   iii.registerFunction(
     CONFIG_FN_ID,
-    async () => {
-      await onChange();
+    async ({ output }: { output?: { event_type?: string } }) => {
+      const lifecycle =
+        output?.event_type === 'configuration:deleted' ||
+        output?.event_type === 'configuration:registered';
+      await onChange(!lifecycle);
       return null;
     },
     {
@@ -171,7 +175,7 @@ export async function observeConfigChanges(
       function_id: ON_UPDATED_FN,
       filters: {
         'input.id': { $eq: CONFIG_ID },
-        'input.event_type': { $eq: 'configuration:updated' },
+        ...(onWatchState ? {} : { 'input.event_type': { $eq: 'configuration:updated' } }),
       },
       capture: ['output'],
     },
