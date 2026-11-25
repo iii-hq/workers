@@ -78,6 +78,7 @@ const malformedToolResults = [
   },
   { name: 'numeric tool use ID', fields: { tool_use_id: 42, content: 'synthetic result' } },
   { name: 'missing tool use ID', fields: { tool_use_id: undefined } },
+  { name: 'empty tool use ID', fields: { tool_use_id: '' } },
 ];
 const reads = (s: SyntheticHost) => s.host.calls.filter((c) => c.payload.command === 'python3');
 const seen = (s: SyntheticHost, observer: string) =>

@@ -137,7 +137,7 @@ def message_content(row, role):
             require(isinstance(part.get('id'), str) and part['id'])
             require(isinstance(part.get('name'), str) and part['name'] and 'input' in part)
         elif role == 'user' and kind == 'tool_result':
-            require(isinstance(part.get('tool_use_id'), str))
+            require(isinstance(part.get('tool_use_id'), str) and part['tool_use_id'])
             require('is_error' not in part or isinstance(part['is_error'], bool))
             if 'content' in part:
                 result = part['content']
