@@ -162,26 +162,27 @@ async fn fetch_live_models(
 
 /// One fetch; with an account source's token, one more after a 401 with the
 /// token the source gives when asked again (D140). A token refused twice is
-/// dropped from the source's cache.
+/// dropped from the source's cache; a source that gives none when asked
+/// again is its error (`busy` keeps the slice, not a sign-in to redo).
 async fn fetch_models(
     http: &reqwest::Client,
     url: &str,
     access_token: &str,
     account: Option<&AccountToken>,
     accounts: &dyn AccountSource,
-) -> FetchOutcome {
+) -> Result<FetchOutcome, AccountError> {
     let outcome = fetch_live_models(http, url, access_token).await;
     if matches!(outcome, FetchOutcome::Rejected)
         && let Some(refused) = account
-        && let Some(fresh) = accounts::ask_again(accounts, refused).await
+        && let Some(fresh) = accounts::ask_again(accounts, refused).await?
     {
         let second = fetch_live_models(http, url, &fresh.access_token).await;
         if matches!(second, FetchOutcome::Rejected) {
             accounts.invalidate(&fresh.account);
         }
-        return second;
+        return Ok(second);
     }
-    outcome
+    Ok(outcome)
 }
 
 /// An account with no token to give: a sign-in to redo is `auth_expired`
@@ -233,7 +234,9 @@ pub async fn refresh_models(
     };
 
     let url = models_url(&api_url);
-    let outcome = fetch_models(http, &url, &access_token, account.as_ref(), accounts).await;
+    let outcome = fetch_models(http, &url, &access_token, account.as_ref(), accounts)
+        .await
+        .map_err(account_failure)?;
     let rejected = match &account {
         Some(account) => accounts::rejected_message(&account.account),
         None => SIGN_IN_REJECTED.to_string(),
@@ -404,7 +407,7 @@ mod tests {
             &accounts,
         )
         .await;
-        assert!(matches!(&outcome, FetchOutcome::Ok(models) if models.len() == 1));
+        assert!(matches!(&outcome, Ok(FetchOutcome::Ok(models)) if models.len() == 1));
         assert_eq!(*seen.lock().unwrap(), ["work-1", "work-2"]);
 
         // A second 401 stays a rejection; the vault path never asks again.
@@ -419,7 +422,7 @@ mod tests {
                 &accounts
             )
             .await,
-            FetchOutcome::Rejected
+            Ok(FetchOutcome::Rejected)
         ));
         assert_eq!(seen.lock().unwrap().len(), 2);
         // The token refused twice is asked for again, not served from the cache.
@@ -434,9 +437,42 @@ mod tests {
                 &accounts
             )
             .await,
-            FetchOutcome::Rejected
+            Ok(FetchOutcome::Rejected)
         ));
         assert_eq!(*seen.lock().unwrap(), ["vault-token"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_busy_source_on_the_second_ask_keeps_the_slice_instead_of_asking_for_a_sign_in() {
+        use crate::accounts::testing::{FakeEngine, in_one_hour, tmux_error};
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let accounts = crate::accounts::TmuxAccounts::new(FakeEngine::new(move |_, _| match asked
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        {
+            0 => Ok(serde_json::json!({
+                "account": "work", "access_token": "work-1", "expires_at_ms": in_one_hour()
+            })),
+            _ => Err(tmux_error("busy")),
+        }));
+        let token = accounts.token("work").await.unwrap();
+        let (url, seen) = bearer_models_stub("never").await;
+        let outcome = fetch_models(
+            &reqwest::Client::new(),
+            &url,
+            &token.access_token,
+            Some(&token),
+            &accounts,
+        )
+        .await;
+        let Err(error) = outcome else {
+            panic!("want the source's error")
+        };
+        assert_eq!(error, AccountError::Busy("work".into()));
+        assert_eq!(*seen.lock().unwrap(), ["work-1"], "no second request");
+        match account_failure(error) {
+            Error::Remote { code, .. } => assert_eq!(code, "provider/upstream_unavailable"),
+            other => panic!("want Remote, got {other:?}"),
+        }
     }
 
     #[test]

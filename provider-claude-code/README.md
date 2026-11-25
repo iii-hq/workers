@@ -41,13 +41,25 @@ holds the Claude Code accounts, and every token comes from it:
   account id the harness froze on the turn. Without it (an older harness, a
   direct `router::chat`), and for model discovery and token counting, which
   have no turn, the provider uses the **global account**: it reads the id from
-  `tmux::accounts::list`'s `global` field (kept 30 s) and asks for that id, so
-  the token cache never serves the previous account after a switch.
+  `tmux::accounts::list`'s `global` field (kept 30 s, and named again after a
+  401 or an `unknown_account`) and asks for that id, so the token cache never
+  serves the previous account after a switch. A `global` of `null` (no
+  account signed in as the global one) is `auth_expired`. tmux's answer must
+  name the account asked for when it names one; a token for another account
+  is never used.
+- **A pinned account never falls back:** a stream with
+  `provider_options.account` runs on that account's token or not at all.
+  Without the tmux worker, or while it cannot be told whether tmux holds the
+  accounts, it fails as `transient` instead of running on the `~/.claude`
+  token, which is another account (and its quota).
 - **Detection:** "tmux manages the accounts" means
   `engine::functions::list {prefix: "tmux::accounts::", include_internal: true}`
-  lists `tmux::accounts::credential`. The answer is kept 30 s; a list call that
-  fails keeps the last answer, and a `function_not_found` from tmux drops it so
-  the next call looks again. The function is the signal rather than tmux's
+  lists `tmux::accounts::credential`. The answer is kept 30 s. A list call that
+  fails is not absence: it is tried three times (250 ms, then 500 ms apart);
+  then the last answer stands, and with none known the call fails as
+  `transient` (it never takes the vault path, and the boot import below runs
+  only on a confirmed absence). A `function_not_found` from tmux drops the
+  answer so the next call looks again. The function is the signal rather than tmux's
   account registry (`claude.managed` in its usage): tmux serves and renews the
   global account's token even without a registry, so a vault copy of that
   token would drift from the one tmux renews.
@@ -55,11 +67,15 @@ holds the Claude Code accounts, and every token comes from it:
   writes the `auth-credentials` vault, and the boot import below is skipped.
 - **Cache:** each account's token is cached by id until 60 s before its
   `expires_at_ms`; one without an expiry is never cached, and an expired one is
-  never sent. tmux renews a token that expires within five minutes.
+  never sent. An answer that arrives after the account's token was dropped
+  (a 401 elsewhere) is used once and not cached. tmux renews a token that
+  expires within five minutes.
 - **A 401:** the provider drops that account's token, asks tmux once more and,
   when it gets a different token, sends the request again once. A 401 that
   survives is `auth_expired` ("Claude Code rejected the sign-in of the account
-  …"). Streaming, discovery and token counting all do this.
+  …"). When tmux gives no token on that second ask, its own refusal stands
+  (below): `busy` stays `transient`, not a sign-in to redo. Streaming,
+  discovery and token counting all do this.
 - **tmux's refusals** become the turn's error frame: `not_signed_in` and
   `token_expired` → `auth_expired`, `busy` (a renewal under way) or tmux not
   answering → `transient` (the router retries), `unknown_account` →
@@ -68,7 +84,8 @@ holds the Claude Code accounts, and every token comes from it:
 
 ### Without the tmux worker
 
-Today's path, unchanged:
+Today's path, unchanged, for every call on the global account (a stream
+without `provider_options.account`, model discovery, token counting):
 
 1. **Vault (intended authority):** the `auth-credentials`
    worker (`auth::get_token`), populated by an `oauth-claude-code` sign-in flow.
@@ -192,6 +209,7 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | `The Claude Code account "…" is not signed in …` / `… has expired and could not be renewed …` | the tmux worker holds the accounts and that one has no usable sign-in | sign in to that account again through the tmux worker |
 | `The Claude Code account "…" is busy renewing its sign-in …` | tmux was renewing that account's token | nothing: the router retries; send again if it gave up |
 | `This Claude Code account has reached its usage limit.` | the account's five-hour or weekly subscription limit (`error_details.usage_limit`) | wait for `resets_at_ms`, or switch the turn to another account |
+| `The Claude Code accounts could not be read (the tmux worker that holds the account "…" is not running) …` | a turn pinned to an account, with the tmux worker stopped (or its function list unreadable) | start the tmux worker; the router retries meanwhile |
 | the vault is never consulted | the tmux worker registers `tmux::accounts::credential`, so it holds the accounts | expected while the tmux worker runs; without it the provider is back on the vault / `~/.claude` path within 30 s |
 | `Claude Code rejected the current sign-in …` | Anthropic answered 401: the token was revoked, replaced, or is corrupted | run `claude` and `/login` again |
 | `Anthropic refused this request for the current Claude Code sign-in …` | Anthropic answered 403: the token is valid but not allowed this request | signing in again does not help; check the reason in parentheses, such as the plan's access to the model |

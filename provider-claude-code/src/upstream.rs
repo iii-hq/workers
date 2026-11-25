@@ -2,6 +2,7 @@
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::PROVIDER_ID;
+use crate::accounts::AccountError;
 use crate::errors::{REQUEST_REFUSED, SIGN_IN_REJECTED, USAGE_LIMIT_REACHED, classify};
 use crate::limits::usage_limit_details;
 use crate::request::auth_header;
@@ -33,9 +34,11 @@ pub struct UpstreamArgs {
 
 /// What a 401 does to a token from an account source.
 pub struct Reauth {
-    /// Drops the refused token and asks the source once more: `Some(token)`
-    /// when it has a different one. Runs only after a 401.
-    pub ask_again: BoxFuture<'static, Option<String>>,
+    /// Drops the refused token and asks the source once more (only after a
+    /// 401): `Ok(Some(token))` when it has a different one, `Ok(None)` for the
+    /// same one (the 401 stands), `Err` when it gives none, whose kind and
+    /// message become the error frame (`busy` stays transient).
+    pub ask_again: BoxFuture<'static, Result<Option<String>, AccountError>>,
     /// What a 401 that survives says (it names the account).
     pub rejected: String,
 }
@@ -134,17 +137,25 @@ async fn run_upstream(
     if let Some(reauth) = args.reauth.take() {
         rejected = reauth.rejected;
         // A 401 drops the token and asks its source once more (D140).
-        if resp.status().as_u16() == 401
-            && let Some(token) = reauth.ask_again.await
-        {
-            set_bearer(&mut args.headers, &token);
-            resp = match send(&client, &args.api_url, &args.headers, &args.body).await {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = tx.send(fetch_failed(e, &args.model)).await;
+        if resp.status().as_u16() == 401 {
+            match reauth.ask_again.await {
+                Ok(Some(token)) => {
+                    set_bearer(&mut args.headers, &token);
+                    resp = match send(&client, &args.api_url, &args.headers, &args.body).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let _ = tx.send(fetch_failed(e, &args.model)).await;
+                            return;
+                        }
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let event = synthetic_error_event(&error.message(), &args.model, error.kind());
+                    let _ = tx.send(event).await;
                     return;
                 }
-            };
+            }
         }
     }
 
@@ -323,7 +334,7 @@ mod tests {
 
     fn reauth_to(token: Option<&'static str>) -> Reauth {
         Reauth {
-            ask_again: Box::pin(async move { token.map(str::to_string) }),
+            ask_again: Box::pin(async move { Ok(token.map(str::to_string)) }),
             rejected: "Claude Code rejected the sign-in of the account \"personal\".".into(),
         }
     }
@@ -367,6 +378,27 @@ mod tests {
             [AssistantMessageEvent::Error { error }] if error.error_kind == Some(ErrorKind::AuthExpired)
         ));
         assert_eq!(*seen.lock().unwrap(), ["stale"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_busy_source_on_the_second_ask_is_transient_not_a_sign_in() {
+        let (url, seen) = bearer_stub("never").await;
+        let busy = Reauth {
+            ask_again: Box::pin(async { Err(AccountError::Busy("personal".into())) }),
+            rejected: "Claude Code rejected the sign-in of the account \"personal\".".into(),
+        };
+        let events = drain(spawn_upstream(
+            reqwest::Client::new(),
+            bearer_args(url, "stale", Some(busy)),
+        ))
+        .await;
+        let [AssistantMessageEvent::Error { error }] = &events[..] else {
+            panic!("want one error frame, got {events:?}")
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("busy"), "{message}");
+        assert_eq!(*seen.lock().unwrap(), ["stale"], "no second request");
     }
 
     #[tokio::test(flavor = "multi_thread")]

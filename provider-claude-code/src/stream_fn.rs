@@ -94,7 +94,7 @@ fn reauth_for(accounts: &Arc<dyn AccountSource>, refused: accounts::AccountToken
         ask_again: Box::pin(async move {
             accounts::ask_again(accounts.as_ref(), &refused)
                 .await
-                .map(|fresh| fresh.access_token)
+                .map(|fresh| fresh.map(|token| token.access_token))
         }),
         rejected,
     }
@@ -143,7 +143,9 @@ async fn run_stream_call(
     };
 
     // The account source (tmux) when it holds the accounts: the turn's
-    // account, never the vault. Without it, today's vault / ~/.claude path.
+    // account, never the vault. Without it, today's vault / ~/.claude path,
+    // but only for a turn on the global account: a pinned turn fails as
+    // transient rather than run on another account's token.
     let requested = accounts::requested_account(input.provider_options.as_ref());
     let (credential, account_token) =
         match accounts::credential(accounts.as_ref(), requested, || {
