@@ -8,10 +8,14 @@ import {
 } from '@/components/shadcn/dropdown-menu'
 import { RadioGroup, RadioGroupItem } from '@/components/shadcn/radio-group'
 import { ChatMenuContent, ChatMenuRadioItem } from '@/components/ui/ChatMenu'
-import type { ClaudeAccounts } from '@/lib/backend/claude-accounts'
+import type {
+  ClaudeAccount,
+  ClaudeAccounts,
+} from '@/lib/backend/claude-accounts'
 import type { ProjectAccount } from '@/lib/backend/projects'
 import {
   accountWeek,
+  atLimit,
   FOLLOW_GLOBAL,
   globalNow,
   mostRoom,
@@ -21,13 +25,18 @@ import {
   usable,
 } from '@/lib/claude-accounts-words'
 
-/** The account a new pin starts on: the one with the most room, else the first usable one. */
+/**
+ * The account a new pin starts on: the one with the most room besides the
+ * global, else another signed-in one not at a limit, else any signed-in one.
+ */
 export function defaultPin(data: ClaudeAccounts): string | null {
   const claude = data.claude
   if (!claude) return null
+  const other = (a: ClaudeAccount) => a.id !== claude.global && usable(a)
   return (
     mostRoom(claude, claude.global)?.id ??
-    claude.accounts.find((a) => a.id !== claude.global && usable(a))?.id ??
+    claude.accounts.find((a) => other(a) && !atLimit(a))?.id ??
+    claude.accounts.find(other)?.id ??
     claude.accounts.find(usable)?.id ??
     null
   )

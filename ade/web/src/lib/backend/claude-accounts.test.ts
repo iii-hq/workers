@@ -103,16 +103,25 @@ describe('parsing tmux', () => {
 })
 
 describe('the feature gate (§4.3.6)', () => {
-  it('needs harness::retry, then a tmux with the credential', () => {
+  it('needs harness::retry and session::patch-meta, then a tmux with the credential', () => {
     const gate = (
       harnessRetry: boolean,
       tmuxAccounts: boolean,
       tmuxCredential: boolean,
-    ) => claudeAccountsGate({ harnessRetry, tmuxAccounts, tmuxCredential })
+      patchMeta = true,
+    ) =>
+      claudeAccountsGate({
+        harnessRetry,
+        tmuxAccounts,
+        tmuxCredential,
+        patchMeta,
+      })
     expect(gate(false, true, true)).toBe('none')
     expect(gate(true, true, true)).toBe('full')
     expect(gate(true, true, false)).toBe('update')
     expect(gate(true, false, false)).toBe('install')
+    // Never a set-meta for the account: no patch-meta, no accounts.
+    expect(gate(true, true, true, false)).toBe('none')
   })
 })
 

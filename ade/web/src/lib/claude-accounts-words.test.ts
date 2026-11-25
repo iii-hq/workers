@@ -8,6 +8,7 @@ import {
   accountUse,
   accountWeek,
   ago,
+  atLimit,
   blocked,
   cardResetLine,
   claudePlan,
@@ -117,6 +118,20 @@ describe('accounts', () => {
     // Personal has the lowest week but is at its 5-hour limit; Side isn't signed in.
     expect(mostRoom(usage.claude)?.id).toBe('default')
     expect(mostRoom(usage.claude, 'default')).toBeNull()
+  })
+
+  it('never picks an account whose week is full', () => {
+    const fullWeek = {
+      ...work,
+      usage: work.usage && {
+        ...work.usage,
+        week: { usedPercent: 100, resetsAtMs: NOW + 50 * HOUR },
+      },
+    } as ClaudeAccount
+    expect(atLimit(fullWeek)).toBe(true)
+    expect(atLimit(personal)).toBe(true)
+    expect(atLimit(work)).toBe(false)
+    expect(mostRoom({ accounts: [fullWeek, personal, side] })).toBeNull()
   })
 
   it("writes Other…'s rows and the pin's week", () => {
