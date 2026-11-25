@@ -75,8 +75,11 @@ def transcript(sid, stack):
     finally:
         os.close(root)
 
-# Check the structural fields of tool result blocks without interpreting their payloads.
-def validate_tool_result_block(part, allowed):
+# These content blocks can also be nested inside a tool result.
+USER_CONTENT = ('text', 'image', 'search_result', 'document')
+RESULT_CONTENT = (*USER_CONTENT, 'tool_reference')
+
+def validate_content_block(part, allowed):
     require(isinstance(part, dict) and part.get('type') in allowed)
     kind = part['type']
     if kind == 'text':
@@ -87,7 +90,7 @@ def validate_tool_result_block(part, allowed):
         require(isinstance(part.get('source'), str) and isinstance(part.get('title'), str))
         require(isinstance(part.get('content'), list))
         for text in part['content']:
-            validate_tool_result_block(text, ('text',))
+            validate_content_block(text, ('text',))
     else:  # image or document
         source = part.get('source')
         require(isinstance(source, dict))
@@ -105,7 +108,7 @@ def validate_tool_result_block(part, allowed):
             require(isinstance(content, (str, list)))
             if isinstance(content, list):
                 for block in content:
-                    validate_tool_result_block(block, ('text', 'image'))
+                    validate_content_block(block, ('text', 'image'))
         else:
             require(False)
 
@@ -118,23 +121,30 @@ def message_content(row, role):
     require(isinstance(content, list))
     for part in content:
         require(isinstance(part, dict) and isinstance(part.get('type'), str))
-        if part['type'] == 'text':
-            require(isinstance(part.get('text'), str))
-        if part['type'] == 'tool_use':
+        kind = part['type']
+        if kind == 'text' or (role == 'user' and kind in USER_CONTENT):
+            validate_content_block(part, USER_CONTENT)
+        elif role == 'assistant' and kind == 'thinking':
+            require(isinstance(part.get('thinking'), str) and isinstance(part.get('signature'), str))
+        elif role == 'assistant' and kind == 'redacted_thinking':
+            require(isinstance(part.get('data'), str))
+        elif role == 'assistant' and kind == 'tool_use':
             require(isinstance(part.get('id'), str))
             require(isinstance(part.get('name'), str) and 'input' in part)
-        if part['type'] == 'tool_result':
+        elif role == 'user' and kind == 'tool_result':
             require(isinstance(part.get('tool_use_id'), str))
+            require('is_error' not in part or isinstance(part['is_error'], bool))
             if 'content' in part:
                 result = part['content']
                 require(isinstance(result, (str, list)))
                 if isinstance(result, list):
                     for block in result:
-                        validate_tool_result_block(block, ('text', 'image', 'search_result', 'document', 'tool_reference'))
+                        validate_content_block(block, RESULT_CONTENT)
+        else:
+            raise ValueError()
     return content
 
-def visible(row):
-    content = message_content(row, 'assistant')
+def visible(content):
     if isinstance(content, str):
         return content
     return '\n'.join(part['text'] for part in content if part['type'] == 'text' and part['text'].strip())
@@ -185,13 +195,13 @@ def scan(sid, mode, previous):
     while leaf is not None:
         row, pos = nodes.pop(leaf)  # missing parents, duplicates and cycles fail closed
         require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
-        if row['type'] == 'user':
-            message_content(row, 'user')
+        if row['type'] in ('assistant', 'user'):
+            content = message_content(row, row['type'])
         parent = row['parentUuid']
         if parent is not None:
             require(parent in nodes and nodes[parent][1] < pos)
         if row['type'] == 'assistant' and not any(row.get(k) for k in HIDDEN):
-            text = visible(row)
+            text = visible(content)
             if text.strip() and (mode == 'last' or pos > boundary):
                 if mode != 'last' or not replies:
                     replies.append({'id': leaf, 'text': text})

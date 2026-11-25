@@ -30,7 +30,7 @@ const lines = (...rows: unknown[]) => rows.map((r) => `${JSON.stringify(r)}\n`).
 const answer = (n: number, parent: number | null, text: string) =>
   record(n, parent, 'assistant', text);
 const toolResultTranscript = (
-  fields: { content?: unknown; tool_use_id?: unknown },
+  fields: { content?: unknown; tool_use_id?: unknown; is_error?: unknown },
   toolUse: { id?: unknown; name?: unknown; input?: unknown } = {},
 ) =>
   lines(
@@ -41,6 +41,11 @@ const toolResultTranscript = (
     record(3, 2, 'user', [{ type: 'tool_result', tool_use_id: 'toolu_1', ...fields }]),
     answer(4, 3, 'synthetic answer'),
   );
+const unknownBlockTranscript = (role: string) =>
+  lines(
+    record(1, null, role, [{ type: 'unsupported-fixture-block' }]),
+    answer(2, 1, 'synthetic answer'),
+  );
 const malformedToolUses = [
   { name: 'numeric ID', fields: { id: 42 } },
   { name: 'missing ID', fields: { id: undefined } },
@@ -49,6 +54,7 @@ const malformedToolUses = [
   { name: 'missing input', fields: { input: undefined } },
 ];
 const malformedToolResults = [
+  { name: 'numeric error flag', fields: { is_error: 42 } },
   { name: 'numeric content', fields: { content: 42 } },
   { name: 'numeric block', fields: { content: [42] } },
   { name: 'unknown block type', fields: { content: [{ type: 'tool_use' }] } },
@@ -137,6 +143,14 @@ describe('lookup', () => {
     });
   });
 
+  it.each(['user', 'assistant'])('rejects unknown blocks in an active %s message', async (role) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, unknownBlockTranscript(role));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
+    });
+  });
+
   it.each(malformedToolResults)('rejects an active tool result with $name', async ({ fields }) => {
     await withSyntheticHost(async (s) => {
       await writeFile(s.file, toolResultTranscript(fields));
@@ -150,6 +164,15 @@ describe('lookup', () => {
       await writeFile(s.file, toolResultTranscript({}, fields));
       await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
       expect(s.host.snapshots).toEqual([]);
+    });
+  });
+
+  it('accepts both boolean values for a tool result error flag', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const is_error of [true, false]) {
+        await writeFile(s.file, toolResultTranscript({ is_error }));
+        expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
+      }
     });
   });
 
@@ -189,7 +212,7 @@ describe('lookup', () => {
           record(1, null, 'user', 'secret prompt'),
           answer(2, 1, 'secret abandoned'),
           record(3, 1, 'assistant', [
-            { type: 'thinking', thinking: 'secret reasoning' },
+            { type: 'thinking', thinking: 'secret reasoning', signature: 'synthetic' },
             { type: 'text', text: 'first' },
             { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { path: 'secret argument' } },
             { type: 'text', text: 'second' },
@@ -502,6 +525,14 @@ describe('observation', () => {
       blocked.release();
       expect((await admissions).filter((a) => a.status === 'rejected')).toHaveLength(256);
       expect(reads(s)).toHaveLength(1);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it.each(['user', 'assistant'])('rejects unknown blocks in a %s baseline', async (role) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, unknownBlockTranscript(role));
+      await expect(observe(s, 'unknown')).rejects.toThrow(/^transcript unavailable$/);
       expect(s.timers.size).toBe(0);
     });
   });
