@@ -677,6 +677,10 @@ export function MessageList({
     }
     return keys
   }, [flatRows])
+  const awaitingQuestionSet = useMemo(
+    () => new Set(awaitingQuestionIds),
+    [awaitingQuestionIds],
+  )
   // Placeholders a display renderer keeps visible in a folded batch (a
   // sub-agent card) are fetched when their page arrives, not when their row
   // mounts: a windowed row mounts as it scrolls in, and a card landing then
@@ -1384,11 +1388,30 @@ export function MessageList({
   // and put focus on its first control so the keyboard can answer at once.
   const handleJumpToQuestion = useCallback(() => {
     const container = containerRef.current
-    const card = questionCardNode(
-      contentRef.current,
-      offscreenQuestions.target ?? '',
-    )
-    if (!container || !card) return
+    const content = contentRef.current
+    const target = offscreenQuestions.target
+    if (!container || !content || !target) return
+    // The card itself, or failing that the transcript row that holds it
+    // (waiting rows are pinned, so it is mounted): a jump always lands.
+    const index = rowIndexById.get(target)
+    const rowKey = index === undefined ? undefined : flatRows[index]?.key
+    const card =
+      questionCardNode(content, target) ??
+      Array.from(
+        content.querySelectorAll<HTMLElement>('[data-message-row]'),
+      ).find(
+        (node) =>
+          rowKey !== undefined &&
+          node.dataset.messageRow?.split(' ').includes(rowKey),
+      )
+    if (!card) {
+      if (index !== undefined) {
+        cancelTailAnimation()
+        transitionTailState('paused')
+        virtualizer.scrollToIndex(index, { align: 'center' })
+      }
+      return
+    }
     cancelTailAnimation()
     transitionTailState('paused')
     scrollRowToCenter(container, card)
@@ -1412,9 +1435,12 @@ export function MessageList({
     }
   }, [
     cancelTailAnimation,
+    flatRows,
     offscreenQuestions.target,
+    rowIndexById,
     scrollRowToCenter,
     transitionTailState,
+    virtualizer,
   ])
 
   // The jump is read through a ref so a new closure (a new target) does not
@@ -1560,6 +1586,7 @@ export function MessageList({
             readerIsIn={readerIsIn}
             defaultOpenCalls={defaultOpenCalls}
             focusMessageId={focusMessageId}
+            awaitingQuestionIds={awaitingQuestionSet}
             onLoadActivityEntries={onLoadActivityEntries}
             onShowObservers={onShowObservers}
             onResolveApproval={onResolveApproval}
@@ -1901,6 +1928,9 @@ interface FunctionCallGroupProps {
   agentName?: string
   /** External landing target — a hidden matching item expands the group. */
   focusMessageId?: string | null
+  /** Waiting question cards: shown even while the batch is folded, so the
+   *  composer's notice always has a card to land on. */
+  awaitingQuestionIds?: ReadonlySet<string>
   onLoadActivityEntries?: MessageListProps['onLoadActivityEntries']
   onShowObservers?: () => void
 }
@@ -2003,6 +2033,7 @@ function FunctionCallGroup({
   workingDir,
   agentName,
   focusMessageId,
+  awaitingQuestionIds,
   onLoadActivityEntries,
   onShowObservers,
 }: FunctionCallGroupProps) {
@@ -2063,6 +2094,7 @@ function FunctionCallGroup({
         renderer.isMatch(functionId) && renderer.metadata?.display === true,
     )
   const collapsedItems = collapsedTimelineActivities(row.items, (call) => {
+    if (awaitingQuestionIds?.has(call.id)) return true
     // Observe receipts stay visible as durable activity receipts without
     // opting the engine renderer into the richer `display` presentation.
     if (call.functionId === 'harness::observe') return true

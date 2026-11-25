@@ -124,4 +124,29 @@ describe('waiting question cards out of view', () => {
     await render([])
     expect(reported?.count ?? 0).toBe(0)
   })
+
+  it('keeps a waiting card visible inside a folded batch, so the jump can land on it', async () => {
+    // The ask is not the batch's last call and no renderer marks it as a
+    // display, so a folded batch would otherwise hide it.
+    const later: Message = {
+      id: 'fc_later',
+      role: 'function-call',
+      functionCallId: 'call-later',
+      functionId: 'engine::functions::list',
+      input: {},
+      output: { functions: [] },
+      createdAt: 2,
+    } as Message
+    const view = (awaitingQuestionIds: readonly string[]) => (
+      <MessageList
+        messages={[ask, later, reply]}
+        awaitingQuestionIds={awaitingQuestionIds}
+      />
+    )
+    const askCard = '[data-message-id="fc_ask"]'
+    await act(() => root.render(view([])))
+    expect(container.querySelector(askCard)).toBeNull()
+    await act(() => root.render(view(['fc_ask'])))
+    expect(container.querySelector(askCard)).not.toBeNull()
+  })
 })

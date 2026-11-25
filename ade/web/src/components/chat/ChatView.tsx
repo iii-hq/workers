@@ -3924,13 +3924,17 @@ export function ChatView({
                   ) : null}
                 </section>
               ) : null}
-              {offscreenQuestions ? (
-                <QuestionNotice
-                  count={offscreenQuestions.offscreen.count}
-                  direction={offscreenQuestions.offscreen.direction}
-                  onShow={offscreenQuestions.jump}
-                />
-              ) : null}
+              <QuestionNotice
+                notice={
+                  offscreenQuestions
+                    ? {
+                        count: offscreenQuestions.offscreen.count,
+                        direction: offscreenQuestions.offscreen.direction,
+                        onShow: offscreenQuestions.jump,
+                      }
+                    : null
+                }
+              />
               {sessionTurnSummaries ? (
                 <div
                   className="flex flex-wrap items-center justify-end gap-1.5 px-1"

@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, MessageCircleQuestionMark } from 'lucide-react'
+import { TrayButton } from '@/components/ui/TrayButton'
 
 /** What the notice says: how many waiting question cards are out of view. */
 export function questionNoticeText(count: number): string {
@@ -7,39 +8,51 @@ export function questionNoticeText(count: number): string {
     : `${count} questions waiting for your answer`
 }
 
-/**
- * A row in the composer's tray (the queued-message strip's look) for
- * question cards that scrolled out of view: the person is looking at the
- * composer when the agent stops to ask, so the notice sits there, in flow,
- * instead of floating over the transcript. The whole row is the control;
- * the trailing arrow points where the card is.
- */
-export function QuestionNotice({
-  count,
-  direction,
-  onShow,
-}: {
+export interface QuestionNoticeState {
   count: number
   direction: 'up' | 'down'
   onShow: () => void
+}
+
+/**
+ * The composer tray's row for question cards that scrolled out of view: the
+ * person is looking at the composer when the agent stops to ask, so the
+ * notice sits there, in flow, rather than over the transcript. The trailing
+ * arrow points where the card is.
+ *
+ * Always mounted: the status line beside the button stays in the
+ * accessibility tree, so a screen reader hears the notice appear and its
+ * count change while focus stays in the composer. Only the words are
+ * announced, not the control.
+ */
+export function QuestionNotice({
+  notice,
+}: {
+  notice: QuestionNoticeState | null
 }) {
-  const Arrow = direction === 'down' ? ArrowDown : ArrowUp
+  const text = notice ? questionNoticeText(notice.count) : ''
+  const Arrow = notice?.direction === 'down' ? ArrowDown : ArrowUp
   return (
-    <button
-      type="button"
-      data-question-jump=""
-      onClick={onShow}
-      className="mb-1 flex min-h-11 w-full items-center gap-2 rounded-xl bg-surface px-3 py-2 text-start text-base text-ink transition-colors duration-(--motion-duration-control) ease-(--motion-ease-standard) hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none @2xl:min-h-9 @2xl:py-1.5 @2xl:text-sm"
-    >
-      <MessageCircleQuestionMark
-        aria-hidden="true"
-        className="size-4 shrink-0 text-ink-faint"
-      />
-      <span className="min-w-0 flex-1">{questionNoticeText(count)}</span>
-      <span className="flex shrink-0 items-center gap-1 text-ink-faint">
-        Show
-        <Arrow aria-hidden="true" className="size-4" />
-      </span>
-    </button>
+    <>
+      <p role="status" aria-live="polite" className="sr-only">
+        {text}
+      </p>
+      {notice ? (
+        <TrayButton
+          data-question-jump=""
+          className="mb-1"
+          onClick={notice.onShow}
+          icon={<MessageCircleQuestionMark className="size-4" />}
+          trailing={
+            <>
+              Show
+              <Arrow aria-hidden="true" className="size-4" />
+            </>
+          }
+        >
+          {text}
+        </TrayButton>
+      ) : null}
+    </>
   )
 }
