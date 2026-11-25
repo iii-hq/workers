@@ -168,6 +168,18 @@ pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>>
         }
     };
 
+    let (width, height) = (thumbnail.width(), thumbnail.height());
+    let max_side = match params.output_format {
+        ImageFormat::Jpeg => 65_535,
+        ImageFormat::WebP => 16_383,
+        _ => u32::MAX,
+    };
+    if width.max(height) > max_side {
+        bail!(
+            "{width}x{height} is too large for this output format (max {max_side} px per side); use a smaller box or png"
+        );
+    }
+
     let mut buf = Vec::new();
     match params.output_format {
         ImageFormat::Jpeg => {
@@ -175,16 +187,36 @@ pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>>
                 .write_with_encoder(JpegEncoder::new_with_quality(&mut buf, params.quality))?;
         }
         ImageFormat::Png => thumbnail.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)?,
-        ImageFormat::WebP => {
-            let mut cursor = Cursor::new(&mut buf);
-            thumbnail
-                .to_rgba8()
-                .write_to(&mut cursor, ImageFormat::WebP)?;
-        }
+        ImageFormat::WebP => buf = encode_webp(&thumbnail, params.quality)?,
         _ => return Err(anyhow!("Unsupported output format")),
     }
 
     Ok(buf)
+}
+
+fn encode_webp(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    use std::ffi::c_int;
+    // process_image rejected sides above 16383, so these casts are exact.
+    let (w, h) = (img.width() as c_int, img.height() as c_int);
+    let mut out: *mut u8 = std::ptr::null_mut();
+    // SAFETY: each buffer is h rows of `stride` bytes of this image; libwebp only reads it.
+    let len = unsafe {
+        if img.color().has_alpha() {
+            let px = img.to_rgba8();
+            libwebp_sys::WebPEncodeRGBA(px.as_ptr(), w, h, w * 4, f32::from(quality), &mut out)
+        } else {
+            let px = img.to_rgb8();
+            libwebp_sys::WebPEncodeRGB(px.as_ptr(), w, h, w * 3, f32::from(quality), &mut out)
+        }
+    };
+    if len == 0 {
+        bail!("libwebp could not encode the image");
+    }
+    // SAFETY: on success libwebp returns `len` bytes at `out`, ours until WebPFree.
+    let bytes = unsafe { std::slice::from_raw_parts(out, len).to_vec() };
+    // SAFETY: `out` came from libwebp and is not used after this call.
+    unsafe { libwebp_sys::WebPFree(out.cast()) };
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -472,6 +504,86 @@ mod tests {
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::WebP).unwrap();
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
+    }
+
+    fn webp_params(w: u32, h: u32, quality: u8, input_format: ImageFormat) -> ProcessingParams {
+        ProcessingParams {
+            target_width: w,
+            target_height: h,
+            strategy: ResizeStrategy::ScaleToFit,
+            quality,
+            input_format,
+            output_format: ImageFormat::WebP,
+        }
+    }
+
+    #[test]
+    fn webp_output_is_lossy_and_honors_quality() {
+        let mut seed: u32 = 1;
+        let noise = RgbImage::from_fn(256, 256, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [_, r, g, b] = seed.to_le_bytes();
+            image::Rgb([r, g, b])
+        });
+        let png = encode_image(&DynamicImage::ImageRgb8(noise), ImageFormat::Png);
+        let [low, high] = [20, 90].map(|q| {
+            let out = process_image(&png, &webp_params(256, 256, q, ImageFormat::Png)).unwrap();
+            assert_eq!(&out[..4], b"RIFF", "q{q}");
+            assert_eq!(&out[12..16], b"VP8 ", "q{q} must be lossy");
+            let decoded = image::load_from_memory_with_format(&out, ImageFormat::WebP).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (256, 256), "q{q}");
+            out.len()
+        });
+        assert!(low < high, "q20 is {low} bytes, q90 is {high} bytes");
+    }
+
+    #[test]
+    fn webp_output_keeps_alpha() {
+        let half = RgbaImage::from_fn(64, 64, |x, _| {
+            image::Rgba(if x < 32 { [200, 30, 30, 255] } else { [0; 4] })
+        });
+        let png = encode_image(&DynamicImage::ImageRgba8(half), ImageFormat::Png);
+        let out = process_image(&png, &webp_params(64, 64, 80, ImageFormat::Png)).unwrap();
+        let decoded = image::load_from_memory_with_format(&out, ImageFormat::WebP).unwrap();
+        assert!(decoded.to_rgba8().pixels().any(|p| p.0[3] < 255));
+    }
+
+    #[test]
+    fn webp_quality_defaults_to_config() {
+        let metadata = ImageMetadata {
+            format: "png".into(),
+            output_format: Some("webp".into()),
+            width: 1,
+            height: 1,
+            quality: None,
+            strategy: None,
+            target_width: None,
+            target_height: None,
+        };
+        let params = resolve_params(&default_config(), &metadata).unwrap();
+        assert_eq!(params.quality, 80);
+    }
+
+    #[test]
+    fn output_side_limits() {
+        let strip = |w| {
+            let mut png = Vec::new();
+            DynamicImage::ImageLuma8(image::GrayImage::new(w, 1))
+                .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+                .unwrap();
+            png
+        };
+        let webp = webp_params(20_000, 1, 80, ImageFormat::Png);
+        let err = process_image(&strip(16_384), &webp).unwrap_err();
+        assert!(err.to_string().contains("16383"), "{err}");
+
+        let jpeg = ProcessingParams {
+            target_width: 70_000,
+            output_format: ImageFormat::Jpeg,
+            ..webp
+        };
+        let err = process_image(&strip(65_536), &jpeg).unwrap_err();
+        assert!(err.to_string().contains("65535"), "{err}");
     }
 
     #[test]
