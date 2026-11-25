@@ -824,8 +824,9 @@ session does:
   such a session counts for the account of that place at the reply's time:
   for `~/.claude`, the account global then.
 - A reply of any other session counts for the account that was global at the
-  reply's time, from `global_history` in `accounts.json` (the last 50
-  switches, `{account, at_ms}`, also in `tmux::accounts::list`), and
+  reply's time, from `global_history` in `accounts.json` (`{account,
+  at_ms}`: the account global before the oldest change kept, at `at_ms` 0,
+  then the last 49 changes; also in `tmux::accounts::list`), and
   `attributed` counts those replies. A session found only in the `projects/`
   of an account that does not share `conversations` is that account's.
 - A reply counts once (by message id and request id), wherever its

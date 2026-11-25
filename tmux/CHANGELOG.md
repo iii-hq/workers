@@ -21,7 +21,8 @@
   denied. The sessions seen in panes are kept in `claude-sessions.json` in the accounts
   folder.
 - **Who was global when.** `accounts.json` and `tmux::accounts::list` keep
-  `global_history`, the last 50 changes of the global account as `{account, at_ms}`.
+  `global_history` as `{account, at_ms}`: the account global before the oldest change kept
+  (at `at_ms` 0), then the last 49 changes of the global account.
 - `III_CLAUDE_OAUTH_URL` points the token renewal at a loopback endpoint, for tests.
 
 ### Changed
