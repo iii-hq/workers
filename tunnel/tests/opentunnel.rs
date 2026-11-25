@@ -11,20 +11,20 @@ use std::{
 
 use chrono::Utc;
 use opentunnel::{ClientOptions, Identity, Storage};
-use quick_tunnel::{
+use tokio::sync::{broadcast, mpsc};
+use tunnel::{
     api::*,
     config::{Config, ProviderKind},
     manager::Manager,
     provider::{Provider, Signal, Sink, opentunnel::OpenTunnel},
 };
-use tokio::sync::{broadcast, mpsc};
 
 const HOST: &str = "abc234.opentunnel.xyz";
 
 /// Isolate the process before Tokio or the test harness can read its environment.
 /// `Command::env` configures only the child; the parent never mutates HOME.
 fn isolated_home(test: &str) -> Option<PathBuf> {
-    const CHILD_HOME: &str = "QUICK_TUNNEL_TEST_HOME";
+    const CHILD_HOME: &str = "TUNNEL_TEST_HOME";
     if let Some(home) = std::env::var_os(CHILD_HOME) {
         return Some(PathBuf::from(home));
     }

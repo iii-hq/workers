@@ -3,16 +3,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
-use quick_tunnel::{
+use serde_json::json;
+use tunnel::{
     config::{self, Config},
     manager::Manager,
     service,
 };
-use serde_json::json;
 
 #[derive(Parser)]
 #[command(
-    name = "quick-tunnel",
+    name = "tunnel",
     about = "Lease-managed public tunnels (cloudflared or OpenTunnel) on iii"
 )]
 struct Cli {
@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
-                "name": "quick-tunnel", "version": env!("CARGO_PKG_VERSION"),
+                "name": "tunnel", "version": env!("CARGO_PKG_VERSION"),
                 "description": env!("CARGO_PKG_DESCRIPTION"),
                 "default_config": Config::default(),
                 "prerequisites": ["operator-provided cloudflared with --output json support, only for provider cloudflared"],
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
         &cli.url,
         InitOptions {
             metadata: Some(WorkerMetadata {
-                name: "quick-tunnel".into(),
+                name: "tunnel".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..WorkerMetadata::default()
             }),
@@ -78,8 +78,20 @@ async fn main() -> Result<()> {
     result
 }
 
-/// Parses a raw configuration, choosing the provider when it names none.
+/// Parses a raw configuration: adopts the `quick-tunnel` data directory on
+/// the first boot, then chooses the provider when the configuration names none.
 fn parse_config(mut raw: serde_json::Value) -> Result<Config> {
+    let state_path = raw
+        .get("state_path")
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(|| Config::default().state_path, std::path::PathBuf::from);
+    if config::adopt_legacy_state(&state_path).context("adopting quick-tunnel data")? {
+        tracing::info!(
+            from = config::LEGACY_STATE_DIR,
+            to = %state_path.display(),
+            "adopted the quick-tunnel data directory"
+        );
+    }
     if let Some(provider) = config::fill_missing_provider(&mut raw) {
         tracing::info!(
             ?provider,
@@ -100,7 +112,7 @@ async fn run(
         let spec = iii_config_client::EntrySpec {
             id: config::config_id(),
             form_id: config::DEFAULT_CONFIG_ID,
-            name: "Quick Tunnel",
+            name: "Tunnel",
             description: "Tunnel provider, authorized origins and lifecycle limits (restart to apply)",
             schema: serde_json::to_value(schemars::schema_for!(Config))?,
             default_value: serde_json::to_value(Config::default())?,
@@ -114,7 +126,7 @@ async fn run(
         let value = iii_config_client::fetch(&iii, spec.id)
             .await
             .map_err(anyhow::Error::msg)?
-            .context("missing quick-tunnel config")?;
+            .context("missing tunnel config")?;
         parse_config(value)?
     };
     let targets = config.targets.keys().cloned().collect();

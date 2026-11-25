@@ -1820,16 +1820,16 @@ workers:
       binary: queue
       targets: *id001
     publish: true
-  quick-tunnel:
+  tunnel:
     source:
-      path: quick-tunnel
+      path: tunnel
       package_manifest: Cargo.toml
     artifact:
       kind: rust-binary
       toolchain:
         name: rust
         version: 1.97.1
-      binary: quick-tunnel
+      binary: tunnel
       targets:
       - aarch64-apple-darwin
       - x86_64-apple-darwin

@@ -202,7 +202,7 @@ func TestJoinDisabledWithoutPublicURL(t *testing.T) {
 	}
 }
 
-// proxyForwarder stands in for quick-tunnel with proxy_protocol: each connection to
+// proxyForwarder stands in for tunnel with proxy_protocol: each connection to
 // the returned URL reaches front after a PROXY v2 header naming visitor.
 func proxyForwarder(t *testing.T, front string, visitor netip.AddrPort) string {
 	t.Helper()

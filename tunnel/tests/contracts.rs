@@ -1,15 +1,15 @@
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::{InitOptions, register_worker};
-use quick_tunnel::{
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use tokio::{net::TcpListener, sync::mpsc};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tunnel::{
     api::*,
     config::{Config, ProviderKind},
     manager::Manager,
     service,
 };
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
-use tokio::{net::TcpListener, sync::mpsc};
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 #[test]
 fn configuration_rejects_nonloopback_and_authority_tricks() {
@@ -84,7 +84,7 @@ async fn interface_registers_without_cloudflared_and_observers_receive_snapshots
     wire_tx
         .send(json!({
             "type": "workerregistered",
-            "worker_id": "quick-tunnel-test",
+            "worker_id": "tunnel-test",
             "features": ["observe.v1", "observe.v2"],
         }))
         .unwrap();

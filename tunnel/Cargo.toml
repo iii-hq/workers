@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "quick-tunnel"
+name = "tunnel"
 version = "0.2.5"
 edition = "2024"
 publish = false
@@ -10,7 +10,7 @@ description = "Lease-managed public tunnels (cloudflared Quick Tunnels or OpenTu
 repository = "https://github.com/iii-hq/workers"
 
 [[bin]]
-name = "quick-tunnel"
+name = "tunnel"
 path = "src/main.rs"
 
 [dependencies]

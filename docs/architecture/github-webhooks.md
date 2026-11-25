@@ -4,7 +4,7 @@
 
 GitHub monitoring uses three independently reusable worker surfaces:
 
-1. `quick-tunnel` owns `cloudflared` processes and expiring consumer leases. It
+1. `tunnel` owns `cloudflared` processes and expiring consumer leases. It
    exposes only operator-configured local targets, not arbitrary caller URLs.
 2. `http` owns HTTP ingress. Its optional webhook listener serves only routes
    explicitly registered with `public_webhook: true`. The ordinary listener,
@@ -25,7 +25,7 @@ repository hooks. Existing one-shot GitHub functions remain available.
 
 ## Guided setup and readiness
 
-`quick-tunnel` is an optional, on-demand prerequisite of GitHub webhook
+`tunnel` is an optional, on-demand prerequisite of GitHub webhook
 monitoring, not a fixed dependency of the `github` worker. The Console asks for
 operator confirmation before installing it. The `cloudflared` executable is
 owned by the operator: setup checks whether it is available and links to
@@ -112,7 +112,7 @@ another worker's public endpoint.
 ## Tunnel URL rotation and outages
 
 A recreated Quick Tunnel may receive a new URL. Consumers observe
-`quick-tunnel::on-changed` before acquiring a lease and read its status once
+`tunnel::on-changed` before acquiring a lease and read its status once
 afterward. A generation identifies a process incarnation; stale events must not
 overwrite the current endpoint. URL updates preserve the existing hook secret.
 

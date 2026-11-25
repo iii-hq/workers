@@ -92,7 +92,7 @@ impl Config {
         config.webhooks.notifications.validate()?;
         if !crate::webhooks::valid_watch_days(config.webhooks.max_watch_days) {
             anyhow::bail!(
-                "webhooks.max_watch_days must be 1..=30 (quick-tunnel leases last at most 30 days)"
+                "webhooks.max_watch_days must be 1..=30 (tunnel leases last at most 30 days)"
             );
         }
         if config.webhooks.orphan_grace_minutes > crate::webhooks::MAX_ORPHAN_GRACE_MINUTES {

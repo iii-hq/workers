@@ -22,11 +22,11 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for EngineRequest<
     }
 }
 
-pub const ACQUIRE: &str = "quick-tunnel::acquire";
-pub const RELEASE: &str = "quick-tunnel::release";
-pub const STATUS: &str = "quick-tunnel::status";
+pub const ACQUIRE: &str = "tunnel::acquire";
+pub const RELEASE: &str = "tunnel::release";
+pub const STATUS: &str = "tunnel::status";
 /// Observable: each call is one tunnel lifecycle snapshot.
-pub const ON_CHANGED_FN: &str = "quick-tunnel::on-changed";
+pub const ON_CHANGED_FN: &str = "tunnel::on-changed";
 
 /// Calls [`ON_CHANGED_FN`] with `snapshot` when something observes it.
 /// Fire-and-forget: iii delivers the call to the observers whose filters
@@ -49,7 +49,7 @@ pub async fn emit(iii: &IIIClient, snapshot: &Snapshot) {
         timeout_ms: None,
     };
     if let Err(error) = iii.call(request).await {
-        tracing::warn!(tunnel_id = %snapshot.tunnel_id, %error, "changed call failed; observers reconcile with quick-tunnel::status");
+        tracing::warn!(tunnel_id = %snapshot.tunnel_id, %error, "changed call failed; observers reconcile with tunnel::status");
     }
 }
 

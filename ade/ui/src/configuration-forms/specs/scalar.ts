@@ -363,7 +363,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
             number(
               'max_watch_days',
               'Maximum watch duration (days)',
-              'At most 30: each watch holds a quick-tunnel lease, and leases last at most 30 days. Applies to new watches.',
+              'At most 30: each watch holds a tunnel lease, and leases last at most 30 days. Applies to new watches.',
               { min: 1, max: 30 },
             ),
             number(

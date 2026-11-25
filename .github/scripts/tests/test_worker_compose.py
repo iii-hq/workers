@@ -261,7 +261,7 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "code-runner",
         "context-manager",
         "lsp",
-        "quick-tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
+        "tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
         "sandbox-code-runner",
         "sandbox-libkrun",  # microVMs need KVM or Hypervisor.framework; neither exists on Windows.
         "ide",

@@ -4,14 +4,14 @@ mod support;
 use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
-use quick_tunnel::{
+use support::FakeProvider;
+use tokio::sync::broadcast;
+use tunnel::{
     api::*,
     config::{Config, ProviderKind},
     manager::Manager,
     provider::Signal,
 };
-use support::FakeProvider;
-use tokio::sync::broadcast;
 
 const URL: &str = "https://abc234.opentunnel.xyz";
 

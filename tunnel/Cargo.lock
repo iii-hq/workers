@@ -1343,35 +1343,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quick-tunnel"
-version = "0.2.5"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "fs2",
- "futures-util",
- "iii-config-client",
- "iii-sdk",
- "opentunnel",
- "rcgen",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2445,6 +2416,35 @@ dependencies = [
  "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror",
+]
+
+[[package]]
+name = "tunnel"
+version = "0.2.5"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "fs2",
+ "futures-util",
+ "iii-config-client",
+ "iii-sdk",
+ "opentunnel",
+ "rcgen",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
 ]
 
 [[package]]

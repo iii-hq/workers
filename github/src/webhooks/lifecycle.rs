@@ -68,7 +68,7 @@ impl Service {
                 || spec.expires_at > now + chrono::Duration::days(i64::from(max_days))
             {
                 return Err(Failure::Invalid(format!(
-                    "expires_at must be in the future and at most {max_days} days away (webhooks.max_watch_days; never above 30, the quick-tunnel lease limit)"
+                    "expires_at must be in the future and at most {max_days} days away (webhooks.max_watch_days; never above 30, the tunnel lease limit)"
                 )));
             }
             ensure_repo(d, &spec.repo);
@@ -122,7 +122,7 @@ impl Service {
     async fn acquire_lease(&self, id: &str) -> Result<()> {
         let data = self.store()?.read()?;
         let w = data.watches.get(id).ok_or(Failure::NotFound)?;
-        let lease = self.invoke("quick-tunnel::acquire", json!({"consumer_id": consumer_id(&data.installation, id), "tunnel_id": self.config.tunnel_id, "expires_at": w.spec.expires_at.to_rfc3339()})).await?;
+        let lease = self.invoke("tunnel::acquire", json!({"consumer_id": consumer_id(&data.installation, id), "tunnel_id": self.config.tunnel_id, "expires_at": w.spec.expires_at.to_rfc3339()})).await?;
         let lease_id = lease["lease_id"]
             .as_str()
             .filter(|id| !id.is_empty())
@@ -141,13 +141,10 @@ impl Service {
         if w.lease_id.is_none() {
             self.acquire_lease(id).await?;
         }
-        // The quick-tunnel observer was submitted before acquire and becomes
+        // The tunnel observer was submitted before acquire and becomes
         // active asynchronously. One status read closes the ready-event race.
         let status = self
-            .invoke(
-                "quick-tunnel::status",
-                json!({"tunnel_id":self.config.tunnel_id}),
-            )
+            .invoke("tunnel::status", json!({"tunnel_id":self.config.tunnel_id}))
             .await?;
         let status: TunnelSnapshot = serde_json::from_value(status)?;
         self.apply_tunnel(&status).await?;
@@ -185,10 +182,7 @@ impl Service {
         // UUID generations are identities, not sortable versions. Always use
         // this ONE authoritative read, including for delayed failure/ready events.
         let current = self
-            .invoke(
-                "quick-tunnel::status",
-                json!({"tunnel_id":self.config.tunnel_id}),
-            )
+            .invoke("tunnel::status", json!({"tunnel_id":self.config.tunnel_id}))
             .await;
         let current: TunnelSnapshot = match current.and_then(|v| Ok(serde_json::from_value(v)?)) {
             Ok(current) => current,
@@ -671,7 +665,7 @@ impl Service {
             }
             if let Some(lease_id) = &w.lease_id
                 && let Err(e) = self
-                    .invoke("quick-tunnel::release", json!({"lease_id":lease_id}))
+                    .invoke("tunnel::release", json!({"lease_id":lease_id}))
                     .await
             {
                 self.store()?.change(|d| {
@@ -697,7 +691,7 @@ impl Service {
     }
     /// Remove subscribers, then stop every watch that lost its last listener.
     /// Cleanup releases those leases and deletes the repository hook once no
-    /// live watch remains; quick-tunnel stops with its last lease.
+    /// live watch remains; tunnel stops with its last lease.
     pub(super) async fn drop_subscribers(&self, ids: &[String]) -> Result<Vec<String>> {
         let _guard = self.operations.lock().await;
         let grace = self.cell.read().await.webhooks.orphan_grace_minutes;

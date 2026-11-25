@@ -49,7 +49,7 @@ func (f *fakeTunnelRPC) call(_ context.Context, id string, input any) (json.RawM
 	switch id {
 	case "http::webhook-listener::status":
 		return json.Marshal(map[string]any{"applied": f.listener})
-	case "quick-tunnel::status":
+	case "tunnel::status":
 		if f.failStatus {
 			return nil, errors.New("transport secret-sentinel")
 		}
@@ -66,7 +66,7 @@ func (f *fakeTunnelRPC) call(_ context.Context, id string, input any) (json.RawM
 			answer["leases"] = leases
 		}
 		return json.Marshal(answer)
-	case "quick-tunnel::acquire":
+	case "tunnel::acquire":
 		consumer := params["consumer_id"].(string)
 		expiry, err := time.Parse(time.RFC3339Nano, params["expires_at"].(string))
 		if err != nil {
@@ -86,7 +86,7 @@ func (f *fakeTunnelRPC) call(_ context.Context, id string, input any) (json.RawM
 			return nil, errors.New("reply lost")
 		}
 		return json.Marshal(map[string]any{"lease_id": "whatsapp-lease", "tunnel_id": "webhooks", "status": f.status, "public_url": f.url})
-	case "quick-tunnel::release":
+	case "tunnel::release":
 		if f.failRelease {
 			return nil, errors.New("release failed secret-sentinel")
 		}
@@ -142,7 +142,7 @@ func TestDevelopmentTunnelOwnLeaseAndConcurrentStart(t *testing.T) {
 		}()
 	}
 	group.Wait()
-	if fake.calls["quick-tunnel::acquire"] != 1 {
+	if fake.calls["tunnel::acquire"] != 1 {
 		t.Fatalf("duplicate leases: %v", fake.calls)
 	}
 	if len(fake.leases) != 2 {
@@ -186,7 +186,7 @@ func TestDevelopmentTunnelTracksAuthoritativeLifecycleAndExpiry(t *testing.T) {
 	tunnelResult(t, got, err, "starting")
 	got, err = service.Start(context.Background())
 	tunnelResult(t, got, err, "ready")
-	if fake.calls["quick-tunnel::acquire"] != 2 {
+	if fake.calls["tunnel::acquire"] != 2 {
 		t.Fatal("expired lease was not renewed")
 	}
 	fake.failStatus = true
@@ -205,7 +205,7 @@ func TestDevelopmentTunnelLostAcquireReplyAndRestartRecovery(t *testing.T) {
 	}
 	got, err = recovered.Start(context.Background())
 	tunnelResult(t, got, err, "ready")
-	if fake.calls["quick-tunnel::acquire"] != 1 {
+	if fake.calls["tunnel::acquire"] != 1 {
 		t.Fatal("restart acquired duplicate lease")
 	}
 	if err = recovered.Close(context.Background()); err != nil {
@@ -225,7 +225,7 @@ func TestDevelopmentTunnelLostAcquireReplyAndRestartRecovery(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	for {
 		fake.mu.Lock()
-		acquired := fake.calls["quick-tunnel::acquire"] == 2
+		acquired := fake.calls["tunnel::acquire"] == 2
 		fake.mu.Unlock()
 		if acquired {
 			break
@@ -286,7 +286,7 @@ func TestDevelopmentTunnelPreflightAndURLValidation(t *testing.T) {
 			test.update(service, fake)
 			got, err := service.Start(context.Background())
 			tunnelResult(t, got, err, "unavailable")
-			if fake.calls["quick-tunnel::acquire"] != 0 {
+			if fake.calls["tunnel::acquire"] != 0 {
 				t.Fatal("acquired before prerequisites")
 			}
 		})
@@ -343,7 +343,7 @@ func TestDevelopmentTunnelPersistenceIsPrivateAndCannotReleaseForeignLease(t *te
 	unsafe := newDevelopmentTunnel(context.Background(), service.config, fake.call)
 	got, err = unsafe.Start(context.Background())
 	tunnelResult(t, got, err, "unavailable")
-	if fake.calls["quick-tunnel::acquire"] != 0 {
+	if fake.calls["tunnel::acquire"] != 0 {
 		t.Fatal("unsafe persistence acquired a tunnel")
 	}
 }
@@ -368,7 +368,7 @@ func TestDevelopmentTunnelRenewalWakesWithoutChangingConsumer(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	for {
 		fake.mu.Lock()
-		renewed := fake.calls["quick-tunnel::acquire"] == 2
+		renewed := fake.calls["tunnel::acquire"] == 2
 		fake.mu.Unlock()
 		if renewed {
 			break

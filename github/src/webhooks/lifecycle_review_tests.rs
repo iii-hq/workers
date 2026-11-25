@@ -152,7 +152,7 @@ async fn lost_patch_response_allows_cleanup_after_restart_without_releasing_fore
         stop_watches(&s);
         let bus = s.bus.as_ref().unwrap();
         for _ in 0..2 {
-            bus.reply("quick-tunnel::release", Ok(Value::Null));
+            bus.reply("tunnel::release", Ok(Value::Null));
         }
         s.cleanup().await.unwrap();
         let data = s.store().unwrap().read().unwrap();
@@ -249,7 +249,7 @@ async fn rejected_post_without_hook_clears_intent_and_releases_lease() {
     s.bus
         .as_ref()
         .unwrap()
-        .reply("quick-tunnel::release", Ok(Value::Null));
+        .reply("tunnel::release", Ok(Value::Null));
     s.cleanup().await.unwrap();
     let data = s.store().unwrap().read().unwrap();
     assert!(data.repos.is_empty());
@@ -310,9 +310,9 @@ async fn failed_listing_keeps_durable_url_and_recover_finds_applied_post_without
     configure_gh(dir.path(), json!({"fail_list":false}));
     let bus = s.bus.as_ref().unwrap();
     for id in ["w1", "w2"] {
-        bus.reply("quick-tunnel::acquire", Ok(json!({"lease_id":id})));
+        bus.reply("tunnel::acquire", Ok(json!({"lease_id":id})));
         bus.reply(
-            "quick-tunnel::status",
+            "tunnel::status",
             Ok(serde_json::to_value(tunnel("ready", Some("https://new.example"), "new")).unwrap()),
         );
     }
@@ -481,10 +481,10 @@ async fn failed_or_malformed_acquire_preserves_old_lease_and_continues_other_wat
             })
             .unwrap();
         let bus = s.bus.as_ref().unwrap();
-        bus.reply("quick-tunnel::acquire", reply);
-        bus.reply("quick-tunnel::acquire", Ok(json!({"lease_id":"new-w2"})));
+        bus.reply("tunnel::acquire", reply);
+        bus.reply("tunnel::acquire", Ok(json!({"lease_id":"new-w2"})));
         bus.reply(
-            "quick-tunnel::status",
+            "tunnel::status",
             Ok(serde_json::to_value(tunnel("starting", None, "new")).unwrap()),
         );
         assert!(s.recover(None).await.is_err());
@@ -498,13 +498,13 @@ async fn failed_or_malformed_acquire_preserves_old_lease_and_continues_other_wat
                 .any(|c| c["endpoint"] == "repos/owner/repo/hooks/42/deliveries/7/attempts")
         );
         stop_watches(&s);
-        bus.reply("quick-tunnel::release", Ok(Value::Null));
-        bus.reply("quick-tunnel::release", Ok(Value::Null));
+        bus.reply("tunnel::release", Ok(Value::Null));
+        bus.reply("tunnel::release", Ok(Value::Null));
         s.cleanup().await.unwrap();
         let releases: Vec<_> = bus
             .calls()
             .into_iter()
-            .filter(|c| c.function == "quick-tunnel::release")
+            .filter(|c| c.function == "tunnel::release")
             .collect();
         assert_eq!(releases[0].payload["lease_id"], "old-w1");
         assert_eq!(releases[1].payload["lease_id"], "new-w2");

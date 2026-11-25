@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 /// Built-in configuration entry id; also the stable `metadata.ui_form` family.
-pub const DEFAULT_CONFIG_ID: &str = "quick-tunnel";
+pub const DEFAULT_CONFIG_ID: &str = "tunnel";
 
 /// The configuration entry this worker owns: `III_CONFIG_NAME` when a
 /// supervisor set it (trimmed, non-empty), else the built-in name. Cached for
@@ -79,7 +79,7 @@ impl Default for Config {
             targets: BTreeMap::from([("webhooks".into(), "http://127.0.0.1:3112".into())]),
             proxy_protocol: BTreeSet::new(),
             cloudflared: "cloudflared".into(),
-            state_path: PathBuf::from("data/quick-tunnel/leases.json"),
+            state_path: PathBuf::from("data/tunnel/leases.json"),
             startup_timeout_ms: 30_000,
             max_retries: 3,
             retry_initial_ms: 1_000,
@@ -179,12 +179,70 @@ impl Config {
     }
 }
 
+/// Data directory of the `quick-tunnel` package this worker replaces.
+pub const LEGACY_STATE_DIR: &str = "data/quick-tunnel";
+
+/// On the first boot after replacing `quick-tunnel`, moves its data directory
+/// to this worker's default one. The upgraded install keeps its leases, its
+/// provider choice and its OpenTunnel identity, and with it its public URL.
+/// Only the default `state_path` adopts; a custom one is the operator's.
+/// Returns whether anything moved.
+///
+/// # Errors
+///
+/// Fails when a `quick-tunnel` worker still holds the legacy lease lock, or
+/// when the directory cannot be moved.
+pub fn adopt_legacy_state(state_path: &Path) -> std::io::Result<bool> {
+    if state_path != Config::default().state_path {
+        return Ok(false);
+    }
+    adopt_from(Path::new(LEGACY_STATE_DIR), state_path)
+}
+
+/// [`adopt_legacy_state`] from an explicit legacy directory.
+///
+/// # Errors
+///
+/// See [`adopt_legacy_state`].
+pub fn adopt_from(legacy: &Path, state_path: &Path) -> std::io::Result<bool> {
+    use fs2::FileExt;
+    let target = crate::manager::state_parent(state_path);
+    if target.exists() || !legacy.is_dir() {
+        return Ok(false);
+    }
+    // A quick-tunnel worker still running holds this lock: moving its files
+    // from under it would split the lease state between two processes.
+    let lock = match std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(legacy.join("leases.lock"))
+    {
+        Ok(file) => Some(file),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    if let Some(lock) = &lock {
+        lock.try_lock_exclusive().map_err(|_| {
+            std::io::Error::other(format!(
+                "quick-tunnel is still running on {}; stop and remove it before starting tunnel",
+                legacy.display()
+            ))
+        })?;
+    }
+    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(legacy, target)?;
+    Ok(true)
+}
+
 /// The provider for a stored configuration that names none.
 ///
 /// Configurations written before `provider` existed leave it out, and so do
-/// Compose-injected package defaults (the manifest cannot carry the key, see
-/// `package_defaults_use_only_keys_the_0_2_2_schema_accepts`). A worker that
-/// already ran on cloudflared keeps it: switching would change its public URL
+/// Compose-injected package defaults (the manifest leaves the key out on
+/// purpose, see `package_defaults_leave_the_provider_to_boot_resolution`). A
+/// worker that already ran on cloudflared (including `quick-tunnel` data
+/// adopted by [`adopt_legacy_state`]) keeps it: switching would change its public URL
 /// and could refuse targets OpenTunnel cannot carry. A fresh worker gets
 /// OpenTunnel, which needs no binary.
 ///
@@ -237,6 +295,57 @@ mod tests {
             targets: BTreeMap::from([(id.into(), origin.into())]),
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn adopt_moves_the_legacy_directory_with_its_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("quick-tunnel");
+        std::fs::create_dir_all(legacy.join("opentunnel/webhooks")).unwrap();
+        std::fs::write(legacy.join("leases.json"), "[]").unwrap();
+        std::fs::write(legacy.join("leases.lock"), "").unwrap();
+        let state = dir.path().join("tunnel/leases.json");
+        assert!(adopt_from(&legacy, &state).unwrap());
+        assert!(!legacy.exists());
+        assert!(state.exists());
+        assert!(dir.path().join("tunnel/opentunnel/webhooks").is_dir());
+    }
+
+    #[test]
+    fn adopt_keeps_an_existing_target_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("quick-tunnel");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(dir.path().join("tunnel")).unwrap();
+        let state = dir.path().join("tunnel/leases.json");
+        assert!(!adopt_from(&legacy, &state).unwrap());
+        assert!(legacy.is_dir());
+    }
+
+    #[test]
+    fn adopt_does_nothing_without_legacy_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("tunnel/leases.json");
+        assert!(!adopt_from(&dir.path().join("quick-tunnel"), &state).unwrap());
+        assert!(!dir.path().join("tunnel").exists());
+    }
+
+    #[test]
+    fn adopt_refuses_while_quick_tunnel_holds_the_lock() {
+        use fs2::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("quick-tunnel");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let held = std::fs::File::create(legacy.join("leases.lock")).unwrap();
+        held.lock_exclusive().unwrap();
+        let state = dir.path().join("tunnel/leases.json");
+        assert!(adopt_from(&legacy, &state).is_err());
+        assert!(legacy.is_dir());
+    }
+
+    #[test]
+    fn adopt_ignores_a_custom_state_path() {
+        assert!(!adopt_legacy_state(Path::new("/nonexistent/custom/leases.json")).unwrap());
     }
 
     #[test]
@@ -299,30 +408,18 @@ mod tests {
         assert!(serde_yaml_ng::from_str::<Config>("provider: ngrok\n").is_err());
     }
 
-    // An upgrade from 0.2.2 validates the package defaults against 0.2.2's
-    // schema, which refuses unknown keys: shipped defaults keep to its keys.
+    // A `provider` in the package defaults would force every install, including
+    // a cloudflared one adopted from quick-tunnel, onto that provider.
     #[test]
-    fn package_defaults_use_only_keys_the_0_2_2_schema_accepts() {
-        const V022_KEYS: [&str; 11] = [
-            "targets",
-            "cloudflared",
-            "state_path",
-            "startup_timeout_ms",
-            "max_retries",
-            "retry_initial_ms",
-            "retry_max_ms",
-            "failed_cooldown_ms",
-            "retry_budget_reset_ms",
-            "max_leases",
-            "max_lease_seconds",
-        ];
+    fn package_defaults_leave_the_provider_to_boot_resolution() {
         let manifest: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(include_str!("../iii.worker.yaml")).unwrap();
         let config = manifest["config"].as_mapping().expect("config mapping");
-        for key in config.keys() {
-            let key = key.as_str().unwrap();
-            assert!(V022_KEYS.contains(&key), "{key} is not in the 0.2.2 schema");
-        }
+        assert!(!config.contains_key("provider"));
+        assert_eq!(
+            manifest["config"]["state_path"].as_str().map(PathBuf::from),
+            Some(Config::default().state_path)
+        );
         // Absent keys fall back to their code defaults.
         let shipped: Config = serde_yaml_ng::from_value(manifest["config"].clone()).unwrap();
         assert_eq!(shipped.provider, ProviderKind::Opentunnel);

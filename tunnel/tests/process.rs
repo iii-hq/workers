@@ -1,13 +1,13 @@
 #![cfg(unix)]
 
 use chrono::Utc;
-use quick_tunnel::{
+use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use tokio::sync::broadcast;
+use tunnel::{
     api::*,
     config::{Config, ProviderKind},
     manager::Manager,
 };
-use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
-use tokio::sync::broadcast;
 
 fn fixture(mode: &str) -> (tempfile::TempDir, Config) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".test-data");
@@ -201,23 +201,20 @@ async fn restart_restores_leases_but_not_generation_or_public_url() {
 #[tokio::test]
 async fn missing_executable_is_observable_but_does_not_prevent_registration() {
     let (_dir, mut config) = fixture("ready");
-    config.cloudflared = "/nonexistent/quick-tunnel-cloudflared".into();
+    config.cloudflared = "/nonexistent/tunnel-cloudflared".into();
     let manager = Manager::open(config).unwrap();
     let before = snapshot(&manager).await;
     assert_eq!(before.snapshot.status, Status::Stopped);
     // Reported before any tunnel is requested, with the install pointer.
     let cloudflared = before.prerequisites.unwrap().cloudflared;
     assert!(!cloudflared.found);
-    assert_eq!(
-        cloudflared.install_url,
-        quick_tunnel::prerequisites::INSTALL_URL
-    );
+    assert_eq!(cloudflared.install_url, tunnel::prerequisites::INSTALL_URL);
     let reply = manager.acquire(request("github", 5000)).await.unwrap();
     assert_eq!(reply.snapshot.status, Status::Failed);
     let error = reply.snapshot.error.unwrap();
     assert!(error.contains("cloudflared not found"), "{error}");
     assert!(
-        error.contains(quick_tunnel::prerequisites::INSTALL_URL),
+        error.contains(tunnel::prerequisites::INSTALL_URL),
         "{error}"
     );
     manager.shutdown().await;
@@ -360,7 +357,7 @@ exec /usr/bin/python3 -c 'import signal; signal.alarm(10); signal.pause()'
         .unwrap();
         let yaml = dir.path().join("worker.yaml");
         std::fs::write(&yaml, serde_yaml_ng::to_string(&config).unwrap()).unwrap();
-        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_quick-tunnel"))
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tunnel"))
             .args(["--local-config", "--url", "ws://127.0.0.1:1", "--config"])
             .arg(yaml)
             // The worker writes an `iii ps` marker under $HOME/.iii/run.

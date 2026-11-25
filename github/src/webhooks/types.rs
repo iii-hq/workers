@@ -20,8 +20,8 @@ pub struct WebhookConfig {
     pub max_body_bytes: usize,
     pub max_pending: usize,
     /// Longest watch lifetime in days (1..=30); new watches must expire within
-    /// it. Capped at 30 because every watch holds a quick-tunnel lease and
-    /// quick-tunnel accepts leases of at most 30 days. Hot-reloaded.
+    /// it. Capped at 30 because every watch holds a tunnel lease and
+    /// tunnel accepts leases of at most 30 days. Hot-reloaded.
     #[schemars(range(min = 1, max = 30))]
     pub max_watch_days: u32,
     /// Minutes a watch may stay without any github::pr::on-event observer
@@ -33,7 +33,7 @@ pub struct WebhookConfig {
 }
 /// Upper bound for `orphan_grace_minutes` (one day).
 pub const MAX_ORPHAN_GRACE_MINUTES: u32 = 1440;
-/// Hard cap for `max_watch_days`: the quick-tunnel lease limit (30 days).
+/// Hard cap for `max_watch_days`: the tunnel lease limit (30 days).
 pub const MAX_WATCH_DAYS: u32 = 30;
 pub fn valid_watch_days(days: u32) -> bool {
     (1..=MAX_WATCH_DAYS).contains(&days)

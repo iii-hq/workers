@@ -15,7 +15,7 @@ import (
 // without launching cloudflared or publishing a test service on the Internet.
 type smokeTunnelProvider struct {
 	mu sync.Mutex
-	// observers maps each observer of quick-tunnel::on-changed to its target.
+	// observers maps each observer of tunnel::on-changed to its target.
 	observers map[string]string
 	client    *iii.Client
 	leases    map[string]map[string]any
@@ -24,12 +24,12 @@ type smokeTunnelProvider struct {
 	released  []string
 }
 
-const smokeTunnelChangedFn = "quick-tunnel::on-changed"
+const smokeTunnelChangedFn = "tunnel::on-changed"
 
 func newSmokeTunnelProvider(t *testing.T, engine, engineURL string) *smokeTunnelProvider {
 	t.Helper()
 	p := &smokeTunnelProvider{
-		client:    iii.New(engineURL, iii.WithName("smoke-quick-tunnel"), iii.WithNamespace(smokeNamespace)),
+		client:    iii.New(engineURL, iii.WithName("smoke-tunnel"), iii.WithNamespace(smokeNamespace)),
 		observers: map[string]string{},
 		leases: map[string]map[string]any{"github-existing": {
 			"lease_id": "github-existing", "consumer_id": "github:existing", "tunnel_id": "webhooks",
@@ -49,12 +49,12 @@ func newSmokeTunnelProvider(t *testing.T, engine, engineURL string) *smokeTunnel
 			t.Fatal(err)
 		}
 	}
-	register("quick-tunnel::status", func(_ context.Context, _ json.RawMessage) (any, error) {
+	register("tunnel::status", func(_ context.Context, _ json.RawMessage) (any, error) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		return p.snapshot(), nil
 	})
-	register("quick-tunnel::acquire", func(_ context.Context, raw json.RawMessage) (any, error) {
+	register("tunnel::acquire", func(_ context.Context, raw json.RawMessage) (any, error) {
 		var req struct {
 			ConsumerID string `json:"consumer_id"`
 			TunnelID   string `json:"tunnel_id"`
@@ -74,7 +74,7 @@ func newSmokeTunnelProvider(t *testing.T, engine, engineURL string) *smokeTunnel
 		result["lease_id"] = leaseID
 		return result, nil
 	})
-	register("quick-tunnel::release", func(_ context.Context, raw json.RawMessage) (any, error) {
+	register("tunnel::release", func(_ context.Context, raw json.RawMessage) (any, error) {
 		var req struct {
 			LeaseID string `json:"lease_id"`
 		}
@@ -104,7 +104,7 @@ func newSmokeTunnelProvider(t *testing.T, engine, engineURL string) *smokeTunnel
 	})
 	register(smokeTunnelChangedFn, iii.Identity, iii.FunctionOptions{Description: "Synthetic tunnel lifecycle", Private: true})
 	smokeWait(t, "synthetic tunnel provider", func() bool {
-		_, err := smokeCall(engine, engineURL, smokeNamespace, "quick-tunnel::status", map[string]any{})
+		_, err := smokeCall(engine, engineURL, smokeNamespace, "tunnel::status", map[string]any{})
 		return err == nil
 	})
 	return p

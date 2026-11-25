@@ -12,7 +12,7 @@ dependencies:
   database: latest
   configuration: latest
   http: latest
-  quick-tunnel: latest
+  tunnel: latest
 config:
   database:
     name: whatsapp

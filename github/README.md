@@ -9,12 +9,12 @@ criado ao registrar a interface com a configuração padrão.
 
 Antes de habilitá-lo, abra **GitHub → Webhooks** no Console ou chame
 `github::setup::webhooks-status`. A lista verifica se o worker opcional
-`quick-tunnel` está instalado, qual provider de túnel ele usa e se o
+`tunnel` está instalado, qual provider de túnel ele usa e se o
 listener restrito do `http` foi realmente aberto. Instalações novas do
-quick-tunnel usam o provider `opentunnel` (endereço fixo, sem binário): a linha
+tunnel usam o provider `opentunnel` (endereço fixo, sem binário): a linha
 `tunnel_provider` fica sempre `ok`. Quem já usava cloudflared continua nele, e
 então a linha `cloudflared` verifica o binário. O Console só instala
-`quick-tunnel` depois da confirmação do operador; ele nunca instala
+`tunnel` depois da confirmação do operador; ele nunca instala
 `cloudflared` e, quando necessário, mostra o
 [guia oficial de instalação](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
 Use `github::setup::enable-http-listener` e
@@ -161,7 +161,7 @@ The worker observes, for its own plumbing:
 | `configuration::on-updated` | filters `input.id` = this worker's entry, `input.event_type` = `configuration:updated` | `github::on-config-change` |
 | `http::on-request` | args `{ method: POST, path: /webhooks/github/:endpoint_id, public_webhook: true }` | `github::webhooks::receive` |
 | `queue::on-message` | args `{ topic: webhooks.queue, group: github-webhooks, max_retries: 5, backoff_ms: 1000 }`, observer id `<worker name>:webhooks:<webhooks.queue>` | `github::webhooks::process` |
-| `quick-tunnel::on-changed` | filter `input.tunnel_id` = `webhooks.tunnel_id` | `github::webhooks::tunnel-changed` |
+| `tunnel::on-changed` | filter `input.tunnel_id` = `webhooks.tunnel_id` | `github::webhooks::tunnel-changed` |
 | `cron::on-tick` | args `{ expression: "*/10 * * * * *" }` | `github::webhooks::maintain` |
 
 The four webhook observers exist only when `webhooks.enabled` is true. Each

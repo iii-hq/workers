@@ -1,10 +1,19 @@
-# quick-tunnel
+# tunnel
 
 Worker binário Rust do iii que gerencia túneis públicos por leases independentes e persistidas, com um provider por instância: **OpenTunnel dentro do processo** (`provider: opentunnel`, padrão em instalações novas, sem binário externo) ou **processos filhos cloudflared Quick Tunnel** (`provider: cloudflared`). Não implementa servidor HTTP, não substitui os workers HTTP/queue e não instala nem baixa cloudflared.
 
+## Migração do `quick-tunnel`
+
+Este worker substitui o pacote `quick-tunnel`, que deixou de ser publicado. Os IDs mudaram sem aliases: `quick-tunnel::acquire`/`release`/`status`/`on-changed` agora são `tunnel::*`, e o ID da configuração central passou a ser `tunnel`. Atualize `github`, `mesh` e `whatsapp` junto (as versões que chamam `tunnel::*`).
+
+1. Pare e remova o `quick-tunnel` (`compose::remove`).
+2. Instale o `tunnel` (`compose::add { worker: "tunnel" }`).
+3. No primeiro boot, se `state_path` é o padrão (`data/tunnel/leases.json`), `data/tunnel/` não existe e `data/quick-tunnel/` existe, o diretório antigo é movido para `data/tunnel/`. Leases, escolha de provider e identidade OpenTunnel (e com ela o endereço fixo) são preservadas. Se o `quick-tunnel` ainda estiver rodando (lock em `data/quick-tunnel/leases.lock`), o boot falha até ele parar. Um `state_path` personalizado nunca é movido.
+4. A configuração central antiga (`quick-tunnel`) não é migrada: reaplique em `tunnel` o que tiver personalizado (targets, `proxy_protocol`, timeouts).
+
 ## Pré-requisito e segurança
 
-Com `provider: cloudflared`, o operador deve fornecer um executável cloudflared confiável, com suporte a `tunnel --output json` (contrato de logs conferido no upstream 2025.11.1 e no `master` consultado em 2026-09-19). Configure `cloudflared` com um caminho absoluto, ou o nome: um nome solto é procurado **somente** em `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` e `/bin` (inclui o Homebrew em Apple silicon), e o filho é iniciado pelo caminho absoluto encontrado. O `PATH` herdado do worker não é consultado: uma entrada gravável pelo usuário (`~/.local/bin`, shims) poderia substituir o binário que publica um serviço local na Internet. Para qualquer outro local, configure o caminho absoluto. A interface registra mesmo sem o executável: somente a primeira lease inicia um filho; executável ausente produz `failed` com `cloudflared not found (...); install it from <página de downloads da Cloudflare>`. `quick-tunnel::status` informa `prerequisites.cloudflared` antes de qualquer lease, para que o operador instale o binário antes de habilitar webhooks. Com `provider: opentunnel` não há binário: o campo `cloudflared` é ignorado, `prerequisites` é omitido e a resposta de `status` traz `provider: "opentunnel"`.
+Com `provider: cloudflared`, o operador deve fornecer um executável cloudflared confiável, com suporte a `tunnel --output json` (contrato de logs conferido no upstream 2025.11.1 e no `master` consultado em 2026-09-19). Configure `cloudflared` com um caminho absoluto, ou o nome: um nome solto é procurado **somente** em `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` e `/bin` (inclui o Homebrew em Apple silicon), e o filho é iniciado pelo caminho absoluto encontrado. O `PATH` herdado do worker não é consultado: uma entrada gravável pelo usuário (`~/.local/bin`, shims) poderia substituir o binário que publica um serviço local na Internet. Para qualquer outro local, configure o caminho absoluto. A interface registra mesmo sem o executável: somente a primeira lease inicia um filho; executável ausente produz `failed` com `cloudflared not found (...); install it from <página de downloads da Cloudflare>`. `tunnel::status` informa `prerequisites.cloudflared` antes de qualquer lease, para que o operador instale o binário antes de habilitar webhooks. Com `provider: opentunnel` não há binário: o campo `cloudflared` é ignorado, `prerequisites` é omitido e a resposta de `status` traz `provider: "opentunnel"`.
 
 **Acquire publica o serviço HTTP autorizado na Internet.** Configure o destino HTTP de webhooks com validação HMAC e sem rotas administrativas. O worker não autentica HTTP público, não cria webhooks GitHub e não fornece SLA: Quick Tunnels são efêmeros e destinados a desenvolvimento. Não exponha o engine iii como target.
 
@@ -26,24 +35,24 @@ startup_timeout_ms: 120000
 Roda dentro do processo pelo crate `opentunnel` (`=0.6.2`), sem binário, contra o relay público `opentunnel.xyz` (URL da API não configurável). Cada target tem sua própria identidade OpenTunnel (perfil = ID do target), ativa só enquanto houver leases, como um filho cloudflared. O worker nunca remove a identidade no relay: ela sobrevive a leases e restarts.
 
 - **URL estável e difícil de adivinhar.** `https://<rota>.<id>.opentunnel.xyz`. `<id>` é atribuído pelo relay; `<rota>` são 16 caracteres hexadecimais aleatórios que o worker gera uma vez por target e guarda em `<perfil>/route` (modo `0600`). O hostname puro `https://<id>.opentunnel.xyz` não responde. A URL se mantém entre gerações e restarts enquanto o diretório de estado existir (com cloudflared muda a cada processo). Detecte mudança pela `generation`, nunca pela URL. Uma identidade criada antes desta versão mantém hostname e certificado, mas a URL muda uma vez para a forma com rota.
-- **Estado.** `<diretório de state_path>/opentunnel/` (padrão `data/quick-tunnel/opentunnel/`), criado pelo worker com modo `0700`; um diretório existente com qualquer permissão de grupo/outros é erro de boot (falha fechada). O worker nunca usa `$HOME`/`XDG_DATA_HOME`. Perder o diretório significa novo hostname: faça backup junto com os dados do worker. Para trocar só a URL, apague o arquivo `route` do perfil; para trocar também o hostname, apague o diretório do perfil. Vale no próximo início do túnel. Um arquivo `route` ilegível ou inválido falha com `opentunnel state unreadable`; ele nunca é regenerado sozinho.
+- **Estado.** `<diretório de state_path>/opentunnel/` (padrão `data/tunnel/opentunnel/`), criado pelo worker com modo `0700`; um diretório existente com qualquer permissão de grupo/outros é erro de boot (falha fechada). O worker nunca usa `$HOME`/`XDG_DATA_HOME`. Perder o diretório significa novo hostname: faça backup junto com os dados do worker. Para trocar só a URL, apague o arquivo `route` do perfil; para trocar também o hostname, apague o diretório do perfil. Vale no próximo início do túnel. Um arquivo `route` ilegível ou inválido falha com `opentunnel state unreadable`; ele nunca é regenerado sozinho.
 - **Primeiro provisionamento** espera um certificado ACME e pode passar dos 30 s padrão de `startup_timeout_ms`; use `startup_timeout_ms: 120000`. A nova tentativa retoma o provisionamento pendente, então as tentativas convergem. Os padrões não mudam por provider.
 - **Erros sanitizados** em `error`: `opentunnel rate limited`, `opentunnel relay unreachable`, `opentunnel certificate failed`, `opentunnel state unreadable`, `opentunnel provisioning failed`, `opentunnel returned an invalid hostname`, `opentunnel route not attached`, `opentunnel stopped`, além de `opentunnel startup/reconnect timeout` e `opentunnel edge connection interrupted`. O erro cru só vai para o log (`warn`). Todos seguem os mesmos retries, `failed` e cooldown do cloudflared.
 
 Segurança, leia antes de habilitar:
 
-- **O TLS dos visitantes termina dentro do processo quick-tunnel.** O relay vê só bytes cifrados, mas o worker guarda a chave privada do certificado e vê toda requisição em claro. Com cloudflared o TLS termina na Cloudflare e o worker nunca vê o tráfego.
-- A chave, o certificado e o token do túnel ficam em `data/quick-tunnel/opentunnel/`. Quem lê esse diretório consegue se passar pelo hostname.
+- **O TLS dos visitantes termina dentro do processo tunnel.** O relay vê só bytes cifrados, mas o worker guarda a chave privada do certificado e vê toda requisição em claro. Com cloudflared o TLS termina na Cloudflare e o worker nunca vê o tráfego.
+- A chave, o certificado e o token do túnel ficam em `data/tunnel/opentunnel/`. Quem lê esse diretório consegue se passar pelo hostname.
 - **O serviço local vê todo visitante como `127.0.0.1`**, sem header de encaminhamento, a menos que o target esteja em `proxy_protocol`. Headers como `X-Forwarded-For` ou `CF-Connecting-IP` são escritos pelo visitante. Não confie em peers loopback e autentique tudo que for exposto.
 - **`proxy_protocol: [<target>]` faz toda conexão ao target começar com um header PROXY protocol v2** com o endereço do visitante (o que o relay informa), antes de qualquer byte do visitante. Liste um target só se o serviço dele lê esse header nessa porta: os outros recusam todo visitante (o listener do worker HTTP, target `webhooks`, não lê; o hub do mesh lê). Targets na mesma porta precisam estar todos na lista ou nenhum; conferir que o target listado aponta para a porta do serviço que lê o header é responsabilidade do operador. O `status` informa o modo na lease: `leases[].proxy_protocol: "v2"`. Um consumer só deve interpretar o header enquanto um `status` listar a lease dele com esse valor. A lease guarda o modo em que foi concedida: reiniciar o worker com o modo trocado descarta as leases do target, e o hub do mesh readquire sozinho. Só existe com `provider: opentunnel`; com cloudflared é erro de configuração.
 - O provider roda no ambiente do worker. Diferente do filho cloudflared (ambiente limpo), ele respeita `HTTPS_PROXY`, `SSL_CERT_FILE` e `OPENTUNNEL_CA_CERT`.
-- **O hostname do relay fica público assim que o certificado é emitido, mas não responde.** O certificado ACME lista `<id>.opentunnel.xyz` e `*.<id>.opentunnel.xyz`, e CAs públicas registram esses nomes nos logs de Certificate Transparency (crt.sh e similares) em minutos; scanners leem esses logs. O nome servido, `<rota>.<id>.opentunnel.xyz`, não aparece em nenhum certificado. Ele é difícil de adivinhar, não secreto: resolvedores DNS, quem observa a rede (o nome vai em claro no TLS), o relay, todos que recebem a URL e todo worker ou agente local autorizado a chamar `quick-tunnel::status` o veem. Continue tratando todo target como alcançável pela Internet enquanto houver lease. Com cloudflared cada processo recebe um `*.trycloudflare.com` aleatório que não é registrado pelo nome.
+- **O hostname do relay fica público assim que o certificado é emitido, mas não responde.** O certificado ACME lista `<id>.opentunnel.xyz` e `*.<id>.opentunnel.xyz`, e CAs públicas registram esses nomes nos logs de Certificate Transparency (crt.sh e similares) em minutos; scanners leem esses logs. O nome servido, `<rota>.<id>.opentunnel.xyz`, não aparece em nenhum certificado. Ele é difícil de adivinhar, não secreto: resolvedores DNS, quem observa a rede (o nome vai em claro no TLS), o relay, todos que recebem a URL e todo worker ou agente local autorizado a chamar `tunnel::status` o veem. Continue tratando todo target como alcançável pela Internet enquanto houver lease. Com cloudflared cada processo recebe um `*.trycloudflare.com` aleatório que não é registrado pelo nome.
 - github, whatsapp e o hub do mesh aceitam a URL do opentunnel. Um worker whatsapp anterior a esta versão só aceita `https://<label>.trycloudflare.com`: atualize-o.
 - O relay é um serviço de terceiros (`opentunnel.xyz`) com limites (30 túneis novos por hora por IP, 5 certificados por dia por túnel) e sem SLA declarado.
 
 ## Configuração
 
-O worker usa a configuração central (`configuration`), via `iii-config-client`, com ID `III_CONFIG_NAME` ou `quick-tunnel`. `--config arquivo.yaml` é seed somente se o registro ainda não tiver valor; falhas da configuração central não viram defaults silenciosos. Mudanças exigem **reinício**: reconfiguração ao vivo de provider/destinos/executável não é suportada para evitar trocar a autorização de leases ativas. `--local-config` é alternativa explícita para desenvolvimento/testes isolados.
+O worker usa a configuração central (`configuration`), via `iii-config-client`, com ID `III_CONFIG_NAME` ou `tunnel`. `--config arquivo.yaml` é seed somente se o registro ainda não tiver valor; falhas da configuração central não viram defaults silenciosos. Mudanças exigem **reinício**: reconfiguração ao vivo de provider/destinos/executável não é suportada para evitar trocar a autorização de leases ativas. `--local-config` é alternativa explícita para desenvolvimento/testes isolados.
 
 **Provider omitido.** Uma configuração sem `provider` (gravada antes da chave existir, ou os defaults do pacote injetados pelo Compose, que não podem trazê-la) é resolvida no boot: se `<diretório de state_path>/opentunnel/` existe, `opentunnel`; senão, se o arquivo `state_path` já existe (o worker já rodou antes, com cloudflared), `cloudflared`; senão (instalação nova), `opentunnel`. Assim quem já usava cloudflared continua nele e quem instala agora começa no OpenTunnel. O provider escolhido vai para o log (`info`). Para fixar, grave `provider` explicitamente; para migrar uma instalação existente, use `provider: opentunnel`.
 
@@ -53,7 +62,7 @@ targets:
   webhooks: http://127.0.0.1:3112
 proxy_protocol: []           # só com opentunnel
 cloudflared: cloudflared     # ignorado com opentunnel
-state_path: data/quick-tunnel/leases.json
+state_path: data/tunnel/leases.json
 startup_timeout_ms: 30000
 max_retries: 3
 failed_cooldown_ms: 300000
@@ -70,7 +79,7 @@ Mantenha `state_path` em volume persistente privado e exclusivo por instância. 
 
 Todos os handlers registram descrição e schemas tipados via serde/schemars, SDK **`=0.26.0`**.
 
-### `quick-tunnel::acquire`
+### `tunnel::acquire`
 
 ```json
 {"consumer_id":"github:owner.repo","tunnel_id":"webhooks","expires_at":"2030-01-01T00:00:00Z"}
@@ -86,15 +95,15 @@ A identidade deve ser um identificador opaco (caracteres aceitos: alfanuméricos
 
 Com opentunnel a resposta de `status` traz também `provider: "opentunnel"` e, nas leases de targets em `proxy_protocol`, `proxy_protocol: "v2"`. Com cloudflared nenhum dos dois campos existe. A resposta de `acquire` e o evento `on-changed` não mudam.
 
-### `quick-tunnel::release`
+### `tunnel::release`
 
 Entrada `{"lease_id":"uuid"}`; saída `{"released":true}`. Repetição/ID desconhecido retorna `false`. A última lease encerra e coleta o filho antes da resposta. Não há autorização por consumer dentro do worker: callers confiáveis dependem da política iii; leases não são credenciais de segurança.
 
-### `quick-tunnel::status`
+### `tunnel::status`
 
 Entrada `{}` ou `{"tunnel_id":"webhooks"}`. Retorna snapshot acima **sem `lease_id` singular**, mais `leases:[{lease_id,consumer_id,tunnel_id,expires_at,proxy_protocol?}]`, `provider?` e `prerequisites:{cloudflared:{found,path,version,error,install_url}}` (sondado com `cloudflared --version`, limitado a 5 s, fora da task dona das leases; o resultado de um binário inalterado — mesmo caminho e mtime — é reutilizado por 60 s, e um binário ausente é reavaliado a cada leitura sem executar processo). Nunca inclui secrets do cloudflared. O worker nunca baixa nem instala o cloudflared: `install_url` aponta a página oficial da Cloudflare.
 
-### `quick-tunnel::on-changed`
+### `tunnel::on-changed`
 
 Função observável e privada: só este worker a chama, qualquer worker a observa. Cada mudança de estado de um túnel é uma chamada dela, e o handler devolve o snapshot recebido. Não recebe args: selecione o túnel com um filtro em `input.tunnel_id` (sem filtro, todos os targets). Entrega padrão do iii: cada observer cujos filtros casam recebe a chamada.
 
@@ -102,7 +111,7 @@ Evento `{tunnel_id,generation,status,public_url,error}`. Estados: `starting`, `r
 
 ```ts
 iii.observe(
-  { function_id: 'quick-tunnel::on-changed', filters: { 'input.tunnel_id': { $eq: 'webhooks' } }, capture: ['output'] },
+  { function_id: 'tunnel::on-changed', filters: { 'input.tunnel_id': { $eq: 'webhooks' } }, capture: ['output'] },
   'github::on-tunnel-change',
   { metadata: { repo: 'owner/repo' } },
 )
@@ -110,7 +119,7 @@ iii.observe(
 
 Com `capture: ['output']` o target recebe o envelope `Observed`, com o snapshot em `output`. A metadata do observer e o namespace do target ficam com o engine, que os aplica a cada entrega.
 
-**Integração GitHub: observe `quick-tunnel::on-changed` ANTES de acquire e leia status DEPOIS.** Mudanças podem ocorrer antes da resposta do acquire. Geração é UUID opaco, não ordenável; em dúvida reconcilie status. Nova tentativa/restart sempre ganha nova geração. Com cloudflared ela obtém uma URL nova do serviço (não há garantia de que o serviço nunca reutilize um hostname); com opentunnel a URL é a mesma. Use a geração, não a URL, para detectar mudança. Reconexão interna do mesmo filho/sessão conserva geração. Eventos são best-effort, não uma fila durável: entregas podem falhar, consumidores devem reconciliar status após reconectar; overflow de 256 eventos provoca reenvio dos snapshots atuais. O worker chama a função sem esperar os targets: um target lento não bloqueia leases, expiração nem outros observers. Sem observers, nenhum evento é enviado.
+**Integração GitHub: observe `tunnel::on-changed` ANTES de acquire e leia status DEPOIS.** Mudanças podem ocorrer antes da resposta do acquire. Geração é UUID opaco, não ordenável; em dúvida reconcilie status. Nova tentativa/restart sempre ganha nova geração. Com cloudflared ela obtém uma URL nova do serviço (não há garantia de que o serviço nunca reutilize um hostname); com opentunnel a URL é a mesma. Use a geração, não a URL, para detectar mudança. Reconexão interna do mesmo filho/sessão conserva geração. Eventos são best-effort, não uma fila durável: entregas podem falhar, consumidores devem reconciliar status após reconectar; overflow de 256 eventos provoca reenvio dos snapshots atuais. O worker chama a função sem esperar os targets: um target lento não bloqueia leases, expiração nem outros observers. Sem observers, nenhum evento é enviado.
 
 ## Ciclo de vida
 
@@ -129,8 +138,8 @@ O parser faz primeiro `serde_json` para registros tipados. Somente uma mensagem 
 
 Fontes:
 - [SDK Rust](https://iii.dev/docs/reference/sdk-rust.md)
-- [quick_tunnel.go 2025.11.1](https://raw.githubusercontent.com/cloudflare/cloudflared/2025.11.1/cmd/cloudflared/tunnel/quick_tunnel.go)
-- [quick_tunnel.go master consultado](https://raw.githubusercontent.com/cloudflare/cloudflared/master/cmd/cloudflared/tunnel/quick_tunnel.go)
+- [tunnel.go 2025.11.1](https://raw.githubusercontent.com/cloudflare/cloudflared/2025.11.1/cmd/cloudflared/tunnel/tunnel.go)
+- [tunnel.go master consultado](https://raw.githubusercontent.com/cloudflare/cloudflared/master/cmd/cloudflared/tunnel/tunnel.go)
 - [flags.go: output=json](https://raw.githubusercontent.com/cloudflare/cloudflared/master/cmd/cloudflared/flags/flags.go)
 - [logger/create.go: stderr JSON](https://raw.githubusercontent.com/cloudflare/cloudflared/master/logger/create.go)
 - [connection/observer.go: registro efetivo](https://raw.githubusercontent.com/cloudflare/cloudflared/2025.11.1/connection/observer.go)

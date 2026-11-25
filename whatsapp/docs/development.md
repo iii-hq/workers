@@ -167,7 +167,7 @@ when supplied, it also checks webhook verification, raw-body signatures, account
 isolation, duplicate message persistence, filtered Cloud event observers, target
 namespace/metadata and archive visibility before event delivery using synthetic
 credentials and data.
-A synthetic private `quick-tunnel::on-changed` checks the development controls,
+A synthetic private `tunnel::on-changed` checks the development controls,
 shared lease isolation, namespace routing and tunnel changes through the real
 engine; it does not launch cloudflared or expose the test server publicly.
 The test does not pair an account or call Meta. Without `III_BINARY`, `WHATSAPP_BINARY` and
