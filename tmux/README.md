@@ -764,12 +764,20 @@ resolves the global one first (`tmux::accounts::list`). The token is read
 from where the account's sign-in lives now: `~/.claude` (or its Keychain
 item) for the global account, its folder for any other. A read that a swap
 could have raced (a `swap.json`, or `accounts.json` changing under it) is
-made again, without waiting for the gate a pane move holds.
+made again, without waiting for the gate a pane move holds. While
+`~/.claude.json` names another account than the global one's own record
+(someone ran `/login` there and the worker has not taken it in yet, which
+takes seconds), the global account answers `busy`: another account's token is
+never answered as its.
 
-When the token expires within five minutes (Claude Code's own margin), the
-worker renews it first, the only place it renews one, one renewal per
-account at a time and in a task of its own (Anthropic replaces the refresh
-token, so an answer is kept even when the caller has gone):
+The worker renews a token here alone, as Claude Code 2.1.332 renews it: only
+when it expires within five minutes (Claude Code's own margin). A token
+without `expiresAt` is used as it is and never renewed (answered with
+`expires_at_ms` five minutes on, so the caller asks again), and a sign-in that
+is not a Claude.ai one (neither the `user:inference` scope nor a
+`subscriptionType`) is never renewed. One renewal per account runs at a time,
+in a task of its own (Anthropic replaces the refresh token, so an answer is
+kept even when the caller has gone):
 
 1. It takes the swap gate and `swap.lock`, settling a swap left half-way
    first, and only then reads `accounts.json` to tell whether the sign-in is
@@ -781,26 +789,49 @@ token, so an answer is kept even when the caller has gone):
    seconds while it holds them.
 3. It reads the sign-in again: a Claude Code that renewed it meanwhile is
    taken as it is, and nothing is asked.
-4. It renews it as Claude Code 2.1.332 does: `POST
+4. It writes the sign-in back as it is, to make sure the store takes a write:
+   a refresh token is never sent when its answer could not be kept (a full
+   disk, a Keychain outside the person's GUI session).
+5. It renews it as Claude Code does: `POST
    https://platform.claude.com/v1/oauth/token` with `grant_type:
    refresh_token`, the refresh token, the sign-in's client id (Claude Code's
    by default) and its scopes (Claude Code's defaults for a Claude.ai
    sign-in, plus the optional ones it holds; asked again with the ones it
    holds on `invalid_scope`), within 20 seconds, no proxy, no redirect.
-5. It writes the new access token, refresh token and expiry into the same
-   store, over the very sign-in it started from, every other key kept
-   (written to a temporary file and renamed; on macOS the Keychain item, which
-   needs the worker in the person's GUI session, as a swap does), reads it
-   back, and lets go of the locks. Another sign-in found there (something that
-   ignored the locks) is left as it is and answered instead.
+6. It writes the new access token, refresh token and expiry into the same
+   store, over the very sign-in it started from (or one whose refresh token a
+   Claude Code cleared), every other key kept (written to a temporary file and
+   renamed; on macOS the Keychain item, as a swap does), reads it back, and
+   lets go of the locks. Another sign-in found there (something that ignored
+   the locks) is left as it is: answered when the profile beside it still
+   names the same account (`accountUuid`), read again from the top otherwise.
+
+A renewal Anthropic answered is never dropped. When its write fails, it is
+kept in memory: its token is answered while it works, its refresh token is
+the one the next renewal sends (written over the store's own chain, which it
+replaced), and it is written again by itself after 15 seconds, then less often
+(up to every five minutes), until it lands or the store holds another sign-in.
+A worker that stops loses it.
+
+When the token still works (for more than 10 seconds), the caller waits for a
+renewal 10 seconds at most, then gets that token while the renewal goes on. A
+refresh token Anthropic refused (`invalid_grant`) is never sent again, as
+Claude Code never sends one again. After any other failure (Anthropic not
+reachable, an answer it can't read, `invalid_scope` with the scopes the
+sign-in holds, an account on hold) or a store that takes no write, the
+account's renewal is held back a minute for that refresh token, and asked
+again only after it.
 
 Errors are one JSON object `{code, message}`: `unknown_account`,
-`not_signed_in`, `token_expired` (Anthropic refused the renewal, or the
-sign-in holds nothing to renew it with: sign in again), `busy` (the gate,
-`swap.lock` or a Claude Code lock held for more than 10 seconds, or a swap
-left half-way on the account) and `failed` (anything else; a token that still
-works for more than 10 seconds is answered instead when Anthropic can't be
-reached). Nothing logs a token.
+`not_signed_in`, `token_expired` (Anthropic refused the refresh token, the
+sign-in holds nothing to renew it with, or it is not a Claude.ai sign-in: sign
+in again), `busy` (the gate, `swap.lock` or a Claude Code lock held for more
+than 10 seconds, a swap left half-way on the account, or a sign-in by hand on
+`~/.claude` not taken in yet) and `failed` (anything else: Anthropic not
+reachable, a 400, 401 or 403 without an OAuth error in it, an account on
+hold, a store that takes no write). A token that still works for more than 10
+seconds is answered instead of `token_expired`, `failed`, or a `busy` from
+anything held. Nothing logs a token.
 
 ### Spend outside the Chat
 
@@ -824,17 +855,29 @@ session does:
   such a session counts for the account of that place at the reply's time:
   for `~/.claude`, the account global then.
 - A reply of any other session counts for the account that was global at the
-  reply's time, from `global_history` in `accounts.json` (the last 50
-  switches, `{account, at_ms}`, also in `tmux::accounts::list`), and
+  reply's time, from `global_history` in `accounts.json` (`{account,
+  at_ms}`: the account global before the oldest change kept, at `at_ms` 0,
+  then the last 49 changes; also in `tmux::accounts::list`), and
   `attributed` counts those replies. A session found only in the `projects/`
   of an account that does not share `conversations` is that account's.
-- A reply counts once (by message id and request id), wherever its
+- A reply counts once (by its message id, else its request id), wherever its
   transcript was copied; a reply written over several lines counts with its
   largest figures. Synthetic messages and replies with no usage are left out.
 
-The transcripts are read only when asked, those changed in the last eight
-days at least, and the result is kept five minutes (`as_of_ms`). The Chat's
-own provider writes no transcript, so nothing is counted twice.
+The transcripts are read only when asked, and only what Claude Code added
+since the last read: the worker keeps how far it read each one (by device,
+inode, size and modification time; one replaced or cut shorter is read again
+from its start, its replies still counted once) and the replies summed by
+session, model and minute, for eight days back at least; a line still being
+written is read once it is whole. A line longer than 1 MiB is parsed from the
+file without being held, one longer than 256 MiB is skipped, and most lines
+are skipped unparsed. The result is kept five minutes (`as_of_ms`), and
+`since_ms` counts to the minute. The Chat's own provider writes no
+transcript, so nothing is counted twice.
+
+An unreadable `claude-sessions.json` is moved aside as
+`claude-sessions.json.corrupt-<ms>` before a new one is written; when it can't
+be moved, none is written.
 
 ### When the global account runs low
 

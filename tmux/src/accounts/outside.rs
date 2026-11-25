@@ -11,22 +11,27 @@
 //!
 //! - **Sessions tmux ran.** Each Claude Code session seen in a pane is
 //!   noted with where it ran (an account's folder, or the slot) and when
-//!   that changed, in `<accounts root>/claude-sessions.json`. Its entries
-//!   go to that folder's account at the entry's time, or, on the slot, to
+//!   that changed, in `<accounts root>/claude-sessions.json`. Its replies
+//!   go to that folder's account at the reply's time, or, on the slot, to
 //!   the account global then.
-//! - **Other sessions** go to the account global at the entry's time
+//! - **Other sessions** go to the account global at the reply's time
 //!   (`global_history`), counted in `attributed`; one found only in an
 //!   account's own `projects/` (not shared with `~/.claude`) goes to that
 //!   account, since only Claude Code on that folder writes there.
 //!
-//! Entries are counted once by message id and request id, across folders
-//! (a moved conversation's transcript is copied). A scan reads only files
-//! changed since the week asked about; it is kept five minutes and read
-//! only when asked. The Chat's provider writes no transcript, so nothing is
-//! counted twice.
+//! A reply counts once, by its message id (its request id when it has
+//! none), across lines and folders (a moved conversation's transcript is
+//! copied), with the largest figures any of its lines shows. The
+//! transcripts are read only when asked, at most every five minutes, and
+//! only what was added since the last read ([`Ledger`]): each file's read
+//! offset is kept, and replies are summed by session, folder, model and
+//! minute, which is also the precision of the attribution. The Chat's
+//! provider writes no transcript, so nothing is counted twice.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
@@ -40,10 +45,10 @@ use crate::model::{GlobalChange, ModelSpend, OutsideSpend, now_ms};
 
 /// The sessions file's name in the accounts root.
 pub const SESSIONS_FILE: &str = "claude-sessions.json";
-/// How long a scan answers before the transcripts are read again.
+/// How long a reading answers before the transcripts are read again.
 pub const CACHE_MS: u64 = 5 * 60_000;
-/// A scan reaches at least this far back, so the accounts' weeks (each
-/// with its own reset) are answered by one scan.
+/// The ledger reaches at least this far back, so the accounts' weeks
+/// (each with its own reset) are answered by one ledger.
 const SCAN_BACK_MS: u64 = 8 * 24 * 3_600_000;
 /// A session not seen for this long leaves the sessions file.
 const KEEP_MS: u64 = 35 * 24 * 3_600_000;
@@ -52,8 +57,19 @@ const SEEN_EVERY_MS: u64 = 10 * 60_000;
 /// How deep below `projects/` transcripts are looked for
 /// (`<project>/<session>/subagents/<agent>.jsonl`).
 const DEPTH: usize = 4;
-/// The longest transcript line read; a longer one is skipped.
-const LINE_LIMIT: usize = 64 * 1024 * 1024;
+/// The longest line kept in memory whole.
+const LINE_WHOLE: usize = 1024 * 1024;
+/// How much of the end of a longer line is read to tell whether it is a
+/// reply (its usage and type come after its content).
+const LINE_TAIL: u64 = 64 * 1024;
+/// A line longer than this is skipped unread.
+const LINE_MAX: u64 = 256 * 1024 * 1024;
+/// Replies are summed by this span: the precision of the attribution.
+const BUCKET_MS: u64 = 60_000;
+/// How often replies that left the window are dropped from memory.
+const PRUNE_EVERY_MS: u64 = 3_600_000;
+/// No owner (`~/.claude/projects`).
+const NO_OWNER: u32 = u32::MAX;
 
 /// Where a session ran from `at_ms` on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,15 +113,18 @@ struct SessionFile {
 #[derive(Debug, Default)]
 struct SessionLog {
     loaded: bool,
+    /// False when an unreadable file could not be moved aside: it is
+    /// never written over.
+    writable: bool,
     file: SessionFile,
     written_at_ms: u64,
 }
 
-/// The sessions tmux saw and the last scan.
+/// The sessions tmux saw and the transcripts read so far.
 pub struct Outside {
     file: Option<PathBuf>,
     log: Mutex<SessionLog>,
-    scan: tokio::sync::Mutex<Option<Scan>>,
+    ledger: tokio::sync::Mutex<Option<Ledger>>,
 }
 
 impl Outside {
@@ -113,7 +132,7 @@ impl Outside {
         Self {
             file: paths.map(|paths| paths.root.join(SESSIONS_FILE)),
             log: Mutex::new(SessionLog::default()),
-            scan: tokio::sync::Mutex::new(None),
+            ledger: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -121,15 +140,20 @@ impl Outside {
         let mut log = self.log.lock().unwrap_or_else(|p| p.into_inner());
         if !log.loaded {
             log.loaded = true;
-            if let Some(text) = self
-                .file
-                .as_ref()
-                .and_then(|f| std::fs::read_to_string(f).ok())
-            {
-                match serde_json::from_str(&text) {
-                    Ok(file) => log.file = file,
+            log.writable = true;
+            if let Some(file) = &self.file {
+                match std::fs::read_to_string(file) {
+                    Ok(text) => match serde_json::from_str(&text) {
+                        Ok(read) => log.file = read,
+                        Err(error) => {
+                            tracing::warn!(%error, "claude-sessions.json unreadable");
+                            log.writable = set_aside(file);
+                        }
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => {
-                        tracing::warn!(%error, "claude-sessions.json unreadable; started again")
+                        tracing::warn!(%error, "claude-sessions.json unreadable");
+                        log.writable = set_aside(file);
                     }
                 }
             }
@@ -164,7 +188,7 @@ impl Outside {
             seen_any = true;
         }
         let due = seen_any && now.saturating_sub(log.written_at_ms) >= SEEN_EVERY_MS;
-        if changed || due {
+        if (changed || due) && log.writable {
             log.file
                 .sessions
                 .retain(|_, record| now.saturating_sub(record.seen_ms) < KEEP_MS);
@@ -182,9 +206,29 @@ impl Outside {
         self.log().file.sessions.clone()
     }
 
-    /// Forget the last scan (tests).
-    pub async fn forget_scan(&self) {
-        *self.scan.lock().await = None;
+    /// Read the transcripts again on the next ask, from where each was
+    /// left (tests).
+    pub async fn read_again(&self) {
+        if let Some(ledger) = self.ledger.lock().await.as_mut() {
+            ledger.as_of_ms = 0;
+        }
+    }
+}
+
+/// Move an unreadable `claude-sessions.json` aside
+/// (`claude-sessions.json.corrupt-<ms>`), so a new one never replaces it;
+/// whether that worked.
+fn set_aside(file: &Path) -> bool {
+    let aside = file.with_file_name(format!("{SESSIONS_FILE}.corrupt-{}", now_ms()));
+    match std::fs::rename(file, &aside) {
+        Ok(()) => {
+            tracing::warn!(to = %aside.display(), "claude-sessions.json moved aside; started again");
+            true
+        }
+        Err(error) => {
+            tracing::warn!(%error, "claude-sessions.json could not be moved aside; not written");
+            false
+        }
     }
 }
 
@@ -196,39 +240,83 @@ pub struct Root {
     pub owner: Option<String>,
 }
 
-/// What a scan needs to know, taken before it runs.
-#[derive(Debug, Clone)]
-pub struct ScanInput {
-    pub roots: Vec<Root>,
-    pub sessions: HashMap<String, SessionRecord>,
-    pub history: Vec<GlobalChange>,
-    pub global_now: String,
-    pub since_ms: u64,
-    pub now_ms: u64,
+/// How far a transcript was read.
+#[derive(Debug, Clone, Copy)]
+struct FileState {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    modified_ms: u64,
+    /// The end of the last whole line read.
+    offset: u64,
 }
 
-/// One reply counted.
-#[derive(Debug, Clone)]
-struct Counted {
-    account: u32,
+/// What replies are summed by: their session, the account whose own
+/// `projects/` held them ([`NO_OWNER`] for `~/.claude`'s), their model and
+/// their minute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BucketKey {
+    session: u32,
+    owner: u32,
     model: u32,
-    at_ms: u64,
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_write: u64,
-    /// Dated against `global_history` alone.
-    fallback: bool,
+    minute: u64,
 }
 
-/// The replies since `since_ms`, each with its account.
-#[derive(Debug, Clone, Default)]
-pub struct Scan {
-    since_ms: u64,
+#[derive(Debug, Clone)]
+struct Bucket {
+    key: BucketKey,
+    tokens: [u64; 4],
+    messages: u64,
+}
+
+/// One reply counted: its bucket and the figures it added there.
+#[derive(Debug, Clone, Copy)]
+struct Reply {
+    bucket: u32,
+    tokens: [u32; 4],
+}
+
+struct Interner {
+    names: Vec<String>,
+    index: HashMap<String, u32>,
+}
+
+impl Interner {
+    fn new() -> Self {
+        Self {
+            names: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    fn of(&mut self, name: &str) -> u32 {
+        if let Some(at) = self.index.get(name) {
+            return *at;
+        }
+        let at = self.names.len() as u32;
+        self.names.push(name.to_string());
+        self.index.insert(name.to_string(), at);
+        at
+    }
+}
+
+/// The replies read from the transcripts since `window_ms`, summed, and
+/// how far each transcript was read: kept between asks, so a new read
+/// only reads what Claude Code added since.
+pub struct Ledger {
+    /// Replies from here on are kept.
+    window_ms: u64,
+    /// When the transcripts were last read.
     as_of_ms: u64,
-    accounts: Vec<String>,
-    models: Vec<String>,
-    entries: Vec<Counted>,
+    pruned_ms: u64,
+    files: HashMap<PathBuf, FileState>,
+    sessions: Interner,
+    owners: Interner,
+    models: Interner,
+    buckets: Vec<Bucket>,
+    index: HashMap<BucketKey, u32>,
+    /// Each reply by a hash of its message id (or request id).
+    replies: HashMap<u64, Reply>,
 }
 
 #[derive(Deserialize)]
@@ -269,9 +357,14 @@ fn modified_ms(meta: &std::fs::Metadata) -> u64 {
         .map_or(u64::MAX, |at| at.as_millis() as u64)
 }
 
-/// The `.jsonl` files below `dir` changed since `since_ms`, never through
-/// a symbolic link.
-fn transcripts(dir: &Path, since_ms: u64, depth: usize, out: &mut Vec<PathBuf>) {
+/// The `.jsonl` files below `dir` changed since `since_ms`, with their
+/// metadata, never through a symbolic link.
+fn transcripts(
+    dir: &Path,
+    since_ms: u64,
+    depth: usize,
+    out: &mut Vec<(PathBuf, std::fs::Metadata)>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -284,11 +377,10 @@ fn transcripts(dir: &Path, since_ms: u64, depth: usize, out: &mut Vec<PathBuf>) 
             transcripts(&path, since_ms, depth - 1, out);
         } else if kind.is_file()
             && path.extension().is_some_and(|ext| ext == "jsonl")
-            && entry
-                .metadata()
-                .is_ok_and(|meta| modified_ms(&meta) >= since_ms)
+            && let Ok(meta) = entry.metadata()
+            && modified_ms(&meta) >= since_ms
         {
-            out.push(path);
+            out.push((path, meta));
         }
     }
 }
@@ -307,117 +399,219 @@ fn session_of_path(path: &Path) -> Option<String> {
         .map(|stem| stem.to_string_lossy().into_owned())
 }
 
-struct Interner {
-    names: Vec<String>,
-    index: HashMap<String, u32>,
-}
-
-impl Interner {
-    fn new() -> Self {
-        Self {
-            names: Vec::new(),
-            index: HashMap::new(),
-        }
-    }
-
-    fn of(&mut self, name: &str) -> u32 {
-        if let Some(at) = self.index.get(name) {
-            return *at;
-        }
-        let at = self.names.len() as u32;
-        self.names.push(name.to_string());
-        self.index.insert(name.to_string(), at);
-        at
-    }
-}
-
-/// Read the transcripts of `input.roots` (the first copy of a reply
-/// counts) and give each reply since `input.since_ms` its account.
-/// Blocking.
-pub fn scan(input: &ScanInput) -> Scan {
-    let mut accounts = Interner::new();
-    let mut models = Interner::new();
-    let mut entries: Vec<Counted> = Vec::new();
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    let mut roots_seen: HashSet<PathBuf> = HashSet::new();
-    for root in &input.roots {
-        let Ok(real) = std::fs::canonicalize(&root.dir) else {
-            continue;
-        };
-        if !roots_seen.insert(real.clone()) {
-            continue;
-        }
-        let mut files = Vec::new();
-        transcripts(&real, input.since_ms, DEPTH, &mut files);
-        files.sort();
-        for file in files {
-            read_file(
-                &file,
-                root.owner.as_deref(),
-                input,
-                &mut accounts,
-                &mut models,
-                &mut entries,
-                &mut seen,
-            );
-        }
-    }
-    Scan {
-        since_ms: input.since_ms,
-        as_of_ms: input.now_ms,
-        accounts: accounts.names,
-        models: models.names,
-        entries,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn read_file(
-    path: &Path,
-    owner: Option<&str>,
-    input: &ScanInput,
-    accounts: &mut Interner,
-    models: &mut Interner,
-    entries: &mut Vec<Counted>,
-    seen: &mut HashMap<String, usize>,
-) {
-    let Ok(file) = std::fs::File::open(path) else {
-        return;
-    };
-    let fallback_session = session_of_path(path);
-    let mut reader = BufReader::new(file);
-    let mut line = Vec::new();
+/// Read one line from `reader`, keeping at most `limit` bytes of it in
+/// `keep`: its whole length (the newline included), and whether it ended
+/// with one (else the file ended first: a line still being written).
+fn read_line(
+    reader: &mut impl BufRead,
+    keep: &mut Vec<u8>,
+    limit: usize,
+) -> std::io::Result<(u64, bool)> {
+    let mut total = 0u64;
     loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            return Ok((total, false));
         }
-        if line.len() > LINE_LIMIT {
-            continue;
-        }
-        let Ok(text) = std::str::from_utf8(&line) else {
-            continue;
+        let (taken, done) = match buf.iter().position(|byte| *byte == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (buf.len(), false),
         };
-        // Only replies carry usage; most lines are skipped unparsed.
-        if !text.contains("\"usage\"") || !text.contains("\"assistant\"") {
-            continue;
+        let room = limit.saturating_sub(keep.len());
+        keep.extend_from_slice(&buf[..taken.min(room)]);
+        total += taken as u64;
+        reader.consume(taken);
+        if done {
+            return Ok((total, true));
         }
-        let Ok(parsed) = serde_json::from_str::<Line>(text) else {
-            continue;
+    }
+}
+
+/// Whether a line may be a reply with usage (most lines are skipped
+/// unparsed).
+fn may_be_reply(text: &[u8]) -> bool {
+    let has = |needle: &[u8]| text.windows(needle.len()).any(|w| w == needle);
+    has(b"\"usage\"") && has(b"\"assistant\"")
+}
+
+/// A line too long to keep, parsed from the file field by field: its
+/// content is skipped, never held.
+fn parse_long(path: &Path, start: u64, len: u64) -> Option<Line> {
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let reader = BufReader::with_capacity(64 * 1024, file.take(len));
+    let mut de = serde_json::Deserializer::from_reader(reader);
+    Line::deserialize(&mut de).ok()
+}
+
+/// The end of a line too long to keep, for [`may_be_reply`].
+fn tail_of(path: &Path, start: u64, len: u64) -> Vec<u8> {
+    let from = start + len.saturating_sub(LINE_TAIL);
+    let mut tail = Vec::new();
+    if let Ok(mut file) = std::fs::File::open(path)
+        && file.seek(SeekFrom::Start(from)).is_ok()
+    {
+        let _ = file.take(start + len - from).read_to_end(&mut tail);
+    }
+    tail
+}
+
+/// A reply's key: its message id, else its request id.
+fn reply_key(message_id: Option<&str>, request_id: Option<&str>) -> Option<u64> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match (message_id, request_id) {
+        (Some(id), _) if !id.is_empty() => ("m", id).hash(&mut hasher),
+        (_, Some(request)) if !request.is_empty() => ("r", request).hash(&mut hasher),
+        _ => return None,
+    }
+    Some(hasher.finish())
+}
+
+impl Ledger {
+    /// An empty ledger keeping replies from `window_ms` on.
+    pub fn new(window_ms: u64) -> Self {
+        Self {
+            window_ms,
+            as_of_ms: 0,
+            pruned_ms: 0,
+            files: HashMap::new(),
+            sessions: Interner::new(),
+            owners: Interner::new(),
+            models: Interner::new(),
+            buckets: Vec::new(),
+            index: HashMap::new(),
+            replies: HashMap::new(),
+        }
+    }
+
+    /// Whether it answers for `since_ms` at `now` without reading again.
+    fn answers(&self, since_ms: u64, now: u64) -> bool {
+        self.window_ms <= since_ms && now.saturating_sub(self.as_of_ms) < CACHE_MS
+    }
+
+    /// Read what was added to the transcripts of `roots` since the last
+    /// read (the first copy of a reply decides its bucket), at `now`.
+    /// Blocking.
+    pub fn update(&mut self, roots: &[Root], now: u64) {
+        let mut roots_seen: HashSet<PathBuf> = HashSet::new();
+        for root in roots {
+            let Ok(real) = std::fs::canonicalize(&root.dir) else {
+                continue;
+            };
+            if !roots_seen.insert(real.clone()) {
+                continue;
+            }
+            let owner = root
+                .owner
+                .as_deref()
+                .map_or(NO_OWNER, |owner| self.owners.of(owner));
+            let mut files = Vec::new();
+            transcripts(&real, self.window_ms, DEPTH, &mut files);
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+            for (path, meta) in files {
+                self.update_file(&path, &meta, owner);
+            }
+        }
+        self.as_of_ms = now;
+        if now.saturating_sub(self.pruned_ms) >= PRUNE_EVERY_MS {
+            self.prune(now);
+        }
+    }
+
+    /// Read `path` from where it was left; from its start when it is
+    /// another file now (replaced, or cut shorter).
+    fn update_file(&mut self, path: &Path, meta: &std::fs::Metadata, owner: u32) {
+        let (dev, ino, len, modified) = (meta.dev(), meta.ino(), meta.len(), modified_ms(meta));
+        let from = match self.files.get(path) {
+            Some(state) if state.dev == dev && state.ino == ino && state.offset <= len => {
+                if state.len == len && state.modified_ms == modified {
+                    return;
+                }
+                state.offset
+            }
+            _ => 0,
         };
+        let offset = self.read_from(path, from, owner);
+        self.files.insert(
+            path.to_path_buf(),
+            FileState {
+                dev,
+                ino,
+                len,
+                modified_ms: modified,
+                offset,
+            },
+        );
+    }
+
+    /// Count the whole lines of `path` from byte `from`: the end of the
+    /// last one counted (where the next read starts, also after an error).
+    fn read_from(&mut self, path: &Path, from: u64, owner: u32) -> u64 {
+        let Ok(mut file) = std::fs::File::open(path) else {
+            return from;
+        };
+        if file.seek(SeekFrom::Start(from)).is_err() {
+            return from;
+        }
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        let fallback_session = session_of_path(path);
+        let mut offset = from;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let Ok((len, whole)) = read_line(&mut reader, &mut line, LINE_WHOLE) else {
+                break;
+            };
+            if len == 0 || !whole {
+                // The end, or a line Claude Code is still writing: read
+                // again next time.
+                break;
+            }
+            let start = offset;
+            offset += len;
+            let parsed = if len as usize <= LINE_WHOLE {
+                if !may_be_reply(&line) {
+                    continue;
+                }
+                match serde_json::from_slice::<Line>(&line) {
+                    Ok(parsed) => parsed,
+                    Err(_) => continue,
+                }
+            } else {
+                if len > LINE_MAX {
+                    continue;
+                }
+                let mut ends = std::mem::take(&mut line);
+                ends.extend_from_slice(&tail_of(path, start, len));
+                let reply = may_be_reply(&ends);
+                line = ends;
+                if !reply {
+                    continue;
+                }
+                match parse_long(path, start, len) {
+                    Some(parsed) => parsed,
+                    None => continue,
+                }
+            };
+            self.count(parsed, owner, fallback_session.as_deref());
+        }
+        offset
+    }
+
+    /// Count one parsed line: a reply with usage since the window, once.
+    fn count(&mut self, parsed: Line, owner: u32, fallback_session: Option<&str>) {
         if parsed.kind.as_deref() != Some("assistant") {
-            continue;
+            return;
         }
         let Some(message) = parsed.message else {
-            continue;
+            return;
         };
         let Some(usage) = message.usage else {
-            continue;
+            return;
         };
         let model = message.model.unwrap_or_default();
         if model.is_empty() || model == "<synthetic>" {
-            continue;
+            return;
         }
         let tokens = [
             usage.input_tokens.unwrap_or(0),
@@ -426,104 +620,156 @@ fn read_file(
             usage.cache_creation_input_tokens.unwrap_or(0),
         ];
         if tokens.iter().all(|n| *n == 0) {
-            continue;
+            return;
         }
         let Some(at_ms) = parsed
             .timestamp
             .as_deref()
             .and_then(super::time::parse_rfc3339_ms)
         else {
-            continue;
+            return;
         };
-        if at_ms < input.since_ms {
-            continue;
+        if at_ms < self.window_ms {
+            return;
         }
-        let key = match (&message.id, &parsed.request_id) {
-            (Some(id), Some(request)) => Some(format!("{id}:{request}")),
-            (Some(id), None) => Some(id.clone()),
-            (None, Some(request)) => Some(format!(":{request}")),
-            (None, None) => None,
-        };
+        let key = reply_key(message.id.as_deref(), parsed.request_id.as_deref());
+        let small = tokens.map(|n| u32::try_from(n).unwrap_or(u32::MAX));
         // One reply is written as several lines (one per content block),
         // and a copied transcript holds it again: counted once, with the
         // largest figures any copy shows.
-        if let Some(at) = key.as_ref().and_then(|key| seen.get(key)) {
-            let counted = &mut entries[*at];
-            counted.input = counted.input.max(tokens[0]);
-            counted.output = counted.output.max(tokens[1]);
-            counted.cache_read = counted.cache_read.max(tokens[2]);
-            counted.cache_write = counted.cache_write.max(tokens[3]);
-            continue;
+        if let Some(reply) = key.and_then(|key| self.replies.get_mut(&key)) {
+            let bucket = &mut self.buckets[reply.bucket as usize];
+            for (at, figure) in small.iter().enumerate() {
+                if *figure > reply.tokens[at] {
+                    bucket.tokens[at] += u64::from(*figure - reply.tokens[at]);
+                    reply.tokens[at] = *figure;
+                }
+            }
+            return;
         }
         let session = parsed
             .session_id
             .filter(|id| !id.is_empty())
-            .or_else(|| fallback_session.clone())
+            .or_else(|| fallback_session.map(str::to_string))
             .unwrap_or_default();
-        let (account, fallback) = match input
-            .sessions
-            .get(&session)
-            .and_then(|r| r.folder_at(at_ms))
-        {
-            Some(Some(folder)) => (folder.as_str(), false),
-            Some(None) => (
-                registry::global_at(&input.history, &input.global_now, at_ms),
-                false,
-            ),
-            None => match owner {
-                Some(owner) => (owner, false),
-                None => (
-                    registry::global_at(&input.history, &input.global_now, at_ms),
-                    true,
-                ),
-            },
+        let bucket_key = BucketKey {
+            session: self.sessions.of(&session),
+            owner,
+            model: self.models.of(&model),
+            minute: at_ms / BUCKET_MS,
         };
-        if let Some(key) = key {
-            seen.insert(key, entries.len());
+        let at = match self.index.get(&bucket_key) {
+            Some(at) => *at,
+            None => {
+                let at = self.buckets.len() as u32;
+                self.buckets.push(Bucket {
+                    key: bucket_key,
+                    tokens: [0; 4],
+                    messages: 0,
+                });
+                self.index.insert(bucket_key, at);
+                at
+            }
+        };
+        let bucket = &mut self.buckets[at as usize];
+        for (sum, figure) in bucket.tokens.iter_mut().zip(small) {
+            *sum += u64::from(figure);
         }
-        entries.push(Counted {
-            account: accounts.of(account),
-            model: models.of(&model),
-            at_ms,
-            input: tokens[0],
-            output: tokens[1],
-            cache_read: tokens[2],
-            cache_write: tokens[3],
-            fallback,
-        });
-    }
-}
-
-impl Scan {
-    /// Whether it answers for `since_ms` at `now`.
-    fn answers(&self, since_ms: u64, now: u64) -> bool {
-        self.since_ms <= since_ms && now.saturating_sub(self.as_of_ms) < CACHE_MS
+        bucket.messages += 1;
+        if let Some(key) = key {
+            self.replies.insert(
+                key,
+                Reply {
+                    bucket: at,
+                    tokens: small,
+                },
+            );
+        }
     }
 
-    /// `account`'s spend since `since_ms`, by model.
-    pub fn spend(&self, account: &str, since_ms: u64) -> OutsideSpend {
+    /// Drop what left the window (eight days back now), and what is known
+    /// of transcripts not changed since.
+    fn prune(&mut self, now: u64) {
+        self.pruned_ms = now;
+        self.window_ms = self.window_ms.max(now.saturating_sub(SCAN_BACK_MS));
+        let first_minute = self.window_ms / BUCKET_MS;
+        let mut moved: Vec<Option<u32>> = Vec::with_capacity(self.buckets.len());
+        let mut kept = Vec::new();
+        for bucket in self.buckets.drain(..) {
+            if bucket.key.minute < first_minute {
+                moved.push(None);
+            } else {
+                moved.push(Some(kept.len() as u32));
+                kept.push(bucket);
+            }
+        }
+        self.buckets = kept;
+        self.index = self
+            .buckets
+            .iter()
+            .enumerate()
+            .map(|(at, bucket)| (bucket.key, at as u32))
+            .collect();
+        self.replies
+            .retain(|_, reply| match moved[reply.bucket as usize] {
+                Some(at) => {
+                    reply.bucket = at;
+                    true
+                }
+                None => false,
+            });
+        let window = self.window_ms;
+        self.files.retain(|_, state| state.modified_ms >= window);
+    }
+
+    /// `account`'s spend since `since_ms`, by model: each bucket goes to
+    /// the account its session ran on at its minute (`sessions`), else to
+    /// the owner of the `projects/` it was read from, else to the account
+    /// global then (`history`, counted in `attributed`).
+    pub fn spend(
+        &self,
+        account: &str,
+        since_ms: u64,
+        sessions: &HashMap<String, SessionRecord>,
+        history: &[GlobalChange],
+        global_now: &str,
+    ) -> OutsideSpend {
         let mut by_model: HashMap<u32, ModelSpend> = HashMap::new();
         let mut attributed = 0;
-        let index = self.accounts.iter().position(|name| name == account);
-        for entry in &self.entries {
-            if Some(entry.account as usize) != index || entry.at_ms < since_ms {
+        let first_minute = since_ms / BUCKET_MS;
+        for bucket in &self.buckets {
+            let key = bucket.key;
+            if key.minute < first_minute {
                 continue;
             }
-            let spend = by_model.entry(entry.model).or_insert_with(|| ModelSpend {
-                model: self.models[entry.model as usize].clone(),
+            let at_ms = key.minute * BUCKET_MS;
+            let session = &self.sessions.names[key.session as usize];
+            let (owner, fallback) = match sessions.get(session).and_then(|r| r.folder_at(at_ms)) {
+                Some(Some(folder)) => (folder.as_str(), false),
+                Some(None) => (registry::global_at(history, global_now, at_ms), false),
+                None if key.owner != NO_OWNER => {
+                    (self.owners.names[key.owner as usize].as_str(), false)
+                }
+                None => (registry::global_at(history, global_now, at_ms), true),
+            };
+            if owner != account {
+                continue;
+            }
+            let spend = by_model.entry(key.model).or_insert_with(|| ModelSpend {
+                model: self.models.names[key.model as usize].clone(),
                 input: 0,
                 output: 0,
                 cache_read: 0,
                 cache_write: 0,
                 messages: 0,
             });
-            spend.input += entry.input;
-            spend.output += entry.output;
-            spend.cache_read += entry.cache_read;
-            spend.cache_write += entry.cache_write;
-            spend.messages += 1;
-            if entry.fallback {
-                attributed += 1;
+            spend.input += bucket.tokens[0];
+            spend.output += bucket.tokens[1];
+            spend.cache_read += bucket.tokens[2];
+            spend.cache_write += bucket.tokens[3];
+            spend.messages += bucket.messages;
+            if fallback {
+                attributed += bucket.messages;
             }
         }
         let mut by_model: Vec<ModelSpend> = by_model.into_values().collect();
@@ -597,31 +843,44 @@ impl super::Accounts {
             return None;
         }
         let now = now_ms();
-        let mut cached = self.outside.scan.lock().await;
-        if !cached
+        let mut kept = self.outside.ledger.lock().await;
+        if !kept
             .as_ref()
-            .is_some_and(|scan| scan.answers(since_ms, now))
+            .is_some_and(|ledger| ledger.answers(since_ms, now))
         {
-            let input = ScanInput {
-                roots: self.transcript_roots(&registry),
-                sessions: self.outside.sessions(),
-                history: registry.global_history.clone(),
-                global_now: registry.global.clone(),
-                since_ms: since_ms.min(now.saturating_sub(SCAN_BACK_MS)),
-                now_ms: now,
+            // Asked further back than it reaches: read it all again.
+            let mut ledger = match kept.take() {
+                Some(ledger) if ledger.window_ms <= since_ms => ledger,
+                _ => Ledger::new(since_ms.min(now.saturating_sub(SCAN_BACK_MS))),
             };
+            let roots = self.transcript_roots(&registry);
             let started = std::time::Instant::now();
-            let scanned = tokio::task::spawn_blocking(move || scan(&input))
-                .await
-                .unwrap_or_default();
-            tracing::debug!(
-                entries = scanned.entries.len(),
-                took_ms = started.elapsed().as_millis() as u64,
-                "Claude Code transcripts read"
-            );
-            *cached = Some(scanned);
+            let read = tokio::task::spawn_blocking(move || {
+                ledger.update(&roots, now);
+                ledger
+            })
+            .await;
+            match read {
+                Ok(ledger) => {
+                    tracing::debug!(
+                        buckets = ledger.buckets.len(),
+                        replies = ledger.replies.len(),
+                        took_ms = started.elapsed().as_millis() as u64,
+                        "Claude Code transcripts read"
+                    );
+                    *kept = Some(ledger);
+                }
+                Err(error) => tracing::warn!(%error, "Claude Code transcripts not read"),
+            }
         }
-        cached.as_ref().map(|scan| scan.spend(&account, since_ms))
+        let ledger = kept.as_ref()?;
+        Some(ledger.spend(
+            &account,
+            since_ms,
+            &self.outside.sessions(),
+            &registry.global_history,
+            &registry.global,
+        ))
     }
 }
 
@@ -949,7 +1208,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(total(&again).0, 3);
-        accounts.outside.forget_scan().await;
+        accounts.outside.read_again().await;
         let fresh = accounts
             .spend_outside("personal", week_start)
             .await
@@ -994,6 +1253,140 @@ mod tests {
         // Not seen for 35 days: dropped with the next write.
         again.note([("s3", Some(&work))], 3_000 + KEEP_MS);
         assert!(!again.sessions().contains_key("s1"));
+    }
+
+    /// `ledger`'s messages and tokens for `default`, the account global
+    /// all along, since `since_ms`.
+    fn counted(ledger: &Ledger, since_ms: u64) -> (u64, u64) {
+        total(&ledger.spend("default", since_ms, &HashMap::new(), &[], "default"))
+    }
+
+    #[test]
+    fn transcripts_are_read_from_where_they_were_left() {
+        let home = Home::new("outside-ledger");
+        let now = now_ms();
+        let dir = home.paths.claude_home.join("projects");
+        let file = dir.join("p/s.jsonl");
+        let roots = [Root {
+            dir: dir.clone(),
+            owner: None,
+        }];
+        let first = reply("s", "m1", "r1", "claude-opus-4-5", now - HOUR, [1, 1, 0, 0]);
+        let second = reply("s", "m2", "r2", "claude-opus-4-5", now - HOUR, [2, 2, 0, 0]);
+        // The second line is still being written.
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let (head, rest) = second.split_at(second.len() / 2);
+        std::fs::write(&file, format!("{first}\n{head}")).unwrap();
+        let mut ledger = Ledger::new(now - DAY);
+        ledger.update(&roots, now);
+        assert_eq!(counted(&ledger, now - DAY), (1, 2));
+        assert_eq!(ledger.files[&file].offset, first.len() as u64 + 1);
+        // Finished, and the first reply's last line with larger figures.
+        let more = reply("s", "m1", "r1", "claude-opus-4-5", now - HOUR, [1, 5, 0, 0]);
+        {
+            use std::io::Write;
+            let mut out = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            write!(out, "{rest}\n{more}\n").unwrap();
+        }
+        ledger.update(&roots, now + 1);
+        assert_eq!(counted(&ledger, now - DAY), (2, 6 + 4));
+        let read_to = std::fs::metadata(&file).unwrap().len();
+        assert_eq!(ledger.files[&file].offset, read_to);
+        // Nothing new: nothing read.
+        ledger.update(&roots, now + 2);
+        assert_eq!(counted(&ledger, now - DAY), (2, 10));
+        // Replaced by another file (a copy put back): read from its start,
+        // what was counted counted once.
+        let third = reply(
+            "s",
+            "m3",
+            "r3",
+            "claude-haiku-4-5",
+            now - HOUR,
+            [3, 0, 0, 0],
+        );
+        let replacement = file.with_extension("new");
+        std::fs::write(&replacement, format!("{first}\n{second}\n{third}\n")).unwrap();
+        std::fs::rename(&replacement, &file).unwrap();
+        ledger.update(&roots, now + 3);
+        assert_eq!(counted(&ledger, now - DAY), (3, 13));
+        // Cut shorter in place: read from its start too.
+        let fourth = reply(
+            "s",
+            "m4",
+            "r4",
+            "claude-haiku-4-5",
+            now - HOUR,
+            [4, 0, 0, 0],
+        );
+        std::fs::write(&file, format!("{fourth}\n")).unwrap();
+        ledger.update(&roots, now + 4);
+        assert_eq!(counted(&ledger, now - DAY), (4, 17));
+        // Counted by the minute: a later start leaves earlier minutes out.
+        assert_eq!(counted(&ledger, now - HOUR + BUCKET_MS), (0, 0));
+    }
+
+    #[test]
+    fn a_line_too_long_to_keep_is_read_without_keeping_it() {
+        let home = Home::new("outside-long");
+        let now = now_ms();
+        let dir = home.paths.claude_home.join("projects");
+        let long_text = "x".repeat(LINE_WHOLE + LINE_WHOLE / 2);
+        let mut long_reply: serde_json::Value = serde_json::from_str(&reply(
+            "s",
+            "m1",
+            "r1",
+            "claude-opus-4-5",
+            now - HOUR,
+            [10, 20, 0, 0],
+        ))
+        .unwrap();
+        long_reply["message"]["content"][0]["text"] = serde_json::Value::String(long_text.clone());
+        let long_user = serde_json::json!({"type": "user", "sessionId": "s",
+            "timestamp": iso(now - HOUR), "message": {"role": "user", "content": long_text}});
+        write(
+            &dir.join("p/s.jsonl"),
+            &[
+                long_user.to_string(),
+                long_reply.to_string(),
+                reply("s", "m2", "r2", "claude-opus-4-5", now - HOUR, [1, 1, 0, 0]),
+            ],
+        );
+        let mut ledger = Ledger::new(now - DAY);
+        ledger.update(
+            &[Root {
+                dir: dir.clone(),
+                owner: None,
+            }],
+            now,
+        );
+        assert_eq!(counted(&ledger, now - DAY), (2, 32));
+    }
+
+    #[test]
+    fn an_unreadable_sessions_file_is_moved_aside_before_a_new_one() {
+        let home = Home::new("outside-corrupt");
+        std::fs::create_dir_all(&home.paths.root).unwrap();
+        let file = home.paths.root.join(SESSIONS_FILE);
+        std::fs::write(&file, "{\"sessions\": {\"s1\": [cut").unwrap();
+        let outside = Outside::new(Some(&home.paths));
+        outside.note([("s2", Some(&Place::Folder("work".into())))], 1_000);
+        let aside: Vec<_> = std::fs::read_dir(&home.paths.root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&format!("{SESSIONS_FILE}.corrupt-")))
+            .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert_eq!(
+            std::fs::read_to_string(home.paths.root.join(&aside[0])).unwrap(),
+            "{\"sessions\": {\"s1\": [cut"
+        );
+        let again = Outside::new(Some(&home.paths));
+        assert!(again.sessions().contains_key("s2"));
     }
 
     #[tokio::test]

@@ -48,7 +48,8 @@ pub struct PendingSwitch {
 /// What `slot_version` says once the registry was brought to the global
 /// slot (G11).
 pub const SLOT_VERSION: u32 = 2;
-/// How many changes of the global account `global_history` keeps.
+/// How many entries `global_history` keeps: the account global before the
+/// oldest change kept (at 0), then the last 49 changes.
 pub const GLOBAL_HISTORY: usize = 50;
 
 /// A suggestion someone said "Not now" to.
@@ -86,9 +87,9 @@ pub struct Registry {
     /// A switch that waits for windows to finish their turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_global: Option<PendingSwitch>,
-    /// The last [`GLOBAL_HISTORY`] changes of the global account, oldest
-    /// first, written with each one (chat-projects D134): the first entry
-    /// names the account global before them, at 0.
+    /// The changes of the global account, oldest first, written with each
+    /// one (chat-projects D134): the first entry names the account global
+    /// before the others, at 0, and at most [`GLOBAL_HISTORY`] are kept.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub global_history: Vec<GlobalChange>,
 }
@@ -181,8 +182,10 @@ impl Registry {
     }
 
     /// Note that the global account changed from `from` to the one now
-    /// global, at `at_ms`: the first change also notes `from`, at 0, and
-    /// only the last [`GLOBAL_HISTORY`] are kept.
+    /// global, at `at_ms`: the first change also notes `from`, at 0. When
+    /// more than [`GLOBAL_HISTORY`] entries would stay, the oldest changes
+    /// go and the first entry, at 0, names the account global before the
+    /// oldest change kept, so every time still has its account.
     pub fn note_global_change(&mut self, from: &str, at_ms: u64) {
         if self.global == from {
             return;
@@ -198,7 +201,11 @@ impl Registry {
             at_ms,
         });
         let extra = self.global_history.len().saturating_sub(GLOBAL_HISTORY);
-        self.global_history.drain(..extra);
+        if extra > 0 {
+            // The entry before the oldest change kept becomes the seed.
+            self.global_history.drain(..extra);
+            self.global_history[0].at_ms = 0;
+        }
     }
 
     /// The account that was global at `at_ms`, as far as `global_history`
@@ -638,7 +645,8 @@ mod tests {
         let registry = store.current();
         assert_eq!(registry.global, "default");
         assert_eq!(registry.global_history.last().unwrap().account, "default");
-        // Only the last 50 stay, and the file round-trips them.
+        // 50 stay (who was global before, then the last 49 changes), and
+        // the file round-trips them.
         let mut long = registry.clone();
         for at in 0..120u64 {
             let from = long.global.clone();
@@ -647,8 +655,15 @@ mod tests {
         }
         assert_eq!(long.global_history.len(), GLOBAL_HISTORY);
         assert_eq!(long.global_history.last().unwrap().at_ms, 1_119);
-        // Before the oldest change kept: the oldest's account.
-        assert_eq!(long.global_at(0), long.global_history[0].account.as_str());
+        // The seed names who was global before the oldest change kept.
+        let seed = &long.global_history[0];
+        let oldest = &long.global_history[1];
+        assert_eq!(seed.at_ms, 0);
+        assert_eq!(oldest.at_ms, 1_119 - (GLOBAL_HISTORY as u64 - 2));
+        assert_ne!(seed.account, oldest.account, "the one it replaced");
+        assert_eq!(long.global_at(oldest.at_ms - 1), seed.account.as_str());
+        assert_eq!(long.global_at(oldest.at_ms), oldest.account.as_str());
+        assert_eq!(long.global_at(0), seed.account.as_str());
         let text = serde_json::to_string(&long).unwrap();
         let back: Registry = serde_json::from_str(&text).unwrap();
         assert_eq!(back.global_history, long.global_history);

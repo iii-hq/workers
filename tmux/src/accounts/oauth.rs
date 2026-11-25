@@ -55,9 +55,24 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub const RENEW_BEFORE_MS: u64 = 5 * 60_000;
 
 /// Whether a token expiring at `expires_at_ms` is renewed at `now_ms`, as
-/// Claude Code decides it. A token without an expiry never is.
+/// Claude Code decides it (`Lv()`). A token without an expiry never is:
+/// Claude Code uses it as it is, and renews it only after the API refused
+/// it (a 401), which the worker never sees.
 pub fn due(expires_at_ms: Option<u64>, now_ms: u64) -> bool {
     expires_at_ms.is_some_and(|at| now_ms.saturating_add(RENEW_BEFORE_MS) >= at)
+}
+
+/// Whether Claude Code renews the sign-in `oauth` (a store's
+/// `claudeAiOauth`) at all: a Claude.ai one, with the inference scope or a
+/// subscription (`not_refreshable` otherwise).
+pub fn refreshable(oauth: &Map<String, Value>) -> bool {
+    let inference = stored_scopes(oauth)
+        .is_some_and(|scopes| scopes.iter().any(|scope| scope == INFERENCE_SCOPE));
+    let subscription = oauth
+        .get("subscriptionType")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| !kind.is_empty());
+    inference || subscription
 }
 
 /// The scopes a sign-in's `claudeAiOauth` holds.
@@ -134,14 +149,18 @@ pub struct Renewed {
 /// Why a renewal failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenewError {
-    /// Anthropic refused the refresh token (`invalid_grant`, a 401 or 403):
-    /// the sign-in has to be made again.
+    /// Anthropic said the refresh token is dead (a 400 or 401 with
+    /// `invalid_grant`, Claude Code's `tY()`): the sign-in has to be made
+    /// again.
     Refused,
-    /// Anthropic refused the scopes asked for (`invalid_scope`).
+    /// Anthropic refused the scopes asked for (a 400 with `invalid_scope`).
     InvalidScope,
+    /// Anthropic put the account on hold (`account_on_hold`).
+    OnHold,
     /// No answer: the network, a timeout.
     Network,
-    /// Another status (a 5xx, a 429).
+    /// Any other status: a 5xx, a 429, another 400, or a 401 or 403 that
+    /// is no OAuth answer (a proxy's).
     Unexpected(u16),
     /// An answer without a token or an expiry.
     Unreadable,
@@ -150,15 +169,18 @@ pub enum RenewError {
 }
 
 impl RenewError {
-    /// Whether the sign-in is over (sign in again), not just this attempt.
+    /// Whether the refresh token is dead (sign in again), not just this
+    /// attempt.
     pub fn refused(&self) -> bool {
         matches!(self, Self::Refused)
     }
 
     pub fn sentence(&self) -> String {
         match self {
-            Self::Refused | Self::InvalidScope => {
-                "Anthropic refused to renew the sign-in; sign in again.".into()
+            Self::Refused => "Anthropic refused to renew the sign-in; sign in again.".into(),
+            Self::InvalidScope => "Anthropic refused the permissions the sign-in asks for.".into(),
+            Self::OnHold => {
+                "Anthropic put the account on hold; see https://claude.ai/restricted.".into()
             }
             Self::Network => "Anthropic's sign-in server could not be reached.".into(),
             Self::Unexpected(status) => {
@@ -181,9 +203,39 @@ struct TokenAnswer {
     scope: Option<String>,
 }
 
+/// An OAuth error answer: `{error: "<code>" | {type: "<code>"},
+/// error_description?}` (Claude Code's `xi()`).
 #[derive(Deserialize)]
 struct ErrorAnswer {
-    error: Option<String>,
+    error: Option<Value>,
+    error_description: Option<String>,
+}
+
+impl ErrorAnswer {
+    fn code(&self) -> Option<&str> {
+        match self.error.as_ref()? {
+            Value::String(code) => Some(code),
+            Value::Object(error) => error.get("type").and_then(Value::as_str),
+            _ => None,
+        }
+    }
+}
+
+/// What a refusal (`status`, body `text`) says, as Claude Code reads it.
+fn refusal(status: u16, text: &str) -> RenewError {
+    let Ok(answer) = serde_json::from_str::<ErrorAnswer>(text) else {
+        return RenewError::Unexpected(status);
+    };
+    if answer.error_description.as_deref() == Some("account_on_hold") {
+        return RenewError::OnHold;
+    }
+    match (status, answer.code()) {
+        (400 | 401, Some("invalid_grant")) => RenewError::Refused,
+        (400, Some("invalid_scope")) => RenewError::InvalidScope,
+        // Any other code (`invalid_request`, `invalid_client`), or a 401
+        // or 403 with no OAuth answer, says nothing of the sign-in.
+        _ => RenewError::Unexpected(status),
+    }
 }
 
 /// The HTTP client for the token endpoint.
@@ -248,19 +300,7 @@ impl OAuthClient {
         let text = response.text().await.map_err(|_| RenewError::Network)?;
         match status {
             200 => parse_answer(&text, refresh_token, now_ms),
-            400 | 401 | 403 => {
-                let error = serde_json::from_str::<ErrorAnswer>(&text)
-                    .ok()
-                    .and_then(|answer| answer.error);
-                match error.as_deref() {
-                    Some("invalid_scope") => Err(RenewError::InvalidScope),
-                    Some("invalid_grant") => Err(RenewError::Refused),
-                    // Another 400 (`invalid_request`, `invalid_client`)
-                    // says nothing of the sign-in.
-                    _ if status == 400 => Err(RenewError::Unexpected(status)),
-                    _ => Err(RenewError::Refused),
-                }
-            }
+            400 | 401 | 403 => Err(refusal(status, &text)),
             other => Err(RenewError::Unexpected(other)),
         }
     }
@@ -343,6 +383,7 @@ pub fn renewed_oauth(oauth: &Map<String, Value>, renewed: &Renewed) -> Map<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn oauth(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
@@ -469,5 +510,60 @@ mod tests {
             .unwrap()
             .block_on(client.renew(&Secret::new("rt".into()), CLIENT_ID, &[], 0));
         assert_eq!(outcome.unwrap_err(), RenewError::NotAllowed);
+    }
+
+    #[test]
+    fn refusals_are_read_as_claude_code_reads_them() {
+        // Dead: a 400 or 401 with `invalid_grant`, either shape of `error`.
+        assert_eq!(
+            refusal(400, r#"{"error":"invalid_grant"}"#),
+            RenewError::Refused
+        );
+        assert_eq!(
+            refusal(401, r#"{"error":{"type":"invalid_grant","message":"x"}}"#),
+            RenewError::Refused
+        );
+        // A 403 is never a dead token, nor a 401 or 403 a proxy answered.
+        assert_eq!(
+            refusal(403, r#"{"error":"invalid_grant"}"#),
+            RenewError::Unexpected(403)
+        );
+        assert_eq!(
+            refusal(401, "<html>Unauthorized</html>"),
+            RenewError::Unexpected(401)
+        );
+        assert_eq!(refusal(403, ""), RenewError::Unexpected(403));
+        assert_eq!(
+            refusal(400, r#"{"error":"invalid_scope"}"#),
+            RenewError::InvalidScope
+        );
+        assert_eq!(
+            refusal(401, r#"{"error":"invalid_scope"}"#),
+            RenewError::Unexpected(401)
+        );
+        assert_eq!(
+            refusal(400, r#"{"error":"invalid_client"}"#),
+            RenewError::Unexpected(400)
+        );
+        assert_eq!(
+            refusal(
+                401,
+                r#"{"error":"invalid_grant","error_description":"account_on_hold"}"#
+            ),
+            RenewError::OnHold
+        );
+        assert!(RenewError::Refused.refused());
+        assert!(!RenewError::Unexpected(401).refused());
+    }
+
+    #[test]
+    fn only_a_claude_ai_sign_in_is_renewed() {
+        assert!(refreshable(&oauth(json!({"scopes": ["user:inference"]}))));
+        assert!(refreshable(&oauth(json!({"subscriptionType": "pro"}))));
+        assert!(!refreshable(&oauth(
+            json!({"scopes": ["org:create_api_key"]})
+        )));
+        assert!(!refreshable(&oauth(json!({"subscriptionType": null}))));
+        assert!(!refreshable(&oauth(json!({}))));
     }
 }

@@ -6,11 +6,14 @@
 //! (`~/.claude`) for the global account, its folder for any other, through
 //! the platform's [`SecretStore`](super::credentials::SecretStore) (the
 //! Keychain on macOS). A read that a swap could have raced (a swap's
-//! journal, or the registry changing under it) is made again.
+//! journal, or the registry changing under it) is made again, and a slot
+//! whose profile names another account than the global one (a sign-in by
+//! hand the worker has not taken in yet) answers `busy`.
 //!
 //! A renewal is the only place the worker renews a token. It runs in a task
 //! of its own (Anthropic rotates refresh tokens: an answer must be kept
-//! once it came), one per account at a time, and:
+//! once it came), one per account at a time, as Claude Code 2.1.332 renews
+//! (`fl()` in its auth chunk), and:
 //!
 //! 1. takes the swap gate, settles a swap left half-way, holds
 //!    `swap.lock`, and only then decides which store holds the account, so
@@ -19,37 +22,60 @@
 //!    `.oauth_refresh.lock`, the legacy `realpath(dir).lock`,
 //!    `.storage-write.lock`), touched while it holds them;
 //! 3. reads the sign-in again: a Claude Code may have renewed it;
-//! 4. renews it with its refresh token, as Claude Code does ([`oauth`]);
-//! 5. writes it back to the same store, atomically, over the very sign-in
+//! 4. makes sure the store takes a write (the sign-in written back as it
+//!    is): a refresh token is never sent when its answer could not be kept;
+//! 5. renews it with its refresh token, as Claude Code does ([`oauth`]);
+//! 6. writes it back to the same store, atomically, over the very sign-in
 //!    it started from, reads it back, then lets go of the locks.
+//!
+//! A renewal Anthropic answered is never dropped: when its write fails it
+//! is kept in memory, answered while its token works, laid over the store
+//! (which still holds the chain it replaced) for the next renewal, and
+//! written again later until it lands. A refresh token Anthropic refused
+//! (`invalid_grant`) is never sent again; after any other failure the
+//! account is not asked about again for a minute with the same refresh
+//! token. When the token still works, a caller waits at most the
+//! renewal's own wait, then gets that token while the renewal goes on.
 //!
 //! Anything held for more than ten seconds (the gate, `swap.lock`, a lock
 //! Claude Code holds) answers `busy`. Nothing here logs a token.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::credentials::{self, Credentials, OAUTH_KEY, Raw, Secret};
 use super::lockdir::LockSet;
 use super::oauth::{self, RenewError, Renewed};
-use super::slot::{Place, SwapError, SwapHold};
+use super::slot::{Place, Stores, SwapError, SwapHold};
 use super::{Accounts, GLOBAL};
 use crate::model::now_ms;
 
 /// How long a renewal waits for the gate, `swap.lock` and Claude Code's
-/// locks together before it answers `busy`.
+/// locks together before it answers `busy`; also how long a caller whose
+/// token still works waits for the renewal.
 pub const WAIT: Duration = Duration::from_secs(10);
 /// How often the locks are touched while the token endpoint answers.
 const TOUCH_EVERY: Duration = Duration::from_secs(2);
-/// How many times a renewed sign-in is written before the renewal fails.
+/// How many times a renewed sign-in is written before it is kept in
+/// memory instead.
 const WRITE_TRIES: u32 = 3;
 /// A token that still works this long is answered when a renewal fails
 /// for a reason that may pass.
 const STILL_USABLE_MS: u64 = 10_000;
+/// How long a renewal that failed (or found the store taking no write) is
+/// held back for the same refresh token: Claude Code holds one back 10 or
+/// 60 seconds.
+const HOLD_BACK: Duration = Duration::from_secs(60);
+/// How soon a renewal that could not be saved is written again; the pause
+/// doubles up to [`RETRY_MAX`].
+const RETRY_FIRST: Duration = Duration::from_secs(15);
+const RETRY_MAX: Duration = Duration::from_secs(300);
+/// How many refused refresh tokens are remembered.
+const DEAD_KEPT: usize = 64;
 
 /// Why no token: one of `unknown_account`, `not_signed_in`,
 /// `token_expired`, `busy` or `failed`, with one sentence.
@@ -103,10 +129,18 @@ impl CredentialError {
     fn failed(message: impl Into<String>) -> Self {
         Self::new("failed", message)
     }
+
+    fn is_busy(&self) -> bool {
+        self.code == "busy"
+    }
 }
 
 const BUSY: &str =
     "Claude Code or a switch of the global account holds the sign-in; try again in a moment.";
+const BY_HAND: &str = "Someone signed ~/.claude in to another account; the worker takes it in within seconds, try again then.";
+const NOTHING_TO_RENEW: &str = "Its sign-in expired and holds nothing to renew it with.";
+const NOT_RENEWABLE: &str = "Its sign-in expired, and Claude Code renews only a Claude.ai sign-in.";
+const REFUSED: &str = "Anthropic refused to renew its sign-in.";
 
 /// An account's access token, for the one caller that may have it.
 #[derive(Debug, Clone)]
@@ -118,11 +152,40 @@ pub struct Credential {
     pub plan: Option<String>,
 }
 
-/// One renewal per account at a time, and how long they wait.
+/// A renewal Anthropic answered whose write failed.
+#[derive(Clone)]
+struct Unsaved {
+    renewed: Renewed,
+    /// The refresh token the store holds instead (the chain it replaced).
+    replaces: String,
+}
+
+/// A renewal held back for a while, and why.
+struct HeldBack {
+    refresh: Secret,
+    until: Instant,
+    why: String,
+}
+
+#[derive(Default)]
+struct RenewState {
+    unsaved: HashMap<String, Unsaved>,
+    /// Accounts whose unsaved renewal a task writes again.
+    retrying: HashSet<String>,
+    /// Refresh tokens Anthropic refused: never sent again.
+    dead: VecDeque<Secret>,
+    held_back: HashMap<String, HeldBack>,
+}
+
+/// One renewal per account at a time, what failed, what is not saved yet,
+/// and how long they wait.
 pub struct Renewals {
     per_account: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    state: Mutex<RenewState>,
     wait_ms: AtomicU64,
-    /// Renewals that asked the token endpoint, for tests.
+    hold_back_ms: AtomicU64,
+    retry_ms: AtomicU64,
+    /// Requests sent to the token endpoint, for tests.
     asked: AtomicU64,
 }
 
@@ -130,7 +193,10 @@ impl Default for Renewals {
     fn default() -> Self {
         Self {
             per_account: Mutex::new(HashMap::new()),
+            state: Mutex::new(RenewState::default()),
             wait_ms: AtomicU64::new(WAIT.as_millis() as u64),
+            hold_back_ms: AtomicU64::new(HOLD_BACK.as_millis() as u64),
+            retry_ms: AtomicU64::new(RETRY_FIRST.as_millis() as u64),
             asked: AtomicU64::new(0),
         }
     }
@@ -146,6 +212,10 @@ impl Renewals {
             .clone()
     }
 
+    fn state(&self) -> MutexGuard<'_, RenewState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     fn wait(&self) -> Duration {
         Duration::from_millis(self.wait_ms.load(Ordering::Relaxed))
     }
@@ -156,9 +226,59 @@ impl Renewals {
             .store(wait.as_millis() as u64, Ordering::Relaxed);
     }
 
-    /// How many renewals asked the token endpoint.
+    /// How long a failed renewal is held back (tests shorten it).
+    pub fn set_hold_back(&self, hold: Duration) {
+        self.hold_back_ms
+            .store(hold.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// How soon an unsaved renewal is written again (tests shorten it).
+    pub fn set_retry(&self, first: Duration) {
+        self.retry_ms
+            .store(first.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// How many requests went to the token endpoint.
     pub fn asked(&self) -> u64 {
         self.asked.load(Ordering::Relaxed)
+    }
+
+    fn is_dead(&self, refresh: &Secret) -> bool {
+        self.state().dead.contains(refresh)
+    }
+
+    fn note_dead(&self, refresh: &Secret) {
+        let mut state = self.state();
+        if !state.dead.contains(refresh) {
+            state.dead.push_back(refresh.clone());
+            if state.dead.len() > DEAD_KEPT {
+                state.dead.pop_front();
+            }
+        }
+    }
+
+    /// Why `id`'s renewal of `refresh` is held back, if it is.
+    fn held_back(&self, id: &str, refresh: &Secret) -> Option<String> {
+        let mut state = self.state();
+        let held = state.held_back.get(id)?;
+        if held.until <= Instant::now() || held.refresh != *refresh {
+            state.held_back.remove(id);
+            return None;
+        }
+        Some(held.why.clone())
+    }
+
+    fn hold_back(&self, id: &str, refresh: &Secret, why: impl Into<String>) {
+        let until =
+            Instant::now() + Duration::from_millis(self.hold_back_ms.load(Ordering::Relaxed));
+        self.state().held_back.insert(
+            id.to_string(),
+            HeldBack {
+                refresh: refresh.clone(),
+                until,
+                why: why.into(),
+            },
+        );
     }
 }
 
@@ -166,7 +286,7 @@ impl Renewals {
 enum Class {
     /// Signed out.
     NoSignIn,
-    /// The token works for more than five minutes.
+    /// The token works for more than five minutes, or has no expiry.
     Fresh { token: Secret, expires_at_ms: u64 },
     /// To renew: the refresh token, and the token while it still works.
     Due {
@@ -182,8 +302,9 @@ fn classify(credentials: &Credentials, now: u64) -> Class {
         return Class::NoSignIn;
     }
     let usable = credentials.token.clone().and_then(|token| {
-        // A sign-in with no expiry (one made from a token alone) is asked
-        // for again in five minutes.
+        // A token without an expiry is used as it is, as Claude Code uses
+        // it: never renewed, answered as good for five minutes, so the
+        // caller asks again then.
         let expires = credentials
             .expires_at_ms
             .unwrap_or(now + oauth::RENEW_BEFORE_MS);
@@ -210,20 +331,53 @@ fn classify(credentials: &Credentials, now: u64) -> Class {
     }
 }
 
+/// What to do for a sign-in.
+enum Decision {
+    Answer(Secret, u64),
+    Fail(CredentialError),
+    Renew {
+        refresh: Secret,
+        usable: Option<(Secret, u64)>,
+    },
+}
+
+/// The store's `claudeAiOauth`.
+fn entry_of(raw: Option<&Raw>) -> Map<String, Value> {
+    raw.and_then(|raw| raw.get(OAUTH_KEY))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The refresh token a store holds (`""` for none).
+fn refresh_of(raw: Option<&Raw>) -> String {
+    entry_of(raw)
+        .get("refreshToken")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// The store and locks a renewal holds.
 struct Held {
     _hold: Option<SwapHold>,
     locks: LockSet,
     place: Place,
+    /// The store as read under the locks.
     raw: Option<Raw>,
+    /// Who its profile says is signed in there (`accountUuid`).
+    identity: Option<String>,
 }
 
 /// What a renewal did.
 enum Done {
     /// It answered without asking the endpoint.
     Kept(Credential),
-    /// It renewed and saved the sign-in.
+    /// It renewed the sign-in (saved, or kept until it is).
     Renewed(Credential),
+    /// Another sign-in took the store meanwhile, and nothing tells it is
+    /// the same account's: to be read again from the top.
+    Reread,
 }
 
 impl Accounts {
@@ -244,35 +398,74 @@ impl Accounts {
                     CredentialError::failed(format!("The worker failed ({error})."))
                 })??
         };
-        match quick {
-            Some(Class::Fresh {
-                token,
-                expires_at_ms,
-            }) => return Ok(self.answer(&id, token, expires_at_ms)),
-            Some(Class::NoSignIn) => return Err(CredentialError::not_signed_in()),
-            Some(Class::Dead) => {
-                return Err(CredentialError::expired(
-                    "Its sign-in expired and holds nothing to renew it with.",
-                ));
+        let mut usable = None;
+        if let Some(raw) = quick {
+            let current = self.current(&id, raw);
+            match self.decide(&id, current.as_ref(), now_ms()) {
+                Decision::Answer(token, expires_at_ms) => {
+                    self.retry_unsaved(&id);
+                    return Ok(self.answer(&id, token, expires_at_ms));
+                }
+                Decision::Fail(error) => return Err(error),
+                Decision::Renew { usable: works, .. } => usable = works,
             }
-            Some(Class::Due { .. }) | None => {}
         }
         // To its end even when the caller goes away: a token renewed must
         // be kept, since the one it replaces no longer works.
-        let this = self.clone();
-        let renewed = tokio::spawn(async move { this.renew(&id, deadline).await })
-            .await
+        let renewal = {
+            let this = self.clone();
+            let id = id.clone();
+            tokio::spawn(async move { this.renew(&id, deadline).await })
+        };
+        let joined = match &usable {
+            // The token still works: wait no longer than the renewal's own
+            // wait, then answer it while the renewal goes on.
+            Some((token, expires)) => {
+                match tokio::time::timeout_at(deadline.into(), renewal).await {
+                    Ok(joined) => joined,
+                    Err(_) => return Ok(self.answer(&id, token.clone(), *expires)),
+                }
+            }
+            None => renewal.await,
+        };
+        let done = joined
             .map_err(|error| CredentialError::failed(format!("The worker failed ({error}).")))?;
-        match renewed? {
-            Done::Kept(credential) | Done::Renewed(credential) => Ok(credential),
+        match (done, usable) {
+            (Ok(Done::Kept(credential) | Done::Renewed(credential)), _) => Ok(credential),
+            (Ok(Done::Reread), _) => self.read_again(&id).await,
+            // Held up: the token read before still works.
+            (Err(error), Some((token, expires))) if error.is_busy() => {
+                Ok(self.answer(&id, token, expires))
+            }
+            (Err(error), _) => Err(error),
         }
     }
 
-    /// The sign-in of `id` read where it lives now, without the gate.
+    /// `id`'s token read again from the top, once a renewal found another
+    /// sign-in in its store: answered as it is, or `busy` (another renewal
+    /// is not started).
+    async fn read_again(self: &Arc<Self>, id: &str) -> Result<Credential, CredentialError> {
+        let this = self.clone();
+        let owned = id.to_string();
+        let read = tokio::task::spawn_blocking(move || this.read_unlocked(&owned))
+            .await
+            .map_err(|error| CredentialError::failed(format!("The worker failed ({error}).")))??;
+        let Some(raw) = read else {
+            return Err(CredentialError::busy(BUSY));
+        };
+        let current = self.current(id, raw);
+        match self.decide(id, current.as_ref(), now_ms()) {
+            Decision::Answer(token, expires_at_ms) => Ok(self.answer(id, token, expires_at_ms)),
+            Decision::Fail(error) => Err(error),
+            Decision::Renew { .. } => Err(CredentialError::busy(BUSY)),
+        }
+    }
+
+    /// The store of `id` read where it lives now, without the gate.
     /// `None` when a swap could have moved it while it was read (a journal,
     /// or another registry after the read): then only the gate tells.
     /// Blocking.
-    fn read_unlocked(&self, id: &str) -> Result<Option<Class>, CredentialError> {
+    fn read_unlocked(&self, id: &str) -> Result<Option<Option<Raw>>, CredentialError> {
         let stores = self
             .stores()
             .ok_or_else(|| CredentialError::failed("This computer's user has no home folder."))?;
@@ -287,14 +480,84 @@ impl Accounts {
             let place = Self::place_of(&registry, id);
             let raw = stores.read(&place).map_err(CredentialError::failed)?;
             if self.registry_at().1 == generation && stores.read_journal().is_none() {
-                let credentials = raw
-                    .as_ref()
-                    .map(credentials::credentials_of)
-                    .unwrap_or_default();
-                return Ok(Some(classify(&credentials, now_ms())));
+                if self.slot_shows_another(&stores, id, &place) {
+                    return Err(CredentialError::busy(BY_HAND));
+                }
+                return Ok(Some(raw));
             }
         }
         Ok(None)
+    }
+
+    /// Whether `place` is the slot and its profile names another account
+    /// than `id` (as `id`'s own folder records it): someone signed in by
+    /// hand there, and the worker has not taken it in yet. Blocking.
+    fn slot_shows_another(&self, stores: &Stores<'_>, id: &str, place: &Place) -> bool {
+        if *place != Place::Slot || !self.managed() {
+            return false;
+        }
+        match (
+            stores.uuid(&Place::Slot),
+            stores.uuid(&Place::Folder(id.to_string())),
+        ) {
+            (Some(here), Some(own)) => here != own,
+            _ => false,
+        }
+    }
+
+    /// The sign-in to go by for `id`: `raw` as its store holds it, with the
+    /// renewal not saved yet laid over it while the store still holds the
+    /// chain that renewal replaced. A renewal saved since, or a store that
+    /// holds another sign-in now, ends it.
+    fn current(&self, id: &str, raw: Option<Raw>) -> Option<Raw> {
+        let mut state = self.renewals.state();
+        let Some(unsaved) = state.unsaved.get(id) else {
+            return raw;
+        };
+        let stored = refresh_of(raw.as_ref());
+        match raw {
+            Some(mut raw) if stored == unsaved.replaces => {
+                let entry = entry_of(Some(&raw));
+                raw.insert(
+                    OAUTH_KEY.to_string(),
+                    Value::Object(oauth::renewed_oauth(&entry, &unsaved.renewed)),
+                );
+                Some(raw)
+            }
+            raw => {
+                state.unsaved.remove(id);
+                raw
+            }
+        }
+    }
+
+    /// What `raw`, `id`'s sign-in, allows at `now`, as Claude Code decides
+    /// it.
+    fn decide(&self, id: &str, raw: Option<&Raw>, now: u64) -> Decision {
+        let credentials = raw.map(credentials::credentials_of).unwrap_or_default();
+        let (refresh, usable) = match classify(&credentials, now) {
+            Class::NoSignIn => return Decision::Fail(CredentialError::not_signed_in()),
+            Class::Dead => return Decision::Fail(CredentialError::expired(NOTHING_TO_RENEW)),
+            Class::Fresh {
+                token,
+                expires_at_ms,
+            } => return Decision::Answer(token, expires_at_ms),
+            Class::Due { refresh, usable } => (refresh, usable),
+        };
+        let unless = |error: CredentialError| match &usable {
+            Some((token, expires)) => Decision::Answer(token.clone(), *expires),
+            None => Decision::Fail(error),
+        };
+        if !oauth::refreshable(&entry_of(raw)) {
+            return unless(CredentialError::expired(NOT_RENEWABLE));
+        }
+        if self.renewals.is_dead(&refresh) {
+            return unless(CredentialError::expired(REFUSED));
+        }
+        if let Some(why) = self.renewals.held_back(id, &refresh) {
+            return unless(CredentialError::failed(why));
+        }
+        Decision::Renew { refresh, usable }
     }
 
     /// The answer for `id` with `token`: its email and plan from where its
@@ -330,13 +593,13 @@ impl Accounts {
         )
     }
 
-    /// The renewal itself: one per account, under the gate, `swap.lock`
-    /// and the store's locks (see the module's description).
-    async fn renew(self: &Arc<Self>, id: &str, deadline: Instant) -> Result<Done, CredentialError> {
-        let one = self.renewals.of(id);
-        let _one = tokio::time::timeout_at(deadline.into(), one.lock_owned())
-            .await
-            .map_err(|_| CredentialError::busy(BUSY))?;
+    /// The gate and the store of `id`, held (steps 1 and 2): `None` when
+    /// they could not be had in time, with why.
+    async fn hold(
+        self: &Arc<Self>,
+        id: &str,
+        deadline: Instant,
+    ) -> Result<(super::Gate, Held), CredentialError> {
         let gate = tokio::time::timeout_at(deadline.into(), self.gate())
             .await
             .map_err(|_| CredentialError::busy(BUSY))?;
@@ -347,20 +610,28 @@ impl Accounts {
         {
             return Err(CredentialError::busy(super::switch::SWAP_UNSETTLED));
         }
-        let held = {
-            let this = self.clone();
-            let id = id.to_string();
-            tokio::task::spawn_blocking(move || this.hold_for_renewal(&id, deadline))
-                .await
-                .map_err(|error| {
-                    CredentialError::failed(format!("The worker failed ({error})."))
-                })??
-        };
+        let this = self.clone();
+        let owned = id.to_string();
+        let held = tokio::task::spawn_blocking(move || this.hold_for_renewal(&owned, deadline))
+            .await
+            .map_err(|error| CredentialError::failed(format!("The worker failed ({error}).")))??;
+        Ok((gate, held))
+    }
+
+    /// The renewal itself: one per account, under the gate, `swap.lock`
+    /// and the store's locks (see the module's description).
+    async fn renew(self: &Arc<Self>, id: &str, deadline: Instant) -> Result<Done, CredentialError> {
+        let one = self.renewals.of(id);
+        let _one = tokio::time::timeout_at(deadline.into(), one.lock_owned())
+            .await
+            .map_err(|_| CredentialError::busy(BUSY))?;
+        let (gate, held) = self.hold(id, deadline).await?;
         let outcome = self.renew_held(id, held).await;
         drop(gate);
         if matches!(outcome, Ok(Done::Renewed(_))) {
             self.reread_credentials(id);
         }
+        self.retry_unsaved(id);
         outcome
     }
 
@@ -397,6 +668,9 @@ impl Accounts {
             return Err(CredentialError::unknown(id));
         }
         let place = Self::place_of(&registry, id);
+        if self.slot_shows_another(&stores, id, &place) {
+            return Err(CredentialError::busy(BY_HAND));
+        }
         let locks = stores
             .lock_place(&place, deadline)
             .map_err(|error| match error {
@@ -404,69 +678,70 @@ impl Accounts {
                 other => CredentialError::failed(other.sentence()),
             })?;
         let raw = stores.read(&place).map_err(CredentialError::failed)?;
+        let identity = stores.uuid(&place);
         Ok(Held {
             _hold: hold,
             locks,
             place,
             raw,
+            identity,
         })
     }
 
-    /// Steps 3 to 5, the locks held: decide again from the sign-in read
-    /// under them, renew, write back. The locks go when `held` does.
-    async fn renew_held(
-        self: &Arc<Self>,
-        id: &str,
-        mut held: Held,
-    ) -> Result<Done, CredentialError> {
-        let now = now_ms();
-        let credentials = held
-            .raw
-            .as_ref()
-            .map(credentials::credentials_of)
-            .unwrap_or_default();
-        let (refresh, usable) = match classify(&credentials, now) {
-            Class::NoSignIn => return Err(CredentialError::not_signed_in()),
-            Class::Dead => {
-                return Err(CredentialError::expired(
-                    "Its sign-in expired and holds nothing to renew it with.",
-                ));
+    /// Steps 3 to 6, the locks held: decide again from the sign-in read
+    /// under them, make sure the store takes a write, renew, write back.
+    /// The locks go when `held` does.
+    async fn renew_held(self: &Arc<Self>, id: &str, held: Held) -> Result<Done, CredentialError> {
+        let current = self.current(id, held.raw.clone());
+        let (refresh, usable) = match self.decide(id, current.as_ref(), now_ms()) {
+            // A Claude Code renewed it meanwhile, or nothing to do.
+            Decision::Answer(token, expires) => {
+                return Ok(Done::Kept(self.answer(id, token, expires)));
             }
-            // A Claude Code renewed it meanwhile.
-            Class::Fresh {
-                token,
-                expires_at_ms,
-            } => return Ok(Done::Kept(self.answer(id, token, expires_at_ms))),
-            Class::Due { refresh, usable } => (refresh, usable),
+            Decision::Fail(error) => return Err(error),
+            Decision::Renew { refresh, usable } => (refresh, usable),
         };
-        let keep_usable = |why: String| match &usable {
+        let keep_usable = |error: CredentialError| match &usable {
             Some((token, expires)) => {
-                tracing::warn!(account = %id, %why, "the sign-in was not renewed; its token still works");
+                tracing::warn!(account = %id, why = %error.message, "the sign-in was not renewed; its token still works");
                 Ok(Done::Kept(self.answer(id, token.clone(), *expires)))
             }
-            None => Err(CredentialError::failed(why)),
+            None => Err(error),
         };
         let Some(client) = self.oauth.clone() else {
-            return keep_usable("This worker can't renew sign-ins.".into());
+            return keep_usable(CredentialError::failed("This worker can't renew sign-ins."));
         };
-        let entry = held
-            .raw
-            .as_ref()
-            .and_then(|raw| raw.get(OAUTH_KEY))
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        // Step 4: no refresh token goes out unless its answer can be kept.
+        let (mut held, probed) = {
+            let this = self.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut held = held;
+                let probed = this.probe(&mut held);
+                (held, probed)
+            })
+            .await
+            .map_err(|error| CredentialError::failed(format!("The worker failed ({error}).")))?
+        };
+        if let Err(error) = probed {
+            tracing::warn!(account = %id, %error, "the sign-in's store takes no write; not renewed");
+            let why =
+                format!("The sign-in can't be saved where it is ({error}), so it was not renewed.");
+            self.renewals.hold_back(id, &refresh, why.clone());
+            return keep_usable(CredentialError::failed(why));
+        }
+        let entry = entry_of(current.as_ref());
         let (scopes, fallback) = oauth::scopes_to_ask(&entry);
         let client_id = oauth::client_id(&entry);
         self.renewals.asked.fetch_add(1, Ordering::Relaxed);
         let mut outcome = touching(
             &mut held.locks,
-            client.renew(&refresh, &client_id, &scopes, now),
+            client.renew(&refresh, &client_id, &scopes, now_ms()),
         )
         .await;
         if outcome.as_ref().err() == Some(&RenewError::InvalidScope)
             && let Some(fallback) = fallback
         {
+            self.renewals.asked.fetch_add(1, Ordering::Relaxed);
             outcome = touching(
                 &mut held.locks,
                 client.renew(&refresh, &client_id, &fallback, now_ms()),
@@ -475,65 +750,122 @@ impl Accounts {
         }
         let renewed = match outcome {
             Ok(renewed) => renewed,
-            Err(error) if error.refused() || error == RenewError::InvalidScope => {
+            Err(RenewError::Refused) => {
                 tracing::warn!(account = %id, "Anthropic refused to renew the sign-in");
-                return match &usable {
-                    Some((token, expires)) => {
-                        Ok(Done::Kept(self.answer(id, token.clone(), *expires)))
-                    }
-                    None => Err(CredentialError::expired(
-                        "Anthropic refused to renew its sign-in.",
-                    )),
-                };
+                self.renewals.note_dead(&refresh);
+                self.forget_unsaved_of(id, &refresh);
+                return keep_usable(CredentialError::expired(REFUSED));
             }
-            Err(error) => return keep_usable(error.sentence()),
+            Err(error) => {
+                tracing::warn!(account = %id, why = %error.sentence(), "the sign-in was not renewed");
+                if error != RenewError::NotAllowed {
+                    self.renewals.hold_back(id, &refresh, error.sentence());
+                }
+                return keep_usable(CredentialError::failed(error.sentence()));
+            }
         };
-        // Step 5, off the async threads (a Keychain answers slowly).
+        // Step 6, off the async threads (a Keychain answers slowly).
+        let expected = refresh_of(held.raw.as_ref());
+        let identity = held.identity.clone();
         let this = self.clone();
+        let saving = renewed.clone();
         let written = tokio::task::spawn_blocking(move || {
-            let written = this.write_back(&mut held, &renewed, &refresh);
+            let mut held = held;
+            let written = this.write_back(&mut held, &saving, &expected);
+            let now_identity = this.stores().and_then(|stores| stores.uuid(&held.place));
             // The locks and `swap.lock` go as soon as the store is written.
             drop(held);
-            written.map(|saved| (saved, renewed))
+            (written, now_identity, expected)
         })
         .await
         .map_err(|error| CredentialError::failed(format!("The worker failed ({error}).")))?;
+        let renewed_answer = |renewed: &Renewed| {
+            Done::Renewed(self.answer(id, renewed.access_token.clone(), renewed.expires_at_ms))
+        };
         match written {
-            Ok((Saved::Ours, renewed)) => {
+            (Ok(Saved::Ours), _, _) => {
                 tracing::info!(account = %id, "sign-in renewed");
-                Ok(Done::Renewed(self.answer(
-                    id,
-                    renewed.access_token,
-                    renewed.expires_at_ms,
-                )))
+                self.renewals.state().unsaved.remove(id);
+                Ok(renewed_answer(&renewed))
             }
-            Ok((Saved::Theirs(credentials), _)) => match classify(&credentials, now_ms()) {
-                Class::Fresh {
-                    token,
-                    expires_at_ms,
-                } => Ok(Done::Kept(self.answer(id, token, expires_at_ms))),
-                Class::NoSignIn => Err(CredentialError::not_signed_in()),
-                _ => Err(CredentialError::busy(BUSY)),
-            },
-            Err(error) => {
-                tracing::error!(account = %id, %error, "a renewed sign-in could not be saved");
-                Err(CredentialError::failed(format!(
-                    "The renewed sign-in could not be saved ({error})."
-                )))
+            (Ok(Saved::Theirs(raw)), now_identity, _) => {
+                self.renewals.state().unsaved.remove(id);
+                // Answered only for the same account: a sign-in by hand
+                // to another one may have taken the store meanwhile.
+                if identity.is_none() || identity != now_identity {
+                    tracing::warn!(account = %id, "another sign-in took the store during a renewal; read again");
+                    return Ok(Done::Reread);
+                }
+                let credentials = raw
+                    .as_ref()
+                    .map(credentials::credentials_of)
+                    .unwrap_or_default();
+                match classify(&credentials, now_ms()) {
+                    Class::Fresh {
+                        token,
+                        expires_at_ms,
+                    } => Ok(Done::Kept(self.answer(id, token, expires_at_ms))),
+                    // Theirs needs renewing: ours, for the same account,
+                    // works.
+                    Class::Due { .. } | Class::Dead => Ok(renewed_answer(&renewed)),
+                    Class::NoSignIn => Err(CredentialError::not_signed_in()),
+                }
+            }
+            (Err(error), _, expected) => {
+                // Anthropic replaced the refresh token: the answer is the
+                // account's only working one. Kept, answered, written
+                // again later.
+                tracing::error!(account = %id, %error, "a renewed sign-in could not be saved; kept until it is");
+                self.renewals.state().unsaved.insert(
+                    id.to_string(),
+                    Unsaved {
+                        renewed: renewed.clone(),
+                        replaces: expected,
+                    },
+                );
+                Ok(renewed_answer(&renewed))
             }
         }
     }
 
-    /// Write `renewed` over the sign-in the renewal started from
-    /// (`posted`), in the store it was read from, the rest of the store as
-    /// it is now, and read it back; tried again on a failed write. Another
-    /// sign-in found there (something that ignored the locks), or none, is
-    /// left as it is and answered instead, as Claude Code does. Blocking.
+    /// Step 4: the store written back as it is, so a renewal is asked
+    /// only when its answer can be kept (a Keychain the worker can't write
+    /// outside the person's GUI session refuses here). Blocking.
+    fn probe(&self, held: &mut Held) -> Result<(), String> {
+        let stores = self
+            .stores()
+            .ok_or_else(|| "This computer's user has no home folder.".to_string())?;
+        let Some(raw) = &held.raw else {
+            return Err("there is no sign-in".into());
+        };
+        held.locks.touch();
+        stores.write(&held.place, raw)
+    }
+
+    /// Drop `id`'s unsaved renewal when it was `refresh`'s (Anthropic
+    /// refused it: the store's own chain is the one to go by).
+    fn forget_unsaved_of(&self, id: &str, refresh: &Secret) {
+        let mut state = self.renewals.state();
+        if state
+            .unsaved
+            .get(id)
+            .is_some_and(|unsaved| unsaved.renewed.refresh_token == *refresh)
+        {
+            state.unsaved.remove(id);
+        }
+    }
+
+    /// Write `renewed` over the sign-in the renewal started from (refresh
+    /// token `expected`; or one Claude Code cleared after a refusal), in the
+    /// store it was read from, the rest of the store as it is now, and read
+    /// it back; tried again on a failed write. Another sign-in found there
+    /// (something that ignored the locks), or none, is left as it is and
+    /// answered instead, as Claude Code does (`_Ws()`). Blocking.
     fn write_back(
         &self,
         held: &mut Held,
         renewed: &Renewed,
-        posted: &Secret,
+        expected: &str,
     ) -> Result<Saved, String> {
         let stores = self
             .stores()
@@ -547,17 +879,15 @@ impl Accounts {
             let mut raw = match stores.read(&held.place) {
                 Ok(Some(raw)) => raw,
                 // Signed out meanwhile: the renewal is not brought back.
-                Ok(None) => return Ok(Saved::Theirs(Credentials::default())),
+                Ok(None) => return Ok(Saved::Theirs(None)),
                 Err(error) => {
                     last = error;
                     continue;
                 }
             };
-            let entry = raw
-                .get(OAUTH_KEY)
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
+            let Some(entry) = raw.get(OAUTH_KEY).and_then(Value::as_object).cloned() else {
+                return Ok(Saved::Theirs(Some(raw)));
+            };
             let stored = entry
                 .get("refreshToken")
                 .and_then(Value::as_str)
@@ -566,8 +896,8 @@ impl Accounts {
             if stored == renewed.refresh_token.expose() && kept(&raw, renewed) {
                 return Ok(Saved::Ours);
             }
-            if stored != posted.expose() {
-                return Ok(Saved::Theirs(credentials::credentials_of(&raw)));
+            if stored != expected && !stored.is_empty() {
+                return Ok(Saved::Theirs(Some(raw)));
             }
             raw.insert(
                 OAUTH_KEY.to_string(),
@@ -589,6 +919,76 @@ impl Accounts {
         }
         Err(last)
     }
+
+    /// Make sure a task writes `id`'s unsaved renewal again, if it has one.
+    fn retry_unsaved(self: &Arc<Self>, id: &str) {
+        {
+            let mut state = self.renewals.state();
+            if !state.unsaved.contains_key(id) || !state.retrying.insert(id.to_string()) {
+                return;
+            }
+        }
+        let this = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            let mut pause = Duration::from_millis(this.renewals.retry_ms.load(Ordering::Relaxed));
+            loop {
+                tokio::time::sleep(pause).await;
+                if this.save_unsaved(&id).await {
+                    break;
+                }
+                pause = (pause * 2).min(RETRY_MAX);
+            }
+            this.renewals.state().retrying.remove(&id);
+            // One that came while it stopped.
+            this.retry_unsaved(&id);
+        });
+    }
+
+    /// One more try to write `id`'s unsaved renewal, under the same gate
+    /// and locks as a renewal: whether nothing is left to write (written,
+    /// or the store holds another sign-in now).
+    async fn save_unsaved(self: &Arc<Self>, id: &str) -> bool {
+        if !self.renewals.state().unsaved.contains_key(id) {
+            return true;
+        }
+        if !self.registry().has(id) {
+            self.renewals.state().unsaved.remove(id);
+            return true;
+        }
+        let deadline = Instant::now() + self.renewals.wait();
+        let one = self.renewals.of(id);
+        let Ok(_one) = tokio::time::timeout_at(deadline.into(), one.lock_owned()).await else {
+            return false;
+        };
+        let Ok((gate, held)) = self.hold(id, deadline).await else {
+            return false;
+        };
+        let Some(unsaved) = self.renewals.state().unsaved.get(id).cloned() else {
+            return true;
+        };
+        let this = self.clone();
+        let written = tokio::task::spawn_blocking(move || {
+            let mut held = held;
+            this.write_back(&mut held, &unsaved.renewed, &unsaved.replaces)
+        })
+        .await;
+        drop(gate);
+        match written {
+            Ok(Ok(Saved::Ours)) => {
+                tracing::info!(account = %id, "a renewed sign-in kept in memory is saved now");
+                self.renewals.state().unsaved.remove(id);
+                self.reread_credentials(id);
+                true
+            }
+            Ok(Ok(Saved::Theirs(_))) => {
+                tracing::warn!(account = %id, "a renewed sign-in kept in memory was dropped: another sign-in is there now");
+                self.renewals.state().unsaved.remove(id);
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Whether the sign-in `raw` holds the renewal `renewed`.
@@ -602,8 +1002,8 @@ fn kept(raw: &Raw, renewed: &Renewed) -> bool {
 enum Saved {
     /// The renewal is in the store.
     Ours,
-    /// Another sign-in was there; it stays.
-    Theirs(Credentials),
+    /// Another sign-in was there, or none; it stays.
+    Theirs(Option<Raw>),
 }
 
 /// Run `work`, touching `locks` every couple of seconds meanwhile, so none
@@ -623,12 +1023,13 @@ async fn touching<F: std::future::Future>(locks: &mut LockSet, work: F) -> F::Ou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::credentials::KeychainStore;
+    use crate::accounts::credentials::{FileStore, KeychainStore, SecretStore};
     use crate::accounts::registry;
     use crate::accounts::slot::{self, Crash};
     use crate::accounts::test_support::Home;
     use serde_json::json;
     use std::path::Path;
+    use std::sync::atomic::AtomicBool;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const HOUR: u64 = 3_600_000;
@@ -719,15 +1120,39 @@ mod tests {
 
     /// Renews every sign-in as `<old>-2`, for eight hours.
     fn renews() -> Reply {
-        Arc::new(|body| {
+        renews_for(28_800)
+    }
+
+    /// Renews every sign-in as `<old>-2`, for `seconds`.
+    fn renews_for(seconds: u64) -> Reply {
+        Arc::new(move |body| {
             let refresh = body["refresh_token"].as_str().unwrap_or_default();
             let account = refresh.trim_start_matches("rt-");
             (
                 200,
                 json!({"access_token": format!("at-{account}-2"), "refresh_token": format!("rt-{account}-2"),
-                    "expires_in": 28_800, "scope": "user:inference user:profile", "token_type": "Bearer"}),
+                    "expires_in": seconds, "scope": "user:inference user:profile", "token_type": "Bearer"}),
             )
         })
+    }
+
+    /// The sign-in files, whose writes fail while `fail` is set (a full
+    /// disk, a Keychain that refuses).
+    struct FlakyStore {
+        fail: Arc<AtomicBool>,
+    }
+
+    impl SecretStore for FlakyStore {
+        fn read_raw(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Raw>, String> {
+            FileStore.read_raw(dir, env_dir)
+        }
+
+        fn write_raw(&self, dir: &Path, env_dir: Option<&str>, value: &Raw) -> Result<(), String> {
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("no space left on the disk".into());
+            }
+            FileStore.write_raw(dir, env_dir, value)
+        }
     }
 
     fn answers(status: u16, error: &'static str) -> Reply {
@@ -770,13 +1195,25 @@ mod tests {
         work: Value,
         personal: Value,
     ) -> (Home, Arc<Accounts>) {
+        two_accounts_in(name, oauth_url, work, personal, Box::new(FileStore))
+    }
+
+    /// [`two_accounts`] with the sign-ins in `store`.
+    fn two_accounts_in(
+        name: &str,
+        oauth_url: &str,
+        work: Value,
+        personal: Value,
+        store: Box<dyn SecretStore>,
+    ) -> (Home, Arc<Accounts>) {
         let home = Home::with_urls(name, "http://127.0.0.1:9", oauth_url);
         write(&slot_file(&home), &work);
         write(
             &home.paths.default_json,
             &json!({"oauthAccount": {"accountUuid": "uuid-work", "emailAddress": "work@x.dev", "displayName": "Work"}}),
         );
-        let accounts = home.accounts();
+        let accounts = Arc::new(Accounts::new(Some(home.paths.clone()), store, false));
+        accounts.load_blocking();
         accounts
             .update_registry(|registry| {
                 registry.accounts.push(registry::Entry {
@@ -796,6 +1233,21 @@ mod tests {
         );
         accounts.renewals.set_wait(Duration::from_secs(5));
         (home, accounts)
+    }
+
+    fn refresh_token(raw: &Value) -> &str {
+        raw["claudeAiOauth"]["refreshToken"]
+            .as_str()
+            .unwrap_or_default()
+    }
+
+    /// Wait up to five seconds for `done`.
+    async fn eventually(what: &str, done: impl Fn() -> bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < until, "{what}");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     fn token(raw: &Value) -> &str {
@@ -1180,14 +1632,30 @@ mod tests {
             "rt-personal",
             "a refusal changes nothing in the store"
         );
-        // Refused while the token still works for a minute: that token.
+        // A refresh token refused is never sent again, as Claude Code
+        // never sends one again: the token, while it still works.
         write(
             &folder_file(&home, "personal"),
             &sign_in("personal", true, now_ms() + 60_000),
         );
         let kept = accounts.credential("personal").await.unwrap();
         assert_eq!(kept.access_token.expose(), "at-personal");
+        write(
+            &folder_file(&home, "personal"),
+            &sign_in("personal", true, now_ms() - 1_000),
+        );
+        let error = accounts.credential("personal").await.unwrap_err();
+        assert_eq!(error.code, "token_expired");
+        assert_eq!(server.asked().len(), 1);
+        // Another refresh token is sent; refused while the token still
+        // works for a minute: that token.
+        let mut again = sign_in("personal", true, now_ms() + 60_000);
+        again["claudeAiOauth"]["refreshToken"] = json!("rt-personal-new");
+        write(&folder_file(&home, "personal"), &again);
+        let kept = accounts.credential("personal").await.unwrap();
+        assert_eq!(kept.access_token.expose(), "at-personal");
         assert_eq!(server.asked().len(), 2);
+        assert_eq!(server.asked()[1].1["refresh_token"], "rt-personal-new");
         // Expired, nothing to renew it with: not asked.
         write(
             &folder_file(&home, "personal"),
@@ -1213,12 +1681,22 @@ mod tests {
             sign_in("work", true, now + HOUR),
             sign_in("personal", true, now + 60_000),
         );
+        accounts.renewals.set_hold_back(Duration::from_secs(1));
         let kept = accounts.credential("personal").await.unwrap();
         assert_eq!(kept.access_token.expose(), "at-personal");
+        assert_eq!(server.asked().len(), 1);
+        // Held back for a while: not asked again, even once the token no
+        // longer works.
         write(
             &folder_file(&home, "personal"),
             &sign_in("personal", true, now_ms() - 1_000),
         );
+        let error = accounts.credential("personal").await.unwrap_err();
+        assert_eq!(error.code, "failed");
+        assert!(error.message.contains("503"), "{}", error.message);
+        assert_eq!(server.asked().len(), 1);
+        // Asked again once that passed.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
         let error = accounts.credential("personal").await.unwrap_err();
         assert_eq!(error.code, "failed");
         assert_eq!(server.asked().len(), 2);
@@ -1263,11 +1741,12 @@ mod tests {
     async fn anything_held_too_long_is_busy() {
         let server = TokenServer::start(Duration::ZERO, renews()).await;
         let now = now_ms();
+        // Expired: nothing else to answer.
         let (home, accounts) = two_accounts(
             "cred-busy",
             &server.url,
             sign_in("work", true, now + HOUR),
-            sign_in("personal", true, now + 60_000),
+            sign_in("personal", true, now - 1_000),
         );
         accounts.renewals.set_wait(Duration::from_millis(300));
         // Another worker process swapping.
@@ -1300,5 +1779,287 @@ mod tests {
         // Nothing held: renewed.
         let renewed = accounts.credential("personal").await.unwrap();
         assert_eq!(renewed.access_token.expose(), "at-personal-2");
+    }
+
+    #[tokio::test]
+    async fn a_token_that_still_works_is_answered_while_a_slow_renewal_goes_on() {
+        let server = TokenServer::start(Duration::from_millis(1_500), renews()).await;
+        let now = now_ms();
+        let (home, accounts) = two_accounts(
+            "cred-slow",
+            &server.url,
+            sign_in("work", true, now + HOUR),
+            sign_in("personal", true, now + 60_000),
+        );
+        accounts.renewals.set_wait(Duration::from_millis(300));
+        let started = Instant::now();
+        let kept = accounts.credential("personal").await.unwrap();
+        assert_eq!(kept.access_token.expose(), "at-personal");
+        assert!(
+            started.elapsed() < Duration::from_millis(1_200),
+            "answered at the deadline: {:?}",
+            started.elapsed()
+        );
+        // The renewal goes on, and lands.
+        let file = folder_file(&home, "personal");
+        eventually("the renewal lands", || {
+            refresh_token(&read(&file)) == "rt-personal-2"
+        })
+        .await;
+        let renewed = accounts.credential("personal").await.unwrap();
+        assert_eq!(renewed.access_token.expose(), "at-personal-2");
+        assert_eq!(server.asked().len(), 1);
+        nothing_left(&home.paths.account_dir("personal"));
+        // A switch holding the gate: the token that works, at the deadline.
+        write(&file, &sign_in("personal", true, now_ms() + 60_000));
+        let gate = accounts.gate().await;
+        let kept = accounts.credential("personal").await.unwrap();
+        assert_eq!(kept.access_token.expose(), "at-personal");
+        drop(gate);
+        assert_eq!(server.asked().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_store_that_takes_no_write_is_never_renewed() {
+        let server = TokenServer::start(Duration::ZERO, renews()).await;
+        let now = now_ms();
+        let fail = Arc::new(AtomicBool::new(false));
+        let (home, accounts) = two_accounts_in(
+            "cred-probe",
+            &server.url,
+            sign_in("work", true, now + HOUR),
+            sign_in("personal", true, now - 1_000),
+            Box::new(FlakyStore { fail: fail.clone() }),
+        );
+        fail.store(true, Ordering::SeqCst);
+        let error = accounts.credential("personal").await.unwrap_err();
+        assert_eq!(error.code, "failed");
+        assert!(
+            error.message.contains("can't be saved"),
+            "{}",
+            error.message
+        );
+        assert!(server.asked().is_empty(), "no refresh token sent");
+        // Held back: while the token still works, it is answered as it is.
+        write(
+            &folder_file(&home, "personal"),
+            &sign_in("personal", true, now_ms() + 60_000),
+        );
+        let kept = accounts.credential("personal").await.unwrap();
+        assert_eq!(kept.access_token.expose(), "at-personal");
+        assert!(server.asked().is_empty());
+        assert_eq!(
+            refresh_token(&read(&folder_file(&home, "personal"))),
+            "rt-personal"
+        );
+        nothing_left(&home.paths.account_dir("personal"));
+    }
+
+    #[tokio::test]
+    async fn a_renewal_that_could_not_be_saved_is_answered_and_saved_later() {
+        let fail = Arc::new(AtomicBool::new(false));
+        // The disk fills while Anthropic answers.
+        let during: During = {
+            let fail = fail.clone();
+            Arc::new(move || fail.store(true, Ordering::SeqCst))
+        };
+        let server = TokenServer::with(Duration::ZERO, renews(), during).await;
+        let now = now_ms();
+        let (home, accounts) = two_accounts_in(
+            "cred-unsaved",
+            &server.url,
+            sign_in("work", true, now + HOUR),
+            sign_in("personal", true, now - 1_000),
+            Box::new(FlakyStore { fail: fail.clone() }),
+        );
+        accounts.renewals.set_retry(Duration::from_millis(200));
+        let renewed = accounts.credential("personal").await.unwrap();
+        assert_eq!(renewed.access_token.expose(), "at-personal-2");
+        let file = folder_file(&home, "personal");
+        assert_eq!(refresh_token(&read(&file)), "rt-personal", "not saved");
+        // Answered from memory meanwhile, never renewed again.
+        let again = accounts.credential("personal").await.unwrap();
+        assert_eq!(again.access_token.expose(), "at-personal-2");
+        assert_eq!(again.expires_at_ms, renewed.expires_at_ms);
+        assert_eq!(server.asked().len(), 1);
+        // The disk has room again: written by itself.
+        fail.store(false, Ordering::SeqCst);
+        eventually("the renewal is saved", || {
+            refresh_token(&read(&file)) == "rt-personal-2"
+        })
+        .await;
+        assert_eq!(token(&read(&file)), "at-personal-2");
+        let stored = accounts.credential("personal").await.unwrap();
+        assert_eq!(stored.access_token.expose(), "at-personal-2");
+        assert_eq!(server.asked().len(), 1);
+        nothing_left(&home.paths.account_dir("personal"));
+    }
+
+    #[tokio::test]
+    async fn a_renewal_not_saved_yet_is_renewed_with_its_own_refresh_token() {
+        let fail = Arc::new(AtomicBool::new(false));
+        let during: During = {
+            let fail = fail.clone();
+            Arc::new(move || fail.store(true, Ordering::SeqCst))
+        };
+        // Renewed for a minute only: due again at once.
+        let server = TokenServer::with(Duration::ZERO, renews_for(60), during).await;
+        let now = now_ms();
+        let (home, accounts) = two_accounts_in(
+            "cred-unsaved-due",
+            &server.url,
+            sign_in("work", true, now + HOUR),
+            sign_in("personal", true, now - 1_000),
+            Box::new(FlakyStore { fail: fail.clone() }),
+        );
+        accounts.renewals.set_retry(Duration::from_secs(60));
+        let renewed = accounts.credential("personal").await.unwrap();
+        assert_eq!(renewed.access_token.expose(), "at-personal-2");
+        let file = folder_file(&home, "personal");
+        assert_eq!(refresh_token(&read(&file)), "rt-personal");
+        // The next renewal sends the refresh token Anthropic gave, not the
+        // one the store still holds; its write fails too (`during`).
+        fail.store(false, Ordering::SeqCst);
+        let next = accounts.credential("personal").await.unwrap();
+        assert_eq!(next.access_token.expose(), "at-personal-2-2");
+        let asked = server.asked();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[1].1["refresh_token"], "rt-personal-2");
+        assert_eq!(refresh_token(&read(&file)), "rt-personal");
+        // Saved over the store's own chain once it takes a write.
+        fail.store(false, Ordering::SeqCst);
+        assert!(accounts.save_unsaved("personal").await);
+        let stored = read(&file);
+        assert_eq!(token(&stored), "at-personal-2-2");
+        assert_eq!(refresh_token(&stored), "rt-personal-2-2");
+        assert_eq!(server.asked().len(), 2);
+        nothing_left(&home.paths.account_dir("personal"));
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_by_hand_on_the_slot_is_never_answered_as_the_global_account() {
+        let now = now_ms();
+        let intruder = sign_in("intruder", true, now + 8 * HOUR);
+        let under: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+        // Someone signs ~/.claude in to another account while Anthropic
+        // answers (`/login` takes none of the locks).
+        let during: During = {
+            let (under, intruder) = (under.clone(), intruder.clone());
+            Arc::new(move || {
+                let Some(home) = under.lock().unwrap().clone() else {
+                    return;
+                };
+                write(&home.join(".claude/.credentials.json"), &intruder);
+                write(
+                    &home.join(".claude.json"),
+                    &json!({"oauthAccount": {"accountUuid": "uuid-intruder", "emailAddress": "x@y.dev"}}),
+                );
+            })
+        };
+        let server = TokenServer::with(Duration::ZERO, renews(), during).await;
+        let (home, accounts) = two_accounts(
+            "cred-by-hand",
+            &server.url,
+            sign_in("work", true, now - 1_000),
+            sign_in("personal", true, now + HOUR),
+        );
+        // The global account's folder keeps its profile (G2).
+        write(
+            &home.paths.account_json("default"),
+            &json!({"oauthAccount": {"accountUuid": "uuid-work", "emailAddress": "work@x.dev"}}),
+        );
+        *under.lock().unwrap() = Some(home.paths.default_json.parent().unwrap().to_path_buf());
+        let error = accounts.credential("default").await.unwrap_err();
+        assert_eq!(error.code, "busy", "{}", error.message);
+        assert!(
+            error.message.contains("another account"),
+            "{}",
+            error.message
+        );
+        assert_eq!(server.asked().len(), 1);
+        // The other sign-in stays, and is not answered as the global
+        // account's, now or until the worker takes it in.
+        let slot = read(&slot_file(&home));
+        assert_eq!(token(&slot), "at-intruder");
+        assert_eq!(refresh_token(&slot), "rt-intruder");
+        let error = accounts.credential("default").await.unwrap_err();
+        assert_eq!(error.code, "busy");
+        let personal = accounts.credential("personal").await.unwrap();
+        assert_eq!(personal.access_token.expose(), "at-personal");
+        assert_eq!(server.asked().len(), 1);
+        nothing_left(&home.paths.claude_home);
+    }
+
+    #[tokio::test]
+    async fn the_same_account_renewed_meanwhile_is_answered() {
+        let now = now_ms();
+        let under: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+        // A Claude Code that takes no lock renews Personal while Anthropic
+        // answers the worker.
+        let during: During = {
+            let under = under.clone();
+            Arc::new(move || {
+                let Some(file) = under.lock().unwrap().clone() else {
+                    return;
+                };
+                let mut theirs = sign_in("personal-theirs", true, now_ms() + 8 * HOUR);
+                theirs["claudeAiOauth"]["refreshToken"] = json!("rt-theirs");
+                write(&file, &theirs);
+            })
+        };
+        let server = TokenServer::with(Duration::ZERO, renews(), during).await;
+        let (home, accounts) = two_accounts(
+            "cred-same",
+            &server.url,
+            sign_in("work", true, now + HOUR),
+            sign_in("personal", true, now - 1_000),
+        );
+        *under.lock().unwrap() = Some(folder_file(&home, "personal"));
+        let credential = accounts.credential("personal").await.unwrap();
+        assert_eq!(credential.access_token.expose(), "at-personal-theirs");
+        assert_eq!(
+            refresh_token(&read(&folder_file(&home, "personal"))),
+            "rt-theirs",
+            "theirs is left as it is"
+        );
+        assert_eq!(server.asked().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_token_without_an_expiry_or_outside_claude_ai_is_never_renewed() {
+        let server = TokenServer::start(Duration::ZERO, renews()).await;
+        let now = now_ms();
+        let mut forever = sign_in("personal", true, 0);
+        forever["claudeAiOauth"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expiresAt");
+        let (home, accounts) = two_accounts(
+            "cred-no-expiry",
+            &server.url,
+            sign_in("work", true, now + HOUR),
+            forever,
+        );
+        // As Claude Code: used as it is, asked again in five minutes.
+        let credential = accounts.credential("personal").await.unwrap();
+        assert_eq!(credential.access_token.expose(), "at-personal");
+        assert!(credential.expires_at_ms >= now + oauth::RENEW_BEFORE_MS);
+        assert!(credential.expires_at_ms <= now_ms() + oauth::RENEW_BEFORE_MS);
+        // Not a Claude.ai sign-in (no `user:inference`, no plan): Claude
+        // Code renews none.
+        let mut console = sign_in("personal", true, now_ms() - 1_000);
+        console["claudeAiOauth"]["scopes"] = json!(["user:profile"]);
+        console["claudeAiOauth"]
+            .as_object_mut()
+            .unwrap()
+            .remove("subscriptionType");
+        write(&folder_file(&home, "personal"), &console);
+        let error = accounts.credential("personal").await.unwrap_err();
+        assert_eq!(error.code, "token_expired");
+        console["claudeAiOauth"]["expiresAt"] = json!(now_ms() + 60_000);
+        write(&folder_file(&home, "personal"), &console);
+        let kept = accounts.credential("personal").await.unwrap();
+        assert_eq!(kept.access_token.expose(), "at-personal");
+        assert!(server.asked().is_empty());
     }
 }

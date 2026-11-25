@@ -624,8 +624,8 @@ pub struct AccountSwitch {
 pub struct GlobalChange {
     /// The account that became global.
     pub account: String,
-    /// When. 0 on the first entry when it names the account that was
-    /// global before the first switch recorded.
+    /// When. 0 on the first entry, which names the account global before
+    /// the oldest change kept.
     pub at_ms: u64,
 }
 
@@ -685,9 +685,10 @@ pub struct ClaudeSnapshot {
     /// The latest change of the global account.
     #[serde(default)]
     pub last_switch: Option<AccountSwitch>,
-    /// The last 50 changes of the global account, oldest first: which
-    /// account was global when (`tmux::usage::claude_outside` dates the
-    /// spend of sessions tmux never ran with it).
+    /// Which account was global when, oldest first: the account global
+    /// before the oldest change kept (at 0), then the last 49 changes
+    /// (`tmux::usage::claude_outside` dates the spend of sessions tmux
+    /// never ran with it).
     #[serde(default)]
     pub global_history: Vec<GlobalChange>,
     /// A switch of the global account that waits for windows on the new
