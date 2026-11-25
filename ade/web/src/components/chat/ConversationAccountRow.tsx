@@ -82,8 +82,13 @@ export function ConversationAccountRow({
       }),
     },
   ]
-  // Following the global while the project pins another account.
-  if (project && projectAccount?.mode === 'pinned') {
+  // Following the global while the project pins another account; and a
+  // conversation that already names `"global"` (another client wrote it,
+  // or its project's pin went), whatever its project does.
+  if (
+    (project && projectAccount?.mode === 'pinned') ||
+    value === FOLLOW_GLOBAL_ID
+  ) {
     items.push({
       value: FOLLOW_GLOBAL_ID,
       label: globalChoiceLabel(globalName),

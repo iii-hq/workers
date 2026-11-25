@@ -965,9 +965,17 @@ export function projectAccountCell(
   return `Follow global (${globalName ?? 'the global account'})`
 }
 
-/** "4 · 1 working", "6". */
-export function sessionsCell(total: number, working: number): string {
-  return working > 0 ? `${total} · ${working} working` : String(total)
+/**
+ * "4 · 1 working", "6"; "6+" when the session list stopped at its page
+ * (older sessions aren't counted).
+ */
+export function sessionsCell(
+  total: number,
+  working: number,
+  more = false,
+): string {
+  const count = more ? `${total}+` : String(total)
+  return working > 0 ? `${count} · ${working} working` : count
 }
 
 /**

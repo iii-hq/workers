@@ -291,6 +291,27 @@ describe('the Claude Code account row (§4.3.5)', () => {
     )
   })
 
+  // Another client wrote "global" in a project that follows the global (or
+  // in no project): the select reads it as the global choice, not "global".
+  it.each([
+    ['a project that follows the global', 'prj_web'],
+    ['no project', undefined],
+  ])('labels "global" as the global choice in %s', (_, projectId) => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: {
+        ...claudeCode,
+        projectId,
+        sessionMetadata: { claude_account: 'global' },
+      },
+    })
+    // The trigger's text, then its chevron.
+    expect(row()?.querySelector('button')?.textContent).toMatch(
+      /^Global \(Work\)\W*$/,
+    )
+    expect(resolution()?.textContent).toBe('Runs on Work, the global account.')
+  })
+
   it('is absent for other providers and short of the whole feature (§4.3.6)', () => {
     seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
     render({ conversation: { ...conversation, model: 'openai::gpt-5.4' } })
