@@ -1,5 +1,5 @@
 import { Plus, RefreshCw } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { ProjectDialog } from '@/components/projects/ProjectDialog'
 import { ProjectDot } from '@/components/projects/ProjectDot'
 import { Button } from '@/components/shadcn/button'
@@ -71,6 +71,10 @@ import {
 } from '@/lib/claude-accounts-words'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { addWorkersWithProgress } from '@/lib/onboarding/api'
+import {
+  sessionListHasMore,
+  subscribeSessionListHasMore,
+} from '@/lib/sessions/api'
 import type { Conversation } from '@/types/chat'
 import { AccountDot } from './AccountCard'
 import {
@@ -176,6 +180,8 @@ function projectRows(
   data: ClaudeAccounts,
   projects: readonly ChatProject[],
   conversations: readonly Conversation[],
+  /** The session list stopped at its page: every count is "N+". */
+  more: boolean,
 ): ProjectRow[] {
   const claude = data.claude
   const global = claude?.global ?? null
@@ -183,7 +189,11 @@ function projectRows(
   const globalColor = data.account(global)?.color ?? null
   const roots = conversations.filter((c) => !c.draft && !c.parentId)
   const sessions = (list: Conversation[]) =>
-    sessionsCell(list.length, list.filter((c) => c.status === 'working').length)
+    sessionsCell(
+      list.length,
+      list.filter((c) => c.status === 'working').length,
+      more,
+    )
   const rows: ProjectRow[] = projects.map((project) => {
     const choice = parseProjectAccount(project.account)
     const pinned = choice.mode === 'pinned' ? choice.account_id : null
@@ -229,9 +239,16 @@ function ProjectsTab({
   const realBackend = getDefaultBackend().id === 'real'
   const chatProjects = useChatProjects(realBackend)
   const ctx = useConversationsCtxOptional()
+  // The counts come from one `session::list` page (the 200 most recent).
+  const more = useSyncExternalStore(
+    subscribeSessionListHasMore,
+    sessionListHasMore,
+    sessionListHasMore,
+  )
   const rows = useMemo(
-    () => projectRows(data, chatProjects.projects, ctx?.conversations ?? []),
-    [data, chatProjects.projects, ctx?.conversations],
+    () =>
+      projectRows(data, chatProjects.projects, ctx?.conversations ?? [], more),
+    [data, chatProjects.projects, ctx?.conversations, more],
   )
   return (
     <section className="flex flex-col gap-3" aria-label={PROJECTS_HEADING}>

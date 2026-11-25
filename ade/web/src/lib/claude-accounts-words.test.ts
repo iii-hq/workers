@@ -334,6 +334,9 @@ describe('the Projects tab', () => {
     ).toBe('Personal (pinned)')
     expect(sessionsCell(4, 1)).toBe('4 · 1 working')
     expect(sessionsCell(6, 0)).toBe('6')
+    // The session list stopped at its page.
+    expect(sessionsCell(6, 0, true)).toBe('6+')
+    expect(sessionsCell(4, 1, true)).toBe('4+ · 1 working')
     const tilde = (p: string) => p.replace('/home/me', '~')
     expect(
       foldersCell(
