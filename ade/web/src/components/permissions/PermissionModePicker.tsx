@@ -43,21 +43,22 @@ export function PermissionModePicker({
         disabled={disabled}
         aria-label="approval mode"
         className="min-w-[92px]"
+        popupClassName="min-w-64"
         options={[
           {
             value: 'manual',
             label: 'manual',
-            title: 'manual: asks before each function',
+            description: 'Asks before each function.',
           },
           {
             value: 'auto',
             label: 'auto',
-            title: 'auto: allowed functions run, the rest ask',
+            description: 'Allowed functions run, the rest ask.',
           },
           {
             value: 'full',
             label: 'full',
-            title: 'full: every function runs, no prompts',
+            description: 'Every function runs, no prompts.',
           },
         ]}
       />

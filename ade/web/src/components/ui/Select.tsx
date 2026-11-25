@@ -85,6 +85,11 @@ interface SelectProps<T extends string> {
    * `SelectPrimitive.Label` (or another labelling element).
    */
   renderGroupHeader?: (group: SelectGroup<T>) => React.ReactNode
+  /**
+   * Classes for the desktop popup. The popup is as wide as the trigger by
+   * default; a compact trigger whose options carry descriptions widens it.
+   */
+  popupClassName?: string
 }
 
 export type { SelectGroup, SelectOption }
@@ -131,6 +136,7 @@ export function Select<T extends string>({
   emptyLabel,
   onClear,
   renderGroupHeader,
+  popupClassName,
   ...aria
 }: SelectProps<T>) {
   const [open, setOpen] = useState(false)
@@ -399,7 +405,10 @@ export function Select<T extends string>({
           align="start"
           alignItemWithTrigger={false}
           collisionBoundary={panelBoundary ?? undefined}
-          className="max-h-[min(60vh,var(--available-height))] p-1 text-base sm:text-sm"
+          className={cn(
+            'max-h-[min(60vh,var(--available-height))] p-1 text-base sm:text-sm',
+            popupClassName,
+          )}
         >
           {allowEmpty ? (
             <SelectItem value={EMPTY_VALUE} label={emptyLabel ?? 'None'} />
