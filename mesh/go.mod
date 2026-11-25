@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	filippo.io/cpace v0.0.0-20210101143347-24d601e2e469
 	github.com/coder/websocket v1.8.14
-	github.com/iii-hq/iii/sdk/packages/go/iii v0.27.0-rc.3
+	github.com/iii-hq/iii/sdk/packages/go/iii v0.27.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.48.0
 	tailscale.com v1.102.4

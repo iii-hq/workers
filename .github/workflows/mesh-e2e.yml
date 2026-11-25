@@ -69,7 +69,7 @@ jobs:
           git diff --exit-code -- mesh/assets
       - name: Install current iii engine
         env:
-          III_RELEASE_TAG: 'iii/v0.27.0-rc.3'
+          III_RELEASE_TAG: 'iii/v0.27.0'
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 https://install.iii.dev/iii/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

@@ -118,8 +118,8 @@ github.com/hdevalence/ed25519consensus v0.2.0 h1:37ICyZqdyj0lAZ8P4D1d1id3HqbbG1N
 github.com/hdevalence/ed25519consensus v0.2.0/go.mod h1:w3BHWjwJbFU29IRHL1Iqkw3sus+7FctEyM4RqDxYNzo=
 github.com/huin/goupnp v1.3.0 h1:UvLUlWDNpoUdYzb2TCn+MuTWtcjXKSza2n6CBdQ0xXc=
 github.com/huin/goupnp v1.3.0/go.mod h1:gnGPsThkYa7bFi/KWmEysQRf48l2dvR5bxr2OFckNX8=
-github.com/iii-hq/iii/sdk/packages/go/iii v0.27.0-rc.3 h1:PyoZOmMnDiTOa/C3pwUGcSiHoV7GWq+ZZw6rz7b7SUs=
-github.com/iii-hq/iii/sdk/packages/go/iii v0.27.0-rc.3/go.mod h1:4QDdvcBJVEFuAcqiRsYwhPhoeAFWB31FAdjSVyqyCVA=
+github.com/iii-hq/iii/sdk/packages/go/iii v0.27.0 h1:tBBXBdWZWeu1WaCRz8C0yzbNkUplcBGUc4DS1hpLRP0=
+github.com/iii-hq/iii/sdk/packages/go/iii v0.27.0/go.mod h1:4QDdvcBJVEFuAcqiRsYwhPhoeAFWB31FAdjSVyqyCVA=
 github.com/illarion/gonotify/v3 v3.0.2 h1:O7S6vcopHexutmpObkeWsnzMJt/r1hONIEogeVNmJMk=
 github.com/illarion/gonotify/v3 v3.0.2/go.mod h1:HWGPdPe817GfvY3w7cx6zkbzNZfi3QjcBm/wgVvEL1U=
 github.com/insomniacslk/dhcp v0.0.0-20240129002554-15c9b8791914 h1:kD8PseueGeYiid/Mmcv17Q0Qqicc4F46jcX22L/e/Hs=

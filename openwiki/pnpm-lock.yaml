@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       iii-sdk:
-        specifier: 0.27.0-rc.3
-        version: 0.27.0-rc.3
+        specifier: 0.27.0
+        version: 0.27.0
     devDependencies:
       '@biomejs/biome':
         specifier: 2.4.10
@@ -234,8 +234,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@iii-dev/helpers@0.27.0-rc.3':
-    resolution: {integrity: sha512-uYaAv30GgnCSWnogDT3DO+k4mkobP6HS6IDV/zQfYAfU/GGIbjePReyEbf73Qq5UnOMONfxOz+72v+RdM/i7xQ==}
+  '@iii-dev/helpers@0.27.0':
+    resolution: {integrity: sha512-EF8vrk846zSF1PUG6En5a18Ml3C/T/AMMLMySGawz7O9Ro5pHkbXok0GQ4t8/UKiwljFENbvDr1q9q+MnRuWBQ==}
 
   '@opentelemetry/api-logs@0.222.0':
     resolution: {integrity: sha512-9mb1If+IF6u0ZVXkHQ6ogEae5HwA6ajIVUgpSDQyRASxft6BSXHvBvPooRle3yFN/fKnCdSOnuu0OC3PLcF6+g==}
@@ -355,8 +355,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  iii-sdk@0.27.0-rc.3:
-    resolution: {integrity: sha512-/e88jnzo6v5N9xU4D7bKVmMfiqT/AN27I3CjVGVO1RCS8IlpOu48dbzhQIhI6a6mbOIP7EJgrG2fczNT8TT5uQ==}
+  iii-sdk@0.27.0:
+    resolution: {integrity: sha512-yVTs3FAGypUIWh60ARmNZZgvKdbEuPxXugUw93USeUnZwHgiaoNR9V2KP5YjpsLQISkBWMMZQSE7ARsOIe366g==}
 
   import-in-the-middle@3.5.2:
     resolution: {integrity: sha512-WseIA/4o56+GYO3RmlOPvejYi771OFeJEeK/ejROsr9bdjW+E5NXTOD1Di8TL40Qgg3JJX9aa97Hf8iiSVIKZw==}
@@ -499,7 +499,7 @@ snapshots:
   '@esbuild/win32-x64@0.25.12':
     optional: true
 
-  '@iii-dev/helpers@0.27.0-rc.3':
+  '@iii-dev/helpers@0.27.0':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -657,9 +657,9 @@ snapshots:
       '@esbuild/win32-ia32': 0.25.12
       '@esbuild/win32-x64': 0.25.12
 
-  iii-sdk@0.27.0-rc.3:
+  iii-sdk@0.27.0:
     dependencies:
-      '@iii-dev/helpers': 0.27.0-rc.3
+      '@iii-dev/helpers': 0.27.0
       '@opentelemetry/api': 1.9.1
       ws: 8.21.1
     transitivePeerDependencies:

@@ -169,8 +169,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0
       iii-browser-sdk:
-        specifier: 0.27.0-rc.3
-        version: 0.27.0-rc.3
+        specifier: 0.27.0
+        version: 0.27.0
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -1548,8 +1548,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       iii-sdk:
-        specifier: 0.27.0-rc.3
-        version: 0.27.0-rc.3
+        specifier: 0.27.0
+        version: 0.27.0
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -2763,8 +2763,8 @@ packages:
   '@iconify/utils@3.1.4':
     resolution: {integrity: sha512-b1S7B1k9ohZ+iNTi2ATxbRYG9fTrJmUT0rc46bvVnNxqNRGW7dyo/vRREwyniI5IRN2RSJHDcm+s3BjWrSAjHw==}
 
-  '@iii-dev/helpers@0.27.0-rc.3':
-    resolution: {integrity: sha512-uYaAv30GgnCSWnogDT3DO+k4mkobP6HS6IDV/zQfYAfU/GGIbjePReyEbf73Qq5UnOMONfxOz+72v+RdM/i7xQ==}
+  '@iii-dev/helpers@0.27.0':
+    resolution: {integrity: sha512-EF8vrk846zSF1PUG6En5a18Ml3C/T/AMMLMySGawz7O9Ro5pHkbXok0GQ4t8/UKiwljFENbvDr1q9q+MnRuWBQ==}
 
   '@isaacs/nonrecursive-glob-match@1.1.0':
     resolution: {integrity: sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==}
@@ -5536,11 +5536,11 @@ packages:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
     engines: {node: '>= 4'}
 
-  iii-browser-sdk@0.27.0-rc.3:
-    resolution: {integrity: sha512-y0bXSYlLWqVlqJ0/2L7H4LnTWuVQbvFgGM+gCccYA28zMKEuPA9dS7nnoY2IL4MjVcEvcoBqMcoDrTeTrOye+g==}
+  iii-browser-sdk@0.27.0:
+    resolution: {integrity: sha512-mAyPafmtTOs/SYzxOcFwWHkLjcJu84ZFr9JN6jhCSjE0q6NP1TMGpxfnThy0sTbRLYNsgyNv0730boQpmh/MMw==}
 
-  iii-sdk@0.27.0-rc.3:
-    resolution: {integrity: sha512-/e88jnzo6v5N9xU4D7bKVmMfiqT/AN27I3CjVGVO1RCS8IlpOu48dbzhQIhI6a6mbOIP7EJgrG2fczNT8TT5uQ==}
+  iii-sdk@0.27.0:
+    resolution: {integrity: sha512-yVTs3FAGypUIWh60ARmNZZgvKdbEuPxXugUw93USeUnZwHgiaoNR9V2KP5YjpsLQISkBWMMZQSE7ARsOIe366g==}
 
   image-blob-reduce@3.0.1:
     resolution: {integrity: sha512-/VmmWgIryG/wcn4TVrV7cC4mlfUC/oyiKIfSg5eVM3Ten/c1c34RJhMYKCWTnoSMHSqXLt3tsrBR4Q2HInvN+Q==}
@@ -8073,7 +8073,7 @@ snapshots:
       '@iconify/types': 2.0.0
       import-meta-resolve: 4.2.0
 
-  '@iii-dev/helpers@0.27.0-rc.3':
+  '@iii-dev/helpers@0.27.0':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -10779,11 +10779,11 @@ snapshots:
 
   ignore@5.3.2: {}
 
-  iii-browser-sdk@0.27.0-rc.3: {}
+  iii-browser-sdk@0.27.0: {}
 
-  iii-sdk@0.27.0-rc.3:
+  iii-sdk@0.27.0:
     dependencies:
-      '@iii-dev/helpers': 0.27.0-rc.3
+      '@iii-dev/helpers': 0.27.0
       '@opentelemetry/api': 1.9.1
       ws: 8.21.1
     transitivePeerDependencies:
