@@ -127,6 +127,20 @@ counts matching root sessions.
 e.g. which memory bank fed a generate), so consumers can render
 provenance without a second lookup.
 
+`session::search` finds chats by what was said in them: every query word
+must land in the session's title or the text of its user/assistant messages
+(function calls, their results and thinking are not indexed), as a whole
+word, a word's start, or a typo away (one edit from four letters, two from
+eight, first letter fixed). Hits rank title matches first, then a message
+holding the words as a phrase, then a message holding them all, then looser
+matches, newest first within each; each carries the title's matched ranges
+and, for a message match, a snippet of the best message with its matched
+words marked (UTF-16 ranges). `kinds` defaults to `["user"]`; `roots: true`
+leaves sub-agents out. A query is at most 256 characters and 16 words;
+longer is `session/invalid_request`. The per-session text is cached and
+rebuilt when the session's `updated_at` or `message_count` moves or this
+instance writes to its transcript.
+
 Sessions can be mentioned in a chat as `@session(id="<session_id>")`
 (see [`crates/mention-contract`](../crates/mention-contract/README.md)).
 Two internal functions provide it: `session::mention::search` ranks

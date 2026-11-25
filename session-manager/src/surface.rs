@@ -26,7 +26,7 @@ use crate::events::{
 use crate::functions::{
     append, append_many, attachment_mention, create, delete, delete_attachment, ensure, fork, get,
     get_attachment, get_message, list, list_attachments, mention, messages, messages_range,
-    messages_tail, patch_meta, put_attachment, read_attachment, set_active_leaf, set_draft,
+    messages_tail, patch_meta, put_attachment, read_attachment, search, set_active_leaf, set_draft,
     set_meta, set_status, store_protocol, update_message,
 };
 use crate::types::{SessionEntry, SessionMeta};
@@ -146,6 +146,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             read_attachment::ReadAttachmentRequest,
             Option<read_attachment::ReadAttachmentResponse>,
         >(read_attachment::FUNCTION_ID),
+        spec::<search::SearchRequest, search::SearchResponse>(search::FUNCTION_ID),
         spec::<MentionSearchRequest, MentionSearchResponse>(mention::SEARCH_FN),
         spec::<MentionGetRequest, Option<MentionView>>(mention::GET_FN),
         spec::<MentionSearchRequest, MentionSearchResponse>(attachment_mention::SEARCH_FN),

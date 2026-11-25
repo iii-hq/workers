@@ -1,0 +1,215 @@
+{
+  "function_id": "session::search",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionKind": {
+        "description": "Who a session is for. `user` (the default) is a human-facing chat — what the console lists by default; `automation` is a machine-driven run; `e2e` is a session created by an end-to-end suite (harness-e2e). Consumers filter on it (`session::list` `kinds`); the store never changes behaviour on it.",
+        "enum": [
+          "user",
+          "automation",
+          "e2e"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "kinds": {
+        "description": "Session kinds to search. Default `[\"user\"]`.",
+        "items": {
+          "$ref": "#/definitions/SessionKind"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Default 20, at most 100.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "query": {
+        "description": "Words to look for, in any order; each may be a word's start or carry a typo. An empty query returns no hits. At most 256 characters and 16 words; longer is `session/invalid_request`.",
+        "type": "string"
+      },
+      "roots": {
+        "description": "When true, leave out sub-agent sessions (metadata `spawned_by`).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "SearchRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "MatchedIn": {
+        "description": "Where a hit's words were found.",
+        "oneOf": [
+          {
+            "description": "Every word is in the title.",
+            "enum": [
+              "title"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Some or all words are in the messages.",
+            "enum": [
+              "content"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "SearchHit": {
+        "properties": {
+          "kind": {
+            "$ref": "#/definitions/SessionKind"
+          },
+          "matched_in": {
+            "$ref": "#/definitions/MatchedIn"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Snippet"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The best-matching message, when the messages answered."
+          },
+          "status": {
+            "$ref": "#/definitions/SessionStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "title_ranges": {
+            "description": "The matched words in `title`, UTF-16 code units `[start, end)`.",
+            "items": {
+              "items": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "matched_in",
+          "session_id",
+          "status",
+          "title",
+          "title_ranges",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionKind": {
+        "description": "Who a session is for. `user` (the default) is a human-facing chat — what the console lists by default; `automation` is a machine-driven run; `e2e` is a session created by an end-to-end suite (harness-e2e). Consumers filter on it (`session::list` `kinds`); the store never changes behaviour on it.",
+        "enum": [
+          "user",
+          "automation",
+          "e2e"
+        ],
+        "type": "string"
+      },
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      },
+      "Snippet": {
+        "description": "A slice of the best-matching message.",
+        "properties": {
+          "entry_id": {
+            "description": "The message's entry id.",
+            "type": "string"
+          },
+          "ranges": {
+            "description": "The matched words in `text`, UTF-16 code units, sorted.",
+            "items": {
+              "items": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "role": {
+            "$ref": "#/definitions/SnippetRole"
+          },
+          "text": {
+            "description": "About 160 characters around the first match, whitespace collapsed, with `…` where it was cut.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id",
+          "ranges",
+          "role",
+          "text"
+        ],
+        "type": "object"
+      },
+      "SnippetRole": {
+        "description": "Which message role a snippet came from.",
+        "enum": [
+          "user",
+          "assistant"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "results": {
+        "description": "Best first: title hits, then a message holding the phrase, then a message holding every word, then looser hits; newest first within each.",
+        "items": {
+          "$ref": "#/definitions/SearchHit"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "results"
+    ],
+    "title": "SearchResponse",
+    "type": "object"
+  }
+}

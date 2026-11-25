@@ -48,16 +48,18 @@ use crate::functions::messages_range::{MessagesRangeRequest, MessagesRangeRespon
 use crate::functions::messages_tail::{MessagesTailRequest, MessagesTailResponse, TailItem};
 use crate::functions::patch_meta::{PatchMetaRequest, PatchMetaResponse};
 use crate::functions::put_attachment::{PutAttachmentRequest, PutAttachmentResponse};
+use crate::functions::search::{MatchedIn, SearchHit, SearchRequest, SearchResponse};
 use crate::functions::set_active_leaf::{SetActiveLeafRequest, SetActiveLeafResponse};
 use crate::functions::set_draft::{SetDraftRequest, SetDraftResponse};
 use crate::functions::set_meta::{SetMetaRequest, SetMetaResponse};
 use crate::functions::set_status::{SetStatusRequest, SetStatusResponse};
 use crate::functions::update_message::{UpdateMessageRequest, UpdateMessageResponse};
 use crate::pagination::{self, BlockKind};
+use crate::search::{self as text_search, SearchDoc, Tier};
 use crate::store::SessionStore;
 use crate::types::{
-    AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry, SessionMeta,
-    SessionStatus, metadata_matches,
+    AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry, SessionKind,
+    SessionMeta, SessionStatus, metadata_matches,
 };
 
 /// Id generation, injected for deterministic tests.
@@ -103,6 +105,32 @@ impl Clock for SystemClock {
     }
 }
 
+/// A session's search text, keyed by what it was built from: the session's
+/// `(updated_at, message_count)` and this instance's write generation for it.
+type CachedSearchDoc = ((i64, u64), u64, Arc<SearchDoc>);
+
+/// Bumps a session's search generation when dropped, so every exit from a
+/// transcript write (success or error, after any partial write) leaves the
+/// cached search text stale. Held under the session lock, after the store
+/// write, so a search that read entries before the write never caches them
+/// under the new generation.
+struct SearchDocInvalidation<'a> {
+    generations: &'a Mutex<HashMap<String, u64>>,
+    session_id: String,
+}
+
+impl Drop for SearchDocInvalidation<'_> {
+    fn drop(&mut self) {
+        let mut generations = self
+            .generations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *generations
+            .entry(std::mem::take(&mut self.session_id))
+            .or_default() += 1;
+    }
+}
+
 type ServiceResult<T> = Result<(T, Vec<EmittableEvent>), SessionError>;
 
 /// Wrap a config value in a fresh, standalone [`ConfigCell`] (not shared with
@@ -123,6 +151,14 @@ pub struct SessionService {
     /// lifetime (tens of bytes per touched session) — never removed, so
     /// two waiters can never end up serialized on different locks.
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// `session::search`'s per-session text, keyed by session id and
+    /// stamped with the `(updated_at, message_count)` it was built from: a
+    /// search re-reads only the sessions that changed since the last one.
+    search_docs: Mutex<HashMap<String, CachedSearchDoc>>,
+    /// Per-session count of transcript writes on this instance. The stamp
+    /// alone misses an edit landing in the same millisecond as the build
+    /// (`update_message` keeps `message_count` and may keep `updated_at`).
+    search_generations: Mutex<HashMap<String, u64>>,
 }
 
 impl SessionService {
@@ -160,6 +196,8 @@ impl SessionService {
             clock,
             config,
             locks: Mutex::new(HashMap::new()),
+            search_docs: Mutex::new(HashMap::new()),
+            search_generations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -286,6 +324,122 @@ impl SessionService {
     /// candidate set `session::mention::search` ranks.
     pub async fn all_metas(&self) -> Result<Vec<SessionMeta>, SessionError> {
         Ok(self.store.list_metas().await?)
+    }
+
+    /// `session::search`: every session of the asked kinds whose title and
+    /// messages hold every query word (exact, prefix or one typo away),
+    /// best tier first and newest first within a tier.
+    pub async fn search(&self, req: SearchRequest) -> Result<SearchResponse, SessionError> {
+        let Some(query) =
+            text_search::Query::parse(&req.query).map_err(SessionError::InvalidRequest)?
+        else {
+            return Ok(SearchResponse {
+                results: Vec::new(),
+            });
+        };
+        let limit = req
+            .limit
+            .unwrap_or(crate::functions::search::DEFAULT_LIMIT)
+            .clamp(1, crate::functions::search::MAX_LIMIT);
+        let kinds = req.kinds.unwrap_or_else(|| vec![SessionKind::User]);
+        let roots = req.roots == Some(true);
+
+        let all = self.store.list_metas().await?;
+        let all_ids: HashSet<&str> = all.iter().map(|m| m.session_id.as_str()).collect();
+        let mut metas: Vec<&SessionMeta> = all.iter().filter(|m| kinds.contains(&m.kind)).collect();
+        if roots {
+            metas.retain(|m| {
+                m.metadata
+                    .as_ref()
+                    .is_none_or(|metadata| !metadata.contains_key("spawned_by"))
+            });
+        }
+
+        let mut hits: Vec<(Tier, SearchHit)> = Vec::new();
+        for meta in metas {
+            let doc = self.search_doc(meta).await?;
+            let Some(found) = text_search::match_doc(&query, &meta.title, &doc) else {
+                continue;
+            };
+            let matched_in = if found.snippet.is_some() {
+                MatchedIn::Content
+            } else {
+                MatchedIn::Title
+            };
+            hits.push((
+                found.tier,
+                SearchHit {
+                    session_id: meta.session_id.clone(),
+                    title: meta.title.clone(),
+                    status: meta.status,
+                    kind: meta.kind,
+                    updated_at: meta.updated_at,
+                    matched_in,
+                    title_ranges: found.title_ranges,
+                    snippet: found.snippet,
+                },
+            ));
+        }
+        // Forget sessions that are gone, so a deleted chat's text does not
+        // linger in memory.
+        self.search_docs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .retain(|id, _| all_ids.contains(id.as_str()));
+        hits.sort_by(|(a_tier, a), (b_tier, b)| {
+            a_tier
+                .cmp(b_tier)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| a.session_id.cmp(&b.session_id))
+        });
+        hits.truncate(limit);
+        Ok(SearchResponse {
+            results: hits.into_iter().map(|(_, hit)| hit).collect(),
+        })
+    }
+
+    /// The searchable text of one session, rebuilt only when the session
+    /// changed since it was last read.
+    async fn search_doc(&self, meta: &SessionMeta) -> Result<Arc<SearchDoc>, SessionError> {
+        let stamp = (meta.updated_at, meta.message_count);
+        // Read before the entries: a write that lands while they load bumps
+        // past this value, so the doc built from them is never reused.
+        let generation = self.search_generation(&meta.session_id);
+        if let Some((cached, cached_generation, doc)) = self
+            .search_docs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&meta.session_id)
+            && *cached == stamp
+            && *cached_generation == generation
+        {
+            return Ok(doc.clone());
+        }
+        let entries = self.store.list_entries(&meta.session_id).await?;
+        let doc = Arc::new(SearchDoc::from_entries(&entries));
+        self.search_docs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(meta.session_id.clone(), (stamp, generation, doc.clone()));
+        Ok(doc)
+    }
+
+    fn search_generation(&self, session_id: &str) -> u64 {
+        self.search_generations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Declare right after taking the session lock in every method that
+    /// writes transcript entries; see [`SearchDocInvalidation`].
+    fn invalidate_search_doc_on_exit(&self, session_id: &str) -> SearchDocInvalidation<'_> {
+        SearchDocInvalidation {
+            generations: &self.search_generations,
+            session_id: session_id.to_string(),
+        }
     }
 
     pub async fn list(&self, req: ListRequest) -> ServiceResult<ListResponse> {
@@ -559,6 +713,7 @@ impl SessionService {
 
     pub async fn delete(&self, req: DeleteRequest) -> ServiceResult<DeleteResponse> {
         let _guard = self.lock_session(&req.session_id).await;
+        let _search = self.invalidate_search_doc_on_exit(&req.session_id);
 
         let Some(meta) = self.store.get_meta(&req.session_id).await? else {
             return Ok((DeleteResponse { deleted: false }, vec![]));
@@ -595,6 +750,7 @@ impl SessionService {
         wants_event: bool,
     ) -> ServiceResult<AppendResponse> {
         let _guard = self.lock_session(&req.session_id).await;
+        let _search = self.invalidate_search_doc_on_exit(&req.session_id);
         self.meta_or_not_found(&req.session_id).await?;
         let parent_explicit = req.parent_id.is_some();
 
@@ -710,6 +866,7 @@ impl SessionService {
         wants_event: bool,
     ) -> ServiceResult<AppendManyResponse> {
         let _guard = self.lock_session(&req.session_id).await;
+        let _search = self.invalidate_search_doc_on_exit(&req.session_id);
         let mut meta = self.meta_or_not_found(&req.session_id).await?;
 
         if req.messages.is_empty() {
@@ -811,6 +968,7 @@ impl SessionService {
         wants_event: bool,
     ) -> ServiceResult<UpdateMessageResponse> {
         let _guard = self.lock_session(&req.session_id).await;
+        let _search = self.invalidate_search_doc_on_exit(&req.session_id);
         let mut meta = self.meta_or_not_found(&req.session_id).await?;
 
         let entry = self
@@ -1869,6 +2027,117 @@ mod tests {
             decode_cursor::<SessionsCursor>(&not_json),
             Err(SessionError::InvalidCursor(_))
         ));
+    }
+
+    /// A clock frozen at one millisecond: every write shares a timestamp.
+    struct FrozenClock;
+    impl Clock for FrozenClock {
+        fn now_ms(&self) -> i64 {
+            1_000
+        }
+    }
+
+    fn user_text(text: &str) -> AgentMessage {
+        AgentMessage::User {
+            content: vec![ContentBlock::Text { text: text.into() }],
+            timestamp: 1_000,
+        }
+    }
+
+    async fn search_ids(service: &SessionService, query: &str) -> Vec<String> {
+        service
+            .search(SearchRequest {
+                query: query.into(),
+                limit: None,
+                kinds: None,
+                roots: None,
+            })
+            .await
+            .expect("search")
+            .results
+            .into_iter()
+            .map(|hit| hit.session_id)
+            .collect()
+    }
+
+    /// An edit in the same millisecond keeps `updated_at` and
+    /// `message_count`, so the stamp alone would serve the text from before
+    /// it; the write generation is what makes the next search re-read.
+    #[tokio::test]
+    async fn search_sees_an_edit_made_in_the_same_millisecond() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(crate::store::FsStore::new(dir.path()).expect("store"));
+        let service = SessionService::with_parts(
+            store,
+            Arc::new(UuidIds),
+            Arc::new(FrozenClock),
+            &WorkerConfig::default(),
+        );
+        let (created, _) = service
+            .create(CreateRequest {
+                title: Some("notes".into()),
+                description: None,
+                kind: None,
+                metadata: None,
+            })
+            .await
+            .expect("create");
+        let id = created.session_id;
+        let (appended, _) = service
+            .append(
+                AppendRequest {
+                    session_id: id.clone(),
+                    message: Some(user_text("the walrus plan")),
+                    custom: None,
+                    parent_id: None,
+                    entry_id: None,
+                    origin: None,
+                },
+                false,
+            )
+            .await
+            .expect("append");
+        assert_eq!(
+            search_ids(&service, "walrus").await,
+            std::slice::from_ref(&id)
+        );
+
+        service
+            .update_message(
+                UpdateMessageRequest {
+                    session_id: id.clone(),
+                    entry_id: appended.entry_id,
+                    content: vec![ContentBlock::Text {
+                        text: "the narwhal plan".into(),
+                    }],
+                    details: None,
+                    usage: None,
+                    expected_revision: None,
+                    origin: None,
+                },
+                false,
+            )
+            .await
+            .expect("update");
+        assert_eq!(search_ids(&service, "narwhal").await, [id]);
+        assert!(search_ids(&service, "walrus").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_refuses_an_oversized_query() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(crate::store::FsStore::new(dir.path()).expect("store"));
+        let service = SessionService::new(store, &WorkerConfig::default());
+        let err = service
+            .search(SearchRequest {
+                query: "word ".repeat(40),
+                limit: None,
+                kinds: None,
+                roots: None,
+            })
+            .await
+            .expect_err("17+ words are refused");
+        assert!(matches!(err, SessionError::InvalidRequest(_)), "{err}");
     }
 
     #[test]
