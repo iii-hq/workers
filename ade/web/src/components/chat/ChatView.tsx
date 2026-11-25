@@ -16,7 +16,6 @@ import {
 } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
-import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { ProjectDot } from '@/components/projects/ProjectDot'
 import { requestProjectDialog } from '@/components/projects/project-dialog-request'
 import { Button } from '@/components/ui/Button'
@@ -3739,11 +3738,6 @@ export function ChatView({
           }
           projects={chatProjects.available ? chatProjects.projects : undefined}
           agentSwitch={chatCaps.setDescription && chatSettings.agentWrites}
-        />
-      ) : null}
-      {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (
-        <FullPermissionsBanner
-          onDisable={() => void approvalSettings.setMode('manual')}
         />
       ) : null}
       <div
