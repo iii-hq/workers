@@ -114,24 +114,35 @@ pub fn apply_exif_orientation(img: DynamicImage, orientation: u16) -> DynamicIma
     }
 }
 
-pub fn resize_scale_to_fit(img: &DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
+pub fn resize_scale_to_fit(img: DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
+    if img.width() <= max_w && img.height() <= max_h {
+        return img;
+    }
     img.resize(max_w, max_h, FilterType::Lanczos3)
 }
 
-pub fn resize_crop_to_fit(img: &DynamicImage, target_w: u32, target_h: u32) -> DynamicImage {
-    let (orig_w, orig_h) = (img.width(), img.height());
-    let scale = f64::max(
-        target_w as f64 / orig_w as f64,
-        target_h as f64 / orig_h as f64,
-    );
-    let scaled_w = (orig_w as f64 * scale).ceil() as u32;
-    let scaled_h = (orig_h as f64 * scale).ceil() as u32;
-
-    let scaled = img.resize_exact(scaled_w, scaled_h, FilterType::Lanczos3);
-
-    let x = (scaled_w.saturating_sub(target_w)) / 2;
-    let y = (scaled_h.saturating_sub(target_h)) / 2;
-    scaled.crop_imm(x, y, target_w, target_h)
+pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicImage {
+    let (box_w, box_h) = (box_w.max(1), box_h.max(1));
+    let (sw, sh) = (u64::from(img.width()), u64::from(img.height()));
+    let (bw, bh) = (u64::from(box_w), u64::from(box_h));
+    // The largest centred rectangle with the box's aspect ratio, in source
+    // pixels: cropping first keeps the resize no larger than the source.
+    let (cw, ch) = if sw * bh > sh * bw {
+        ((sh * bw / bh).max(1), sh)
+    } else {
+        (sw, (sw * bh / bw).max(1))
+    };
+    let (cw, ch) = (cw as u32, ch as u32); // cw <= sw and ch <= sh
+    let cropped = if (cw, ch) == (img.width(), img.height()) {
+        img
+    } else {
+        img.crop_imm((img.width() - cw) / 2, (img.height() - ch) / 2, cw, ch)
+    };
+    if cw > box_w || ch > box_h {
+        cropped.resize_exact(cw.min(box_w), ch.min(box_h), FilterType::Lanczos3)
+    } else {
+        cropped
+    }
 }
 
 pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>> {
@@ -141,10 +152,10 @@ pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>>
 
     let thumbnail = match params.strategy {
         ResizeStrategy::ScaleToFit => {
-            resize_scale_to_fit(&img, params.target_width, params.target_height)
+            resize_scale_to_fit(img, params.target_width, params.target_height)
         }
         ResizeStrategy::CropToFit => {
-            resize_crop_to_fit(&img, params.target_width, params.target_height)
+            resize_crop_to_fit(img, params.target_width, params.target_height)
         }
     };
 
@@ -260,7 +271,7 @@ mod tests {
     #[test]
     fn test_scale_to_fit_landscape() {
         let img = make_rgb_image(1000, 500, 255, 0, 0);
-        let result = resize_scale_to_fit(&img, 200, 200);
+        let result = resize_scale_to_fit(img, 200, 200);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 100);
     }
@@ -268,7 +279,7 @@ mod tests {
     #[test]
     fn test_scale_to_fit_portrait() {
         let img = make_rgb_image(500, 1000, 0, 255, 0);
-        let result = resize_scale_to_fit(&img, 200, 200);
+        let result = resize_scale_to_fit(img, 200, 200);
         assert_eq!(result.width(), 100);
         assert_eq!(result.height(), 200);
     }
@@ -276,7 +287,7 @@ mod tests {
     #[test]
     fn test_scale_to_fit_square() {
         let img = make_rgb_image(1000, 1000, 0, 0, 255);
-        let result = resize_scale_to_fit(&img, 200, 200);
+        let result = resize_scale_to_fit(img, 200, 200);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 200);
     }
@@ -284,7 +295,7 @@ mod tests {
     #[test]
     fn test_crop_to_fit_landscape() {
         let img = make_rgb_image(1000, 500, 255, 0, 0);
-        let result = resize_crop_to_fit(&img, 200, 200);
+        let result = resize_crop_to_fit(img, 200, 200);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 200);
     }
@@ -292,9 +303,81 @@ mod tests {
     #[test]
     fn test_crop_to_fit_portrait() {
         let img = make_rgb_image(500, 1000, 0, 255, 0);
-        let result = resize_crop_to_fit(&img, 200, 200);
+        let result = resize_crop_to_fit(img, 200, 200);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 200);
+    }
+
+    fn run(
+        input: &[u8],
+        input_format: ImageFormat,
+        output_format: ImageFormat,
+        strategy: ResizeStrategy,
+        w: u32,
+        h: u32,
+        quality: u8,
+    ) -> DynamicImage {
+        let params = ProcessingParams {
+            target_width: w,
+            target_height: h,
+            strategy,
+            quality,
+            input_format,
+            output_format,
+        };
+        let output = process_image(input, &params).unwrap();
+        image::load_from_memory_with_format(&output, output_format).unwrap()
+    }
+
+    #[test]
+    fn scale_to_fit_never_enlarges() {
+        for img in [
+            make_rgb_image(100, 80, 10, 20, 30),
+            make_rgb_image(1, 1, 10, 20, 30),
+        ] {
+            assert_eq!(resize_scale_to_fit(img.clone(), 200, 200), img);
+        }
+    }
+
+    #[test]
+    fn crop_to_fit_small_source_crops_without_enlarging() {
+        for side in [200, 96] {
+            let result = resize_crop_to_fit(make_rgb_image(100, 80, 10, 20, 30), side, side);
+            assert_eq!((result.width(), result.height()), (80, 80), "box {side}");
+        }
+    }
+
+    #[test]
+    fn crop_to_fit_keeps_the_centre() {
+        let columns = RgbImage::from_fn(300, 100, |x, _| match x / 100 {
+            0 => image::Rgb([255, 0, 0]),
+            1 => image::Rgb([0, 255, 0]),
+            _ => image::Rgb([0, 0, 255]),
+        });
+        let png = encode_image(&DynamicImage::ImageRgb8(columns), ImageFormat::Png);
+        let out = run(
+            &png,
+            ImageFormat::Png,
+            ImageFormat::Png,
+            ResizeStrategy::CropToFit,
+            100,
+            100,
+            100,
+        );
+        assert_eq!((out.width(), out.height()), (100, 100));
+        assert!(out.to_rgb8().pixels().all(|p| p.0 == [0, 255, 0]));
+    }
+
+    #[test]
+    fn crop_to_fit_extreme_aspect_is_cheap() {
+        let result = resize_crop_to_fit(make_rgb_image(20_000, 2, 10, 20, 30), 200, 200);
+        assert_eq!((result.width(), result.height()), (2, 2));
+    }
+
+    #[test]
+    fn crop_to_fit_never_exceeds_the_box() {
+        let result = resize_crop_to_fit(make_rgb_image(5000, 1009, 10, 20, 30), 100, 1000);
+        assert_eq!((result.width(), result.height()), (100, 1000));
     }
 
     #[test]

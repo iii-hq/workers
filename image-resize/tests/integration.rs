@@ -16,66 +16,70 @@ fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
 }
 
-#[test]
-fn jpeg_fixture_scales_within_box() {
-    let bytes = fixture("sample.jpg");
+fn process(
+    name: &str,
+    input_format: ImageFormat,
+    output_format: ImageFormat,
+    strategy: ResizeStrategy,
+    side: u32,
+) -> (u32, u32) {
     let params = ProcessingParams {
-        target_width: 128,
-        target_height: 128,
-        strategy: ResizeStrategy::ScaleToFit,
+        target_width: side,
+        target_height: side,
+        strategy,
         quality: 80,
-        input_format: ImageFormat::Jpeg,
-        output_format: ImageFormat::Jpeg,
+        input_format,
+        output_format,
     };
-
-    let out = process_image(&bytes, &params).expect("process jpeg");
-    let decoded =
-        image::load_from_memory_with_format(&out, ImageFormat::Jpeg).expect("decode jpeg output");
-
-    assert!(decoded.width() <= 128, "width {} > 128", decoded.width());
-    assert!(decoded.height() <= 128, "height {} > 128", decoded.height());
-    assert!(
-        decoded.width() == 128 || decoded.height() == 128,
-        "scale-to-fit should hit a bound"
-    );
+    let out = process_image(&fixture(name), &params).expect("process fixture");
+    let decoded = image::load_from_memory_with_format(&out, output_format).expect("decode output");
+    (decoded.width(), decoded.height())
 }
 
 #[test]
-fn png_fixture_crops_to_exact_size() {
-    let bytes = fixture("sample.png");
-    let params = ProcessingParams {
-        target_width: 96,
-        target_height: 96,
-        strategy: ResizeStrategy::CropToFit,
-        quality: 100,
-        input_format: ImageFormat::Png,
-        output_format: ImageFormat::Png,
-    };
+fn small_source_is_not_enlarged() {
+    let dims = process(
+        "sample.jpg",
+        ImageFormat::Jpeg,
+        ImageFormat::Jpeg,
+        ResizeStrategy::ScaleToFit,
+        128,
+    );
+    assert_eq!(dims, (100, 80));
+}
 
-    let out = process_image(&bytes, &params).expect("process png");
-    let decoded =
-        image::load_from_memory_with_format(&out, ImageFormat::Png).expect("decode png output");
+#[test]
+fn jpeg_fixture_scales_down_to_the_box() {
+    let dims = process(
+        "sample.jpg",
+        ImageFormat::Jpeg,
+        ImageFormat::Jpeg,
+        ResizeStrategy::ScaleToFit,
+        50,
+    );
+    assert_eq!(dims, (50, 40));
+}
 
-    assert_eq!(decoded.width(), 96);
-    assert_eq!(decoded.height(), 96);
+#[test]
+fn png_fixture_crops_without_enlarging() {
+    let dims = process(
+        "sample.png",
+        ImageFormat::Png,
+        ImageFormat::Png,
+        ResizeStrategy::CropToFit,
+        96,
+    );
+    assert_eq!(dims, (80, 80));
 }
 
 #[test]
 fn webp_to_jpeg_format_conversion() {
-    let bytes = fixture("sample.webp");
-    let params = ProcessingParams {
-        target_width: 64,
-        target_height: 64,
-        strategy: ResizeStrategy::ScaleToFit,
-        quality: 75,
-        input_format: ImageFormat::WebP,
-        output_format: ImageFormat::Jpeg,
-    };
-
-    let out = process_image(&bytes, &params).expect("process webp -> jpeg");
-    let decoded =
-        image::load_from_memory_with_format(&out, ImageFormat::Jpeg).expect("decode jpeg output");
-
-    assert!(decoded.width() <= 64);
-    assert!(decoded.height() <= 64);
+    let dims = process(
+        "sample.webp",
+        ImageFormat::WebP,
+        ImageFormat::Jpeg,
+        ResizeStrategy::ScaleToFit,
+        64,
+    );
+    assert_eq!(dims, (64, 51));
 }
