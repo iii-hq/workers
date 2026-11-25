@@ -1,7 +1,7 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use image::codecs::jpeg::JpegEncoder;
 use image::metadata::Orientation;
-use image::{DynamicImage, ImageFormat, imageops::FilterType};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
@@ -92,6 +92,25 @@ fn exif_orientation(bytes: &[u8]) -> Orientation {
         .unwrap_or(Orientation::NoTransforms)
 }
 
+/// Largest image decoded, in pixels. The resize keeps an f32 buffer of up to
+/// 16 bytes per source pixel, so this bounds memory per image.
+pub const MAX_PIXELS: u64 = 50_000_000;
+
+fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage> {
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut limits = Limits::default();
+    // into_decoder does not charge the pixel buffer (checked below); this
+    // bounds what a PNG's ancillary chunks may inflate to.
+    limits.max_alloc = Some(64 << 20);
+    reader.limits(limits);
+    let decoder = reader.into_decoder()?;
+    let (w, h) = decoder.dimensions();
+    if u64::from(w) * u64::from(h) > MAX_PIXELS {
+        bail!("image is {w}x{h}; the limit is {MAX_PIXELS} pixels");
+    }
+    Ok(DynamicImage::from_decoder(decoder)?)
+}
+
 pub fn resize_scale_to_fit(img: DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
     if img.width() <= max_w && img.height() <= max_h {
         return img;
@@ -124,7 +143,7 @@ pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicI
 }
 
 pub fn process_image(bytes: &[u8], params: &ProcessingParams) -> Result<Vec<u8>> {
-    let mut img = image::load_from_memory_with_format(bytes, params.input_format)?;
+    let mut img = decode(bytes, params.input_format)?;
     img.apply_orientation(exif_orientation(bytes));
 
     let thumbnail = match params.strategy {
@@ -358,30 +377,34 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_jpeg() {
-        let img = make_rgb_image(100, 80, 255, 0, 0);
-        let bytes = encode_image(&img, ImageFormat::Jpeg);
-        let decoded = image::load_from_memory_with_format(&bytes, ImageFormat::Jpeg).unwrap();
-        assert_eq!(decoded.width(), 100);
-        assert_eq!(decoded.height(), 80);
+    fn decode_rejects_oversized_header() {
+        let mut jpeg = encode_image(&make_rgb_image(16, 16, 1, 2, 3), ImageFormat::Jpeg);
+        let p = jpeg.windows(2).position(|m| m == [0xFF, 0xC0]).unwrap();
+        // SOF0: length (2), precision (1), then height and width, big-endian.
+        jpeg[p + 5..p + 9].copy_from_slice(&[0x32, 0xC8, 0x32, 0xC8]);
+        // Not expect_err: it would Debug-print a 13000x13000 image.
+        let Err(err) = decode(&jpeg, ImageFormat::Jpeg) else {
+            panic!("a 13000x13000 header must be rejected");
+        };
+        assert!(err.to_string().contains("pixels"), "{err}");
     }
 
     #[test]
-    fn test_decode_png() {
-        let img = make_rgba_image(100, 80, 0, 0, 255, 128);
-        let bytes = encode_image(&img, ImageFormat::Png);
-        let decoded = image::load_from_memory_with_format(&bytes, ImageFormat::Png).unwrap();
-        assert_eq!(decoded.width(), 100);
-        assert_eq!(decoded.height(), 80);
-    }
-
-    #[test]
-    fn test_decode_webp() {
-        let img = make_rgba_image(100, 80, 0, 255, 0, 255);
-        let bytes = encode_image(&img, ImageFormat::WebP);
-        let decoded = image::load_from_memory_with_format(&bytes, ImageFormat::WebP).unwrap();
-        assert_eq!(decoded.width(), 100);
-        assert_eq!(decoded.height(), 80);
+    fn decode_allows_pixel_buffers_above_the_decoder_alloc_budget() {
+        let (w, h) = (4200, 4000);
+        assert!(w * h * 4 > 64 << 20);
+        assert!(u64::from(w * h) <= MAX_PIXELS);
+        let mut png = Vec::new();
+        let enc = image::codecs::png::PngEncoder::new_with_quality(
+            &mut png,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::NoFilter,
+        );
+        DynamicImage::ImageRgba8(RgbaImage::new(w, h))
+            .write_with_encoder(enc)
+            .unwrap();
+        let img = decode(&png, ImageFormat::Png).unwrap();
+        assert_eq!((img.width(), img.height()), (w, h));
     }
 
     #[test]
