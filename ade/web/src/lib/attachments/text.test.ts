@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Attachment } from '@/types/chat'
+import { failureBlock } from './shared'
 import {
   expandTextAttachments,
   isTextAttachment,
@@ -80,5 +81,27 @@ describe('expandTextAttachments', () => {
 
     expect(result.read).toHaveLength(MAX_TEXT_FILES_PER_SEND)
     expect(result.failures).toHaveLength(3)
+  })
+
+  it('puts the stored id on the stub of every file it did not inline', async () => {
+    const many = Array.from(
+      { length: MAX_TEXT_FILES_PER_SEND + 1 },
+      (_, i) => ({
+        ...file(`note-${i}.md`, 'hello'),
+        attachmentId: `a_${i}`,
+      }),
+    )
+    many[0].size = MAX_TEXT_BYTES + 1
+    many[1].file = {
+      text: () => Promise.reject(new Error('gone')),
+    } as unknown as File
+    const { blocks, failures } = await expandTextAttachments(many)
+
+    const stubbed = [many[0], many[1], many[MAX_TEXT_FILES_PER_SEND]]
+    expect(blocks.filter((b) => b.includes(' error="'))).toEqual(
+      stubbed.map((a, i) =>
+        failureBlock(a.name, failures[i].reason, a.attachmentId),
+      ),
+    )
   })
 })

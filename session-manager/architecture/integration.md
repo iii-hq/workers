@@ -328,13 +328,16 @@ type AttachmentMeta = { attachment_id, session_id, name, mime, size, sha256, cre
 // (session_id optional). kind from the mime and the extension: pdf, then an
 // office document, then markup (svg/html/xml, read as text), then an image,
 // then text; anything else binary, and text that is not UTF-8 is binary.
-// text: the character window [offset, offset + max_chars) (max_chars default
-// 20000, at most 100000), next_offset null at the end. Every other kind:
-// how_to_read, the exact fp::pipe calls (from session::get-attachment, so the
-// bytes stay worker-side) that convert it with pdf::to-markdown /
-// document::to-markdown or save it into the working folder through
-// shell::exec, or the worker to install when the engine lacks one.
-// null when unknown.
+// text and document (the markdown document::to-markdown makes of it): the
+// character window [offset, offset + max_chars) (max_chars default 20000, at
+// most 100000), next_offset null at the end. A document's how_to_read names
+// the embedded images its text leaves out; without text it says so, or gives
+// the converter's reason (or compose::add for the document worker), with the
+// save call. Every other kind: how_to_read, the exact fp::pipe calls (from
+// session::get-attachment, so the bytes stay worker-side) that convert it with
+// pdf::to-markdown or save a copy through shell::exec in a temporary folder
+// outside the working folder and print its path, or the worker to install when
+// the engine lacks one. null when unknown.
 { attachment_id, session_id?, offset?, max_chars? }
   -> { attachment: AttachmentMeta, kind: "text" | "image" | "pdf" | "document" | "binary",
        text: string | null, offset: number, next_offset: number | null,

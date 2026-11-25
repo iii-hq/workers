@@ -95,8 +95,8 @@ the pattern for bulk code results: `coder::search` → `fp::get {path:"/content_
 `fp::map {path:"/path"}` → `fp::uniq` → `state::set`, one call, nothing through the chat.
 Caveat: a path-access rejection inside a pipe just fails
 the step — only a DIRECT call offers the access-grant prompt.
-Session READS (`session::get-attachment`, `session::messages-tail`, …) ride a pipe too — the way
-to move an attachment's bytes somewhere without them passing through you.
+Session READS (`session::get-attachment`, `session::read-attachment`, `session::messages-tail`, …)
+ride a pipe too — the way to move an attachment's bytes somewhere without them passing through you.
 Observer-control, session-write/approval, credential/config, LLM-routing, and
 turn-control steps are excluded — call those directly.
 
@@ -108,7 +108,9 @@ beside a function info. Every call runs (at once, or `concurrency` at a time) an
 place: `results: [{ id, function, status: "ok", result, chars } | { id, function, status:
 "error", code, message }]`, `ok` false when any failed. Defaults: 10 s per call, 16 KB per
 result (a bigger one comes back cut as text with `truncated: true` — use a pipe to move it),
-12 calls (more runs but warns: the whole response must still fit through the chat). Nothing is
+12 calls (more runs but warns: the whole response must still fit through the chat). In a batch
+give each `session::read-attachment` `max_chars: 4000` (its default window is larger than 16 KB)
+and read the rest of a long file with direct calls from its `next_offset`. Nothing is
 threaded between calls; a chain is a pipe. A batch is not a pipe step and a pipe is not a batch call; the same step exclusions apply."#;
 
 /// The `pre_generate` hook envelope slice we read; the generation context is nested
@@ -313,6 +315,7 @@ mod tests {
             "Producer responses are OBJECTS",
             "fp::get {path:\"/content_matches\"}",
             "a pipe is not a batch call",
+            "give each `session::read-attachment` `max_chars: 4000`",
         ] {
             assert!(GUIDANCE.contains(needle), "missing: {needle}");
         }

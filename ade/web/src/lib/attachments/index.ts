@@ -184,7 +184,7 @@ export async function expandAttachments(
   for (const attachment of of('unknown')) {
     const kind = attachment.type || extensionOf(attachment.name) || 'unknown'
     const reason = `${kind} is not a file the ADE can read into a message`
-    blocks.push(failureBlock(attachment.name, reason))
+    blocks.push(failureBlock(attachment.name, reason, attachment.attachmentId))
     failures.push({ name: attachment.name, reason })
   }
 

@@ -135,7 +135,9 @@ export async function expandPdfAttachments(
     if (attachment.size > MAX_PDF_BYTES) {
       const mb = Math.round(MAX_PDF_BYTES / (1024 * 1024))
       const reason = `larger than the ${mb} MB limit for reading a PDF in the composer`
-      blocks.push(failureBlock(attachment.name, reason))
+      blocks.push(
+        failureBlock(attachment.name, reason, attachment.attachmentId),
+      )
       failures.push({ name: attachment.name, reason })
       continue
     }
@@ -148,7 +150,9 @@ export async function expandPdfAttachments(
       })
     } catch (err) {
       const reason = describeFailure(err)
-      blocks.push(failureBlock(attachment.name, reason))
+      blocks.push(
+        failureBlock(attachment.name, reason, attachment.attachmentId),
+      )
       failures.push({ name: attachment.name, reason })
     }
   }

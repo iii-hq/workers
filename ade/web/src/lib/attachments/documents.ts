@@ -30,18 +30,23 @@ import {
   extensionOf,
   failureBlock,
   fileToBase64,
+  isWorkerMissing,
+  READ_ATTACHMENT_FUNCTION_ID,
   reportDropped,
 } from './shared'
 
 export const TO_MARKDOWN_FUNCTION_ID = 'document::to-markdown'
 
-/** Max documents converted per send; extras are reported, never dropped. */
-export const MAX_DOCUMENTS_PER_SEND = 4
+/**
+ * Characters of markdown inlined per send, over all documents; the ones past it
+ * are reported, never dropped.
+ */
+export const MAX_DOCUMENT_CHARS_PER_SEND = 80_000
 
 /**
  * Characters of markdown inlined per document. A long report would otherwise
  * consume the context the question needed. The block says when it stops short,
- * and the agent can call `document::to-markdown` itself for the rest.
+ * and how the agent reads the rest itself.
  */
 export const MAX_MARKDOWN_CHARS = 20_000
 
@@ -136,41 +141,64 @@ export async function expandDocumentAttachments(
   const read: AttachmentReadSummary[] = []
   const failures: AttachmentFailure[] = []
 
-  for (const attachment of documents.slice(0, MAX_DOCUMENTS_PER_SEND)) {
+  let charsLeft = MAX_DOCUMENT_CHARS_PER_SEND
+  for (const [i, attachment] of documents.entries()) {
     if (attachment.size > MAX_DOCUMENT_BYTES) {
       const mb = Math.round(MAX_DOCUMENT_BYTES / (1024 * 1024))
       const reason = `larger than the ${mb} MB limit for reading a document in the composer`
-      blocks.push(failureBlock(attachment.name, reason))
+      blocks.push(
+        failureBlock(attachment.name, reason, attachment.attachmentId),
+      )
       failures.push({ name: attachment.name, reason })
       continue
     }
+    if (charsLeft <= 0) {
+      const full = `this message already holds ${MAX_DOCUMENT_CHARS_PER_SEND.toLocaleString('en-US')} characters of documents`
+      reportDropped(
+        [attachment],
+        attachment.attachmentId
+          ? `${full}; the agent can read this one by its id`
+          : full,
+        { blocks, failures },
+      )
+      continue
+    }
     try {
-      const outcome = await expandOne(attachment, call)
+      const outcome = await expandOne(
+        attachment,
+        Math.min(MAX_MARKDOWN_CHARS, charsLeft),
+        call,
+      )
       blocks.push(outcome.block)
       read.push(outcome.summary)
+      charsLeft -= outcome.inlined
     } catch (err) {
-      const reason = describeWorkerFailure(err, 'document')
-      blocks.push(failureBlock(attachment.name, reason))
-      failures.push({ name: attachment.name, reason })
+      // A worker that is not running, or does not answer, fails every document
+      // the same way, and a call waits five minutes for its answer.
+      const down =
+        isWorkerMissing(err) || (err as { code?: unknown })?.code === 'TIMEOUT'
+      reportDropped(
+        down ? documents.slice(i) : [attachment],
+        describeWorkerFailure(err, 'document'),
+        { blocks, failures },
+      )
+      if (down) break
     }
   }
-
-  reportDropped(
-    documents.slice(MAX_DOCUMENTS_PER_SEND),
-    `only ${MAX_DOCUMENTS_PER_SEND} documents are read per message`,
-    { blocks, failures },
-  )
 
   return { blocks, read, failures }
 }
 
 interface ExpandOutcome {
   block: string
+  /** Characters of markdown the block carries. */
+  inlined: number
   summary: AttachmentReadSummary
 }
 
 async function expandOne(
   attachment: Attachment,
+  maxChars: number,
   call: CallFn,
 ): Promise<ExpandOutcome> {
   const bytes_base64 = await fileToBase64(attachment.file as File)
@@ -180,7 +208,7 @@ async function expandOne(
     // A CSV carries no signature of its own; without the name the worker
     // cannot recognise it and would refuse a file it reads perfectly well.
     file_name: attachment.name,
-    max_chars: MAX_MARKDOWN_CHARS,
+    max_chars: maxChars,
   })) as MarkdownWire
 
   const body = converted.body ?? {}
@@ -188,6 +216,7 @@ async function expandOne(
   const assets = converted.asset_count ?? 0
   const elapsedMs = converted.elapsed_ms ?? 0
   const chars = body.total_chars ?? text.length
+  const inlined = body.chars ?? text.length
 
   const attrs = [
     `path="${escapeAttr(attachment.name)}"`,
@@ -202,9 +231,10 @@ async function expandOne(
 
   const notes: string[] = []
   if (body.truncated) {
-    notes.push(
-      `This is the first ${body.chars ?? text.length} of ${chars} characters. Call ${TO_MARKDOWN_FUNCTION_ID} with max_chars 0 for the rest.`,
-    )
+    const rest = attachment.attachmentId
+      ? `Read the rest with ${READ_ATTACHMENT_FUNCTION_ID} ${JSON.stringify({ attachment_id: attachment.attachmentId, offset: inlined })}.`
+      : `Call ${TO_MARKDOWN_FUNCTION_ID} with max_chars 0 for the rest.`
+    notes.push(`This is the first ${inlined} of ${chars} characters. ${rest}`)
   }
   if (assets > 0) {
     notes.push(
@@ -225,6 +255,7 @@ async function expandOne(
   const preamble = notes.length > 0 ? `${notes.join(' ')}\n\n` : ''
   return {
     block: `${ATTACHED_FILE_PREFIX}${attrs.join(' ')}>\n${preamble}${text}\n</attached-file>`,
+    inlined,
     summary: {
       id: attachment.id,
       label: chipLabel(attachment.name, {

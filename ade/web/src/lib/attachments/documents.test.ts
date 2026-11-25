@@ -5,9 +5,10 @@ import {
   expandDocumentAttachments,
   isDocumentAttachment,
   MAX_DOCUMENT_BYTES,
-  MAX_DOCUMENTS_PER_SEND,
+  MAX_MARKDOWN_CHARS,
   TO_MARKDOWN_FUNCTION_ID,
 } from './documents'
+import { failureBlock } from './shared'
 
 function doc(name = 'report.docx', bytes = 'PK'): Attachment {
   return {
@@ -34,6 +35,29 @@ function converted(over: Record<string, unknown> = {}) {
     elapsed_ms: 4,
     ...over,
   }
+}
+
+/** `count` stored documents, with ids `a_0`, `a_1`, … */
+function storedDocs(count: number): Attachment[] {
+  return Array.from({ length: count }, (_, i) => ({
+    ...doc(`report-${i}.docx`),
+    attachmentId: `a_${i}`,
+  }))
+}
+
+/** A worker holding documents of `total` characters, cut at `max_chars`. */
+function workerOf(total: number) {
+  return vi.fn(async (_id: string, payload: Record<string, unknown>) => {
+    const chars = Math.min(total, payload.max_chars as number)
+    return converted({
+      body: {
+        text: 'x'.repeat(chars),
+        chars,
+        total_chars: total,
+        truncated: chars < total,
+      },
+    })
+  })
 }
 
 describe('isDocumentAttachment', () => {
@@ -167,6 +191,33 @@ describe('expandDocumentAttachments', () => {
     expect(result.read[0].label).toContain('90,000+ chars')
   })
 
+  it('names the call that reads the rest of a stored document', async () => {
+    const [stored] = storedDocs(1)
+    const result = await expandDocumentAttachments([stored], workerOf(90_000))
+
+    expect(result.blocks[0]).toContain(
+      'This is the first 20000 of 90000 characters. Read the rest with session::read-attachment {"attachment_id":"a_0","offset":20000}.\n\n',
+    )
+    expect(result.blocks[0]).not.toContain('max_chars 0')
+  })
+
+  /* Five emoji are ten UTF-16 units; the read counts them as five. */
+  it('counts the rest from the characters the worker counted', async () => {
+    const call = vi.fn().mockResolvedValue(
+      converted({
+        body: {
+          text: '\u{1F600}'.repeat(5),
+          chars: 5,
+          total_chars: 10,
+          truncated: true,
+        },
+      }),
+    )
+    const result = await expandDocumentAttachments(storedDocs(1), call)
+
+    expect(result.blocks[0]).toContain('{"attachment_id":"a_0","offset":5}')
+  })
+
   /* A failure has to reach the model as a block. Staying silent is the bug this
      path exists to prevent: the agent answers as though nothing was attached. */
   it('turns a worker failure into a block and a named failure', async () => {
@@ -189,17 +240,132 @@ describe('expandDocumentAttachments', () => {
     expect(result.failures[0].reason).toContain('limit')
   })
 
-  it('reports the documents past the per-send ceiling instead of dropping them', async () => {
-    const call = vi.fn().mockResolvedValue(converted())
-    const many = Array.from({ length: MAX_DOCUMENTS_PER_SEND + 2 }, (_, i) =>
-      doc(`report-${i}.docx`),
+  it('puts the stored id on the stub of a document it could not read', async () => {
+    const [huge, broken] = storedDocs(2)
+    const result = await expandDocumentAttachments(
+      [{ ...huge, size: MAX_DOCUMENT_BYTES + 1 }, broken],
+      vi.fn().mockRejectedValue(new Error('malformed document')),
     )
-    const result = await expandDocumentAttachments(many, call)
 
-    expect(call).toHaveBeenCalledTimes(MAX_DOCUMENTS_PER_SEND)
-    expect(result.blocks).toHaveLength(MAX_DOCUMENTS_PER_SEND + 2)
+    expect(result.blocks).toEqual([
+      failureBlock(huge.name, result.failures[0].reason, 'a_0'),
+      failureBlock(broken.name, 'malformed document', 'a_1'),
+    ])
+  })
+
+  it('inlines every document while the message has room', async () => {
+    const call = workerOf(4_500)
+    const result = await expandDocumentAttachments(storedDocs(14), call)
+
+    expect(call).toHaveBeenCalledTimes(14)
+    expect(result.read).toHaveLength(14)
+    expect(result.failures).toEqual([])
+  })
+
+  it('cuts at the character budget and stubs the rest instead of dropping them', async () => {
+    const call = workerOf(15_000)
+    const huge = { ...doc('huge.docx'), size: MAX_DOCUMENT_BYTES + 1 }
+    const result = await expandDocumentAttachments(
+      [...storedDocs(7), doc('never-stored.docx'), huge],
+      call,
+    )
+
+    // Five take 75,000 characters, the sixth what is left of the 80,000.
+    expect(call.mock.calls.map(([, payload]) => payload.max_chars)).toEqual([
+      ...Array(5).fill(MAX_MARKDOWN_CHARS),
+      5_000,
+    ])
+    expect(result.read).toHaveLength(6)
+    expect(result.blocks[5]).toContain('{"attachment_id":"a_5","offset":5000}')
+    expect(result.blocks.slice(6)).toEqual([
+      failureBlock(
+        'report-6.docx',
+        'this message already holds 80,000 characters of documents; the agent can read this one by its id',
+        'a_6',
+      ),
+      failureBlock(
+        'never-stored.docx',
+        'this message already holds 80,000 characters of documents',
+      ),
+      failureBlock(
+        'huge.docx',
+        'larger than the 64 MB limit for reading a document in the composer',
+      ),
+    ])
+    expect(result.failures).toHaveLength(3)
+  })
+
+  it('spends the budget on what it inlines, not on what a document holds', async () => {
+    const call = workerOf(90_000)
+    const result = await expandDocumentAttachments(storedDocs(5), call)
+
+    expect(call.mock.calls.map(([, payload]) => payload.max_chars)).toEqual(
+      Array(4).fill(MAX_MARKDOWN_CHARS),
+    )
+    expect(result.read).toHaveLength(4)
+    expect(result.failures).toHaveLength(1)
+    expect(result.blocks[4]).toContain('id="a_4" error=')
+  })
+
+  it('asks a worker that is not running once for the whole message', async () => {
+    const call = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "remote error (NOT_FOUND): Function 'document::to-markdown' is not registered.",
+        ),
+      )
+    const result = await expandDocumentAttachments(storedDocs(14), call)
+
+    expect(call).toHaveBeenCalledTimes(1)
+    const { reason } = result.failures[0]
+    expect(reason).toContain('iii call compose::add worker=document')
+    expect(result.failures).toHaveLength(14)
+    expect(result.blocks).toEqual(
+      storedDocs(14).map((d) => failureBlock(d.name, reason, d.attachmentId)),
+    )
+  })
+
+  it('keeps what it read before the worker went away', async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce(converted())
+      .mockRejectedValue(
+        new Error("Function 'document::to-markdown' is not registered."),
+      )
+    const result = await expandDocumentAttachments(storedDocs(3), call)
+
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(result.read).toHaveLength(1)
+    expect(result.blocks).toHaveLength(3)
+    expect(result.blocks[0]).toContain('# Quarterly Notes')
     expect(result.failures).toHaveLength(2)
-    expect(result.failures[0].reason).toContain('per message')
+  })
+
+  /* A call waits five minutes, and the message waits for every document. */
+  it('asks a worker that does not answer once for the whole message', async () => {
+    const reason = 'Invocation timeout after 300000ms: document::to-markdown'
+    const call = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error(reason), { code: 'TIMEOUT' }))
+    const result = await expandDocumentAttachments(storedDocs(14), call)
+
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(result.blocks).toEqual(
+      storedDocs(14).map((d) => failureBlock(d.name, reason, d.attachmentId)),
+    )
+  })
+
+  it('keeps converting after one document fails on its own', async () => {
+    const call = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('malformed document'))
+      .mockResolvedValue(converted())
+    const result = await expandDocumentAttachments(storedDocs(3), call)
+
+    expect(call).toHaveBeenCalledTimes(3)
+    expect(result.read).toHaveLength(2)
+    expect(result.failures).toHaveLength(1)
   })
 
   /* A conversation reloaded from history keeps the chip, not the bytes. */

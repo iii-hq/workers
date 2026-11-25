@@ -19,7 +19,7 @@
       },
       "offset": {
         "default": null,
-        "description": "First character of the text window (text files only). Default 0.",
+        "description": "First character of the text window (text files and office documents only). Default 0.",
         "format": "uint64",
         "minimum": 0.0,
         "type": [
@@ -78,14 +78,14 @@
             "type": "string"
           },
           {
-            "description": "An office document (Word, Excel, PowerPoint, OpenDocument, RTF, EPUB, CSV), read through `document::to-markdown`.",
+            "description": "An office document (Word, Excel, PowerPoint, OpenDocument, RTF, EPUB, CSV), converted by `document::to-markdown` and returned in character windows.",
             "enum": [
               "document"
             ],
             "type": "string"
           },
           {
-            "description": "Anything else: saved into the working folder and opened with the agent's own tools.",
+            "description": "Anything else: saved in a temporary folder and opened with the agent's own tools.",
             "enum": [
               "binary"
             ],
@@ -145,7 +145,7 @@
             "$ref": "#/definitions/AttachmentMeta"
           },
           "how_to_read": {
-            "description": "Every kind but text: the exact calls that read or save the file on this engine (or the worker to install).",
+            "description": "Without `text`: the exact calls that read or save the file on this engine (or the worker to install) and, for a document, why it has no text. With a document's text: the embedded images it leaves out, if any.",
             "type": [
               "string",
               "null"
@@ -160,7 +160,7 @@
             "description": "From the mime type and the extension; a text file that is not UTF-8 is `binary`."
           },
           "next_offset": {
-            "description": "The `offset` of the next window; `null` at the end of the text and for the other kinds.",
+            "description": "The `offset` of the next window; `null` at the end of the text and without `text`.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -169,20 +169,20 @@
             ]
           },
           "offset": {
-            "description": "Where `text` starts (0 for the other kinds).",
+            "description": "Where `text` starts (0 without `text`).",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
           },
           "text": {
-            "description": "`kind: \"text\"` only: the characters `[offset, offset + max_chars)`.",
+            "description": "The characters `[offset, offset + max_chars)` of a text file or of an office document's markdown; `null` for the other kinds and for a document without text or that could not be converted.",
             "type": [
               "string",
               "null"
             ]
           },
           "total_chars": {
-            "description": "Characters in the whole text; `null` for the other kinds.",
+            "description": "Characters in the whole text; `null` without `text`.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
