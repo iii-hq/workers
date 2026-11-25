@@ -42,6 +42,7 @@ import {
   DESKTOP_POINTER_QUERY,
   MOBILE_LAYOUT_QUERY,
   useMediaQuery,
+  WIDE_HEADER_QUERY,
 } from '@/hooks/use-media-query'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
@@ -59,6 +60,15 @@ import {
 } from '@/lib/attachments/store'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
+import {
+  CLAUDE_CODE_PROVIDER,
+  parseAccountsError,
+  refreshClaudeAccounts,
+  retryTurn,
+  setConversationAccount,
+  setGlobalAccount,
+  useClaudeAccounts,
+} from '@/lib/backend/claude-accounts'
 import {
   badgeCount,
   contextItemCount,
@@ -103,7 +113,9 @@ import {
   useQuoteHighlights,
 } from '@/lib/chat-aside'
 import { useChatCapabilities } from '@/lib/chat-capabilities'
+import { ACCOUNT_ROW_LABEL, globalRefusal } from '@/lib/claude-accounts-words'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
+import { claudeAccountOf, detailsDraftOf } from '@/lib/conversation-details'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { errText } from '@/lib/errors'
@@ -113,6 +125,12 @@ import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { getIiiClient } from '@/lib/iii-client'
+import {
+  dismissLimit,
+  lastTurnFailure,
+  limitCardModel,
+  limitDismissed,
+} from '@/lib/limit-card'
 import { useMentionProviderRefresh } from '@/lib/mentions/providers'
 import {
   onboardingWizardAvailable,
@@ -185,6 +203,7 @@ import {
   type WorkingDirScope,
 } from '@/types/chat'
 import type { PageCommandsApi } from '@/types/injectable-ui'
+import { AccountDot } from './AccountCard'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { AgentProfilePicker } from './AgentProfilePicker'
 import { DEFAULT_AGENT_ID, idleComposerPlaceholder } from './agent-defaults'
@@ -208,10 +227,16 @@ import {
   composerControlNodes,
 } from './Composer'
 import { ContextUsage } from './ContextUsage'
-import { ConversationDetailsDialog } from './ConversationDetailsDialog'
+import { conversationResolution } from './ConversationAccountRow'
+import {
+  ConversationDetailsDialog,
+  type ConversationDetailsSection,
+} from './ConversationDetailsDialog'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
+import { requestClaudeAccountsDialog } from './claude-accounts-dialog-request'
+import { LimitCard } from './LimitCard'
 import { MessageList } from './MessageList'
-import { formatModelLabel } from './model-picker-presentation'
+import { formatModelLabel, providerForModel } from './model-picker-presentation'
 import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
 import {
@@ -501,12 +526,24 @@ export function ChatView({
     ? contextItemCount(contextItems.items, dismissedPrKeys)
     : 0
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsSection, setDetailsSection] = useState<
+    ConversationDetailsSection | undefined
+  >(undefined)
+  const openDetails = useCallback((section?: ConversationDetailsSection) => {
+    setDetailsSection(section)
+    setDetailsOpen(true)
+  }, [])
   const chatProject =
     conversation.projectId && conversation.projectId !== NO_PROJECT
       ? (chatProjects.projects.find(
           (project) => project.id === conversation.projectId,
         ) ?? null)
       : null
+  // Claude Code accounts (chat-projects §4.3): the chip and the limit card,
+  // for claude-code conversations on an engine with the whole feature.
+  const claudeAccounts = useClaudeAccounts(realBackend)
+  // The chip is for wide surfaces only (D138): the ADE wider than 768.
+  const wideHeader = useMediaQuery(WIDE_HEADER_QUERY)
   // Putting the pane away is a request the pane carries out itself: it
   // knows whether it is the column (fold it) or the drawer beside a narrow
   // chat (close it). Writing the column's stored state alone left the
@@ -1255,6 +1292,89 @@ export function ChatView({
     if (!last?.model) return null
     return toCatalog(last.model)
   }, [conversation.model, conversation.messages, modelOptions, imported])
+
+  const claudeCodeChat =
+    claudeAccounts.gate === 'full' &&
+    providerForModel(effectiveModel ?? side?.locked?.model ?? undefined) ===
+      CLAUDE_CODE_PROVIDER
+  const accountResolution = claudeCodeChat
+    ? conversationResolution({
+        choice: claudeAccountOf(conversation.sessionMetadata),
+        project: chatProject,
+        global: claudeAccounts.claude?.global ?? null,
+      })
+    : null
+  const chipAccount =
+    !side && wideHeader && accountResolution?.account
+      ? {
+          id: accountResolution.account,
+          name: claudeAccounts.nameOf(accountResolution.account),
+          color:
+            claudeAccounts.account(accountResolution.account)?.color ?? 'gray',
+        }
+      : null
+  // The limit card (§4.3.4): the last turn failed with the usage limit, or
+  // the conversation is idle and its account's reading is at 100 %.
+  // The X writes the put-away key outside React; this re-renders to read it.
+  const [, setLimitDismissTick] = useState(0)
+  const lastFailure = useMemo(
+    () => lastTurnFailure(conversation.messages),
+    [conversation.messages],
+  )
+  const limitModel = claudeCodeChat
+    ? limitCardModel({
+        sessionId: conversation.id,
+        failure: lastFailure,
+        idle:
+          !streamingIndicator &&
+          !sessionHydrating &&
+          conversation.status !== 'working',
+        resolved: accountResolution?.account ?? null,
+        account: claudeAccounts.account,
+      })
+    : null
+  const limitCard =
+    limitModel && !readOnly && !limitDismissed(conversation.id, limitModel.key)
+      ? limitModel
+      : null
+  /** "Continue in X" and Other…: pin the conversation, then re-run the failed turn. */
+  const continueInAccount = useCallback(
+    async (account: string) => {
+      if (conversationsCtx) {
+        await conversationsCtx.saveDetails(conversation.id, {
+          ...detailsDraftOf(conversation),
+          claudeAccount: account,
+        })
+      } else {
+        await setConversationAccount(conversation.id, account)
+      }
+      if (limitModel && limitModel.kind !== 'reading') {
+        await retryTurn(conversation.id)
+      }
+    },
+    [conversationsCtx, conversation, limitModel],
+  )
+  /** "Make Work the global": the conversation follows it from its next turn. */
+  const makeAccountGlobal = useCallback(
+    async (account: string) => {
+      try {
+        await setGlobalAccount(account)
+      } catch (err) {
+        throw new Error(
+          globalRefusal(
+            parseAccountsError(err),
+            claudeAccounts.nameOf(account),
+          ),
+        )
+      } finally {
+        void refreshClaudeAccounts()
+      }
+      if (limitModel && limitModel.kind !== 'reading') {
+        await retryTurn(conversation.id)
+      }
+    },
+    [claudeAccounts, conversation.id, limitModel],
+  )
 
   const modelSwitch = useModelSwitch({
     backend,
@@ -3644,7 +3764,7 @@ export function ChatView({
                 /* The name opens Conversation details (§1.3.4). */
                 <button
                   type="button"
-                  onClick={() => setDetailsOpen(true)}
+                  onClick={() => openDetails()}
                   className="max-w-full truncate rounded-sm text-left hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
                 >
                   {panelTitle ?? 'Chat'}
@@ -3668,7 +3788,7 @@ export function ChatView({
           </div>
         </PageHeader>
       )}
-      {!side && (conversation.description || chatProject) ? (
+      {!side && (conversation.description || chatProject || chipAccount) ? (
         /* Line 2 and the chips row of the header (chat-projects §1.3.4):
            the description in Muted with "by agent · 2m" when the agent
            wrote it, then the project and folder chips. */
@@ -3685,7 +3805,7 @@ export function ChatView({
                 type="button"
                 data-chat-description=""
                 disabled={!canEditDetails}
-                onClick={() => setDetailsOpen(true)}
+                onClick={() => openDetails()}
                 title={conversation.description}
                 className="min-w-0 truncate rounded-sm text-left text-xs text-muted-foreground enabled:hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
               >
@@ -3696,23 +3816,25 @@ export function ChatView({
               ) : null}
             </div>
           ) : null}
-          {chatProject ? (
+          {chatProject || chipAccount ? (
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                data-project-chip=""
-                onClick={() =>
-                  requestProjectDialog({
-                    mode: 'edit',
-                    projectId: chatProject.id,
-                  })
-                }
-                className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
-              >
-                <ProjectDot color={chatProject.color} />
-                <span className="truncate">{chatProject.name}</span>
-              </button>
-              {conversation.workingDir ? (
+              {chatProject ? (
+                <button
+                  type="button"
+                  data-project-chip=""
+                  onClick={() =>
+                    requestProjectDialog({
+                      mode: 'edit',
+                      projectId: chatProject.id,
+                    })
+                  }
+                  className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                >
+                  <ProjectDot color={chatProject.color} />
+                  <span className="truncate">{chatProject.name}</span>
+                </button>
+              ) : null}
+              {chatProject && conversation.workingDir ? (
                 <span
                   data-folder-chip=""
                   data-keep-mono=""
@@ -3725,6 +3847,21 @@ export function ChatView({
                   </span>
                 </span>
               ) : null}
+              {chipAccount ? (
+                /* The account chip (§4.3.3, D138): Conversation details on
+                   the account row. */
+                <button
+                  type="button"
+                  data-account-chip={chipAccount.id}
+                  disabled={!canEditDetails}
+                  onClick={() => openDetails('account')}
+                  title={ACCOUNT_ROW_LABEL}
+                  className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink enabled:hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                >
+                  <AccountDot color={chipAccount.color} />
+                  <span className="truncate">{chipAccount.name}</span>
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -3734,6 +3871,7 @@ export function ChatView({
           open={detailsOpen}
           conversation={conversation}
           onOpenChange={setDetailsOpen}
+          initialSection={detailsSection}
           onSave={(draft) =>
             conversationsCtx.saveDetails(conversation.id, draft)
           }
@@ -3952,7 +4090,25 @@ export function ChatView({
                   {side.metaLine}
                 </p>
               ) : null}
-              {!side && !conversation.parentId && backend.turnRest ? (
+              {limitCard ? (
+                <LimitCard
+                  model={limitCard}
+                  data={claudeAccounts}
+                  time={{ now: Date.now() }}
+                  sideChat={Boolean(side) || Boolean(conversation.parentId)}
+                  followsGlobal={
+                    accountResolution?.source === 'global' &&
+                    limitCard.account === claudeAccounts.claude?.global
+                  }
+                  onContinue={continueInAccount}
+                  onMakeGlobal={makeAccountGlobal}
+                  onOpenAccounts={() => requestClaudeAccountsDialog()}
+                  onDismiss={() => {
+                    dismissLimit(conversation.id, limitCard.key)
+                    setLimitDismissTick((tick) => tick + 1)
+                  }}
+                />
+              ) : !side && !conversation.parentId && backend.turnRest ? (
                 <TurnRestRow
                   sessionId={conversation.id}
                   // A reconnect reloads the transcript while the status stays

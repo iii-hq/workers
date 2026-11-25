@@ -5,7 +5,12 @@
  */
 export type ProjectDialogRequest =
   | { mode: 'new'; folders?: readonly string[] }
-  | { mode: 'edit'; projectId: string }
+  | {
+      mode: 'edit'
+      projectId: string
+      /** Open on this section (the Projects tab of Claude Code accounts). */
+      section?: 'account'
+    }
 
 type Listener = (request: ProjectDialogRequest) => void
 

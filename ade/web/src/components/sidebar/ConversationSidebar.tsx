@@ -24,6 +24,7 @@ import {
   rowsWithSpacers,
   windowedRowIndexes,
 } from '@/components/chat/transcript-window'
+import { UsageFooter } from '@/components/chat/UsageFooter'
 import { ProjectMenu } from '@/components/projects/ProjectMenu'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
@@ -940,6 +941,9 @@ export function ConversationSidebar({
           </div>
         )}
       </div>
+      {/* Claude Code accounts' week (chat-projects §4.3.3): whenever the
+          list shows, on an engine with the whole feature. */}
+      <UsageFooter />
     </div>
   )
 }

@@ -327,8 +327,14 @@ export function Configuration({
     () => ({
       projects: chatCaps.projects,
       descriptions: chatCaps.chatSettings && chatCaps.setDescription,
+      claudeAccounts: chatCaps.harnessRetry,
     }),
-    [chatCaps.projects, chatCaps.chatSettings, chatCaps.setDescription],
+    [
+      chatCaps.projects,
+      chatCaps.chatSettings,
+      chatCaps.setDescription,
+      chatCaps.harnessRetry,
+    ],
   )
   const searchIndex = useMemo(() => {
     const prefixes = sharedIdPrefixes(entries.map((entry) => entry.id))

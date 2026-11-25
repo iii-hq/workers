@@ -2470,3 +2470,63 @@ describe('thought timing', () => {
     expect(timeThought({ ...prior, durationMs: 0 }, prior).durationMs).toBe(900)
   })
 })
+
+describe('Claude Code account failures (chat-projects D147)', () => {
+  const failureOf = (data: Record<string, unknown>) => {
+    const [notice] = entrySegments({
+      entry_id: 'e-limit-error',
+      custom: { custom_type: 'error', data: { status: 'error', ...data } },
+    })
+    if (notice.role !== 'system') throw new Error('expected a system notice')
+    return notice.failure
+  }
+
+  it('reads the usage limit out of the details', () => {
+    expect(
+      failureOf({
+        code: 'llm.usage_limit',
+        class: 'llm.usage_limit',
+        summary: 'Claude Code usage limit reached.',
+        details: {
+          usage_limit: true,
+          window: 'five_hour',
+          resets_at_ms: 1_764_000_000_000,
+          account: 'personal',
+        },
+      })?.usageLimit,
+    ).toEqual({
+      window: 'five_hour',
+      resetsAtMs: 1_764_000_000_000,
+      account: 'personal',
+    })
+  })
+
+  it("reads the router's error_details and a class without its window", () => {
+    expect(
+      failureOf({
+        code: 'router/provider_rejected',
+        class: 'llm.usage_limit',
+        error_details: { usage_limit: true, window: 'month', account: 'work' },
+      })?.usageLimit,
+    ).toEqual({ window: null, resetsAtMs: null, account: 'work' })
+  })
+
+  it('names the removed account of harness.unknown_account', () => {
+    const failure = failureOf({
+      code: 'harness.unknown_account',
+      details: { account: 'old-team' },
+    })
+    expect(failure?.unknownAccount).toBe('old-team')
+    expect(failure?.usageLimit).toBeUndefined()
+  })
+
+  it('leaves other failures alone', () => {
+    const failure = failureOf({
+      code: 'llm.permanent',
+      class: 'llm.permanent',
+      detail: 'usage limit',
+    })
+    expect(failure?.usageLimit).toBeUndefined()
+    expect(failure?.unknownAccount).toBeUndefined()
+  })
+})

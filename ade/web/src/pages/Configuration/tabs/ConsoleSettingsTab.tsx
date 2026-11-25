@@ -1,5 +1,6 @@
 import { ArrowUpRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ClaudeAccountsDialog } from '@/components/chat/ClaudeAccountsDialog'
 import { FullModeConfirmDialog } from '@/components/permissions/FullModeConfirmDialog'
 import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
 import { ProjectDialog } from '@/components/projects/ProjectDialog'
@@ -36,6 +37,7 @@ import {
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import { type ChatProject, tildePath } from '@/lib/backend/projects'
 import { useChatCapabilities } from '@/lib/chat-capabilities'
+import { INTRO_PHONE, SCREEN_TITLE } from '@/lib/claude-accounts-words'
 import {
   loadCompletionBellEnabled,
   playCompletionBell,
@@ -151,6 +153,10 @@ export function ConsoleSettingsTab({
   const [descriptionsError, setDescriptionsError] = useState<string | null>(
     null,
   )
+  // Chat › Claude Code accounts (chat-projects §4.3.1): on an engine with
+  // `harness::retry`; the dialog says what tmux needs short of the whole
+  // feature (§4.3.6).
+  const [claudeAccountsOpen, setClaudeAccountsOpen] = useState(false)
   const newChatMode = useNewChatMode()
   const sendKey = useSendKey()
   const sendKeyOptions = useMemo(buildSendKeyOptions, [])
@@ -390,6 +396,10 @@ export function ConsoleSettingsTab({
           projects={chatProjects.projects}
           conversations={ctx?.conversations ?? []}
         />
+        <ClaudeAccountsDialog
+          open={claudeAccountsOpen}
+          onOpenChange={setClaudeAccountsOpen}
+        />
         <SettingsList>
           {chatProjects.available ? (
             <SettingsRow
@@ -427,6 +437,22 @@ export function ConsoleSettingsTab({
                     </Button>
                   </li>
                 </ul>
+              }
+            />
+          ) : null}
+          {chatCaps.harnessRetry ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.claudeAccounts}
+              label={SCREEN_TITLE}
+              description={INTRO_PHONE}
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setClaudeAccountsOpen(true)}
+                >
+                  Open
+                </Button>
               }
             />
           ) : null}

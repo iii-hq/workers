@@ -14,9 +14,16 @@ import {
   FormDialogTitle,
   FormSelectTrigger,
 } from '@/components/ui/FormDialog'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { getDefaultBackend } from '@/lib/backend'
+import {
+  CLAUDE_CODE_PROVIDER,
+  useClaudeAccounts,
+} from '@/lib/backend/claude-accounts'
 import { type ChatProject, NO_PROJECT } from '@/lib/backend/projects'
 import {
   type ConversationDetailsDraft,
+  claudeAccountOf,
   DESCRIPTION_COUNTER_FROM,
   DESCRIPTION_MAX,
   descriptionHistory,
@@ -27,6 +34,11 @@ import { shortAge } from '@/lib/short-age'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ByAgentPill } from './ByAgentPill'
+import { ConversationAccountRow } from './ConversationAccountRow'
+import { providerForModel } from './model-picker-presentation'
+
+/** A section the dialog can open on (the account chip). */
+export type ConversationDetailsSection = 'account'
 
 interface ConversationDetailsDialogProps {
   open: boolean
@@ -38,7 +50,8 @@ interface ConversationDetailsDialogProps {
     | 'descriptionAtMs'
     | 'projectId'
     | 'sessionMetadata'
-  >
+  > &
+    Partial<Pick<Conversation, 'model' | 'parentId'>>
   onOpenChange: (open: boolean) => void
   /** Write the draft; a rejection keeps the dialog open with the error. */
   onSave: (draft: ConversationDetailsDraft) => Promise<void> | void
@@ -53,6 +66,10 @@ interface ConversationDetailsDialogProps {
   agentSwitch?: boolean
   /** Clock for the relative times (tests). */
   now?: number
+  /** Open on this section, its control focused (the account chip). */
+  initialSection?: ConversationDetailsSection
+  /** A side chat: the account row is text only (its account is locked, D2). */
+  sideChat?: boolean
 }
 
 const FIELD =
@@ -73,6 +90,8 @@ export function ConversationDetailsDialog({
   projects,
   agentSwitch = false,
   now,
+  initialSection,
+  sideChat = false,
 }: ConversationDetailsDialogProps) {
   const [draft, setDraft] = useState<ConversationDetailsDraft>(() =>
     detailsDraftOf(conversation),
@@ -80,7 +99,17 @@ export function ConversationDetailsDialog({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const nameRef = useRef<HTMLInputElement>(null)
+  const accountRef = useRef<HTMLButtonElement>(null)
   const ids = useId()
+  // §4.3.5: the account row, for claude-code conversations on an engine
+  // with the whole feature (§4.3.6).
+  const realBackend = getDefaultBackend().id === 'real'
+  const accounts = useClaudeAccounts(realBackend && open)
+  const chatProjects = useChatProjects(realBackend && open)
+  const showAccount =
+    accounts.gate === 'full' &&
+    providerForModel(conversation.model ?? undefined) === CLAUDE_CODE_PROVIDER
+  const openOnAccount = initialSection === 'account' && showAccount
   const history = descriptionHistory(conversation.sessionMetadata)
 
   // Every open starts from the live values, with the name selected: most
@@ -92,6 +121,11 @@ export function ConversationDetailsDialog({
     setError(null)
     setSaving(false)
     const frame = requestAnimationFrame(() => {
+      if (openOnAccount && accountRef.current) {
+        accountRef.current.focus()
+        accountRef.current.scrollIntoView?.({ block: 'nearest' })
+        return
+      }
       nameRef.current?.focus()
       nameRef.current?.select()
     })
@@ -145,7 +179,7 @@ export function ConversationDetailsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <FormDialogContent
         className="w-[min(30rem,calc(100vw-2rem))] [--dialog-max-width:30rem]"
-        initialFocus={nameRef}
+        initialFocus={openOnAccount ? accountRef : nameRef}
         finalFocus={returnFocusTo}
         // The dialog portals to the body but stays inside the row's React
         // tree, so pointer and key events would bubble to the row.
@@ -325,6 +359,26 @@ export function ConversationDetailsDialog({
                 </SelectContent>
               </Select>
             </div>
+          ) : null}
+
+          {showAccount ? (
+            <ConversationAccountRow
+              value={
+                draft.claudeAccount ??
+                claudeAccountOf(conversation.sessionMetadata)
+              }
+              onChange={(claudeAccount) =>
+                setDraft((current) => ({ ...current, claudeAccount }))
+              }
+              project={
+                (projects ?? chatProjects.projects).find(
+                  (project) => project.id === draft.projectId,
+                ) ?? null
+              }
+              data={accounts}
+              readOnly={sideChat || Boolean(conversation.parentId)}
+              triggerRef={accountRef}
+            />
           ) : null}
 
           {error ? (

@@ -4,8 +4,13 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { seedClaudeAccountsForTests } from '@/lib/backend/claude-accounts'
 import type { ChatProject } from '@/lib/backend/projects'
 import type { ConversationDetailsDraft } from '@/lib/conversation-details'
+import {
+  splitsFixture,
+  usageFixture,
+} from '@/stories/fixtures/claude-accounts-fixtures'
 import { ConversationDetailsDialog } from './ConversationDetailsDialog'
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -171,5 +176,59 @@ describe('Conversation details (§1.3.5)', () => {
     expect(dialog().querySelector('[role="alert"]')?.textContent).toContain(
       'engine said no',
     )
+  })
+})
+
+describe('the Claude Code account row (§4.3.5)', () => {
+  const claudeCode = { ...conversation, model: 'claude-code::claude-opus-4-5' }
+  const row = () => dialog().querySelector('[data-conversation-account]')
+  const resolution = () =>
+    dialog().querySelector('[data-account-resolution]') as HTMLElement | null
+
+  afterEach(() => seedClaudeAccountsForTests(null))
+
+  it('says where a claude-code conversation runs, with a select', () => {
+    seedClaudeAccountsForTests({
+      usage: usageFixture(NOW),
+      splits: splitsFixture(NOW),
+    })
+    render({ conversation: claudeCode })
+    expect(row()?.textContent).toContain('Claude Code account')
+    expect(resolution()?.dataset.accountResolution).toBe('global')
+    expect(resolution()?.textContent).toBe(
+      'Runs on Work, the global account, because acme-web follows the global.',
+    )
+    expect(row()?.querySelector('button')).not.toBeNull()
+  })
+
+  it("reads a conversation's own pin", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: {
+        ...claudeCode,
+        sessionMetadata: { claude_account: 'personal' },
+      },
+    })
+    expect(resolution()?.textContent).toBe(
+      'Runs on Personal, pinned for this conversation.',
+    )
+  })
+
+  it('is text only in a side chat', () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({ conversation: claudeCode, sideChat: true })
+    expect(resolution()?.textContent).toContain('Runs on Work')
+    expect(row()?.querySelector('button')).toBeNull()
+  })
+
+  it('is absent for other providers and short of the whole feature (§4.3.6)', () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({ conversation: { ...conversation, model: 'openai::gpt-5.4' } })
+    expect(row()).toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW), gate: 'update' })
+    render({ conversation: claudeCode })
+    expect(row()).toBeNull()
   })
 })

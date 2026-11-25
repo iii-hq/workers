@@ -17,6 +17,7 @@ import {
   Settings2,
   TriangleAlert,
   Unplug,
+  UserX,
   Wallet,
 } from 'lucide-react'
 import { Fragment, useId, useState } from 'react'
@@ -154,6 +155,8 @@ function InlineNotice({ message }: { message: SystemMessage }) {
 
 const CATEGORY_ICON: Record<TurnFailureCategory, LucideIcon> = {
   auth: KeyRound,
+  'usage-limit': Hourglass,
+  account: UserX,
   billing: Wallet,
   configuration: Settings2,
   context: Gauge,

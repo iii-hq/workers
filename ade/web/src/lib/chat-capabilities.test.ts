@@ -58,6 +58,10 @@ describe('chat capabilities (spec §0.2)', () => {
       contextItems: true,
       chatSettings: true,
       sideChats: true,
+      harnessRetry: false,
+      tmuxAccounts: false,
+      tmuxCredential: false,
+      claudeAccounts: false,
     })
   })
 
@@ -80,6 +84,10 @@ describe('chat capabilities (spec §0.2)', () => {
       contextItems: true,
       chatSettings: false,
       sideChats: true,
+      harnessRetry: false,
+      tmuxAccounts: false,
+      tmuxCredential: false,
+      claudeAccounts: false,
     })
   })
 
