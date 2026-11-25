@@ -24,7 +24,8 @@ pub const MAX_LIMIT: usize = 100;
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SearchRequest {
     /// Words to look for, in any order; each may be a word's start or carry
-    /// a typo. An empty query returns no hits.
+    /// a typo. An empty query returns no hits. At most 256 characters and
+    /// 16 words; longer is `session/invalid_request`.
     pub query: String,
     /// Default 20, at most 100.
     pub limit: Option<usize>,

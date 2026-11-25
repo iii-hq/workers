@@ -120,8 +120,10 @@ holding the words as a phrase, then a message holding them all, then looser
 matches, newest first within each; each carries the title's matched ranges
 and, for a message match, a snippet of the best message with its matched
 words marked (UTF-16 ranges). `kinds` defaults to `["user"]`; `roots: true`
-leaves sub-agents out. The per-session text is cached and rebuilt only when
-the session's `updated_at` or `message_count` moves.
+leaves sub-agents out. A query is at most 256 characters and 16 words;
+longer is `session/invalid_request`. The per-session text is cached and
+rebuilt when the session's `updated_at` or `message_count` moves or this
+instance writes to its transcript.
 
 Sessions can be mentioned in a chat as `@session(id="<session_id>")`
 (see [`crates/mention-contract`](../crates/mention-contract/README.md)).

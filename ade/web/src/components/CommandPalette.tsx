@@ -369,6 +369,7 @@ export interface CommandPaletteProps {
 /** Shortest query the live search is asked for: one letter matches half
  *  of every transcript. */
 const LIVE_SEARCH_MIN = 2
+const NO_LIVE_ANSWER = { text: '', entries: [] as PaletteEntry[] }
 
 export function CommandPalette({
   open,
@@ -389,7 +390,12 @@ export function CommandPalette({
   const [engineEntries, setEngineEntries] = useState<PaletteEntry[]>([])
   const [engineError, setEngineError] = useState<string | null>(null)
   const [sourceEntries, setSourceEntries] = useState<PaletteEntry[]>([])
-  const [liveEntries, setLiveEntries] = useState<PaletteEntry[]>([])
+  // Live rows remember the query they answered: rows for "alpha" must not
+  // stand in the list once the query reads "beta".
+  const [liveAnswer, setLiveAnswer] = useState<{
+    text: string
+    entries: PaletteEntry[]
+  }>(NO_LIVE_ANSWER)
   const [searching, setSearching] = useState(false)
   const [recents, setRecents] = useState<RecentEntry[]>([])
   const [numbering, setNumbering] = useState(false)
@@ -451,7 +457,7 @@ export function CommandPalette({
         liveSearch !== undefined && parsed.text.length >= LIVE_SEARCH_MIN
       if (sources.length === 0 && !askLive) {
         setSourceEntries([])
-        setLiveEntries([])
+        setLiveAnswer(NO_LIVE_ANSWER)
         setSearching(false)
         return
       }
@@ -461,35 +467,46 @@ export function CommandPalette({
       controller.signal.addEventListener('abort', () =>
         window.clearTimeout(slow),
       )
+      // Each search publishes the moment it answers: `#` file rows never
+      // wait on a chat search the mode does not even show. The indicator
+      // clears when the last one is in.
+      let pending = 2
+      const settle = () => {
+        pending -= 1
+        if (pending > 0 || controller.signal.aborted) return
+        window.clearTimeout(slow)
+        setSearching(false)
+      }
+      const text = parsed.text
       const fromSources =
         sources.length === 0
           ? Promise.resolve([])
           : searchPaletteSources(sources, {
-              text: parsed.text,
+              text,
               prefix: parsed.prefix,
               kinds: parsed.kinds,
               workingDir,
               conversationId,
               signal: controller.signal,
             })
+      void fromSources
+        .then((entries) => {
+          if (!controller.signal.aborted) setSourceEntries(entries)
+        })
+        .catch(() => {})
+        .finally(settle)
       // A live search that fails leaves the local rows standing.
       const fromLive = askLive
-        ? liveSearch({ text: parsed.text, signal: controller.signal }).catch(
-            (): PaletteEntry[] => [],
-          )
+        ? liveSearch({ text, signal: controller.signal })
         : Promise.resolve([])
-      void Promise.all([fromSources, fromLive])
-        .then(([entries, live]) => {
-          window.clearTimeout(slow)
-          if (controller.signal.aborted) return
-          setSourceEntries(entries)
-          setLiveEntries(live)
-          setSearching(false)
+      void fromLive
+        .then((entries) => {
+          if (!controller.signal.aborted) setLiveAnswer({ text, entries })
         })
         .catch(() => {
-          window.clearTimeout(slow)
-          if (!controller.signal.aborted) setSearching(false)
+          if (!controller.signal.aborted) setLiveAnswer(NO_LIVE_ANSWER)
         })
+        .finally(settle)
     }, SOURCE_DEBOUNCE_MS)
     return () => {
       window.clearTimeout(timer)
@@ -545,9 +562,14 @@ export function CommandPalette({
   // A live row replaces the local row with its id (a chat found by its
   // messages carries the snippet the title-only row lacks). Live rows only
   // stand for the query they answered: a cleared query drops them.
+  // Only the answer to the query on screen counts; while the next one is
+  // in flight, the local title matches stand alone.
   const live = useMemo(
-    () => (parsed.text.length >= LIVE_SEARCH_MIN ? liveEntries : []),
-    [liveEntries, parsed],
+    () =>
+      parsed.text.length >= LIVE_SEARCH_MIN && liveAnswer.text === parsed.text
+        ? liveAnswer.entries
+        : [],
+    [liveAnswer, parsed],
   )
   const liveIds = useMemo(() => new Set(live.map((entry) => entry.id)), [live])
   const searchable = useMemo(

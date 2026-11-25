@@ -38,6 +38,23 @@ describe('focusSnippet', () => {
   })
 })
 
+describe('focusSnippet surrogates', () => {
+  it('never opens on half of an astral character', () => {
+    const text = `xxx😀${'漢'.repeat(23)}needle`
+    const at = text.indexOf('needle')
+    const focused = focusSnippet(text, [[at, at + 6]])
+    for (let i = 0; i < focused.text.length; i += 1) {
+      const unit = focused.text.charCodeAt(i)
+      if (unit >= 0xdc00 && unit <= 0xdfff) {
+        const before = focused.text.charCodeAt(i - 1)
+        expect(before >= 0xd800 && before <= 0xdbff).toBe(true)
+      }
+    }
+    const [from, to] = focused.ranges[0]
+    expect(focused.text.slice(from, to)).toBe('needle')
+  })
+})
+
 describe('chatSearchEntries', () => {
   const chats = new Map([
     ['s_1', { id: 's_1', title: 'Setup notes', updatedAt: 0 }],

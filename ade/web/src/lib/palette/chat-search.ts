@@ -33,11 +33,18 @@ export function focusSnippet(
   let start = first - lead
   const space = text.indexOf(' ', start)
   if (space !== -1 && space < first) start = space + 1
+  // With no space to land on, never start on the trailing half of a
+  // surrogate pair: the slice would open on a replacement glyph.
+  else if (isLowSurrogate(text.charCodeAt(start))) start += 1
   const shift = start - 1 // the `…` takes one unit
   return {
     text: `…${text.slice(start)}`,
     ranges: ranges.map(([a, b]) => [a - shift, b - shift] as const),
   }
+}
+
+function isLowSurrogate(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff
 }
 
 export interface SearchableChat {

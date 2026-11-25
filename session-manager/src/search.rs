@@ -157,20 +157,35 @@ pub struct Query {
     phrase: String,
 }
 
+/// The longest query accepted, in characters. A search box query is a few
+/// words; anything near this is a paste, not a search.
+pub const MAX_QUERY_CHARS: usize = 256;
+/// The most words a query may hold. Matching builds a words-by-terms table
+/// per message, so the term count is what bounds a search's memory.
+pub const MAX_QUERY_TERMS: usize = 16;
+
 impl Query {
-    /// `None` when the text holds no word characters.
-    pub fn parse(text: &str) -> Option<Self> {
+    /// `Ok(None)` when the text holds no word characters; `Err` (the
+    /// message for `session/invalid_request`) when it exceeds
+    /// [`MAX_QUERY_CHARS`] or [`MAX_QUERY_TERMS`].
+    pub fn parse(text: &str) -> Result<Option<Self>, String> {
+        if text.chars().count() > MAX_QUERY_CHARS {
+            return Err(format!("query is longer than {MAX_QUERY_CHARS} characters"));
+        }
         let terms: Vec<String> = words(text)
             .into_iter()
             .map(|(start, end)| text[start..end].to_lowercase())
             .collect();
-        if terms.is_empty() {
-            return None;
+        if terms.len() > MAX_QUERY_TERMS {
+            return Err(format!("query has more than {MAX_QUERY_TERMS} words"));
         }
-        Some(Self {
+        if terms.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
             phrase: text.trim().to_lowercase(),
             terms,
-        })
+        }))
     }
 }
 
@@ -476,6 +491,12 @@ fn snippet_of(text: &str, first: usize, hit: impl Fn(&str) -> bool) -> (String, 
             .rfind(|&e| e > start && e <= end)
             .unwrap_or(end);
     }
+    // The match the window opens on is always inside it, even when that
+    // word alone runs past SNIPPET_LENGTH (a long path or identifier); the
+    // reader truncates the row, never the reason it matched.
+    if let Some(&(_, anchor_end)) = spans.iter().find(|&&(s, _)| s == first) {
+        end = end.max(anchor_end);
+    }
 
     let marked: Vec<(usize, usize)> = spans
         .iter()
@@ -595,7 +616,9 @@ mod tests {
     use super::*;
 
     fn query(text: &str) -> Query {
-        Query::parse(text).expect("query has words")
+        Query::parse(text)
+            .expect("query within limits")
+            .expect("query has words")
     }
 
     fn doc(messages: &[(&str, SnippetRole)]) -> SearchDoc {
@@ -725,6 +748,25 @@ mod tests {
             "Where to start onboarding.yaml: the setup flow quoted 2 * 3"
         );
         assert_eq!(slice16(&out, ranges[0]), "onboarding");
+    }
+
+    #[test]
+    fn the_anchor_word_stays_in_the_window_however_long() {
+        let text = format!("before needle{}", "x".repeat(200));
+        let at = text.find("needle").unwrap();
+        let (out, ranges) = snippet_of(&text, at, |w| w.starts_with("needle"));
+        assert_eq!(ranges.len(), 1, "{out}");
+        assert!(slice16(&out, ranges[0]).starts_with("needle"));
+    }
+
+    #[test]
+    fn queries_past_the_limits_are_refused() {
+        assert!(Query::parse(&"a".repeat(MAX_QUERY_CHARS + 1)).is_err());
+        let many = vec!["word"; MAX_QUERY_TERMS + 1].join(" ");
+        assert!(Query::parse(&many).is_err());
+        let most = vec!["word"; MAX_QUERY_TERMS].join(" ");
+        assert!(Query::parse(&most).unwrap().is_some());
+        assert!(Query::parse("  ...  ").unwrap().is_none());
     }
 
     #[test]

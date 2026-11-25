@@ -150,4 +150,87 @@ describe('CommandPalette row tags', () => {
     })
     expect(asked).toEqual([])
   })
+
+  // CodeRabbit on #1892: rows answered for one query must not stand once the
+  // query changes, while the next answer is still in flight.
+  it('drops live rows that answered an earlier query', async () => {
+    const liveSearch = ({ text }: { text: string }) =>
+      text === 'alpha'
+        ? Promise.resolve([
+            {
+              id: 'chat:s_alpha',
+              kind: 'chat',
+              title: 'Alpha chat',
+              run: () => {},
+            } satisfies PaletteEntry,
+          ])
+        : new Promise<PaletteEntry[]>(() => {})
+    await act(async () => {
+      root.render(
+        <CommandPalette
+          open
+          onClose={() => {}}
+          localEntries={entries}
+          onOpenWorker={() => {}}
+          onOpenFunction={() => {}}
+          readInventory={readInventory}
+          liveSearch={liveSearch}
+          initialQuery="@alpha"
+        />,
+      )
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+    expect(document.body.textContent).toContain('Alpha chat')
+
+    const input = document.querySelector('input') as HTMLInputElement
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    await act(async () => {
+      setValue?.call(input, '@beta')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+    expect(document.body.textContent).not.toContain('Alpha chat')
+  })
+
+  it('shows source rows without waiting for the chat search', async () => {
+    const sources = [
+      {
+        key: 'files.files',
+        scope: 'files',
+        source: {
+          id: 'files',
+          title: 'Files',
+          kind: 'file' as const,
+          prefix: '#',
+          search: async () => [{ id: 'r', title: 'report.md', run: () => {} }],
+        },
+      },
+    ]
+    await act(async () => {
+      root.render(
+        <CommandPalette
+          open
+          onClose={() => {}}
+          localEntries={entries}
+          onOpenWorker={() => {}}
+          onOpenFunction={() => {}}
+          readInventory={readInventory}
+          sources={sources}
+          liveSearch={() => new Promise<PaletteEntry[]>(() => {})}
+          initialQuery="#report"
+        />,
+      )
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+    expect(document.body.textContent).toContain('report.md')
+  })
 })
