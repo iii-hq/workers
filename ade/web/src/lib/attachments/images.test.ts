@@ -14,6 +14,7 @@ import {
   MAX_SOURCE_IMAGE_BYTES,
   needsDownscale,
 } from './images'
+import { failureBlock } from './shared'
 
 function image(name = 'shot.png', type = 'image/png', size = 1024): Attachment {
   const file = new File([new Uint8Array(size)], name, { type })
@@ -233,5 +234,21 @@ describe('expandImageAttachments', () => {
     expect(result.images).toHaveLength(MAX_IMAGES_PER_SEND)
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0].reason).toContain('per message')
+  })
+
+  it('puts the stored id on the stub of every image it did not send', async () => {
+    const many = Array.from({ length: MAX_IMAGES_PER_SEND + 1 }, (_, i) => ({
+      ...image(`photo-${i}.heic`, 'image/heic'),
+      attachmentId: `a_${i}`,
+    }))
+    many[0].size = MAX_SOURCE_IMAGE_BYTES + 1
+    const { blocks, failures } = await expandImageAttachments(
+      many,
+      neverDownscales,
+    )
+
+    expect(blocks).toEqual(
+      many.map((a, i) => failureBlock(a.name, failures[i].reason, `a_${i}`)),
+    )
   })
 })

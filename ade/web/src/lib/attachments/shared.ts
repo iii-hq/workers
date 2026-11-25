@@ -13,6 +13,9 @@ import { getIiiClient } from '@/lib/iii-client'
 /** Opening of an attachment block; the header ends at the first `>`. */
 export const ATTACHED_FILE_PREFIX = '<attached-file '
 
+/** The call the agent makes to read a stored attachment itself. */
+export const READ_ATTACHMENT_FUNCTION_ID = 'session::read-attachment'
+
 export interface AttachmentFailure {
   name: string
   reason: string
@@ -67,20 +70,21 @@ export function callOr(invoke: CallFn | undefined): CallFn {
 }
 
 /**
- * Report the attachments a per-send ceiling cut off.
+ * Report the attachments a message leaves out, all for the same reason.
  *
  * Every kind has a ceiling and every kind has to say what it dropped: an
  * attachment that silently disappears is the failure this whole path exists to
- * prevent, and a person who attached six documents deserves to know two of them
- * did not go.
+ * prevent.
  */
 export function reportDropped(
-  dropped: readonly { name: string }[],
+  dropped: readonly { name: string; attachmentId?: string }[],
   reason: string,
   into: { blocks: string[]; failures: AttachmentFailure[] },
 ): void {
   for (const attachment of dropped) {
-    into.blocks.push(failureBlock(attachment.name, reason))
+    into.blocks.push(
+      failureBlock(attachment.name, reason, attachment.attachmentId),
+    )
     into.failures.push({ name: attachment.name, reason })
   }
 }
@@ -116,9 +120,25 @@ export function escapeAttr(value: string): string {
     .replaceAll('>', '&gt;')
 }
 
-/** A self-closing block saying a named file could not be read, and why. */
-export function failureBlock(name: string, reason: string): string {
-  return `${ATTACHED_FILE_PREFIX}path="${escapeAttr(name)}" error="${escapeAttr(reason)}" />`
+/**
+ * A self-closing block saying a named file could not be read, and why. A stored
+ * file also carries its id and the call that reads it.
+ */
+export function failureBlock(
+  name: string,
+  reason: string,
+  attachmentId?: string,
+): string {
+  const path = `${ATTACHED_FILE_PREFIX}path="${escapeAttr(name)}"`
+  const error = `error="${escapeAttr(reason)}"`
+  return attachmentId
+    ? `${path} id="${escapeAttr(attachmentId)}" ${error} read-with="${READ_ATTACHMENT_FUNCTION_ID}" />`
+    : `${path} ${error} />`
+}
+
+/** Whether a rejection says the worker is not running. */
+export function isWorkerMissing(err: unknown): boolean {
+  return /not registered|NOT_FOUND|function .* not found/i.test(messageOf(err))
 }
 
 /**
@@ -126,10 +146,10 @@ export function failureBlock(name: string, reason: string): string {
  * else surfaces as-is, trimmed.
  */
 export function describeWorkerFailure(err: unknown, worker: string): string {
-  const message = messageOf(err)
-  if (/not registered|NOT_FOUND|function .* not found/i.test(message)) {
+  if (isWorkerMissing(err)) {
     return `the ${worker} worker is not running — install it with \`iii call compose::add worker=${worker}\``
   }
+  const message = messageOf(err)
   return message.length > 160 ? `${message.slice(0, 157)}…` : message
 }
 
