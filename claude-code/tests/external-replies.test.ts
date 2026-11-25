@@ -49,6 +49,7 @@ const unknownBlockTranscript = (role: string) =>
 const malformedToolUses = [
   { name: 'numeric ID', fields: { id: 42 } },
   { name: 'missing ID', fields: { id: undefined } },
+  { name: 'empty ID', fields: { id: '' } },
   { name: 'numeric name', fields: { name: 42 } },
   { name: 'missing name', fields: { name: undefined } },
   { name: 'empty name', fields: { name: '' } },
