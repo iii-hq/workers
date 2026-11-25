@@ -1,0 +1,133 @@
+{
+  "function_id": "harness::metrics::account-split",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AccountSplitRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AccountSplit": {
+        "description": "One account's week.",
+        "properties": {
+          "account": {
+            "description": "The tmux account id.",
+            "type": "string"
+          },
+          "outside_measured": {
+            "description": "tmux measured the usage outside the Chat. When it could not, there is no `outside` segment and the Chat's segments split the week alone.",
+            "type": "boolean"
+          },
+          "resets_at_ms": {
+            "description": "When the week starts again, in unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "segments": {
+            "description": "They add up to `week_percent`; none when nothing was spent.",
+            "items": {
+              "$ref": "#/definitions/SplitSegment"
+            },
+            "type": "array"
+          },
+          "week_percent": {
+            "description": "How much of the week is used, 0 to 100 (tmux's reading).",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "account",
+          "outside_measured",
+          "segments",
+          "week_percent"
+        ],
+        "type": "object"
+      },
+      "SplitSegment": {
+        "description": "A share of the week.",
+        "oneOf": [
+          {
+            "properties": {
+              "color": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "percent": {
+                "format": "double",
+                "type": "number"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "color",
+              "kind",
+              "name",
+              "percent",
+              "project_id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "no_project"
+                ],
+                "type": "string"
+              },
+              "percent": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "percent"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "outside"
+                ],
+                "type": "string"
+              },
+              "percent": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "percent"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "items": {
+      "$ref": "#/definitions/AccountSplit"
+    },
+    "title": "Array_of_AccountSplit",
+    "type": "array"
+  }
+}

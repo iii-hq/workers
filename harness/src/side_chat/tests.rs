@@ -1240,6 +1240,45 @@ fn the_lock_refuses_each_field_that_differs_and_accepts_its_own_values() {
 }
 
 #[test]
+fn the_lock_ignores_the_claude_code_account_a_send_names() {
+    let mut lock = lock();
+    lock.provider = Some("claude-code".into());
+    lock.provider_options = Some(BTreeMap::from([(
+        "claude-code".to_string(),
+        json!({ "account": "work", "effort": "high" }),
+    )]));
+    for sent in [
+        json!({ "claude-code": { "account": "personal", "effort": "high" } }),
+        json!({ "claude-code": { "effort": "high" } }),
+    ] {
+        check_lock(
+            &lock,
+            &request(json!({ "options": { "provider_options": sent.clone() } })),
+        )
+        .unwrap_or_else(|e| panic!("{sent}: {e}"));
+    }
+    let error = check_lock(
+        &lock,
+        &request(json!({ "options": { "provider_options": {
+            "claude-code": { "account": "work", "effort": "low" } } } })),
+    )
+    .unwrap_err();
+    assert_eq!(code(&error).as_deref(), Some("side_chat_locked"));
+
+    // A last turn that differs only by its account is the lock's own options:
+    // nothing is written into the request.
+    let mut prev = main_record();
+    prev.options.provider_options = Some(BTreeMap::from([(
+        "claude-code".to_string(),
+        json!({ "account": "personal", "effort": "high" }),
+    )]));
+    prev.options.thinking_level = lock.thinking_level;
+    let mut req = request(json!({}));
+    fill_from_lock(&lock, Some(&prev), &mut req);
+    assert!(req.options.as_ref().unwrap().provider_options.is_none());
+}
+
+#[test]
 fn the_lock_fills_what_a_send_leaves_out_only_where_the_last_turn_differs() {
     let lock = lock();
     // The last turn is the conversation's own (a side chat `open` made):

@@ -23,11 +23,11 @@ use crate::policy::{self, CallKind, CompiledPolicy};
 pub use crate::queue::TURN_QUEUE;
 use crate::types::content::ContentBlock;
 use crate::types::event::ErrorKind;
-use crate::types::message::{AgentMessage, AssistantMessage, empty_assistant};
+use crate::types::message::{AgentMessage, AssistantMessage, ErrorDetails, empty_assistant};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnFailure,
-    TurnRecord, TurnStatus,
+    TurnFailureDetails, TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -39,6 +39,8 @@ struct FailureInfo<'a> {
     detail: Option<&'a str>,
     provider: Option<&'a str>,
     model: Option<&'a str>,
+    /// The usage limit a `rate_limited` generation hit (D147).
+    limit: Option<&'a ErrorDetails>,
 }
 
 impl FailureInfo<'_> {
@@ -47,9 +49,28 @@ impl FailureInfo<'_> {
         TurnFailure {
             code: self.code.to_string(),
             retryable: self.retryable,
+            details: self.limit.map(|limit| TurnFailureDetails {
+                usage_limit: limit.usage_limit,
+                window: limit.window.clone(),
+                resets_at_ms: limit.resets_at_ms,
+                account: None,
+            }),
         }
     }
 }
+
+/// A turn pinned (by its conversation, project or side chat lock) to a
+/// Claude Code account that tmux no longer has.
+const UNKNOWN_ACCOUNT_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: crate::accounts::UNKNOWN_ACCOUNT_CODE,
+    phase: "pre_turn",
+    retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+    limit: None,
+};
 
 const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.turn_internal",
@@ -59,6 +80,7 @@ const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -69,6 +91,7 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 /// An assembly overflow on a model the router catalog does not list: the
@@ -82,6 +105,7 @@ const UNKNOWN_MODEL_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -92,6 +116,7 @@ const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -102,6 +127,7 @@ const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 /// Provider adapters add framing outside the fields visible to the harness.
@@ -686,6 +712,14 @@ async fn generate_step(
         .set_status(&record.session_id, "working", Some("preparing context"))
         .await;
     if payload.step == 0 && record.turn_count == 0 {
+        // The Claude Code account, resolved once and frozen on the turn
+        // (chat-projects D139): its first step is where every way a turn
+        // starts (a send, a reseed, a wake, `harness::retry`) meets.
+        let resolution =
+            Box::pin(crate::accounts::resolve_turn(deps, &session, &mut record)).await?;
+        if resolution != crate::accounts::TurnResolution::Unchanged {
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+        }
         deps.events
             .emit_started(
                 &record.session_id,
@@ -694,8 +728,25 @@ async fn generate_step(
                 record.display_parent_session_id.as_deref(),
                 record.message_preview.as_deref(),
                 record.depth,
+                record.account.as_ref(),
             )
             .await;
+        if resolution == crate::accounts::TurnResolution::Unknown {
+            let id = record
+                .account
+                .as_ref()
+                .map(|account| account.id.clone())
+                .unwrap_or_default();
+            return Box::pin(finalize_failed(
+                deps,
+                &session,
+                &mut record,
+                &crate::accounts::unknown_account_message(&id),
+                UNKNOWN_ACCOUNT_FAILURE,
+            ))
+            .await
+            .map(PreparedStep::Finished);
+        }
         if let Err(reason) = Box::pin(deps.hooks.run_pre_turn(&record, payload.step)).await {
             return finalize_failed(
                 deps,
@@ -710,6 +761,7 @@ async fn generate_step(
                     detail: None,
                     provider: None,
                     model: None,
+                    limit: None,
                 },
             )
             .await
@@ -763,6 +815,7 @@ async fn generate_step(
                         detail: None,
                         provider: None,
                         model: None,
+                        limit: None,
                     },
                 )
                 .await
@@ -1065,6 +1118,7 @@ async fn generate_step(
                             detail: None,
                             provider: None,
                             model: None,
+                            limit: None,
                         },
                     )
                     .await
@@ -1185,6 +1239,7 @@ async fn generate_step(
                     detail: None,
                     provider: None,
                     model: None,
+                    limit: None,
                 },
             )
             .await
@@ -1592,6 +1647,8 @@ async fn generate_step(
     if let Some(reservation) = budget_reservation.as_ref() {
         crate::budget::reconcile(deps, reservation, outcome.message.usage.as_ref()).await?;
     }
+    // The account ledger (D133): `claude-code` usage carries no cost.
+    crate::accounts::record_usage(deps, &record, &outcome.message).await;
 
     // A stop mid-generation truncates tool-call blocks before their arguments
     // stream. An argument-less call can never execute (the turn is cancelled)
@@ -1882,6 +1939,7 @@ async fn finish_step(
             detail: Some("generation failed".into()),
             kind: outcome.message.error_kind,
             retryable: outcome.message.error_kind.map(ErrorKind::is_retryable),
+            error_details: outcome.message.error_details.clone(),
         });
         let failure = llm_failure_info(
             Some(&generation_error),
@@ -1939,24 +1997,14 @@ async fn finish_step(
                 .await;
             // With no output, the transcript already ends at the input to retry.
             if has_partial {
-                let nudge = AgentMessage::user_text(format!(
-                    "The provider/router ended transiently after streaming the previous partial \
-                     response: {reason}. Resume from the transcript and return the complete deliverable, \
-                     incorporating the previous partial even if it was already nearly complete. Do not \
-                     repeat function calls that already have successful results."
-                ));
-                let _ = session
-                    .append(
-                        &record.session_id,
-                        &nudge,
-                        Some(&ids::transient_resume_nudge_entry_id(
-                            &record.turn_id,
-                            attempt,
-                        )),
-                        None,
-                        Some(&origin(&record.turn_id)),
-                    )
-                    .await?;
+                append_resume_nudge(
+                    &session,
+                    &record.session_id,
+                    &record.turn_id,
+                    attempt,
+                    &reason,
+                )
+                .await?;
             }
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
@@ -3029,6 +3077,7 @@ async fn settle_unreseeded(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     // A failed write leaves the marker: the completion can repeat, never be lost.
@@ -3205,6 +3254,7 @@ async fn retry_or_giveup_with(
                 detail: None,
                 provider: None,
                 model: None,
+                limit: None,
             },
         )
         .await
@@ -3343,6 +3393,7 @@ async fn finalize_completed(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     // An exhausted step cap is reported as its own outcome: `completed` alone
@@ -3541,6 +3592,20 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
             "The provider rejected this request.",
             &["Review the selected model and provider settings, then try again."],
         ),
+        crate::accounts::USAGE_LIMIT_CODE => (
+            "This Claude Code account reached its usage limit.",
+            &[
+                "Continue on another Claude Code account.",
+                "Or wait until the limit resets, then retry the turn.",
+            ],
+        ),
+        crate::accounts::UNKNOWN_ACCOUNT_CODE => (
+            "The Claude Code account this conversation runs on no longer exists.",
+            &[
+                "Choose another account for the conversation or its project.",
+                "Then retry the turn.",
+            ],
+        ),
         _ => match failure.kind {
             Some(ErrorKind::AuthExpired) => (
                 "The provider authentication needs attention.",
@@ -3580,6 +3645,18 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
     }
 }
 
+/// The failure the record keeps: a usage limit, and a pin to a gone
+/// account, name the account (contract D).
+fn stored_failure(record: &TurnRecord, failure: FailureInfo<'_>) -> TurnFailure {
+    let mut stored = failure.stored();
+    if let Some(account) = record.account.as_ref()
+        && (stored.details.is_some() || failure.code == UNKNOWN_ACCOUNT_FAILURE.code)
+    {
+        stored.details.get_or_insert_with(Default::default).account = Some(account.id.clone());
+    }
+    stored
+}
+
 async fn finalize_failed(
     deps: &Deps,
     session: &SessionClient,
@@ -3597,7 +3674,7 @@ async fn finalize_failed(
     record.exchange_finished = terminal;
     record.continues = woke;
     record.result_error = Some(summary.clone());
-    record.failure = Some(failure.stored());
+    record.failure = Some(stored_failure(record, failure));
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
     record.slim_finished();
@@ -3619,35 +3696,43 @@ async fn finalize_failed(
     let woke = woke || late;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
+    let mut entry = json!({
+        "status": "error",
+        "summary": summary,
+        "reason": detail,
+        "code": failure.code,
+        "class": failure_class(failure),
+        "message": public_message,
+        "detail": detail,
+        "provider": failure.provider.or(record.options.provider.as_deref()),
+        "model": failure.model.unwrap_or(&record.options.model),
+        "retryable": failure.retryable,
+        "phase": failure.phase,
+        "partial_result_available": record.result.is_some(),
+        "recovery": {
+            "attempted": record.transient_resumes,
+            "max_attempts": record.options.max_transient_resumes,
+            "outcome": if record.transient_resumes > 0 { "exhausted" } else { "not_attempted" },
+        },
+        "next_actions": presentation.next_actions,
+        "artifacts": {
+            "session_id": record.session_id,
+            "turn_id": record.turn_id,
+        },
+        "timestamp": AgentMessage::now_ms(),
+    });
+    if let Some(details) = record
+        .failure
+        .as_ref()
+        .and_then(|failure| failure.details.as_ref())
+    {
+        entry["details"] = json!(details);
+    }
     let _ = session
         .append_custom(
             &record.session_id,
             "error",
-            json!({
-                "status": "error",
-                "summary": summary,
-                "reason": detail,
-                "code": failure.code,
-                "class": failure_class(failure),
-                "message": public_message,
-                "detail": detail,
-                "provider": failure.provider.or(record.options.provider.as_deref()),
-                "model": failure.model.unwrap_or(&record.options.model),
-                "retryable": failure.retryable,
-                "phase": failure.phase,
-                "partial_result_available": record.result.is_some(),
-                "recovery": {
-                    "attempted": record.transient_resumes,
-                    "max_attempts": record.options.max_transient_resumes,
-                    "outcome": if record.transient_resumes > 0 { "exhausted" } else { "not_attempted" },
-                },
-                "next_actions": presentation.next_actions,
-                "artifacts": {
-                    "session_id": record.session_id,
-                    "turn_id": record.turn_id,
-                },
-                "timestamp": AgentMessage::now_ms(),
-            }),
+            entry,
             &format!("e_{}_error", record.turn_id),
             Some(&origin(&record.turn_id)),
         )
@@ -3666,6 +3751,7 @@ async fn finalize_failed(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     crate::usage_report::report(deps, record, "failed", Some(failure_class(failure))).await;
@@ -3720,20 +3806,57 @@ fn llm_failure_info<'a>(
         Some(ErrorKind::Permanent) => "llm.permanent",
         None => "llm.generation_failed",
     };
+    // A usage limit stays `rate_limited` on the wire (D147), but no retry
+    // can pass it before its reset: the transient resume skips it.
+    let limit = ErrorDetails::usage_limit(error.and_then(|error| error.error_details.as_ref()));
     FailureInfo {
-        code: error
-            .and_then(|error| error.code.as_deref())
-            .filter(|code| !code.is_empty())
-            .unwrap_or(fallback_code),
+        code: if limit.is_some() {
+            crate::accounts::USAGE_LIMIT_CODE
+        } else {
+            error
+                .and_then(|error| error.code.as_deref())
+                .filter(|code| !code.is_empty())
+                .unwrap_or(fallback_code)
+        },
         phase: "generation",
-        retryable: error
-            .and_then(|error| error.retryable)
-            .unwrap_or_else(|| kind.is_some_and(ErrorKind::is_retryable)),
+        retryable: limit.is_none()
+            && error
+                .and_then(|error| error.retryable)
+                .unwrap_or_else(|| kind.is_some_and(ErrorKind::is_retryable)),
         kind,
         detail: error.and_then(|error| error.detail.as_deref()),
         provider,
         model,
+        limit,
     }
+}
+
+/// The message that resumes a generation cut after streaming part of its
+/// answer: the transient resume's, and `harness::retry`'s when the failed
+/// turn left partial output.
+pub(crate) async fn append_resume_nudge(
+    session: &SessionClient,
+    session_id: &str,
+    turn_id: &str,
+    attempt: u32,
+    reason: &str,
+) -> Result<(), HarnessError> {
+    let nudge = AgentMessage::user_text(format!(
+        "The provider/router ended transiently after streaming the previous partial \
+         response: {reason}. Resume from the transcript and return the complete deliverable, \
+         incorporating the previous partial even if it was already nearly complete. Do not \
+         repeat function calls that already have successful results."
+    ));
+    session
+        .append(
+            session_id,
+            &nudge,
+            Some(&ids::transient_resume_nudge_entry_id(turn_id, attempt)),
+            None,
+            Some(&origin(turn_id)),
+        )
+        .await?;
+    Ok(())
 }
 
 fn record_recovery_telemetry(record: &TurnRecord, reason: &str, attempt: u32) {
@@ -3852,6 +3975,7 @@ pub(crate) async fn finalize_cancelled(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     crate::usage_report::report(deps, record, "cancelled", None).await;
@@ -3994,6 +4118,7 @@ pub(crate) async fn end_stopped_exchange(
             true,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     record.exchange_finished = true;
@@ -4011,6 +4136,7 @@ const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 /// Finalise a freshly seeded turn whose first step could not be enqueued.
@@ -6681,6 +6807,7 @@ mod tests {
             detail: Some("provider openai stream function was not found".into()),
             kind: Some(ErrorKind::Transient),
             retryable: Some(true),
+            error_details: None,
         };
         let failure = super::llm_failure_info(
             Some(&error),
@@ -6702,6 +6829,87 @@ mod tests {
     }
 
     #[test]
+    fn a_usage_limit_fails_the_turn_without_a_resume_and_names_the_account() {
+        let limit = crate::types::message::ErrorDetails {
+            usage_limit: true,
+            window: Some("five_hour".into()),
+            resets_at_ms: Some(1_700_000_000_000),
+        };
+        let error = ChatError {
+            code: Some("router/provider_rate_limited".into()),
+            message: "Limited.".into(),
+            detail: None,
+            kind: Some(ErrorKind::RateLimited),
+            retryable: Some(true),
+            error_details: Some(limit),
+        };
+        let failure = super::llm_failure_info(Some(&error), None, None, None);
+        assert_eq!(failure.code, "llm.usage_limit");
+        assert!(!failure.retryable, "a usage limit is never resumed");
+        assert!(!transient_resume_allowed(failure.retryable, 0, 3, 1, 16));
+        assert_eq!(super::failure_class(failure), "llm.rate_limited");
+        assert_eq!(
+            super::failure_presentation("Limited.", failure).summary,
+            "This Claude Code account reached its usage limit."
+        );
+
+        let mut record = crate::types::turn::tests::record();
+        record.account = Some(crate::accounts::TurnAccount {
+            id: "work".into(),
+            source: crate::accounts::AccountSource::Project,
+            project_id: None,
+        });
+        assert_eq!(
+            serde_json::to_value(super::stored_failure(&record, failure)).unwrap(),
+            serde_json::json!({
+                "code": "llm.usage_limit",
+                "retryable": false,
+                "details": {
+                    "usage_limit": true,
+                    "window": "five_hour",
+                    "resets_at_ms": 1_700_000_000_000u64,
+                    "account": "work"
+                }
+            })
+        );
+
+        // A plain rate limit (no usage limit) stays retryable and detail-less.
+        let plain = ChatError {
+            error_details: Some(crate::types::message::ErrorDetails::default()),
+            ..error
+        };
+        let failure = super::llm_failure_info(Some(&plain), None, None, None);
+        assert_eq!(failure.code, "router/provider_rate_limited");
+        assert!(failure.retryable);
+        assert_eq!(super::stored_failure(&record, failure).details, None);
+    }
+
+    #[test]
+    fn a_pin_to_a_gone_account_names_it_in_the_failure() {
+        let mut record = crate::types::turn::tests::record();
+        record.account = Some(crate::accounts::TurnAccount {
+            id: "old".into(),
+            source: crate::accounts::AccountSource::Session,
+            project_id: None,
+        });
+        let stored = super::stored_failure(&record, super::UNKNOWN_ACCOUNT_FAILURE);
+        assert_eq!(stored.code, "harness.unknown_account");
+        assert!(!stored.retryable);
+        assert_eq!(
+            stored
+                .details
+                .and_then(|details| details.account)
+                .as_deref(),
+            Some("old")
+        );
+        // Any other failure of an account's turn carries no details.
+        assert_eq!(
+            super::stored_failure(&record, super::INTERNAL_FAILURE).details,
+            None
+        );
+    }
+
+    #[test]
     fn a_stored_failure_keeps_the_code_and_whether_a_retry_may_succeed() {
         let error = ChatError {
             code: Some("router/provider_transient".into()),
@@ -6709,6 +6917,7 @@ mod tests {
             detail: None,
             kind: Some(ErrorKind::Transient),
             retryable: None,
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, None, None);
         assert_eq!(
@@ -6716,6 +6925,7 @@ mod tests {
             crate::types::turn::TurnFailure {
                 code: "router/provider_transient".into(),
                 retryable: true,
+                details: None,
             }
         );
         assert_eq!(
@@ -6723,6 +6933,7 @@ mod tests {
             crate::types::turn::TurnFailure {
                 code: "harness.turn_internal".into(),
                 retryable: false,
+                details: None,
             }
         );
     }
@@ -6735,6 +6946,7 @@ mod tests {
             detail: Some("legacy raw provider text".into()),
             kind: Some(ErrorKind::Transient),
             retryable: Some(true),
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, Some("openai"), Some("gpt-test"));
         let presentation = super::failure_presentation(&error.message, failure);
@@ -6762,6 +6974,7 @@ mod tests {
             detail: None,
             kind: Some(ErrorKind::Permanent),
             retryable: Some(false),
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, Some("openai-codex"), Some("m"));
         assert!(!transient_resume_allowed(failure.retryable, 0, 3, 1, 16));
@@ -6820,6 +7033,7 @@ mod tests {
             detail: Some("raw rejection with upstream diagnostics".into()),
             kind: Some(ErrorKind::Permanent),
             retryable: Some(false),
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, None, Some("m"));
         let presentation = super::failure_presentation(&error.message, failure);

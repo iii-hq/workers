@@ -48,6 +48,17 @@ pub struct LifecycleEventV1 {
     /// (`harness::ask`); board dispatch reads it.
     #[serde(default)]
     pub open_asks: u64,
+    /// The Claude Code account a `claude-code` turn ran on (D139).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<LifecycleAccountV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleAccountV1 {
+    pub id: String,
+    /// `session`, `project` or `global`.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -63,6 +63,31 @@ pub struct ScenarioFixture {
     /// `(relative path, content)`, e.g. `("harness/alpha.md", …)` for the
     /// skill id `harness/alpha`.
     pub skill_files: Vec<(String, String)>,
+    /// Functions the probe registers before the harness starts, standing in
+    /// for workers the stack does not run.
+    pub stand_in_functions: Vec<StandInFunction>,
+    /// Calls the runner makes once the harness is ready, before the send.
+    pub setup_calls: Vec<SetupCall>,
+}
+
+/// A function of a worker the stack does not run (the tmux worker's
+/// `tmux::accounts::list`), registered by the probe: every call answers
+/// `response`.
+#[derive(Debug, Clone)]
+pub struct StandInFunction {
+    pub function_id: String,
+    pub response: serde_json::Value,
+}
+
+/// A call made before the send (`harness::projects::create`), so the send's
+/// turn starts from that state. `{{run_id}}`/`{{session_id}}` in the payload
+/// expand.
+#[derive(Debug, Clone)]
+pub struct SetupCall {
+    pub function_id: String,
+    pub payload: serde_json::Value,
+    /// Required subset of the response.
+    pub expected_output: Option<crate::types::script::JsonMatcherV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +210,25 @@ impl ScenarioFixture {
                     "a probe action gated on target calls needs a controlled function to count"
                 );
             }
+        }
+        for function in &self.stand_in_functions {
+            anyhow::ensure!(
+                !function.function_id.is_empty()
+                    && !function.function_id.starts_with("harness::")
+                    && self
+                        .scenario
+                        .target
+                        .as_ref()
+                        .is_none_or(|target| target.function_id != function.function_id),
+                "stand-in {:?} must name a function outside the harness and the controlled one",
+                function.function_id
+            );
+        }
+        for call in &self.setup_calls {
+            anyhow::ensure!(
+                !call.function_id.is_empty(),
+                "a setup call needs a function id"
+            );
         }
         if let Some(intervention) = &self.intervention {
             match intervention {

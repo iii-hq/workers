@@ -35,8 +35,10 @@ pub const LIST_DESC: &str = "List the chat projects: named, coloured groups of f
      created_at_ms, updated_at_ms }] }. Without `version: 2` it answers the old saved-folder \
      list, kept for apps released before projects.";
 pub const CREATE_ID: &str = "harness::projects::create";
-pub const CREATE_DESC: &str = "Internal control-plane: create a chat project { name, color, folders, bring_existing? }; \
-     bring_existing stamps the root conversations already in its folders. Answers { project, moved }.";
+pub const CREATE_DESC: &str = "Internal control-plane: create a chat project { name, color, folders, account?, \
+     bring_existing? }; account is { mode: \"global\" } (the default) or { mode: \"pinned\", \
+     account_id } (invalid_account otherwise); bring_existing stamps the root conversations \
+     already in its folders. Answers { project, moved }.";
 pub const UPDATE_ID: &str = "harness::projects::update";
 pub const UPDATE_DESC: &str = "Internal control-plane: change a chat project (a patch: only the fields sent change); \
      bring_existing applies to the folders added in this call. Answers { project, moved }.";
@@ -97,6 +99,11 @@ pub struct ProjectCreateRequest {
     /// `project_id` is missing or `"none"`.
     #[serde(default)]
     pub bring_existing: Option<bool>,
+    /// The project's Claude Code account: `{mode: "global"}` (the default)
+    /// or `{mode: "pinned", account_id}`. Anything else is `invalid_account`.
+    #[serde(default)]
+    #[schemars(with = "Option<Map<String, Value>>")]
+    pub account: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -109,7 +116,8 @@ pub struct ProjectUpdateRequest {
     /// The whole new folder list.
     #[serde(default)]
     pub folders: Option<Vec<String>>,
-    /// Phase 4: `{mode: "global"}` or a pinned account.
+    /// The project's Claude Code account: `{mode: "global"}` or
+    /// `{mode: "pinned", account_id}`. Anything else is `invalid_account`.
     #[serde(default)]
     #[schemars(with = "Option<Map<String, Value>>")]
     pub account: Option<Value>,
@@ -252,6 +260,7 @@ pub async fn create(
                 name: request.name,
                 color: request.color,
                 folders: request.folders,
+                account: request.account,
             },
             home.as_deref(),
         )
@@ -759,6 +768,7 @@ mod tests {
                 color: "blue".into(),
                 folders: vec!["/w/acme/web".into()],
                 bring_existing: None,
+                account: None,
             },
         )
         .await
@@ -809,6 +819,7 @@ mod tests {
                 color: "rose".into(),
                 folders: vec!["/w/other".into()],
                 bring_existing: None,
+                account: None,
             },
         )
         .await
@@ -967,6 +978,7 @@ mod tests {
                 color: "blue".into(),
                 folders: vec!["/w/web".into(), "/w/api".into()],
                 bring_existing: Some(true),
+                account: None,
             },
         )
         .await
@@ -999,6 +1011,7 @@ mod tests {
                 color: "rose".into(),
                 folders: vec!["/w/elsewhere".into()],
                 bring_existing: None,
+                account: None,
             },
         )
         .await

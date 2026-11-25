@@ -55,6 +55,7 @@ No provider key or network access is required.
 | INT-045 | `set-description-ends-turn` | direct | a step whose only call is `harness::set-description`, beside reply text, is answered by the turn loop for the turn's own session (one `session::patch-meta`), `session::on-meta-updated` carries the description, and the turn completes without another model call |
 | INT-046 | `side-chat-same-prefix` | direct | after the conversation's turn, the probe opens a side chat at its reply (`harness::side-chat::open`) and sends in it; the side chat's first router request carries the conversation's system prompt (its frozen runtime context included), system sections and tools, its history starts with the conversation's, and nothing reaches the conversation |
 | INT-047 | `ask-open-answer` | direct | an ask remains listed and observable while steering continues the turn; a later operator answer arrives once, agent answers remain denied, and status/completion expose `open_asks` |
+| INT-048 | `account-usage-limit-retry` | direct | a stand-in `tmux::accounts::list` offers two Claude Code accounts and a setup call creates a project over the send's folder pinned to the second; the conversation joins it, its turn carries `provider_options.claude-code.account` of the pinned account, and the router answers `rate_limited` with `error_details.usage_limit`. The turn fails once with `llm.usage_limit` naming the account and no resume; after `session::patch-meta` names the other account, `harness::retry` runs the turn on it with no second user message, and the verbose status shows `account {id, source: "session"}` |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
@@ -70,6 +71,13 @@ response behavior, controlled function, function history, and verification
 visible at the call site. Builders compile directly to the runtime types; there
 is no YAML, macro layer, inferred history, or generic authored-scenario
 compiler.
+
+Two builders reach outside the stack's workers. A stand-in function
+(`stand_in_function`) is registered by the probe before the harness starts
+and answers every call with a fixed value, standing in for a worker the stack
+does not run (INT-048's `tmux::accounts::list`). A setup call (`setup_call`)
+runs once the harness is ready and before the send, and its response must
+contain the expected subset (INT-048's `harness::projects::create`).
 
 ## Run the direct scenarios
 

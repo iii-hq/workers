@@ -66,6 +66,10 @@ pub struct TurnStartedEvent {
     /// The session this one is displayed under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// The Claude Code account the turn runs on and why (`claude-code`
+    /// turns, chat-projects phase 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::AccountRef>,
 }
 
 /// `harness::on-turn-completed`: a turn reached a terminal status. A turn that ended
@@ -97,6 +101,10 @@ pub struct TurnCompletedEvent {
     /// The latest generation's context accounting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::context_snapshot::ContextSnapshotV1>,
+    /// The Claude Code account the turn ran on and why (`claude-code`
+    /// turns, chat-projects phase 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::AccountRef>,
 }
 
 /// `harness::on-message-queued`: a pointer to a message parked in the
@@ -387,6 +395,7 @@ impl TurnEvents {
     /// started the turn (a sub-agent's task text for a child), so a consumer
     /// can name the turn without reading the transcript; `depth` is 0 for a
     /// top-level turn.
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit_started(
         &self,
         session_id: &str,
@@ -395,6 +404,7 @@ impl TurnEvents {
         display_parent: Option<&str>,
         message_preview: Option<&str>,
         depth: u32,
+        account: Option<&crate::accounts::TurnAccount>,
     ) {
         tracing::info!(session_id, turn_id, "turn started");
         if !self.iii.is_observed(ON_TURN_STARTED_FN) {
@@ -410,6 +420,7 @@ impl TurnEvents {
             payload["message_preview"] = Value::String(preview.to_string());
         }
         put_parent(&mut payload, parent, display_parent);
+        put_account(&mut payload, account);
         self.emit(ON_TURN_STARTED_FN, payload).await;
     }
 
@@ -427,6 +438,7 @@ impl TurnEvents {
         terminal: bool,
         context: Option<&crate::context_snapshot::ContextSnapshotV1>,
         open_asks: usize,
+        account: Option<&crate::accounts::TurnAccount>,
     ) {
         tracing::info!(
             session_id,
@@ -467,6 +479,7 @@ impl TurnEvents {
         if let Some(snapshot) = context {
             payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
+        put_account(&mut payload, account);
         self.emit(ON_TURN_COMPLETED_FN, payload).await;
     }
 
@@ -510,6 +523,13 @@ pub async fn emit_void(iii: &IIIClient, function_id: &str, payload: Value) {
     };
     if let Err(error) = iii.call(request).await {
         tracing::warn!(function_id, %error, "harness event call failed");
+    }
+}
+
+/// `account {id, source}` on a turn event, for a turn that has one.
+fn put_account(payload: &mut Value, account: Option<&crate::accounts::TurnAccount>) {
+    if let Some(account) = account {
+        payload["account"] = serde_json::to_value(account.public()).unwrap_or(Value::Null);
     }
 }
 
@@ -656,6 +676,36 @@ mod tests {
         let before = top.clone();
         put_parent(&mut top, None, None);
         assert_eq!(top, before);
+    }
+
+    /// `account {id, source}` (chat-projects contract D), never the
+    /// project the ledger counts the turn under.
+    #[test]
+    fn put_account_writes_what_the_turn_events_publish() {
+        let account = crate::accounts::TurnAccount {
+            id: "work".into(),
+            source: crate::accounts::AccountSource::Project,
+            project_id: Some("prj_1".into()),
+        };
+        let mut started = json!({ "session_id": "s_1", "turn_id": "t_1", "timestamp": 1,
+            "depth": 0 });
+        put_account(&mut started, Some(&account));
+        assert_eq!(
+            started["account"],
+            json!({ "id": "work", "source": "project" })
+        );
+        let event: TurnStartedEvent = serde_json::from_value(started).unwrap();
+        assert_eq!(event.account, Some(account.public()));
+
+        let mut completed = json!({ "session_id": "s_1", "turn_id": "t_1",
+            "status": "failed", "terminal": true, "timestamp": 2 });
+        put_account(&mut completed, Some(&account));
+        let event: TurnCompletedEvent = serde_json::from_value(completed).unwrap();
+        assert_eq!(event.account, Some(account.public()));
+
+        let mut other = json!({ "session_id": "s_1" });
+        put_account(&mut other, None);
+        assert_eq!(other, json!({ "session_id": "s_1" }));
     }
 
     #[test]
