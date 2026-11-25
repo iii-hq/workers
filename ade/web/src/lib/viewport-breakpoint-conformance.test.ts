@@ -66,6 +66,11 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
     max: 8,
     reason: 'phone chrome: stacked 48px buttons in the phone dialog',
   },
+  'components/permissions/PermissionModePicker.tsx': {
+    max: 1,
+    reason:
+      'phone chrome: the pill is 40px on touch, 32px on desktop like the model pill',
+  },
   'components/sidebar/ConversationSidebar.tsx': { max: 4, reason: TOUCH },
   'components/observer-activity/ObserverActivityCard.tsx': {
     max: 18,
