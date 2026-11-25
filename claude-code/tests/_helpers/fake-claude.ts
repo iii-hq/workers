@@ -1,9 +1,11 @@
 /**
  * Claude Code's own plugin commands, as far as the worker uses them:
- * `claude plugin list --json`, `claude plugin marketplace list|add`,
- * `claude plugin install|enable`, plus `pwd -P` for the real folder. The
- * state is what Claude Code keeps per user: the known marketplaces, every
- * install with its scope and project.
+ * `claude plugin list --json`, `claude plugin marketplace list|add|update`,
+ * `claude plugin install|enable|update`, plus `pwd -P` for the real folder.
+ * The state is what Claude Code keeps per user: the known marketplaces, every
+ * install with its scope, project and version, and the version the local
+ * copy of the marketplace offers (`catalog`), which only moves to the
+ * published one (`latest`) on `marketplace add` or `marketplace update`.
  */
 
 export type Install = {
@@ -11,6 +13,7 @@ export type Install = {
   scope: 'user' | 'project' | 'local';
   enabled: boolean;
   projectPath?: string;
+  version?: string;
 };
 
 export type ClaudeRun = { program: string; args: string[]; cwd: string };
@@ -18,6 +21,10 @@ export type ClaudeRun = { program: string; args: string[]; cwd: string };
 export type FakeClaude = {
   marketplaces: string[];
   installs: Install[];
+  /** The version the local copy of the `iii` marketplace offers. */
+  catalog: string;
+  /** The version published upstream, fetched by `marketplace add|update`. */
+  latest: string;
   runs: ClaudeRun[];
   /** Symlinked folders: what `pwd -P` answers for them. */
   realpaths: Record<string, string>;
@@ -45,10 +52,15 @@ export const CLAUDE = '/opt/claude/bin/claude';
 /** The terminal host resolves a path; a headless turn may run plain `claude`. */
 const isClaude = (program: string) => program === 'claude' || program.endsWith('/claude');
 
-export function fakeClaude(initial: Partial<Pick<FakeClaude, 'marketplaces' | 'installs'>> = {}) {
+export function fakeClaude(
+  initial: Partial<Pick<FakeClaude, 'marketplaces' | 'installs' | 'catalog' | 'latest'>> = {},
+) {
+  const latest = initial.latest ?? '0.4.0';
   const fake: FakeClaude = {
     marketplaces: [...(initial.marketplaces ?? ['iii'])],
-    installs: [...(initial.installs ?? [])],
+    installs: (initial.installs ?? []).map((i) => ({ version: '0.3.0', ...i })),
+    catalog: initial.catalog ?? latest,
+    latest,
     runs: [],
     realpaths: {},
     missing: new Set(),
@@ -74,10 +86,10 @@ export function fakeClaude(initial: Partial<Pick<FakeClaude, 'marketplaces' | 'i
           JSON.stringify(
             fake.installs.map((i) => ({
               id: i.id,
-              version: '0.3.0',
+              version: i.version,
               scope: i.scope,
               enabled: i.enabled,
-              installPath: '/home/u/.claude/plugins/cache/iii/iii/0.3.0',
+              installPath: `/home/u/.claude/plugins/cache/iii/iii/${i.version}`,
               ...(i.projectPath ? { projectPath: i.projectPath } : {}),
             })),
           ),
@@ -91,17 +103,36 @@ export function fakeClaude(initial: Partial<Pick<FakeClaude, 'marketplaces' | 'i
         );
       }
       if (sub.startsWith('plugin marketplace add')) {
-        if (args.includes('iii-hq/agent-plugins-claude')) fake.marketplaces.push('iii');
+        if (args.includes('iii-hq/agent-plugins-claude')) {
+          fake.marketplaces.push('iii');
+          fake.catalog = fake.latest;
+        }
         return ok(
           JSON.stringify({ command: 'marketplace-add', outcome: 'ok', marketplace: 'iii' }),
         );
+      }
+      if (sub.startsWith('plugin marketplace update')) {
+        const name = args[args.indexOf('update') + 1];
+        if (!fake.marketplaces.includes(name)) return err(`Marketplace "${name}" not found`);
+        if (name === 'iii') fake.catalog = fake.latest;
+        return ok(JSON.stringify({ command: 'marketplace-update', outcome: 'ok' }));
+      }
+      if (sub.startsWith('plugin update')) {
+        const id = args[args.indexOf('update') + 1];
+        const scope = args[args.indexOf('--scope') + 1];
+        const entry = fake.installs.find(
+          (i) => i.id === id && i.scope === scope && (scope === 'user' || i.projectPath === cwd),
+        );
+        if (!entry) return err(`Plugin "${id}" is not installed at scope ${scope}`);
+        entry.version = fake.catalog;
+        return ok(JSON.stringify({ command: 'update', outcome: 'ok', version: fake.catalog }));
       }
       if (sub.startsWith('plugin install')) {
         const id = args[args.indexOf('install') + 1];
         if (!fake.marketplaces.includes(id.split('@')[1]))
           return err(`Plugin "${id}" not found in any configured marketplace`);
         const scope = args[args.indexOf('--scope') + 1] as Install['scope'];
-        fake.installs.push({ id, scope, enabled: true, projectPath: cwd });
+        fake.installs.push({ id, scope, enabled: true, projectPath: cwd, version: fake.catalog });
         return ok(JSON.stringify({ command: 'install', outcome: 'ok', pluginId: id, scope }));
       }
       if (sub.startsWith('plugin enable')) {

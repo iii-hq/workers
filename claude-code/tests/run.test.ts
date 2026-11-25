@@ -199,7 +199,7 @@ describe('executeRun', () => {
     expect(capture.options?.plugins).toBeUndefined();
     expect(claude.claudeCalls()).toContain('plugin install iii@iii --scope local --json');
     expect(claude.installs).toEqual([
-      { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/repo/a' },
+      { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/repo/a', version: '0.4.0' },
     ]);
     // The install is in the folder's local settings: the turn has to read them.
     expect(capture.options?.settingSources).toEqual(['local']);
@@ -211,7 +211,13 @@ describe('executeRun', () => {
     });
     vi.mocked(localRun).mockImplementation(claude.run);
     await runTurn({ prompt: 'x', session_id: 's1', cwd: '/repo/a' });
-    expect(claude.claudeCalls()).toEqual(['plugin list --json']);
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      'plugin update iii@iii --scope local --json',
+    ]);
+    expect(claude.installs).toHaveLength(1);
   });
 
   it('checks the folder a turn without cwd runs in: the worker process folder', async () => {

@@ -77,30 +77,84 @@ describe('ensurePlugin', () => {
     const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
     expect(status).toMatchObject({ state: 'installed', folder: '/p/a' });
     expect(claude.claudeCalls()).toEqual([
-      'plugin list --json',
       'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
       `plugin install iii@iii --scope local --json`,
     ]);
     // Every command runs IN the folder: local scope is that folder's.
     for (const run of claude.runs) expect(run.cwd).toBe('/p/a');
     expect(claude.installs).toEqual([
-      { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a' },
+      { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a', version: '0.4.0' },
     ]);
   });
 
-  it('leaves a folder alone when iii@iii is already installed and enabled for it', async () => {
+  it('does not reinstall where iii@iii is installed and enabled: it updates it in place', async () => {
     const claude = fakeClaude({
       installs: [{ id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a' }],
     });
     const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
     expect(status.state).toBe('present');
-    expect(claude.claudeCalls()).toEqual(['plugin list --json']);
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      'plugin update iii@iii --scope local --json',
+    ]);
+    expect(claude.installs).toHaveLength(1);
   });
 
-  it('leaves it alone under a user-scope install too', async () => {
+  it('updates a user-scope install at user scope, without installing locally', async () => {
     const claude = fakeClaude({ installs: [{ id: 'iii@iii', scope: 'user', enabled: true }] });
     expect((await ensurePlugin(claude.run, CLAUDE, '/p/a')).state).toBe('present');
-    expect(claude.claudeCalls()).toEqual(['plugin list --json']);
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      'plugin update iii@iii --scope user --json',
+    ]);
+    expect(claude.installs).toHaveLength(1);
+    expect(claude.installs[0].version).toBe('0.4.0');
+  });
+
+  it('brings a stale install up to the published release: the local marketplace copy is refreshed first', async () => {
+    // The published plugin is 0.4.0, the local marketplace copy still offers
+    // 0.3.0 and the folder has 0.3.0: without the refresh, update finds
+    // nothing new.
+    const claude = fakeClaude({
+      catalog: '0.3.0',
+      latest: '0.4.0',
+      installs: [
+        { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a', version: '0.3.0' },
+      ],
+    });
+    await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(claude.installs[0].version).toBe('0.4.0');
+  });
+
+  it('installs the published release, not a stale marketplace copy', async () => {
+    const claude = fakeClaude({ catalog: '0.3.0', latest: '0.4.0' });
+    expect((await ensurePlugin(claude.run, CLAUDE, '/p/a')).state).toBe('installed');
+    expect(claude.installs[0].version).toBe('0.4.0');
+  });
+
+  it('still checks and installs when the marketplace refresh fails, saying so', async () => {
+    const claude = fakeClaude({ catalog: '0.3.0', latest: '0.4.0' });
+    claude.fail.add('plugin marketplace update');
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('installed');
+    expect(status.detail).toContain('could not be refreshed');
+    expect(claude.installs[0].version).toBe('0.3.0');
+  });
+
+  it('keeps an installed plugin when its update fails, saying so', async () => {
+    const claude = fakeClaude({
+      installs: [{ id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/p/a' }],
+    });
+    claude.fail.add('plugin update');
+    const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
+    expect(status.state).toBe('present');
+    expect(status.detail).toContain('claude plugin update');
   });
 
   it('installs in a folder even when another folder has it', async () => {
@@ -116,9 +170,9 @@ describe('ensurePlugin', () => {
     const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
     expect(status.state).toBe('installed');
     expect(claude.claudeCalls()).toEqual([
-      'plugin list --json',
       'plugin marketplace list --json',
       'plugin marketplace add iii-hq/agent-plugins-claude --json',
+      'plugin list --json',
       `plugin install iii@iii --scope local --json`,
     ]);
   });
@@ -130,10 +184,14 @@ describe('ensurePlugin', () => {
     const status = await ensurePlugin(claude.run, CLAUDE, '/p/a');
     expect(status.state).toBe('enabled');
     expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
       'plugin list --json',
+      'plugin update iii@iii --scope local --json',
       'plugin enable iii@iii --scope local --json',
     ]);
     expect(claude.installs[0].enabled).toBe(true);
+    expect(claude.installs[0].version).toBe('0.4.0');
   });
 
   it('installs nothing when the list cannot be read, and says why', async () => {
@@ -143,7 +201,11 @@ describe('ensurePlugin', () => {
     expect(status.state).toBe('failed');
     expect(status.detail).toContain('claude plugin list');
     expect(status.detail).toContain('plugin list failed');
-    expect(claude.claudeCalls()).toEqual(['plugin list --json']);
+    expect(claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+    ]);
   });
 
   it('installs nothing when the list is not JSON (an older claude)', async () => {

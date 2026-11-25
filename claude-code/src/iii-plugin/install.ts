@@ -4,11 +4,14 @@
  *
  * The plugin is the PUBLISHED one: `iii@iii`, plugin `iii` of the `iii`
  * marketplace (iii-hq/agent-plugins-claude). The worker writes no copy of
- * it, and passes no `--plugin-dir`. For a folder it asks
- * `claude plugin list --json` (run in that folder) whether `iii@iii` already
- * covers it, installed and enabled; when not, it adds the marketplace if
- * missing and runs `claude plugin install iii@iii --scope local` there. The
- * plugin is not configured: it has no options.
+ * it, and passes no `--plugin-dir`. For a folder it first adds the
+ * marketplace when missing, else refreshes Claude Code's local copy of it
+ * (`claude plugin marketplace update iii`), so a new release is seen. Then it
+ * asks `claude plugin list --json` (run in that folder) whether `iii@iii`
+ * already covers it: when installed, it is updated in place at its own scope
+ * (a no-op when current), never reinstalled; when not, it is installed with
+ * `claude plugin install iii@iii --scope local` there. The plugin is not
+ * configured: it has no options.
  *
  * Where mcp-server answers is not stored anywhere either. The plugin's
  * `.mcp.json` reads `III_MCP_URL` from the environment of the Claude process
@@ -120,31 +123,30 @@ async function ensureNow(run: Runner, claude: string, folder: string): Promise<P
     folder,
     detail: `the iii plugin is not loaded in ${folder}: ${detail}`,
   });
+  // Problems that leave the plugin loaded, an older release of it at worst.
+  const notes: string[] = [];
   try {
-    const listed = await run(claude, ['plugin', 'list', '--json'], folder);
-    if (listed.exit_code !== 0) return failed(`\`claude plugin list\` failed (${said(listed)})`);
-    const list = parseJson(listed.stdout);
-    if (!list.ok) return failed('`claude plugin list --json` printed something that is not JSON');
-    const coverage = pluginCoverage(list.value, folder);
-    if (coverage === 'enabled') return { state: 'present', folder, detail: '' };
-    if (coverage === 'disabled') {
-      const enabled = await run(
-        claude,
-        ['plugin', 'enable', PLUGIN_ID, '--scope', 'local', '--json'],
-        folder,
-      );
-      if (enabled.exit_code !== 0)
-        return failed(`\`claude plugin enable\` failed (${said(enabled)})`);
-      return { state: 'enabled', folder, detail: '' };
-    }
-
+    // The marketplace first, refreshed every time: Claude Code installs and
+    // updates from its local copy, which does not move on its own, so a
+    // stale copy would hold every folder at an old release.
     const markets = await run(claude, ['plugin', 'marketplace', 'list', '--json'], folder);
     const known = markets.exit_code === 0 ? parseJson(markets.stdout) : { ok: false as const };
     const hasMarket =
       known.ok &&
       Array.isArray(known.value) &&
       (known.value as { name?: unknown }[]).some((m) => m?.name === MARKETPLACE_NAME);
-    if (!hasMarket) {
+    if (hasMarket) {
+      const refreshed = await run(
+        claude,
+        ['plugin', 'marketplace', 'update', MARKETPLACE_NAME],
+        folder,
+      );
+      if (refreshed.exit_code !== 0) {
+        notes.push(
+          `the ${MARKETPLACE_NAME} marketplace could not be refreshed (${said(refreshed)}), so the plugin may be an older release`,
+        );
+      }
+    } else {
       const added = await run(
         claude,
         ['plugin', 'marketplace', 'add', MARKETPLACE_SOURCE, '--json'],
@@ -155,18 +157,61 @@ async function ensureNow(run: Runner, claude: string, folder: string): Promise<P
       }
     }
 
-    const installed = await run(
+    const listed = await run(claude, ['plugin', 'list', '--json'], folder);
+    if (listed.exit_code !== 0) return failed(`\`claude plugin list\` failed (${said(listed)})`);
+    const list = parseJson(listed.stdout);
+    if (!list.ok) return failed('`claude plugin list --json` printed something that is not JSON');
+    const coverage = pluginCoverage(list.value, folder);
+    const detail = () => notes.join('; ');
+
+    if (coverage === 'absent') {
+      const installed = await run(
+        claude,
+        ['plugin', 'install', PLUGIN_ID, '--scope', 'local', '--json'],
+        folder,
+      );
+      if (installed.exit_code !== 0) {
+        return failed(`\`claude plugin install ${PLUGIN_ID}\` failed (${said(installed)})`);
+      }
+      return { state: 'installed', folder, detail: detail() };
+    }
+
+    // Installed: bring it to the marketplace's release in place, at the scope
+    // it was installed at (a no-op when it is current). Never a reinstall.
+    const scope = coverage === 'enabled' ? coveringScope(list.value, folder) : 'local';
+    const updated = await run(
       claude,
-      ['plugin', 'install', PLUGIN_ID, '--scope', 'local', '--json'],
+      ['plugin', 'update', PLUGIN_ID, '--scope', scope, '--json'],
       folder,
     );
-    if (installed.exit_code !== 0) {
-      return failed(`\`claude plugin install ${PLUGIN_ID}\` failed (${said(installed)})`);
+    if (updated.exit_code !== 0) {
+      notes.push(
+        `\`claude plugin update ${PLUGIN_ID}\` failed (${said(updated)}); the installed release is kept`,
+      );
     }
-    return { state: 'installed', folder, detail: '' };
+    if (coverage === 'enabled') return { state: 'present', folder, detail: detail() };
+
+    const enabled = await run(
+      claude,
+      ['plugin', 'enable', PLUGIN_ID, '--scope', 'local', '--json'],
+      folder,
+    );
+    if (enabled.exit_code !== 0)
+      return failed(`\`claude plugin enable\` failed (${said(enabled)})`);
+    return { state: 'enabled', folder, detail: detail() };
   } catch (err) {
     return failed(String(err));
   }
+}
+
+/** The scope of the enabled install that covers `folder`: its own, else the user's. */
+function coveringScope(list: unknown, folder: string): string {
+  const mine = (Array.isArray(list) ? (list as ListEntry[]) : []).filter(
+    (e) => e?.id === PLUGIN_ID && e.enabled === true,
+  );
+  const own = mine.find((e) => e.projectPath === folder && typeof e.scope === 'string');
+  if (own) return own.scope as string;
+  return 'user';
 }
 
 const MCP_SETUP =

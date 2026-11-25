@@ -183,7 +183,7 @@ describe('preparing one session (every terminal start)', () => {
     expect(spec.program).toBe(CLAUDE);
     expect(spec.plugin).toMatchObject({ state: 'installed', folder: '/work/app' });
     expect(engine.claude.installs).toEqual([
-      { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/work/app' },
+      { id: 'iii@iii', scope: 'local', enabled: true, projectPath: '/work/app', version: '0.4.0' },
     ]);
     expect(engine.claude.claudeCalls()).toContain('plugin install iii@iii --scope local --json');
   });
@@ -231,7 +231,13 @@ describe('preparing one session (every terminal start)', () => {
       cwd: '/work/app',
     });
     expect(spec.plugin?.state).toBe('present');
-    expect(engine.claude.claudeCalls()).toEqual(['plugin list --json']);
+    expect(engine.claude.claudeCalls()).toEqual([
+      'plugin marketplace list --json',
+      'plugin marketplace update iii',
+      'plugin list --json',
+      'plugin update iii@iii --scope local --json',
+    ]);
+    expect(engine.claude.installs).toHaveLength(1);
   });
 
   it('passes no --plugin-dir and writes no plugin copy into the folder or anywhere', async () => {
