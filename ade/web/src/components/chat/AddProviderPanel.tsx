@@ -295,6 +295,7 @@ export function AddProviderPanel({
         ariaLabel: `Retry adding ${row.label}`,
         icon: 'retry' as const,
         pending: false,
+        keepsFocus: false,
         inert: blocked || !live,
         run: () => addWorker(row.worker.name),
       }
@@ -308,6 +309,7 @@ export function AddProviderPanel({
         ariaLabel: `${starting ? 'Starting' : 'Adding'} ${row.label}`,
         icon: 'spin' as const,
         pending: true,
+        keepsFocus: true,
         inert: true,
         run: () => undefined,
       }
@@ -322,6 +324,7 @@ export function AddProviderPanel({
           ariaLabel: `Configure ${row.label}`,
           icon: null,
           pending: false,
+          keepsFocus: false,
           inert: blocked,
           run: () => onConfigureProvider(id),
         }
@@ -331,6 +334,7 @@ export function AddProviderPanel({
         ariaLabel: `${row.label} ${row.present ? 'installed' : 'starting'}`,
         icon: 'check' as const,
         pending: false,
+        keepsFocus: true,
         inert: true,
         run: () => undefined,
       }
@@ -341,6 +345,7 @@ export function AddProviderPanel({
       ariaLabel: `${verb} ${row.label}`,
       icon: 'add' as const,
       pending: false,
+      keepsFocus: false,
       inert: blocked || !live,
       run: () => addWorker(row.worker.name),
     }
@@ -409,21 +414,15 @@ export function AddProviderPanel({
                     variant="secondary"
                     size="sm"
                     aria-label={action.ariaLabel}
-                    aria-disabled={action.inert || undefined}
                     aria-busy={action.pending || undefined}
+                    // The row being added is never disabled: a disabled
+                    // button drops the focus, and the menu's focus trap then
+                    // jumped to the list's last button. Pending, a click
+                    // does nothing; every other row waits disabled.
+                    disabled={action.inert && !action.keepsFocus}
                     onClick={() => {
                       if (!action.inert) action.run()
                     }}
-                    // Outlined on the popover itself: a filled card fill
-                    // read as a hole in the dark popover. `aria-disabled`,
-                    // not `disabled`, so the focus stays on it.
-                    className={cn(
-                      'bg-transparent pl-2.5 tabular-nums',
-                      action.inert &&
-                        !action.pending &&
-                        'cursor-default opacity-50 hover:bg-transparent',
-                      action.pending && 'cursor-default hover:bg-transparent',
-                    )}
                   >
                     {actionIcon(action.icon)}
                     {action.label}
@@ -539,7 +538,7 @@ export function AddProviderPanel({
           >
             {[0, 1, 2, 3].map((row) => (
               <div key={row} className="flex items-center gap-3 px-2 py-2.5">
-                <Skeleton className="size-9 rounded-lg" />
+                <Skeleton className="size-9" />
                 <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                   <Skeleton className="h-4 w-32" />
                   <Skeleton className="h-4 w-2/3" />

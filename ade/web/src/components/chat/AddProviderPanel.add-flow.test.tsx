@@ -129,7 +129,7 @@ describe('AddProviderPanel add flow', () => {
     expect(add.getAttribute('aria-busy')).toBe('true')
     // Everything else waits meanwhile.
     expect(onBusyChange).toHaveBeenLastCalledWith(true)
-    expect(button('Add xAI')?.getAttribute('aria-disabled')).toBe('true')
+    expect(button('Add xAI')?.disabled).toBe(true)
   })
 
   it('opens the provider settings the moment it registers', async () => {
@@ -150,11 +150,11 @@ describe('AddProviderPanel add flow', () => {
       vi.advanceTimersByTime(AUTO_CONFIGURE_TIMEOUT_MS)
     })
     expect(onBusyChange).toHaveBeenLastCalledWith(false)
-    expect(button('Add xAI')?.getAttribute('aria-disabled')).toBeNull()
+    expect(button('Add xAI')?.disabled).toBe(false)
     // Installed but not registered yet: Configure, not an endless spinner.
     const configure = button('Configure Z.ai')
     expect(configure?.getAttribute('aria-busy')).toBeNull()
-    expect(configure?.getAttribute('aria-disabled')).toBeNull()
+    expect(configure?.disabled).toBe(false)
     act(() => configure?.click())
     expect(onConfigureProvider).toHaveBeenCalledWith('zai')
     // Registering after the wait no longer navigates by itself.
