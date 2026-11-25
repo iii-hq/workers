@@ -188,8 +188,14 @@ export interface AssistantMessage extends BaseMessage {
 export interface ThoughtMessage extends BaseMessage {
   role: 'thought'
   content: string
+  /** 0 when unknown: the record keeps no timing, see `timeThought`. */
   durationMs: number
   streaming?: boolean
+  /**
+   * Client clock when this window first saw the thought stream. Held only
+   * while it streams; settling turns it into `durationMs`.
+   */
+  startedAt?: number
 }
 
 export interface FunctionCallMessage extends BaseMessage {

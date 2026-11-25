@@ -45,6 +45,7 @@ import type {
   SystemMessage,
   SystemNoticeFailure,
   SystemNoticeTechnicalDetails,
+  ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
 import {
@@ -1295,6 +1296,18 @@ export function applyEntryUpsert(
     }
   }
 
+  segments = segments.map((segment) =>
+    segment.role === 'thought'
+      ? timeThought(
+          segment,
+          messages.find(
+            (m): m is ThoughtMessage =>
+              m.role === 'thought' && m.id === segment.id,
+          ),
+        )
+      : segment,
+  )
+
   const withoutAbsorbed = absorbedLocalIds.size
     ? messages.filter((m) => !absorbedLocalIds.has(m.id))
     : messages
@@ -1362,11 +1375,59 @@ export function prependTranscript(
   return older.length > 0 ? [...older, ...messages] : messages
 }
 
+/** A clock this far apart from the record's is not the same machine's. */
+const THOUGHT_ANCHOR_MAX_MS = 10 * 60_000
+
+/**
+ * How long a thought took. The record keeps no timing: a thinking block has
+ * only its text. So the window times a thought it watches stream, and keeps
+ * that duration through later re-reads of the same entry. A thought only ever
+ * seen settled (history, a reload) keeps `durationMs: 0` and reads "Thought".
+ *
+ * Providers often hand thinking over in one piece once it is done, so the
+ * first frame that shows it is not when it began. A thought that opens its
+ * reply (block 0) began with the model call, which is the entry's timestamp;
+ * that is the start, unless the two clocks disagree past belief. Any other
+ * thought starts when the window first saw it.
+ */
+export function timeThought(
+  next: ThoughtMessage,
+  prior: ThoughtMessage | undefined,
+  now = Date.now(),
+): ThoughtMessage {
+  const { startedAt: _dropped, ...settled } = next
+  if (next.durationMs > 0) return settled
+  if (prior && prior.durationMs > 0) {
+    return { ...settled, durationMs: prior.durationMs }
+  }
+  if (next.streaming) {
+    if (prior?.startedAt !== undefined) {
+      return { ...next, startedAt: prior.startedAt }
+    }
+    const sinceCall = now - next.createdAt
+    const opensReply =
+      next.id.endsWith(':0') &&
+      sinceCall >= 0 &&
+      sinceCall < THOUGHT_ANCHOR_MAX_MS
+    return { ...next, startedAt: opensReply ? next.createdAt : now }
+  }
+  if (prior?.startedAt !== undefined) {
+    return { ...settled, durationMs: Math.max(1, now - prior.startedAt) }
+  }
+  return settled
+}
+
 /** Clear transient streaming/running flags (turn over, abort, error). */
 export function clearTransientFlags(messages: Message[]): Message[] {
   let changed = false
   const next = messages.map((m) => {
-    if ((m.role === 'assistant' || m.role === 'thought') && m.streaming) {
+    // A thought still streaming when the turn ends settles here: no later
+    // frame will arrive to time it.
+    if (m.role === 'thought' && (m.streaming || m.startedAt !== undefined)) {
+      changed = true
+      return timeThought({ ...m, streaming: false }, m)
+    }
+    if (m.role === 'assistant' && m.streaming) {
       changed = true
       return { ...m, streaming: false }
     }
