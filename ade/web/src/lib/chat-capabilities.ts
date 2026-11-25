@@ -18,8 +18,10 @@
  * | `tmuxCredential` | `tmux::accounts::credential`| "Update tmux" (with the two above)            |
  *
  * `claudeAccounts` is phase 4's whole feature (spec §4.3.6, D144): the engine
- * has `harness::retry` and `tmux::accounts::credential`. The partial cases
- * read the three flags through `claudeAccountsGate` (`lib/backend/claude-accounts.ts`).
+ * has `harness::retry`, `tmux::accounts::credential` and `session::patch-meta`
+ * (a conversation's account is only ever written with a patch, never a
+ * `set-meta`). The partial cases read the flags through `claudeAccountsGate`
+ * (`lib/backend/claude-accounts.ts`).
  *
  * The control-plane functions are internal (chat-projects D37): only
  * `harness::projects::list`, `harness::set-description` and the two
@@ -51,11 +53,11 @@ export interface ChatCapabilities {
   tmuxAccounts: boolean
   /** `tmux::accounts::credential`: a tmux worker new enough for the Chat. */
   tmuxCredential: boolean
-  /** Accounts in the Chat: `harness::retry` and `tmux::accounts::credential`. */
+  /** Accounts in the Chat: `harness::retry`, `tmux::accounts::credential` and `session::patch-meta`. */
   claudeAccounts: boolean
 }
 
-/** The flags that are one function each; `claudeAccounts` is two of them. */
+/** The flags that are one function each; `claudeAccounts` is three of them. */
 type FunctionCapability = Exclude<
   keyof ChatCapabilities,
   'loaded' | 'claudeAccounts'
@@ -141,7 +143,8 @@ export function capabilitiesFromCatalog(response: unknown): ChatCapabilities {
     tmuxCredential: ids.has(CAPABILITY_FUNCTIONS.tmuxCredential),
     claudeAccounts:
       ids.has(CAPABILITY_FUNCTIONS.harnessRetry) &&
-      ids.has(CAPABILITY_FUNCTIONS.tmuxCredential),
+      ids.has(CAPABILITY_FUNCTIONS.tmuxCredential) &&
+      ids.has(CAPABILITY_FUNCTIONS.patchMeta),
   }
 }
 
@@ -245,9 +248,10 @@ export function setChatCapabilitiesForTests(
   }
   frozen = true
   const merged = { ...NO_CHAT_CAPABILITIES, loaded: true, ...next }
-  // `claudeAccounts` follows its two functions unless a test pins it.
+  // `claudeAccounts` follows its three functions unless a test pins it.
   if (next.claudeAccounts === undefined) {
-    merged.claudeAccounts = merged.harnessRetry && merged.tmuxCredential
+    merged.claudeAccounts =
+      merged.harnessRetry && merged.tmuxCredential && merged.patchMeta
   }
   set(merged)
 }

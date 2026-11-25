@@ -266,10 +266,15 @@ export function usable(a: ClaudeAccount): boolean {
   return a.signedIn && !a.tokenExpired
 }
 
+/** An account at a limit now: its 5-hour window or its week is full. */
+export function atLimit(a: ClaudeAccount): boolean {
+  return level(a.usage?.fiveHour) === 'full' || level(a.usage?.week) === 'full'
+}
+
 /**
  * The account with the most room this week (D14's tiebreak): signed in with a
- * fresh token and a reading, not at a 5-hour limit, the lowest week; `except`
- * left out. Null when none qualifies.
+ * fresh token and a reading, neither its 5-hour window nor its week full, the
+ * lowest week; `except` left out. Null when none qualifies.
  */
 export function mostRoom(
   c: Pick<ClaudeSnapshot, 'accounts'> | null | undefined,
@@ -278,7 +283,7 @@ export function mostRoom(
   let best: ClaudeAccount | null = null
   for (const a of c?.accounts ?? []) {
     if (a.id === except || !usable(a) || !a.usage?.week) continue
-    if (level(a.usage.fiveHour) === 'full') continue
+    if (atLimit(a)) continue
     if (!best) {
       best = a
       continue
@@ -1009,6 +1014,10 @@ export function limitResetLine(
 ): string | null {
   return resetsAtMs == null ? null : `Resets ${resetCompact(resetsAtMs, style)}`
 }
+
+/** A failed card whose window reset since: the line, then the primary button (harness::retry on the same account). */
+export const LIMIT_HAS_RESET = 'The limit has reset'
+export const TRY_AGAIN = 'Try again'
 
 /** "Continue in Work". */
 export function continueIn(name: string): string {

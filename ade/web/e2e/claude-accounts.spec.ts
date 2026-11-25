@@ -24,13 +24,23 @@ const HOUR = 3_600_000
 const NOW = Date.now()
 const CLAUDE_MODEL = 'claude-code::claude-opus-4-5'
 
+interface PendingGlobal {
+  account: string
+  by: string
+  waiting_for: string[]
+  at_ms: number
+}
+
 interface Fakes {
   calls: { functionId: string; payload: Record<string, unknown> }[]
   global: string
+  /** The next global switch waits for windows pinned to its account. */
+  waitNext: boolean
+  pending: PendingGlobal | null
   dispose: () => Promise<void>
 }
 
-function usage(global: string) {
+function usage(global: string, pending: PendingGlobal | null = null) {
   return {
     generated_at_ms: Date.now() - 4 * 60_000,
     claude: {
@@ -93,7 +103,7 @@ function usage(global: string) {
         order: [],
       },
       suggestion: null,
-      pending_global: null,
+      pending_global: pending,
       logins: [],
     },
   }
@@ -133,6 +143,8 @@ function registerFakes(engineUrl: string): Fakes {
   const fakes: Fakes = {
     calls: [],
     global: 'personal',
+    waitNext: false,
+    pending: null,
     dispose: async () => {
       if (disposed) return
       disposed = true
@@ -150,10 +162,31 @@ function registerFakes(engineUrl: string): Fakes {
       return answer(input)
     })
   const refs = [
-    fake('tmux::accounts::list', () => usage(fakes.global).claude),
+    fake(
+      'tmux::accounts::list',
+      () => usage(fakes.global, fakes.pending).claude,
+    ),
     fake('tmux::accounts::credential', () => ({ error: 'fake' })),
-    fake('tmux::usage::read', () => usage(fakes.global)),
+    fake('tmux::usage::read', () => usage(fakes.global, fakes.pending)),
     fake('tmux::accounts::global', (input) => {
+      if (fakes.waitNext) {
+        // tmux keeps the old global and records the switch it waits for.
+        fakes.waitNext = false
+        fakes.pending = {
+          account: String(input.account),
+          by: 'person',
+          waiting_for: ['%7'],
+          at_ms: Date.now(),
+        }
+        return {
+          global: fakes.global,
+          state: 'waiting',
+          following: 1,
+          restarted: [],
+          after_turn: [],
+          waiting_for: ['%7'],
+        }
+      }
       fakes.global = String(input.account)
       return {
         global: fakes.global,
@@ -265,6 +298,27 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       ).toHaveAttribute('data-disabled', '')
       await page.keyboard.press('Escape')
 
+      // "Make Work the global" while a window pinned to Work is busy: tmux
+      // waits, so the turn doesn't run again yet, and "Continue in" stays.
+      fakes.waitNext = true
+      await card.locator('[data-limit-make-global]').click()
+      await expect(card.locator('[data-limit-waiting]')).toHaveText(
+        'Switching to Work when 1 window pinned to it finishes its turn.',
+      )
+      await expect(card.locator('[data-limit-make-global]')).toBeDisabled()
+      await expect(
+        card.locator('[data-limit-continue="default"]'),
+      ).toBeEnabled()
+      expect(
+        fakes.calls
+          .filter((c) => c.functionId === 'tmux::accounts::global')
+          .map((c) => c.payload.account),
+      ).toEqual(['default'])
+      expect(
+        fakes.calls.filter((c) => c.functionId === 'harness::retry'),
+      ).toEqual([])
+      await card.screenshot({ path: shot('limit-card-waiting') })
+
       // "Continue in Work": pins the conversation, then re-runs the turn.
       await card.locator('[data-limit-continue="default"]').click()
       await expect
@@ -274,8 +328,14 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
             .map((c) => c.payload.session_id),
         )
         .toEqual([sessionId])
-      expect((await sessionMetadata(stack)).claude_account).toBe('default')
+      const meta = await sessionMetadata(stack)
+      expect(meta.claude_account).toBe('default')
+      // The account alone was written: the model stays.
+      expect(meta.model).toBe(CLAUDE_MODEL)
       await expect(chip).toHaveText('Work')
+      // Until the re-run turn changes the card, nothing more to press.
+      await expect(card.locator('[data-limit-continue]')).toBeDisabled()
+      await expect(card.locator('[data-limit-other]')).toBeDisabled()
       // The X puts it away (the fake retry ran no turn, so it is still there).
       await card.locator('[data-limit-dismiss]').click()
       await expect(card).toHaveCount(0)
@@ -292,6 +352,12 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       await details.screenshot({ path: shot('details-row') })
       await page.keyboard.press('Escape')
       await expect(details).toHaveCount(0)
+      // The card put away, "Turn ended · Continue" doesn't come in its place:
+      // it would run the same turn into the same limit.
+      await expect(page.getByText('Turn ended.')).toHaveCount(0)
+      await expect(
+        page.getByRole('button', { name: 'Continue', exact: true }),
+      ).toHaveCount(0)
 
       /* The sidebar footer opens the screen (§4.3.1, §4.3.3). */
       const footer = page.locator('[data-usage-footer]')

@@ -7,6 +7,7 @@ import {
   fetchTranscriptTail,
   getSession,
   listSessions,
+  patchSessionMeta,
   setSessionMeta,
 } from '@/lib/sessions/api'
 import {
@@ -28,6 +29,7 @@ vi.mock('@/lib/sessions/api', async (original) => ({
   getSession: vi.fn(),
   fetchTranscriptTail: vi.fn(),
   setSessionMeta: vi.fn(),
+  patchSessionMeta: vi.fn(),
 }))
 vi.mock('@/lib/sessions/events', () => ({
   subscribeSessionDirectory: vi.fn(),
@@ -105,6 +107,36 @@ afterEach(async () => {
 })
 
 describe('session metadata writes', () => {
+  // "Continue in Work" on the limit card: the account alone, never the
+  // conversation's other fields from a stale draft, never through set-meta.
+  it("pins a conversation's Claude Code account with a patch of that key alone", async () => {
+    vi.mocked(patchSessionMeta).mockResolvedValue(undefined as never)
+    await act(() => api.setClaudeAccount(id, 'default'))
+    expect(patchSessionMeta).toHaveBeenCalledExactlyOnceWith({
+      session_id: id,
+      set: { claude_account: 'default' },
+    })
+    expect(setSessionMeta).not.toHaveBeenCalled()
+    const conv = () => api.conversations.find((c) => c.id === id)
+    expect(conv()?.sessionMetadata?.claude_account).toBe('default')
+    expect(conv()?.title).toBe('Saved chat')
+
+    await act(() => api.setClaudeAccount(id, null))
+    expect(patchSessionMeta).toHaveBeenLastCalledWith({
+      session_id: id,
+      unset: ['claude_account'],
+    })
+    expect(conv()?.sessionMetadata).not.toHaveProperty('claude_account')
+
+    // A refused patch puts the local value back and says why.
+    vi.mocked(patchSessionMeta).mockRejectedValueOnce(new Error('refused'))
+    await act(() =>
+      expect(api.setClaudeAccount(id, 'personal')).rejects.toThrow('refused'),
+    )
+    expect(conv()?.sessionMetadata).not.toHaveProperty('claude_account')
+    expect(setSessionMeta).not.toHaveBeenCalled()
+  })
+
   // ModelPicker.selectModel: onChange(next), then onThinkingLevelChange.
   it('sends a model pick and its effort as one write', async () => {
     await act(async () => {

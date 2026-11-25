@@ -8,6 +8,8 @@
  *   (tmux's `limitHit`: the 5-hour window first, then the week).
  *
  * The X puts it away until the reading changes, as the tmux card's key does.
+ * A failed card whose window has reset since stays, `reset`: "The limit has
+ * reset" and "Try again"; a reading's card goes once its reset passed.
  */
 import type { ClaudeAccount } from '@/lib/backend/claude-accounts'
 import { type LimitWindow, limitHit } from '@/lib/claude-accounts-words'
@@ -25,6 +27,13 @@ export function lastTurnFailure(
   return null
 }
 
+/** The last turn failed on its Claude Code account: the card, never "Turn ended · Continue", answers it. */
+export function accountFailure(failure: SystemMessage | null): boolean {
+  return Boolean(
+    failure?.failure?.usageLimit || failure?.failure?.unknownAccount,
+  )
+}
+
 export interface LimitCardModel {
   /** `failed`: the last turn hit the limit; `reading`: idle at 100 %; `unknown`: the pinned account is gone. */
   kind: 'failed' | 'reading' | 'unknown'
@@ -32,6 +41,8 @@ export interface LimitCardModel {
   account: string
   window: LimitWindow | null
   resetsAtMs: number | null
+  /** A failed card whose `resetsAtMs` has passed: the same account can run again. */
+  reset: boolean
   /** What the X puts away: the card for this reading. */
   key: string
 }
@@ -45,6 +56,8 @@ export function limitCardModel(input: {
   /** The account the next turn runs on. */
   resolved: string | null
   account: (id: string | null | undefined) => ClaudeAccount | null
+  /** The clock the reset is read against. */
+  now: number
 }): LimitCardModel | null {
   const { sessionId, failure } = input
   // A turn on its way (the retry "Continue in" started) puts it away.
@@ -61,6 +74,7 @@ export function limitCardModel(input: {
       account,
       window,
       resetsAtMs,
+      reset: resetsAtMs !== null && resetsAtMs <= input.now,
       key: [
         sessionId,
         failure?.id,
@@ -77,17 +91,23 @@ export function limitCardModel(input: {
       account: gone,
       window: null,
       resetsAtMs: null,
+      reset: false,
       key: [sessionId, failure?.id, gone].join('|'),
     }
   }
   if (!input.resolved) return null
   const hit = limitHit(input.account(input.resolved))
   if (!hit) return null
+  // A reading taken before its window reset: nothing is full any more.
+  if (hit.limit.resetsAtMs !== null && hit.limit.resetsAtMs <= input.now) {
+    return null
+  }
   return {
     kind: 'reading',
     account: input.resolved,
     window: hit.window,
     resetsAtMs: hit.limit.resetsAtMs,
+    reset: false,
     key: [
       sessionId,
       input.resolved,

@@ -1,5 +1,5 @@
 import { ChevronDown, Clock, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/shadcn/button'
 import {
   DropdownMenu,
@@ -10,12 +10,14 @@ import { ChatMenuContent, ChatMenuItem } from '@/components/ui/ChatMenu'
 import { QuietIconButton } from '@/components/ui/QuietIconButton'
 import {
   type ClaudeAccounts,
+  type GlobalResult,
   parseAccountsError,
 } from '@/lib/backend/claude-accounts'
 import {
   accountUse,
   continueIn,
   HIDE_LIMIT,
+  LIMIT_HAS_RESET,
   LIMIT_HINT,
   limitResetLine,
   limitTitle,
@@ -25,9 +27,11 @@ import {
   SCREEN_TITLE,
   sideChatLimitHint,
   type TimeStyle,
+  TRY_AGAIN,
   UNKNOWN_ACCOUNT_LINE,
   unknownAccountTitle,
   usable,
+  waitingBanner,
 } from '@/lib/claude-accounts-words'
 import type { LimitCardModel } from '@/lib/limit-card'
 import { AccountDot } from './AccountCard'
@@ -40,22 +44,32 @@ export interface LimitCardProps {
   sideChat?: boolean
   /** The conversation follows the global account, and the limited one is it. */
   followsGlobal?: boolean
-  /** Pin the conversation to `account`, then re-run the failed turn. */
-  onContinue: (account: string) => Promise<void>
-  /** Make `account` the global one, then re-run the failed turn. */
-  onMakeGlobal: (account: string) => Promise<void>
+  /** Pin the conversation to `account` (`claude_account`, a patch of that key alone). */
+  onPin: (account: string) => Promise<void>
+  /** Make `account` the global one; rejects with the refusal's words. */
+  onSetGlobal: (account: string) => Promise<GlobalResult>
+  /** Re-run the failed turn (`harness::retry`) on the account it resolves to now. */
+  onRetry: () => Promise<void>
   /** "Claude Code accounts…" in Other…. */
   onOpenAccounts: () => void
   onDismiss: () => void
 }
 
+/** What a button did: re-ran the turn (the card waits for it), or not. */
+type Outcome = 'retried' | 'done'
+
 /**
  * The limit card (§4.3.4, D135), in place of "Turn ended · Continue" while
  * it shows: "Personal reached its 5-hour limit", when it resets, "Continue
- * in Work" (the account with the most room), "Other…" (the accounts with
- * their use), and "Make Work the global" when the conversation follows the
- * global. A side chat keeps its account: only the title, the reset line and
- * the X.
+ * in Work" (the account with the most room, when one has room), "Other…"
+ * (the accounts with their use), and "Make Work the global" when the
+ * conversation follows the global. Once the window has reset: "The limit
+ * has reset" and "Try again" on the same account. A side chat keeps its
+ * account: only the title, the reset line and the X.
+ *
+ * A turn re-run keeps the buttons off until the card changes (the turn
+ * starts and puts it away). A global switch tmux has to wait for shows its
+ * waiting words; the turn runs again once the switch is done.
  */
 export function LimitCard({
   model,
@@ -63,19 +77,29 @@ export function LimitCard({
   time,
   sideChat = false,
   followsGlobal = false,
-  onContinue,
-  onMakeGlobal,
+  onPin,
+  onSetGlobal,
+  onRetry,
   onOpenAccounts,
   onDismiss,
 }: LimitCardProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** A global switch tmux answered `waiting` for, and its words. */
+  const [waiting, setWaiting] = useState<{
+    account: string
+    text: string
+  } | null>(null)
+  const sawPending = useRef(false)
   const limited = data.account(model.account)
   const name = limited?.name ?? model.account
   const best = mostRoom(data.claude, model.account)
   const others = (data.claude?.accounts ?? []).filter(
     (a) => a.id !== model.account,
   )
+  const failedTurn = model.kind !== 'reading'
+  const global = data.claude?.global ?? null
+  const pending = data.claude?.pendingGlobal ?? null
   const title =
     model.kind === 'unknown'
       ? unknownAccountTitle(model.account)
@@ -83,20 +107,98 @@ export function LimitCard({
   const line =
     model.kind === 'unknown'
       ? UNKNOWN_ACCOUNT_LINE
-      : limitResetLine(model.resetsAtMs, time)
+      : model.reset
+        ? LIMIT_HAS_RESET
+        : limitResetLine(model.resetsAtMs, time)
+  const waitingText = pending
+    ? waitingBanner(data.nameOf(pending.account), pending.waitingFor.length)
+    : (waiting?.text ?? null)
 
-  const run = (action: () => Promise<void>) => {
+  // The card's state changed (another failure, another reading, the reset):
+  // the buttons are on again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the card's identity, not its handlers
+  useEffect(() => {
+    setBusy(false)
+  }, [model.key, model.kind, model.reset])
+
+  const run = (action: () => Promise<Outcome>) => {
     if (busy) return
     setBusy(true)
     setError(null)
-    action()
-      .catch((err: unknown) => setError(parseAccountsError(err).message))
-      .finally(() => setBusy(false))
+    action().then(
+      // A re-run turn takes the card away; until then nothing more to press.
+      (outcome) => {
+        if (outcome !== 'retried') setBusy(false)
+      },
+      (err: unknown) => {
+        setError(parseAccountsError(err).message)
+        setBusy(false)
+      },
+    )
   }
+  const retryNow = async (): Promise<Outcome> => {
+    await onRetry()
+    return 'retried'
+  }
+  const retryRef = useRef<() => void>(() => {})
+  retryRef.current = () => run(retryNow)
+
+  // A waiting switch: done when the global is the account asked for (then
+  // the failed turn runs again), off when tmux dropped it without that.
+  useEffect(() => {
+    if (!waiting) return
+    if (pending?.account === waiting.account) {
+      sawPending.current = true
+      return
+    }
+    if (global === waiting.account) {
+      setWaiting(null)
+      if (failedTurn) retryRef.current()
+      return
+    }
+    if (sawPending.current) setWaiting(null)
+  }, [waiting, pending, global, failedTurn])
+
+  const continueTo = (account: string) =>
+    run(async (): Promise<Outcome> => {
+      setWaiting(null)
+      await onPin(account)
+      return failedTurn ? retryNow() : 'done'
+    })
+
+  const switchGlobal = (account: string) =>
+    run(async (): Promise<Outcome> => {
+      const result = await onSetGlobal(account)
+      if (result.state === 'waiting') {
+        sawPending.current = false
+        setWaiting({
+          account,
+          text: waitingBanner(data.nameOf(account), result.waitingFor.length),
+        })
+        return 'done'
+      }
+      return failedTurn ? retryNow() : 'done'
+    })
+
+  const primary = model.reset ? (
+    <Button data-limit-retry="" disabled={busy} onClick={() => run(retryNow)}>
+      {TRY_AGAIN}
+    </Button>
+  ) : best ? (
+    <Button
+      data-limit-continue={best.id}
+      disabled={busy}
+      onClick={() => continueTo(best.id)}
+    >
+      <AccountDot color={best.color} />
+      {continueIn(best.name)}
+    </Button>
+  ) : null
 
   return (
     <section
       data-limit-card={model.kind}
+      data-limit-reset={model.reset || undefined}
       aria-labelledby={`limit-card-${model.key}`}
       className="mb-2 flex flex-col gap-3 rounded-xl border border-border bg-popover px-4 py-3.5 shadow-sm"
     >
@@ -128,16 +230,7 @@ export function LimitCard({
 
       {sideChat ? null : (
         <div className="flex flex-wrap items-center gap-2">
-          {best ? (
-            <Button
-              data-limit-continue={best.id}
-              disabled={busy}
-              onClick={() => run(() => onContinue(best.id))}
-            >
-              <AccountDot color={best.color} />
-              {continueIn(best.name)}
-            </Button>
-          ) : null}
+          {primary}
           <DropdownMenu>
             <DropdownMenuTrigger
               disabled={busy}
@@ -153,7 +246,7 @@ export function LimitCard({
                   key={a.id}
                   data-limit-account={a.id}
                   disabled={!usable(a)}
-                  onClick={() => run(() => onContinue(a.id))}
+                  onClick={() => continueTo(a.id)}
                 >
                   <AccountDot color={a.color} />
                   <span className="flex min-w-0 flex-1 flex-col">
@@ -172,12 +265,12 @@ export function LimitCard({
               </ChatMenuItem>
             </ChatMenuContent>
           </DropdownMenu>
-          {followsGlobal && best && model.kind !== 'unknown' ? (
+          {followsGlobal && best && !model.reset && model.kind !== 'unknown' ? (
             <Button
               variant="secondary"
               data-limit-make-global={best.id}
-              disabled={busy}
-              onClick={() => run(() => onMakeGlobal(best.id))}
+              disabled={busy || pending?.account === best.id}
+              onClick={() => switchGlobal(best.id)}
             >
               {makeGlobal(best.name)}
             </Button>
@@ -185,6 +278,11 @@ export function LimitCard({
         </div>
       )}
 
+      {waitingText && !sideChat ? (
+        <p role="status" data-limit-waiting="" className="text-xs text-ink">
+          {waitingText}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-xs text-alert">
           {error}

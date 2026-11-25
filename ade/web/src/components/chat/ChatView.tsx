@@ -115,7 +115,7 @@ import {
 import { useChatCapabilities } from '@/lib/chat-capabilities'
 import { ACCOUNT_ROW_LABEL, globalRefusal } from '@/lib/claude-accounts-words'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
-import { claudeAccountOf, detailsDraftOf } from '@/lib/conversation-details'
+import { claudeAccountOf } from '@/lib/conversation-details'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { errText } from '@/lib/errors'
@@ -126,6 +126,7 @@ import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { getIiiClient } from '@/lib/iii-client'
 import {
+  accountFailure,
   dismissLimit,
   lastTurnFailure,
   limitCardModel,
@@ -1316,7 +1317,7 @@ export function ChatView({
   // The limit card (§4.3.4): the last turn failed with the usage limit, or
   // the conversation is idle and its account's reading is at 100 %.
   // The X writes the put-away key outside React; this re-renders to read it.
-  const [, setLimitDismissTick] = useState(0)
+  const [, setLimitTick] = useState(0)
   const lastFailure = useMemo(
     () => lastTurnFailure(conversation.messages),
     [conversation.messages],
@@ -1331,34 +1332,42 @@ export function ChatView({
           conversation.status !== 'working',
         resolved: accountResolution?.account ?? null,
         account: claudeAccounts.account,
+        now: Date.now(),
       })
     : null
   const limitCard =
     limitModel && !readOnly && !limitDismissed(conversation.id, limitModel.key)
       ? limitModel
       : null
-  /** "Continue in X" and Other…: pin the conversation, then re-run the failed turn. */
-  const continueInAccount = useCallback(
+  // The card turns to "The limit has reset" (or a reading's card goes) when
+  // the window resets: render again then.
+  const limitResetsAt = limitModel?.reset ? null : limitModel?.resetsAtMs
+  useEffect(() => {
+    if (limitResetsAt == null) return
+    const wait = limitResetsAt - Date.now()
+    if (wait <= 0) return
+    const timer = window.setTimeout(
+      () => setLimitTick((tick) => tick + 1),
+      Math.min(wait + 250, 2 ** 31 - 1),
+    )
+    return () => window.clearTimeout(timer)
+  }, [limitResetsAt])
+  /** Pin the conversation: `claude_account` alone, through `session::patch-meta`. */
+  const pinConversationAccount = useCallback(
     async (account: string) => {
       if (conversationsCtx) {
-        await conversationsCtx.saveDetails(conversation.id, {
-          ...detailsDraftOf(conversation),
-          claudeAccount: account,
-        })
+        await conversationsCtx.setClaudeAccount(conversation.id, account)
       } else {
         await setConversationAccount(conversation.id, account)
       }
-      if (limitModel && limitModel.kind !== 'reading') {
-        await retryTurn(conversation.id)
-      }
     },
-    [conversationsCtx, conversation, limitModel],
+    [conversationsCtx, conversation.id],
   )
-  /** "Make Work the global": the conversation follows it from its next turn. */
-  const makeAccountGlobal = useCallback(
+  /** "Make Work the global": tmux's answer, or its refusal in the apps' words. */
+  const switchGlobalAccount = useCallback(
     async (account: string) => {
       try {
-        await setGlobalAccount(account)
+        return await setGlobalAccount(account)
       } catch (err) {
         throw new Error(
           globalRefusal(
@@ -1369,12 +1378,12 @@ export function ChatView({
       } finally {
         void refreshClaudeAccounts()
       }
-      if (limitModel && limitModel.kind !== 'reading') {
-        await retryTurn(conversation.id)
-      }
     },
-    [claudeAccounts, conversation.id, limitModel],
+    [claudeAccounts],
   )
+  const retryFailedTurn = useCallback(async () => {
+    await retryTurn(conversation.id)
+  }, [conversation.id])
 
   const modelSwitch = useModelSwitch({
     backend,
@@ -4100,15 +4109,21 @@ export function ChatView({
                     accountResolution?.source === 'global' &&
                     limitCard.account === claudeAccounts.claude?.global
                   }
-                  onContinue={continueInAccount}
-                  onMakeGlobal={makeAccountGlobal}
+                  onPin={pinConversationAccount}
+                  onSetGlobal={switchGlobalAccount}
+                  onRetry={retryFailedTurn}
                   onOpenAccounts={() => requestClaudeAccountsDialog()}
                   onDismiss={() => {
                     dismissLimit(conversation.id, limitCard.key)
-                    setLimitDismissTick((tick) => tick + 1)
+                    setLimitTick((tick) => tick + 1)
                   }}
                 />
-              ) : !side && !conversation.parentId && backend.turnRest ? (
+              ) : !side &&
+                !conversation.parentId &&
+                backend.turnRest &&
+                // "Continue" would run the same account into the same limit:
+                // closing the limit card doesn't bring it back.
+                !accountFailure(lastFailure) ? (
                 <TurnRestRow
                   sessionId={conversation.id}
                   // A reconnect reloads the transcript while the status stays

@@ -387,7 +387,9 @@ export function parseAccountSplits(raw: unknown): AccountSplit[] {
  * - `full`: `harness::retry` and `tmux::accounts::credential`, everything;
  * - `update`: `harness::retry` and an older tmux ("Update tmux");
  * - `install`: `harness::retry` and no tmux ("Install tmux");
- * - `none`: no `harness::retry`, today's screens.
+ * - `none`: no `harness::retry`, today's screens. Also without
+ *   `session::patch-meta`: a conversation's account is only ever written
+ *   with a patch, never with a `set-meta` of the whole metadata.
  * Short of `full`, the sign-in of today stays, and the dialog section, the
  * rows, the chip, the footer and the card are hidden.
  */
@@ -396,10 +398,10 @@ export type ClaudeAccountsGate = 'full' | 'update' | 'install' | 'none'
 export function claudeAccountsGate(
   caps: Pick<
     ChatCapabilities,
-    'harnessRetry' | 'tmuxAccounts' | 'tmuxCredential'
+    'harnessRetry' | 'tmuxAccounts' | 'tmuxCredential' | 'patchMeta'
   >,
 ): ClaudeAccountsGate {
-  if (!caps.harnessRetry) return 'none'
+  if (!caps.harnessRetry || !caps.patchMeta) return 'none'
   if (caps.tmuxCredential) return 'full'
   if (caps.tmuxAccounts) return 'update'
   return 'install'
@@ -666,10 +668,15 @@ const WATCH_FN = 'ade::claude-accounts-watch'
 const SPLIT_MIN_INTERVAL_MS = 60_000
 
 let state: ClaudeAccountsState = EMPTY
+/** tmux is observed: at least one view holds the store (`hold`). */
 let active = false
 let seeded = false
 let stopWatch: (() => void) | null = null
+/** The views mounted with the whole feature; the observer lives while there is one. */
+let holders = 0
 let usageSeq = 0
+/** The manual refreshes ("Read 4 min ago" ↻): only the last one clears `refreshing`. */
+let refreshSeq = 0
 let splitSeq = 0
 let splitReadAt = 0
 let splitWanted = 0
@@ -684,29 +691,38 @@ function update(patch: Partial<ClaudeAccountsState>): void {
   emit()
 }
 
-/** Keep `next` unless the store already holds a newer reading. */
-export function applyUsageSnapshot(next: UsageSnapshot | null): void {
-  if (!next) return
-  if (state.usage && next.generatedAtMs < state.usage.generatedAtMs) return
-  update({ loaded: true, usage: next, error: null })
+/** Read the split again when a view shows it and the last read is a minute old. */
+function maybeRefreshSplits(): void {
   if (splitWanted > 0 && Date.now() - splitReadAt >= SPLIT_MIN_INTERVAL_MS) {
     void refreshAccountSplits()
   }
 }
 
-/** Read the usage now; `refresh` asks tmux to read every account again. */
+/** Keep `next` unless the store already holds a newer reading. */
+export function applyUsageSnapshot(next: UsageSnapshot | null): void {
+  if (!next) return
+  if (state.usage && next.generatedAtMs < state.usage.generatedAtMs) return
+  update({ loaded: true, usage: next, error: null })
+  maybeRefreshSplits()
+}
+
+/**
+ * Read the usage now; `refresh` asks tmux to read every account again (the
+ * ↻ button). Whichever call answers last, the newer reading wins; the
+ * split follows the same once-a-minute limit as a pushed reading.
+ */
 export async function refreshClaudeAccounts(refresh = false): Promise<void> {
   if (!active || seeded) return
   const mine = ++usageSeq
+  const manual = refresh ? ++refreshSeq : 0
   if (refresh) update({ refreshing: true })
   try {
-    const snapshot = await readUsage(refresh)
-    if (mine === usageSeq || refresh) applyUsageSnapshot(snapshot)
-    if (refresh) void refreshAccountSplits()
+    applyUsageSnapshot(await readUsage(refresh))
+    if (refresh) maybeRefreshSplits()
   } catch (err) {
     if (mine === usageSeq) update({ loaded: true, error: errText(err) })
   } finally {
-    if (refresh && mine === usageSeq) update({ refreshing: false })
+    if (refresh && manual === refreshSeq) update({ refreshing: false })
   }
 }
 
@@ -752,6 +768,10 @@ function start(): void {
   })()
 }
 
+/**
+ * The last view let go: stop observing tmux. The last reading stays for the
+ * next view, which reads again as it starts.
+ */
 function stop(): void {
   if (!active) return
   active = false
@@ -759,9 +779,22 @@ function stop(): void {
   stopWatch = null
   usageSeq++
   splitSeq++
+  refreshSeq++
   splitReadAt = 0
-  state = EMPTY
-  emit()
+  if (state.refreshing) update({ refreshing: false })
+}
+
+/** A view holds the store open; the returned release lets it go. */
+function hold(): () => void {
+  holders++
+  if (holders === 1) start()
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    holders--
+    if (holders === 0) stop()
+  }
 }
 
 export function getClaudeAccountsState(): ClaudeAccountsState {
@@ -789,7 +822,9 @@ export interface ClaudeAccounts extends ClaudeAccountsState {
 /**
  * The accounts, when the engine has the whole feature. `enabled` is false on
  * mock and Storybook backends. `splits` asks for the week's split too (the
- * provider screen and the picker's cards).
+ * provider screen and the picker's cards). The store is reference-counted:
+ * it reads and observes tmux while at least one enabled view with the whole
+ * feature is mounted, and stops observing when the last one unmounts.
  */
 export function useClaudeAccounts(
   enabled = true,
@@ -798,10 +833,9 @@ export function useClaudeAccounts(
   const caps = useChatCapabilities(enabled)
   const gate = seeded && seededGate ? seededGate : claudeAccountsGate(caps)
   useEffect(() => {
-    if (!enabled || seeded) return
-    if (gate === 'full') start()
-    else if (caps.loaded) stop()
-  }, [enabled, gate, caps.loaded])
+    if (!enabled || seeded || gate !== 'full') return
+    return hold()
+  }, [enabled, gate])
   useEffect(() => {
     if (!splits || !enabled || gate !== 'full') return
     splitWanted++

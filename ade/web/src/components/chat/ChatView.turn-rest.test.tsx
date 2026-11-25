@@ -267,3 +267,39 @@ it('shows no row on a backend that cannot tell', async () => {
   expect(host.querySelector('textarea')).not.toBeNull()
   expect(continueButton()).toBeUndefined()
 })
+
+// "Continue" would run the same account into the same limit: the limit card
+// answers that turn, and closing it doesn't bring the row back.
+it.each([
+  [
+    'a usage limit',
+    { usageLimit: { window: 'five_hour', resetsAtMs: 9, account: 'personal' } },
+  ],
+  ['a removed account', { unknownAccount: 'old-team' }],
+] as const)(
+  'shows no row after a turn that failed on %s',
+  async (_, failure) => {
+    await open({
+      ...done,
+      messages: [
+        {
+          id: 'u1',
+          role: 'user',
+          content: 'Go on',
+          createdAt: 1,
+        },
+        {
+          id: 'f1',
+          role: 'system',
+          kind: 'turn-failure',
+          content: 'This Claude Code account reached its usage limit',
+          createdAt: 2,
+          failure,
+        },
+      ],
+    } as Conversation)
+    expect(turnRest).not.toHaveBeenCalled()
+    expect(continueButton()).toBeUndefined()
+    expect(host.textContent).not.toContain('Turn ended.')
+  },
+)

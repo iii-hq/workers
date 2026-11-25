@@ -3,6 +3,7 @@ import { usageFixture } from '@/stories/fixtures/claude-accounts-fixtures'
 import type { Message, SystemMessage } from '@/types/chat'
 import type { ClaudeAccount } from './backend/claude-accounts'
 import {
+  accountFailure,
   dismissLimit,
   lastTurnFailure,
   limitCardModel,
@@ -57,6 +58,7 @@ describe('limitCardModel', () => {
     idle: true,
     resolved: 'default',
     account,
+    now: NOW,
   }
 
   it('shows for a turn that failed with llm.usage_limit, from its details', () => {
@@ -75,7 +77,38 @@ describe('limitCardModel', () => {
       account: 'personal',
       window: 'week',
       resetsAtMs: NOW + 5 * HOUR,
+      reset: false,
     })
+  })
+
+  it('turns a failed card to "reset" once its window reset, and drops a stale reading', () => {
+    const failed = failure({
+      usageLimit: {
+        window: 'five_hour',
+        resetsAtMs: NOW + HOUR,
+        account: 'personal',
+      },
+    })
+    const later = { ...base, now: NOW + HOUR + 1, resolved: 'personal' }
+    expect(limitCardModel({ ...later, failure: failed })).toMatchObject({
+      kind: 'failed',
+      reset: true,
+    })
+    // Personal's reading still says 100 %, but its window reset since.
+    expect(limitCardModel({ ...later, failure: null })).toBeNull()
+  })
+
+  it('names the last turn failing on its account', () => {
+    expect(
+      accountFailure(
+        failure({
+          usageLimit: { window: null, resetsAtMs: null, account: null },
+        }),
+      ),
+    ).toBe(true)
+    expect(accountFailure(failure({ unknownAccount: 'gone' }))).toBe(true)
+    expect(accountFailure(failure({ summary: 'billing' }))).toBe(false)
+    expect(accountFailure(null)).toBe(false)
   })
 
   it("fills a failure's missing window from the account's reading", () => {
@@ -137,6 +170,7 @@ describe('dismissal', () => {
         failure: null,
         idle: true,
         resolved: 'personal',
+        now: NOW,
         account: (id) => {
           const a = account(id)
           if (!a?.usage?.fiveHour) return a
