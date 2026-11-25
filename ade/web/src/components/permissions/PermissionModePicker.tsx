@@ -47,19 +47,17 @@ export function PermissionModePicker({
           {
             value: 'manual',
             label: 'manual',
-            title:
-              'manual: pause every function call until you approve or deny it',
+            title: 'manual: asks before each function',
           },
           {
             value: 'auto',
             label: 'auto',
-            title:
-              'auto: use configured safe functions automatically; ask for the rest',
+            title: 'auto: allowed functions run, the rest ask',
           },
           {
             value: 'full',
             label: 'full',
-            title: 'full: run every function without asking',
+            title: 'full: every function runs, no prompts',
           },
         ]}
       />
@@ -102,17 +100,17 @@ export function PermissionModePickerPanel({
         {
           value: 'manual',
           label: 'Manual',
-          description: 'Ask before every function runs.',
+          description: 'Asks before each function.',
         },
         {
           value: 'auto',
           label: 'Auto',
-          description: 'Run configured safe functions automatically.',
+          description: 'Allowed functions run, the rest ask.',
         },
         {
           value: 'full',
           label: 'Full',
-          description: 'Run every function without asking.',
+          description: 'Every function runs, no prompts.',
         },
       ]}
     />

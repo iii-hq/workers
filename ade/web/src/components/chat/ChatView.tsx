@@ -10,7 +10,6 @@ import {
 } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
-import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
@@ -3365,11 +3364,6 @@ export function ChatView({
           </div>
         </PageHeader>
       )}
-      {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (
-        <FullPermissionsBanner
-          onDisable={() => void approvalSettings.setMode('manual')}
-        />
-      ) : null}
       <div
         ref={conversationBodyRef}
         className="chat-conversation-body flex min-h-0 flex-1 flex-col"
