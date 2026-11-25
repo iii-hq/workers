@@ -42,6 +42,11 @@ pub struct ScenarioFixture {
     /// that produces no session turn — a call-mode reaction's dispatch,
     /// including a trailing coalesced fire.
     pub await_target_calls: Option<usize>,
+    /// After every terminal turn arrived, await until the router served
+    /// every scripted generation: the only way to wait for a turn in a
+    /// session the run does not track — a side chat the Console opened and
+    /// sent in (UI-007), whose completion reaches no observer of the run.
+    pub await_generations: bool,
     /// Session-trace-count override for the floor. `None` keeps the driver
     /// formula. Needed when probe actions trip CALL-mode reactions, which
     /// dispatch a function without seeding any session turn — no extra trace
@@ -84,6 +89,12 @@ pub enum ScenarioIntervention {
 /// `{ function_id, args?, filters?, target }`, and the probe creates that
 /// observer and waits until it is active.
 pub const OBSERVE_ACTION: &str = "probe::observe";
+
+/// The probe action that opens a side chat of the run's session
+/// (`harness::side-chat::open`), sends its payload's `message` in it and
+/// waits until that turn is terminal. A side chat is no child of the
+/// session, so the completion observers never see its turn.
+pub const SIDE_CHAT_ACTION: &str = "probe::side-chat";
 
 /// Race two identical human answers and require one winner and one refusal.
 pub const ANSWER_RACE_ACTION: &str = "probe::answer-race";

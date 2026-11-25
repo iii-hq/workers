@@ -37,6 +37,12 @@ interface ConversationFilterMenuProps {
   onViewChange: (next: ConversationListView) => void
   /** Touch-sized menu rows when the list is the whole narrow page. */
   narrow?: boolean
+  /**
+   * The defaults in force: "Clear filters" goes back to them and the dot
+   * marks a difference from them (Project grouping on an engine with chat
+   * projects, chat-projects §1.3.1).
+   */
+  defaults?: ConversationListView
 }
 
 interface SettingProps {
@@ -132,8 +138,9 @@ export function ConversationFilterMenu({
   view,
   onViewChange,
   narrow = false,
+  defaults = DEFAULT_CONVERSATION_LIST_VIEW,
 }: ConversationFilterMenuProps) {
-  const filtering = !isDefaultConversationListView(view)
+  const filtering = !isDefaultConversationListView(view, defaults)
   const grouping = CONVERSATION_GROUPING_OPTIONS.find(
     (option) => option.value === view.grouping,
   )
@@ -235,7 +242,7 @@ export function ConversationFilterMenu({
         <DropdownMenuSeparator />
         <DropdownMenuItem
           disabled={!filtering}
-          onClick={() => onViewChange(DEFAULT_CONVERSATION_LIST_VIEW)}
+          onClick={() => onViewChange(defaults)}
           className={rowClass}
         >
           Clear filters

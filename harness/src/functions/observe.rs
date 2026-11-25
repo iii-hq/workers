@@ -305,7 +305,9 @@ pub async fn invoke(
     if let Some(ns) = namespace.filter(|ns| *ns != implicit)
         && (matches!(
             function_id,
-            crate::functions::SPAWN_ID | crate::functions::ASK_ID
+            crate::functions::SPAWN_ID
+                | crate::functions::ASK_ID
+                | crate::description::SET_DESCRIPTION_ID
         ) || is_locally_intercepted(
             function_id,
             arguments,

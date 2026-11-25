@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   ChevronRight,
   Download,
+  FolderKanban,
   Plus,
   Search,
   SquarePen,
@@ -23,15 +24,21 @@ import {
   rowsWithSpacers,
   windowedRowIndexes,
 } from '@/components/chat/transcript-window'
+import { ProjectMenu } from '@/components/projects/ProjectMenu'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { navRowVariants } from '@/components/ui/nav-row'
+import type { ChatProject } from '@/lib/backend/projects'
 import { hideSideChats } from '@/lib/chat-aside'
+import type { ConversationDetailsDraft } from '@/lib/conversation-details'
 import {
+  type ConversationGrouping,
+  capProjectRoots,
   countConversations,
   groupConversationRoots,
   NO_PROJECT_GROUP_KEY,
   PINNED_GROUP_KEY,
+  PROJECT_ROOTS_SHOWN,
 } from '@/lib/conversation-groups'
 import {
   buildConversationTree,
@@ -74,7 +81,7 @@ interface ConversationSidebarProps {
   narrow?: boolean
   /** Start a conversation — the New chat row at the top of the sidebar. */
   onCreate?: () => void
-  /** Browse for a folder to remember as a project — the Add project row. */
+  /** Browse for a folder to remember in the folder catalogue — the Add folder row. */
   onAddProject?: () => void
   /** Import conversations from a file — a quiet action beside the list title. */
   onImport?: () => void
@@ -83,6 +90,21 @@ interface ConversationSidebarProps {
   onSelect: (id: string) => void
   onRename: (id: string, title: string) => void
   onRemove: (id: string) => void
+  /**
+   * The engine's chat projects (chat-projects §1.3.1); absent on an engine
+   * without them, where Project groups by folder as before.
+   */
+  chatProjects?: readonly ChatProject[]
+  /** Save "Conversation details" for a row. */
+  onSaveDetails?: (id: string, draft: ConversationDetailsDraft) => Promise<void>
+  /** "Move to project" in a row's menu. */
+  onMoveToProject?: (id: string, projectId: string) => Promise<void>
+  /** Show the details' "Let the agent keep it up to date" switch. */
+  agentSwitch?: boolean
+  /** "New project", next to New chat. */
+  onNewProject?: () => void
+  /** "Edit project…" from a project's menu. */
+  onEditProject?: (projectId: string) => void
 }
 
 const TREE_COLLAPSED_KEY = 'iii-chat-tree-collapsed'
@@ -100,6 +122,27 @@ const LIST_GAP_PX = 1
 
 /** The grouping-only key this view record replaced; read as a fallback. */
 const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
+/**
+ * Set once the reader picks a grouping on this device. Until then an engine
+ * with chat projects groups by Project (chat-projects §1.3.1).
+ */
+const GROUPING_CHOSEN_KEY = 'iii-chat-grouping-chosen'
+
+function loadGroupingChosen(): boolean {
+  try {
+    return window.localStorage.getItem(GROUPING_CHOSEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveGroupingChosen(): void {
+  try {
+    window.localStorage.setItem(GROUPING_CHOSEN_KEY, '1')
+  } catch {
+    // best-effort persistence
+  }
+}
 
 /**
  * A navigation row at the top of the sidebar (New chat, Search): an icon
@@ -181,6 +224,12 @@ export function ConversationSidebar({
   onSelect,
   onRename,
   onRemove,
+  chatProjects,
+  onSaveDetails,
+  onMoveToProject,
+  agentSwitch = false,
+  onNewProject,
+  onEditProject,
 }: ConversationSidebarProps) {
   /* Per-node tree collapse state, persisted so a folded sub-agent subtree
  stays folded across reloads. Default expanded. */
@@ -219,6 +268,44 @@ export function ConversationSidebar({
 
   /* Kinds shown, grouping and order — one record, one Clear filters. */
   const [view, setView] = useState<ConversationListView>(loadListView)
+  /* Project is the default grouping while the engine has projects and the
+     reader has not picked one on this device. */
+  const [groupingChosen, setGroupingChosen] = useState(loadGroupingChosen)
+  const projectsMode = chatProjects !== undefined
+  const defaultGrouping: ConversationGrouping =
+    projectsMode && (chatProjects?.length ?? 0) > 0
+      ? 'project'
+      : DEFAULT_CONVERSATION_LIST_VIEW.grouping
+  const grouping: ConversationGrouping = groupingChosen
+    ? view.grouping
+    : defaultGrouping
+  const effectiveView = useMemo(() => ({ ...view, grouping }), [view, grouping])
+  const viewDefaults = useMemo(
+    () => ({ ...DEFAULT_CONVERSATION_LIST_VIEW, grouping: defaultGrouping }),
+    [defaultGrouping],
+  )
+  const changeView = useCallback(
+    (next: ConversationListView) => {
+      if (next.grouping !== grouping) {
+        saveGroupingChosen()
+        setGroupingChosen(true)
+      }
+      setView(next)
+    },
+    [grouping],
+  )
+  /* Chat projects showing every root, past the first three. */
+  const [projectsExpanded, setProjectsExpanded] = useState<Set<string>>(
+    () => new Set(),
+  )
+  const toggleProjectExpanded = useCallback((key: string) => {
+    setProjectsExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
   const { pinned, togglePin, movePin } = usePinnedConversations()
 
   /* Pinned chats rearrange by drag: the dragged id, and the row edge it
@@ -353,23 +440,44 @@ export function ConversationSidebar({
  update. */
   const sections = useMemo(
     () =>
-      groupConversationRoots(roots, view.grouping, Date.now(), pinned).map(
-        (group) => ({
+      groupConversationRoots(
+        roots,
+        grouping,
+        Date.now(),
+        pinned,
+        projectsMode ? chatProjects : undefined,
+      ).map((group) => {
+        const folded = collapsedGroups.has(group.key)
+        // A chat project lists its 3 newest roots, then "N more".
+        const capped = group.chatProject
+          ? capProjectRoots(
+              group.roots,
+              projectsExpanded.has(group.key),
+              activeId,
+            )
+          : { shown: group.roots, hidden: 0 }
+        return {
           group,
-          count: countConversations(group.roots),
-          rows: collapsedGroups.has(group.key)
+          count: group.chatProject
+            ? group.roots.length
+            : countConversations(group.roots),
+          hidden: folded ? 0 : capped.hidden,
+          rows: folded
             ? []
             : flattenConversationTree(
-                group.roots,
+                capped.shown,
                 collapsedNodes,
                 inactiveShown,
                 activeId,
               ),
-        }),
-      ),
+        }
+      }),
     [
       roots,
-      view.grouping,
+      grouping,
+      projectsMode,
+      chatProjects,
+      projectsExpanded,
       collapsedGroups,
       collapsedNodes,
       inactiveShown,
@@ -379,7 +487,11 @@ export function ConversationSidebar({
   )
   /* The flat list has one section and no header to collapse it by — unless
  pins split it, when both halves need naming. */
-  const headers = view.grouping !== 'none' || pinned.size > 0
+  const headers = grouping !== 'none' || pinned.size > 0
+  /* Under chat projects every root row has its second line; elsewhere only
+     a status line or a description earns one. */
+  const secondLine: 'full' | 'status' =
+    projectsMode && grouping === 'project' ? 'full' : 'status'
   /* Once any row carries a sub-agent caret at its end, every row keeps that
  column so timestamps and actions line up down the list. */
   const caretColumn = sections.some((section) =>
@@ -396,10 +508,14 @@ export function ConversationSidebar({
   const windowed = typeof ResizeObserver !== 'undefined'
   const items = useMemo(
     () =>
-      sections.flatMap(({ group, count, rows }) => {
+      sections.flatMap(({ group, count, rows, hidden }) => {
         // A project folder heads its own chats; date buckets stay labels.
         const project =
-          group.key.startsWith('project:') && group.key !== NO_PROJECT_GROUP_KEY
+          Boolean(group.chatProject) ||
+          (group.key.startsWith('project:') &&
+            group.key !== NO_PROJECT_GROUP_KEY)
+        const folded = collapsedGroups.has(group.key)
+        const expanded = projectsExpanded.has(group.key)
         return [
           ...(headers
             ? [
@@ -423,9 +539,35 @@ export function ConversationSidebar({
             project,
             stacked: project && position > 0,
           })),
+          // An empty chat project still shows one row under its header.
+          ...(group.chatProject && !folded && group.roots.length === 0
+            ? [
+                {
+                  kind: 'empty' as const,
+                  key: `empty:${group.key}`,
+                  group,
+                  project,
+                },
+              ]
+            : []),
+          // "N more" past a project's first three roots; "Show less" after.
+          ...(group.chatProject &&
+          !folded &&
+          (hidden > 0 || (expanded && group.roots.length > PROJECT_ROOTS_SHOWN))
+            ? [
+                {
+                  kind: 'more' as const,
+                  key: `more:${group.key}`,
+                  group,
+                  project,
+                  hidden,
+                  expanded,
+                },
+              ]
+            : []),
         ]
       }),
-    [sections, headers],
+    [sections, headers, collapsedGroups, projectsExpanded],
   )
   const [focusedKey, setFocusedKey] = useState<string | null>(null)
   const heldIndexes = useMemo(() => {
@@ -452,10 +594,21 @@ export function ConversationSidebar({
     (index: number) => {
       const item = items[index]
       if (item?.kind === 'header') return item.project ? 49 : 41
+      if (item?.kind === 'more' || item?.kind === 'empty')
+        return narrow ? 45 : 37
+      // A two-line row (chat projects) is 52px; measured once mounted.
+      const twoLine =
+        item?.kind === 'row' &&
+        !isInactiveToggle(item.row) &&
+        item.row.depth === 0 &&
+        (secondLine === 'full' || Boolean(item.row.conversation.description))
       // A stacked row sits 1px up (conversation-tree.css), and its slot counts it.
-      return (narrow ? 45 : 37) - (item?.stacked ? 1 : 0)
+      return (
+        (twoLine ? (narrow ? 57 : 53) : narrow ? 45 : 37) -
+        (item?.stacked ? 1 : 0)
+      )
     },
-    [items, narrow],
+    [items, narrow, secondLine],
   )
   // A changed list's range still comes from the old offset, so a section moving
   // up would unmount the rows in view. They stay for that commit, for the browser
@@ -549,6 +702,18 @@ export function ConversationSidebar({
         onSelect={() => onSelect(c.id)}
         onRename={(title) => onRename(c.id, title)}
         onRemove={() => onRemove(c.id)}
+        onSaveDetails={
+          onSaveDetails ? (draft) => onSaveDetails(c.id, draft) : undefined
+        }
+        projects={projectsMode ? chatProjects : undefined}
+        onMoveToProject={
+          onMoveToProject && projectsMode
+            ? (projectId) => onMoveToProject(c.id, projectId)
+            : undefined
+        }
+        agentSwitch={agentSwitch}
+        secondLine={secondLine}
+        folderTail={group.noProject === true}
         pinned={pinned.has(c.id)}
         onTogglePin={() => togglePin(c.id)}
         reorder={
@@ -575,7 +740,22 @@ export function ConversationSidebar({
       data-stacked={item.kind === 'row' && item.stacked ? '' : undefined}
       onFocusCapture={() => setFocusedKey(item.key)}
     >
-      {item.kind === 'header' ? (
+      {item.kind === 'empty' ? (
+        <div className={cn(uiClasses.treeItem, 'conversation-project-empty')}>
+          <span className={uiClasses.treeItemLabel}>No conversations yet</span>
+        </div>
+      ) : item.kind === 'more' ? (
+        <button
+          type="button"
+          className={cn(uiClasses.treeItem, 'conversation-project-more')}
+          aria-expanded={item.expanded}
+          onClick={() => toggleProjectExpanded(item.group.key)}
+        >
+          <span className={uiClasses.treeItemLabel}>
+            {item.expanded ? 'Show less' : `${item.hidden} more`}
+          </span>
+        </button>
+      ) : item.kind === 'header' ? (
         <ConversationGroupHeader
           label={item.group.label}
           title={item.group.title}
@@ -584,6 +764,27 @@ export function ConversationSidebar({
           onToggle={() => toggleGroup(item.group.key)}
           narrow={narrow}
           project={item.project}
+          chatProject={item.group.chatProject}
+          onCreateIn={onCreateInProject}
+          menu={
+            item.group.chatProject ? (
+              <ProjectMenu
+                project={item.group.chatProject}
+                // As the list counts a project: its conversations, not the
+                // subagents nested under them (spec §1.3.2, P11).
+                conversationCount={item.group.roots.length}
+                narrow={narrow}
+                onNewConversation={() => {
+                  const folder = item.group.chatProject?.folders[0]
+                  if (folder) onCreateInProject?.(folder)
+                }}
+                onEdit={() =>
+                  item.group.chatProject &&
+                  onEditProject?.(item.group.chatProject.id)
+                }
+              />
+            ) : undefined
+          }
           onCreate={
             item.project && item.group.title && onCreateInProject
               ? () => onCreateInProject(item.group.title as string)
@@ -621,15 +822,25 @@ export function ConversationSidebar({
             {narrow ? null : <ShortcutHint id="chat.new" />}
           </button>
         ) : null}
+        {onNewProject && projectsMode ? (
+          <button
+            type="button"
+            onClick={onNewProject}
+            className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-sm')}
+          >
+            <FolderKanban className="size-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">New project</span>
+          </button>
+        ) : null}
         {onAddProject ? (
           <button
             type="button"
             onClick={onAddProject}
-            title={hoverTitle('Add project', 'project.add')}
+            title={hoverTitle('Add folder', 'project.add')}
             className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-sm')}
           >
             <Plus className="size-4 shrink-0" aria-hidden />
-            <span className="min-w-0 flex-1 truncate">Add project</span>
+            <span className="min-w-0 flex-1 truncate">Add folder</span>
             {narrow ? null : <ShortcutHint id="project.add" />}
           </button>
         ) : null}
@@ -666,9 +877,10 @@ export function ConversationSidebar({
             </Hint>
           ) : null}
           <ConversationFilterMenu
-            view={view}
-            onViewChange={setView}
+            view={effectiveView}
+            onViewChange={changeView}
             narrow={narrow}
+            defaults={viewDefaults}
           />
         </div>
       </div>
@@ -693,7 +905,7 @@ export function ConversationSidebar({
                   variant="ghost"
                   size="sm"
                   className="-ml-3 h-7 px-3 text-xs"
-                  onClick={() => setView(DEFAULT_CONVERSATION_LIST_VIEW)}
+                  onClick={() => changeView(viewDefaults)}
                 >
                   Clear filters
                 </Button>

@@ -70,6 +70,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "session::get",
             "session::list",
             "session::set-meta",
+            "session::patch-meta",
             "session::set-draft",
             "session::set-status",
             "session::delete",

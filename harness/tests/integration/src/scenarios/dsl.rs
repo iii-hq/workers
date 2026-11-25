@@ -64,6 +64,7 @@ pub(super) struct Scenario {
     probe_actions: Vec<crate::fixtures::ProbeAction>,
     harness_env: Vec<(String, String)>,
     await_target_calls: Option<usize>,
+    await_generations: bool,
     traces_override: Option<usize>,
     intervention: Option<ScenarioIntervention>,
     agent_files: Vec<(String, String)>,
@@ -97,6 +98,7 @@ impl Scenario {
             probe_actions: Vec::new(),
             harness_env: Vec::new(),
             await_target_calls: None,
+            await_generations: false,
             traces_override: None,
             intervention: None,
             agent_files: Vec::new(),
@@ -261,6 +263,15 @@ impl Scenario {
     pub(super) fn await_target_calls(mut self, count: usize) -> Self {
         assert!(count > 0, "await_target_calls must be positive");
         self.await_target_calls = Some(count);
+        self
+    }
+
+    /// After every terminal turn arrived, additionally await until the
+    /// router served every scripted generation. A turn in a session the run
+    /// does not track (a side chat the Console opens and sends in) reaches no
+    /// completion observer of the run; this is how the run waits for it.
+    pub(super) fn await_generations(mut self) -> Self {
+        self.await_generations = true;
         self
     }
 
@@ -467,6 +478,7 @@ impl Scenario {
             probe_actions: self.probe_actions,
             harness_env: self.harness_env,
             await_target_calls: self.await_target_calls,
+            await_generations: self.await_generations,
             traces_override: self.traces_override,
             intervention: self.intervention,
             agent_files: self.agent_files,
@@ -965,6 +977,12 @@ enum ResponseKind {
     FunctionCalls {
         calls: Vec<(String, String, Value)>,
     },
+    TextAndFunctionCall {
+        text: String,
+        call_id: String,
+        function_id: String,
+        arguments: Value,
+    },
     TerminalError {
         text: String,
         chunks: Vec<String>,
@@ -1102,6 +1120,27 @@ impl Response {
         }
     }
 
+    /// One assistant message with reply text and then one call, the shape
+    /// of a reply that also updates the conversation's description.
+    pub(super) fn text_and_function_call_raw(
+        text: &str,
+        call_id: &str,
+        function_id: &str,
+        arguments: Value,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        Self {
+            kind: ResponseKind::TextAndFunctionCall {
+                text: text.to_string(),
+                call_id: call_id.to_string(),
+                function_id: function_id.to_string(),
+                arguments,
+            },
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
     /// Compile one assistant message containing several function calls. This
     /// is used by the stop-cascade fixture so both child checkpoints exist
     /// before the root enters its held generation.
@@ -1185,6 +1224,32 @@ impl Response {
                                 arguments,
                             })
                             .collect(),
+                        StopReason::FunctionCall,
+                        Some(usage.clone()),
+                        model,
+                        timestamp,
+                    ),
+                }],
+                StopReason::FunctionCall,
+                true,
+                None,
+            ),
+            ResponseKind::TextAndFunctionCall {
+                text,
+                call_id,
+                function_id,
+                arguments,
+            } => (
+                vec![AssistantMessageEvent::Done {
+                    message: assistant_message(
+                        vec![
+                            ContentBlock::Text { text },
+                            ContentBlock::FunctionCall {
+                                id: call_id,
+                                function_id,
+                                arguments,
+                            },
+                        ],
                         StopReason::FunctionCall,
                         Some(usage.clone()),
                         model,

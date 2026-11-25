@@ -124,6 +124,11 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading harness configuration")?;
 
+    // The saved-folder catalogue moved from `harness::projects` to
+    // `harness::folders` (chat-projects D25): its file moves once, before any
+    // function can read either store.
+    harness::folders::migrate_at_start(&cfg).await;
+
     // The harness's own observable functions first: each sets its observer
     // hooks by id before it registers.
     let events = TurnEvents::register(&iii);

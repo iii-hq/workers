@@ -170,13 +170,50 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub filesystem_boundary: crate::filesystem_scope::BoundaryMode,
 
-    /// JSON file used for the operator's durable project catalog. Resolved
-    /// like every other worker path: absolute and `~/` paths are kept, relative
-    /// paths resolve under `III_COMPOSE_DIR` (or the process cwd outside
-    /// Compose). Changes take effect on the next project operation without
-    /// restarting the worker.
+    /// JSON file of the chat projects (`harness::projects`): named, coloured
+    /// groups of folders. Resolved like every other worker path: absolute and
+    /// `~/` paths are kept, relative paths resolve under `III_COMPOSE_DIR` (or
+    /// the process cwd outside Compose). Until chat projects, this file held
+    /// the saved-folder catalogue; at start the harness moves such a file to
+    /// `folders_file_path` once. Changes take effect on the next project
+    /// operation without restarting the worker.
     #[serde(default = "default_projects_file_path")]
     pub projects_file_path: String,
+
+    /// JSON file of the saved-folder catalogue (`harness::folders`): the
+    /// folders the IDE, the Chat and the console's folder pickers list.
+    /// Resolved like `projects_file_path`; changes take effect on the next
+    /// folder operation.
+    #[serde(default = "default_folders_file_path")]
+    pub folders_file_path: String,
+
+    /// Conversation descriptions written by agents (`harness::set-description`).
+    /// Read and written by devices through `harness::chat-settings::get|set`.
+    #[serde(default)]
+    pub descriptions: DescriptionsConfig,
+}
+
+/// [`WorkerConfig::descriptions`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DescriptionsConfig {
+    /// Agents keep each conversation's one-line description up to date with
+    /// `harness::set-description`, inside the turn they are running. Off
+    /// leaves the tool out of every turn's tools.
+    #[serde(default = "default_agent_writes")]
+    pub agent_writes: bool,
+}
+
+impl Default for DescriptionsConfig {
+    fn default() -> Self {
+        Self {
+            agent_writes: default_agent_writes(),
+        }
+    }
+}
+
+fn default_agent_writes() -> bool {
+    true
 }
 
 impl WorkerConfig {
@@ -354,8 +391,11 @@ fn default_sweep_expression() -> String {
     // daily at midnight.
     "0 0 0 * * *".to_string()
 }
-fn default_projects_file_path() -> String {
+pub(crate) fn default_projects_file_path() -> String {
     iii_worker_paths::default_path("data/harness-projects.json")
+}
+pub(crate) fn default_folders_file_path() -> String {
+    iii_worker_paths::default_path("data/harness-folders.json")
 }
 fn default_functions() -> Option<FunctionPolicy> {
     // Default policy for PARENTLESS spawns that carry no inherited policy
@@ -433,6 +473,8 @@ impl Default for WorkerConfig {
             default_filesystem_root: None,
             filesystem_boundary: Default::default(),
             projects_file_path: default_projects_file_path(),
+            folders_file_path: default_folders_file_path(),
+            descriptions: DescriptionsConfig::default(),
         }
     }
 }
@@ -489,6 +531,8 @@ mod tests {
         assert!(cfg.co_author);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
         assert_eq!(cfg.projects_file_path, "data/harness-projects.json");
+        assert_eq!(cfg.folders_file_path, "data/harness-folders.json");
+        assert!(cfg.descriptions.agent_writes);
     }
 
     #[test]

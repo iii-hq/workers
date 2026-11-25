@@ -15,6 +15,8 @@ export const GENERAL_ANCHOR = {
   soundCheck: 'settings-general-sound-check',
   chat: 'settings-general-chat',
   sendKey: 'settings-general-send-key',
+  projects: 'settings-general-projects',
+  sessionDescriptions: 'settings-general-session-descriptions',
   permissions: 'settings-general-permissions',
   defaultMode: 'settings-general-default-mode',
   allowlist: 'settings-general-allowlist',
@@ -103,6 +105,38 @@ const BASE_FIELDS: SettingsSearchField[] = [
       'composer',
     ],
     anchor: A.sendKey,
+  },
+]
+
+/** Chat › Projects, on an engine with chat projects (chat-projects §1.3.7). */
+const PROJECT_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'projects',
+    label: 'Projects',
+    trail: ['Chat'],
+    description:
+      'Named, coloured groups of folders and the conversations started in them.',
+    keywords: ['project', 'folders', 'group', 'new project', 'colour', 'color'],
+    anchor: A.projects,
+  },
+]
+
+/** Chat › Session descriptions, on an engine with the chat settings. */
+const DESCRIPTION_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'session-descriptions',
+    label: 'Session descriptions',
+    trail: ['Chat'],
+    description:
+      'Agents write a one-line description inside the turn they are running.',
+    keywords: [
+      'description',
+      'agent',
+      'summary',
+      'set-description',
+      'up to date',
+    ],
+    anchor: A.sessionDescriptions,
   },
 ]
 
@@ -206,12 +240,18 @@ const TRAILING_FIELDS: SettingsSearchField[] = [
   },
 ]
 
-/** The General page's searchable fields; Permissions only when it renders. */
+/**
+ * The General page's searchable fields; Permissions, Projects and Session
+ * descriptions only when they render.
+ */
 export function generalSearchFields(
   approvalGateAvailable: boolean,
+  chat: { projects?: boolean; descriptions?: boolean } = {},
 ): SettingsSearchField[] {
   return [
     ...BASE_FIELDS,
+    ...(chat.projects ? PROJECT_FIELDS : []),
+    ...(chat.descriptions ? DESCRIPTION_FIELDS : []),
     ...(approvalGateAvailable ? PERMISSION_FIELDS : []),
     ...TRAILING_FIELDS,
   ]

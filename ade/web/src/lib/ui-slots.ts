@@ -82,15 +82,22 @@ export interface RegisteredContextSection extends ContextSectionRegistration {
 }
 
 /** The Context panel's own sections, in their default order. */
+/**
+ * The Context panel's own sections in their default order (chat-projects
+ * D11): the common ones every surface shows first — Subagents, Pull
+ * requests, Links, Attachments, Images — then the ADE's own.
+ */
 export const CONTEXT_PANEL_GROUPS = [
+  'sidechats',
+  'subagents',
+  'prs',
+  'links',
+  'attachments',
+  'images',
+  'tracking',
   'project',
   'tickets',
-  'prs',
-  'assets',
-  'subagents',
   'observers',
-  'links',
-  'tracking',
 ] as const
 
 export interface RegisteredComposerAction extends ComposerActionRegistration {

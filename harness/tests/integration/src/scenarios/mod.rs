@@ -15,6 +15,8 @@ mod call_argument_reconciliation;
 mod child_discovery_granted;
 mod compaction_anchor;
 mod condition_failure_notice;
+mod console_set_description;
+mod console_side_chat;
 mod console_streamed_text;
 mod database_row_wake;
 mod direct_spawn_leaf_pipeline;
@@ -35,6 +37,8 @@ mod queued_message_edit_unqueue;
 mod repeated_failed_call_breaker;
 mod reseed_parked_message;
 mod router_midstream_terminal_error;
+mod set_description_ends_turn;
+mod side_chat_same_prefix;
 mod spawn_reuse_guard;
 mod standing_wake_delivery;
 mod state_worker_sidecar;
@@ -73,6 +77,8 @@ pub fn all() -> Vec<ScenarioFixture> {
         child_discovery_granted::scenario(),
         compaction_anchor::scenario(),
         condition_failure_notice::scenario(),
+        console_set_description::scenario(),
+        console_side_chat::scenario(),
         console_streamed_text::scenario(),
         database_row_wake::scenario(),
         direct_spawn_leaf_pipeline::scenario(),
@@ -94,6 +100,8 @@ pub fn all() -> Vec<ScenarioFixture> {
         repeated_failed_call_breaker::scenario(),
         reseed_parked_message::scenario(),
         router_midstream_terminal_error::scenario(),
+        set_description_ends_turn::scenario(),
+        side_chat_same_prefix::scenario(),
         spawn_reuse_guard::scenario(),
         stop_cancel_cascade::scenario(),
         stop_parked::quiet_deadlines(),
@@ -117,7 +125,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 47);
+        assert_eq!(fixtures.len(), 51);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

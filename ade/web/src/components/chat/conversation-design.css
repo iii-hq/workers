@@ -900,3 +900,10 @@
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--border);
 }
+
+/* A full-height phone panel (the context drawer, a side chat's page) keeps
+   its header and composer clear of the notch and the home indicator. */
+.side-panel-safe-area {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}

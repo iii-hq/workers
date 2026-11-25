@@ -99,6 +99,18 @@ export interface PageSidebarProps
    */
   expandRequest?: number
   /**
+   * Each new value collapses the sidebar, or closes the drawer when narrow,
+   * so a header button or a shortcut outside it can put it away in either
+   * presentation. The first value is the baseline and does nothing.
+   */
+  collapseRequest?: number
+  /**
+   * How far below its container's top the drawer opens: its panel, scrim
+   * and toggle start there, so a header above it stays in reach (the chat's
+   * pane button that opened the drawer also closes it). 0 by default.
+   */
+  drawerOffsetTop?: number
+  /**
    * Whether picking a button, link or tab inside the open drawer closes it
    * (default). Turn it off for a panel people keep working in.
    */
@@ -158,6 +170,22 @@ function writeStoredState(
   )
 }
 
+/**
+ * Fold or unfold every collapsible `PageSidebar` kept under `storageKey`
+ * from outside it (a header's pane button, a shortcut): the same stored
+ * state and sync event its own toggle writes. The width is kept.
+ */
+export function setPageSidebarCollapsed(
+  storageKey: string,
+  collapsed: boolean,
+): void {
+  writeStoredState(
+    storageKey,
+    { ...readStoredState(storageKey), collapsed },
+    'external-toggle',
+  )
+}
+
 function firstFocusable(root: HTMLElement): HTMLElement | null {
   return root.querySelector<HTMLElement>(
     'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
@@ -195,6 +223,8 @@ export function PageSidebar({
   narrowBelow,
   narrowMode = 'inline',
   expandRequest,
+  collapseRequest,
+  drawerOffsetTop = 0,
   closeDrawerOnSelect = true,
   className,
   style,
@@ -519,7 +549,7 @@ export function PageSidebar({
     if (controlledCollapsed === undefined) persist({ collapsed: next })
   }, [controlledCollapsed, onCollapsedChange, persist, preferredCollapsed])
 
-  const setDrawer = React.useCallback((next: boolean) => {
+  const setDrawer = React.useCallback((next: boolean, refocus = true) => {
     setAnimateToggle(true)
     if (motionTimerRef.current !== null)
       window.clearTimeout(motionTimerRef.current)
@@ -528,7 +558,7 @@ export function PageSidebar({
       setAnimateToggle(false)
     }, MOTION_CLEANUP_MS)
     setDrawerOpen(next)
-    if (!next) toggleRef.current?.focus({ preventScroll: true })
+    if (!next && refocus) toggleRef.current?.focus({ preventScroll: true })
   }, [])
 
   const expandRequestRef = React.useRef(expandRequest)
@@ -538,6 +568,31 @@ export function PageSidebar({
     if (hostDrawer) setDrawer(true)
     else if (effectiveCollapsed) toggle()
   }, [expandRequest, hostDrawer, effectiveCollapsed, setDrawer, toggle])
+
+  const collapseRequestRef = React.useRef(collapseRequest)
+  React.useEffect(() => {
+    if (collapseRequestRef.current === collapseRequest) return
+    collapseRequestRef.current = collapseRequest
+    if (effectiveCollapsed) return
+    if (hostDrawer) {
+      // Focus follows only when it was inside the drawer that is closing;
+      // a shortcut from the composer leaves the caret where it was.
+      const active = document.activeElement
+      setDrawer(
+        false,
+        active instanceof Node &&
+          Boolean(expandedRef.current?.contains(active)),
+      )
+    } else if (collapsible && !effectiveNarrow) toggle()
+  }, [
+    collapseRequest,
+    hostDrawer,
+    effectiveCollapsed,
+    effectiveNarrow,
+    collapsible,
+    setDrawer,
+    toggle,
+  ])
 
   // Preserve the original zero-behavior primitive for existing consumers.
   if (!managed) {
@@ -584,7 +639,16 @@ export function PageSidebar({
       data-resizing={isResizing ? '' : undefined}
       data-narrow={effectiveNarrow ? '' : undefined}
       data-drawer={hostDrawer ? (drawerOpen ? 'open' : 'closed') : undefined}
-      style={{ ...style, width: effectiveWidth }}
+      style={
+        {
+          ...style,
+          width: effectiveWidth,
+          // Where the drawer's scrim, panel and toggle start (0 unset).
+          '--page-sidebar-drawer-top': drawerOffsetTop
+            ? `${drawerOffsetTop}px`
+            : undefined,
+        } as React.CSSProperties
+      }
       className={cn(
         'relative shrink-0 min-h-0 bg-sidebar',
         side === 'left'
@@ -622,7 +686,7 @@ export function PageSidebar({
           tabIndex={-1}
           aria-label={`close ${label}`}
           className={cn(
-            'absolute inset-y-0 z-10 cursor-default bg-ink/25',
+            'absolute top-[var(--page-sidebar-drawer-top,0px)] bottom-0 z-10 cursor-default bg-ink/25',
             side === 'left' ? 'left-0' : 'right-0',
           )}
           style={{ width: containerWidth > 0 ? containerWidth : '100vw' }}
@@ -637,7 +701,10 @@ export function PageSidebar({
         aria-hidden={effectiveCollapsed || undefined}
         style={{ width: panelWidth }}
         className={cn(
-          'absolute inset-y-0 flex min-h-0 flex-col overflow-hidden',
+          'absolute flex min-h-0 flex-col overflow-hidden',
+          hostDrawer
+            ? 'top-[var(--page-sidebar-drawer-top,0px)] bottom-0'
+            : 'inset-y-0',
           side === 'left' ? 'left-0' : 'right-0',
           hostDrawer &&
             cn(
@@ -727,9 +794,10 @@ export function PageSidebar({
                 : { right: drawerToggleOffset + 4 }
           }
           className={cn(
-            'absolute top-2 z-30 size-7',
-            drawerToggleOffset === undefined &&
-              (toggleAtLeft ? 'left-1' : 'right-1'),
+            'absolute z-30 size-7',
+            drawerToggleOffset === undefined
+              ? cn('top-2', toggleAtLeft ? 'left-1' : 'right-1')
+              : 'top-[calc(var(--page-sidebar-drawer-top,0px)+0.5rem)]',
           )}
         >
           <span className="relative block size-4" aria-hidden>

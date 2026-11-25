@@ -258,11 +258,11 @@ describe('ConversationRow menu', () => {
       (el) => el.textContent?.trim(),
     )
 
-  it('lists Rename, Pin and Delete, each with an icon', () => {
+  it('lists Conversation details, Pin and Delete, each with an icon', () => {
     const onSelect = vi.fn()
     mount({ onRemove: vi.fn(), onTogglePin: vi.fn(), onSelect })
     open()
-    expect(items()).toEqual(['Rename', 'Pin', 'Delete'])
+    expect(items()).toEqual(['Conversation details…', 'Pin', 'Delete'])
     for (const item of document.querySelectorAll(
       '[data-slot="dropdown-menu-item"]',
     )) {
@@ -295,7 +295,7 @@ describe('ConversationRow menu', () => {
     const onTogglePin = vi.fn()
     mount({ onRemove, onTogglePin, onSelect: vi.fn(), pinned: true })
     open()
-    expect(items()).toEqual(['Rename', 'Unpin', 'Delete'])
+    expect(items()).toEqual(['Conversation details…', 'Unpin', 'Delete'])
     const del = [
       ...document.querySelectorAll<HTMLElement>(
         '[data-slot="dropdown-menu-item"]',

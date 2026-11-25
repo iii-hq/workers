@@ -4,10 +4,12 @@
 //! the same `handle` functions directly (SOP §7).
 
 pub mod ask_settle;
+pub mod chat_settings;
 pub mod compact;
 pub mod context_policy;
 pub mod delete_session_tree;
 pub mod filesystem;
+pub mod folders;
 pub mod function_call;
 pub mod function_resolve;
 pub mod link_card;
@@ -129,17 +131,7 @@ pub const FILESYSTEM_INFO_ID: &str = "harness::filesystem::info";
 pub const FILESYSTEM_INFO_DESC: &str =
     "Internal control-plane: the default working-directory root new sessions are scoped to.";
 
-pub const PROJECTS_LIST_ID: &str = "harness::projects::list";
-pub const PROJECTS_LIST_DESC: &str =
-    "Internal control-plane: list the operator's durable project catalog.";
-
-pub const PROJECTS_UPSERT_ID: &str = "harness::projects::upsert";
-pub const PROJECTS_UPSERT_DESC: &str =
-    "Internal control-plane: remember, touch, or rename a project directory.";
-
-pub const PROJECTS_DELETE_ID: &str = "harness::projects::delete";
-pub const PROJECTS_DELETE_DESC: &str =
-    "Internal control-plane: remove a project directory from the durable catalog.";
+pub use crate::description::SET_DESCRIPTION_ID;
 
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
@@ -322,6 +314,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, ASK_ID, ASK_DESC, |_d, r| async move {
         crate::ask::direct_handle(r).await
     });
+    // Same pattern: the turn loop answers it with the turn's own session.
+    register(
+        iii,
+        deps,
+        crate::description::SET_DESCRIPTION_ID,
+        crate::description::TOOL_DESC,
+        |_d, r| async move { crate::description::direct_handle(r).await },
+    );
     register_internal(
         iii,
         deps,
@@ -508,28 +508,130 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, r| async move { filesystem::info(&d, r).await },
     );
 
-    // Operator project catalog — trusted console control-plane, durable in the
-    // harness-owned private state namespace and absent from the agent catalog.
+    // Saved-folder catalogue (D25) — trusted console control-plane, a
+    // harness-owned JSON file, absent from the agent catalog.
     register_internal(
         iii,
         deps,
-        PROJECTS_LIST_ID,
-        PROJECTS_LIST_DESC,
+        folders::LIST_ID,
+        folders::LIST_DESC,
+        |d, r| async move { folders::list(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        folders::UPSERT_ID,
+        folders::UPSERT_DESC,
+        |d, r| async move { folders::upsert(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        folders::DELETE_ID,
+        folders::DELETE_DESC,
+        |d, r| async move { folders::delete(&d, r).await },
+    );
+
+    // Chat projects — control-plane like the rest (D54), off the default
+    // catalog. Agents may still call `list` by id (iii-permissions.yaml
+    // allows it; its description asks for `version: 2`); the writes are the
+    // console's and the apps'.
+    register_internal(
+        iii,
+        deps,
+        projects::LIST_ID,
+        projects::LIST_DESC,
         |d, r| async move { projects::list(&d, r).await },
     );
     register_internal(
         iii,
         deps,
-        PROJECTS_UPSERT_ID,
-        PROJECTS_UPSERT_DESC,
-        |d, r| async move { projects::upsert(&d, r).await },
+        projects::CREATE_ID,
+        projects::CREATE_DESC,
+        |d, r| async move { projects::create(&d, r).await },
     );
     register_internal(
         iii,
         deps,
-        PROJECTS_DELETE_ID,
-        PROJECTS_DELETE_DESC,
+        projects::UPDATE_ID,
+        projects::UPDATE_DESC,
+        |d, r| async move { projects::update(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        projects::DELETE_ID,
+        projects::DELETE_DESC,
         |d, r| async move { projects::delete(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        projects::ASSIGN_ID,
+        projects::ASSIGN_DESC,
+        |d, r| async move { projects::assign(&d, r).await },
+    );
+    // D26 shim for apps released before chat projects.
+    register_internal(
+        iii,
+        deps,
+        projects::UPSERT_ID,
+        projects::UPSERT_DESC,
+        |d, r| async move { projects::upsert_shim(&d, r).await },
+    );
+
+    // The context pane and the Chat settings — console and app control-plane.
+    register_internal(
+        iii,
+        deps,
+        crate::context_items::CONTEXT_ITEMS_ID,
+        crate::context_items::CONTEXT_ITEMS_DESC,
+        |d, r| async move { crate::context_items::handle(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        chat_settings::GET_ID,
+        chat_settings::GET_DESC,
+        |d, r| async move { chat_settings::get(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        chat_settings::SET_ID,
+        chat_settings::SET_DESC,
+        |d, r| async move { chat_settings::set(&d, r).await },
+    );
+
+    // Sidechats (chat-projects phase 2, D14-D16) — console and app
+    // control-plane like the rest (D37), off the default catalog.
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::OPEN_ID,
+        crate::side_chat::OPEN_DESC,
+        |d, r| async move { crate::side_chat::open(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::CLOSE_ID,
+        crate::side_chat::CLOSE_DESC,
+        |d, r| async move { crate::side_chat::close(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::KEEP_ID,
+        crate::side_chat::KEEP_DESC,
+        |d, r| async move { crate::side_chat::keep(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::side_chat::SUMMARIZE_ID,
+        crate::side_chat::SUMMARIZE_DESC,
+        |d, r| async move { crate::side_chat::summarize(&d, r).await },
     );
 
     // Internal cron target — registered, but kept off the public catalog.
@@ -568,6 +670,143 @@ mod tests {
         ] {
             assert!(ASK_DESC.contains(guidance), "missing {guidance}");
         }
+    }
+
+    /// What `register_all` registers, by id: `true` when the function is on
+    /// the default catalog (neither `metadata.internal` nor private).
+    async fn registered_visibility() -> std::collections::BTreeMap<String, bool> {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (frames_tx, mut frames) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let hello = serde_json::json!({"type": "workerregistered", "worker_id": "w",
+                "features": ["observe.v2"]});
+            socket
+                .send(Message::Text(hello.to_string().into()))
+                .await
+                .unwrap();
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(text) = frame.to_text() else { continue };
+                if let Ok(message) = serde_json::from_str::<serde_json::Value>(text)
+                    && message["type"] == "registerfunction"
+                {
+                    let _ = frames_tx.send(message);
+                }
+            }
+        });
+        let iii = std::sync::Arc::new(iii_sdk::register_worker(
+            &url,
+            iii_sdk::InitOptions::default(),
+        ));
+        let deps = std::sync::Arc::new(crate::deps::Deps::new(
+            iii.clone(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(
+                crate::config::WorkerConfig::default(),
+            ))),
+            crate::discovery::new_cell(),
+            crate::skills::new_cell(),
+            crate::events::TurnEvents::register(&iii),
+            crate::hooks::HookRegistry::register(&iii),
+        ));
+        super::register_all(&iii, &deps);
+        let mut seen = std::collections::BTreeMap::new();
+        // The last function `register_all` registers, and the event
+        // functions `Deps::new` registers: their frames can come in any
+        // order, so the read waits for all of them, then for the stragglers.
+        let awaited = [
+            crate::side_chat::SUMMARIZE_ID,
+            "harness::projects::on-changed",
+            "harness::chat-settings::on-changed",
+        ];
+        let mut record = |frame: serde_json::Value| {
+            let id = frame["id"].as_str().unwrap_or_default().to_string();
+            let internal = frame["metadata"]["internal"] == serde_json::json!(true);
+            let private = frame["private"] == serde_json::json!(true);
+            seen.insert(id, !internal && !private);
+        };
+        let mut pending: std::collections::BTreeSet<&str> = awaited.into_iter().collect();
+        while !pending.is_empty() {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), frames.recv())
+                .await
+                .expect("every registration reaches the engine")
+                .expect("the fake engine is up");
+            pending.remove(frame["id"].as_str().unwrap_or_default());
+            record(frame);
+        }
+        while let Ok(Some(frame)) =
+            tokio::time::timeout(std::time::Duration::from_millis(300), frames.recv()).await
+        {
+            record(frame);
+        }
+        iii.shutdown();
+        server.abort();
+        seen
+    }
+
+    /// D54: `harness::projects::list` is internal again, like every harness
+    /// control-plane function (agents still call it by id). The default
+    /// catalog of `register_all` is the one of origin/main (which added
+    /// `harness::ask::list`, `harness::ask::withdraw` and
+    /// `harness::link-card`) plus `harness::set-description`, which the
+    /// model must find. The sidechat
+    /// functions of phase 2 are control-plane too (D37).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_model_facing_functions_are_on_the_default_catalog() {
+        let seen = registered_visibility().await;
+        assert_eq!(seen.get("harness::projects::list"), Some(&false));
+        for id in [
+            "harness::projects::create",
+            "harness::projects::update",
+            "harness::projects::delete",
+            "harness::projects::assign",
+            "harness::projects::upsert",
+            "harness::folders::list",
+            "harness::folders::upsert",
+            "harness::folders::delete",
+            "harness::context-items",
+            "harness::chat-settings::get",
+            "harness::chat-settings::set",
+            "harness::projects::on-changed",
+            "harness::chat-settings::on-changed",
+            "harness::side-chat::open",
+            "harness::side-chat::close",
+            "harness::side-chat::keep",
+            "harness::side-chat::summarize",
+        ] {
+            assert_eq!(
+                seen.get(id),
+                Some(&false),
+                "{id} must stay off the default catalog"
+            );
+        }
+        let public: Vec<&str> = seen
+            .iter()
+            .filter(|(_, public)| **public)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(
+            public,
+            [
+                "harness::ask",
+                "harness::ask::list",
+                "harness::ask::withdraw",
+                "harness::link-card",
+                "harness::metrics",
+                "harness::observe",
+                "harness::observers::dispose",
+                "harness::observers::list",
+                "harness::session-tree",
+                "harness::set-description",
+                "harness::spawn",
+                "harness::status",
+                "harness::unobserve",
+            ]
+        );
     }
 
     #[test]

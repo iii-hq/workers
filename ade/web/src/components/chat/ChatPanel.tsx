@@ -4,15 +4,20 @@ import {
   NewChatDialog,
   type NewChatDraft,
 } from '@/components/chat/NewChatDialog'
-import { OpenProjectPicker } from '@/components/chat/OpenProjectPicker'
+import { OpenFolderPicker } from '@/components/chat/OpenFolderPicker'
+import { ProjectDialogHost } from '@/components/projects/ProjectDialogHost'
+import { requestProjectDialog } from '@/components/projects/project-dialog-request'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { IconButton } from '@/components/ui/IconButton'
 import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { closeSideChat } from '@/lib/backend/side-chats'
 import {
   endSideChat,
   isSideChat,
@@ -23,6 +28,7 @@ import {
   sideChatsLeftByClosedTabs,
   sideChatsMadeHere,
 } from '@/lib/chat-aside'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import { useChatDraftSeed } from '@/lib/chat-draft-seeds'
 import {
   claimChatPaneLead,
@@ -82,7 +88,11 @@ interface ChatPanelProps {
  * stays aligned with Tailwind's `sm` breakpoint.
  */
 const NARROW_BELOW = 560
-/** A side chat untouched this long ends (see the effect below)… */
+/**
+ * A side chat untouched this long ends (see the effect below)… On an engine
+ * with side chats that only ever ends an empty one: `close` keeps a side
+ * chat with messages (chat-projects §2.4).
+ */
 const SIDE_CHAT_IDLE_MS = 2 * 60 * 60 * 1000
 /** …checked this often while the ADE stays open. */
 const SIDE_CHAT_SWEEP_MS = 5 * 60 * 1000
@@ -113,6 +123,8 @@ export function ChatPanel({
     createNew,
     select,
     rename,
+    saveDetails,
+    moveToProject,
     remove,
     setModel,
     setThinkingLevel,
@@ -136,6 +148,12 @@ export function ChatPanel({
   } = useConversationsCtx()
   const [importOpen, setImportOpen] = useState(false)
   const pinned = conversationId !== undefined
+  // Chat projects (chat-projects §1.3): only on an engine that has them.
+  const realBackend = backend.id === 'real'
+  const chatProjects = useChatProjects(realBackend)
+  const chatCaps = useChatCapabilities(realBackend)
+  const chatSettings = useChatSettings(realBackend)
+  const agentSwitch = chatCaps.setDescription && chatSettings.agentWrites
   // An unpinned workspace pane keeps its own chat: picking another chat in
   // another tab or pane leaves this one where it was. Its first chat is one
   // an outside request opened it for, else the one it showed last, else the
@@ -249,6 +267,15 @@ export function ChatPanel({
     [ownKey],
   )
 
+  // With the engine's side chats, every ending below goes through
+  // `harness::side-chat::close`, which deletes a side chat only when nothing
+  // was sent in it; one with messages stays until it is deleted or kept.
+  const engineSideChats = chatCaps.sideChats
+  const endWith = useCallback(
+    (id: string): Promise<void> =>
+      engineSideChats ? closeSideChat(id).then(() => undefined) : remove(id),
+    [engineSideChats, remove],
+  )
   // Side chats end, besides Discard: two hours untouched, with their main
   // chat (deleted here, in another tab or elsewhere: the list marks it
   // missing), and when every ADE tab of this browser is closed. Leaving a
@@ -258,8 +285,12 @@ export function ChatPanel({
     () => (displayedId ? markDisplayed(displayedId) : undefined),
     [displayedId],
   )
-  // The server's list, not the local draft the list boots with.
-  const listed = !conversationsLoading && !conversationsError
+  // The server's list, not the local draft the list boots with — and, on a
+  // real engine, its catalogue: whether an ending deletes or asks `close`.
+  const listed =
+    !conversationsLoading &&
+    !conversationsError &&
+    (!realBackend || chatCaps.loaded)
   useEffect(() => {
     if (!listed) return
     // Never one still working, nor one any tab of the browser shows.
@@ -277,7 +308,7 @@ export function ChatPanel({
       for (const conversation of idle) {
         const main = sideChatOf(conversation)
         if (main !== null && !shown.has(main) && !shown.has(conversation.id)) {
-          endSideChat(conversation.id, remove)
+          endSideChat(conversation.id, endWith)
         }
       }
     }
@@ -286,7 +317,7 @@ export function ChatPanel({
     queueMicrotask(() => void sweep())
     const timer = window.setInterval(() => void sweep(), SIDE_CHAT_SWEEP_MS)
     return () => window.clearInterval(timer)
-  }, [listed, remove])
+  }, [listed, endWith])
   const [leftByClosedTabs, setLeftByClosedTabs] = useState<readonly string[]>(
     [],
   )
@@ -302,13 +333,14 @@ export function ChatPanel({
         isSideChat(conversation) &&
         !(SIDE_CHAT_QUESTION_KEY in (conversation.sessionMetadata ?? {}))
       )
-        endSideChat(id, remove)
+        endSideChat(id, endWith)
       // Kept in another browser: not a side chat any more.
       else sideChatsMadeHere.delete(id)
     }
-  }, [listed, leftByClosedTabs, conversations, remove])
+  }, [listed, leftByClosedTabs, conversations, endWith])
   useEffect(() => {
-    if (!missingConversationIds?.size) return
+    // The engine deletes a conversation's side chats with its tree.
+    if (!listed || engineSideChats || !missingConversationIds?.size) return
     for (const conversation of conversations) {
       const main = sideChatOf(conversation)
       if (
@@ -319,7 +351,7 @@ export function ChatPanel({
         endSideChat(conversation.id, remove)
       }
     }
-  }, [conversations, missingConversationIds, remove])
+  }, [listed, conversations, missingConversationIds, remove, engineSideChats])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
@@ -442,7 +474,7 @@ export function ChatPanel({
     ],
   )
 
-  // Add project: a new chat scoped to the folder just added, so the first
+  // Add folder: a new chat scoped to the folder just added, so the first
   // message lands where the user pointed.
   const [addProjectOpen, setAddProjectOpen] = useState(false)
   const handleProjectAdded = useCallback(
@@ -598,11 +630,17 @@ export function ChatPanel({
         onOpenChange={setImportOpen}
         onImported={handleSelect}
       />
-      <OpenProjectPicker
+      <OpenFolderPicker
         open={addProjectOpen}
         onOpenChange={setAddProjectOpen}
         onAdded={handleProjectAdded}
       />
+      {chatProjects.available ? (
+        <ProjectDialogHost
+          projects={chatProjects.projects}
+          conversations={conversations}
+        />
+      ) : null}
       <NewChatDialog
         open={newChatOpen}
         onOpenChange={setNewChatOpen}
@@ -674,6 +712,18 @@ export function ChatPanel({
               onSelect={handleSelect}
               onRename={rename}
               onRemove={requestRemoval}
+              chatProjects={
+                chatProjects.available && chatProjects.loaded
+                  ? chatProjects.projects
+                  : undefined
+              }
+              onSaveDetails={saveDetails}
+              onMoveToProject={moveToProject}
+              agentSwitch={agentSwitch}
+              onNewProject={() => requestProjectDialog({ mode: 'new' })}
+              onEditProject={(projectId) =>
+                requestProjectDialog({ mode: 'edit', projectId })
+              }
             />
           </PageSidebar>
         ) : null}

@@ -54,15 +54,17 @@ const stored = (key: string): string[] =>
 describe('the Sections menu', () => {
   it('lists every section in panel order, ticked when shown', () => {
     open()
+    // The six common sections first, then the ADE's own (D11).
     expect(names()).toEqual([
+      'subagents',
+      'prs',
+      'links',
+      'attachments',
+      'images',
+      'tracking',
       'project',
       'tickets',
-      'prs',
-      'assets',
-      'subagents',
       'observers',
-      'links',
-      'tracking',
     ])
     const links = document.querySelector(
       'li[data-reorder-item="links"] input[type="checkbox"]',
@@ -84,7 +86,7 @@ describe('the Sections menu', () => {
     expect(names()[0]).toBe('links')
     expect(stored('iii-context-order')[0]).toBe('links')
     act(() => (button('Reset to default order') as HTMLButtonElement).click())
-    expect(names()[0]).toBe('project')
+    expect(names()[0]).toBe('subagents')
     expect(stored('iii-context-order')).toEqual([])
   })
 })

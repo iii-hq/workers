@@ -488,6 +488,23 @@ async fn start_with_delivery_lock(
             "require_existing_session needs an existing session_id".into(),
         ));
     }
+    // A side chat runs on its conversation's options (chat-projects D14):
+    // its lock is enforced, and written into what the send leaves out,
+    // before anything below reads the request.
+    let mut req = req;
+    let side_chat = match (req.session_id.clone(), existing_metadata.as_ref()) {
+        (Some(id), Some(metadata)) => {
+            crate::side_chat::prepare_send(
+                deps,
+                &id,
+                metadata,
+                &mut req,
+                caller_holds_target_session_lock,
+            )
+            .await?
+        }
+        _ => None,
+    };
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -765,6 +782,41 @@ async fn start_with_delivery_lock(
     )?;
 
     drop(topology);
+    // Membership on send (D8): a conversation without `project_id` whose
+    // working folder belongs to a project joins it before its turn, through
+    // session::patch-meta. `"none"` (kept out on purpose) is never stamped.
+    let stamp_root = options
+        .filesystem_root()
+        .map(str::to_string)
+        .or_else(|| {
+            prev.as_ref()
+                .and_then(|record| record.options.filesystem_root())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            existing_metadata
+                .as_ref()
+                .and_then(|m| m.get(crate::types::turn::FS_SCOPE_KEY))
+                .and_then(|scope| scope.get("root"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            prev.is_none()
+                .then(|| cfg.resolved_default_filesystem_root())
+                .flatten()
+        });
+    let known_metadata = existing_metadata
+        .as_ref()
+        .or(metadata.as_ref().and_then(Value::as_object));
+    super::projects::stamp_on_send(
+        deps,
+        &session,
+        &session_id,
+        known_metadata,
+        stamp_root.as_deref(),
+    )
+    .await;
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
         .idempotency_key
@@ -810,6 +862,9 @@ async fn start_with_delivery_lock(
             ts: AgentMessage::now_ms(),
         };
         let _ = crate::state::put_idem(&deps.iii, key, &rec, cfg.session_timeout_ms).await;
+    }
+    if let Some(prepared) = side_chat {
+        crate::side_chat::after_send(deps, &session_id, prepared).await;
     }
 
     Ok(StartOutcome {

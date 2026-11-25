@@ -17,19 +17,20 @@ import {
   useState,
 } from 'react'
 import { Button } from '@/components/shadcn/button'
+import { Dialog } from '@/components/shadcn/dialog'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/shadcn/dialog'
-import { KeyCombo } from '@/components/ui/KeyCombo'
+  PanelDialogContent,
+  PanelDialogDescription,
+  PanelDialogTitle,
+} from '@/components/ui/FormDialog'
+import { KeyHint } from '@/components/ui/KeyHint'
+import { QuietButton } from '@/components/ui/QuietButton'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import {
-  type HarnessProject,
-  listHarnessProjects,
-  upsertHarnessProject,
-} from '@/lib/backend/projects'
+  listSavedFolders,
+  type SavedFolder,
+  upsertSavedFolder,
+} from '@/lib/backend/folders'
 import { getIiiClient } from '@/lib/iii-client'
 import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
 import {
@@ -47,7 +48,7 @@ import { cn } from '@/lib/utils'
 import { errMsg, validateWorkspaceDir } from '@/lib/working-dir'
 import { basename, parentOf } from './FolderBrowser'
 
-interface OpenProjectPickerProps {
+interface OpenFolderPickerProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The worker-echoed canonical path of the folder just added. */
@@ -60,6 +61,8 @@ interface Row {
   git: boolean
   /** Show the parent folder beside the name (rows from outside the listing). */
   showWhere?: boolean
+  /** A saved folder (`harness::folders`): a destination, a click adds it. */
+  saved?: boolean
   ranges?: Array<[number, number]>
 }
 
@@ -92,43 +95,43 @@ const NONE = -1
 const highlightFor = (text: string) =>
   isPathText(text) && text.endsWith('/') ? NONE : 0
 
-/** Footer key caps: hairline boxes that read as labels. */
-const CAP =
-  'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none'
-
 /**
- * "Add project": a path field first, the way Finder's Go to Folder and a
+ * "Add folder": a path field first, the way Finder's Go to Folder and a
  * shell prompt work, with the folder it points at listed underneath.
  *
  * - The field holds a path (`~/conductor/repos/`). Typing narrows the
  *  folder's children and the best completion shows as ghost text, fish
  *  style; Tab or → takes it, Backspace over a `/` climbs a level. A
  *  path that ends in `/` names its folder: nothing under it is
- *  highlighted, so Add project adds that folder, not its first child.
+ *  highlighted, so Add folder adds that folder, not its first child.
  * - The listing under it is that folder: repositories first, each row
  *  opens on click and offers Add, the way Vercel's Import repository
  *  list does. A name that isn't in the folder is looked up across the
  *  background index (`lib/project-index`) under "Elsewhere".
- * - Recent projects sit as chips above the listing: one click adds.
- * - The footer always names the folder Add project will add.
+ * - It opens on the saved folders (`harness::folders`), most recent first:
+ *  one click adds. Typing `~/` or `/` browses, a name searches; with no
+ *  saved folder it opens at home. While browsing, the saved folders sit
+ *  as chips above the listing.
+ * - The footer always names the folder Add folder will add.
  *
  * Adding validates the folder with the shell worker and remembers it as a
  * project before `onAdded` fires with the canonical path.
  */
-export function OpenProjectPicker({
+export function OpenFolderPicker({
   open,
   onOpenChange,
   onAdded,
-}: OpenProjectPickerProps) {
+}: OpenFolderPickerProps) {
   const pointerFine = useMediaQuery(DESKTOP_POINTER_QUERY)
   const [text, setText] = useState('')
   const [index, setIndex] = useState<ProjectIndex | null>(cachedProjectIndex)
-  const [recent, setRecent] = useState<HarnessProject[]>([])
+  const [recent, setRecent] = useState<SavedFolder[]>([])
+  const [savedLoaded, setSavedLoaded] = useState(false)
   const [listings, setListings] = useState<
     Record<string, FolderListing | { error: string }>
   >({})
   // The highlighted row, or NONE: the field names a whole folder (it ends in
-  // `/`) and that folder, not its first child, is what Add project adds.
+  // `/`) and that folder, not its first child, is what Add folder adds.
   const [active, setActive] = useState(0)
   const [busyPath, setBusyPath] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -145,27 +148,46 @@ export function OpenProjectPicker({
     [index],
   )
 
-  // Each open starts at home with fresh projects and index; a cached index
-  // paints at once and a stale one is swapped in when its crawl lands.
+  // Each open starts on the saved folders, fresh from the engine; with none
+  // it starts at home. A cached index paints at once and a stale one is
+  // swapped in when its crawl lands.
   useEffect(() => {
     if (!open) return
-    const startHome = cachedProjectIndex()?.home ?? null
-    setText(startHome ? '~/' : '')
+    setText('')
     setActive(0)
     setError(null)
     setListings({})
     setNewFolder(null)
+    setSavedLoaded(false)
     let live = true
-    listHarnessProjects().then(
-      (projects) => live && setRecent(projects),
-      () => undefined,
+    let home = cachedProjectIndex()?.home ?? null
+    let saved: SavedFolder[] | null = null
+    // Untouched and nothing saved: browse home, as before folders existed.
+    const settle = () => {
+      if (!live || saved === null || saved.length > 0 || !home) return
+      setText((t) => (t === '' ? '~/' : t))
+    }
+    listSavedFolders().then(
+      (folders) => {
+        if (!live) return
+        saved = folders
+        setRecent(folders)
+        setSavedLoaded(true)
+        settle()
+      },
+      () => {
+        if (!live) return
+        saved = []
+        setSavedLoaded(true)
+        settle()
+      },
     )
     loadProjectIndex().then(
       (next) => {
         if (!live) return
         setIndex(next)
-        // The first open has no cached home yet: start there once known.
-        if (!startHome && next.home) setText((t) => (t === '' ? '~/' : t))
+        if (next.home) home = next.home
+        settle()
       },
       () => undefined,
     )
@@ -217,7 +239,23 @@ export function OpenProjectPicker({
       if (!pool.has(f.path)) pool.set(f.path, f)
 
     if (!pathMode) {
-      if (!s) return []
+      // Nothing typed: the saved folders, the picker's top level.
+      if (!s)
+        return recent.length
+          ? [
+              {
+                id: 'saved',
+                label: null,
+                rows: recent.map((p) => ({
+                  path: p.path,
+                  name: p.name || basename(p.path),
+                  git: known.get(p.path)?.git ?? false,
+                  showWhere: true,
+                  saved: true,
+                })),
+              },
+            ]
+          : []
       const matches = rankFolders([...pool.values()], s).slice(0, SEARCH_LIMIT)
       return [
         {
@@ -317,7 +355,7 @@ export function OpenProjectPicker({
       : undefined
   const ghost = ghostFor ? `${ghostFor.name.slice(segment.length)}/` : ''
 
-  /** The folder "Add project" adds right now. */
+  /** The folder "Add folder" adds right now. */
   const target = activeRow?.path ?? (pathMode && !segment ? dir : null)
   const targetIsProject =
     activeRow?.git ?? (target === dir ? folderListing?.project : false)
@@ -347,9 +385,9 @@ export function OpenProjectPicker({
         return
       }
       try {
-        await upsertHarnessProject(res.path)
+        await upsertSavedFolder(res.path)
       } catch (err) {
-        setError(`Can't save this project: ${errMsg(err)}`)
+        setError(`Can't save this folder: ${errMsg(err)}`)
         setBusyPath(null)
         return
       }
@@ -373,7 +411,7 @@ export function OpenProjectPicker({
   /**
    * Make a folder inside the one being listed (the shell worker's
    * `shell::fs::mkdir`, held to the same workspace roots as the listing),
-   * then step into it so "Add project" points at it.
+   * then step into it so "Add folder" points at it.
    */
   const createFolder = async (raw: string) => {
     const name = raw.trim()
@@ -428,7 +466,7 @@ export function OpenProjectPicker({
       event.preventDefault()
       // A repository is a destination; any other folder is a way through.
       if (activeRow) {
-        if (activeRow.git) void add(activeRow.path)
+        if (activeRow.git || activeRow.saved) void add(activeRow.path)
         else go(activeRow.path)
       } else if (pathMode && !segment) void add(dir)
     } else if (
@@ -454,8 +492,11 @@ export function OpenProjectPicker({
   }
 
   const crumbs = dir ? crumbsOf(dir, home) : []
-  const loading = pathMode && listing === undefined
-  const recentChips = recent.slice(0, RECENT_CHIPS)
+  const onSaved = !pathMode && !segment
+  const loading = pathMode ? listing === undefined : onSaved && !savedLoaded
+  // The saved folders are the list itself at the top level; browsing keeps
+  // the most recent ones a click away.
+  const recentChips = pathMode ? recent.slice(0, RECENT_CHIPS) : []
 
   let note: ReactNode = null
   if (!loading && rows.length === 0) {
@@ -476,11 +517,10 @@ export function OpenProjectPicker({
           type="button"
           variant="secondary"
           size="sm"
-          className="gap-1.5"
           disabled={creating}
           onClick={() => void createFolder(segment)}
         >
-          <FolderPlus className="size-4" aria-hidden />
+          <FolderPlus className="mr-0.5 size-4" aria-hidden />
           Create “{segment}” here
         </Button>
       </span>
@@ -499,8 +539,8 @@ export function OpenProjectPicker({
         if (!busyPath) onOpenChange(next)
       }}
     >
-      <DialogContent
-        className="flex h-[min(34rem,calc(100dvh-2rem))] w-[min(38rem,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 [--dialog-max-width:none]"
+      <PanelDialogContent
+        className="flex h-[min(34rem,calc(100dvh-2rem))] w-[min(38rem,calc(100vw-2rem))] max-w-none flex-col overflow-hidden [--dialog-max-width:none]"
         initialFocus={pointerFine ? inputRef : () => false}
         onKeyDown={(event) => {
           if (bindingMatchesEvent(NEW_FOLDER_BINDING, event)) {
@@ -510,18 +550,16 @@ export function OpenProjectPicker({
         }}
       >
         <div className="flex shrink-0 flex-col gap-1 px-5 pt-5 pr-12">
-          <DialogTitle className="text-base font-medium">
-            Add project
-          </DialogTitle>
-          <DialogDescription className="text-sm text-muted-foreground">
-            Choose the folder a chat works in. Type a path, or pick a
-            repository.
-          </DialogDescription>
+          <PanelDialogTitle>Add folder</PanelDialogTitle>
+          <PanelDialogDescription>
+            Choose the folder a chat works in: a saved folder, or type a path to
+            browse.
+          </PanelDialogDescription>
         </div>
 
         {/* The path field: the surface's one control. */}
         <div className="shrink-0 px-5 pt-4">
-          <div className="relative flex h-11 items-center gap-2.5 rounded-xl border border-border bg-background px-3.5 transition-[border-color,box-shadow] duration-[var(--motion-duration-control)] focus-within:border-foreground/30 focus-within:ring-3 focus-within:ring-foreground/10">
+          <div className="relative flex h-11 items-center gap-2.5 rounded-xl border border-border bg-background px-3.5 transition duration-(--motion-duration-control) focus-within:border-foreground/30 focus-within:ring-3 focus-within:ring-foreground/10">
             {busyPath ? (
               <Loader2
                 className="size-4 shrink-0 animate-spin text-muted-foreground"
@@ -554,7 +592,7 @@ export function OpenProjectPicker({
                 }}
                 onKeyDown={onKeyDown}
                 disabled={busyPath !== null}
-                placeholder="~/path/to/project or a folder name"
+                placeholder="~/path/to/folder or a folder name"
                 aria-label="Folder path or name"
                 role="combobox"
                 aria-expanded="true"
@@ -574,7 +612,7 @@ export function OpenProjectPicker({
               />
             </div>
             {ghost && pointerFine ? (
-              <KeyCombo binding="Tab" capClassName={CAP} className="shrink-0" />
+              <KeyHint binding="Tab" className="shrink-0" />
             ) : null}
           </div>
         </div>
@@ -601,7 +639,7 @@ export function OpenProjectPicker({
                 title={tildify(project.path, home)}
                 disabled={busyPath !== null}
                 onClick={() => void add(project.path)}
-                className="inline-flex h-7 max-w-44 shrink-0 items-center gap-1.5 rounded-lg border border-border px-2.5 text-sm text-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                className="inline-flex h-7 max-w-44 shrink-0 items-center gap-1.5 rounded-lg border border-border px-2.5 text-sm text-foreground transition-colors duration-(--motion-duration-control) hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
               >
                 <History
                   className="size-4 shrink-0 text-muted-foreground"
@@ -638,7 +676,7 @@ export function OpenProjectPicker({
                         onClick={() => go(crumb.path)}
                         aria-current={last ? 'location' : undefined}
                         className={cn(
-                          'inline-flex h-6 items-center rounded-md px-1.5 text-sm transition-colors duration-[var(--motion-duration-control)] hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                          'inline-flex h-6 items-center rounded-md px-1.5 text-sm transition-colors duration-(--motion-duration-control) hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                           last
                             ? 'font-medium text-foreground'
                             : 'text-muted-foreground hover:text-foreground',
@@ -653,7 +691,7 @@ export function OpenProjectPicker({
             </nav>
           ) : (
             <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-              {segment ? `Folders named “${segment}”` : 'Search'}
+              {segment ? `Folders named “${segment}”` : 'Saved folders'}
             </span>
           )}
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
@@ -661,28 +699,33 @@ export function OpenProjectPicker({
               ? countLabel(folderListing.folders)
               : !pathMode && segment
                 ? `${rows.length} found`
-                : null}
+                : onSaved && recent.length
+                  ? `${recent.length} folder${recent.length === 1 ? '' : 's'}`
+                  : null}
           </span>
-          {pathMode && dir ? (
-            <Button
+          {onSaved && home ? (
+            <QuietButton
               type="button"
-              variant="ghost"
-              size="sm"
-              className="-mr-2 h-7 shrink-0 gap-1.5 px-2 text-muted-foreground hover:text-foreground"
+              className="-mr-2 shrink-0"
+              disabled={busyPath !== null}
+              onClick={() => go(home)}
+            >
+              <FolderOpen className="size-4" aria-hidden />
+              Browse
+            </QuietButton>
+          ) : null}
+          {pathMode && dir ? (
+            <QuietButton
+              type="button"
+              className="-mr-2 shrink-0"
               disabled={busyPath !== null || creating}
               onClick={() => startNewFolder()}
               title={`New folder in ${tildify(dir, home)}`}
             >
               <FolderPlus className="size-4" aria-hidden />
               New folder
-              {pointerFine ? (
-                <KeyCombo
-                  binding={NEW_FOLDER_BINDING}
-                  className="gap-0.5"
-                  capClassName="h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none"
-                />
-              ) : null}
-            </Button>
+              {pointerFine ? <KeyHint binding={NEW_FOLDER_BINDING} /> : null}
+            </QuietButton>
           ) : null}
         </div>
 
@@ -746,13 +789,18 @@ export function OpenProjectPicker({
               role="status"
               aria-label="Reading folder"
             >
-              {[0, 1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className="h-9 animate-pulse rounded-lg bg-muted/60"
-                  style={{ opacity: 1 - i * 0.2 }}
-                />
-              ))}
+              {/* Each placeholder row a step fainter than the one above. */}
+              {['opacity-100', 'opacity-80', 'opacity-60', 'opacity-40'].map(
+                (fade) => (
+                  <div
+                    key={fade}
+                    className={cn(
+                      'h-9 animate-pulse rounded-lg bg-muted/60',
+                      fade,
+                    )}
+                  />
+                ),
+              )}
             </div>
           ) : note ? (
             <div className="flex h-full min-h-32 items-center justify-center px-6 text-center text-sm text-muted-foreground">
@@ -785,7 +833,9 @@ export function OpenProjectPicker({
                       busy={busyPath === row.path}
                       disabled={busyPath !== null}
                       onHover={() => setActive(i)}
-                      onOpen={() => go(row.path)}
+                      onOpen={() =>
+                        row.saved ? void add(row.path) : go(row.path)
+                      }
                       onAdd={() => void add(row.path)}
                     />
                   )
@@ -828,19 +878,17 @@ export function OpenProjectPicker({
             size="sm"
             disabled={!target || busyPath !== null}
             onClick={() => void add(target)}
-            className="gap-2 pr-1.5"
           >
-            {busyPath ? 'Adding…' : 'Add project'}
+            {busyPath ? 'Adding…' : 'Add folder'}
             {pointerFine ? (
-              <KeyCombo
-                binding="Mod+Enter"
-                className="gap-0.5"
-                capClassName="h-5 min-w-5 rounded-[5px] bg-primary-foreground/15 px-1 font-inter text-meta font-medium text-primary-foreground shadow-none"
-              />
+              // The caps trail the label; the button tightens its end for them.
+              <span data-icon="inline-end" className="ml-1 flex">
+                <KeyHint binding="Mod+Enter" tone="on-primary" />
+              </span>
             ) : null}
           </Button>
         </div>
-      </DialogContent>
+      </PanelDialogContent>
     </Dialog>
   )
 }
@@ -879,7 +927,7 @@ function FolderRow({
       onPointerMove={onHover}
       onClick={onOpen}
       className={cn(
-        'group/row flex min-h-12 w-full cursor-pointer scroll-my-1 items-center gap-3 rounded-lg pr-1.5 pl-2.5 transition-colors duration-[var(--motion-duration-control)] pointer-fine:min-h-9',
+        'group/row flex min-h-12 w-full cursor-pointer scroll-my-1 items-center gap-3 rounded-lg pr-1.5 pl-2.5 transition-colors duration-(--motion-duration-control) pointer-fine:min-h-9',
         active && 'bg-muted',
       )}
     >
@@ -903,23 +951,26 @@ function FolderRow({
       </span>
       {/* Add shows on the highlighted row; a click elsewhere on the row
  opens the folder instead. */}
-      <Button
-        type="button"
-        variant="secondary"
-        size="xs"
-        tabIndex={-1}
-        disabled={disabled}
-        onClick={(event) => {
-          event.stopPropagation()
-          onAdd()
-        }}
+      <span
         className={cn(
-          'shrink-0 transition-opacity duration-[var(--motion-duration-control)]',
+          'flex shrink-0 transition-opacity duration-(--motion-duration-control)',
           active ? 'opacity-100' : 'opacity-0 pointer-coarse:opacity-100',
         )}
       >
-        Add
-      </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          size="xs"
+          tabIndex={-1}
+          disabled={disabled}
+          onClick={(event) => {
+            event.stopPropagation()
+            onAdd()
+          }}
+        >
+          Add
+        </Button>
+      </span>
       <ChevronRight
         className="size-4 shrink-0 text-muted-foreground/60"
         aria-hidden

@@ -2,17 +2,19 @@ import { Plus } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
-  DialogHeader,
   DialogTitle,
 } from '@/components/shadcn/dialog'
+import {
+  PanelDialogContent,
+  PanelDialogHeader,
+} from '@/components/ui/FormDialog'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
-import { upsertHarnessProject } from '@/lib/backend/projects'
+import { upsertSavedFolder } from '@/lib/backend/folders'
 import { errMsg, validateWorkspaceDir } from '@/lib/working-dir'
 import { FolderBrowser } from './FolderBrowser'
 
-interface AddProjectDialogProps {
+interface AddFolderDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The worker-echoed canonical path of the folder just added. */
@@ -20,20 +22,20 @@ interface AddProjectDialogProps {
 }
 
 /**
- * "Add project" on its own, outside the directory picker: the folder
+ * "Add folder" on its own, outside the directory picker: the folder
  * browser in a dialog. A chosen folder is validated against the live shell
- * worker and remembered as a project before `onAdded` fires with the
- * canonical path, the same contract the picker's own Add project keeps.
+ * worker and remembered in the folder catalogue before `onAdded` fires with the
+ * canonical path, the same contract the picker's own Add folder keeps.
  *
  * The dialog is the shadcn one: a titled header that says what choosing
  * does, the browser as the body, and the browser's own footer (keys on the
  * left, Cancel and Use on the right) as the dialog's footer.
  */
-export function AddProjectDialog({
+export function AddFolderDialog({
   open,
   onOpenChange,
   onAdded,
-}: AddProjectDialogProps) {
+}: AddFolderDialogProps) {
   const pointerFine = useMediaQuery(DESKTOP_POINTER_QUERY)
   const phone = useMediaQuery('(max-width: 767px)')
   const [validating, setValidating] = useState(false)
@@ -51,9 +53,9 @@ export function AddProjectDialog({
         return
       }
       try {
-        await upsertHarnessProject(res.path)
+        await upsertSavedFolder(res.path)
       } catch (err) {
-        setError(`Can't save this project: ${errMsg(err)}`)
+        setError(`Can't save this folder: ${errMsg(err)}`)
         setValidating(false)
         return
       }
@@ -72,12 +74,12 @@ export function AddProjectDialog({
         onOpenChange(next)
       }}
     >
-      <DialogContent
-        className="flex h-[min(38rem,calc(100dvh-2rem))] w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col gap-0 overflow-hidden p-0"
+      <PanelDialogContent
+        className="flex h-[min(38rem,calc(100dvh-2rem))] w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col overflow-hidden"
         // No keyboard to type with: don't raise the on-screen one.
         initialFocus={pointerFine ? undefined : () => false}
       >
-        <DialogHeader className="flex-row items-start gap-3 border-b border-border px-5 py-4 pr-14">
+        <PanelDialogHeader className="flex-row items-start">
           <span
             aria-hidden
             className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground"
@@ -85,13 +87,13 @@ export function AddProjectDialog({
             <Plus className="size-4" />
           </span>
           <div className="flex min-w-0 flex-col gap-1">
-            <DialogTitle>Add project</DialogTitle>
+            <DialogTitle>Add folder</DialogTitle>
             <DialogDescription>
-              Choose a folder for the chat to work in. It is remembered as a
-              project, so the next chat can pick it in one click.
+              Choose a folder for the chat to work in. It is remembered, so the
+              next chat can pick it in one click.
             </DialogDescription>
           </div>
-        </DialogHeader>
+        </PanelDialogHeader>
         <FolderBrowser
           wide={!phone}
           keyboard={pointerFine}
@@ -100,7 +102,7 @@ export function AddProjectDialog({
           onUse={(dir) => void use(dir)}
           onCancel={() => onOpenChange(false)}
         />
-      </DialogContent>
+      </PanelDialogContent>
     </Dialog>
   )
 }
