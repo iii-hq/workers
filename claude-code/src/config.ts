@@ -114,11 +114,34 @@ export const RuntimeConfigSchema = ConfigSchema.omit({ engine_url: true });
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 
 /** JSON Schema published to the configuration worker. The registry validator
- *  has no `$schema` meta-schema, so strip the draft-2020-12 `$schema` key. */
+ *  has no `$schema` meta-schema, so strip the draft-2020-12 `$schema` key.
+ *
+ *  It describes what may be STORED (`io: 'input'`), not what a parse returns:
+ *  a setting with a default is optional and carries that default. The
+ *  configuration worker validates a stored value against this schema, and
+ *  compose refuses to start the worker when it does not validate, so a
+ *  setting a release adds must never make an older stored configuration
+ *  invalid; this worker's own parse fills in the default. */
 export function runtimeJsonSchema(): Record<string, unknown> {
-  const out = z.toJSONSchema(RuntimeConfigSchema) as Record<string, unknown>;
+  const out = z.toJSONSchema(RuntimeConfigSchema, { io: 'input' }) as Record<string, unknown>;
+  // Input mode leaves objects open; the stored value stays closed, as it was,
+  // so a misspelt setting is still refused rather than silently ignored.
+  closeLike(out, z.toJSONSchema(RuntimeConfigSchema) as Record<string, unknown>);
   delete out.$schema;
   return out;
+}
+
+type SchemaNode = { properties?: Record<string, SchemaNode>; additionalProperties?: unknown };
+
+/** Copy `additionalProperties` from `like` onto the matching objects of `node`. */
+function closeLike(node: SchemaNode, like: SchemaNode): void {
+  if ('additionalProperties' in like && node.properties) {
+    node.additionalProperties = like.additionalProperties;
+  }
+  for (const [key, child] of Object.entries(node.properties ?? {})) {
+    const other = like.properties?.[key];
+    if (other) closeLike(child, other);
+  }
 }
 
 /** The runtime slice of a full config, for use as `initial_value`. */
