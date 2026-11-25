@@ -1034,10 +1034,36 @@ export function makeGlobal(name: string): string {
 export const LIMIT_HINT =
   'Changing account starts a new prompt cache for this conversation.'
 
+/**
+ * A conversation that can't choose its Claude Code account: a side chat
+ * keeps its conversation's (D2), a sub-agent runs on its conversation's.
+ * Its limit card offers no other account, and its notices say why.
+ */
+export type LockedAccount = 'side-chat' | 'sub-agent' | null
+
 /** A sidechat's hint: its account is locked (D2). */
 export function sideChatLimitHint(name: string): string {
   return `This side chat stays on ${name} so it keeps the conversation's cache.`
 }
+
+/** A sub-agent's hint on its card, and its step in the usage-limit notice. */
+export const SUB_AGENT_LIMIT_HINT =
+  "This sub-agent stays on its conversation's account."
+
+/** The locked card's hint: the side chat names its account. */
+export function lockedLimitHint(
+  locked: Exclude<LockedAccount, null>,
+  name: string,
+): string {
+  return locked === 'side-chat' ? sideChatLimitHint(name) : SUB_AGENT_LIMIT_HINT
+}
+
+/** A side chat's step in the usage-limit notice (no account name there). */
+export const SIDE_CHAT_LIMIT_STEP =
+  "This side chat stays on its account so it keeps the conversation's cache."
+
+/** The usage-limit notice's step where no other account can take over. */
+export const LIMIT_WAIT_STEP = 'Wait until the limit resets, then try again.'
 
 /** "Other…"'s rows: "5 hours 38% · This week 64%", or why there is none. */
 export function accountUse(a: ClaudeAccount): string {
@@ -1057,6 +1083,15 @@ export function unknownAccountTitle(id: string): string {
   return `${id} is no longer a Claude Code account`
 }
 export const UNKNOWN_ACCOUNT_LINE = 'Choose another account to continue.'
+
+/** A removed account where no other can be chosen: the card's line, the notice's step. */
+export function lockedAccountRemoved(
+  locked: Exclude<LockedAccount, null>,
+): string {
+  return locked === 'side-chat'
+    ? "Its account was removed from tmux, and a side chat keeps its conversation's account. Continue in the main conversation."
+    : 'Its account was removed from tmux. Continue in the main conversation.'
+}
 
 /** The close button's name. */
 export const HIDE_LIMIT = 'Hide until the reading changes'

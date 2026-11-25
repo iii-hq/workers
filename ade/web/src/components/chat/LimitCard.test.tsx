@@ -339,12 +339,43 @@ describe('the limit card', () => {
   })
 
   it("keeps a side chat on its account: no choices, the side chat's hint", () => {
-    render({ model: model(failed('five_hour')), sideChat: true })
+    render({ model: model(failed('five_hour')), locked: 'side-chat' })
     expect(q('[data-limit-continue]')).toBeNull()
     expect(q('[data-limit-other]')).toBeNull()
     expect(card().textContent).toContain(
       "This side chat stays on Personal so it keeps the conversation's cache.",
     )
+  })
+
+  it("keeps a sub-agent on its conversation's account, in its own words", () => {
+    render({ model: model(failed('five_hour')), locked: 'sub-agent' })
+    expect(q('[data-limit-continue]')).toBeNull()
+    expect(q('[data-limit-other]')).toBeNull()
+    expect(card().textContent).toContain(
+      "This sub-agent stays on its conversation's account.",
+    )
+    expect(card().textContent).not.toContain('side chat')
+  })
+
+  it('sends a locked conversation whose account was removed back to the main one', () => {
+    const removed = model({
+      ...failed(null),
+      failure: { unknownAccount: 'old-team' },
+    })
+    render({ model: removed, locked: 'side-chat' })
+    expect(card().querySelector('h3')?.textContent).toBe(
+      'old-team is no longer a Claude Code account',
+    )
+    const said = () => card().querySelectorAll('p')
+    expect([...said()].map((p) => p.textContent)).toEqual([
+      "Its account was removed from tmux, and a side chat keeps its conversation's account. Continue in the main conversation.",
+    ])
+    expect(q('[data-limit-continue]')).toBeNull()
+    act(() => root?.unmount())
+    render({ model: removed, locked: 'sub-agent' })
+    expect([...said()].map((p) => p.textContent)).toEqual([
+      'Its account was removed from tmux. Continue in the main conversation.',
+    ])
   })
 
   it('names a removed account and offers the others', () => {

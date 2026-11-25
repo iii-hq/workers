@@ -129,7 +129,18 @@ export const LimitReset: Story = {
 export const ReadingFull: Story = { args: { model: model(null) } }
 
 /** A side chat keeps its account (D2): the title, the reset and the X. */
-export const SideChat: Story = { args: { sideChat: true } }
+export const SideChat: Story = { args: { locked: 'side-chat' } }
+
+/** A sub-agent runs on its conversation's account. */
+export const SubAgent: Story = { args: { locked: 'sub-agent' } }
+
+/** A side chat whose account was removed: back to the main conversation. */
+export const SideChatAccountRemoved: Story = {
+  args: {
+    locked: 'side-chat',
+    model: model(failure({ unknownAccount: 'old-team' })),
+  },
+}
 
 /** A pin to an account removed from tmux. */
 export const UnknownAccount: Story = {

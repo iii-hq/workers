@@ -113,7 +113,11 @@ import {
   useQuoteHighlights,
 } from '@/lib/chat-aside'
 import { useChatCapabilities } from '@/lib/chat-capabilities'
-import { ACCOUNT_ROW_LABEL, globalRefusal } from '@/lib/claude-accounts-words'
+import {
+  ACCOUNT_ROW_LABEL,
+  globalRefusal,
+  type LockedAccount,
+} from '@/lib/claude-accounts-words'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { claudeAccountOf } from '@/lib/conversation-details'
 import {
@@ -1332,9 +1336,14 @@ export function ChatView({
         now: Date.now(),
       })
     : null
-  // A side chat keeps its account (D2); so does a sub-agent here. The card
-  // and the transcript's usage-limit notice offer no other account then.
-  const lockedAccount = Boolean(side) || Boolean(conversation.parentId)
+  // A side chat keeps its account (D2); a sub-agent runs on its
+  // conversation's. The card and the transcript's account notices offer no
+  // other account then, each with its own words.
+  const lockedAccount: LockedAccount = side
+    ? 'side-chat'
+    : conversation.parentId
+      ? 'sub-agent'
+      : null
   const limitCard =
     limitModel && !readOnly && !limitDismissed(conversation.id, limitModel.key)
       ? limitModel
@@ -4107,7 +4116,7 @@ export function ChatView({
                   model={limitCard}
                   data={claudeAccounts}
                   time={{ now: Date.now() }}
-                  sideChat={lockedAccount}
+                  locked={lockedAccount}
                   followsGlobal={
                     accountResolution?.source === 'global' &&
                     limitCard.account === claudeAccounts.claude?.global

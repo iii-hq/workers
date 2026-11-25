@@ -360,16 +360,54 @@ describe('SystemNotice · a Claude Code usage limit', () => {
     expect(out).toContain('Or wait until the limit resets, then try again.')
   })
 
-  it("keeps a side chat on its account, as the side chat's card does", () => {
-    const out = renderToStaticMarkup(
-      <LockedAccountContext.Provider value>
-        <SystemNotice message={limit} />
+  const inLocked = (
+    locked: 'side-chat' | 'sub-agent',
+    message: SystemMessage = limit,
+  ) =>
+    renderToStaticMarkup(
+      <LockedAccountContext.Provider value={locked}>
+        <SystemNotice message={message} />
       </LockedAccountContext.Provider>,
     )
+
+  it("keeps a side chat on its account, as the side chat's card does", () => {
+    const out = inLocked('side-chat')
     expect(out).toContain('Wait until the limit resets, then try again.')
     expect(out).toContain(
       'This side chat stays on its account so it keeps the conversation&#x27;s cache.',
     )
     expect(out).not.toContain('Another account')
+  })
+
+  it("keeps a sub-agent on its conversation's account, in its own words", () => {
+    const out = inLocked('sub-agent')
+    expect(out).toContain('Wait until the limit resets, then try again.')
+    expect(out).toContain(
+      'This sub-agent stays on its conversation&#x27;s account.',
+    )
+    expect(out).not.toContain('side chat')
+    expect(out).not.toContain('Another account')
+  })
+
+  it('sends a locked conversation whose account was removed back to the main one', () => {
+    const removed: SystemMessage = {
+      ...limit,
+      id: 'e_gone',
+      content: 'unknown Claude Code account "old-team"',
+      failure: { summary: 'Unknown account.', unknownAccount: 'old-team' },
+      technicalDetails: { code: 'harness.unknown_account' },
+    }
+    expect(inLocked('side-chat', removed)).toContain(
+      'Its account was removed from tmux, and a side chat keeps its conversation&#x27;s account. Continue in the main conversation.',
+    )
+    const sub = inLocked('sub-agent', removed)
+    expect(sub).toContain(
+      'Its account was removed from tmux. Continue in the main conversation.',
+    )
+    expect(sub).not.toContain('Choose another account')
+    // The main conversation keeps its words.
+    expect(html(removed)).toContain(
+      'Choose another account from the card above the composer, or in Conversation details.',
+    )
   })
 })

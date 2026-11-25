@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
@@ -38,10 +38,17 @@ vi.mock('./ChatAside', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   ChatAside: () => null,
 }))
-vi.mock('./MessageList', async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  MessageList: () => <div />,
-}))
+// The transcript reads which kind of locked conversation it is in.
+vi.mock('./MessageList', async (importOriginal) => {
+  const { useContext } = await import('react')
+  const { LockedAccountContext } = await import('@/lib/limit-card')
+  return {
+    ...(await importOriginal<object>()),
+    MessageList: () => (
+      <div data-locked={useContext(LockedAccountContext) ?? 'none'} />
+    ),
+  }
+})
 
 import { ChatView } from './ChatView'
 
@@ -98,13 +105,17 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-it("shows the chip and Details' account row for a conversation without a model", async () => {
+async function open(
+  conversation: Conversation,
+  props: Partial<ComponentProps<typeof ChatView>> = {},
+) {
   const noop = vi.fn()
   await act(async () => {
     root.render(
       <TooltipProvider>
         <ChatView
-          conversation={sent}
+          key={conversation.id}
+          conversation={conversation}
           backend={{ id: 'real', stream: vi.fn() } as unknown as ChatBackend}
           modelOptions={[
             { id: 'anthropic::claude-opus-4-5', label: 'Claude Opus 4.5' },
@@ -117,10 +128,15 @@ it("shows the chip and Details' account row for a conversation without a model",
           onAppendMessage={noop}
           onPatchMessage={noop}
           onCompactConversation={noop}
+          {...props}
         />
       </TooltipProvider>,
     )
   })
+}
+
+it("shows the chip and Details' account row for a conversation without a model", async () => {
+  await open(sent)
   const chip = host.querySelector<HTMLButtonElement>('[data-account-chip]')
   expect(chip?.textContent).toBe('Work')
   await act(async () => chip?.click())
@@ -132,4 +148,15 @@ it("shows the chip and Details' account row for a conversation without a model",
   expect(
     document.body.querySelector('[data-account-resolution]')?.textContent,
   ).toContain('Runs on Work')
+})
+
+it('tells the transcript a side chat from a sub-agent', async () => {
+  const locked = () =>
+    host.querySelector<HTMLElement>('[data-locked]')?.dataset.locked
+  await open(sent)
+  expect(locked()).toBe('none')
+  await open({ ...sent, id: 'child', parentId: 'sent-elsewhere' })
+  expect(locked()).toBe('sub-agent')
+  await open({ ...sent, id: 'side' }, { side: { since: 1, empty: null } })
+  expect(locked()).toBe('side-chat')
 })
