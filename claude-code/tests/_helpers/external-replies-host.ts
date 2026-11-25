@@ -77,6 +77,8 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
     beforeInventory: async () => {},
     inventoryOK: true,
     socketOpen: true,
+    connectionEpoch: 1,
+    configWatchAnswered: true,
     outputs: [] as string[],
     snapshots: [] as string[],
     hostOutput: (stdout: string) => stdout,
@@ -90,9 +92,21 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
   let configWatch!: { source: ObserveSource; target: string };
   const backend = {
     isOpen: () => host.socketOpen,
+    observeOnline: () => host.socketOpen,
+    get connectionEpoch() {
+      return host.connectionEpoch;
+    },
     observe(source: ObserveSource, target: string) {
       configWatch = { source, target };
-      return { state: 'active', onStateChange() {} };
+      return {
+        state: 'active',
+        // SDK 0.27 clears `answered` when replaying but does not notify
+        // state listeners when the new acknowledgement is also active.
+        get answered() {
+          return host.configWatchAnswered;
+        },
+        onStateChange() {},
+      };
     },
     registerFunction(fn: string, handler: Handler) {
       functions.set(fn, wrapHandler?.(fn, handler) ?? handler);

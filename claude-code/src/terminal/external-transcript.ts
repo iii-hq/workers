@@ -75,22 +75,24 @@ def transcript(sid, stack):
     finally:
         os.close(root)
 
-def visible(row):
+def message_content(row, role):
     message = row['message']
-    require(isinstance(message, dict) and message.get('role', 'assistant') == 'assistant')
+    require(isinstance(message, dict) and message.get('role', role) == role)
     content = message['content']
     if isinstance(content, str):
         return content
     require(isinstance(content, list))
-    blocks = []
     for part in content:
         require(isinstance(part, dict) and isinstance(part.get('type'), str))
         if part['type'] == 'text':
-            text = part['text']
-            require(isinstance(text, str))
-            if text.strip():
-                blocks.append(text)
-    return '\n'.join(blocks)
+            require(isinstance(part.get('text'), str))
+    return content
+
+def visible(row):
+    content = message_content(row, 'assistant')
+    if isinstance(content, str):
+        return content
+    return '\n'.join(part['text'] for part in content if part['type'] == 'text' and part['text'].strip())
 
 def scan(sid, mode, previous):
     require(UUID.fullmatch(sid) and mode in ('last', 'baseline', 'since'))
@@ -139,14 +141,7 @@ def scan(sid, mode, previous):
         row, pos = nodes.pop(leaf)  # missing parents, duplicates and cycles fail closed
         require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
         if row['type'] == 'user':
-            msg = row['message']
-            require(isinstance(msg, dict) and msg.get('role', 'user') == 'user')
-            content = msg.get('content')
-            require(isinstance(content, str) or (
-                isinstance(content, list) and all(
-                    isinstance(part, dict) and isinstance(part.get('type'), str) for part in content
-                )
-            ))
+            message_content(row, 'user')
         parent = row['parentUuid']
         if parent is not None:
             require(parent in nodes and nodes[parent][1] < pos)

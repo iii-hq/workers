@@ -8,7 +8,7 @@
  * former `events_stream` / `raw_events_stream` keys are accepted and ignored.
  */
 
-import type { IIIClient } from 'iii-sdk';
+import type { IIIClient, ObserverHandle } from 'iii-sdk';
 import {
   type Config,
   type RuntimeConfig,
@@ -108,19 +108,64 @@ function hasCode(error: unknown, code: string): boolean {
  * refresh revokes outstanding leases before waiting on the configuration worker. */
 export class ReplyPermission {
   private generation = 0;
-  epoch: number | null = null;
+  private currentEpoch: number | null = null;
+  private refreshConnection: number | null = null;
+  private watch?: { iii: IIIClient; handle: ObserverHandle };
+
+  trackWatch(iii: IIIClient, handle: ObserverHandle) {
+    this.invalidate();
+    this.watch = { iii, handle };
+    handle.onStateChange((state) => {
+      if (state === 'active') void this.refresh(iii);
+      else this.invalidate();
+    });
+  }
+
+  private watchConnection() {
+    if (!this.watch) return null;
+    const { iii, handle } = this.watch;
+    // SDK 0.27 preserves the handle state across socket loss and sends no
+    // state change for active-to-active replay. Check its connection and
+    // replay acknowledgement too; a missing SDK signal fails closed.
+    if (
+      handle.state !== 'active' ||
+      !('answered' in handle && handle.answered === true) ||
+      !('observeOnline' in iii && typeof iii.observeOnline === 'function' && iii.observeOnline()) ||
+      !('connectionEpoch' in iii && typeof iii.connectionEpoch === 'number')
+    ) {
+      return null;
+    }
+    return iii.connectionEpoch;
+  }
+
+  get epoch() {
+    const connection = this.watchConnection();
+    if (connection !== this.refreshConnection) {
+      if (connection === null) this.invalidate();
+      else if (this.watch) void this.refresh(this.watch.iii);
+    }
+    return this.currentEpoch;
+  }
 
   invalidate() {
     this.generation++;
-    this.epoch = null;
+    this.currentEpoch = null;
+    this.refreshConnection = null;
   }
 
-  async refresh(iii: IIIClient, updatesActive: () => boolean = () => true) {
+  async refresh(iii: IIIClient) {
     this.invalidate();
     const generation = this.generation;
+    const connection = this.watchConnection();
+    this.refreshConnection = connection;
     const runtime = await fetchRuntime(iii);
-    if (generation === this.generation && runtime?.external_sessions === true && updatesActive()) {
-      this.epoch = generation;
+    if (
+      generation === this.generation &&
+      runtime?.external_sessions === true &&
+      connection !== null &&
+      connection === this.watchConnection()
+    ) {
+      this.currentEpoch = generation;
     }
     return runtime;
   }
@@ -153,7 +198,7 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
 export async function observeConfigChanges(
   iii: IIIClient,
   onChange: (reloadSettings?: boolean) => Promise<void>,
-  onWatchState?: (active: boolean) => void,
+  trackWatch?: (handle: ObserverHandle) => void,
 ): Promise<void> {
   iii.registerFunction(
     CONFIG_FN_ID,
@@ -176,21 +221,13 @@ export async function observeConfigChanges(
       function_id: ON_UPDATED_FN,
       filters: {
         'input.id': { $eq: CONFIG_ID },
-        ...(onWatchState ? {} : { 'input.event_type': { $eq: 'configuration:updated' } }),
+        ...(trackWatch ? {} : { 'input.event_type': { $eq: 'configuration:updated' } }),
       },
       capture: ['output'],
     },
     CONFIG_FN_ID,
   );
-  // A disconnect can hide a disable/re-enable transition. Do not trust the
-  // previous value across that gap; reconcile again once updates can arrive.
-  if (onWatchState) {
-    watch.onStateChange((state) => {
-      onWatchState(state === 'active');
-      if (state === 'active') void onChange(false);
-    });
-    onWatchState(watch.state === 'active');
-  }
+  trackWatch?.(watch);
   await onChange();
 }
 
@@ -202,18 +239,14 @@ export function observeReplyConfig(
   permission: ReplyPermission,
   applySettings: (runtime: RuntimeConfig | null) => void,
 ) {
-  let watching = false;
   let settingsGeneration = 0;
   return observeConfigChanges(
     iii,
     async (reloadSettings = true) => {
       const generation = reloadSettings ? ++settingsGeneration : undefined;
-      const runtime = await permission.refresh(iii, () => watching);
+      const runtime = await permission.refresh(iii);
       if (generation !== undefined && generation === settingsGeneration) applySettings(runtime);
     },
-    (active) => {
-      watching = active;
-      if (!active) permission.invalidate();
-    },
+    (watch) => permission.trackWatch(iii, watch),
   );
 }

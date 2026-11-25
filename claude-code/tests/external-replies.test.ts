@@ -78,7 +78,7 @@ describe('lookup', () => {
   ])('rejects the nonstandard JSON token %s in a complete active record', async (token) => {
     await withSyntheticHost(async (s) => {
       const row = JSON.stringify(record(1, null, 'user', ['INVALID_NUMBER']));
-      await writeFile(s.file, row.replace('"INVALID_NUMBER"', token) + '\n');
+      await writeFile(s.file, `${row.replace('"INVALID_NUMBER"', token)}\n`);
       await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
     });
   });
@@ -88,11 +88,10 @@ describe('lookup', () => {
       await writeFile(s.file, lines(record(1, null, 'user', [42])));
       await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
 
-      await writeFile(
-        s.file,
-        lines(record(1, null, 'user', [{ type: 42 }]), answer(2, 1, 'do not disclose')),
-      );
-      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      for (const block of [{ type: 42 }, { type: 'text' }, { type: 'text', text: 7 }]) {
+        await writeFile(s.file, lines(record(1, null, 'user', [block]), answer(2, 1, 'later')));
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      }
     });
   });
 
@@ -518,6 +517,57 @@ describe('authorization', () => {
         await pending;
         expect(seen(s, stage)).toEqual([]);
       }
+    });
+  });
+
+  it.each([
+    'pending',
+    'acknowledged',
+  ])('revokes permission across %s active-to-active configuration observer replay', async (replay) => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      const stalled = barrier();
+      s.host.beforeRead = stalled.wait;
+      const oldLookup = expect(lookup(s)).rejects.toThrow('reply access disabled');
+      await stalled.entered;
+
+      // No lease is checked while offline, and the observer state stays active.
+      s.host.socketOpen = false;
+      s.host.config = async () => ({ external_sessions: false });
+      s.host.connectionEpoch++;
+      s.host.configWatchAnswered = false;
+      s.host.socketOpen = true;
+      if (replay === 'acknowledged') s.host.configWatchAnswered = true;
+      const beforeReplay = s.host.calls.length;
+      stalled.release();
+      s.host.beforeRead = async () => {};
+      await oldLookup;
+      if (replay === 'pending') {
+        await expect(lookup(s)).rejects.toThrow('reply access disabled');
+        await expect(observe(s, 'before-ack')).rejects.toThrow('reply access disabled');
+        await s.poll();
+        expect(s.host.calls.slice(beforeReplay).map((c) => c.function_id)).toEqual([GET]);
+        s.host.configWatchAnswered = true;
+      }
+
+      await s.poll();
+      expect(
+        s.host.calls
+          .slice(beforeReplay)
+          .map((c) => c.function_id)
+          .filter((fn) => fn !== GET),
+      ).toEqual(['configuration::get']);
+      await expect(lookup(s)).rejects.toThrow('reply access disabled');
+      await expect(observe(s, 'denied')).rejects.toThrow('reply access disabled');
+
+      await appendFile(s.file, lines(answer(2, 1, 'during the gap')));
+      s.host.config = async () => ({ external_sessions: true });
+      await s.configEvent('configuration:updated');
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after new confirmation')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after new confirmation' }]);
     });
   });
 
