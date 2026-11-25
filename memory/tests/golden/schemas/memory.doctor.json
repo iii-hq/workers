@@ -89,6 +89,24 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "continuation_input_tokens": {
+            "description": "Of `input_tokens`, what the continuations took.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "continuation_output_tokens": {
+            "description": "Of `output_tokens`, what the continuations took.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "continuations": {
+            "description": "Calls made after one whose memories reached `max_memories_per_turn`, asking the same piece for what it left out; failed ones included. Each is also in `calls`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "cost_usd": {
             "description": "The router's own cost, summed over the calls that carried one; absent when none did.",
             "format": "double",
@@ -118,7 +136,7 @@
             "type": "integer"
           },
           "no_array": {
-            "description": "Replies with no JSON array (prose, one word, no text); a `[]` reply is not one. The call is asked once more after one, and a second reads as nothing to keep.",
+            "description": "Replies with no JSON array (prose, one word, no text); a `[]` reply is not one. A piece's first call is asked once more after one, and a second reads as nothing to keep; a continuation's is not asked again and leaves the piece `saturated`.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
@@ -146,7 +164,7 @@
             "type": "integer"
           },
           "saturated": {
-            "description": "Pieces whose memories reached `max_memories_per_turn`: the model may have left facts out to stay under it, and nothing else shows that.",
+            "description": "Pieces that ended at the cap: the last reply read still reached `max_memories_per_turn` and no further call was made or could be read. The model may have left facts out, and nothing else shows that.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
@@ -159,6 +177,9 @@
         },
         "required": [
           "calls",
+          "continuation_input_tokens",
+          "continuation_output_tokens",
+          "continuations",
           "created",
           "input_tokens",
           "no_array",
