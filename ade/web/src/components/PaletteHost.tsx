@@ -50,9 +50,12 @@ import {
   SETUP_WIZARD_KEYWORDS,
 } from '@/lib/onboarding/open'
 import { usePageCommands } from '@/lib/page-commands'
+import { chatSearchEntries } from '@/lib/palette/chat-search'
 import { usePaletteSources } from '@/lib/palette/providers'
-import type { PaletteEntry } from '@/lib/palette/sources'
+import type { PaletteEntry, PaletteLiveSearch } from '@/lib/palette/sources'
 import { bundledProviderMark } from '@/lib/provider-marks'
+import { formatRelative } from '@/lib/relative-age'
+import { searchSessions } from '@/lib/sessions/api'
 import { useExtPages } from '@/lib/ui-slots'
 import {
   fetchRegistryProviders,
@@ -220,6 +223,40 @@ export function PaletteHost({
     [openScreen],
   )
 
+  // Chats are searched by what was said in them, on the server; the local
+  // rows below only know titles (and only the most recent forty).
+  const openChat = useCallback(
+    (id: string) => {
+      select(id)
+      openScreen('chat')
+    },
+    [select, openScreen],
+  )
+  const searchableChats = useMemo(
+    () =>
+      new Map(
+        hideSideChats(conversations)
+          .filter((conversation) => !conversation.draft)
+          .map((conversation) => [
+            conversation.id,
+            {
+              id: conversation.id,
+              title: conversation.title,
+              updatedAt: conversation.updatedAt,
+            },
+          ]),
+      ),
+    [conversations],
+  )
+  const liveSearch = useCallback<PaletteLiveSearch>(
+    async ({ text }) => {
+      if (!live) return []
+      const hits = await searchSessions(text, { limit: 30 })
+      return chatSearchEntries(hits, searchableChats, openChat)
+    },
+    [live, searchableChats, openChat],
+  )
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: `open` re-asks each command's `enabled` when the palette opens.
   const localEntries = useMemo((): PaletteEntry[] => {
     const platform = shortcutPlatform()
@@ -255,11 +292,9 @@ export function PaletteHost({
         id: `chat:${conversation.id}`,
         kind: 'chat',
         title: conversation.title || 'untitled chat',
-        detail: conversation.model ?? undefined,
-        run: () => {
-          select(conversation.id)
-          openScreen('chat')
-        },
+        // The sidebar's own tag: two chats can share a title, not an age.
+        meta: formatRelative(conversation.updatedAt),
+        run: () => openChat(conversation.id),
       }))
 
     const digit = bindingsFor('workspace.selectByIndex', platform)[0]
@@ -505,7 +540,7 @@ export function PaletteHost({
     // `enabled` is re-asked each time the palette opens.
     open,
     conversations,
-    select,
+    openChat,
     createNew,
     openScreen,
     onOpenSettings,
@@ -530,6 +565,7 @@ export function PaletteHost({
         workingDir={active?.workingDir ?? null}
         conversationId={active?.id ?? null}
         initialQuery={initialQuery}
+        liveSearch={liveSearch}
       />
     </>
   )

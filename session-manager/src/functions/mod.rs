@@ -1,5 +1,5 @@
-//! The 26 `session::*` functions: 22 session operations (among them
-//! `session::read-attachment`) plus the four functions of the two chat
+//! The 27 `session::*` functions: 23 session operations (among them
+//! `session::read-attachment` and `session::search`) plus the four functions of the two chat
 //! mention providers, `session::mention::*` (`@session`) and
 //! `session::attachments::mention::*` (`@attachment`).
 //!
@@ -29,6 +29,7 @@ pub mod messages_range;
 pub mod messages_tail;
 pub mod put_attachment;
 pub mod read_attachment;
+pub mod search;
 pub mod set_active_leaf;
 pub mod set_draft;
 pub mod set_meta;
@@ -313,6 +314,14 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
             let bus = bus.clone();
             async move { read_attachment::handle(&d, bus.as_ref(), r).await }
         },
+    );
+    register(
+        iii,
+        state,
+        search::FUNCTION_ID,
+        "Find chats by what was said in them: fuzzy search (word starts and typos match) over every session's title and user/assistant message text. Returns sessions best first, each with the title's matched ranges and, when the messages matched, a snippet of the best message (entry_id, role, text, ranges). Defaults to user sessions; kinds and roots filter.",
+        false,
+        |d, r| async move { search::handle(&d, r).await },
     );
     // The chat mention provider: plumbing for the console's `@session:` menu
     // and pills, so internal (agents read sessions through session::get).
