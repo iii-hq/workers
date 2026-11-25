@@ -60,10 +60,18 @@ export function ShareLinks({ share }: { share: ShareView }) {
       {share.public && !share.public_url ? (
         <StatusPanel
           variant={share.tunnel_error ? 'warn' : 'info'}
-          headline={share.tunnel_error ? 'No public link yet' : 'The tunnel is starting'}
+          headline={
+            share.tunnel_error
+              ? 'No public link yet'
+              : share.tunnel_status === 'warming'
+                ? 'Public link warming up'
+                : 'The tunnel is starting'
+          }
           detail={
             share.tunnel_error ??
-            `Status: ${share.tunnel_status ?? 'starting'}. The public link shows in the share list once it is ready.`
+            (share.tunnel_status === 'warming'
+              ? 'The new address is still reaching public DNS, usually within a minute. Reopen the share list to get the link.'
+              : 'The public link shows in the share list once the tunnel is ready.')
           }
         />
       ) : null}

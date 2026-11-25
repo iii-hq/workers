@@ -58,6 +58,18 @@ pub struct WorkerConfig {
     /// public URL before answering without one, in milliseconds.
     #[serde(default = "default_tunnel_ready_timeout_ms")]
     pub tunnel_ready_timeout_ms: u64,
+
+    /// Public DNS resolver (`ip:port`) asked whether a new tunnel hostname
+    /// resolves before its link is handed out. Empty disables the check.
+    /// Takes effect on restart.
+    #[serde(default = "default_dns_check_resolver")]
+    pub dns_check_resolver: String,
+
+    /// Minutes the tunnel stays up after the last public share ends, so a
+    /// new share soon after reuses the same, already-resolving address
+    /// (at most 1440). 0 releases it at once.
+    #[serde(default = "default_tunnel_grace_minutes")]
+    pub tunnel_grace_minutes: u32,
 }
 
 fn default_listen_addr() -> String {
@@ -89,8 +101,19 @@ fn default_max_list() -> usize {
 }
 
 fn default_tunnel_ready_timeout_ms() -> u64 {
-    20_000
+    45_000
 }
+
+fn default_dns_check_resolver() -> String {
+    "1.1.1.1:53".to_string()
+}
+
+fn default_tunnel_grace_minutes() -> u32 {
+    30
+}
+
+/// Longest tunnel grace an operator may set: one day.
+const MAX_TUNNEL_GRACE_MINUTES: u32 = 1440;
 
 impl Default for WorkerConfig {
     fn default() -> Self {
@@ -103,6 +126,8 @@ impl Default for WorkerConfig {
             max_versions: default_max_versions(),
             max_list: default_max_list(),
             tunnel_ready_timeout_ms: default_tunnel_ready_timeout_ms(),
+            dns_check_resolver: default_dns_check_resolver(),
+            tunnel_grace_minutes: default_tunnel_grace_minutes(),
         }
     }
 }
@@ -176,6 +201,12 @@ impl WorkerConfig {
         if self.max_list == 0 {
             return Err("max_list must be at least 1".to_string());
         }
+        if self.tunnel_grace_minutes > MAX_TUNNEL_GRACE_MINUTES {
+            return Err(format!(
+                "tunnel_grace_minutes must be at most {MAX_TUNNEL_GRACE_MINUTES}"
+            ));
+        }
+        crate::dns::Dns::new(&self.dns_check_resolver)?;
         Ok(self)
     }
 
@@ -296,6 +327,15 @@ mod tests {
             assert!(WorkerConfig::from_yaml(bad).is_err(), "{bad} should fail");
         }
         assert!(WorkerConfig::from_json(&serde_json::json!({ "max_list": 0 })).is_err());
+    }
+
+    #[test]
+    fn tunnel_grace_and_dns_resolver_are_validated() {
+        assert!(WorkerConfig::from_yaml("tunnel_grace_minutes: 1441\n").is_err());
+        assert!(WorkerConfig::from_yaml("dns_check_resolver: nope\n").is_err());
+        let off = WorkerConfig::from_yaml("dns_check_resolver: ''\ntunnel_grace_minutes: 0\n")
+            .expect("both may be turned off");
+        assert_eq!(off.tunnel_grace_minutes, 0);
     }
 
     #[test]

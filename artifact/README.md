@@ -13,8 +13,13 @@ version through an expiring, token-guarded link.
   the worker's own loopback listener at `/s/<token>` and, when the operator
   has configured it, published through [`quick-tunnel`](../quick-tunnel).
 - **Expiry**: an expired link answers `410 Gone`. A sweeper drops expired
-  shares every minute, and the tunnel lease is released as soon as no public
-  share is left.
+  shares every minute. The tunnel stays up `tunnel_grace_minutes` after the
+  last public share ends, so a new share soon after reuses the same address,
+  then its lease is released.
+- **No dead links**: a fresh `*.trycloudflare.com` hostname takes up to a
+  minute to reach DNS. `share` asks a public resolver directly (never the
+  host's cache) and hands out the public URL only once it resolves; until
+  then the share reports `tunnel_status: "warming"`.
 
 ## Functions
 
@@ -73,7 +78,9 @@ Registered with the `configuration` worker under the id `artifact`.
 | `max_content_bytes` | `2097152` | Largest content per version. |
 | `max_versions` | `100` | Most versions per artifact. |
 | `max_list` | `200` | Most rows per `artifact::list`. |
-| `tunnel_ready_timeout_ms` | `20000` | How long `share` waits for a starting tunnel. |
+| `tunnel_ready_timeout_ms` | `45000` | How long `share` waits for the tunnel and its DNS. |
+| `tunnel_grace_minutes` | `30` | Keep the tunnel this long after the last public share, so a new share reuses the same address (0 releases at once). |
+| `dns_check_resolver` | `1.1.1.1:53` | Public resolver asked whether a fresh tunnel hostname resolves before the link is handed out (empty disables; restart to change). |
 
 ### Publishing links
 

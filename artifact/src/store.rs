@@ -150,6 +150,10 @@ pub struct LeaseRecord {
     pub tunnel_id: String,
     /// Lease expiry, unix seconds.
     pub expires_at: i64,
+    /// When the last public share ended (unix seconds); the lease is
+    /// released once the configured grace has passed since then.
+    #[serde(default)]
+    pub idle_since: Option<i64>,
 }
 
 enum Backend {

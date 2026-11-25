@@ -37,6 +37,12 @@ pub const REVOKE_DESC: &str = "Revoke a share by its token so the link stops wor
 /// How often `share` re-reads a starting tunnel's status.
 const READY_POLL_MS: u64 = 500;
 
+/// How often `share` asks public DNS about a fresh tunnel hostname.
+const DNS_POLL_MS: u64 = 2_000;
+
+/// Tunnel status reported while its new hostname is not in public DNS yet.
+pub const WARMING: &str = "warming";
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ShareRequest {
     /// Artifact id.
@@ -121,6 +127,7 @@ pub async fn share(
     }
     let public = req.public.unwrap_or(true);
 
+    let started = tokio::time::Instant::now();
     let (record, snapshot) = {
         let _guard = ctx.store.lock().await;
         let artifact = load(&ctx, &req.id).await?;
@@ -143,9 +150,13 @@ pub async fn share(
         (record, snapshot)
     };
 
+    // One budget covers both waits: the tunnel coming up, then its hostname
+    // reaching public DNS.
+    let deadline = started + Duration::from_millis(cfg.tunnel_ready_timeout_ms);
     let snapshot = match snapshot {
-        Some(Ok(snap)) if !snap.is_ready() && !snap.is_failed() => {
-            Some(Ok(wait_ready(&ctx, &cfg, snap).await))
+        Some(Ok(snap)) => {
+            let snap = wait_ready(&ctx, &cfg, snap, deadline).await;
+            Some(Ok(publishable(&ctx, snap, Some(deadline)).await))
         }
         other => other,
     };
@@ -157,7 +168,7 @@ pub async fn shares(
     cfg: Arc<WorkerConfig>,
     req: SharesRequest,
 ) -> Result<SharesResponse, String> {
-    sweep(&ctx).await?;
+    sweep(&ctx, &cfg).await?;
     let mut shares: Vec<ShareRecord> = ctx
         .store
         .shares()
@@ -167,12 +178,10 @@ pub async fn shares(
         .collect();
     shares.sort_by_key(|s| std::cmp::Reverse(s.created_at));
     let snapshot = if shares.iter().any(|s| s.public) {
-        Some(
-            ctx.tunnel
-                .status(&cfg.tunnel_id)
-                .await
-                .map_err(|e| tunnel_hint(&cfg.tunnel_id, &e)),
-        )
+        Some(match ctx.tunnel.status(&cfg.tunnel_id).await {
+            Ok(snap) => Ok(publishable(&ctx, snap, None).await),
+            Err(e) => Err(tunnel_hint(&cfg.tunnel_id, &e)),
+        })
     } else {
         None
     };
@@ -186,7 +195,7 @@ pub async fn shares(
 
 pub async fn revoke(
     ctx: Arc<Ctx>,
-    _cfg: Arc<WorkerConfig>,
+    cfg: Arc<WorkerConfig>,
     req: RevokeRequest,
 ) -> Result<RevokeResponse, String> {
     let token = req
@@ -198,27 +207,36 @@ pub async fn revoke(
         .to_string();
     let _guard = ctx.store.lock().await;
     let removed = ctx.store.remove_shares(|s| s.token == token).await?;
-    let tunnel_released = release_if_idle(&ctx).await?;
+    let tunnel_released = release_if_idle(&ctx, &cfg, unix_now()).await?;
     Ok(RevokeResponse {
         revoked: !removed.is_empty(),
         tunnel_released,
     })
 }
 
-/// Drop expired shares and release the tunnel if nothing public is left.
+/// Drop expired shares and release an idle tunnel whose grace has passed.
 /// Run by `artifact::shares` and by the background sweeper.
-pub async fn sweep(ctx: &Ctx) -> Result<usize, String> {
+pub async fn sweep(ctx: &Ctx, cfg: &WorkerConfig) -> Result<usize, String> {
     let _guard = ctx.store.lock().await;
     let now = unix_now();
     let expired = ctx.store.remove_shares(|s| !s.is_live(now)).await?;
-    release_if_idle(ctx).await?;
+    release_if_idle(ctx, cfg, now).await?;
     Ok(expired.len())
 }
 
-/// Release the lease when no live public share remains. Caller holds the
-/// store lock. Returns whether a lease was released.
-pub(crate) async fn release_if_idle(ctx: &Ctx) -> Result<bool, String> {
-    let now = unix_now();
+/// Once no live public share remains, keep the tunnel for
+/// `tunnel_grace_minutes` (so a share soon after reuses the same,
+/// already-resolving address), then release it. A public share in the
+/// meantime cancels the countdown. Caller holds the store lock. Returns
+/// whether a lease was released.
+pub(crate) async fn release_if_idle(
+    ctx: &Ctx,
+    cfg: &WorkerConfig,
+    now: i64,
+) -> Result<bool, String> {
+    let Some(mut lease) = ctx.store.lease().await? else {
+        return Ok(false);
+    };
     let busy = ctx
         .store
         .shares()
@@ -226,20 +244,41 @@ pub(crate) async fn release_if_idle(ctx: &Ctx) -> Result<bool, String> {
         .iter()
         .any(|s| s.public && s.is_live(now));
     if busy {
+        if lease.idle_since.take().is_some() {
+            ctx.store.save_lease(&lease).await?;
+        }
         return Ok(false);
     }
-    let Some(lease) = ctx.store.lease().await? else {
-        return Ok(false);
+    let grace = i64::from(cfg.tunnel_grace_minutes) * 60;
+    let lapsed = lease.expires_at <= now;
+    let idle_since = match lease.idle_since {
+        Some(since) => since,
+        None if grace > 0 && !lapsed => {
+            lease.idle_since = Some(now);
+            ctx.store.save_lease(&lease).await?;
+            tracing::info!(
+                tunnel_id = %lease.tunnel_id,
+                grace_minutes = cfg.tunnel_grace_minutes,
+                "no public share left; keeping the tunnel for the grace period"
+            );
+            return Ok(false);
+        }
+        None => now,
     };
+    if !lapsed && now < idle_since + grace {
+        return Ok(false);
+    }
     ctx.tunnel.release(&lease.lease_id).await?;
     ctx.store.clear_lease().await?;
-    tracing::info!(tunnel_id = %lease.tunnel_id, "no public share left; tunnel lease released");
+    tracing::info!(tunnel_id = %lease.tunnel_id, "tunnel lease released");
     Ok(true)
 }
 
-/// Acquire or stretch the lease to cover `until`. Caller holds the store lock.
+/// Acquire or stretch the lease to cover `until` plus the grace period, and
+/// cancel any idle countdown. Caller holds the store lock.
 async fn ensure_lease(ctx: &Ctx, cfg: &WorkerConfig, until: i64) -> Result<TunnelSnapshot, String> {
     let current = ctx.store.lease().await?;
+    let until = until + i64::from(cfg.tunnel_grace_minutes) * 60;
     let until = match &current {
         Some(lease) if lease.tunnel_id == cfg.tunnel_id => until.max(lease.expires_at),
         _ => until,
@@ -260,15 +299,20 @@ async fn ensure_lease(ctx: &Ctx, cfg: &WorkerConfig, until: i64) -> Result<Tunne
             lease_id,
             tunnel_id: cfg.tunnel_id.clone(),
             expires_at: until,
+            idle_since: None,
         })
         .await?;
     Ok(snapshot)
 }
 
-/// Re-read a starting tunnel until it is ready, failed, or the configured
-/// wait runs out; the last snapshot wins either way.
-async fn wait_ready(ctx: &Ctx, cfg: &WorkerConfig, mut snap: TunnelSnapshot) -> TunnelSnapshot {
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(cfg.tunnel_ready_timeout_ms);
+/// Re-read a starting tunnel until it is ready, failed, or `deadline`; the
+/// last snapshot wins either way.
+async fn wait_ready(
+    ctx: &Ctx,
+    cfg: &WorkerConfig,
+    mut snap: TunnelSnapshot,
+    deadline: tokio::time::Instant,
+) -> TunnelSnapshot {
     while !snap.is_ready() && !snap.is_failed() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(READY_POLL_MS)).await;
         match ctx.tunnel.status(&cfg.tunnel_id).await {
@@ -280,6 +324,35 @@ async fn wait_ready(ctx: &Ctx, cfg: &WorkerConfig, mut snap: TunnelSnapshot) -> 
         }
     }
     snap
+}
+
+/// Hand out a ready tunnel's URL only once public DNS knows its hostname;
+/// until then report `warming`. With a deadline, keep asking until it.
+async fn publishable(
+    ctx: &Ctx,
+    snap: TunnelSnapshot,
+    deadline: Option<tokio::time::Instant>,
+) -> TunnelSnapshot {
+    let Some(url) = snap.public_url.clone() else {
+        return snap;
+    };
+    loop {
+        if ctx.dns.resolves(&url).await {
+            return snap;
+        }
+        let poll = Duration::from_millis(DNS_POLL_MS);
+        match deadline {
+            Some(deadline) if tokio::time::Instant::now() + poll < deadline => {
+                tokio::time::sleep(poll).await;
+            }
+            _ => break,
+        }
+    }
+    TunnelSnapshot {
+        status: WARMING.to_string(),
+        public_url: None,
+        error: None,
+    }
 }
 
 fn tunnel_hint(tunnel_id: &str, error: &str) -> String {
@@ -335,6 +408,7 @@ mod tests {
     fn cfg() -> Arc<WorkerConfig> {
         Arc::new(WorkerConfig {
             tunnel_ready_timeout_ms: 0,
+            tunnel_grace_minutes: 0,
             ..WorkerConfig::default()
         })
     }
@@ -494,6 +568,105 @@ mod tests {
             .await
             .expect("lists");
         assert!(listed.shares.is_empty());
+    }
+
+    fn grace_cfg() -> Arc<WorkerConfig> {
+        Arc::new(WorkerConfig {
+            tunnel_ready_timeout_ms: 0,
+            tunnel_grace_minutes: 30,
+            ..WorkerConfig::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn the_lease_covers_the_share_plus_the_grace_period() {
+        let ctx = Ctx::for_tests(Some("https://x.trycloudflare.com"));
+        let id = artifact(&ctx).await;
+        let view = share(ctx.clone(), grace_cfg(), req(&id, true))
+            .await
+            .expect("shares");
+        let acquired = ctx.tunnel.with_fake(|f| f.acquired.clone());
+        assert_eq!(acquired[0].1, view.expires_at + 30 * 60);
+    }
+
+    #[tokio::test]
+    async fn the_tunnel_outlives_the_last_share_by_the_grace_period() {
+        let ctx = Ctx::for_tests(Some("https://x.trycloudflare.com"));
+        let id = artifact(&ctx).await;
+        let link = share(ctx.clone(), grace_cfg(), req(&id, true))
+            .await
+            .expect("shares");
+
+        let out = revoke(
+            ctx.clone(),
+            grace_cfg(),
+            RevokeRequest { token: link.token },
+        )
+        .await
+        .expect("revokes");
+        assert!(
+            out.revoked && !out.tunnel_released,
+            "kept for the grace period"
+        );
+        let lease = ctx.store.lease().await.expect("lease").expect("still held");
+        let idle_since = lease.idle_since.expect("countdown started");
+
+        let early = release_if_idle(&ctx, &grace_cfg(), idle_since + 29 * 60)
+            .await
+            .expect("early");
+        assert!(!early);
+        let late = release_if_idle(&ctx, &grace_cfg(), idle_since + 30 * 60)
+            .await
+            .expect("late");
+        assert!(late);
+        assert!(ctx.store.lease().await.expect("lease").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_new_public_share_cancels_the_idle_countdown() {
+        let ctx = Ctx::for_tests(Some("https://x.trycloudflare.com"));
+        let id = artifact(&ctx).await;
+        let first = share(ctx.clone(), grace_cfg(), req(&id, true))
+            .await
+            .expect("first");
+        revoke(
+            ctx.clone(),
+            grace_cfg(),
+            RevokeRequest { token: first.token },
+        )
+        .await
+        .expect("revokes");
+        let second = share(ctx.clone(), grace_cfg(), req(&id, true))
+            .await
+            .expect("second");
+        assert_eq!(
+            second
+                .public_url
+                .as_deref()
+                .map(|u| u.starts_with("https://x.")),
+            Some(true)
+        );
+        let lease = ctx.store.lease().await.expect("lease").expect("held");
+        assert_eq!(lease.idle_since, None);
+        assert!(ctx.tunnel.with_fake(|f| f.released.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn a_hostname_not_in_public_dns_yet_is_reported_as_warming() {
+        let base = Ctx::for_tests(Some("https://fresh.trycloudflare.com"));
+        let ctx = Arc::new(Ctx {
+            store: base.store.clone(),
+            tunnel: base.tunnel.clone(),
+            dns: Arc::new(crate::dns::Dns::fake(false)),
+            local_base: base.local_base.clone(),
+        });
+        let id = artifact(&ctx).await;
+        let view = share(ctx.clone(), cfg(), req(&id, true))
+            .await
+            .expect("shares");
+        assert_eq!(view.public_url, None);
+        assert_eq!(view.tunnel_status.as_deref(), Some(WARMING));
+        assert!(view.local_url.contains(&view.token));
     }
 
     #[tokio::test]

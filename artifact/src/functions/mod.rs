@@ -18,6 +18,7 @@ use serde::de::DeserializeOwned;
 
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
+use crate::dns::Dns;
 use crate::store::Store;
 use crate::tunnel::Tunnel;
 
@@ -25,6 +26,8 @@ use crate::tunnel::Tunnel;
 pub struct Ctx {
     pub store: Arc<Store>,
     pub tunnel: Arc<Tunnel>,
+    /// Public DNS check for fresh tunnel hostnames.
+    pub dns: Arc<Dns>,
     /// Base URL of the share listener as bound, e.g. `http://127.0.0.1:3120`.
     pub local_base: String,
 }
@@ -35,6 +38,7 @@ impl Ctx {
         Arc::new(Self {
             store: Arc::new(Store::in_memory()),
             tunnel: Arc::new(Tunnel::fake(public_url)),
+            dns: Arc::new(Dns::fake(true)),
             local_base: "http://127.0.0.1:3120".to_string(),
         })
     }

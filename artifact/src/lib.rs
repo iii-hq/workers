@@ -1,5 +1,6 @@
 pub mod config;
 pub mod configuration;
+pub mod dns;
 pub mod functions;
 pub mod manifest;
 pub mod render;

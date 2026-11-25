@@ -24,6 +24,7 @@ use tracing_subscriber::EnvFilter;
 
 use artifact::config::WorkerConfig;
 use artifact::configuration::{self, ConfigCell};
+use artifact::dns::Dns;
 use artifact::functions::{self, Ctx, sharing};
 use artifact::store::Store;
 use artifact::tunnel::Tunnel;
@@ -127,11 +128,17 @@ async fn main() -> anyhow::Result<()> {
     let bound = listener.local_addr()?;
     tracing::info!(%bound, tunnel_id = %cfg.tunnel_id, "share listener bound");
 
+    let dns = Arc::new(
+        Dns::new(&cfg.dns_check_resolver)
+            .map_err(|e| anyhow::anyhow!("invalid dns_check_resolver: {e}"))?,
+    );
+
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
     let store = Arc::new(Store::new(iii.clone()));
     let ctx = Arc::new(Ctx {
         store: store.clone(),
         tunnel: Arc::new(Tunnel::Bus(iii.clone())),
+        dns,
         local_base: format!("http://{bound}"),
     });
 
@@ -151,11 +158,13 @@ async fn main() -> anyhow::Result<()> {
     ui::register(&iii);
 
     let sweeper_ctx = ctx.clone();
+    let sweeper_cell = cell.clone();
     let sweeper = tokio::spawn(async move {
         let mut tick = tokio::time::interval(SWEEP_INTERVAL);
         loop {
             tick.tick().await;
-            match sharing::sweep(&sweeper_ctx).await {
+            let cfg = sweeper_cell.read().await.clone();
+            match sharing::sweep(&sweeper_ctx, &cfg).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(expired = n, "expired shares dropped"),
                 Err(e) => tracing::warn!(error = %e, "share sweep failed"),

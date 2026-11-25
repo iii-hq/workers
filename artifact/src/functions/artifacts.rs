@@ -248,7 +248,7 @@ pub async fn list(
 
 pub async fn delete(
     ctx: Arc<Ctx>,
-    _cfg: Arc<WorkerConfig>,
+    cfg: Arc<WorkerConfig>,
     req: DeleteRequest,
 ) -> Result<DeleteResponse, String> {
     let _guard = ctx.store.lock().await;
@@ -264,7 +264,7 @@ pub async fn delete(
         .remove_shares(|share| share.artifact_id == record.id)
         .await?;
     ctx.store.delete_artifact(&record).await?;
-    let tunnel_released = sharing::release_if_idle(&ctx).await?;
+    let tunnel_released = sharing::release_if_idle(&ctx, &cfg, unix_now()).await?;
     Ok(DeleteResponse {
         deleted: true,
         revoked_shares: revoked.len(),

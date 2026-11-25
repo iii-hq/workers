@@ -50,8 +50,20 @@ const SHARING: FieldSpec[] = [
   {
     key: 'tunnel_ready_timeout_ms',
     label: 'Tunnel wait (ms)',
-    description: 'How long a share waits for a starting tunnel before answering without a public link.',
+    description: 'How long a share waits for the tunnel and its DNS before answering without a public link.',
     numeric: true,
+  },
+  {
+    key: 'tunnel_grace_minutes',
+    label: 'Keep tunnel after last link (minutes)',
+    description: 'A new share within this window reuses the same address. 0 closes the tunnel at once.',
+    numeric: true,
+  },
+  {
+    key: 'dns_check_resolver',
+    label: 'Public DNS for the check',
+    description: 'ip:port asked whether a new tunnel address resolves before it is handed out. Empty disables it. Takes effect on restart.',
+    numeric: false,
   },
 ]
 
