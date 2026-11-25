@@ -278,7 +278,7 @@ async fn wait_ready(ctx: &Ctx, cfg: &WorkerConfig, mut snap: TunnelSnapshot) -> 
 }
 
 fn tunnel_hint(tunnel_id: &str, error: &str) -> String {
-    if error.contains("unknown tunnel_id") {
+    if error.contains("unauthorized tunnel_id") || error.contains("unknown tunnel_id") {
         format!(
             "quick-tunnel has no `{tunnel_id}` target; the operator must add `{tunnel_id}: \
              http://<listen_addr>` to the quick-tunnel targets ({error})"
@@ -436,8 +436,9 @@ mod tests {
     #[tokio::test]
     async fn a_missing_tunnel_target_still_yields_a_local_link_with_a_hint() {
         let ctx = Ctx::for_tests(None);
-        ctx.tunnel
-            .with_fake(|f| f.fail = Some("invalid request: unknown tunnel_id".into()));
+        ctx.tunnel.with_fake(|f| {
+            f.fail = Some("invalid request: invalid consumer_id or unauthorized tunnel_id".into())
+        });
         let id = artifact(&ctx).await;
         let view = share(ctx, cfg(), req(&id, true))
             .await
