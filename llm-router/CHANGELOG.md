@@ -15,8 +15,10 @@ published from `main` without a changelog.
   `resets_at_ms` is when that limit resets. `error_kind` stays `rate_limited`
   and `ErrorKind` keeps its five values. The field is written only when
   present, so a message without it reads and writes as before, and an older
-  reader ignores it. A `window` this version does not know reads as absent,
-  and unreadable details never drop the frame.
+  reader ignores it. Each field is read on its own: a `window` this version
+  does not know, or a malformed `window` or `resets_at_ms`, reads as absent
+  without costing `usage_limit`, and details that are not an object never drop
+  the frame.
 
 ### Changed
 

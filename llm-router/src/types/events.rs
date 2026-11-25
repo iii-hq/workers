@@ -86,7 +86,9 @@ where
 }
 
 /// Details this router cannot read are absent: a terminal frame is never
-/// dropped as malformed because of them.
+/// dropped as malformed because of them. Each field is read on its own, so a
+/// malformed `window` or `resets_at_ms` never costs `usage_limit: true` (a
+/// limit read as a busy moment would be retried against it).
 pub(crate) fn lenient_error_details<'de, D>(
     deserializer: D,
 ) -> Result<Option<ErrorDetails>, D::Error>
@@ -94,7 +96,24 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+    Ok(value.as_ref().and_then(read_error_details))
+}
+
+/// `error_details` field by field: an object, else nothing.
+fn read_error_details(value: &serde_json::Value) -> Option<ErrorDetails> {
+    let object = value.as_object()?;
+    Some(ErrorDetails {
+        usage_limit: object
+            .get("usage_limit")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        window: object
+            .get("window")
+            .and_then(|window| serde_json::from_value(window.clone()).ok()),
+        resets_at_ms: object
+            .get("resets_at_ms")
+            .and_then(serde_json::Value::as_u64),
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -457,6 +476,51 @@ mod tests {
         };
         assert_eq!(error.error_kind, Some(ErrorKind::RateLimited));
         assert_eq!(error.error_details, None);
+    }
+
+    #[test]
+    fn a_malformed_field_never_costs_the_usage_limit() {
+        let read = |details: serde_json::Value| {
+            let wire = serde_json::json!({
+                "type": "error",
+                "error": {
+                    "role": "assistant", "content": [], "stop_reason": "error",
+                    "error_kind": "rate_limited", "error_details": details,
+                    "model": "m", "provider": "p", "timestamp": 1
+                }
+            });
+            let AssistantMessageEvent::Error { error } = serde_json::from_value(wire).unwrap()
+            else {
+                panic!("not an error frame")
+            };
+            error.error_details
+        };
+        // A bad reset or window: the flag and whatever else reads stay.
+        assert_eq!(
+            read(serde_json::json!({ "usage_limit": true, "resets_at_ms": "soon", "window": 5 })),
+            Some(ErrorDetails::usage_limit(None, None))
+        );
+        assert_eq!(
+            read(serde_json::json!({ "usage_limit": true, "resets_at_ms": -1, "window": "week" })),
+            Some(ErrorDetails::usage_limit(Some(UsageWindow::Week), None))
+        );
+        assert_eq!(
+            read(
+                serde_json::json!({ "usage_limit": true, "resets_at_ms": 1.5, "window": "five_hour" })
+            ),
+            Some(ErrorDetails::usage_limit(Some(UsageWindow::FiveHour), None))
+        );
+        // A bad flag is not a limit; the rest still reads.
+        assert_eq!(
+            read(serde_json::json!({ "usage_limit": "yes", "resets_at_ms": 5, "window": "week" })),
+            Some(ErrorDetails {
+                usage_limit: false,
+                window: Some(UsageWindow::Week),
+                resets_at_ms: Some(5),
+            })
+        );
+        assert_eq!(read(serde_json::json!(null)), None);
+        assert_eq!(read(serde_json::json!([true])), None);
     }
 
     #[test]
