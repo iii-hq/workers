@@ -12,7 +12,8 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
-import { installLocal } from './iii-plugin/install.js';
+import { headlessPlugin } from './iii-plugin/headless.js';
+import { pluginLoaded } from './iii-plugin/install.js';
 import { headlessTools } from './iii-plugin/shared/mode.js';
 import {
   lastAssistant,
@@ -478,24 +479,22 @@ async function runReserved(
   // worker keeps no copy of the prompt or of the skills index.
   const iiiContext = payload.iii_context ?? cfg.iii_context;
   const context = iiiContext ? await fetchIiiContext(iii) : null;
-  // The same `iii` plugin the terminal half loads (hooks, runtime skill, the
-  // engine's mcp-server as its MCP server, /iii:* commands): the SDK turns a
-  // local plugin into the CLI's own `--plugin-dir`. It lives in a directory
-  // of this turn's own, removed when the turn ends.
-  const plugin = iiiContext
-    ? await installLocal(iii)
-    : { dir: '', detail: '', mode: '', mcp: false, dispose: async () => {} };
+  // The published `iii` plugin, installed in the folder the turn runs in when
+  // it is not (iii-plugin/headless.ts), and the turn's environment read now:
+  // III_MCP_URL (the http worker's current address plus /mcp) and III_CLI.
+  const plugin = await headlessPlugin(iii, cfg, record.cwd, iiiContext);
   if (plugin.detail) console.warn(`claude-code: ${plugin.detail}`);
-  try {
+  const loaded = pluginLoaded(plugin.status);
+  const withMcp = plugin.mcp.available;
+  {
     // default-mcp is appended to Claude Code's own system prompt: an agent
     // (`--agent`) would replace it, and with it Claude Code's operating rules.
     // The runtime text teaches the `iii` CLI as the only way in: with
     // mcp-server, default-mcp and the iii tools take its place.
-    const runtime = plugin.mcp ? '' : (context?.text ?? '');
+    const runtime = iiiContext && withMcp ? '' : (context?.text ?? '');
     const append = [runtime, plugin.mode, userAppend].filter(Boolean).join('\n\n');
-    const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];
     const options: Options = {
-      ...(plugins.length ? { plugins } : {}),
+      env: plugin.env,
       ...(record.model ? { model: record.model } : {}),
       ...(record.cwd ? { cwd: record.cwd } : {}),
       ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
@@ -513,13 +512,15 @@ async function runReserved(
         ...(iiiContext ? ['Bash(iii *)'] : []),
         // With mcp-server, the iii tools run without a prompt nobody would
         // answer: rbac-proxy is what bounds them.
-        ...(plugin.mcp ? headlessTools(cfg.approval_gate) : []),
+        ...(iiiContext && withMcp ? headlessTools(cfg.approval_gate) : []),
       ],
       disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
       systemPrompt: payload.system_prompt
         ? payload.system_prompt
         : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
-      settingSources: [],
+      // The plugin is installed in the folder's local settings: read them
+      // only when it is there, so a turn without it reads no settings.
+      settingSources: loaded ? ['local'] : [],
       ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
       // A child session renders its turn live: ask for the stream. Before the
       // caller's options, so a caller can still turn it off.
@@ -686,8 +687,6 @@ async function runReserved(
       total_cost_usd: record.total_cost_usd,
       usage: record.usage,
     };
-  } finally {
-    await plugin.dispose();
   }
 }
 

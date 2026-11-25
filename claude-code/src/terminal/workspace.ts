@@ -1,138 +1,259 @@
 /**
- * Everything the terminal needs before it opens: the CLI installed and the
- * workspace equipped with the iii plugin (the hooks that report what Claude
- * does, the iii skills and commands). All of it runs on the terminal host
- * through the `shell::*` functions of the `ide` worker, so this worker never
- * touches a local path.
+ * Everything a terminal session needs, in two steps, all of it on the
+ * terminal host through the `shell::*` functions of the `ide` worker (this
+ * worker never touches a local path for a terminal):
+ *
+ *   - `prepareHost`, at worker start and on a config change: the CLI
+ *     installed, the `iii` CLI the plugin's activity hooks report through,
+ *     the user a keychain login is looked up by. Slow on a cold host, and
+ *     the same for every session.
+ *   - `prepareSession`, right before EVERY terminal start (what
+ *     `claude::terminal::describe` runs): the folder the session runs in,
+ *     the published `iii` plugin installed there when it is not
+ *     (`../iii-plugin/install.ts`), the http worker's address read now, and
+ *     the default-mcp prompt written again for `--append-system-prompt-file`.
+ *     Nothing a session depends on is decided at worker start any more, so a
+ *     moved http worker reaches the very next session.
  */
 
 import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
-import { installOnHost } from '../iii-plugin/install.js';
-import { MODE_FILE } from '../plugin.js';
 import {
-  exec,
-  fileExists,
-  hostRoot,
-  mkdir,
-  probe,
-  readFile,
-  removeFile,
-  writeFile,
-} from './host.js';
-import { fetchIiiContext } from '../iii-context.js';
+  ensurePlugin,
+  mcpEnv,
+  type PluginStatus,
+  readDefaultMcp,
+  resolveWorkerMcp,
+  type Runner,
+} from '../iii-plugin/install.js';
+import { exec, fileExists, hostRoot, mkdir, probe, writeFile } from './host.js';
 
 const INSTALL_CMD = 'curl -fsSL https://claude.ai/install.sh | bash';
 
+/** The default-mcp prompt, in the worker's own folder on the terminal host. */
+export const MODE_FILE = 'default-mcp.md';
+
+export type HostPrepared = {
+  /**
+   * The worker's own folder on the terminal host (`workspace_dir`, else
+   * `claude-code` under the ide worker's root): where it keeps the
+   * default-mcp file. Never where a session runs.
+   */
+  home: string;
+  executable: string;
+  /** What every session runs with, beyond what the host already exports. */
+  env: Record<string, string>;
+  /**
+   * The `iii` CLI on the terminal host, which is how the plugin's activity
+   * hooks reach the bus (passed as `III_CLI`). Empty: the hooks fall back to
+   * `iii` on PATH, and nothing may reach `claude::on-agent-event`.
+   */
+  bridge: string;
+  /** Empty when the host is ready; otherwise why it is not. */
+  detail: string;
+};
+
+/**
+ * What the session inventory (`../agents.ts`) reads of the terminal host: the
+ * CLI it lists and stops sessions with, and the argv and folder it opens one
+ * from. Sessions are prepared one by one (`prepareSession`), so the argv is
+ * empty (the opened session's own prepared argv goes in front of a resume)
+ * and so is the folder (a session without one opens in the compose project).
+ */
 export type Prepared = {
   workspace: string;
   executable: string;
   args: string[];
   env: Record<string, string>;
-  /** Empty when the terminal is ready; otherwise why it is not. */
   detail: string;
-  /** The plugin directory a session loads with `--plugin-dir`. */
-  plugin: string;
-  /**
-   * The `iii` CLI on the terminal host, which is how the hooks reach the bus.
-   * Empty means the hooks are installed but mute: the terminal works and
-   * nothing reaches `claude::on-agent-event`. Worth knowing, because it is what breaks
-   * first if the worker that owns the terminal moves into a guest of its own.
-   */
-  bridge: string;
 };
 
-export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): Promise<Prepared> {
-  const workspace = config.workspace_dir || `${await hostRoot(iii)}/claude-code`;
+export function inventoryHost(host: HostPrepared): Prepared {
+  return {
+    workspace: '',
+    executable: host.executable,
+    args: [],
+    env: host.env,
+    detail: host.detail,
+  };
+}
+
+export type SessionSpec = {
+  program: string;
+  args: string[];
+  /** The folder the session runs in, resolved (`pwd -P`). */
+  cwd: string;
+  env: Record<string, string>;
+  activity_bridge: string;
+  /** Anything wrong that does not stop the session from opening. */
+  detail: string;
+  /** The plugin check in `cwd`; null when `setup_workspace` is off. */
+  plugin: PluginStatus | null;
+  /** The compose project's folder: where a session runs when none is asked for. */
+  project_dir: string;
+};
+
+const join = (...parts: string[]) => parts.filter(Boolean).join('; ');
+
+export async function prepareHost(iii: IIIClient, config: TerminalConfig): Promise<HostPrepared> {
+  const home = config.workspace_dir || `${await hostRoot(iii)}/claude-code`;
   const env = await sessionEnv(iii);
-  const base = { workspace, args: config.args, env, bridge: '', plugin: '' };
-  let detail = '';
-
-  try {
-    await mkdir(iii, workspace);
-  } catch (err) {
-    return { ...base, executable: '', detail: `workspace ${workspace} is unreachable: ${err}` };
-  }
-
   const executable = await resolveExecutable(iii, config);
+  let detail = '';
   if (!executable) {
     detail = config.auto_install
       ? 'claude could not be installed on the terminal host'
       : 'claude is not on the terminal host and auto_install is off';
   }
+  const bridge = await probe(iii, 'command -v iii');
+  if (!bridge && config.setup_workspace) {
+    detail = join(
+      detail,
+      'the `iii` CLI is not on the terminal host, so the plugin activity hooks cannot reach the bus: the terminal works, but no turn will reach claude::on-agent-event',
+    );
+  }
+  return { home, executable, env, bridge, detail };
+}
 
-  let bridge = '';
-  let plugin = '';
-  let mode = false;
+/** `run` for the plugin commands: argv through `shell::exec`, in `cwd`. */
+function hostRunner(iii: IIIClient): Runner {
+  return (program, args, cwd) => exec(iii, program, { args, cwd, timeoutMs: 5 * 60_000 });
+}
+
+/**
+ * The folder holding the compose file of the project this worker runs in
+ * (the project with a `claude-code` container, else the only/first one), or
+ * '' when there is no compose daemon to ask.
+ */
+export async function composeProjectDir(iii: IIIClient): Promise<string> {
+  try {
+    const res = await iii.call<
+      unknown,
+      { projects?: { file?: string; containers?: { container?: string }[] }[] }
+    >({ function_id: 'compose::list', payload: {}, timeoutMs: 15_000 });
+    const projects = (res?.projects ?? []).filter((p) => typeof p.file === 'string' && p.file);
+    const mine =
+      projects.find((p) => (p.containers ?? []).some((c) => c.container === 'claude-code')) ??
+      projects[0];
+    if (!mine?.file) return '';
+    const cut = mine.file.lastIndexOf('/');
+    return cut > 0 ? mine.file.slice(0, cut) : '/';
+  } catch (err) {
+    console.warn(`claude-code terminal: compose::list did not answer: ${String(err)}`);
+    return '';
+  }
+}
+
+export async function prepareSession(
+  iii: IIIClient,
+  config: TerminalConfig,
+  host: HostPrepared,
+  request: { cwd?: string },
+): Promise<SessionSpec> {
+  if (!host.executable) {
+    throw new Error(host.detail || 'claude is not available on the terminal host');
+  }
+  const run = hostRunner(iii);
+  const project = await composeProjectDir(iii);
+  const asked = request.cwd?.trim() || project;
+  if (!asked) {
+    throw new Error(
+      'no folder to run Claude in: pass `cwd`, or run the worker in a compose project (compose::list names none)',
+    );
+  }
+  // The folder must exist on the terminal host, and Claude Code records its
+  // local installs by the resolved path, so the session runs in that one.
+  const real = await run('pwd', ['-P'], asked).catch((err) => ({
+    stdout: '',
+    stderr: String(err),
+    exit_code: 1,
+  }));
+  const folder = real.exit_code === 0 ? real.stdout.trim() : '';
+  if (!folder) {
+    throw new Error(
+      `the folder ${asked} is not reachable on the terminal host: ${real.stderr.trim()}`,
+    );
+  }
+
+  // Read now, for this session: http::status, then mcp-server's presence.
+  const mcp = await resolveWorkerMcp(iii);
+  const env = { ...host.env, ...mcpEnv(mcp.url, host.bridge) };
+  const args = [...config.args];
+  let detail = mcp.detail;
+  let plugin: PluginStatus | null = null;
+
   if (config.setup_workspace) {
-    // Equipping the workspace is not what makes a terminal usable: a read-only
-    // `CLAUDE.md` or an unreadable `.claude/` still leaves a working CLI in a
-    // working directory. A failure here is reported, and the terminal opens.
-    try {
-      const context = await fetchIiiContext(iii);
-      await removeLegacyNotes(iii, workspace);
-      // The `iii` plugin: activity hooks, the runtime skill, the engine's
-      // mcp-server as its MCP server, and the /iii:* commands
-      // (../iii-plugin/install.ts).
-      const written = await installOnHost(iii, workspace, context);
-      bridge = written.bridge;
-      plugin = written.dir;
-      mode = Boolean(written.mode);
-      if (written.detail) {
-        console.warn(`claude-code: ${written.detail}`);
-        detail = detail ? `${detail}; ${written.detail}` : written.detail;
+    plugin = await ensurePlugin(run, host.executable, folder);
+    if (plugin.detail) detail = join(detail, plugin.detail);
+    // default-mcp is appended to Claude Code's own prompt (an agent would
+    // replace it); an append the operator configured is kept, ours left out.
+    if (mcp.available) {
+      if (config.args.some((a) => a.startsWith('--append-system-prompt'))) {
+        detail = join(
+          detail,
+          'default-mcp was not appended: the terminal args already carry an --append-system-prompt',
+        );
+      } else {
+        const appended = await writeDefaultMcp(iii, host.home);
+        if (appended.file) args.push('--append-system-prompt-file', appended.file);
+        else detail = join(detail, appended.detail);
       }
-      if (!bridge) {
-        const mute =
-          'the `iii` CLI is not on the terminal host, so the activity hooks cannot reach the bus: the terminal works, but no turn will reach claude::on-agent-event';
-        console.warn(`claude-code: ${mute}`);
-        detail = detail ? `${detail}; ${mute}` : mute;
-      }
-    } catch (err) {
-      const failed = `the workspace could not be equipped (${String(err)}); the terminal opens without the iii notes or the activity hooks`;
-      console.warn(`claude-code: ${failed}`);
-      detail = detail ? `${detail}; ${failed}` : failed;
     }
   }
+  return {
+    program: host.executable,
+    args,
+    cwd: folder,
+    env,
+    activity_bridge: host.bridge,
+    detail,
+    plugin,
+    project_dir: project,
+  };
+}
 
-  // The plugin is how a session gets its hooks and the iii skill; the flag is
-  // the same one the Agent SDK emits for a headless turn.
-  const args = plugin ? [...config.args, '--plugin-dir', plugin] : [...config.args];
-  // default-mcp (only with mcp-server) is appended to Claude Code's
-  // own system prompt. An agent (`--agent`) would replace that prompt. An
-  // append the operator configured is kept, and ours is left out.
-  if (plugin && mode) {
-    const ownAppend = config.args.some((a) => a.startsWith('--append-system-prompt'));
-    if (ownAppend) {
-      const skipped =
-        'default-mcp was not appended: the terminal args already carry an --append-system-prompt';
-      console.warn(`claude-code: ${skipped}`);
-      detail = detail ? `${detail}; ${skipped}` : skipped;
-    } else {
-      args.push('--append-system-prompt-file', `${plugin}/${MODE_FILE}`);
-    }
+/**
+ * Write the default-mcp prompt to the worker's folder and check it is there:
+ * the session is never launched with a path to a missing file.
+ */
+async function writeDefaultMcp(
+  iii: IIIClient,
+  home: string,
+): Promise<{ file: string; detail: string }> {
+  const profile = await readDefaultMcp(iii);
+  if (!profile.text) return { file: '', detail: `default-mcp was not appended: ${profile.detail}` };
+  const file = `${home}/${MODE_FILE}`;
+  try {
+    await mkdir(iii, home);
+    await writeFile(iii, file, `${profile.text.trim()}\n`);
+  } catch (err) {
+    return {
+      file: '',
+      detail: `default-mcp was not appended: ${file} could not be written (${String(err)})`,
+    };
   }
-  return { ...base, args, executable, detail, bridge, plugin };
+  if ((await fileExists(iii, file)) !== true) {
+    return {
+      file: '',
+      detail: `default-mcp was not appended: ${file} is not there after writing it`,
+    };
+  }
+  return { file, detail: '' };
 }
 
 /**
  * What a session runs with, beyond what the terminal host already exports.
  *
- * `III_URL` is the reason a worker Claude writes registers against the engine
- * this worker is talking to.
+ * `III_URL` is the engine this worker talks to: the `iii` CLI the plugin's
+ * hooks run, and any worker Claude writes, connect there.
  *
  * `USER` is the reason it can log in at all. Claude Code keeps its
  * subscription credentials in the OS keychain and looks them up by the current
- * user — and a worker's environment is NOT the operator's shell: compose
- * clears it and re-seeds an allowlist from the daemon's own environment, so a
- * daemon started without `USER` hands every child a blank one. The symptom is
- * a CLI that reports `loggedIn: false` beside a keychain that plainly holds
- * the login. Asking the terminal host who it is costs one call and removes the
- * dependency on how the daemon was started.
+ * user, and a worker's environment is NOT the operator's shell: compose clears
+ * it and re-seeds an allowlist, so a daemon started without `USER` hands every
+ * child a blank one. Asking the terminal host who it is costs one call.
  *
- * `COLORFGBG` says light-on-dark. The page paints a dark terminal, an agent
- * TUI picks its palette from this, and without it half the interface can
- * arrive in dark ink on a dark background.
+ * `COLORFGBG` says light-on-dark: the page paints a dark terminal.
  */
 async function sessionEnv(iii: IIIClient): Promise<Record<string, string>> {
   const env: Record<string, string> = {
@@ -158,7 +279,7 @@ async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promis
   if (!config.auto_install) return '';
   console.log(`claude not found on the terminal host — installing: ${INSTALL_CMD}`);
   try {
-    await exec(iii, INSTALL_CMD, { timeoutMs: 10 * 60_000 });
+    await exec(iii, 'bash', { args: ['-c', INSTALL_CMD], timeoutMs: 10 * 60_000 });
   } catch (err) {
     console.warn(`claude install failed: ${String(err)}`);
     return '';
@@ -166,33 +287,4 @@ async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promis
   // The installer lands in ~/.local/bin, which a non-login shell may not have
   // on PATH yet.
   return (await probe(iii, 'command -v claude')) || (await probe(iii, 'ls ~/.local/bin/claude'));
-}
-
-/** The block earlier versions kept in the workspace's CLAUDE.md. */
-const LEGACY_BEGIN = '<!-- iii:begin';
-const LEGACY_END = '<!-- iii:end -->';
-
-/**
- * Earlier versions kept a marked block in the workspace's `CLAUDE.md`. What it
- * said now comes from the plugin (the `iii-runtime` skill, default-mcp
- * appended), and what it got wrong (the `shell` worker, the `iii` CLI as the
- * only way in) contradicted default-mcp, so the block is taken out. Text
- * outside the markers is the operator's and stays; a file left empty is
- * removed. A read that fails for any reason but "absent" throws: the file is
- * left alone and the caller reports it.
- */
-async function removeLegacyNotes(iii: IIIClient, workspace: string): Promise<void> {
-  const path = `${workspace}/CLAUDE.md`;
-  // Unknown (null) is read anyway: only a sure "absent" skips the read.
-  if ((await fileExists(iii, path)) === false) return;
-  const current = await readFile(iii, path);
-  if (current === null) return;
-  const start = current.indexOf(LEGACY_BEGIN);
-  const end = start < 0 ? -1 : current.indexOf(LEGACY_END, start);
-  if (end < 0) return;
-  const before = current.slice(0, start).trim();
-  const after = current.slice(end + LEGACY_END.length).trim();
-  const rest = [before, after].filter(Boolean).join('\n\n');
-  if (rest) await writeFile(iii, path, `${rest}\n`);
-  else await removeFile(iii, path);
 }
