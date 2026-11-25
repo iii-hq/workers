@@ -269,10 +269,10 @@ mod tests {
         });
         let id = Uuid::new_v4();
         let b = SandboxFsBackend::new(stub.clone(), true, id);
-        let content = iii_sdk::channels::StreamChannelRef {
+        let content = iii_sdk::protocol::StreamChannelRef {
             channel_id: "c-1".into(),
             access_key: "k-1".into(),
-            direction: iii_sdk::helpers::ChannelDirection::Read,
+            direction: iii_sdk::protocol::ChannelDirection::Read,
         };
         let resp = b
             .write(WriteArgs {

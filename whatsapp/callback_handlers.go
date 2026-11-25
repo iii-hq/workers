@@ -48,7 +48,7 @@ func cloudFlowEndpointHandler(client *iii.Client, manager *Manager, engineURL st
 		if _, err := cloudSignatureBytes(cloudHeader(req.Headers, "x-hub-signature-256")); err != nil {
 			return cloudHTTPText(403, "Invalid signature"), nil
 		}
-		raw, status := readCloudChannel(ctx, engineURL, req.RequestBody, cloudFlowEnvelopeLimit)
+		raw, status := readCloudChannel(ctx, client, req.RequestBody, cloudFlowEnvelopeLimit)
 		if status != 0 {
 			return cloudHTTPText(status, map[int]string{400: "Original request body is required", 413: "Flow payload exceeds the size limit", 503: "Unable to read Flow request"}[status]), nil
 		}

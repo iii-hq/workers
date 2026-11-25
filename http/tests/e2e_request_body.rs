@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{backend, engine, worker};
-use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{Value, json};
@@ -45,32 +44,27 @@ async fn register_request_body_echo_backend(
     http_method: &str,
 ) {
     let function_id = format!("test.request_body_echo {http_method} {api_path}");
-    let ws_url = engine::ws_url();
 
     iii.register_function(
         function_id.clone(),
-        RegisterFunction::new_async(move |req: HttpRequest| {
-            let ws_url = ws_url.clone();
-            async move {
-                let reader = ChannelReader::new(&ws_url, &req.request_body);
-                let bytes = tokio::time::timeout(READ_TIMEOUT, reader.read_all())
-                    .await
-                    .map_err(|_| Error::Remote {
-                        code: "REQUEST_BODY_READ_TIMEOUT".to_string(),
-                        message: "timed out reading request_body channel".to_string(),
-                        stacktrace: None,
-                    })?
-                    .map_err(|e| Error::Remote {
-                        code: "REQUEST_BODY_READ_ERROR".to_string(),
-                        message: e.to_string(),
-                        stacktrace: None,
-                    })?;
-                let received = String::from_utf8_lossy(&bytes).into_owned();
-                Ok::<Value, Error>(json!({
-                    "status_code": 200,
-                    "body": { "received": received, "len": bytes.len() },
-                }))
-            }
+        RegisterFunction::new_async(move |req: HttpRequest| async move {
+            let bytes = tokio::time::timeout(READ_TIMEOUT, req.request_body.read_all())
+                .await
+                .map_err(|_| Error::Remote {
+                    code: "REQUEST_BODY_READ_TIMEOUT".to_string(),
+                    message: "timed out reading request_body stream".to_string(),
+                    stacktrace: None,
+                })?
+                .map_err(|e| Error::Remote {
+                    code: "REQUEST_BODY_READ_ERROR".to_string(),
+                    message: e.to_string(),
+                    stacktrace: None,
+                })?;
+            let received = String::from_utf8_lossy(&bytes).into_owned();
+            Ok::<Value, Error>(json!({
+                "status_code": 200,
+                "body": { "received": received, "len": bytes.len() },
+            }))
         }),
     );
 

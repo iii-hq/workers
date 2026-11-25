@@ -552,14 +552,14 @@ fn fs_host_backend() -> Arc<dyn ide::fs::FsBackend> {
     struct StubChan;
     #[async_trait::async_trait]
     impl ide::fs::host::ChannelMaker for StubChan {
-        async fn create_channel(
-            &self,
-            _: usize,
-        ) -> Result<iii_sdk::channel::Channel, iii_sdk::errors::Error> {
+        async fn pipe(&self) -> Result<iii_sdk::Pipe, iii_sdk::errors::Error> {
             Err(iii_sdk::errors::Error::Handler("stub channel".into()))
         }
-        fn engine_address(&self) -> String {
-            "ws://stub:0".into()
+        fn open_reader(
+            &self,
+            _: iii_sdk::protocol::StreamChannelRef,
+        ) -> Result<iii_sdk::InputStream, iii_sdk::errors::Error> {
+            Err(iii_sdk::errors::Error::Handler("stub channel".into()))
         }
     }
     impl fmt::Display for StubChan {

@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::channel::Channel;
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::StreamChannelRef;
+use iii_sdk::{InputStream, Pipe};
 
 use ide::fs::host::{ChannelMaker, HostFsBackend, HostFsConfig};
 use ide::fs::{ChmodArgs, FsBackend, GrepArgs, MkdirArgs, MvArgs, RmArgs, SedArgs, StatArgs};
@@ -14,13 +15,15 @@ struct StubChan;
 
 #[async_trait]
 impl ChannelMaker for StubChan {
-    async fn create_channel(&self, _: usize) -> Result<Channel, Error> {
+    async fn pipe(&self) -> Result<Pipe, Error> {
         Err(Error::Handler(
             "stub channel maker — non-streaming tests only".into(),
         ))
     }
-    fn engine_address(&self) -> String {
-        "ws://stub:0".into()
+    fn open_reader(&self, _: StreamChannelRef) -> Result<InputStream, Error> {
+        Err(Error::Handler(
+            "stub channel maker — non-streaming tests only".into(),
+        ))
     }
 }
 

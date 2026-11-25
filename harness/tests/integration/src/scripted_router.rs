@@ -16,9 +16,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
+use iii_sdk::OutputStream;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
+use iii_sdk::protocol::StreamChannelRef;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{Value, json};
 
@@ -746,7 +747,12 @@ async fn stream_frames(
     state: &Arc<Mutex<State>>,
     request_id: &str,
 ) -> Result<(), Error> {
-    let writer = ChannelWriter::new(address, writer_ref);
+    // A forwarded write ref deserializes to the stream the router reads.
+    let _ = address;
+    let writer: OutputStream = serde_json::from_value(
+        serde_json::to_value(writer_ref).map_err(|e| Error::Serde(e.to_string()))?,
+    )
+    .map_err(|e| Error::Serde(e.to_string()))?;
     let captured = state.lock().expect("router state").captured.clone();
     for frame in &generation.frames {
         if request_aborted(state, request_id) {
@@ -771,7 +777,7 @@ async fn stream_frames(
                 )));
             }
         }
-        writer.send_message(&text).await?;
+        writer.send_text(&text).await?;
     }
     if request_aborted(state, request_id) {
         writer.close().await?;

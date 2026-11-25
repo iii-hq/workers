@@ -1,4 +1,3 @@
-use iii_sdk::channels::ChannelWriter;
 use iii_sdk::{IIIClient, RegisterFunction, errors::Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,14 +22,12 @@ struct AttachmentGetResp {
 
 pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
-    let iii_inner = iii.clone();
     iii.register_function(
         "email::attachment::get",
         RegisterFunction::new_async(move |req: AttachReq| {
             let pool = pool.clone();
-            let iii = iii_inner.clone();
             async move {
-                let writer = ChannelWriter::new(iii.address(), &req.response.into());
+                let writer = req.response.open_writer()?;
 
                 let mut guard = pool.acquire(&req.account, &req.folder).await?;
                 let fetch_result = {

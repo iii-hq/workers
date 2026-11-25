@@ -246,11 +246,7 @@ pub async fn spawn_engine_with_state(
     })?;
     let mut engine = spawn_engine_with(config_for).await?;
     let state_config = engine.dir.join("state-config.yaml");
-    std::fs::write(
-        &state_config,
-        "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
-    )
-    .expect("write state config");
+    std::fs::write(&state_config, "{}\n").expect("write state config");
     let mut state_child = match Command::new(&state_bin)
         .arg("--url")
         .arg(&engine.url)
@@ -390,4 +386,19 @@ macro_rules! bare_engine_or_skip {
             None => return,
         }
     };
+}
+
+/// Opens a forwarded `writer_ref` as the stream a fake provider writes its
+/// frames to (0.27: a write ref deserializes to an `OutputStream`).
+#[allow(dead_code)]
+pub fn open_writer(r: &iii_sdk::protocol::StreamChannelRef) -> iii_sdk::OutputStream {
+    serde_json::from_value(serde_json::to_value(r).expect("serializable ref"))
+        .expect("writer_ref opens as an OutputStream")
+}
+
+/// The ref a pipe end serializes to, for a payload field typed as a ref.
+#[allow(dead_code)]
+pub fn ref_of<T: serde::Serialize>(end: &T) -> iii_sdk::protocol::StreamChannelRef {
+    serde_json::from_value(serde_json::to_value(end).expect("serializable end"))
+        .expect("a pipe end serializes to its ref")
 }

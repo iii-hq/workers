@@ -11,7 +11,7 @@
 //! requires, so a field, rename, tag, default or optional flag that drifts
 //! fails here.
 
-use iii_sdk::channels::StreamChannelRef;
+use iii_sdk::protocol::StreamChannelRef;
 use iii_shell_proto::{FsEntry, FsMatch, FsSedFileResult};
 use sandbox_libkrun::sandbox_daemon::{catalog, create, exec, fs, list, run, stop};
 use sandbox_libkrun::wire::*;
