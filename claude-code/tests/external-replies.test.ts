@@ -284,6 +284,17 @@ describe('lookup', () => {
 });
 
 describe('host reader', () => {
+  it('rejects duplicate parent members for lookup and observer admission', async () => {
+    await withSyntheticHost(async (s) => {
+      // Equal values isolate the duplicate name from any error in the chain itself.
+      const row = JSON.stringify(record(1, null, 'user', ''));
+      await writeFile(s.file, `{"parentUuid":null,${row.slice(1)}\n`);
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      await expect(observe(s, 'duplicate')).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
   it('keeps reply text out of both shell exec payloads and rejects modified output', async () => {
     await withSyntheticHost(async (s) => {
       const text = 'fixture answer';

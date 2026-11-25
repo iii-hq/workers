@@ -39,6 +39,11 @@ def require(ok):
 def reject_constant(_):
     raise ValueError()
 
+def unique_members(pairs):
+    obj = dict(pairs)
+    require(len(obj) == len(pairs))
+    return obj
+
 def transcript(sid, stack):
     base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
     path = os.path.realpath(os.path.join(base, 'projects'))
@@ -175,7 +180,8 @@ def scan(sid, mode, previous):
             break
         stop = data.index(b'\n', pos) + 1
         require(count < 65536 and stop - pos <= MAX_LINE)
-        row = json.loads(data[pos:stop].decode('utf-8'), parse_constant=reject_constant)
+        row = json.loads(data[pos:stop].decode('utf-8'), parse_constant=reject_constant,
+                         object_pairs_hook=unique_members)
         pos = stop
         require(isinstance(row, dict) and isinstance(row.get('type'), str))
         kind = row['type']
