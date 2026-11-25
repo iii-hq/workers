@@ -90,6 +90,8 @@ interface SelectProps<T extends string> {
    * default; a compact trigger whose options carry descriptions widens it.
    */
   popupClassName?: string
+  /** Icon or mark shown before the selected label in the desktop trigger. */
+  leading?: React.ReactNode
 }
 
 export type { SelectGroup, SelectOption }
@@ -137,6 +139,7 @@ export function Select<T extends string>({
   onClear,
   renderGroupHeader,
   popupClassName,
+  leading,
   ...aria
 }: SelectProps<T>) {
   const [open, setOpen] = useState(false)
@@ -263,6 +266,11 @@ export function Select<T extends string>({
         onClick={() => handleOpenChange(!open)}
         className={triggerClassName}
       >
+        {leading ? (
+          <span aria-hidden className="flex shrink-0 items-center">
+            {leading}
+          </span>
+        ) : null}
         <span className="min-w-0 flex-1 truncate text-left">
           {selected?.label ?? placeholder}
         </span>
@@ -378,6 +386,11 @@ export function Select<T extends string>({
           {/* The wrapper is the flex item (`flex-1 min-w-0`) and owns the
  ellipsis, keeping the label on one line so the trigger stays at
  its fixed height. */}
+          {leading ? (
+            <span aria-hidden className="flex shrink-0 items-center">
+              {leading}
+            </span>
+          ) : null}
           <span className="min-w-0 flex-1 truncate text-left">
             <SelectPrimitive.Value placeholder={placeholder}>
               {selected?.label}
