@@ -596,6 +596,8 @@ impl Collector {
                 },
             );
         }
+        // Which account each session ran on, for the spend outside the Chat.
+        self.accounts.note_sessions(&out);
         out
     }
 

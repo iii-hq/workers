@@ -94,21 +94,27 @@ pub async fn ports_list(ctx: &Ctx, _input: EmptyInput) -> Result<PortsSnapshot, 
     Ok(ctx.collector.overview().await.ports)
 }
 
+/// Register `$handler` as function `$id`. With `internal: true` the
+/// function is registered internal (`{"internal": true}` metadata): the
+/// engine lists it only with `include_internal`, and it stays out of
+/// [`catalog`] (see [`internal_catalog`]).
 macro_rules! register_fn {
-    ($iii:expr, $ctx:expr, $id:expr, $desc:expr, $input:ty, $handler:path) => {{
+    ($iii:expr, $ctx:expr, $id:expr, $desc:expr, $input:ty, $handler:path $(, internal: $internal:literal)?) => {{
         let ctx = $ctx.clone();
-        $iii.register_function(
-            $id,
-            iii_sdk::RegisterFunction::new_async(move |input: $input| {
-                let ctx = ctx.clone();
-                async move {
-                    $handler(&ctx, input)
-                        .await
-                        .map_err(iii_sdk::errors::Error::Handler)
-                }
-            })
-            .description($desc),
-        );
+        let registration = iii_sdk::RegisterFunction::new_async(move |input: $input| {
+            let ctx = ctx.clone();
+            async move {
+                $handler(&ctx, input)
+                    .await
+                    .map_err(iii_sdk::errors::Error::Handler)
+            }
+        })
+        .description($desc);
+        $(
+            let registration =
+                registration.metadata(serde_json::json!({ "internal": $internal }));
+        )?
+        $iii.register_function($id, registration);
     }};
 }
 pub(crate) use register_fn;
@@ -131,6 +137,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
     specs.extend(usage::catalog());
     specs.extend(accounts::catalog());
     specs
+}
+
+/// The functions registered internal (`{"internal": true}`), which only
+/// another worker calls: `tmux::accounts::credential` hands
+/// `provider-claude-code` an account's token.
+pub fn internal_catalog() -> Vec<FunctionSpec> {
+    accounts::internal_catalog()
 }
 
 pub fn register_all(iii: &IIIClient, ctx: Arc<Ctx>) {
