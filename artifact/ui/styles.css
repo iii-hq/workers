@@ -18,6 +18,10 @@
   font-size: 13px;
 }
 
+[data-iii-ui="artifact"] .artifact-ui-truncated {
+  margin: 8px 12px;
+}
+
 /* ---- preview ---------------------------------------------------------- */
 
 [data-iii-ui="artifact"] .artifact-ui-preview {

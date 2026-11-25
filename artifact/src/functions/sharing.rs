@@ -2,9 +2,13 @@
 //! one frozen version, plus the quick-tunnel lease that publishes them.
 //!
 //! Two clocks bound a public link. Each share has its own `expires_at`, which
-//! the share server enforces per request. The tunnel lease is stretched to the
-//! latest live public share and released as soon as none is left (on revoke,
-//! delete, or the sweeper), so the tunnel never stays up for nothing.
+//! the share server enforces per request. The tunnel lease covers the latest
+//! live public share plus a grace period, and is released once the grace has
+//! passed with no public share left.
+//!
+//! Expired and viewed single-view shares stay recorded for
+//! [`EXPIRED_RETENTION_SECS`] so their links keep answering `410 Gone`
+//! instead of `404`; revoked shares are deleted at once and answer `404`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,24 +19,28 @@ use serde::{Deserialize, Serialize};
 use super::Ctx;
 use super::artifacts::{load, resolve_version};
 use crate::config::WorkerConfig;
-use crate::store::{LeaseRecord, ShareRecord};
+use crate::store::{LeaseRecord, ShareRecord, ViewStats};
 use crate::tunnel::TunnelSnapshot;
-use crate::util::{random_token, rfc3339, unix_now};
+use crate::util::{MIN_PASSCODE_CHARS, hash_passcode, random_token, rfc3339, unix_now};
+
+/// How long an ended share stays recorded so its link answers `410`.
+pub const EXPIRED_RETENTION_SECS: i64 = 7 * 24 * 3600;
 
 pub const SHARE_ID: &str = "artifact::share";
 pub const SHARE_DESC: &str = "Share one frozen version of an artifact through a secret link that \
      expires after `hours`. `local_url` works on this machine at once; with `public: true` \
      (default) the link is also published through the operator's quick-tunnel and \
-     `public_url` is set once the tunnel is ready. Anyone holding the link can view it.";
+     `public_url` is set once the address resolves. Optionally require a `passcode`, or make \
+     the link single-view with `once`. Anyone holding the link (and passcode) can view it.";
 
 pub const SHARES_ID: &str = "artifact::shares";
 pub const SHARES_DESC: &str = "List the live shares (optionally of one artifact) with their current \
-     local and public URLs and expiry, after dropping expired ones. A public URL can change \
-     when the tunnel restarts; this always shows the current one.";
+     local and public URLs, expiry and view counts, plus the configured share lifetimes. A \
+     public URL can change when the tunnel restarts; this always shows the current one.";
 
 pub const REVOKE_ID: &str = "artifact::revoke";
 pub const REVOKE_DESC: &str = "Revoke a share by its token so the link stops working at once. \
-     Releases the public tunnel when no public share remains.";
+     The tunnel is released after the grace period once no public share remains.";
 
 /// How often `share` re-reads a starting tunnel's status.
 const READY_POLL_MS: u64 = 500;
@@ -59,6 +67,14 @@ pub struct ShareRequest {
     /// local-only link, e.g. to preview in the console browser.
     #[serde(default)]
     pub public: Option<bool>,
+    /// Require this passcode (at least 6 characters) before the link shows
+    /// anything. Send it to the viewer separately from the link.
+    #[serde(default)]
+    pub passcode: Option<String>,
+    /// Single-view link: it stops working after its first view. Link
+    /// previews in chat apps can count as that view; pair with a passcode.
+    #[serde(default)]
+    pub once: Option<bool>,
 }
 
 /// A share as callers see it, with URLs resolved against the current tunnel.
@@ -69,21 +85,32 @@ pub struct ShareView {
     pub artifact_id: String,
     pub version: u32,
     pub public: bool,
+    /// Whether a passcode is required.
+    pub protected: bool,
+    /// Whether the link stops working after its first view.
+    pub once: bool,
     /// Creation time, unix seconds.
     pub created_at: i64,
     /// Expiry, unix seconds.
     pub expires_at: i64,
     /// Expiry as RFC 3339 UTC.
     pub expires_at_utc: String,
-    /// The link on this machine's share listener.
+    /// The link on this machine's local listener.
     pub local_url: String,
-    /// The public link, once the tunnel is ready; `null` for a local share or
-    /// while the tunnel starts.
+    /// The public link, once the tunnel is ready and its address resolves;
+    /// `null` for a local share or while the tunnel starts.
     pub public_url: Option<String>,
-    /// Tunnel state for a public share: `ready`, `starting`, `failed`, …
+    /// Tunnel state for a public share: `ready`, `warming`, `starting`,
+    /// `failed`, …
     pub tunnel_status: Option<String>,
     /// Why the share is not public yet, when something went wrong.
     pub tunnel_error: Option<String>,
+    /// How often the link was opened.
+    pub views: u64,
+    /// Last view, unix seconds.
+    pub last_viewed_at: Option<i64>,
+    /// ISO country of the last view through the tunnel, when known.
+    pub last_country: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -93,9 +120,17 @@ pub struct SharesRequest {
     pub id: Option<String>,
 }
 
+/// The share lifetimes a caller may pick from.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ShareLimits {
+    pub default_share_hours: u32,
+    pub max_share_hours: u32,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SharesResponse {
     pub shares: Vec<ShareView>,
+    pub limits: ShareLimits,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -106,10 +141,10 @@ pub struct RevokeRequest {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RevokeResponse {
-    /// `false` when no live share had this token.
+    /// `false` when no share had this token.
     pub revoked: bool,
     /// Whether the public tunnel lease was released because no public share
-    /// remains.
+    /// remains and its grace period has passed.
     pub tunnel_released: bool,
 }
 
@@ -126,6 +161,19 @@ pub async fn share(
         ));
     }
     let public = req.public.unwrap_or(true);
+    let passcode = match req.passcode.filter(|p| !p.is_empty()) {
+        Some(p) if p.chars().count() < MIN_PASSCODE_CHARS => {
+            return Err(format!(
+                "passcode must be at least {MIN_PASSCODE_CHARS} characters"
+            ));
+        }
+        Some(p) => Some(
+            tokio::task::spawn_blocking(move || hash_passcode(&p))
+                .await
+                .map_err(|e| format!("passcode hashing failed: {e}"))??,
+        ),
+        None => None,
+    };
 
     let started = tokio::time::Instant::now();
     let (record, snapshot) = {
@@ -140,10 +188,13 @@ pub async fn share(
             public,
             created_at: now,
             expires_at: now + i64::from(hours) * 3600,
+            passcode,
+            once: req.once.unwrap_or(false),
+            consumed_at: None,
         };
         ctx.store.save_share(&record).await?;
         let snapshot = if public {
-            Some(ensure_lease(&ctx, &cfg, record.expires_at).await)
+            Some(ensure_lease(&ctx, &cfg, now).await)
         } else {
             None
         };
@@ -155,12 +206,12 @@ pub async fn share(
     let deadline = started + Duration::from_millis(cfg.tunnel_ready_timeout_ms);
     let snapshot = match snapshot {
         Some(Ok(snap)) => {
-            let snap = wait_ready(&ctx, &cfg, snap, deadline).await;
+            let snap = wait_ready(&ctx, &cfg.tunnel_id, snap, deadline).await;
             Some(Ok(publishable(&ctx, snap, Some(deadline)).await))
         }
         other => other,
     };
-    Ok(view(&ctx, record, snapshot.as_ref()))
+    Ok(view(&ctx, record, ViewStats::default(), snapshot.as_ref()))
 }
 
 pub async fn shares(
@@ -169,27 +220,43 @@ pub async fn shares(
     req: SharesRequest,
 ) -> Result<SharesResponse, String> {
     sweep(&ctx, &cfg).await?;
+    let now = unix_now();
     let mut shares: Vec<ShareRecord> = ctx
         .store
         .shares()
         .await?
         .into_iter()
+        .filter(|s| s.is_live(now))
         .filter(|s| req.id.as_deref().is_none_or(|id| s.artifact_id == id))
         .collect();
     shares.sort_by_key(|s| std::cmp::Reverse(s.created_at));
     let snapshot = if shares.iter().any(|s| s.public) {
-        Some(match ctx.tunnel.status(&cfg.tunnel_id).await {
+        // Report the tunnel the lease actually holds: after the operator
+        // retargets `tunnel_id`, live links still ride the old one until a
+        // new public share moves the lease.
+        let tunnel_id = ctx
+            .store
+            .lease()
+            .await?
+            .map_or_else(|| cfg.tunnel_id.clone(), |lease| lease.tunnel_id);
+        Some(match ctx.tunnel.status(&tunnel_id).await {
             Ok(snap) => Ok(publishable(&ctx, snap, None).await),
-            Err(e) => Err(tunnel_hint(&cfg.tunnel_id, &e)),
+            Err(e) => Err(tunnel_hint(&tunnel_id, &e)),
         })
     } else {
         None
     };
+    let mut views = Vec::with_capacity(shares.len());
+    for share in shares {
+        let stats = ctx.store.views(&share.token).await?;
+        views.push(view(&ctx, share, stats, snapshot.as_ref()));
+    }
     Ok(SharesResponse {
-        shares: shares
-            .into_iter()
-            .map(|s| view(&ctx, s, snapshot.as_ref()))
-            .collect(),
+        shares: views,
+        limits: ShareLimits {
+            default_share_hours: cfg.default_share_hours,
+            max_share_hours: cfg.max_share_hours,
+        },
     })
 }
 
@@ -219,7 +286,14 @@ pub async fn revoke(
 pub async fn sweep(ctx: &Ctx, cfg: &WorkerConfig) -> Result<usize, String> {
     let _guard = ctx.store.lock().await;
     let now = unix_now();
-    let expired = ctx.store.remove_shares(|s| !s.is_live(now)).await?;
+    // Ended links stay recorded for a while so they keep answering 410.
+    let expired = ctx
+        .store
+        .remove_shares(|s| {
+            let ended_at = s.consumed_at.unwrap_or(s.expires_at).min(s.expires_at);
+            !s.is_live(now) && ended_at + EXPIRED_RETENTION_SECS <= now
+        })
+        .await?;
     release_if_idle(ctx, cfg, now).await?;
     Ok(expired.len())
 }
@@ -274,11 +348,23 @@ pub(crate) async fn release_if_idle(
     Ok(true)
 }
 
-/// Acquire or stretch the lease to cover `until` plus the grace period, and
-/// cancel any idle countdown. Caller holds the store lock.
-async fn ensure_lease(ctx: &Ctx, cfg: &WorkerConfig, until: i64) -> Result<TunnelSnapshot, String> {
+/// Acquire or stretch the lease to cover every live public share plus the
+/// grace period, and cancel any idle countdown. Covering every share (not just
+/// the new one) matters when the operator retargets `tunnel_id`: the old
+/// lease is released below, and the new one must carry the longest link.
+/// Caller holds the store lock, and has already saved the new share.
+async fn ensure_lease(ctx: &Ctx, cfg: &WorkerConfig, now: i64) -> Result<TunnelSnapshot, String> {
     let current = ctx.store.lease().await?;
-    let until = until + i64::from(cfg.tunnel_grace_minutes) * 60;
+    let latest = ctx
+        .store
+        .shares()
+        .await?
+        .iter()
+        .filter(|s| s.public && s.is_live(now))
+        .map(|s| s.expires_at)
+        .max()
+        .unwrap_or(now);
+    let until = latest + i64::from(cfg.tunnel_grace_minutes) * 60;
     let until = match &current {
         Some(lease) if lease.tunnel_id == cfg.tunnel_id => until.max(lease.expires_at),
         _ => until,
@@ -309,13 +395,13 @@ async fn ensure_lease(ctx: &Ctx, cfg: &WorkerConfig, until: i64) -> Result<Tunne
 /// last snapshot wins either way.
 async fn wait_ready(
     ctx: &Ctx,
-    cfg: &WorkerConfig,
+    tunnel_id: &str,
     mut snap: TunnelSnapshot,
     deadline: tokio::time::Instant,
 ) -> TunnelSnapshot {
     while !snap.is_ready() && !snap.is_failed() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(READY_POLL_MS)).await;
-        match ctx.tunnel.status(&cfg.tunnel_id).await {
+        match ctx.tunnel.status(tunnel_id).await {
             Ok(next) => snap = next,
             Err(e) => {
                 tracing::warn!(error = %e, "tunnel status read failed while waiting");
@@ -371,6 +457,7 @@ fn tunnel_hint(tunnel_id: &str, error: &str) -> String {
 fn view(
     ctx: &Ctx,
     share: ShareRecord,
+    stats: ViewStats,
     snapshot: Option<&Result<TunnelSnapshot, String>>,
 ) -> ShareView {
     let path = format!("/s/{}", share.token);
@@ -388,6 +475,8 @@ fn view(
     ShareView {
         local_url: format!("{}{path}", ctx.local_base),
         expires_at_utc: rfc3339(share.expires_at),
+        protected: share.passcode.is_some(),
+        once: share.once,
         token: share.token,
         artifact_id: share.artifact_id,
         version: share.version,
@@ -397,6 +486,9 @@ fn view(
         public_url,
         tunnel_status,
         tunnel_error,
+        views: stats.count,
+        last_viewed_at: stats.last_at,
+        last_country: stats.last_country,
     }
 }
 
@@ -436,6 +528,8 @@ mod tests {
             version: None,
             hours: Some(2),
             public: Some(public),
+            passcode: None,
+            once: None,
         }
     }
 
@@ -670,6 +764,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_expired_link_keeps_answering_gone_after_the_sweep() {
+        let ctx = Ctx::for_tests(None);
+        let id = artifact(&ctx).await;
+        let link = share(ctx.clone(), cfg(), req(&id, false))
+            .await
+            .expect("shares");
+        let mut stored = ctx
+            .store
+            .load_share(&link.token)
+            .await
+            .expect("load")
+            .expect("kept");
+        stored.expires_at = unix_now() - 10;
+        ctx.store.save_share(&stored).await.expect("expire");
+
+        sweep(&ctx, &cfg()).await.expect("sweep");
+        assert!(
+            ctx.store
+                .load_share(&link.token)
+                .await
+                .expect("load")
+                .is_some(),
+            "retained so the server can answer 410"
+        );
+        let listed = shares(ctx.clone(), cfg(), SharesRequest::default())
+            .await
+            .expect("list");
+        assert!(listed.shares.is_empty(), "but no longer listed as live");
+
+        stored.expires_at = unix_now() - EXPIRED_RETENTION_SECS - 1;
+        ctx.store.save_share(&stored).await.expect("age out");
+        sweep(&ctx, &cfg()).await.expect("sweep");
+        assert!(
+            ctx.store
+                .load_share(&link.token)
+                .await
+                .expect("load")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn retargeting_the_tunnel_keeps_the_longest_link_covered() {
+        let ctx = Ctx::for_tests(Some("https://x.trycloudflare.com"));
+        let id = artifact(&ctx).await;
+        let long = share(
+            ctx.clone(),
+            cfg(),
+            ShareRequest {
+                hours: Some(10),
+                ..req(&id, true)
+            },
+        )
+        .await
+        .expect("long on A");
+        let moved = Arc::new(WorkerConfig {
+            tunnel_id: "artifacts-b".into(),
+            ..(*cfg()).clone()
+        });
+        share(ctx.clone(), moved, req(&id, true))
+            .await
+            .expect("short on B");
+        let acquired = ctx.tunnel.with_fake(|f| f.acquired.clone());
+        assert_eq!(
+            acquired.last(),
+            Some(&("artifacts-b".to_string(), long.expires_at))
+        );
+        assert_eq!(
+            ctx.tunnel.with_fake(|f| f.released.len()),
+            1,
+            "A is released"
+        );
+    }
+
+    #[tokio::test]
+    async fn shares_reports_the_tunnel_the_lease_holds() {
+        let ctx = Ctx::for_tests(Some("https://x.trycloudflare.com"));
+        let id = artifact(&ctx).await;
+        share(ctx.clone(), cfg(), req(&id, true))
+            .await
+            .expect("on A");
+        let retargeted = Arc::new(WorkerConfig {
+            tunnel_id: "artifacts-b".into(),
+            ..(*cfg()).clone()
+        });
+        let listed = shares(ctx, retargeted, SharesRequest::default())
+            .await
+            .expect("list");
+        assert!(
+            listed.shares[0].public_url.is_some(),
+            "still served through A"
+        );
+    }
+
+    #[tokio::test]
+    async fn passcodes_and_single_view_are_recorded_and_limits_listed() {
+        let ctx = Ctx::for_tests(None);
+        let id = artifact(&ctx).await;
+        let short = ShareRequest {
+            passcode: Some("12345".into()),
+            ..req(&id, false)
+        };
+        assert!(share(ctx.clone(), cfg(), short).await.is_err());
+
+        let locked = ShareRequest {
+            passcode: Some("123456".into()),
+            once: Some(true),
+            ..req(&id, false)
+        };
+        let view = share(ctx.clone(), cfg(), locked).await.expect("shares");
+        assert!(view.protected && view.once);
+        let stored = ctx
+            .store
+            .load_share(&view.token)
+            .await
+            .expect("load")
+            .expect("kept");
+        let hash = stored.passcode.expect("hash stored");
+        assert_ne!(hash.hash, "123456", "never stored in clear");
+
+        let listed = shares(ctx, cfg(), SharesRequest::default())
+            .await
+            .expect("list");
+        assert_eq!(listed.limits.max_share_hours, 72);
+        assert!(listed.shares[0].protected);
+    }
+
+    #[tokio::test]
     async fn shares_drops_expired_links_and_lists_live_ones() {
         let ctx = Ctx::for_tests(None);
         let id = artifact(&ctx).await;
@@ -684,6 +906,9 @@ mod tests {
                 public: false,
                 created_at: 0,
                 expires_at: 1,
+                passcode: None,
+                once: false,
+                consumed_at: None,
             })
             .await
             .expect("expired");

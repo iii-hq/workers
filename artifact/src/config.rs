@@ -22,11 +22,18 @@ const HARD_MAX_SHARE_HOURS: u32 = 720;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
-    /// Loopback address the share listener binds, `ip:port`. Only `/s/<token>`
-    /// is served there. Point the quick-tunnel target named by `tunnel_id` at
-    /// it to publish shares. Must be a loopback IP; takes effect on restart.
+    /// Loopback address of the PUBLIC share listener, `ip:port`: it serves
+    /// only shares made with `public: true`. Point the quick-tunnel target
+    /// named by `tunnel_id` at it. Must be a loopback IP; takes effect on
+    /// restart.
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
+
+    /// Loopback address of the LOCAL share listener, `ip:port`: it serves
+    /// every share, for previews on this machine. Never point a tunnel at it.
+    /// Takes effect on restart.
+    #[serde(default = "default_local_listen_addr")]
+    pub local_listen_addr: String,
 
     /// quick-tunnel target id public shares are published through. The
     /// operator maps it to `http://<listen_addr>` in the quick-tunnel
@@ -76,6 +83,10 @@ fn default_listen_addr() -> String {
     "127.0.0.1:3120".to_string()
 }
 
+fn default_local_listen_addr() -> String {
+    "127.0.0.1:3121".to_string()
+}
+
 fn default_tunnel_id() -> String {
     "artifacts".to_string()
 }
@@ -119,6 +130,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             listen_addr: default_listen_addr(),
+            local_listen_addr: default_local_listen_addr(),
             tunnel_id: default_tunnel_id(),
             default_share_hours: default_share_hours(),
             max_share_hours: default_max_share_hours(),
@@ -159,25 +171,33 @@ impl WorkerConfig {
         serde_json::to_value(self).expect("WorkerConfig serializes")
     }
 
-    /// The parsed listener address. Infallible on a validated config.
+    /// The public listener address. Infallible on a validated config.
     pub fn listen_socket(&self) -> Result<SocketAddr, String> {
-        let addr: SocketAddr = self
-            .listen_addr
-            .parse()
-            .map_err(|_| format!("listen_addr `{}` is not ip:port", self.listen_addr))?;
-        if !addr.ip().is_loopback() {
-            return Err(format!(
-                "listen_addr `{}` must be a loopback IP: shares are published only through \
-                 the operator's quick-tunnel target",
-                self.listen_addr
-            ));
-        }
-        Ok(addr)
+        loopback("listen_addr", &self.listen_addr)
+    }
+
+    /// The local listener address. Infallible on a validated config.
+    pub fn local_listen_socket(&self) -> Result<SocketAddr, String> {
+        loopback("local_listen_addr", &self.local_listen_addr)
     }
 
     /// Reject values that parse but cannot mean anything.
     fn validate(self) -> Result<Self, String> {
-        self.listen_socket()?;
+        let public = self.listen_socket()?;
+        let local = self.local_listen_socket()?;
+        if public == local && public.port() != 0 {
+            return Err(
+                "listen_addr and local_listen_addr must differ: the public listener serves \
+                 only public shares"
+                    .to_string(),
+            );
+        }
+        if self.tunnel_ready_timeout_ms > MAX_TUNNEL_READY_TIMEOUT_MS {
+            return Err(format!(
+                "tunnel_ready_timeout_ms must be at most {MAX_TUNNEL_READY_TIMEOUT_MS}: the \
+                 console gives up on a share after that"
+            ));
+        }
         if !valid_tunnel_id(&self.tunnel_id) {
             return Err(format!(
                 "tunnel_id `{}` must be 1..=63 lowercase letters, digits or `-`",
@@ -227,6 +247,22 @@ impl WorkerConfig {
         }
         schema
     }
+}
+
+/// Longest share wait the console's share call outlasts (it allows 150 s).
+pub const MAX_TUNNEL_READY_TIMEOUT_MS: u64 = 120_000;
+
+fn loopback(field: &str, value: &str) -> Result<SocketAddr, String> {
+    let addr: SocketAddr = value
+        .parse()
+        .map_err(|_| format!("{field} `{value}` is not ip:port"))?;
+    if !addr.ip().is_loopback() {
+        return Err(format!(
+            "{field} `{value}` must be a loopback IP: shares are published only through the \
+             operator's quick-tunnel target"
+        ));
+    }
+    Ok(addr)
 }
 
 fn valid_tunnel_id(id: &str) -> bool {
@@ -327,6 +363,18 @@ mod tests {
             assert!(WorkerConfig::from_yaml(bad).is_err(), "{bad} should fail");
         }
         assert!(WorkerConfig::from_json(&serde_json::json!({ "max_list": 0 })).is_err());
+    }
+
+    #[test]
+    fn the_two_listeners_must_differ_and_the_wait_is_bounded() {
+        assert!(WorkerConfig::from_yaml("local_listen_addr: 127.0.0.1:3120\n").is_err());
+        assert!(WorkerConfig::from_yaml("local_listen_addr: 10.0.0.1:3121\n").is_err());
+        assert!(WorkerConfig::from_yaml("tunnel_ready_timeout_ms: 120001\n").is_err());
+        assert!(
+            WorkerConfig::from_yaml("listen_addr: 127.0.0.1:0\nlocal_listen_addr: 127.0.0.1:0\n")
+                .is_ok(),
+            "two ephemeral ports never collide"
+        );
     }
 
     #[test]

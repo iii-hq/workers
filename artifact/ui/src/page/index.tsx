@@ -30,6 +30,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ArtifactPreview } from '../components/ArtifactPreview'
 import { ShareDialog, ShareLinks } from '../components/ShareDialog'
 import { VersionSelect } from '../components/VersionSelect'
+import { useShareRefresh } from '../lib/refresh'
 import {
   type ArtifactFormat,
   type ArtifactRecord,
@@ -49,6 +50,9 @@ const FORMAT_ICON: Record<ArtifactFormat, typeof FileCode2> = {
 
 interface Snapshot {
   artifacts: IndexEntry[]
+  /** Every artifact, before the list cap. */
+  total: number
+  truncated: boolean
   shares: ShareView[]
 }
 
@@ -65,9 +69,10 @@ export function ArtifactPage({ host, ...props }: PageRenderProps & { host: Host 
     handlerId: 'iii::artifact-ui::events',
     fetch: async () => {
       const [list, shares] = await Promise.all([api.list(), api.shares()])
-      return { artifacts: list.artifacts, shares: shares.shares }
+      return { artifacts: list.artifacts, total: list.total, truncated: list.truncated, shares: shares.shares }
     },
   })
+  useShareRefresh(live.data?.shares, live.refresh)
 
   // A chat card's Open delivers { id }: select it.
   const contextId = props.panelContext?.id
@@ -130,6 +135,12 @@ export function ArtifactPage({ host, ...props }: PageRenderProps & { host: Host 
               })}
             </List>
           )}
+          {live.data?.truncated ? (
+            <p className="artifact-ui-muted artifact-ui-truncated">
+              Showing {live.data.artifacts.length} of {live.data.total}. Raise <code>max_list</code> in the
+              Artifacts settings to list the rest.
+            </p>
+          ) : null}
         </PageSidebar>
         <PageMain className="artifact-ui-main">
           {selected ? (
@@ -138,6 +149,7 @@ export function ArtifactPage({ host, ...props }: PageRenderProps & { host: Host 
               host={host}
               id={selected}
               updatedAt={artifacts.find((a) => a.id === selected)?.updated_at ?? 0}
+              latestVersion={artifacts.find((a) => a.id === selected)?.latest_version ?? 0}
               shares={(live.data?.shares ?? []).filter((s) => s.artifact_id === selected)}
               onDeleted={() => setSelected(null)}
               onChanged={live.refresh}
@@ -155,18 +167,30 @@ export function ArtifactPage({ host, ...props }: PageRenderProps & { host: Host 
   )
 }
 
+/** `3 views, last 5m ago from BR` / `not opened yet`. */
+function viewsLabel(share: ShareView): string {
+  if (share.views === 0) return 'not opened yet'
+  const count = `${share.views} ${share.views === 1 ? 'view' : 'views'}`
+  const when = share.last_viewed_at ? `, last ${formatRelative(share.last_viewed_at * 1000)}` : ''
+  const where = share.last_country ? ` from ${share.last_country}` : ''
+  return count + when + where
+}
+
 function ArtifactDetail({
   host,
   id,
   updatedAt,
+  latestVersion,
   shares,
   onDeleted,
   onChanged,
 }: {
   host: Host
   id: string
-  /** The index row's `updated_at`: a new version re-reads the record. */
+  /** The index row's `updated_at` and `latest_version`: either changing
+      re-reads the record (two saves can share one second). */
   updatedAt: number
+  latestVersion: number
   shares: ShareView[]
   onDeleted(): void
   onChanged(): void
@@ -177,6 +201,19 @@ function ArtifactDetail({
   const [version, setVersion] = useState<number | undefined>(undefined)
   const [sharing, setSharing] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [revokeError, setRevokeError] = useState<string | null>(null)
+
+  const revoke = async (token: string) => {
+    try {
+      await api.revoke(token)
+      setRevokeError(null)
+    } catch (err) {
+      setRevokeError(errorMessage(err))
+    } finally {
+      // Reconcile either way: a revoke can fail after partial progress.
+      onChanged()
+    }
+  }
 
   useEffect(() => {
     let current = true
@@ -191,7 +228,7 @@ function ArtifactDetail({
     return () => {
       current = false
     }
-  }, [api, id, updatedAt])
+  }, [api, id, updatedAt, latestVersion])
 
   if (error) return <StatusPanel variant="alert" headline="Could not load this artifact" detail={error} />
   if (!record) return null
@@ -220,18 +257,22 @@ function ArtifactDetail({
       <ArtifactPreview api={api} id={record.id} version={shown} size="page" />
       <section className="artifact-ui-shares" aria-label="Live links">
         <h3 className="artifact-ui-section-title">Live links</h3>
+        {revokeError ? (
+          <StatusPanel variant="alert" headline="Could not revoke the link" detail={revokeError} />
+        ) : null}
         {shares.length === 0 ? (
           <p className="artifact-ui-muted">No live links. Share… creates one that expires on its own.</p>
         ) : (
           shares.map((share) => (
             <div key={share.token} className="artifact-ui-share-row">
               <div className="artifact-ui-share-meta">
-                v{share.version} · {share.public ? 'public' : 'local'} · expires {expiresLabel(share.expires_at)}
-                <IconButton
-                  variant="ghost"
-                  label="Revoke link"
-                  onClick={() => api.revoke(share.token).then(onChanged, onChanged)}
-                >
+                <span>
+                  v{share.version} · {share.public ? 'public' : 'local'}
+                  {share.protected ? ' · passcode' : ''}
+                  {share.once ? ' · single view' : ''} · expires {expiresLabel(share.expires_at)} ·{' '}
+                  {viewsLabel(share)}
+                </span>
+                <IconButton variant="ghost" label="Revoke link" onClick={() => revoke(share.token)}>
                   <X />
                 </IconButton>
               </div>

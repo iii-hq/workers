@@ -50,6 +50,10 @@ fn share_key(token: &str) -> String {
     format!("share/{token}")
 }
 
+fn views_key(token: &str) -> String {
+    format!("views/{token}")
+}
+
 /// How an artifact's content is rendered when it is shared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -135,12 +139,40 @@ pub struct ShareRecord {
     pub created_at: i64,
     /// Expiry, unix seconds; the link answers `410 Gone` from then on.
     pub expires_at: i64,
+    /// Salted hash of the passcode a viewer must enter, when one was set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passcode: Option<PasscodeHash>,
+    /// A single-view link: it answers `410 Gone` after its first view.
+    #[serde(default)]
+    pub once: bool,
+    /// When a single-view link was viewed, unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<i64>,
 }
 
 impl ShareRecord {
+    /// Serving: not expired and, for a single-view link, not viewed yet.
     pub fn is_live(&self, now: i64) -> bool {
-        self.expires_at > now
+        self.expires_at > now && self.consumed_at.is_none()
     }
+}
+
+/// A passcode stored as an iterated, salted SHA-256, both hex.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PasscodeHash {
+    pub salt: String,
+    pub hash: String,
+}
+
+/// How often a share was viewed. The viewer's IP is never kept; only the
+/// country Cloudflare reports for tunnelled requests.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ViewStats {
+    pub count: u64,
+    /// Last view, unix seconds.
+    pub last_at: Option<i64>,
+    /// ISO country code of the last tunnelled view, when known.
+    pub last_country: Option<String>,
 }
 
 /// The quick-tunnel lease this worker holds for public shares.
@@ -166,6 +198,8 @@ enum Backend {
 pub struct Store {
     backend: Backend,
     mutation_lock: Mutex<()>,
+    /// Serializes view counting, which the share server does per request.
+    views_lock: Mutex<()>,
 }
 
 impl Store {
@@ -173,6 +207,7 @@ impl Store {
         Self {
             backend: Backend::Bus(iii),
             mutation_lock: Mutex::new(()),
+            views_lock: Mutex::new(()),
         }
     }
 
@@ -180,6 +215,7 @@ impl Store {
         Self {
             backend: Backend::Memory(std::sync::Mutex::new(HashMap::new())),
             mutation_lock: Mutex::new(()),
+            views_lock: Mutex::new(()),
         }
     }
 
@@ -304,6 +340,16 @@ impl Store {
         Ok(())
     }
 
+    /// Undo a create whose index write failed: drop the record and the
+    /// content so a retry starts clean instead of leaving an unlisted orphan.
+    pub async fn discard_artifact(&self, id: &str, version: u32) {
+        for key in [artifact_key(id), content_key(id, version)] {
+            if let Err(e) = self.delete_raw(&key).await {
+                tracing::warn!(error = %e, key, "could not roll back a failed create");
+            }
+        }
+    }
+
     async fn index_raw(&self) -> Result<Vec<IndexEntry>, String> {
         Ok(self.get_typed(INDEX_KEY).await?.unwrap_or_default())
     }
@@ -337,9 +383,11 @@ impl Store {
         self.set_typed(SHARES_KEY, &shares).await
     }
 
-    /// Remove every share `drop` selects; returns the removed ones. The list
-    /// row goes first, so an interrupted removal never leaves a listed share
-    /// whose link is gone.
+    /// Remove every share `drop` selects; returns the removed ones.
+    ///
+    /// The link keys go first: a failure part-way leaves a dead link that is
+    /// still listed (a retry or the sweeper finishes the job), never a live
+    /// link that dropped off the list and can no longer be revoked.
     pub async fn remove_shares(
         &self,
         drop: impl Fn(&ShareRecord) -> bool,
@@ -349,11 +397,47 @@ impl Store {
         if removed.is_empty() {
             return Ok(removed);
         }
-        self.set_typed(SHARES_KEY, &kept).await?;
         for share in &removed {
             self.delete_raw(&share_key(&share.token)).await?;
+            self.delete_raw(&views_key(&share.token)).await?;
         }
+        self.set_typed(SHARES_KEY, &kept).await?;
         Ok(removed)
+    }
+
+    /// Mark a single-view share as viewed. `Ok(false)` when it already was.
+    pub async fn consume_share(&self, token: &str, now: i64) -> Result<bool, String> {
+        let _guard = self.mutation_lock.lock().await;
+        let Some(mut share) = self.load_share(token).await? else {
+            return Ok(false);
+        };
+        if share.consumed_at.is_some() {
+            return Ok(false);
+        }
+        share.consumed_at = Some(now);
+        self.save_share(&share).await?;
+        Ok(true)
+    }
+
+    pub async fn views(&self, token: &str) -> Result<ViewStats, String> {
+        Ok(self.get_typed(&views_key(token)).await?.unwrap_or_default())
+    }
+
+    /// Count one view of a share.
+    pub async fn record_view(
+        &self,
+        token: &str,
+        now: i64,
+        country: Option<String>,
+    ) -> Result<(), String> {
+        let _guard = self.views_lock.lock().await;
+        let mut stats = self.views(token).await?;
+        stats.count += 1;
+        stats.last_at = Some(now);
+        if country.is_some() {
+            stats.last_country = country;
+        }
+        self.set_typed(&views_key(token), &stats).await
     }
 
     // ---- tunnel lease ----------------------------------------------------
@@ -401,7 +485,54 @@ mod tests {
             public: false,
             created_at: 0,
             expires_at,
+            passcode: None,
+            once: false,
+            consumed_at: None,
         }
+    }
+
+    #[tokio::test]
+    async fn a_single_view_share_is_consumed_once() {
+        let store = Store::in_memory();
+        let mut once = share("t1", 100);
+        once.once = true;
+        store.save_share(&once).await.expect("save");
+        assert!(store.consume_share("t1", 5).await.expect("first"));
+        assert!(!store.consume_share("t1", 6).await.expect("second"));
+        let stored = store.load_share("t1").await.expect("load").expect("kept");
+        assert!(
+            !stored.is_live(10),
+            "a viewed single-view link is no longer live"
+        );
+    }
+
+    #[tokio::test]
+    async fn views_are_counted_without_the_viewer_address() {
+        let store = Store::in_memory();
+        store
+            .record_view("t1", 5, Some("BR".into()))
+            .await
+            .expect("view");
+        store.record_view("t1", 9, None).await.expect("view");
+        let stats = store.views("t1").await.expect("stats");
+        assert_eq!(stats.count, 2);
+        assert_eq!(stats.last_at, Some(9));
+        assert_eq!(
+            stats.last_country.as_deref(),
+            Some("BR"),
+            "kept from the last known view"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_create_can_be_rolled_back() {
+        let store = Store::in_memory();
+        store
+            .save_content("aaaaaaaa", 1, "x")
+            .await
+            .expect("content");
+        store.discard_artifact("aaaaaaaa", 1).await;
+        assert_eq!(store.load_content("aaaaaaaa", 1).await.expect("load"), None);
     }
 
     #[test]

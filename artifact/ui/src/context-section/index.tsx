@@ -10,6 +10,7 @@ import { formatRelative } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { FileCode2, FileText, Image } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { useShareRefresh } from '../lib/refresh'
 import { type ArtifactFormat, createApi, type IndexEntry, MUTATING_FUNCTIONS, PAGE_ID, type ShareView } from '../lib/api'
 
 /** Rows shown before "Show all". */
@@ -23,6 +24,7 @@ const FORMAT_ICON: Record<ArtifactFormat, typeof FileCode2> = {
 
 interface Snapshot {
   artifacts: IndexEntry[]
+  total: number
   shares: ShareView[]
 }
 
@@ -48,13 +50,15 @@ function ArtifactSection({ host, setSummary }: ContextSectionProps & { host: Hos
     handlerId: 'iii::artifact-ui::context',
     fetch: async () => {
       const [list, shares] = await Promise.all([api.list(), api.shares()])
-      return { artifacts: list.artifacts, shares: shares.shares }
+      return { artifacts: list.artifacts, total: list.total, shares: shares.shares }
     },
   })
+  useShareRefresh(live.data?.shares, live.refresh)
 
   const artifacts = live.data?.artifacts ?? []
   const shares = live.data?.shares ?? []
-  const count = artifacts.length
+  // The header counts every artifact, not just the listed page.
+  const count = live.data?.total ?? artifacts.length
   const linkCount = shares.length
   const brief = linkCount > 0 ? `${linkCount} live ${linkCount === 1 ? 'link' : 'links'}` : undefined
   useEffect(() => {

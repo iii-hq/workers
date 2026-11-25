@@ -157,7 +157,12 @@ pub async fn create(
         updated_at: now,
     };
     ctx.store.save_content(&record.id, 1, &req.content).await?;
-    ctx.store.save_artifact(&record).await?;
+    if let Err(e) = ctx.store.save_artifact(&record).await {
+        // Never leave a stored but unlisted artifact behind: a retry would
+        // create a second one instead of finding the first.
+        ctx.store.discard_artifact(&record.id, 1).await;
+        return Err(e);
+    }
     Ok(record)
 }
 

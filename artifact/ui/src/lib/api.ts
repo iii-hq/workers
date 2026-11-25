@@ -51,6 +51,11 @@ export interface ShareView {
   artifact_id: string
   version: number
   public: boolean
+  protected: boolean
+  once: boolean
+  views: number
+  last_viewed_at: number | null
+  last_country: string | null
   created_at: number
   expires_at: number
   expires_at_utc: string
@@ -60,8 +65,14 @@ export interface ShareView {
   tunnel_error: string | null
 }
 
+export interface ShareLimits {
+  default_share_hours: number
+  max_share_hours: number
+}
+
 export interface SharesResponse {
   shares: ShareView[]
+  limits: ShareLimits
 }
 
 export interface ShareRequest {
@@ -69,6 +80,8 @@ export interface ShareRequest {
   version?: number
   hours?: number
   public?: boolean
+  passcode?: string
+  once?: boolean
 }
 
 /** The page id the chat card opens. */
@@ -83,8 +96,9 @@ export const MUTATING_FUNCTIONS = [
   'artifact::revoke',
 ] as const
 
-/** Sharing waits for a starting tunnel (`tunnel_ready_timeout_ms`). */
-const SHARE_TIMEOUT_MS = 40_000
+/** Sharing waits for the tunnel and its DNS (`tunnel_ready_timeout_ms`,
+    capped at 120 s by the worker's config validation); stay above it. */
+const SHARE_TIMEOUT_MS = 150_000
 
 export function createApi(host: Host) {
   const call = <T,>(id: string, payload: Record<string, unknown>, timeoutMs?: number) =>

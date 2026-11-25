@@ -7,8 +7,9 @@
 //!    connecting
 //! 2. connect, then register and fetch the configuration (a required boot
 //!    dependency)
-//! 3. bind the loopback share listener — a bind failure aborts, because
-//!    every share link would be dead
+//! 3. bind the two loopback share listeners (public: the tunnel target,
+//!    public shares only; local: every share) — a bind failure aborts,
+//!    because every share link would be dead
 //! 4. register the functions and the console UI, start the expiry sweeper, observe
 //!    configuration changes last
 //! 5. wait for a signal, then stop the listener and shut the SDK down
@@ -26,12 +27,17 @@ use artifact::config::WorkerConfig;
 use artifact::configuration::{self, ConfigCell};
 use artifact::dns::Dns;
 use artifact::functions::{self, Ctx, sharing};
+use artifact::server::Exposure;
 use artifact::store::Store;
 use artifact::tunnel::Tunnel;
 use artifact::{manifest, server, ui};
 
 /// How often expired shares are dropped and an idle tunnel released.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long boot waits for the configuration observer to turn active before
+/// the catch-up read.
+const OBSERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Parser, Debug)]
 #[command(name = "artifact", about = manifest::DESCRIPTION)]
@@ -119,14 +125,15 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("configuration::get failed: {e}"))?;
 
-    let listener = tokio::net::TcpListener::bind(
-        cfg.listen_socket()
-            .map_err(|e| anyhow::anyhow!("invalid listen_addr: {e}"))?,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("cannot bind the share listener {}: {e}", cfg.listen_addr))?;
-    let bound = listener.local_addr()?;
-    tracing::info!(%bound, tunnel_id = %cfg.tunnel_id, "share listener bound");
+    let public_listener = bind("listen_addr", cfg.listen_socket()).await?;
+    let local_listener = bind("local_listen_addr", cfg.local_listen_socket()).await?;
+    let local_bound = local_listener.local_addr()?;
+    tracing::info!(
+        public = %public_listener.local_addr()?,
+        local = %local_bound,
+        tunnel_id = %cfg.tunnel_id,
+        "share listeners bound"
+    );
 
     let dns = Arc::new(
         Dns::new(&cfg.dns_check_resolver)
@@ -139,19 +146,27 @@ async fn main() -> anyhow::Result<()> {
         store: store.clone(),
         tunnel: Arc::new(Tunnel::Bus(iii.clone())),
         dns,
-        local_base: format!("http://{bound}"),
+        local_base: format!("http://{local_bound}"),
     });
 
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_task = tokio::spawn(async move {
-        let result = axum::serve(listener, server::router(store))
-            .with_graceful_shutdown(async {
-                let _ = stop_rx.await;
-            })
-            .await;
-        if let Err(e) = result {
-            tracing::error!(error = %e, "share listener stopped");
-        }
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let servers = [
+        (public_listener, Exposure::Public),
+        (local_listener, Exposure::Local),
+    ]
+    .map(|(listener, exposure)| {
+        let mut stop = stop_rx.clone();
+        let app = server::router(store.clone(), exposure);
+        tokio::spawn(async move {
+            let result = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = stop.wait_for(|stopped| *stopped).await;
+                })
+                .await;
+            if let Err(e) = result {
+                tracing::error!(error = %e, ?exposure, "share listener stopped");
+            }
+        })
     });
 
     functions::register_all(&iii, &ctx, &cell);
@@ -166,20 +181,46 @@ async fn main() -> anyhow::Result<()> {
             let cfg = sweeper_cell.read().await.clone();
             match sharing::sweep(&sweeper_ctx, &cfg).await {
                 Ok(0) => {}
-                Ok(n) => tracing::info!(expired = n, "expired shares dropped"),
+                Ok(n) => tracing::info!(expired = n, "ended shares dropped"),
                 Err(e) => tracing::warn!(error = %e, "share sweep failed"),
             }
         }
     });
 
-    configuration::register_config_observer(&iii, cell.clone());
+    // A change made between the boot read and the observer turning active
+    // would be missed: once it is active, read the configuration again
+    // through the same serialized path the observer uses.
+    let observer = configuration::register_config_observer(&iii, cell.clone());
+    let catch_up_iii = iii.clone();
+    let catch_up_cell = cell.clone();
+    tokio::spawn(async move {
+        match tokio::time::timeout(OBSERVER_READY_TIMEOUT, observer.ready()).await {
+            Ok(Ok(())) => configuration::on_config_change(&catch_up_iii, &catch_up_cell).await,
+            Ok(Err(e)) => tracing::warn!(error = %e, "configuration observer did not activate"),
+            Err(_) => tracing::warn!(
+                "configuration observer still pending; changes may wait for the next update"
+            ),
+        }
+    });
 
     tracing::info!(url = %cli.url, "artifact worker ready");
 
     wait_for_shutdown().await?;
     sweeper.abort();
-    let _ = stop_tx.send(());
-    let _ = server_task.await;
+    let _ = stop_tx.send(true);
+    for server in servers {
+        let _ = server.await;
+    }
     iii.shutdown_async().await;
     Ok(())
+}
+
+async fn bind(
+    field: &str,
+    addr: Result<std::net::SocketAddr, String>,
+) -> anyhow::Result<tokio::net::TcpListener> {
+    let addr = addr.map_err(|e| anyhow::anyhow!("invalid {field}: {e}"))?;
+    tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("cannot bind the share listener {addr} ({field}): {e}"))
 }

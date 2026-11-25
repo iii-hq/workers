@@ -3,6 +3,52 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sha2::{Digest, Sha256};
+
+use crate::store::PasscodeHash;
+
+/// Rounds of SHA-256 over a passcode: slows offline guessing of a stored
+/// hash; online guessing is rate-limited by the share server.
+const PASSCODE_ROUNDS: u32 = 100_000;
+
+/// Shortest passcode accepted.
+pub const MIN_PASSCODE_CHARS: usize = 6;
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn digest(salt: &str, passcode: &str) -> String {
+    let mut out = Sha256::new()
+        .chain_update(salt.as_bytes())
+        .chain_update(passcode.as_bytes())
+        .finalize();
+    for _ in 1..PASSCODE_ROUNDS {
+        out = Sha256::new().chain_update(out).finalize();
+    }
+    hex(&out)
+}
+
+/// Hash a passcode with a fresh 128-bit salt.
+pub fn hash_passcode(passcode: &str) -> Result<PasscodeHash, String> {
+    let mut salt = [0u8; 16];
+    getrandom::getrandom(&mut salt).map_err(|e| format!("the OS entropy source failed: {e}"))?;
+    let salt = hex(&salt);
+    let hash = digest(&salt, passcode);
+    Ok(PasscodeHash { salt, hash })
+}
+
+/// Check a passcode, comparing in constant time.
+pub fn verify_passcode(passcode: &str, stored: &PasscodeHash) -> bool {
+    let candidate = digest(&stored.salt, passcode);
+    candidate.len() == stored.hash.len()
+        && candidate
+            .bytes()
+            .zip(stored.hash.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+}
+
 /// Seconds since the unix epoch.
 pub fn unix_now() -> i64 {
     SystemTime::now()
@@ -105,6 +151,16 @@ mod tests {
         assert!(!is_token_shaped(&"A".repeat(TOKEN_LEN)));
         assert!(!is_token_shaped(&"a".repeat(TOKEN_LEN - 1)));
         assert!(!is_token_shaped("../../etc/passwd"));
+    }
+
+    #[test]
+    fn passcodes_verify_only_with_the_right_secret() {
+        let stored = hash_passcode("open sesame").expect("hash");
+        assert!(verify_passcode("open sesame", &stored));
+        assert!(!verify_passcode("open sesamE", &stored));
+        assert!(!verify_passcode("", &stored));
+        let again = hash_passcode("open sesame").expect("hash");
+        assert_ne!(stored.salt, again.salt, "every hash gets its own salt");
     }
 
     #[test]

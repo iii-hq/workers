@@ -174,7 +174,11 @@ fn config_updated_filters(id: &str) -> Value {
 /// `artifact::on-config-change` is a bus function, so trusting a `new_value` in
 /// the payload would let any caller lift the size ceiling without touching
 /// persisted state.
-async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
+pub async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
+    // One reload at a time: fetch and apply form a single step, so an older
+    // fetch can never land after a newer one.
+    static RELOAD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _reload = RELOAD.lock().await;
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {

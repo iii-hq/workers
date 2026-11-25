@@ -25,8 +25,14 @@ interface FieldSpec {
 const SHARING: FieldSpec[] = [
   {
     key: 'listen_addr',
-    label: 'Share listener',
-    description: 'Loopback ip:port serving /s/<token>. Point the quick-tunnel target here. Takes effect on restart.',
+    label: 'Public listener',
+    description: 'Loopback ip:port serving public shares only. Point the quick-tunnel target here. Takes effect on restart.',
+    numeric: false,
+  },
+  {
+    key: 'local_listen_addr',
+    label: 'Local listener',
+    description: 'Loopback ip:port serving every share, for previews on this machine. Never tunnel it. Takes effect on restart.',
     numeric: false,
   },
   {

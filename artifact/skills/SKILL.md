@@ -46,10 +46,14 @@ Shared pages run under a strict sandbox: nothing loads from the network.
 - `artifact::get { id, version? }` — record plus one version's content.
 - `artifact::list { kind?, limit? }` — summaries, newest first.
 - `artifact::delete { id }` — removes every version and revokes its shares.
-- `artifact::share { id, version?, hours?, public? }` — a frozen, expiring
-  link. Returns `token`, `local_url`, `public_url` (when the tunnel is
-  ready), `expires_at_utc` and, if publishing failed, `tunnel_error`.
-- `artifact::shares { id? }` — live shares with their current URLs. A
+- `artifact::share { id, version?, hours?, public?, passcode?, once? }` — a
+  frozen, expiring link. Returns `token`, `local_url`, `public_url` (once
+  the tunnel's address resolves; `tunnel_status: "warming"` until then),
+  `expires_at_utc` and, if publishing failed, `tunnel_error`. A `passcode`
+  (6+ characters) must be sent to the viewer separately; `once` makes the
+  link single-view.
+- `artifact::shares { id? }` — live shares with their current URLs and view
+  counts, plus the allowed lifetimes. A
   quick-tunnel URL can change when the tunnel restarts; read it here again
   instead of reusing an old one.
 - `artifact::revoke { token }` — the link stops working at once; accepts the

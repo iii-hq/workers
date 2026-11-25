@@ -6,27 +6,37 @@ import {
   DialogDescription,
   DialogTitle,
   IconButton,
+  Input,
   Select,
   SettingsField,
   SettingsList,
   StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
-import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { errorMessage } from '@iii-dev/console-ui/format'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, Copy, Globe, Laptop, Link2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import type { ArtifactApi, ArtifactRecord, ShareView } from '../lib/api'
+import { useEffect, useRef, useState } from 'react'
+import type { ArtifactApi, ArtifactRecord, ShareLimits, ShareView } from '../lib/api'
 import { versionOptions } from './VersionSelect'
 
-const HOURS = ['1', '6', '24', '72'] as const
-type Hours = (typeof HOURS)[number]
+/** Lifetimes offered, filtered by the configured maximum. */
+const LIFETIMES = [1, 6, 24, 72, 168, 336, 720]
+const MIN_PASSCODE = 6
 
-const HOUR_LABELS: Record<Hours, string> = {
-  '1': '1 hour',
-  '6': '6 hours',
-  '24': '1 day',
-  '72': '3 days',
+function lifetimeLabel(hours: number): string {
+  if (hours < 24) return hours === 1 ? '1 hour' : `${hours} hours`
+  const days = hours / 24
+  return days === 1 ? '1 day' : `${days} days`
+}
+
+/** The offered lifetimes: every standard one up to the maximum, plus the
+    configured default and maximum themselves. */
+export function lifetimeOptions(limits: ShareLimits): number[] {
+  const set = new Set(LIFETIMES.filter((h) => h <= limits.max_share_hours))
+  set.add(limits.default_share_hours)
+  set.add(limits.max_share_hours)
+  return [...set].sort((a, b) => a - b)
 }
 
 export function CopyLink({ url, label }: { url: string; label: string }) {
@@ -34,11 +44,7 @@ export function CopyLink({ url, label }: { url: string; label: string }) {
   return (
     <div className="artifact-ui-link">
       <code className="artifact-ui-link-url">{url}</code>
-      <IconButton
-        variant="ghost"
-        label={state === 'copied' ? 'Copied' : `Copy ${label}`}
-        onClick={copy}
-      >
+      <IconButton variant="ghost" label={state === 'copied' ? 'Copied' : `Copy ${label}`} onClick={copy}>
         {state === 'copied' ? <Check /> : <Copy />}
       </IconButton>
     </div>
@@ -70,8 +76,8 @@ export function ShareLinks({ share }: { share: ShareView }) {
           detail={
             share.tunnel_error ??
             (share.tunnel_status === 'warming'
-              ? 'The new address is still reaching public DNS, usually within a minute. Reopen the share list to get the link.'
-              : 'The public link shows in the share list once the tunnel is ready.')
+              ? 'The new address is still reaching public DNS, usually within a minute. The link appears here on its own.'
+              : 'The public link appears here once the tunnel is ready.')
           }
         />
       ) : null}
@@ -89,56 +95,83 @@ interface ShareDialogProps {
   onShared?(share: ShareView): void
 }
 
-/** Pick a version, a lifetime and the audience, then create the link. */
+/** Pick a version, a lifetime, the audience and optional protection, then
+    create the link. */
 export function ShareDialog({ api, artifact, version, open, onOpenChange, onShared }: ShareDialogProps) {
   const [chosenVersion, setChosenVersion] = useState(String(version ?? artifact.latest_version))
-  const [hours, setHours] = useState<Hours>('24')
+  const [limits, setLimits] = useState<ShareLimits | null>(null)
+  const [hours, setHours] = useState<string | undefined>(undefined)
   const [isPublic, setPublic] = useState(true)
+  const [passcode, setPasscode] = useState('')
+  const [once, setOnce] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [share, setShare] = useState<ShareView | null>(null)
+  /** Bumped on every open: a request only touches the dialog session that
+      started it. */
+  const session = useRef(0)
 
   useEffect(() => {
     if (!open) return
+    session.current += 1
+    const current = session.current
     setChosenVersion(String(version ?? artifact.latest_version))
     setShare(null)
     setError(null)
-  }, [open, version, artifact.latest_version])
+    setBusy(false)
+    setPasscode('')
+    setOnce(false)
+    api.shares(artifact.id).then(
+      (res) => {
+        if (session.current !== current) return
+        setLimits(res.limits)
+        setHours(String(res.limits.default_share_hours))
+      },
+      (err) => session.current === current && setError(errorMessage(err)),
+    )
+  }, [open, version, artifact.id, artifact.latest_version, api])
+
+  const passcodeTooShort = passcode.length > 0 && passcode.length < MIN_PASSCODE
 
   const create = async () => {
+    const current = session.current
     setBusy(true)
     setError(null)
     try {
       const created = await api.share({
         id: artifact.id,
         version: Number(chosenVersion),
-        hours: Number(hours),
+        hours: hours ? Number(hours) : undefined,
         public: isPublic,
+        passcode: passcode || undefined,
+        once,
       })
-      setShare(created)
+      // The link exists either way: let the list refresh even if this
+      // dialog session is gone.
       onShared?.(created)
+      if (session.current === current) setShare(created)
     } catch (err) {
-      setError(errorMessage(err))
+      if (session.current === current) setError(errorMessage(err))
     } finally {
-      setBusy(false)
+      if (session.current === current) setBusy(false)
     }
   }
-
-  const versions = versionOptions(artifact)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="artifact-ui-share-dialog">
         <DialogTitle>Share {artifact.title}</DialogTitle>
         <DialogDescription>
-          Anyone with the link can view this version until it expires. Later edits do not change
-          what the link shows.
+          Anyone with the link (and the passcode, if you set one) can view this version until it
+          expires. Later edits do not change what the link shows.
         </DialogDescription>
         {share ? (
           <div className="artifact-ui-share-result">
             <ShareLinks share={share} />
             <p className="artifact-ui-muted">
               v{share.version} · expires {new Date(share.expires_at * 1000).toLocaleString()}
+              {share.protected ? ' · passcode required: send it separately' : ''}
+              {share.once ? ' · single view' : ''}
             </p>
             <div className="artifact-ui-dialog-actions">
               <Button variant="secondary" onClick={() => onOpenChange(false)}>
@@ -153,7 +186,7 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
                 label="Version"
                 controlSize="compact"
                 renderControl={(props) => (
-                  <Select {...props} value={chosenVersion} options={versions} onChange={setChosenVersion} />
+                  <Select {...props} value={chosenVersion} options={versionOptions(artifact)} onChange={setChosenVersion} />
                 )}
               />
               <SettingsField
@@ -163,7 +196,12 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
                   <Select
                     {...props}
                     value={hours}
-                    options={HOURS.map((h) => ({ value: h, label: HOUR_LABELS[h] }))}
+                    placeholder="Loading…"
+                    disabled={!limits}
+                    options={(limits ? lifetimeOptions(limits) : []).map((h) => ({
+                      value: String(h),
+                      label: lifetimeLabel(h),
+                    }))}
                     onChange={setHours}
                   />
                 )}
@@ -176,13 +214,35 @@ export function ShareDialog({ api, artifact, version, open, onOpenChange, onShar
                   <Switch {...props} checked={isPublic} onChange={(e) => setPublic(e.target.checked)} />
                 )}
               />
+              <SettingsField
+                label="Passcode (optional)"
+                description="At least 6 characters. Viewers must enter it; send it apart from the link."
+                error={passcodeTooShort ? `Use at least ${MIN_PASSCODE} characters.` : undefined}
+                controlSize="default"
+                renderControl={(props) => (
+                  <Input {...props} type="password" autoComplete="new-password" value={passcode} onChange={setPasscode} />
+                )}
+              />
+              <SettingsField
+                label="Single view"
+                description="The link stops working after it is opened once. Chat apps that preview links can use up that view: add a passcode."
+                controlSize="fit"
+                renderControl={(props) => (
+                  <Switch {...props} checked={once} onChange={(e) => setOnce(e.target.checked)} />
+                )}
+              />
             </SettingsList>
             {error ? <StatusPanel variant="alert" headline="Could not share" detail={error} /> : null}
             <div className="artifact-ui-dialog-actions">
               <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>
                 Cancel
               </Button>
-              <Button variant="primary" onClick={create} disabled={busy} aria-busy={busy}>
+              <Button
+                variant="primary"
+                onClick={create}
+                disabled={busy || !limits || passcodeTooShort}
+                aria-busy={busy}
+              >
                 <Link2 />
                 {busy ? 'Creating link…' : 'Create link'}
               </Button>
