@@ -47,7 +47,11 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
-import { type ObserveRowTitle, observeRowTitle } from './observe-title'
+import {
+  OBSERVE_FUNCTION_ID,
+  type ObserveRowTitle,
+  observeRowTitle,
+} from './observe-title'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -246,9 +250,6 @@ function formatPrimitive(v: Primitive): string {
  * renderers first, then the first-party families. The default
  * (unbranded) span keeps unknown ids readable.
  */
-/** The one call whose row iii titles itself: "Observing <function>". */
-const OBSERVE_FUNCTION_ID = 'harness::observe'
-
 function FunctionIdLabel({ functionId }: { functionId: string }) {
   const renderers = useFunctionCallRenderers()
   for (const renderer of renderers) {
@@ -260,7 +261,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   return <span className="text-ink">{functionId}</span>
 }
 
-type FunctionCallStatus = 'pending' | 'running' | 'error' | 'done'
+export type FunctionCallStatus = 'pending' | 'running' | 'error' | 'done'
 
 interface RendererLayer {
   key: string
@@ -364,7 +365,11 @@ function FunctionRendererPresence({
  * which layer is visible, giving CSS both the outgoing and incoming glyphs
  * for the spinner -> check/error handoff without delaying the real state.
  */
-function FunctionCallStatusIcon({ status }: { status: FunctionCallStatus }) {
+export function FunctionCallStatusIcon({
+  status,
+}: {
+  status: FunctionCallStatus
+}) {
   return (
     <span
       aria-hidden="true"

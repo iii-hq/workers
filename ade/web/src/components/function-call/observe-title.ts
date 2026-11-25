@@ -7,6 +7,10 @@
  * that prose instead: "Arming the observer for sub-agent" → "Observing
  * sub-agent".
  */
+
+/** The one call whose row iii titles itself: "Observing <function>". */
+export const OBSERVE_FUNCTION_ID = 'harness::observe'
+
 export type ObserveRowTitle =
   /** "Observing <functionId>". */
   | { functionId: string }

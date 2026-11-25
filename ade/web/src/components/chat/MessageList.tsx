@@ -3,6 +3,7 @@ import { ArrowDown, ChevronDown } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   type CSSProperties,
+  Fragment,
   forwardRef,
   type ReactNode,
   type Ref,
@@ -22,6 +23,10 @@ import {
   isErrorOutput,
   resultEnvelope,
 } from '@/components/function-call/FunctionCallCard'
+import {
+  isObserveCall,
+  ObserveRunCard,
+} from '@/components/function-call/ObserveRunCard'
 import {
   firstRendered,
   rawRedactor,
@@ -2027,6 +2032,61 @@ function FunctionCallGroup({
     return { item, index, key, semanticVisible, mounted, ordinal }
   })
 
+  // Consecutive observes fold into one "Observing N functions" row whose
+  // second line names them all; one observe on its own stays itself.
+  const presentedSegments: (typeof presentedItems)[] = []
+  for (const entry of presentedItems) {
+    const previous = presentedSegments.at(-1)
+    const observe =
+      entry.item.kind === 'function-call' && isObserveCall(entry.item.message)
+    const previousObserve =
+      previous?.[0].item.kind === 'function-call' &&
+      isObserveCall(previous[0].item.message)
+    if (previous && observe && previousObserve) previous.push(entry)
+    else presentedSegments.push([entry])
+  }
+  const renderActivity = ({
+    item,
+    index,
+    key,
+  }: (typeof presentedItems)[number]) => {
+    const message = item.message
+    const notification =
+      item.kind === 'observer-activity' ? item.notification : undefined
+    return (
+      <LiveTimelineRow
+        // An item that absorbed its wake notification represents two
+        // transcript entries; the row carries both ids.
+        messageRow={
+          notification ? `${message.id} ${notification.id}` : message.id
+        }
+        animate={!reducedMotion && livePhaseChildKeys.has(key)}
+        staggerIndex={index}
+      >
+        <Message
+          message={message}
+          agentName={agentName}
+          observerNotification={notification}
+          registration={
+            registrations.get(message.id) ??
+            (notification ? registrations.get(notification.id) : undefined)
+          }
+          defaultOpenCalls={defaultOpenCalls}
+          onLoadDetails={
+            item.kind === 'function-call'
+              ? () => requestEntries([item.message], true)
+              : undefined
+          }
+          onResolveApproval={onResolveApproval}
+          onAlwaysAllow={onAlwaysAllow}
+          onResolveFilesystemAccess={onResolveFilesystemAccess}
+          onManageFilesystemAccess={onManageFilesystemAccess}
+          workingDir={workingDir}
+        />
+      </LiveTimelineRow>
+    )
+  }
+
   if (rollsUp && !expanded) {
     const label = `${row.items.length} observer ${noun}`
     // Which observers the run came from, most recent first: two names, then
@@ -2137,64 +2197,60 @@ function FunctionCallGroup({
         className="chat-tool-group__list"
         data-function-call-group-calls=""
       >
-        {presentedItems.map(
-          ({ item, index, key, semanticVisible, mounted, ordinal }) => {
-            const message = item.message
-            const notification =
-              item.kind === 'observer-activity' ? item.notification : undefined
-            return (
-              <div
-                key={key}
-                className="chat-activity-item"
-                data-visible={semanticVisible}
-                data-mounted={mounted}
-                data-stacked={ordinal > 0}
-                data-archiving={mounted && !semanticVisible}
-                aria-hidden={!semanticVisible}
-                inert={!semanticVisible ? true : undefined}
-              >
-                <div className="chat-activity-item-inner">
-                  {mounted ? (
-                    <LiveTimelineRow
-                      // An item that absorbed its wake notification represents
-                      // two transcript entries; the row carries both ids.
-                      messageRow={
-                        notification
-                          ? `${message.id} ${notification.id}`
-                          : message.id
-                      }
-                      animate={!reducedMotion && livePhaseChildKeys.has(key)}
-                      staggerIndex={index}
-                    >
-                      <Message
-                        message={message}
-                        agentName={agentName}
-                        observerNotification={notification}
-                        registration={
-                          registrations.get(message.id) ??
-                          (notification
-                            ? registrations.get(notification.id)
-                            : undefined)
-                        }
-                        defaultOpenCalls={defaultOpenCalls}
-                        onLoadDetails={
-                          item.kind === 'function-call'
-                            ? () => requestEntries([item.message], true)
-                            : undefined
-                        }
-                        onResolveApproval={onResolveApproval}
-                        onAlwaysAllow={onAlwaysAllow}
-                        onResolveFilesystemAccess={onResolveFilesystemAccess}
-                        onManageFilesystemAccess={onManageFilesystemAccess}
-                        workingDir={workingDir}
-                      />
-                    </LiveTimelineRow>
-                  ) : null}
-                </div>
+        {presentedSegments.map((segment) => {
+          const first = segment[0]
+          const semanticVisible = segment.some((entry) => entry.semanticVisible)
+          const mounted = segment.some((entry) => entry.mounted)
+          const ordinal =
+            segment.find((entry) => entry.semanticVisible)?.ordinal ?? -1
+          return (
+            // A run keeps its first member's key, so a lone observe that a
+            // second one joins becomes the run without remounting its slot.
+            <div
+              key={first.key}
+              className="chat-activity-item"
+              data-visible={semanticVisible}
+              data-mounted={mounted}
+              data-stacked={ordinal > 0}
+              data-archiving={mounted && !semanticVisible}
+              aria-hidden={!semanticVisible}
+              inert={!semanticVisible ? true : undefined}
+            >
+              <div className="chat-activity-item-inner">
+                {!mounted ? null : segment.length === 1 ? (
+                  renderActivity(first)
+                ) : (
+                  <ObserveRunCard
+                    calls={segment.map(
+                      (entry) => entry.item.message as FunctionCallMessage,
+                    )}
+                    defaultOpen={defaultOpenCalls}
+                    forceOpen={segment.some(
+                      ({ item }) =>
+                        ownsFocusTarget(item) ||
+                        (item.kind === 'function-call' &&
+                          item.message.pendingApproval === true),
+                    )}
+                    onOpen={() =>
+                      requestEntries(
+                        segment.map(
+                          (entry) => entry.item.message as FunctionCallMessage,
+                        ),
+                        true,
+                      )
+                    }
+                  >
+                    {segment.map((entry) => (
+                      <Fragment key={entry.key}>
+                        {renderActivity(entry)}
+                      </Fragment>
+                    ))}
+                  </ObserveRunCard>
+                )}
               </div>
-            )
-          },
-        )}
+            </div>
+          )
+        })}
       </div>
     </section>
   )

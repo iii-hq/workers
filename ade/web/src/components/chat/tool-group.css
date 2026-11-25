@@ -227,7 +227,8 @@
     background: var(--color-surface);
   }
 
-  .chat-tool-row[data-expanded="true"] .chat-tool-row__head:hover {
+  /* `>`: a row nested in an opened observe run keeps its own state. */
+  .chat-tool-row[data-expanded="true"] > .chat-tool-row__head:hover {
     background: var(--color-surface-hover);
   }
 }
@@ -338,7 +339,9 @@
   transition: transform var(--acc-chevron, 250ms) var(--ease-smooth-out);
 }
 
-.chat-tool-row[data-expanded="true"] .chat-tool-row__chevron,
+.chat-tool-row[data-expanded="true"]
+  > .chat-tool-row__head
+  .chat-tool-row__chevron,
 .chat-tool-row__chevron[data-open="true"] {
   transform: rotate(180deg);
 }
@@ -546,4 +549,41 @@
 [data-theme="dark"] .chat-tool-group__list,
 [data-theme="dark"] .chat-tool-row__body {
   border-top-color: var(--border);
+}
+
+/* ── a run of observes ─────────────────────────────────────────────── */
+
+/* The run's second line names every observed function. It wraps between
+   names, never inside one, so the folded rows lose nothing. */
+.chat-tool-row__subtitle--wrap > span {
+  white-space: normal;
+}
+
+.chat-observe-run__name {
+  white-space: nowrap;
+}
+
+/* The marks sit on the title line, not the middle of the list under it:
+   16px glyphs centred in the 20px title line. */
+.chat-observe-run > .chat-tool-row__head > .chat-tool-row__main {
+  align-items: flex-start;
+}
+
+.chat-observe-run
+  > .chat-tool-row__head
+  > .chat-tool-row__main
+  > :not(.chat-tool-row__text) {
+  margin-top: 2px;
+}
+
+.chat-observe-run > .chat-tool-row__head > .chat-tool-row__caret {
+  align-items: flex-start;
+  padding-top: 8px;
+}
+
+/* The individual observes sit inside the run, inset under its title. */
+.chat-observe-run__list {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 4px 12px;
 }
