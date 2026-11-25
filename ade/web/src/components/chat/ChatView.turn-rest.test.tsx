@@ -11,6 +11,9 @@ import type { Conversation } from '@/types/chat'
 const mocks = vi.hoisted(() => ({
   activateWorkingDir: vi.fn(),
   setDraftText: vi.fn(),
+  setDraftAttachments: vi.fn(),
+  draftText: undefined as string | undefined,
+  ensureSession: undefined as undefined | (() => Promise<void>),
   composerSubmit: undefined as
     | undefined
     | ((payload: { text: string; attachments: [] }) => Promise<void>),
@@ -31,10 +34,11 @@ vi.mock('@/lib/conversations-context', async (importOriginal) => ({
       installing: false,
       error: null,
     },
-    getDraftText: () => undefined,
+    getDraftText: () => mocks.draftText,
     getDraftAttachments: () => undefined,
     setDraftText: mocks.setDraftText,
-    setDraftAttachments: vi.fn(),
+    setDraftAttachments: mocks.setDraftAttachments,
+    ensureSession: mocks.ensureSession,
     shellAvailable: true,
     worktreeAvailable: false,
     memoryAvailable: false,
@@ -123,6 +127,9 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   mocks.activateWorkingDir.mockReset().mockResolvedValue(valid)
   mocks.setDraftText.mockReset()
+  mocks.setDraftAttachments.mockReset()
+  mocks.draftText = undefined
+  mocks.ensureSession = undefined
   turnRest.mockReset().mockResolvedValue('ended')
   stream.mockClear()
   onAppendMessage.mockReset()
@@ -176,6 +183,19 @@ it('leaves Continue in the draft while the chat cannot send', async () => {
   await act(async () => continueButton()?.click())
   expect(stream).not.toHaveBeenCalled()
   expect(mocks.setDraftText).toHaveBeenCalledWith('root', 'Continue')
+})
+
+it('keeps the draft when Continue fails before it is sent', async () => {
+  mocks.draftText = 'Half a thought'
+  mocks.ensureSession = () => Promise.reject(new Error('down'))
+  await open(done)
+  await act(async () => continueButton()?.click())
+  expect(stream).not.toHaveBeenCalled()
+  expect(mocks.setDraftText).toHaveBeenCalledExactlyOnceWith(
+    'root',
+    'Continue\n\nHalf a thought',
+  )
+  expect(mocks.setDraftAttachments).not.toHaveBeenCalled()
 })
 
 it.each([

@@ -1686,13 +1686,24 @@ export function ChatView({
     (payload: ComposerSubmitPayload) => {
       if (!conversationsCtx) return
       const prefix = sendingQuoteRef.current?.prefix
-      conversationsCtx.setDraftText(
-        conversation.id,
+      const text =
         prefix && payload.text.startsWith(prefix)
           ? payload.text.slice(prefix.length)
-          : payload.text,
+          : payload.text
+      // Added to what is there: the composer may hold newer text, and a
+      // message the side panel or the turn-rest row sends never was its draft.
+      conversationsCtx.setDraftText(
+        conversation.id,
+        draftWithPulledBack(conversationsCtx.getDraftText(conversation.id), [
+          { id: 'not-sent', text },
+        ]),
       )
-      conversationsCtx.setDraftAttachments(conversation.id, payload.attachments)
+      if (payload.attachments.length > 0) {
+        conversationsCtx.setDraftAttachments(conversation.id, [
+          ...(conversationsCtx.getDraftAttachments(conversation.id) ?? []),
+          ...payload.attachments,
+        ])
+      }
       setComposerGeneration((generation) => generation + 1)
     },
     [conversationsCtx, conversation.id],
