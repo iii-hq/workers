@@ -48,6 +48,7 @@ const meta: SessionMeta = {
 }
 const id = meta.session_id
 let api: ConversationsApi
+let connectionChanged: (state: string) => void
 let root: Root
 let host: HTMLDivElement
 
@@ -65,7 +66,8 @@ beforeEach(async () => {
   document.body.append(host)
   root = createRoot(host)
   vi.mocked(getIiiClient).mockResolvedValue({
-    addConnectionStateListener: (listener: (state: string) => void) => {
+    addConnectionStateListener: (listener: typeof connectionChanged) => {
+      connectionChanged = listener
       listener('connected')
       return () => {}
     },
@@ -108,6 +110,7 @@ describe('a chat named by its first ask', () => {
   // start, a saved draft) never passes through ensureSession's draft path.
   it("renames a server-backed session with the model's heading", async () => {
     vi.mocked(summarizeChatTitle).mockResolvedValue(HEADING)
+    await act(async () => api.watchConversation(id))
     await act(async () => api.appendMessage(id, ask(1)))
     expect(summarizeChatTitle).toHaveBeenCalledWith(expect.anything(), {
       sessionId: id,
@@ -146,6 +149,40 @@ describe('a chat named by its first ask', () => {
     expect(setSessionMeta).not.toHaveBeenCalledWith(
       expect.objectContaining({ title: HEADING }),
     )
+  })
+
+  it('leaves a chat alone while its first ask may be in a page not loaded', async () => {
+    vi.mocked(fetchTranscriptTail).mockResolvedValue({
+      items: [
+        {
+          entry_id: 'e_9',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Done.' }],
+            stop_reason: 'end',
+            model: 'test',
+            provider: 'test',
+            timestamp: 9,
+          },
+        },
+      ],
+      hasMore: true,
+      oldestEntryId: 'e_9',
+    })
+    await act(async () => api.watchConversation(id))
+    // A reconnect whose session list lands after the transcript read.
+    let listed!: (metas: SessionMeta[]) => void
+    vi.mocked(listSessions).mockReturnValueOnce(
+      new Promise((resolve) => {
+        listed = resolve
+      }),
+    )
+    await act(async () => connectionChanged('reconnecting'))
+    await act(async () => connectionChanged('connected'))
+    await act(async () => listed([meta]))
+    await act(async () => api.appendMessage(id, ask(1, 'Continue')))
+    expect(titleOf()).toBe('Saved chat')
+    expect(summarizeChatTitle).not.toHaveBeenCalled()
   })
 
   it('asks once: a later message does not rename the chat', async () => {
