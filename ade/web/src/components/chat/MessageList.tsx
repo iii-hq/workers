@@ -81,6 +81,7 @@ import { Message, type SpawnTaskContext } from './Message'
 import { ModelWaitingIndicator } from './ModelWaitingIndicator'
 import {
   type OffscreenQuestions,
+  type QuestionJumps,
   questionCardNode,
   useOffscreenQuestions,
 } from './question-jump'
@@ -208,13 +209,14 @@ interface MessageListProps {
    */
   awaitingQuestionIds?: readonly string[]
   /**
-   * Called when the waiting cards out of view change, with the jump that
-   * centres the oldest of them and focuses its first answer control. The
-   * owner shows the notice (by the composer, not over the transcript).
+   * Called when the waiting cards out of view change, with the jumps that
+   * centre a card and focus its first answer control: `next` walks the
+   * waiting cards in order (wrapping), `jumpTo` lands on one. The owner
+   * shows the notice (by the composer, not over the transcript).
    */
   onQuestionsOffscreen?: (
     offscreen: OffscreenQuestions,
-    jump: () => void,
+    jumps: QuestionJumps,
   ) => void
   /**
    * Where the loaded window ends at the top (`Conversation.history`). Drives
@@ -1041,12 +1043,20 @@ export function MessageList({
     const cap = setTimeout(finishOpening, OPEN_SETTLE_MAX_MS)
     return () => clearTimeout(cap)
   }, [transcriptHydrated, noteOpeningLayout, finishOpening])
+  // The card the last notice jump landed on: the next jump goes on from
+  // there. Forgotten once that card no longer waits.
+  const [landedQuestionId, setLandedQuestionId] = useState<string | null>(null)
+  const lastLandedQuestion =
+    landedQuestionId && awaitingQuestionIds.includes(landedQuestionId)
+      ? landedQuestionId
+      : null
   const { offscreen: offscreenQuestions, check: checkQuestions } =
     useOffscreenQuestions(
       awaitingQuestionIds,
       containerRef,
       contentRef,
       !opening,
+      lastLandedQuestion,
     )
   useEffect(() => {
     if (!opening) return
@@ -1384,73 +1394,88 @@ export function MessageList({
     transitionTailState,
   ])
 
-  // The question notice: center the oldest waiting card out of view, flash it,
-  // and put focus on its first control so the keyboard can answer at once.
-  const handleJumpToQuestion = useCallback(() => {
-    const container = containerRef.current
-    const content = contentRef.current
-    const target = offscreenQuestions.target
-    if (!container || !content || !target) return
-    // The card itself, or failing that the transcript row that holds it
-    // (waiting rows are pinned, so it is mounted): a jump always lands.
-    const index = rowIndexById.get(target)
-    const rowKey = index === undefined ? undefined : flatRows[index]?.key
-    const card =
-      questionCardNode(content, target) ??
-      Array.from(
-        content.querySelectorAll<HTMLElement>('[data-message-row]'),
-      ).find(
-        (node) =>
-          rowKey !== undefined &&
-          node.dataset.messageRow?.split(' ').includes(rowKey),
-      )
-    if (!card) {
-      if (index !== undefined) {
-        cancelTailAnimation()
-        transitionTailState('paused')
-        virtualizer.scrollToIndex(index, { align: 'center' })
+  // Land on a waiting card: center it, flash it, and put focus on its first
+  // control so the keyboard can answer at once. The next notice jump goes on
+  // from here.
+  const landOnQuestion = useCallback(
+    (target: string) => {
+      const container = containerRef.current
+      const content = contentRef.current
+      if (!container || !content) return
+      setLandedQuestionId(target)
+      // The card itself, or failing that the transcript row that holds it
+      // (waiting rows are pinned, so it is mounted): a jump always lands.
+      const index = rowIndexById.get(target)
+      const rowKey = index === undefined ? undefined : flatRows[index]?.key
+      const card =
+        questionCardNode(content, target) ??
+        Array.from(
+          content.querySelectorAll<HTMLElement>('[data-message-row]'),
+        ).find(
+          (node) =>
+            rowKey !== undefined &&
+            node.dataset.messageRow?.split(' ').includes(rowKey),
+        )
+      if (!card) {
+        if (index !== undefined) {
+          cancelTailAnimation()
+          transitionTailState('paused')
+          virtualizer.scrollToIndex(index, { align: 'center' })
+        }
+        return
       }
-      return
-    }
-    cancelTailAnimation()
-    transitionTailState('paused')
-    scrollRowToCenter(container, card)
-    // The answer controls first: the card's own header toggle comes before
-    // them in the DOM, and landing there would not let the keyboard answer.
-    const control =
-      card.querySelector<HTMLElement>(
-        'input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
-      ) ?? card.querySelector<HTMLElement>('button:not([disabled])')
-    ;(control ?? card).focus({ preventScroll: true })
-    if (typeof card.animate === 'function' && !reducedMotionRef.current) {
-      card.animate(
-        [
-          {
-            backgroundColor: 'color-mix(in srgb, currentColor 6%, transparent)',
-          },
-          { backgroundColor: 'transparent' },
-        ],
-        { duration: 900, easing: 'ease-out' },
-      )
-    }
-  }, [
-    cancelTailAnimation,
-    flatRows,
-    offscreenQuestions.target,
-    rowIndexById,
-    scrollRowToCenter,
-    transitionTailState,
-    virtualizer,
-  ])
+      cancelTailAnimation()
+      transitionTailState('paused')
+      scrollRowToCenter(container, card)
+      // The answer controls first: the card's own header toggle comes before
+      // them in the DOM, and landing there would not let the keyboard answer.
+      const control =
+        card.querySelector<HTMLElement>(
+          'input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
+        ) ?? card.querySelector<HTMLElement>('button:not([disabled])')
+      ;(control ?? card).focus({ preventScroll: true })
+      if (typeof card.animate === 'function' && !reducedMotionRef.current) {
+        card.animate(
+          [
+            {
+              backgroundColor:
+                'color-mix(in srgb, currentColor 6%, transparent)',
+            },
+            { backgroundColor: 'transparent' },
+          ],
+          { duration: 900, easing: 'ease-out' },
+        )
+      }
+    },
+    [
+      cancelTailAnimation,
+      flatRows,
+      rowIndexById,
+      scrollRowToCenter,
+      transitionTailState,
+      virtualizer,
+    ],
+  )
 
-  // The jump is read through a ref so a new closure (a new target) does not
-  // re-report an unchanged state.
-  const jumpToQuestionRef = useRef(handleJumpToQuestion)
-  jumpToQuestionRef.current = handleJumpToQuestion
-  const jumpToQuestion = useCallback(() => jumpToQuestionRef.current(), [])
+  // Read through refs, so the actions keep one identity and a new target
+  // does not re-report an unchanged state.
+  const landOnQuestionRef = useRef(landOnQuestion)
+  landOnQuestionRef.current = landOnQuestion
+  const nextQuestionRef = useRef(offscreenQuestions.target)
+  nextQuestionRef.current = offscreenQuestions.target
+  const questionJumps = useMemo<QuestionJumps>(
+    () => ({
+      next: () => {
+        const target = nextQuestionRef.current
+        if (target) landOnQuestionRef.current(target)
+      },
+      jumpTo: (id) => landOnQuestionRef.current(id),
+    }),
+    [],
+  )
   useEffect(() => {
-    onQuestionsOffscreen?.(offscreenQuestions, jumpToQuestion)
-  }, [offscreenQuestions, onQuestionsOffscreen, jumpToQuestion])
+    onQuestionsOffscreen?.(offscreenQuestions, questionJumps)
+  }, [offscreenQuestions, onQuestionsOffscreen, questionJumps])
 
   /* External landing (trace → "go to message"): center the requested row
  once it exists, then hand the request back to the owner. Tail following

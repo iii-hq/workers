@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/types/chat'
 import {
+  type AwaitingQuestion,
   type AwaitingQuestionsOptions,
   useAwaitingQuestions,
 } from './use-awaiting-questions'
@@ -24,7 +25,7 @@ const ask = (id: string, questionId: string) =>
 
 let container: HTMLDivElement
 let root: Root
-let seen: readonly string[] = []
+let seen: readonly AwaitingQuestion[] = []
 
 function Probe(props: AwaitingQuestionsOptions) {
   seen = useAwaitingQuestions(props)
@@ -82,7 +83,7 @@ describe('useAwaitingQuestions', () => {
     )
     await flush()
     expect(askStates).toHaveBeenCalledWith('s1')
-    expect(seen).toEqual(['fc_1', 'fc_2'])
+    expect(seen.map((q) => q.messageId)).toEqual(['fc_1', 'fc_2'])
 
     // Answered in another tab: the settled event re-reads.
     states = new Map([
@@ -92,7 +93,7 @@ describe('useAwaitingQuestions', () => {
     ])
     ring()
     await flush()
-    expect(seen).toEqual(['fc_2'])
+    expect(seen.map((q) => q.messageId)).toEqual(['fc_2'])
 
     await act(() => root.unmount())
     expect(off).toHaveBeenCalled()
@@ -111,13 +112,13 @@ describe('useAwaitingQuestions', () => {
     )
     await act(() => root.render(view([ask('fc_1', 'q1'), ask('fc_2', 'q2')])))
     await flush()
-    expect(seen).toEqual(['fc_1', 'fc_2'])
+    expect(seen.map((q) => q.messageId)).toEqual(['fc_1', 'fc_2'])
 
     await act(() =>
       root.render(view([ask('fc_1', 'q1'), user('u1'), ask('fc_2', 'q2')])),
     )
     await flush()
-    expect(seen).toEqual(['fc_2'])
+    expect(seen.map((q) => q.messageId)).toEqual(['fc_2'])
   })
 
   it('a failed read falls back to the same rule', async () => {
@@ -135,7 +136,7 @@ describe('useAwaitingQuestions', () => {
       ),
     )
     await flush()
-    expect(seen).toEqual(['fc_2'])
+    expect(seen.map((q) => q.messageId)).toEqual(['fc_2'])
   })
 
   it('reads nothing while the chat has no question card', async () => {
@@ -152,6 +153,6 @@ describe('useAwaitingQuestions', () => {
     )
     await flush()
     expect(askStates).not.toHaveBeenCalled()
-    expect(seen).toEqual([])
+    expect(seen.map((q) => q.messageId)).toEqual([])
   })
 })

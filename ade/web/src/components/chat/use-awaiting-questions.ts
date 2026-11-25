@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ChatBackend } from '@/lib/backend/types'
-import { questionCardsIn } from '@/lib/chat-activity'
+import { type QuestionCardRef, questionCardsIn } from '@/lib/chat-activity'
 import type { Message } from '@/types/chat'
+
+/** A question card still waiting on the person, as the notice lists it. */
+export type AwaitingQuestion = Pick<
+  QuestionCardRef,
+  'messageId' | 'header' | 'title' | 'questionCount'
+>
 
 export interface AwaitingQuestionsOptions {
   backend: Pick<ChatBackend, 'askStates' | 'onAskChanged'>
@@ -14,7 +20,7 @@ export interface AwaitingQuestionsOptions {
 
 /**
  * The question cards (`harness::ask`) in this chat that still wait on the
- * person, as transcript message ids, oldest first.
+ * person, oldest first, with what each asks (for the notice's list).
  *
  * What the harness knows wins (`askStates`): an open ask entry waits, a
  * settled one does not, whichever tab or channel settled it. A card it
@@ -28,7 +34,7 @@ export function useAwaitingQuestions({
   sessionId,
   messages,
   waitingOnAnswer,
-}: AwaitingQuestionsOptions): readonly string[] {
+}: AwaitingQuestionsOptions): readonly AwaitingQuestion[] {
   const cards = useMemo(() => questionCardsIn(messages), [messages])
   const lastUserIndex = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index--) {
@@ -67,18 +73,27 @@ export function useAwaitingQuestions({
     }
   }, [askStates, onAskChanged, sessionId, cardKey, waitingOnAnswer])
 
-  const ids = useMemo(
+  const waiting = useMemo(
     () =>
-      cards
-        .filter(
-          (card) => known?.get(card.questionId) ?? card.index > lastUserIndex,
-        )
-        .map((card) => card.messageId),
+      cards.filter(
+        (card) => known?.get(card.questionId) ?? card.index > lastUserIndex,
+      ),
     [cards, known, lastUserIndex],
   )
   // One array per distinct answer, so the list's effects only re-run when
-  // the set of waiting cards changes.
-  const key = ids.join('\n')
+  // the set of waiting cards (or what they say) changes.
+  const key = waiting
+    .map((card) => `${card.messageId}\u0000${card.header}\u0000${card.title}`)
+    .join('\n')
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed by content.
-  return useMemo(() => ids, [key])
+  return useMemo(
+    () =>
+      waiting.map(({ messageId, header, title, questionCount }) => ({
+        messageId,
+        header,
+        title,
+        questionCount,
+      })),
+    [key],
+  )
 }

@@ -39,4 +39,24 @@ describe('offscreenQuestions', () => {
       direction: 'up',
     })
   })
+
+  it('walks the waiting cards in order from the last landing, wrapping at the end', () => {
+    // All three are above the viewport: centring one scrolls the others out.
+    const above = () => ({ top: -900, bottom: -700 })
+    const ids = ['a', 'b', 'c']
+    expect(offscreenQuestions(ids, above, viewport).target).toBe('a')
+    expect(offscreenQuestions(ids, above, viewport, 'a').target).toBe('b')
+    expect(offscreenQuestions(ids, above, viewport, 'b').target).toBe('c')
+    expect(offscreenQuestions(ids, above, viewport, 'c').target).toBe('a')
+  })
+
+  it('goes on to the next card even when that one is in view', () => {
+    const spans: Record<string, { top: number; bottom: number }> = {
+      a: { top: -900, bottom: -700 },
+      b: { top: 300, bottom: 500 },
+    }
+    expect(
+      offscreenQuestions(['a', 'b'], (id) => spans[id], viewport, 'a'),
+    ).toEqual({ count: 1, target: 'b', direction: 'down' })
+  })
 })

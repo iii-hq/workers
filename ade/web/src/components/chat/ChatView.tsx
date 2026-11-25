@@ -213,7 +213,7 @@ import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
 import { QuestionNotice } from './QuestionNotice'
-import type { OffscreenQuestions } from './question-jump'
+import type { OffscreenQuestions, QuestionJumps } from './question-jump'
 import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
 import {
@@ -2887,21 +2887,25 @@ export function ChatView({
   )
   // Question cards still waiting on the person: the list keeps them mounted
   // and offers a jump to any that scrolled out of view.
-  const awaitingQuestionIds = useAwaitingQuestions({
+  const awaitingQuestions = useAwaitingQuestions({
     backend,
     sessionId: conversation.id,
     messages: shownMessages,
     waitingOnAnswer,
   })
-  // Which of them the list has scrolled out of view, and its jump to the
-  // oldest: the notice in the composer's tray shows while any is hidden.
+  const awaitingQuestionIds = useMemo(
+    () => awaitingQuestions.map((question) => question.messageId),
+    [awaitingQuestions],
+  )
+  // Which of them the list has scrolled out of view, and its jumps: the
+  // notice in the composer's tray shows while any is hidden.
   const [offscreenQuestions, setOffscreenQuestions] = useState<{
     offscreen: OffscreenQuestions
-    jump: () => void
+    jumps: QuestionJumps
   } | null>(null)
   const handleQuestionsOffscreen = useCallback(
-    (offscreen: OffscreenQuestions, jump: () => void) =>
-      setOffscreenQuestions(offscreen.count > 0 ? { offscreen, jump } : null),
+    (offscreen: OffscreenQuestions, jumps: QuestionJumps) =>
+      setOffscreenQuestions(offscreen.count > 0 ? { offscreen, jumps } : null),
     [],
   )
 
@@ -3925,12 +3929,13 @@ export function ChatView({
                 </section>
               ) : null}
               <QuestionNotice
+                questions={awaitingQuestions}
                 notice={
                   offscreenQuestions
                     ? {
-                        count: offscreenQuestions.offscreen.count,
+                        next: offscreenQuestions.offscreen.target,
                         direction: offscreenQuestions.offscreen.direction,
-                        onShow: offscreenQuestions.jump,
+                        jumps: offscreenQuestions.jumps,
                       }
                     : null
                 }

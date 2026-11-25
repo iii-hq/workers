@@ -143,8 +143,20 @@ describe('question cards in the transcript', () => {
       call('fc_2', { status: 'awaiting_answer', question_id: 'q2' }),
     ]
     expect(questionCardsIn(messages)).toEqual([
-      { messageId: 'fc_1', questionId: 'q1', index: 0 },
-      { messageId: 'fc_2', questionId: 'q2', index: 2 },
+      {
+        messageId: 'fc_1',
+        questionId: 'q1',
+        index: 0,
+        title: 'Question from the agent',
+        questionCount: 1,
+      },
+      {
+        messageId: 'fc_2',
+        questionId: 'q2',
+        index: 2,
+        title: 'Question from the agent',
+        questionCount: 1,
+      },
     ])
   })
 
@@ -160,5 +172,26 @@ describe('question cards in the transcript', () => {
         } as Partial<Message>),
       ]),
     ).toEqual([])
+  })
+
+  it('reads the first question as the card title, with its header and count', () => {
+    const [card] = questionCardsIn([
+      call('fc_1', {
+        content: [{ type: 'text', text: 'awaiting answer' }],
+        details: {
+          status: 'awaiting_answer',
+          question_id: 'q1',
+          questions: [
+            { header: 'Colour', question: 'Which colour?', options: [] },
+            { header: 'Size', question: 'Which size?', options: [] },
+          ],
+        },
+      }),
+    ])
+    expect(card).toMatchObject({
+      header: 'Colour',
+      title: 'Which colour?',
+      questionCount: 2,
+    })
   })
 })

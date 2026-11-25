@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QuestionNotice, questionNoticeText } from './QuestionNotice'
+import type { AwaitingQuestion } from './use-awaiting-questions'
 
 let container: HTMLDivElement
 let root: Root
@@ -21,28 +22,84 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+const question = (n: number, extra: Partial<AwaitingQuestion> = {}) => ({
+  messageId: `fc_${n}`,
+  title: `Question ${n}?`,
+  questionCount: 1,
+  ...extra,
+})
+
 describe('QuestionNotice', () => {
-  it('counts the questions', () => {
-    expect(questionNoticeText(1)).toBe('1 question waiting for your answer')
-    expect(questionNoticeText(3)).toBe('3 questions waiting for your answer')
+  it('counts the questions in a few words', () => {
+    expect(questionNoticeText(1)).toBe('1 unanswered question')
+    expect(questionNoticeText(3)).toBe('3 unanswered questions')
   })
 
-  it('is one native button, named by its words, that jumps', async () => {
-    const onShow = vi.fn()
+  it('one question: one row that shows it', async () => {
+    const jumps = { next: vi.fn(), jumpTo: vi.fn() }
     await act(() =>
       root.render(
-        <QuestionNotice notice={{ count: 2, direction: 'up', onShow }} />,
+        <QuestionNotice
+          questions={[question(1)]}
+          notice={{ next: 'fc_1', direction: 'up', jumps }}
+        />,
       ),
     )
-    const button = container.querySelector('button')
-    expect(button?.getAttribute('type')).toBe('button')
-    expect(button?.textContent).toBe('2 questions waiting for your answerShow')
-    await act(() => button?.click())
-    expect(onShow).toHaveBeenCalledTimes(1)
+    const buttons = container.querySelectorAll('button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].textContent).toBe('1 unanswered questionShow')
+    await act(() => buttons[0].click())
+    expect(jumps.next).toHaveBeenCalledTimes(1)
+  })
+
+  it('several: the row goes to the next, the chevron lists them all to jump to', async () => {
+    const jumps = { next: vi.fn(), jumpTo: vi.fn() }
+    await act(() =>
+      root.render(
+        <QuestionNotice
+          questions={[
+            question(1, { header: 'Colour' }),
+            question(2, { questionCount: 3 }),
+          ]}
+          notice={{ next: 'fc_1', direction: 'down', jumps }}
+        />,
+      ),
+    )
+    const row = container.querySelector<HTMLButtonElement>(
+      '[data-question-jump]',
+    )
+    expect(row?.textContent).toBe('2 unanswered questionsNext')
+    const toggle = container.querySelector<HTMLButtonElement>(
+      'button[aria-expanded]',
+    )
+    expect(toggle?.getAttribute('aria-label')).toBe('List the questions')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
+
+    await act(() => toggle?.click())
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    const items = container.querySelectorAll<HTMLButtonElement>(
+      '[data-question-jump-to]',
+    )
+    expect([...items].map((item) => item.textContent)).toEqual([
+      '1Colour · Question 1?',
+      '2Question 2?+2 more',
+    ])
+    await act(() => items[1].click())
+    expect(jumps.jumpTo).toHaveBeenCalledWith('fc_2')
+
+    // Escape closes the list.
+    await act(() => {
+      items[1].dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      )
+    })
+    expect(container.querySelector('[data-question-jump-to]')).toBeNull()
   })
 
   it('keeps a polite status mounted, so the notice is announced as it appears', async () => {
-    await act(() => root.render(<QuestionNotice notice={null} />))
+    await act(() =>
+      root.render(<QuestionNotice questions={[question(1)]} notice={null} />),
+    )
     const status = container.querySelector('[role="status"]')
     expect(status?.getAttribute('aria-live')).toBe('polite')
     expect(status?.textContent).toBe('')
@@ -51,12 +108,17 @@ describe('QuestionNotice', () => {
     await act(() =>
       root.render(
         <QuestionNotice
-          notice={{ count: 1, direction: 'down', onShow: () => {} }}
+          questions={[question(1)]}
+          notice={{
+            next: 'fc_1',
+            direction: 'down',
+            jumps: { next: () => {}, jumpTo: () => {} },
+          }}
         />,
       ),
     )
-    // The same node, now carrying the words (and not the control).
+    // The same node, now carrying the words (and not the controls).
     expect(container.querySelector('[role="status"]')).toBe(status)
-    expect(status?.textContent).toBe('1 question waiting for your answer')
+    expect(status?.textContent).toBe('1 unanswered question')
   })
 })

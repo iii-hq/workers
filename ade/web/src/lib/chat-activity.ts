@@ -65,6 +65,28 @@ export interface QuestionCardRef {
   questionId: string
   /** Its position in the messages it was read from. */
   index: number
+  /** The first question's header (`Colour`), when it has one. */
+  header?: string
+  /** The first question's text, or the call's description. */
+  title: string
+  /** How many questions the card asks. */
+  questionCount: number
+}
+
+function firstQuestion(details: Record<string, unknown>) {
+  const questions = Array.isArray(details.questions) ? details.questions : []
+  const first = questions[0]
+  return {
+    count: questions.length,
+    header:
+      isRecord(first) && typeof first.header === 'string' && first.header
+        ? first.header
+        : undefined,
+    question:
+      isRecord(first) && typeof first.question === 'string' && first.question
+        ? first.question
+        : undefined,
+  }
 }
 
 /** Every question card the agent showed in `messages`, oldest first. */
@@ -75,10 +97,16 @@ export function questionCardsIn(
   messages.forEach((message, index) => {
     const details = acceptedAskDetails(message)
     if (details && typeof details.question_id === 'string') {
+      const first = firstQuestion(details)
+      const description =
+        message.role === 'function-call' ? message.description : undefined
       cards.push({
         messageId: message.id,
         questionId: details.question_id,
         index,
+        header: first.header,
+        title: first.question ?? description ?? 'Question from the agent',
+        questionCount: Math.max(1, first.count),
       })
     }
   })

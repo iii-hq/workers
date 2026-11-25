@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/types/chat'
 import { MessageList } from './MessageList'
+import type { OffscreenQuestions, QuestionJumps } from './question-jump'
 
 const ask: Message = {
   id: 'fc_ask',
@@ -39,7 +40,7 @@ function layout(cardTop: number) {
       if (el.dataset.messageList !== undefined) {
         return DOMRect.fromRect({ x: 0, y: 0, width: 800, height: 600 })
       }
-      if (el.dataset.messageId === 'fc_ask') {
+      if (el.dataset.messageId?.startsWith('fc_ask')) {
         return DOMRect.fromRect({ x: 0, y: cardTop, width: 700, height: 200 })
       }
       return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 })
@@ -63,10 +64,12 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-let reported: { count: number; direction: string; jump: () => void } | null =
-  null
+let reported: (OffscreenQuestions & { jumps: QuestionJumps }) | null = null
 
-async function render(awaitingQuestionIds: readonly string[]) {
+async function render(
+  awaitingQuestionIds: readonly string[],
+  messages: Message[] = [ask, reply],
+) {
   reported = null
   await act(() =>
     root.render(
@@ -74,10 +77,10 @@ async function render(awaitingQuestionIds: readonly string[]) {
       // measuring frame stuck and nothing was ever reported.
       <StrictMode>
         <MessageList
-          messages={[ask, reply]}
+          messages={messages}
           awaitingQuestionIds={awaitingQuestionIds}
-          onQuestionsOffscreen={(offscreen, jump) => {
-            reported = { ...offscreen, jump }
+          onQuestionsOffscreen={(offscreen, jumps) => {
+            reported = { ...offscreen, jumps }
           }}
         />
       </StrictMode>,
@@ -101,7 +104,7 @@ describe('waiting question cards out of view', () => {
     // The list draws no pill of its own over the transcript.
     expect(container.querySelector('[data-question-jump]')).toBeNull()
 
-    await act(() => reported?.jump())
+    await act(() => reported?.jumps.next())
     const card = container.querySelector('[data-message-id="fc_ask"]')
     expect(card?.contains(document.activeElement)).toBe(true)
   })
@@ -148,5 +151,48 @@ describe('waiting question cards out of view', () => {
     expect(container.querySelector(askCard)).toBeNull()
     await act(() => root.render(view(['fc_ask'])))
     expect(container.querySelector(askCard)).not.toBeNull()
+  })
+
+  // Anthony's report on #1890: the third click went back to the first card.
+  it('each jump goes on to the next waiting card, wrapping after the last', async () => {
+    const asks = [1, 2, 3].map((n) => ({
+      ...ask,
+      id: `fc_ask${n}`,
+      functionCallId: `call-ask${n}`,
+      createdAt: n,
+      output: {
+        content: [{ type: 'text', text: 'awaiting answer' }],
+        details: { status: 'awaiting_answer', question_id: `q${n}` },
+      },
+    })) as Message[]
+    const between = (n: number) =>
+      ({
+        id: `a${n}`,
+        role: 'assistant',
+        content: `Text ${n}`,
+        createdAt: n + 0.5,
+      }) as Message
+    // Every card measures as out of view, as when centring one pushes the
+    // others away: the walk must not depend on geometry.
+    layout(-900)
+    await render(
+      ['fc_ask1', 'fc_ask2', 'fc_ask3'],
+      [asks[0], between(1), asks[1], between(2), asks[2], reply],
+    )
+    const landed: string[] = []
+    for (let i = 0; i < 4; i++) {
+      await act(() => reported?.jumps.next())
+      await wait(50)
+      landed.push(
+        document.activeElement?.closest<HTMLElement>('[data-message-id]')
+          ?.dataset.messageId ?? '?',
+      )
+    }
+    expect(landed).toEqual(['fc_ask1', 'fc_ask2', 'fc_ask3', 'fc_ask1'])
+
+    // A card picked from the list continues the walk from there.
+    await act(() => reported?.jumps.jumpTo('fc_ask3'))
+    await wait(50)
+    expect(reported?.target).toBe('fc_ask1')
   })
 })
