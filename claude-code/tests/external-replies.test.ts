@@ -71,16 +71,30 @@ describe('lookup', () => {
     });
   });
 
-  it.each(['NaN', 'Infinity', '-Infinity'])(
-    'rejects the nonstandard JSON token %s in a complete active record',
-    async (token) => {
-      await withSyntheticHost(async (s) => {
-        const row = JSON.stringify(record(1, null, 'user', ['INVALID_NUMBER']));
-        await writeFile(s.file, row.replace('"INVALID_NUMBER"', token) + '\n');
-        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
-      });
-    },
-  );
+  it.each([
+    'NaN',
+    'Infinity',
+    '-Infinity',
+  ])('rejects the nonstandard JSON token %s in a complete active record', async (token) => {
+    await withSyntheticHost(async (s) => {
+      const row = JSON.stringify(record(1, null, 'user', ['INVALID_NUMBER']));
+      await writeFile(s.file, row.replace('"INVALID_NUMBER"', token) + '\n');
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('rejects malformed user message blocks on the active chain', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, lines(record(1, null, 'user', [42])));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', [{ type: 42 }]), answer(2, 1, 'do not disclose')),
+      );
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
 
   it('selects complete visible blocks on the active branch and never exports raw records', async () => {
     await withSyntheticHost(async (s) => {

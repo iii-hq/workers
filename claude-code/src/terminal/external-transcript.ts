@@ -140,8 +140,13 @@ def scan(sid, mode, previous):
         require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
         if row['type'] == 'user':
             msg = row['message']
-            require(isinstance(msg, dict) and msg.get('role', 'user') == 'user'
-                    and isinstance(msg.get('content'), (str, list)))
+            require(isinstance(msg, dict) and msg.get('role', 'user') == 'user')
+            content = msg.get('content')
+            require(isinstance(content, str) or (
+                isinstance(content, list) and all(
+                    isinstance(part, dict) and isinstance(part.get('type'), str) for part in content
+                )
+            ))
         parent = row['parentUuid']
         if parent is not None:
             require(parent in nodes and nodes[parent][1] < pos)
