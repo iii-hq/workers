@@ -31,14 +31,23 @@ const answer = (n: number, parent: number | null, text: string) =>
   record(n, parent, 'assistant', text);
 const toolResultTranscript = (
   fields: { content?: unknown; tool_use_id?: unknown },
-  toolUse: { id?: unknown } = { id: 'toolu_1' },
+  toolUse: { id?: unknown; name?: unknown; input?: unknown } = {},
 ) =>
   lines(
     record(1, null, 'user', 'synthetic prompt'),
-    record(2, 1, 'assistant', [{ type: 'tool_use', name: 'Read', input: {}, ...toolUse }]),
+    record(2, 1, 'assistant', [
+      { type: 'tool_use', id: 'toolu_1', name: 'Read', input: {}, ...toolUse },
+    ]),
     record(3, 2, 'user', [{ type: 'tool_result', tool_use_id: 'toolu_1', ...fields }]),
     answer(4, 3, 'synthetic answer'),
   );
+const malformedToolUses = [
+  { name: 'numeric ID', fields: { id: 42 } },
+  { name: 'missing ID', fields: { id: undefined } },
+  { name: 'numeric name', fields: { name: 42 } },
+  { name: 'missing name', fields: { name: undefined } },
+  { name: 'missing input', fields: { input: undefined } },
+];
 const malformedToolResults = [
   { name: 'numeric content', fields: { content: 42 } },
   { name: 'numeric block', fields: { content: [42] } },
@@ -136,9 +145,9 @@ describe('lookup', () => {
     });
   });
 
-  it.each([42, undefined])('rejects an active assistant tool_use with ID %s', async (id) => {
+  it.each(malformedToolUses)('rejects an active tool use with $name', async ({ fields }) => {
     await withSyntheticHost(async (s) => {
-      await writeFile(s.file, toolResultTranscript({}, { id }));
+      await writeFile(s.file, toolResultTranscript({}, fields));
       await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
       expect(s.host.snapshots).toEqual([]);
     });
@@ -208,7 +217,9 @@ describe('lookup', () => {
         lines(
           record(1, null, 'user', 'hello'),
           answer(2, 1, 'abandoned'),
-          record(3, 1, 'assistant', [{ type: 'tool_use', id: 'toolu_1', input: 'private' }]),
+          record(3, 1, 'assistant', [
+            { type: 'tool_use', id: 'toolu_1', name: 'Read', input: 'private' },
+          ]),
           record(4, 3, 'user', [
             { type: 'tool_result', tool_use_id: 'toolu_1', content: 'private' },
           ]),
@@ -503,9 +514,9 @@ describe('observation', () => {
     });
   });
 
-  it.each([42, undefined])('rejects a baseline assistant tool_use with ID %s', async (id) => {
+  it.each(malformedToolUses)('rejects a baseline tool use with $name', async ({ fields }) => {
     await withSyntheticHost(async (s) => {
-      await writeFile(s.file, toolResultTranscript({}, { id }));
+      await writeFile(s.file, toolResultTranscript({}, fields));
       await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
       expect(s.timers.size).toBe(0);
     });

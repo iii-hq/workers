@@ -105,6 +105,20 @@ instead of bolting anything onto this one.
   functions you observe with args `{ session_id }` (at most 256 observers
   each); never call them.
 
+## Observing events
+
+Use `claude::agents::get` for the current reply. To react to later replies without polling or opening the session, observe the private `claude::agents::on-reply` event; do not call it. Pass the listed session’s full `claude_session_id` as a watch argument, not a filter. Admission requires live `external_sessions: true` and a readable transcript.
+
+```typescript
+iii.registerFunction('consumer::on-reply', ({ output }) => handleReply(output.reply));
+const watch = iii.observe({
+  function_id: 'claude::agents::on-reply', args: { claude_session_id }, capture: ['output'],
+}, 'consumer::on-reply');
+await watch.ready();
+```
+
+Each watch starts at its own baseline and does not replay the current reply. A reply between lookup and subscription can be missed. Dispose the watch when finished. See `engine::functions::info` for the event schema.
+
 ## The terminal half
 
 The same worker also runs Claude Code as a terminal page on the console: it

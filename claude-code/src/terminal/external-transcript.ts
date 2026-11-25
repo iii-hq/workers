@@ -122,6 +122,7 @@ def message_content(row, role):
             require(isinstance(part.get('text'), str))
         if part['type'] == 'tool_use':
             require(isinstance(part.get('id'), str))
+            require(isinstance(part.get('name'), str) and 'input' in part)
         if part['type'] == 'tool_result':
             require(isinstance(part.get('tool_use_id'), str))
             if 'content' in part:
