@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Checkbox } from '@/components/shadcn/checkbox'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { isAutoAcceptable } from '@/lib/backend/auto-accept-policy'
 import type { FunctionEntry } from '@/lib/functions'
@@ -288,30 +289,17 @@ interface TristateProps {
 }
 
 function Tristate({ state, onClick, 'aria-label': label }: TristateProps) {
-  const ariaChecked =
-    state === 'checked' ? true : state === 'mixed' ? 'mixed' : false
+  // The shadcn checkbox, like every other choice in the ADE: a square that
+  // ticks when the whole subtree is allowed and dashes when only part is.
   return (
-    // biome-ignore lint/a11y/useSemanticElements: native <input type="checkbox"> can't render the tri-state "mixed" glyph with custom styling; button + role="checkbox" + aria-checked="mixed" is the WAI-ARIA tri-state pattern
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={ariaChecked}
+    <Checkbox
+      checked={state === 'checked'}
+      indeterminate={state === 'mixed'}
       aria-label={label}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
-      className={cn(
-        'shrink-0 size-4 rounded-sm flex items-center justify-center transition-colors',
-        state === 'unchecked' && 'bg-surface hover:bg-surface-hover',
-        state === 'checked' && 'bg-ink text-bg',
-        state === 'mixed' && 'bg-ink-ghost text-bg',
-      )}
-    >
-      <span aria-hidden className="text-meta leading-none">
-        {state === 'checked' ? '✓' : state === 'mixed' ? '–' : ''}
-      </span>
-    </button>
+      onCheckedChange={() => onClick()}
+      onClick={(event) => event.stopPropagation()}
+      className="shrink-0"
+    />
   )
 }
 
