@@ -4,6 +4,7 @@ import {
   endsOnQuestion,
   hasWorkingConversation,
   isWaitingOnAnswer,
+  questionCardsIn,
 } from './chat-activity'
 
 describe('chat screen activity', () => {
@@ -115,5 +116,82 @@ describe('waiting on the person’s answer', () => {
       messages: [user, accepted],
     } as Conversation
     expect(isWaitingOnAnswer(conversation, false)).toBe(false)
+  })
+})
+
+describe('question cards in the transcript', () => {
+  const call = (id: string, output: unknown, extra: Partial<Message> = {}) =>
+    ({
+      id,
+      role: 'function-call',
+      functionId: 'harness::ask',
+      input: {},
+      output,
+      createdAt: 1,
+      ...extra,
+    }) as Message
+  const card = (questionId: string) => ({
+    content: [{ type: 'text', text: 'awaiting answer' }],
+    details: { status: 'awaiting_answer', question_id: questionId },
+  })
+
+  it('lists every accepted card, oldest first, with its question id', () => {
+    const messages = [
+      call('fc_1', card('q1')),
+      { id: 'u', role: 'user', content: 'x', createdAt: 2 } as Message,
+      // The bare details shape (no content envelope) counts too.
+      call('fc_2', { status: 'awaiting_answer', question_id: 'q2' }),
+    ]
+    expect(questionCardsIn(messages)).toEqual([
+      {
+        messageId: 'fc_1',
+        questionId: 'q1',
+        index: 0,
+        title: 'Question from the agent',
+        questionCount: 1,
+      },
+      {
+        messageId: 'fc_2',
+        questionId: 'q2',
+        index: 2,
+        title: 'Question from the agent',
+        questionCount: 1,
+      },
+    ])
+  })
+
+  it('skips running, failed, rejected and other functions’ calls', () => {
+    expect(
+      questionCardsIn([
+        call('running', card('q1'), { running: true } as Partial<Message>),
+        call('failed', { error: 'boom' }),
+        call('rejected', { details: { status: 'invalid' } }),
+        call('no-id', { details: { status: 'awaiting_answer' } }),
+        call('other', card('q5'), {
+          functionId: 'harness::send',
+        } as Partial<Message>),
+      ]),
+    ).toEqual([])
+  })
+
+  it('reads the first question as the card title, with its header and count', () => {
+    const [card] = questionCardsIn([
+      call('fc_1', {
+        content: [{ type: 'text', text: 'awaiting answer' }],
+        details: {
+          status: 'awaiting_answer',
+          question_id: 'q1',
+          questions: [
+            { header: 'Colour', question: 'Which colour?', options: [] },
+            { header: 'Size', question: 'Which size?', options: [] },
+          ],
+        },
+      }),
+    ])
+    expect(card).toMatchObject({
+      header: 'Colour',
+      title: 'Which colour?',
+      questionCount: 2,
+    })
   })
 })

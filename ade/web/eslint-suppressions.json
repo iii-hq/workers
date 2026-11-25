@@ -189,7 +189,7 @@
   },
   "src/components/chat/MessageList.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "shadcn/no-inline-styles": {
       "count": 1
@@ -198,7 +198,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 15
+      "count": 2
     }
   },
   "src/components/chat/ModelLibraryDialog.tsx": {

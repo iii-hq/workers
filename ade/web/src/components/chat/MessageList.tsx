@@ -45,9 +45,9 @@ import {
   registrationFromRow,
 } from '@/components/observer-activity/model'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
-import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { ImageViewer } from '@/components/ui/ImageViewer'
+import { JumpPill } from '@/components/ui/JumpPill'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
@@ -79,6 +79,12 @@ import { functionCallGroups } from './function-call-groups'
 import { imageZoomTarget } from './image-zoom-target'
 import { Message, type SpawnTaskContext } from './Message'
 import { ModelWaitingIndicator } from './ModelWaitingIndicator'
+import {
+  type OffscreenQuestions,
+  type QuestionJumps,
+  questionCardNode,
+  useOffscreenQuestions,
+} from './question-jump'
 import {
   nextTailScrollTop,
   type PrependScrollMetrics,
@@ -114,10 +120,6 @@ import {
 import type { TurnVisualPhase } from './turn-visual-state'
 import './chat-motion.css'
 import './tool-group.css'
-
-// viewport: phone chrome — the sm and md utilities here are the console's
-// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
-// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 interface MessageListProps {
   messages: MessageType[]
@@ -201,6 +203,22 @@ interface MessageListProps {
   focusMessageId?: string | null
   onFocusMessageHandled?: () => void
   /**
+   * Question cards (`harness::ask`) that still wait on the person, as
+   * message ids, oldest first. Their rows stay mounted, and the list
+   * reports which are out of view (`onQuestionsOffscreen`).
+   */
+  awaitingQuestionIds?: readonly string[]
+  /**
+   * Called when the waiting cards out of view change, with the jumps that
+   * centre a card and focus its first answer control: `next` walks the
+   * waiting cards in order (wrapping), `jumpTo` lands on one. The owner
+   * shows the notice (by the composer, not over the transcript).
+   */
+  onQuestionsOffscreen?: (
+    offscreen: OffscreenQuestions,
+    jumps: QuestionJumps,
+  ) => void
+  /**
    * Where the loaded window ends at the top (`Conversation.history`). Drives
    * the status row above the first message and the upward infinite scroll:
    * while `hasMore`, a sentinel entering the viewport asks `onLoadOlder` for
@@ -224,6 +242,7 @@ interface MessageListProps {
 }
 
 const ACTIVITY_RESULT_DWELL_MS = 250
+const NO_QUESTIONS: readonly string[] = []
 
 /**
  * How far above the viewport the top sentinel counts as "reached". A page is
@@ -534,6 +553,8 @@ export function MessageList({
   observersById,
   focusMessageId,
   onFocusMessageHandled,
+  awaitingQuestionIds = NO_QUESTIONS,
+  onQuestionsOffscreen,
   history,
   onLoadOlder,
   onLoadActivityEntries,
@@ -658,6 +679,10 @@ export function MessageList({
     }
     return keys
   }, [flatRows])
+  const awaitingQuestionSet = useMemo(
+    () => new Set(awaitingQuestionIds),
+    [awaitingQuestionIds],
+  )
   // Placeholders a display renderer keeps visible in a folded batch (a
   // sub-agent card) are fetched when their page arrives, not when their row
   // mounts: a windowed row mounts as it scrolls in, and a card landing then
@@ -727,6 +752,12 @@ export function MessageList({
       ? rowIndexById.get(focusMessageId)
       : undefined
     if (focusIndex !== undefined) pinned.add(focusIndex)
+    // A waiting question card stays mounted: it keeps what the person has
+    // ticked so far, and the jump pill can measure where it is.
+    for (const id of awaitingQuestionIds) {
+      const index = rowIndexById.get(id)
+      if (index !== undefined) pinned.add(index)
+    }
     if (selectedRows) {
       const anchor = rowIndexById.get(selectedRows.anchor)
       const focus = rowIndexById.get(selectedRows.focus)
@@ -738,7 +769,14 @@ export function MessageList({
       }
     }
     return pinned
-  }, [flatRows, focusMessageId, rowIndexById, selectedRows, stickyRowKeys])
+  }, [
+    flatRows,
+    focusMessageId,
+    rowIndexById,
+    selectedRows,
+    stickyRowKeys,
+    awaitingQuestionIds,
+  ])
   const prevFirstIdRef = useRef<string | undefined>(undefined)
   const renderedRowKeysRef = useRef<readonly string[]>([])
   // Only rows already mounted: one first mounted in this commit would add its
@@ -1005,6 +1043,21 @@ export function MessageList({
     const cap = setTimeout(finishOpening, OPEN_SETTLE_MAX_MS)
     return () => clearTimeout(cap)
   }, [transcriptHydrated, noteOpeningLayout, finishOpening])
+  // The card the last notice jump landed on: the next jump goes on from
+  // there. Forgotten once that card no longer waits.
+  const [landedQuestionId, setLandedQuestionId] = useState<string | null>(null)
+  const lastLandedQuestion =
+    landedQuestionId && awaitingQuestionIds.includes(landedQuestionId)
+      ? landedQuestionId
+      : null
+  const { offscreen: offscreenQuestions, check: checkQuestions } =
+    useOffscreenQuestions(
+      awaitingQuestionIds,
+      containerRef,
+      contentRef,
+      !opening,
+      lastLandedQuestion,
+    )
   useEffect(() => {
     if (!opening) return
     const timer = setTimeout(
@@ -1242,8 +1295,14 @@ export function MessageList({
       // A prepend restores against the offset the reader was at, not the
       // one at the last commit.
       recordScrollMetrics(container)
+      checkQuestions()
     },
-    [cancelTailAnimation, recordScrollMetrics, transitionTailState],
+    [
+      cancelTailAnimation,
+      recordScrollMetrics,
+      transitionTailState,
+      checkQuestions,
+    ],
   )
 
   const handleWheel = useCallback(
@@ -1334,6 +1393,89 @@ export function MessageList({
     scrollRowToCenter,
     transitionTailState,
   ])
+
+  // Land on a waiting card: center it, flash it, and put focus on its first
+  // control so the keyboard can answer at once. The next notice jump goes on
+  // from here.
+  const landOnQuestion = useCallback(
+    (target: string) => {
+      const container = containerRef.current
+      const content = contentRef.current
+      if (!container || !content) return
+      setLandedQuestionId(target)
+      // The card itself, or failing that the transcript row that holds it
+      // (waiting rows are pinned, so it is mounted): a jump always lands.
+      const index = rowIndexById.get(target)
+      const rowKey = index === undefined ? undefined : flatRows[index]?.key
+      const card =
+        questionCardNode(content, target) ??
+        Array.from(
+          content.querySelectorAll<HTMLElement>('[data-message-row]'),
+        ).find(
+          (node) =>
+            rowKey !== undefined &&
+            node.dataset.messageRow?.split(' ').includes(rowKey),
+        )
+      if (!card) {
+        if (index !== undefined) {
+          cancelTailAnimation()
+          transitionTailState('paused')
+          virtualizer.scrollToIndex(index, { align: 'center' })
+        }
+        return
+      }
+      cancelTailAnimation()
+      transitionTailState('paused')
+      scrollRowToCenter(container, card)
+      // The answer controls first: the card's own header toggle comes before
+      // them in the DOM, and landing there would not let the keyboard answer.
+      const control =
+        card.querySelector<HTMLElement>(
+          'input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
+        ) ?? card.querySelector<HTMLElement>('button:not([disabled])')
+      ;(control ?? card).focus({ preventScroll: true })
+      if (typeof card.animate === 'function' && !reducedMotionRef.current) {
+        card.animate(
+          [
+            {
+              backgroundColor:
+                'color-mix(in srgb, currentColor 6%, transparent)',
+            },
+            { backgroundColor: 'transparent' },
+          ],
+          { duration: 900, easing: 'ease-out' },
+        )
+      }
+    },
+    [
+      cancelTailAnimation,
+      flatRows,
+      rowIndexById,
+      scrollRowToCenter,
+      transitionTailState,
+      virtualizer,
+    ],
+  )
+
+  // Read through refs, so the actions keep one identity and a new target
+  // does not re-report an unchanged state.
+  const landOnQuestionRef = useRef(landOnQuestion)
+  landOnQuestionRef.current = landOnQuestion
+  const nextQuestionRef = useRef(offscreenQuestions.target)
+  nextQuestionRef.current = offscreenQuestions.target
+  const questionJumps = useMemo<QuestionJumps>(
+    () => ({
+      next: () => {
+        const target = nextQuestionRef.current
+        if (target) landOnQuestionRef.current(target)
+      },
+      jumpTo: (id) => landOnQuestionRef.current(id),
+    }),
+    [],
+  )
+  useEffect(() => {
+    onQuestionsOffscreen?.(offscreenQuestions, questionJumps)
+  }, [offscreenQuestions, onQuestionsOffscreen, questionJumps])
 
   /* External landing (trace → "go to message"): center the requested row
  once it exists, then hand the request back to the owner. Tail following
@@ -1469,6 +1611,7 @@ export function MessageList({
             readerIsIn={readerIsIn}
             defaultOpenCalls={defaultOpenCalls}
             focusMessageId={focusMessageId}
+            awaitingQuestionIds={awaitingQuestionSet}
             onLoadActivityEntries={onLoadActivityEntries}
             onShowObservers={onShowObservers}
             onResolveApproval={onResolveApproval}
@@ -1695,28 +1838,22 @@ export function MessageList({
         </div>
       ) : null}
       {tailState === 'paused' ? (
-        <Button
-          type="button"
-          variant="pill"
-          size="sm"
-          className={cn(
-            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md ring-1 ring-border sm:h-8 sm:text-[0.8125rem]',
-            hasPendingApproval && 'text-warn',
-          )}
-          onClick={hasPendingApproval ? handleJumpToAction : handleJumpToLatest}
-          aria-label={
-            hasPendingApproval
-              ? 'jump to action required'
-              : 'jump to latest message'
-          }
-        >
-          <span
-            className="absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-            aria-hidden="true"
-          />
-          <ArrowDown aria-hidden="true" className="stroke-current" />
-          <span>{hasPendingApproval ? 'action required' : 'latest'}</span>
-        </Button>
+        <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
+          <JumpPill
+            tone={hasPendingApproval ? 'warn' : 'default'}
+            onClick={
+              hasPendingApproval ? handleJumpToAction : handleJumpToLatest
+            }
+            aria-label={
+              hasPendingApproval
+                ? 'jump to action required'
+                : 'jump to latest message'
+            }
+            icon={<ArrowDown aria-hidden="true" className="stroke-current" />}
+          >
+            {hasPendingApproval ? 'action required' : 'latest'}
+          </JumpPill>
+        </div>
       ) : null}
     </div>
   )
@@ -1816,6 +1953,9 @@ interface FunctionCallGroupProps {
   agentName?: string
   /** External landing target — a hidden matching item expands the group. */
   focusMessageId?: string | null
+  /** Waiting question cards: shown even while the batch is folded, so the
+   *  composer's notice always has a card to land on. */
+  awaitingQuestionIds?: ReadonlySet<string>
   onLoadActivityEntries?: MessageListProps['onLoadActivityEntries']
   onShowObservers?: () => void
 }
@@ -1918,6 +2058,7 @@ function FunctionCallGroup({
   workingDir,
   agentName,
   focusMessageId,
+  awaitingQuestionIds,
   onLoadActivityEntries,
   onShowObservers,
 }: FunctionCallGroupProps) {
@@ -1978,6 +2119,7 @@ function FunctionCallGroup({
         renderer.isMatch(functionId) && renderer.metadata?.display === true,
     )
   const collapsedItems = collapsedTimelineActivities(row.items, (call) => {
+    if (awaitingQuestionIds?.has(call.id)) return true
     // Observe receipts stay visible as durable activity receipts without
     // opting the engine renderer into the richer `display` presentation.
     if (call.functionId === 'harness::observe') return true
