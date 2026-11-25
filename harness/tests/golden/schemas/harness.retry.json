@@ -1,0 +1,30 @@
+{
+  "function_id": "harness::retry",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "RetryRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "turn_id": {
+        "description": "The turn that re-runs the failed one.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "turn_id"
+    ],
+    "title": "RetryResponse",
+    "type": "object"
+  }
+}

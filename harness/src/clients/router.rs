@@ -29,7 +29,7 @@ use crate::error::HarnessError;
 use crate::types::event::{
     AssistantMessageEvent, ErrorKind, FunctionCallArgumentsPreview, StopReason,
 };
-use crate::types::message::{AssistantMessage, empty_assistant};
+use crate::types::message::{AssistantMessage, ErrorDetails, empty_assistant};
 use crate::types::model::{AgentFunction, Model, ProviderDefaults, ThinkingLevel};
 
 /// Rewrite every attachment reference in a router-bound message list (wire
@@ -155,6 +155,9 @@ pub struct ChatError {
     pub detail: Option<String>,
     pub kind: Option<ErrorKind>,
     pub retryable: Option<bool>,
+    /// The error's details beyond its kind (D147): a usage limit, its window
+    /// and its reset.
+    pub error_details: Option<ErrorDetails>,
 }
 
 impl ChatError {
@@ -162,12 +165,16 @@ impl ChatError {
         mut self,
         terminal_detail: Option<&str>,
         terminal_kind: Option<ErrorKind>,
+        terminal_details: Option<&ErrorDetails>,
     ) -> Self {
         if self.detail.is_none() {
             self.detail = terminal_detail.map(str::to_string);
         }
         if self.kind.is_none() {
             self.kind = terminal_kind;
+        }
+        if self.error_details.is_none() {
+            self.error_details = terminal_details.cloned();
         }
         if self.retryable.is_none() {
             self.retryable = self.kind.map(ErrorKind::is_retryable);
@@ -203,6 +210,10 @@ fn response_chat_error(response: &Value) -> Option<ChatError> {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
         retryable: error.get("retryable").and_then(Value::as_bool),
+        error_details: error
+            .get("error_details")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
     })
 }
 
@@ -214,6 +225,7 @@ fn dispatch_chat_error(error: &iii_sdk::errors::Error) -> ChatError {
             detail: Some(error.to_string()),
             kind: None,
             retryable: None,
+            error_details: None,
         },
         _ => ChatError {
             code: None,
@@ -221,6 +233,7 @@ fn dispatch_chat_error(error: &iii_sdk::errors::Error) -> ChatError {
             detail: Some(error.to_string()),
             kind: None,
             retryable: None,
+            error_details: None,
         },
     }
 }
@@ -631,6 +644,9 @@ impl RouterClient {
         let terminal_kind = final_message
             .as_ref()
             .and_then(|message| message.error_kind);
+        let terminal_details = final_message
+            .as_ref()
+            .and_then(|message| message.error_details.clone());
         let (ok, response_error) = match &response {
             Ok(v) => {
                 let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
@@ -638,8 +654,13 @@ impl RouterClient {
             }
             Err(e) => (false, Some(dispatch_chat_error(e))),
         };
-        let response_error = response_error
-            .map(|error| error.with_terminal_fallback(terminal_error.as_deref(), terminal_kind));
+        let response_error = response_error.map(|error| {
+            error.with_terminal_fallback(
+                terminal_error.as_deref(),
+                terminal_kind,
+                terminal_details.as_ref(),
+            )
+        });
 
         let mut message = final_message.unwrap_or_else(|| {
             let mut m = empty_assistant(params.provider.as_deref().unwrap_or(""), &params.model);
@@ -663,6 +684,9 @@ impl RouterClient {
             } else {
                 ErrorKind::Transient
             });
+            m.error_details = response_error
+                .as_ref()
+                .and_then(|error| error.error_details.clone());
             m
         });
 
@@ -674,6 +698,9 @@ impl RouterClient {
         {
             message.error_message = Some(error.message.clone());
             message.error_kind = error.kind.or(message.error_kind);
+            if error.error_details.is_some() {
+                message.error_details = error.error_details.clone();
+            }
         }
 
         let stop_reason = Some(message.stop_reason);
@@ -691,6 +718,7 @@ impl RouterClient {
                     detail: terminal_error.or_else(|| message.error_message.clone()),
                     kind,
                     retryable: kind.map(ErrorKind::is_retryable),
+                    error_details: message.error_details.clone(),
                 }
             })
         });
@@ -1370,6 +1398,46 @@ mod error_contract_tests {
     }
 
     #[test]
+    fn a_usage_limit_passes_through_from_the_response_or_the_terminal_message() {
+        let limit = ErrorDetails {
+            usage_limit: true,
+            window: Some("week".into()),
+            resets_at_ms: Some(1_700_000_000_000),
+        };
+        let parsed = response_chat_error(&json!({
+            "ok": false,
+            "error": {
+                "code": "router/provider_rate_limited",
+                "message": "This account reached its usage limit.",
+                "kind": "rate_limited",
+                "retryable": false,
+                "error_details": {
+                    "usage_limit": true,
+                    "window": "week",
+                    "resets_at_ms": 1_700_000_000_000u64
+                }
+            }
+        }))
+        .expect("structured error");
+        assert_eq!(parsed.error_details.as_ref(), Some(&limit));
+
+        // An older router sends no details on its ErrorShape: the terminal
+        // message's own details stand in.
+        let legacy = response_chat_error(&json!({
+            "ok": false,
+            "error": { "code": "router/provider_rate_limited", "message": "Limited." }
+        }))
+        .expect("legacy error")
+        .with_terminal_fallback(None, Some(ErrorKind::RateLimited), Some(&limit));
+        assert_eq!(legacy.error_details, Some(limit));
+        assert_eq!(
+            legacy.retryable,
+            Some(true),
+            "the kind alone stays retryable"
+        );
+    }
+
+    #[test]
     fn legacy_response_keeps_code_and_message_and_uses_terminal_fallbacks() {
         let parsed = response_chat_error(&json!({
             "ok": false,
@@ -1382,6 +1450,7 @@ mod error_contract_tests {
         .with_terminal_fallback(
             Some("provider credentials are not configured"),
             Some(ErrorKind::Permanent),
+            None,
         );
 
         assert_eq!(parsed.code.as_deref(), Some("router/not_configured"));

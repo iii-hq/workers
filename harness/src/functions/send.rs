@@ -1544,7 +1544,15 @@ fn build_options(
     let opts = req.options.clone().unwrap_or_default();
     let mut thinking_level = opts.thinking_level;
     // `{}` is the explicit reset; it reaches the router as no options at all.
-    let mut provider_options = opts.provider_options.filter(|map| !map.is_empty());
+    // The Claude Code account is the harness's to resolve when the turn
+    // starts (chat-projects D139): a client's is dropped.
+    let mut provider_options = opts
+        .provider_options
+        .map(|mut map| {
+            crate::accounts::strip_account_option(&mut map);
+            map
+        })
+        .filter(|map| !map.is_empty());
     if let Some(agent) = agent {
         agent.apply_reasoning(
             provider.as_deref(),
@@ -2140,6 +2148,7 @@ pub(crate) async fn seed_new(
         result_error: None,
         stop_reason: None,
         failure: None,
+        account: None,
         dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         native_names: Default::default(),
         validation_retries: 0,
@@ -2879,6 +2888,7 @@ mod tests {
             result_error: None,
             stop_reason: None,
             failure: None,
+            account: None,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,
@@ -3499,6 +3509,51 @@ mod tests {
         assert!(compiled.allows("state::set"));
         assert!(compiled.allows("harness::spawn"));
         assert!(compiled.allows("shell::run"));
+    }
+
+    #[test]
+    fn build_options_drops_a_clients_claude_code_account() {
+        let cfg = WorkerConfig::default();
+        let request = |provider_options: serde_json::Value| SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: Some("claude-code/claude-opus-4-8".into()),
+            provider: Some("claude-code".into()),
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                provider_options: Some(serde_json::from_value(provider_options).unwrap()),
+                ..Default::default()
+            }),
+        };
+        let build = |req: &SendRequest| {
+            build_options(
+                &cfg,
+                req,
+                "claude-code/claude-opus-4-8".into(),
+                Some("claude-code".into()),
+                None,
+                crate::prompt::DEFAULT,
+            )
+        };
+        let opts = build(&request(serde_json::json!({
+            "claude-code": { "account": "personal", "effort": "high" },
+            "acme": { "account": "kept" }
+        })));
+        let provider_options = opts.provider_options.unwrap();
+        assert_eq!(
+            provider_options["claude-code"],
+            serde_json::json!({ "effort": "high" })
+        );
+        assert_eq!(
+            provider_options["acme"],
+            serde_json::json!({ "account": "kept" })
+        );
+        // Naming only an account names no options: the turn inherits as usual.
+        let opts = build(&request(serde_json::json!({
+            "claude-code": { "account": "personal" }
+        })));
+        assert_eq!(opts.provider_options, None);
     }
 
     #[test]

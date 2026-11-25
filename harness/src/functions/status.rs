@@ -40,6 +40,10 @@ pub struct StatusReport {
     pub partial_result_available: Option<bool>,
     pub depth: Option<u32>,
     pub pending_function_calls: Option<Vec<String>>,
+    /// The Claude Code account the turn runs on and why (`claude-code`
+    /// turns, chat-projects phase 4). Verbose only.
+    #[serde(default)]
+    pub account: Option<crate::accounts::AccountRef>,
     pub children: Vec<ChildRef>,
     /// The session owns an armed wake (a one-shot notify subscription, claimed
     /// or not, until its delivery has seeded the woken turn), or its finished
@@ -71,7 +75,8 @@ pub struct StatusReport {
     pub stop_reason: Option<String>,
     /// Why a `failed` turn failed: `code`, and `retryable` when the failure is
     /// temporary, so a later send into this session may succeed. Present in the
-    /// lean report too, only on a failed turn.
+    /// lean report too, only on a failed turn; its `details` (a usage limit's
+    /// window, reset and account) are verbose only.
     #[serde(default)]
     pub failure: Option<TurnFailure>,
     /// The last generate step's context accounting (budget, categories,
@@ -130,6 +135,7 @@ impl Serialize for StatusReport {
                 "pending_function_calls",
                 &self.pending_function_calls,
             )?;
+            serialize_optional(&mut report, "account", &self.account)?;
         }
 
         report.serialize_entry("children", &self.children)?;
@@ -157,7 +163,16 @@ impl Serialize for StatusReport {
             report.serialize_entry("result_error", &self.result_error)?;
         }
         serialize_optional(&mut report, "stop_reason", &self.stop_reason)?;
-        serialize_optional(&mut report, "failure", &self.failure)?;
+        if verbose {
+            serialize_optional(&mut report, "failure", &self.failure)?;
+        } else {
+            // The lean report is the model's, and stays as it was.
+            let lean = self.failure.as_ref().map(|failure| TurnFailure {
+                details: None,
+                ..failure.clone()
+            });
+            serialize_optional(&mut report, "failure", &lean)?;
+        }
 
         report.end()
     }
@@ -277,6 +292,15 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         partial_result_available: req.verbose.then_some(record.result.is_some()),
         depth: req.verbose.then_some(record.depth),
         pending_function_calls: req.verbose.then(|| record.pending_call_ids()),
+        account: req
+            .verbose
+            .then(|| {
+                record
+                    .account
+                    .as_ref()
+                    .map(crate::accounts::TurnAccount::public)
+            })
+            .flatten(),
         children,
         queued,
         result: record.result.clone(),
@@ -380,6 +404,37 @@ mod tests {
         assert_eq!(serialized["status"], "completed");
         assert!(serialized["result_error"].is_null());
         assert_eq!(serialized["stop_reason"], "max_turns");
+    }
+
+    #[test]
+    fn a_usage_limit_and_the_account_show_in_the_verbose_report_only() {
+        let failure = json!({
+            "code": "llm.usage_limit",
+            "retryable": false,
+            "details": {
+                "usage_limit": true,
+                "window": "five_hour",
+                "resets_at_ms": 1_700_000_000_000u64,
+                "account": "work"
+            }
+        });
+        let account = json!({ "id": "work", "source": "project" });
+        let mut report = lean_report(None);
+        report.status = TurnStatus::Failed;
+        report.failure = Some(serde_json::from_value(failure.clone()).unwrap());
+        report.account = Some(serde_json::from_value(account.clone()).unwrap());
+
+        let lean = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            lean["failure"],
+            json!({ "code": "llm.usage_limit", "retryable": false })
+        );
+        assert!(lean.get("account").is_none());
+
+        report.pending_function_calls = Some(Vec::new());
+        let verbose = serde_json::to_value(&report).unwrap();
+        assert_eq!(verbose["failure"], failure);
+        assert_eq!(verbose["account"], account);
     }
 
     #[test]

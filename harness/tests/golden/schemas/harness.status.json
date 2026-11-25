@@ -29,6 +29,49 @@
       }
     ],
     "definitions": {
+      "AccountRef": {
+        "description": "`account {id, source}`: what the verbose `harness::status` and the turn events show.",
+        "properties": {
+          "id": {
+            "description": "The tmux account id.",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/definitions/AccountSource"
+          }
+        },
+        "required": [
+          "id",
+          "source"
+        ],
+        "type": "object"
+      },
+      "AccountSource": {
+        "description": "Why a turn runs on its account (contract D).",
+        "oneOf": [
+          {
+            "description": "The conversation names it (`metadata.claude_account`).",
+            "enum": [
+              "session"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The conversation's project is pinned to it.",
+            "enum": [
+              "project"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "It is the global account (nothing pins the conversation, or it names `\"global\"`).",
+            "enum": [
+              "global"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "AgentMessage": {
         "anyOf": [
           {
@@ -86,6 +129,17 @@
               "$ref": "#/definitions/ContentBlock"
             },
             "type": "array"
+          },
+          "error_details": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a `rate_limited` error says beyond its kind (D147): a Claude Code account's usage limit, its window and its reset. Absent on any other message; a reader that predates it ignores the field."
           },
           "error_kind": {
             "anyOf": [
@@ -540,6 +594,33 @@
         ],
         "type": "string"
       },
+      "ErrorDetails": {
+        "description": "The details of a provider error that its kind does not carry (chat-projects contract C). The kind stays `rate_limited`: a usage limit is that kind with `usage_limit: true`, and neither the router nor the harness's transient resume retries it.",
+        "properties": {
+          "resets_at_ms": {
+            "description": "When the window resets, in unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "usage_limit": {
+            "default": false,
+            "description": "The account reached its plan's usage limit: retrying before the reset cannot succeed.",
+            "type": "boolean"
+          },
+          "window": {
+            "description": "The limit's window: `five_hour` or `week`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "ErrorKind": {
         "enum": [
           "auth_expired",
@@ -786,6 +867,18 @@
       },
       "StatusReport": {
         "properties": {
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AccountRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The Claude Code account the turn runs on and why (`claude-code` turns, chat-projects phase 4). Verbose only."
+          },
           "armed_wakes": {
             "description": "WHAT the session is parked on, when `expects_wake`: each armed wake's watch and deadline, so \"parked 12m on state operation_meta/status — never written\" is readable from the outside instead of the session just looking quietly done.",
             "items": {
@@ -837,7 +930,7 @@
               }
             ],
             "default": null,
-            "description": "Why a `failed` turn failed: `code`, and `retryable` when the failure is temporary, so a later send into this session may succeed. Present in the lean report too, only on a failed turn."
+            "description": "Why a `failed` turn failed: `code`, and `retryable` when the failure is temporary, so a later send into this session may succeed. Present in the lean report too, only on a failed turn; its `details` (a usage limit's window, reset and account) are verbose only."
           },
           "max_transient_resumes": {
             "format": "uint32",
@@ -974,6 +1067,17 @@
             "description": "The failure code, e.g. `router/provider_transient` or `harness.turn_internal`.",
             "type": "string"
           },
+          "details": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TurnFailureDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the code alone does not say: for `llm.usage_limit`, the limit's window and reset and the account that hit it; for `harness.unknown_account`, the account that is gone."
+          },
           "retryable": {
             "description": "The failure is temporary, so a later send into the session may succeed: a provider outage, rate limit or cut stream that outlasted the turn's `max_transient_resumes` recovery generations, or a turn the harness could not schedule.",
             "type": "boolean"
@@ -983,6 +1087,39 @@
           "code",
           "retryable"
         ],
+        "type": "object"
+      },
+      "TurnFailureDetails": {
+        "description": "[`TurnFailure::details`] (chat-projects contract D).",
+        "properties": {
+          "account": {
+            "description": "The tmux account id the turn ran on, or was pinned to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resets_at_ms": {
+            "description": "When the limit's window resets, in unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "usage_limit": {
+            "description": "The Claude Code account reached its plan's usage limit.",
+            "type": "boolean"
+          },
+          "window": {
+            "description": "The limit's window: `five_hour` or `week`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "TurnStatus": {

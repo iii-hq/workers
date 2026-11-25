@@ -1,5 +1,6 @@
 //! The checked-in integration fixtures.
 
+mod account_usage_limit_retry;
 mod adversarial_content_rendering;
 mod agent_identity;
 mod agent_preloaded_functions;
@@ -65,6 +66,7 @@ pub enum ScenarioDriver {
 /// Every fixture, in stable slug order.
 pub fn all() -> Vec<ScenarioFixture> {
     let mut fixtures = vec![
+        account_usage_limit_retry::scenario(),
         adversarial_content_rendering::scenario(),
         agent_identity::scenario(),
         agent_preloaded_functions::scenario(),
@@ -125,7 +127,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 51);
+        assert_eq!(fixtures.len(), 52);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
