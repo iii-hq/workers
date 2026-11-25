@@ -29,6 +29,13 @@ const observe = (s: SyntheticHost, key: string, session = id) => s.client.observ
 const lines = (...rows: unknown[]) => rows.map((r) => `${JSON.stringify(r)}\n`).join('');
 const answer = (n: number, parent: number | null, text: string) =>
   record(n, parent, 'assistant', text);
+const toolResultTranscript = (content: unknown) =>
+  lines(
+    record(1, null, 'user', 'synthetic prompt'),
+    record(2, 1, 'assistant', [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }]),
+    record(3, 2, 'user', [{ type: 'tool_result', tool_use_id: 'toolu_1', content }]),
+    answer(4, 3, 'synthetic answer'),
+  );
 const reads = (s: SyntheticHost) => s.host.calls.filter((c) => c.payload.command === 'python3');
 const seen = (s: SyntheticHost, observer: string) =>
   s.host.deliveries.filter((d) => d.observer === observer).map((d) => d.event.reply);
@@ -91,6 +98,27 @@ describe('lookup', () => {
       for (const block of [{ type: 42 }, { type: 'text' }, { type: 'text', text: 7 }]) {
         await writeFile(s.file, lines(record(1, null, 'user', [block]), answer(2, 1, 'later')));
         await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      }
+    });
+  });
+
+  it('rejects numeric tool result content in an active ancestor', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript(42));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
+    });
+  });
+
+  it('accepts string, block array and omitted tool result content', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const content of [
+        'synthetic result',
+        [{ type: 'text', text: 'synthetic result' }],
+        undefined,
+      ]) {
+        await writeFile(s.file, toolResultTranscript(content));
+        expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
       }
     });
   });
@@ -412,6 +440,14 @@ describe('observation', () => {
       blocked.release();
       expect((await admissions).filter((a) => a.status === 'rejected')).toHaveLength(256);
       expect(reads(s)).toHaveLength(1);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it('rejects baseline admission with numeric tool result content in an active ancestor', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript(42));
+      await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
       expect(s.timers.size).toBe(0);
     });
   });

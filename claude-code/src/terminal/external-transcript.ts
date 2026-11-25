@@ -86,6 +86,8 @@ def message_content(row, role):
         require(isinstance(part, dict) and isinstance(part.get('type'), str))
         if part['type'] == 'text':
             require(isinstance(part.get('text'), str))
+        if part['type'] == 'tool_result' and 'content' in part:
+            require(isinstance(part['content'], (str, list)))
     return content
 
 def visible(row):
