@@ -160,14 +160,14 @@ Read it with session::read-attachment {"session_id":"<sid>","attachment_id":"a_â
 ```
 
 Read a file by making that call when the task needs it; nothing is inlined.
-`session::read-attachment` answers a text file's characters in windows
-(`offset`, `next_offset`), and for a PDF, an office document, an image or any
-other file `how_to_read`: the exact `fp::pipe` calls that convert it to
-markdown (`pdf::to-markdown`, `document::to-markdown`) or save it into the
-working folder for your own tools (unzip an archive, run a script over data),
-or the worker to install when one is missing. When the message also carries
-the file's picture, the block says so before the call. The persisted
-transcript keeps the `file` block.
+`session::read-attachment` answers the characters of a text file, or of an
+office document converted to markdown, in windows (`offset`, `next_offset`),
+and for a PDF, an image or any other file `how_to_read`: the exact `fp::pipe`
+calls that convert it to markdown (`pdf::to-markdown`) or save a copy in a
+temporary folder outside the working folder for your own tools (unzip an
+archive, run a script over data), or the worker to install when one is
+missing. When the message also carries the file's picture, the block says so
+before the call. The persisted transcript keeps the `file` block.
 
 ## Turn events
 

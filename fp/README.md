@@ -139,6 +139,9 @@ fp::batch { calls: [
   of its JSON text with `truncated: true` and the full `chars`), 12 calls
   per request (`max_calls`; more still runs, with a warning that the
   response may be too large to deliver; hard ceiling 64).
+- A default `session::read-attachment` window is larger than 16 KB. Give each
+  one in a batch `max_chars: 4000` and read the rest of a long file with direct
+  calls from its `next_offset`.
 - Same refusals as pipe steps, plus no nested batch and no pipe as a call. A batch is not a pipe step, and a pipe is not a batch call.
 - While the approval gate runs, a call naming another namespace is refused; call it directly with `namespace`.
 - Every refusal lists all the problems of the request, not only the first; fix them all in one resend.
@@ -177,10 +180,10 @@ fp::batch { calls: [
   fails when fp accepts a call it denies. Rules an operator adds at runtime are
   not seen.
   Session READS (`session::get`/`list`/`messages*`/`get-message`/
-  `get-attachment`/`list-attachments`) are allowed, like `database::query`:
-  the policy only gates them behind approval, and the pipe call is that
-  surface — pulling an attachment out of the session and threading it on is
-  exactly what a pipe is for. Denied calls a step may still make are listed,
+  `get-attachment`/`list-attachments`/`read-attachment`) are allowed, like
+  `database::query`: the policy at most gates them behind approval, and the pipe
+  call is that surface — pulling an attachment out of the session and threading
+  it on is exactly what a pipe is for. Denied calls a step may still make are listed,
   each with its reason, in `ALLOWED_ON_PURPOSE` (`src/pipe.rs`): `state::set`/
   `update`/`delete` (persisting the threaded value is the pipe's purpose) and
   the kanban planning writes (`kanban::ticket::restore`, `kanban::project::update`/

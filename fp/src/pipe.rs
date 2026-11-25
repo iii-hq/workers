@@ -44,7 +44,9 @@ const MAX_PREVIEW_CHARS: usize = 8_000;
 const STEP_TIMEOUT_MS: u64 = 120_000;
 /// The read-only session-manager surface — every `session::*` id that
 /// iii-permissions.yaml leaves at the needs_approval default instead of
-/// hard-denying. The only `session::*` steps a pipe accepts.
+/// hard-denying, and `read-attachment`, an explicit allow there: it answers
+/// text, less than `get-attachment`'s bytes. The only `session::*` steps a
+/// pipe accepts.
 const SESSION_READS: &[&str] = &[
     "session::get",
     "session::list",
@@ -54,6 +56,7 @@ const SESSION_READS: &[&str] = &[
     "session::get-message",
     "session::get-attachment",
     "session::list-attachments",
+    "session::read-attachment",
 ];
 
 /// The metadata reads of the secrets worker (masked hints, fingerprints,
@@ -354,7 +357,7 @@ fn forbidden_unprefixed_step(
     if function_id == "engine::observers::dispose" {
         return Some("observer control calls are not supported in a pipe — call them directly");
     }
-    // Session READS are only needs_approval for agents (the policy hard-denies
+    // Session READS are at most needs_approval for agents (the policy hard-denies
     // the writes and the raw `session::store::*` protocol), and the pipe call
     // is that approval surface — so, like `database::query`, they may ride a
     // pipe. Writes and approval::* stay refused.
@@ -362,8 +365,8 @@ fn forbidden_unprefixed_step(
         || function_id.starts_with("approval::")
     {
         return Some(
-            "only read-only session functions (session::get/list/messages*/get-message/\
-             get-attachment/list-attachments) are supported in a pipe — session writes and \
+            "only session reads (session::get/list/messages*/get-message/get-attachment/\
+             list-attachments/read-attachment) are supported in a pipe — session writes and \
              approval functions run with worker authority, which would bypass the agent-level \
              deny on them",
         );
@@ -1221,6 +1224,7 @@ mod tests {
               "payload": { "session_id": "s", "attachment_id": "a" } },
             { "function": "fp::get", "payload": { "path": "/data" } },
             { "function": "session::messages-tail", "payload": { "session_id": "s", "n": 5 } },
+            { "function": "session::read-attachment", "payload": { "attachment_id": "a" } },
         ]}))
         .unwrap();
         assert!(validate(&reads).is_ok());
@@ -1507,6 +1511,7 @@ mod tests {
                 "session::get-message",
                 "session::get-attachment",
                 "session::list-attachments",
+                "session::read-attachment",
                 "secrets::list",
                 "secrets::get",
                 "secrets::status",
