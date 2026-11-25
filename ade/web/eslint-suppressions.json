@@ -31,11 +31,6 @@
       "count": 32
     }
   },
-  "src/components/chat/AddProviderPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "src/components/chat/AgentPicker.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -211,7 +206,7 @@
       "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 7
     }
   },
   "src/components/chat/ModelMark.tsx": {

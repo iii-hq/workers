@@ -224,7 +224,7 @@ describe('SystemNotice · turn failure', () => {
       createdAt: 0,
     })
     expect(out).toContain('data-failure-owner="environment"')
-    expect(out).toContain('Lost the connection to Zai')
+    expect(out).toContain('Lost the connection to Z.ai')
     expect(out).toContain('Temporary')
     expect(out).toContain('stopped partway')
     expect(out).toContain('retried automatically 1 of 1 time')

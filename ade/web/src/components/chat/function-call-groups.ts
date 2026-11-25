@@ -6,7 +6,15 @@ import type {
 } from '@/types/chat'
 
 export type MessageListRow =
-  | { kind: 'message'; message: Message }
+  | {
+      kind: 'message'
+      message: Message
+      /**
+       * Ids of the thoughts a folded run absorbed after its first
+       * (`mergeThoughtRuns`). A jump to any of them lands on this row.
+       */
+      absorbedIds?: readonly string[]
+    }
   | {
       kind: 'function-call-group'
       id: string

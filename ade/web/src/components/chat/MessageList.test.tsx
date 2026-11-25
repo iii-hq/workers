@@ -142,7 +142,7 @@ describe('MessageList function-call groups', () => {
     expect(html).toContain('show all')
   })
 
-  it('groups calls across finished thoughts and keeps the thoughts as rows', () => {
+  it('groups calls across finished thoughts and folds the thoughts into one row', () => {
     const completedThought = (id: string): ThoughtMessage => ({
       id,
       role: 'thought',
@@ -171,7 +171,9 @@ describe('MessageList function-call groups', () => {
     expect(html).not.toContain('Agent called 2 functions')
     expect(html).toContain('reasoning t1')
     expect(html).toContain('reasoning t2')
-    expect(html.match(/data-state="done"/g)).toHaveLength(2)
+    // Both thoughts stack under the group, so they read as one fold.
+    expect(html.match(/data-state="done"/g)).toHaveLength(1)
+    expect(html).toContain('Thought for')
   })
 
   it('reveals a hidden wake pair when the landing targets its notification', () => {
