@@ -262,6 +262,40 @@ fn error_shape(
         kind: Some(kind),
         retryable: Some(kind.is_retryable()),
         detail,
+        error_details: None,
+    }
+}
+
+/// The `ErrorShape` of a provider's error terminal. An account's usage limit
+/// keeps the `rate_limited` kind and code (D147), is not retryable, says what
+/// happened, and passes the provider's `error_details` through.
+fn provider_error_shape(
+    error: &crate::types::messages::AssistantMessage,
+    provider: &str,
+    model: &str,
+) -> ErrorShape {
+    let kind = error.error_kind.unwrap_or(ErrorKind::Transient);
+    let detail = error
+        .error_message
+        .clone()
+        .unwrap_or_else(|| "provider returned an error without details".into());
+    let (code, message) = if error.is_usage_limit() {
+        (
+            RouterCode::ProviderRateLimited,
+            format!(
+                "Provider \"{provider}\" reached the usage limit of its account. Try again after the limit resets."
+            ),
+        )
+    } else {
+        provider_error_presentation(kind, provider, model)
+    };
+    ErrorShape {
+        code: code.as_str().to_string(),
+        message,
+        kind: Some(kind),
+        retryable: Some(kind.is_retryable() && !error.is_usage_limit()),
+        detail: Some(detail),
+        error_details: error.error_details.clone(),
     }
 }
 
@@ -862,9 +896,10 @@ impl ChatPipeline {
                     let AssistantMessageEvent::Error { error } = &terminal else {
                         unreachable!()
                     };
-                    let kind = error.error_kind;
+                    // A usage limit is `rate_limited` but never retried: every
+                    // attempt would meet the same limit (D147).
                     let can_retry = !forwarded
-                        && kind.map(|k| k.is_retryable()).unwrap_or(false)
+                        && error.error_is_retryable()
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
@@ -882,19 +917,14 @@ impl ChatPipeline {
                     let AssistantMessageEvent::Error { error } = terminal else {
                         unreachable!()
                     };
-                    let kind = kind.unwrap_or(ErrorKind::Transient);
-                    let detail = error
-                        .error_message
-                        .unwrap_or_else(|| "provider returned an error without details".into());
-                    let (code, message) = provider_error_presentation(kind, provider, &call.model);
-                    return Ok(respond_err(
-                        StopReason::Error,
-                        code,
-                        kind,
-                        message,
-                        Some(detail),
-                        error.usage,
-                    ));
+                    return Ok(ChatResponse {
+                        ok: false,
+                        provider: provider.to_string(),
+                        model: call.model.clone(),
+                        stop_reason: Some(StopReason::Error),
+                        error: Some(provider_error_shape(&error, provider, &call.model)),
+                        usage: error.usage,
+                    });
                 }
                 RelayResult::Aborted { partial, usage, .. } => {
                     last_partial = partial;
@@ -1337,6 +1367,70 @@ mod tests {
             assert!(message.contains(action), "missing action in {message}");
             assert!(!message.contains("terminal frame"));
         }
+    }
+
+    fn provider_error(
+        kind: Option<ErrorKind>,
+        details: Option<crate::types::events::ErrorDetails>,
+    ) -> crate::types::messages::AssistantMessage {
+        let mut error = super::super::synthesize::empty_partial("m", "claude-code", 1);
+        error.stop_reason = StopReason::Error;
+        error.error_kind = kind;
+        error.error_message = Some("upstream said no".into());
+        error.error_details = details;
+        error
+    }
+
+    #[test]
+    fn a_usage_limit_is_rate_limited_but_never_retried_and_its_details_pass_through() {
+        use crate::types::events::{ErrorDetails, UsageWindow};
+        let details = ErrorDetails::usage_limit(Some(UsageWindow::Week), Some(1_800_000_000_000));
+        let limited = provider_error(Some(ErrorKind::RateLimited), Some(details.clone()));
+        assert!(!limited.error_is_retryable());
+
+        let shape = provider_error_shape(&limited, "claude-code", "m");
+        assert_eq!(shape.code, RouterCode::ProviderRateLimited.as_str());
+        assert_eq!(shape.kind, Some(ErrorKind::RateLimited));
+        assert_eq!(shape.retryable, Some(false));
+        assert_eq!(shape.error_details, Some(details));
+        assert_eq!(shape.detail.as_deref(), Some("upstream said no"));
+        assert!(shape.message.contains("usage limit"), "{}", shape.message);
+        let wire = serde_json::to_value(&shape).unwrap();
+        assert_eq!(wire["error_details"]["usage_limit"], true);
+        assert_eq!(wire["error_details"]["window"], "week");
+    }
+
+    #[test]
+    fn a_plain_rate_limit_stays_retryable_without_details() {
+        let busy = provider_error(Some(ErrorKind::RateLimited), None);
+        assert!(busy.error_is_retryable());
+        let shape = provider_error_shape(&busy, "claude-code", "m");
+        assert_eq!(shape.retryable, Some(true));
+        assert!(
+            shape.message.contains("Try again shortly"),
+            "{}",
+            shape.message
+        );
+        assert!(
+            serde_json::to_value(&shape)
+                .unwrap()
+                .get("error_details")
+                .is_none()
+        );
+
+        // Details without the flag change nothing.
+        let unflagged = provider_error(
+            Some(ErrorKind::RateLimited),
+            Some(crate::types::events::ErrorDetails::default()),
+        );
+        assert!(unflagged.error_is_retryable());
+        // A kindless error stays the transient it always was.
+        let kindless = provider_error(None, None);
+        assert!(!kindless.error_is_retryable());
+        assert_eq!(
+            provider_error_shape(&kindless, "p", "m").retryable,
+            Some(true)
+        );
     }
 
     #[tokio::test]

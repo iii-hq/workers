@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::types::content::ContentBlock;
-use crate::types::events::{ErrorKind, StopReason, Usage};
+use crate::types::events::{ErrorDetails, ErrorKind, StopReason, Usage, lenient_error_details};
 
 /// Single-variant role tags: exact-match on deserialize, correct wire string on
 /// serialize, and they let `AgentMessage` be an untagged union.
@@ -45,6 +45,14 @@ pub struct AssistantMessage {
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ErrorKind>,
+    /// What `error_kind` alone does not say, such as an account's usage limit.
+    /// Omitted when absent; readers that don't know it ignore it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_error_details"
+    )]
+    pub error_details: Option<ErrorDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>, // report-and-continue notices
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +60,19 @@ pub struct AssistantMessage {
     pub model: String,
     pub provider: String,
     pub timestamp: i64,
+}
+
+impl AssistantMessage {
+    /// The provider said the account's usage limit is reached.
+    pub fn is_usage_limit(&self) -> bool {
+        self.error_details.as_ref().is_some_and(|d| d.usage_limit)
+    }
+
+    /// Whether another attempt of the same request may succeed: a retryable
+    /// kind, except a usage limit, which a retry only hits again.
+    pub fn error_is_retryable(&self) -> bool {
+        self.error_kind.is_some_and(ErrorKind::is_retryable) && !self.is_usage_limit()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -357,6 +378,7 @@ mod tests {
             native_stop_reason: None,
             error_message: None,
             error_kind: None,
+            error_details: None,
             warnings: None,
             usage: None,
             model: "m".into(),
@@ -447,5 +469,62 @@ mod tests {
         assert!(matches!(out[4], AgentMessage::Assistant(_)));
         assert!(is_result(out[5], "t3"));
         assert!(matches!(out[6], AgentMessage::User(_)));
+    }
+
+    /// The assistant message as llm-router 1.5.x (and the strict copies in
+    /// session-manager and context-manager) read it: no `error_details`, and
+    /// no `deny_unknown_fields`.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct OlderAssistantMessage {
+        role: AssistantRoleTag,
+        content: Vec<ContentBlock>,
+        stop_reason: StopReason,
+        #[serde(default)]
+        error_message: Option<String>,
+        #[serde(default)]
+        error_kind: Option<ErrorKind>,
+        model: String,
+        provider: String,
+        timestamp: i64,
+    }
+
+    fn usage_limited() -> AssistantMessage {
+        use crate::types::events::{ErrorDetails, UsageWindow};
+        let AgentMessage::Assistant(mut message) = assistant(vec![]) else {
+            unreachable!()
+        };
+        message.stop_reason = StopReason::Error;
+        message.error_kind = Some(ErrorKind::RateLimited);
+        message.error_message = Some("limit".into());
+        message.error_details = Some(ErrorDetails::usage_limit(
+            Some(UsageWindow::FiveHour),
+            Some(1_800_000_000_000),
+        ));
+        message
+    }
+
+    #[test]
+    fn an_older_reader_stores_a_message_with_error_details() {
+        let wire = serde_json::to_value(usage_limited()).unwrap();
+        assert_eq!(wire["error_details"]["usage_limit"], true);
+        let older: OlderAssistantMessage = serde_json::from_value(wire).unwrap();
+        assert_eq!(older.error_kind, Some(ErrorKind::RateLimited));
+        assert_eq!(older.stop_reason, StopReason::Error);
+    }
+
+    #[test]
+    fn error_details_are_omitted_when_absent_and_round_trip_when_present() {
+        let AgentMessage::Assistant(plain) = assistant(vec![]) else {
+            unreachable!()
+        };
+        let wire = serde_json::to_value(&plain).unwrap();
+        assert!(wire.get("error_details").is_none(), "{wire}");
+        let limited = usage_limited();
+        let back: AssistantMessage =
+            serde_json::from_value(serde_json::to_value(&limited).unwrap()).unwrap();
+        assert_eq!(back, limited);
+        assert!(back.is_usage_limit());
+        assert!(!back.error_is_retryable());
     }
 }
