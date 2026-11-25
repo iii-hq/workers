@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*",
-    "iii-sdk": "0.27.0-rc.1",
+    "iii-sdk": "0.27.0-rc.3",
     "zod": "catalog:"
   },
   "devDependencies": {

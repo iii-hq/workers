@@ -4,7 +4,8 @@
 # pnpm >=11 no longer reads package.json `pnpm`, and blocks dependency build
 # scripts unless allowed here.
 minimumReleaseAgeExclude:
-  - iii-sdk@0.27.0-rc.1
+  - iii-sdk@0.27.0-rc.3
+  - '@iii-dev/helpers@0.27.0-rc.3'
 
 allowBuilds:
   '@google/genai': false

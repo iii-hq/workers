@@ -53,7 +53,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -64,7 +64,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -332,7 +332,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -371,7 +371,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -809,9 +809,9 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.27.0-rc.1"
+version = "0.27.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4163177a2f6cf0bd4ff76086de984471604e47cc393ebd4751820b785220a26a"
+checksum = "12c7636147c04ced13cbb6a0ae1681ed8fe171f978a338969686fd8217cd202e"
 dependencies = [
  "serde",
  "serde_json",
@@ -819,9 +819,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.27.0-rc.1"
+version = "0.27.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2ea43dad23ab631dea2b8709c625f746c18f9f62136628b1d8f472d6c3142c3"
+checksum = "9ce01bd717f396e96714b580965dfb8e08592dc5be97350ca6794999d2463f13"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -862,9 +862,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.27.0-rc.1"
+version = "0.27.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29c8bd24b4249331a25318ca3a7e6d812b513a112e4134de4639089ac33a0aa5"
+checksum = "7a1f0faf166cc6b491f4b0375db686df110df0c2f1da3320377d1a496301c420"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1081,7 +1081,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1275,7 +1275,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1452,7 +1452,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1711,7 +1711,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1809,7 +1809,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

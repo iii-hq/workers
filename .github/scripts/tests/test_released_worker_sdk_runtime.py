@@ -15,7 +15,7 @@ def test_opengantry_uses_current_sdk_release() -> None:
         (REPO_ROOT / "opengantry" / "package.json").read_text(encoding="utf-8")
     )
 
-    assert package["dependencies"]["iii-sdk"] == "0.27.0-rc.1"
+    assert package["dependencies"]["iii-sdk"] == "0.27.0-rc.3"
 
 
 def test_hermes_uses_current_sdk_release() -> None:
@@ -24,5 +24,5 @@ def test_hermes_uses_current_sdk_release() -> None:
     )
     dependencies = pyproject["project"]["dependencies"]
 
-    assert "iii-sdk>=0.27.0rc1" in dependencies
-    assert "iii-helpers>=0.27.0rc1" in dependencies
+    assert "iii-sdk>=0.27.0rc3" in dependencies
+    assert "iii-helpers>=0.27.0rc3" in dependencies
