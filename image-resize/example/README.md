@@ -21,11 +21,16 @@ iii compose --up
 
 1. the iii engine on `ws://127.0.0.1:49134`
 2. the http worker (`../../http`), serving HTTP on `127.0.0.1:3111`
-3. the image-resize worker (`..`), with its settings from `../config.yaml`
+3. the image-resize worker (`..`); its defaults come from the `image-resize`
+   configuration entry: add a `config_override:` to its container in
+   `worker-compose.yaml` to change them
 4. this Node.js worker (`npm install`, then `npm run dev`), which registers the
    routes
 
 Stop everything with Ctrl+C.
+
+The stack binds `127.0.0.1`. `GET /image` fetches any http(s) URL server-side,
+so do not expose it.
 
 ## API Endpoints
 
@@ -44,34 +49,41 @@ Returns service status.
 ### POST /thumbnail
 
 Generate a thumbnail from a base64-encoded image. The image-resize worker
-resizes it over SDK channels.
+detects the input format (JPEG, PNG or WebP) from the bytes and resizes it over
+SDK channels. `width` and `height` (default 200) are the box, `strategy` is
+`scale-to-fit` (default) or `crop-to-fit`, and `outputFormat` is `jpeg`
+(default), `png` or `webp`.
 
 **Request:**
 ```json
 {
   "image": "<base64-encoded image>",
-  "width": 200,
-  "height": 200,
+  "width": 50,
+  "height": 50,
   "strategy": "scale-to-fit",
-  "format": "jpeg"
+  "outputFormat": "jpeg"
 }
 ```
 
-**Response:**
+**Response** (for `images/sample.jpg`, 100x80):
 ```json
 {
   "thumbnail": "<base64-encoded thumbnail>",
   "format": "jpeg",
-  "width": 200,
-  "height": 160,
-  "size": 1505
+  "width": 50,
+  "height": 40,
+  "size": 691
 }
 ```
+
+The image is never enlarged: one smaller than the box is returned at its own
+size. A bad image or option returns 400.
 
 ### GET /image
 
 Resize a remote image by URL — similar to Next.js `/_next/image`. The image is
-fetched server-side, resized via the image-resize binary, and returned as JSON.
+fetched server-side, resized by the image-resize worker, and returned as binary
+image data. The input format is detected from the bytes.
 
 **Query parameters:**
 
@@ -128,7 +140,7 @@ thumbnail. It calls the same `POST /thumbnail` endpoint on `http://localhost:311
 
 ## Manual Testing
 
-With the stack running:
+With the stack running, from this directory (`image-resize/example`):
 
 ```bash
 # Health check
@@ -137,7 +149,7 @@ curl http://localhost:3111/health
 # Generate thumbnail from file
 curl -X POST http://localhost:3111/thumbnail \
   -H "Content-Type: application/json" \
-  -d "{\"image\": \"$(base64 -i images/sample.jpg)\", \"width\": 200, \"height\": 200}"
+  -d "{\"image\": \"$(base64 < images/sample.jpg | tr -d '\n')\", \"width\": 50, \"height\": 50}"
 
 # Resize from URL (returns binary image)
 curl -o resized.webp "http://localhost:3111/image?url=https%3A%2F%2Fexample.com%2Fphoto.jpg&w=300&h=200&format=webp"

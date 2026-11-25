@@ -1,15 +1,8 @@
+import { Writable } from 'node:stream'
 import { http } from '@iii-dev/helpers/http'
-import { InputStream } from 'iii-sdk'
+import { InputStream, OutputStream } from 'iii-sdk'
 import { observeRoute, useApi } from './hooks'
 import { iii } from './iii'
-
-/** Detect image format from the first bytes (magic numbers). */
-function detectFormat(buf: Buffer): 'jpeg' | 'png' | 'webp' {
-  if (buf[0] === 0xff && buf[1] === 0xd8) return 'jpeg'
-  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png'
-  if (buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'webp'
-  return 'jpeg' // fallback
-}
 
 // Serialize access to the resizer to avoid concurrent invocation issues.
 // The engine architecture supports parallel invocations, but there's a known
@@ -21,34 +14,41 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
   return next
 }
 
+type ThumbnailMetadata = {
+  format: string
+  width: number
+  height: number
+  source_width: number
+  source_height: number
+  strategy: string
+}
+
 /**
- * Send an image to the image_resize::resize function via SDK channels
- * and return the thumbnail bytes.
- *
- * 1. Create two channels (input for image data, output for thumbnail data)
- * 2. Call the resize function with channel refs + metadata
- * 3. Write image bytes to input channel
- * 4. Read thumbnail metadata (text frame) + bytes (binary) from output channel
- * 5. Return result
+ * Resize an image with image_resize::resize and return the thumbnail bytes
+ * and the call's result. The worker detects the input format from the bytes;
+ * the call resolves once the sink holds the whole thumbnail. A bad image or
+ * option rejects with code INVALID_ARGS.
  */
 async function processImage(
   imageBuffer: Buffer,
-  opts: { format: string; outputFormat: string; width: number; height: number; strategy: string },
-): Promise<{ thumbnail: Buffer; metadata: Record<string, unknown> }> {
-  // The image goes as a stream the SDK pumps; the thumbnail comes back on a
-  // pipe whose write end the resize function receives.
-  const output = await iii.pipe()
-
-  const callPromise = iii.call({
+  opts: { outputFormat: string; width: number; height: number; strategy: string },
+): Promise<{ thumbnail: Buffer; metadata: ThumbnailMetadata }> {
+  const chunks: Buffer[] = []
+  const metadata: ThumbnailMetadata = await iii.call({
     function_id: 'image_resize::resize',
     payload: {
       input_channel: InputStream.from(imageBuffer),
-      output_channel: output.output,
+      output_channel: OutputStream.to(
+        new Writable({
+          write(chunk, _enc, done) {
+            chunks.push(chunk)
+            done()
+          },
+        }),
+      ),
+      // The worker rejects any other metadata key.
       metadata: {
-        format: opts.format,
         output_format: opts.outputFormat,
-        width: 0,
-        height: 0,
         target_width: opts.width,
         target_height: opts.height,
         strategy: opts.strategy,
@@ -56,20 +56,11 @@ async function processImage(
     },
     timeoutMs: 30_000,
   })
-
-  // A text frame (thumbnail metadata), then the thumbnail bytes.
-  let metadata: Record<string, unknown> = {}
-  const chunks: Buffer[] = []
-  for await (const frame of output.input.frames()) {
-    if (frame.type === 'text') metadata = JSON.parse(frame.value)
-    else chunks.push(frame.value)
-  }
-
-  // Wait for the call to complete
-  await callPromise
-
   return { thumbnail: Buffer.concat(chunks), metadata }
 }
+
+/** INVALID_ARGS is the caller's fault (bad image or option): 400, anything else 500. */
+const failureStatus = (err: unknown) => ((err as { code?: string } | undefined)?.code === 'INVALID_ARGS' ? 400 : 500)
 
 // ── Health check ──────────────────────────────────────
 
@@ -101,14 +92,12 @@ useApi(
       width = 200,
       height = 200,
       strategy = 'scale-to-fit',
-      format,
       outputFormat = 'jpeg',
     } = req.body as {
       image: string
       width?: number
       height?: number
       strategy?: 'scale-to-fit' | 'crop-to-fit'
-      format?: 'jpeg' | 'png' | 'webp'
       outputFormat?: 'jpeg' | 'png' | 'webp'
     }
 
@@ -120,15 +109,13 @@ useApi(
       }
     }
 
-    // Detect input format from image bytes if not explicitly provided
     const imageBuffer = Buffer.from(image, 'base64')
-    const inputFormat = format ?? detectFormat(imageBuffer)
 
-    logger.info('Processing thumbnail request', { inputFormat, outputFormat, width, height, strategy })
+    logger.info('Processing thumbnail request', { outputFormat, width, height, strategy })
 
     try {
       const { thumbnail, metadata } = await serialized(() =>
-        processImage(imageBuffer, { format: inputFormat, outputFormat, width, height, strategy }),
+        processImage(imageBuffer, { outputFormat, width, height, strategy }),
       )
 
       logger.info('Thumbnail generated', {
@@ -152,7 +139,7 @@ useApi(
     } catch (err) {
       logger.error('Thumbnail generation failed', { error: String(err) })
       return {
-        status_code: 500,
+        status_code: failureStatus(err),
         body: { error: `Thumbnail generation failed: ${err}` },
         headers: { 'Content-Type': 'application/json' },
       }
@@ -201,7 +188,6 @@ function sendJsonError(
       const w = Number(str(qp.w)) || 200
       const h = Number(str(qp.h)) || 200
       const strategy = str(qp.strategy) || 'scale-to-fit'
-      const format = str(qp.format) as 'jpeg' | 'png' | 'webp' | undefined
       const outputFormat = (str(qp.format) as 'jpeg' | 'png' | 'webp') || 'jpeg'
 
       // ── Validate URL ──
@@ -239,11 +225,8 @@ function sendJsonError(
 
       let imageBuffer: Buffer
       try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-
-        const fetchRes = await fetch(url, { signal: controller.signal })
-        clearTimeout(timeout)
+        // The signal also covers the body read below.
+        const fetchRes = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
 
         if (!fetchRes.ok) {
           sendJsonError(res, 502, `Failed to fetch image: upstream returned ${fetchRes.status}`)
@@ -265,19 +248,17 @@ function sendJsonError(
         imageBuffer = Buffer.from(arrayBuf)
       } catch (err) {
         const message =
-          err instanceof Error && err.name === 'AbortError'
+          err instanceof Error && err.name === 'TimeoutError'
             ? 'Upstream image fetch timed out'
             : `Failed to fetch image: ${err}`
         sendJsonError(res, 502, message)
         return
       }
 
-      // ── Detect format & process ──
-      const inputFormat = format ?? detectFormat(imageBuffer)
-
+      // ── Process ──
       try {
         const { thumbnail, metadata } = await serialized(() =>
-          processImage(imageBuffer, { format: inputFormat, outputFormat, width: w, height: h, strategy }),
+          processImage(imageBuffer, { outputFormat, width: w, height: h, strategy }),
         )
 
         imageLogger.info('URL image resized', {
@@ -289,7 +270,7 @@ function sendJsonError(
         })
 
         // Return binary image directly
-        const mimeType = MIME_TYPES[metadata.format as string] ?? 'application/octet-stream'
+        const mimeType = MIME_TYPES[metadata.format] ?? 'application/octet-stream'
         res.status(200)
         res.headers({
           'content-type': mimeType,
@@ -300,7 +281,7 @@ function sendJsonError(
         res.close()
       } catch (err) {
         imageLogger.error('URL image resize failed', { error: String(err) })
-        sendJsonError(res, 500, `Image processing failed: ${err}`)
+        sendJsonError(res, failureStatus(err), `Image processing failed: ${err}`)
       }
     }),
     {
