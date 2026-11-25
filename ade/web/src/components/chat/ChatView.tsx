@@ -197,6 +197,7 @@ import {
   skillSelectionForSend,
   turnEstablishedFrom,
 } from './system-prompt-selection'
+import { CONTINUE_MESSAGE, TurnRestRow } from './TurnRestRow'
 import { deriveTurnVisualState } from './turn-visual-state'
 import { useModelSwitch } from './use-model-switch'
 import {
@@ -2552,9 +2553,10 @@ export function ChatView({
   // Editing a queued message (`useQueuedEdits`) sends through here.
   sendQueuedEditRef.current = (payload, reason) =>
     void (reason === 'original' ? resendOriginal : handleSubmit)(payload)
-  // The side panel's way to hand this chat's agent an instruction: sent now,
-  // or put in this chat's draft (the composer remounts to pick it up). The
-  // composer buses are global, so neither goes through them.
+  // How the side panel and the turn-rest row hand this chat's agent an
+  // instruction: sent now, or put in this chat's draft (the composer remounts
+  // to pick it up). The composer buses are global, so neither goes through
+  // them.
   // A chat that cannot send now (no model, setup missing) gets the text as
   // a draft instead, so the click is never silently lost; a draft adds to
   // what was already typed.
@@ -3551,6 +3553,24 @@ export function ChatView({
                     ' The working-directory picker requires the shell worker.'}
                 </p>
               )}
+              {!side && !conversation.parentId && backend.turnRest ? (
+                <TurnRestRow
+                  sessionId={conversation.id}
+                  // A reconnect reloads the transcript while the status stays
+                  // `done`: a turn it missed is only seen by reading again.
+                  atRest={
+                    conversation.status === 'done' &&
+                    !streamingIndicator &&
+                    !sessionHydrating
+                  }
+                  turnRest={backend.turnRest}
+                  onContinue={() => {
+                    askAgent(CONTINUE_MESSAGE, true)
+                    // The clicked button is gone: focus would fall to the page.
+                    if (focusComposerOnOpen) requestComposerFocus(composerId)
+                  }}
+                />
+              ) : null}
               <Composer
                 key={composerGeneration}
                 model={effectiveModel}
