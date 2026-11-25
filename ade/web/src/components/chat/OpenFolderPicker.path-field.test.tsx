@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { OpenProjectPicker } from './OpenProjectPicker'
+import { OpenFolderPicker } from './OpenFolderPicker'
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -64,9 +64,11 @@ vi.mock('@/lib/project-index', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/backend/projects', () => ({
-  listHarnessProjects: vi.fn().mockResolvedValue([]),
-  upsertHarnessProject: vi.fn().mockResolvedValue(undefined),
+// No saved folder (harness::folders): the picker starts at home, the field
+// first (OpenFolderPicker.test.tsx covers the saved folders' top level).
+vi.mock('@/lib/backend/folders', () => ({
+  listSavedFolders: vi.fn().mockResolvedValue([]),
+  upsertSavedFolder: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/working-dir', async (importOriginal) => ({
@@ -110,7 +112,7 @@ const highlighted = () =>
 async function mount() {
   await act(async () => {
     root.render(
-      <OpenProjectPicker open onOpenChange={vi.fn()} onAdded={onAdded} />,
+      <OpenFolderPicker open onOpenChange={vi.fn()} onAdded={onAdded} />,
     )
   })
   await settle()
@@ -141,7 +143,7 @@ async function press(key: string, init: KeyboardEventInit = {}) {
   await settle()
 }
 
-describe('OpenProjectPicker target folder', () => {
+describe('OpenFolderPicker target folder', () => {
   it('a Tab-completed folder is the target, not its first child', async () => {
     await mount()
     await type('~/code/iii-')

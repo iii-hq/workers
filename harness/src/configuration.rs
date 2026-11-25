@@ -149,6 +149,27 @@ async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value
     }
 }
 
+/// The stored `harness` entry as written (raw: `${VAR}` placeholders kept),
+/// `null` when nothing is stored yet. For server-side merges
+/// (`harness::chat-settings::set`).
+pub(crate) async fn read_stored(iii: &IIIClient) -> Result<Value, String> {
+    Ok(try_get_config_value(iii, true)
+        .await?
+        .unwrap_or(Value::Null))
+}
+
+/// Replace the stored `harness` entry; the configuration worker validates it
+/// against the registered schema and calls `configuration::on-updated`.
+pub(crate) async fn write_stored(iii: &IIIClient, value: Value) -> Result<(), String> {
+    call_configuration_with_retry(
+        iii,
+        "configuration::set",
+        json!({ "id": config_id(), "value": value }),
+    )
+    .await
+    .map(|_| ())
+}
+
 fn configuration_get_payload(raw: bool) -> Value {
     json!({ "id": config_id(), "raw": raw })
 }
@@ -480,8 +501,19 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &Lifecycl
         tracing::info!("harness pending-sweep observer replaced (sweep_expression changed)");
     }
 
+    let chat_settings = crate::functions::chat_settings::ChatSettings::of(&cfg);
+    let chat_settings_changed =
+        crate::functions::chat_settings::ChatSettings::of(&old) != chat_settings;
     apply_config(cell, cfg).await;
     tracing::info!("harness configuration reloaded");
+    if chat_settings_changed {
+        crate::events::emit_void(
+            iii,
+            crate::functions::chat_settings::ON_CHANGED_FN,
+            json!({ "settings": chat_settings }),
+        )
+        .await;
+    }
 }
 
 async fn call_configuration_with_retry(

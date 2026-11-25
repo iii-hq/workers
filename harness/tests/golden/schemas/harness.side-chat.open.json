@@ -1,0 +1,79 @@
+{
+  "function_id": "harness::side-chat::open",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SideChatQuote": {
+        "description": "A passage of the conversation the side chat asks about.",
+        "properties": {
+          "agent": {
+            "description": "Who wrote the message, for the quote card's label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_id": {
+            "description": "The conversation's message the passage came from (its entry id).",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "entry_id": {
+        "description": "The conversation's entry to fork at. Default: its last user or assistant message (a reply still streaming is skipped).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "quote": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SideChatQuote"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "A passage the side chat asks about, recorded in `side_chat_quotes`."
+      },
+      "session_id": {
+        "description": "The conversation to open a side chat of.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "SideChatOpenRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "meta": {
+        "description": "The side chat's session record after it was tagged (as `session::get` answers it in `meta`)."
+      },
+      "session_id": {
+        "description": "The side chat's session id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "meta",
+      "session_id"
+    ],
+    "title": "SideChatOpenResponse",
+    "type": "object"
+  }
+}

@@ -1,4 +1,4 @@
-//! The 27 `session::*` functions: 23 session operations (among them
+//! The 28 `session::*` functions: 24 session operations (among them
 //! `session::read-attachment` and `session::search`) plus the four functions of the two chat
 //! mention providers, `session::mention::*` (`@session`) and
 //! `session::attachments::mention::*` (`@attachment`).
@@ -27,6 +27,7 @@ pub mod mention;
 pub mod messages;
 pub mod messages_range;
 pub mod messages_tail;
+pub mod patch_meta;
 pub mod put_attachment;
 pub mod read_attachment;
 pub mod search;
@@ -170,6 +171,14 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         "Update a session's title/description/metadata; calls session::on-meta-updated.",
         true,
         |d, r| async move { set_meta::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::patch-meta",
+        "Merge a session's title/description and named metadata keys (`set` replaces each key whole, `unset` removes keys, every other key is kept) under the session's write lock; calls session::on-meta-updated once with the merged metadata.",
+        true,
+        |d, r| async move { patch_meta::handle(&d, r).await },
     );
     register(
         iii,

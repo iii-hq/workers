@@ -1,4 +1,10 @@
-import { ArrowLeft, PanelRight, TriangleAlert } from 'lucide-react'
+import {
+  ArrowLeft,
+  Folder,
+  PanelRight,
+  PanelRightClose,
+  TriangleAlert,
+} from 'lucide-react'
 import {
   type ReactNode,
   useCallback,
@@ -11,6 +17,8 @@ import {
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
+import { ProjectDot } from '@/components/projects/ProjectDot'
+import { requestProjectDialog } from '@/components/projects/project-dialog-request'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
@@ -19,6 +27,8 @@ import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
@@ -50,6 +60,11 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import {
+  badgeCount,
+  contextItemCount,
+  useContextItems,
+} from '@/lib/backend/context-items'
+import {
   getTurnStatus,
   type HarnessImageBlock,
   predictedUserEntryId,
@@ -58,6 +73,7 @@ import {
   mergeFiredObservers,
   type SessionObserverInfo,
 } from '@/lib/backend/observers'
+import { NO_PROJECT, tildePath } from '@/lib/backend/projects'
 import {
   type SessionObserverLoader,
   startSessionObserverLoader,
@@ -71,15 +87,22 @@ import type {
 import { isWaitingOnAnswer, WAITING_ON_ANSWER_LABEL } from '@/lib/chat-activity'
 import {
   AskInSideChatContext,
+  dismissedPullRequests,
   findSideChat,
+  SIDE_CHAT_LOCK_HINT,
+  SIDE_CHAT_QUOTES_KEY,
+  type SideChatMark,
   type SideChatQuote,
   SideChatQuotesContext,
+  SideChatRepliesContext,
   selectionQuote,
   sideChatMessages,
   sideChatQuote,
   sideChatQuotes,
+  sideChatRows,
   useQuoteHighlights,
 } from '@/lib/chat-aside'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
@@ -97,7 +120,11 @@ import {
 } from '@/lib/onboarding/open'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
-import { isCallSettled } from '@/lib/sessions/entry-mapper'
+import {
+  belongsToEntry,
+  entryIdOfMessage,
+  isCallSettled,
+} from '@/lib/sessions/entry-mapper'
 import {
   expandSlashInvocations,
   loadedSkillIds,
@@ -166,10 +193,12 @@ import {
   approvedAlwaysText,
   filesystemDecisionText,
 } from './approval-announcements'
+import { ByAgentPill } from './ByAgentPill'
 import {
   type AsideRequest,
   type AsideTab,
   ChatAside,
+  CONTEXT_PANE_SHORTCUT,
   QuoteChip,
   SelectionToolbar,
 } from './ChatAside'
@@ -179,6 +208,7 @@ import {
   composerControlNodes,
 } from './Composer'
 import { ContextUsage } from './ContextUsage'
+import { ConversationDetailsDialog } from './ConversationDetailsDialog'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
@@ -313,6 +343,22 @@ interface ChatViewProps {
     onJumpToQuote?: (quote: SideChatQuote) => void
     /** On a phone: the one-row composer and a one-line quote. */
     compact?: boolean
+    /**
+     * An engine side chat (chat-projects §2.3.2): the model label with a
+     * lock instead of the picker, and sends that name no model or option
+     * (the harness runs the side chat on its lock).
+     */
+    locked?: { label: string; model?: string } | null
+    /** The composer's idle placeholder ("Ask aside…"). */
+    placeholder?: string
+    /** A quiet line above the composer: model, effort and account. */
+    metaLine?: string | null
+    /** Entry ids of the summary replies, drawn as summary cards. */
+    summaries?: readonly string[]
+    /** "Bring back" on every reply: the text goes to the conversation's composer. */
+    onBringBack?: (text: string) => void
+    /** "Bring back", or "Bring back to <title>" on a phone. */
+    bringBackLabel?: string
   }
   /** The pane edge the side panel hugs: opposite the conversation list. */
   asideSide?: 'left' | 'right'
@@ -417,6 +463,65 @@ export function ChatView({
   const phoneViewport = useMediaQuery(MOBILE_LAYOUT_QUERY)
   const [asideRequest, setAsideRequest] = useState<AsideRequest | null>(null)
   const [asideSheetOpen, setAsideSheetOpen] = useState(false)
+  // The pane in sight (the column or the phone drawer), for the header's
+  // button and the context items' refresh rules (chat-projects §1.2.4).
+  const [asideVisible, setAsideVisible] = useState(false)
+  const realBackend = backend.id === 'real'
+  const chatCaps = useChatCapabilities(realBackend)
+  const chatProjects = useChatProjects(realBackend)
+  const chatSettings = useChatSettings(realBackend)
+  // The conversation's side chats as this tab's session list has them:
+  // their activity re-reads the context items (titles, counts, running).
+  const listedConversations = conversationsCtx?.conversations
+  const sideChatsHere = useMemo(
+    () =>
+      asideEnabled && listedConversations
+        ? findSideChat(listedConversations, conversation.id)
+        : [],
+    [asideEnabled, listedConversations, conversation.id],
+  )
+  const sideTick = sideChatsHere
+    .map((c) => `${c.id}:${c.updatedAt}:${c.status ?? ''}:${c.title}`)
+    .join('|')
+  const contextItems = useContextItems(conversation.id, {
+    enabled: asideEnabled && chatCaps.contextItems,
+    visible: asideVisible,
+    messageTick: `${conversation.messages.length}|${sideTick}`,
+  })
+  // Side chats from the engine (`harness::side-chat::*`), several per
+  // conversation; without them the pane keeps its own one-fork side chat.
+  const engineSideChats = asideEnabled && chatCaps.sideChats
+  const conversationMetadata = conversation.sessionMetadata
+  const dismissedPrKeys = useMemo(
+    () =>
+      new Set(dismissedPullRequests({ sessionMetadata: conversationMetadata })),
+    [conversationMetadata],
+  )
+  const contextCount = contextItems.items
+    ? contextItemCount(contextItems.items, dismissedPrKeys)
+    : 0
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const chatProject =
+    conversation.projectId && conversation.projectId !== NO_PROJECT
+      ? (chatProjects.projects.find(
+          (project) => project.id === conversation.projectId,
+        ) ?? null)
+      : null
+  // Putting the pane away is a request the pane carries out itself: it
+  // knows whether it is the column (fold it) or the drawer beside a narrow
+  // chat (close it). Writing the column's stored state alone left the
+  // drawer open.
+  const [asideHideSeq, setAsideHideSeq] = useState(0)
+  const hideAside = useCallback(() => {
+    if (phoneViewport) setAsideSheetOpen(false)
+    else setAsideHideSeq((seq) => seq + 1)
+  }, [phoneViewport])
+  // The name and the description open Conversation details (§1.3.5).
+  const canEditDetails =
+    conversationsCtx !== null &&
+    !side &&
+    !readOnly &&
+    conversation.draft !== true
   const showAside = useCallback(
     (tab: AsideTab, quote?: SideChatQuote) =>
       setAsideRequest((current) => ({
@@ -446,29 +551,96 @@ export function ChatView({
     },
     [showAside],
   )
-  // Keyed on the side chat's metadata object: the context value is rebuilt
-  // on every render, the metadata only when it changes, so the marks (and
-  // every message reading them) stay put while a reply streams.
-  const sideChatMetadata =
-    asideEnabled && conversationsCtx
-      ? findSideChat(conversationsCtx.conversations, conversation.id)
-          ?.sessionMetadata
-      : undefined
-  const heldQuotes = useMemo(() => {
-    const sent = sideChatQuotes(
-      sideChatMetadata ? { sessionMetadata: sideChatMetadata } : null,
-    )
-    return pendingQuote ? [...sent, pendingQuote] : sent
-  }, [sideChatMetadata, pendingQuote])
+  // The quotes every side chat of this chat sent (and the one waiting):
+  // their source messages stay marked here while a side chat holds them.
+  // Keyed on the quotes themselves, so the marks (and every message reading
+  // them) stay put while a reply streams.
+  const sentQuotesKey = JSON.stringify(
+    sideChatsHere.map((c) => c.sessionMetadata?.[SIDE_CHAT_QUOTES_KEY] ?? null),
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sentQuotesKey stands for the side chats' quotes
+  const sentQuotes = useMemo(
+    () => sideChatsHere.flatMap((c) => sideChatQuotes(c)),
+    [sentQuotesKey],
+  )
+  const heldQuotes = useMemo(
+    () => (pendingQuote ? [...sentQuotes, pendingQuote] : sentQuotes),
+    [sentQuotes, pendingQuote],
+  )
+  // Engine side chats (chat-projects §2.3.1): "Side chat" on a reply forks
+  // at it, and the mark under each forked message opens its side chat.
+  const forkSideChat = useCallback(
+    (entryId: string) =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab: 'side-chat',
+        fork: { entryId },
+      })),
+    [],
+  )
+  const openSideChat = useCallback(
+    (id: string) =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab: 'side-chat',
+        openId: id,
+      })),
+    [],
+  )
+  const markPairs: [string, SideChatMark[]][] = []
+  if (engineSideChats) {
+    const rows = sideChatRows(
+      contextItems.items?.side_chats,
+      conversationsCtx?.conversations ?? [],
+      conversation.id,
+    ).sort((a, b) => a.createdAt - b.createdAt)
+    const byMessage = new Map<string, SideChatMark[]>()
+    for (const row of rows) {
+      const entryId = row.fromEntryId
+      if (!entryId) continue
+      // The last row the entry rendered: a reply split around its calls
+      // carries the mark under its end.
+      let target: string | null = null
+      for (const message of conversation.messages) {
+        if (belongsToEntry(message.id, entryId)) target = message.id
+      }
+      if (!target) continue
+      byMessage.set(target, [
+        ...(byMessage.get(target) ?? []),
+        { id: row.id, title: row.title },
+      ])
+    }
+    markPairs.push(...byMessage)
+  }
+  const markKey = JSON.stringify(markPairs)
+  const sideChatMarks = useMemo(
+    () => new Map<string, SideChatMark[]>(JSON.parse(markKey)),
+    [markKey],
+  )
   const sideChatValue = useMemo(
     () =>
       asideEnabled
         ? {
             ask: askInSideChat,
             quotedIds: new Set(heldQuotes.map((quote) => quote.messageId)),
+            ...(engineSideChats
+              ? {
+                  fork: forkSideChat,
+                  marks: sideChatMarks,
+                  open: openSideChat,
+                }
+              : {}),
           }
         : null,
-    [asideEnabled, askInSideChat, heldQuotes],
+    [
+      asideEnabled,
+      askInSideChat,
+      heldQuotes,
+      engineSideChats,
+      forkSideChat,
+      sideChatMarks,
+      openSideChat,
+    ],
   )
   // A quote card's way back: land this transcript on its source message.
   const [quoteFocusId, setQuoteFocusId] = useState<string | null>(null)
@@ -481,6 +653,23 @@ export function ChatView({
           }
         : null,
     [side],
+  )
+  // An engine side chat's replies: summary cards and "Bring back".
+  const sideSummariesKey = (side?.summaries ?? []).join('\n')
+  const onBringBack = side?.onBringBack
+  const bringBackLabel = side?.bringBackLabel ?? 'Bring back'
+  const sideRepliesValue = useMemo(
+    () =>
+      onBringBack
+        ? {
+            summaries: new Set(
+              sideSummariesKey ? sideSummariesKey.split('\n') : [],
+            ),
+            bringBack: onBringBack,
+            bringBackLabel,
+          }
+        : null,
+    [onBringBack, sideSummariesKey, bringBackLabel],
   )
   const sideSince = side?.since
   const sideFrom = side?.fromEntry
@@ -1708,6 +1897,10 @@ export function ChatView({
     },
     [conversationsCtx, conversation.id],
   )
+  // An engine side chat sends no model or option: the harness runs it on
+  // its lock (chat-projects §2.2), and refuses a different value.
+  const sideLocked = Boolean(side?.locked)
+  const sideLockedModel = side?.locked?.model ?? null
   const submit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (submitBlockedRef.current) return
@@ -1759,7 +1952,7 @@ export function ChatView({
       // catalog-resolved id goes first: a profile's plain router id
       // (`claude-code/claude-haiku-5-5`) would otherwise reach the backend
       // without its provider, which then guesses one from the name.
-      const model = effectiveModel ?? conversation.model
+      const model = effectiveModel ?? conversation.model ?? sideLockedModel
       if (!model) {
         onAppendMessage(
           conversationId,
@@ -2126,6 +2319,7 @@ export function ChatView({
               ...(agentId ? { agent: agentId } : {}),
               workingDir: workingDirForSend,
               approvalGateAvailable: approvalEnabled,
+              ...(sideLocked ? { sideChatLocked: true } : {}),
               ...(attachedBlocks && attachedBlocks.length > 0
                 ? { attachedBlocks }
                 : {}),
@@ -2187,6 +2381,7 @@ export function ChatView({
             ...(agentId ? { agent: agentId } : {}),
             workingDir: workingDirForSend,
             approvalGateAvailable: approvalEnabled,
+            ...(sideLocked ? { sideChatLocked: true } : {}),
             approvalSessionMatcher,
             approvalEventsExternallyManaged: true,
             ...(attachedBlocks && attachedBlocks.length > 0
@@ -2527,6 +2722,8 @@ export function ChatView({
       reconcileWorkingDir,
       workingDirEnabled,
       markQuoteSent,
+      sideLocked,
+      sideLockedModel,
     ],
   )
 
@@ -2794,6 +2991,56 @@ export function ChatView({
   ])
   const chatFocusIdRef = useRef<number | null>(null)
   chatFocusIdRef.current = chatFocus?.id ?? null
+
+  /* "Show in conversation" from the context pane (chat-projects §1.3.6): a
+     loaded row is landed on at once; an entry above the loaded window asks
+     for the pages back to it (the older-pages read), once, then lands. */
+  const [entryFocus, setEntryFocus] = useState<{
+    entryId: string
+    requested: boolean
+  } | null>(null)
+  const showInConversation = useCallback(
+    (target: { entryId?: string; messageId?: string }) => {
+      if (target.messageId) {
+        setQuoteFocusId(target.messageId)
+        return
+      }
+      if (target.entryId)
+        setEntryFocus({ entryId: target.entryId, requested: false })
+    },
+    [],
+  )
+  useEffect(() => {
+    if (!entryFocus) return
+    const found = conversation.messages.find(
+      (message) => entryIdOfMessage(message.id) === entryFocus.entryId,
+    )
+    if (found) {
+      setQuoteFocusId(found.id)
+      setEntryFocus(null)
+      return
+    }
+    if (loadingOlderHistory) return
+    if (
+      entryFocus.requested ||
+      !conversationsCtx ||
+      conversation.history?.hasMore !== true
+    ) {
+      setEntryFocus(null)
+      return
+    }
+    setEntryFocus({ ...entryFocus, requested: true })
+    void conversationsCtx.loadOlderMessages(conversation.id, {
+      untilEntryId: entryFocus.entryId,
+    })
+  }, [
+    entryFocus,
+    conversation.messages,
+    conversation.id,
+    conversation.history?.hasMore,
+    loadingOlderHistory,
+    conversationsCtx,
+  ])
 
   /* Paged history: the list asks for the page above when the reader nears
  the top, and for placeholder calls when a group expands. Both are
@@ -3153,10 +3400,24 @@ export function ChatView({
         ? [
             {
               id: 'show-context',
-              title: 'Show context panel',
-              detail: 'Folder, branch, pull requests, sub-agents and links',
+              title: 'Show context pane',
+              detail: 'Subagents, pull requests, links, files and images',
               keywords: ['side panel', 'branch', 'changes', 'subagents'],
+              // ⌘⌥0 on a Mac, Ctrl+Alt+0 elsewhere (§1.3.6).
+              shortcut: CONTEXT_PANE_SHORTCUT,
+              firesWhileTyping: true,
+              enabled: () => !asideVisible,
               run: () => showAside('context'),
+            },
+            {
+              id: 'hide-context',
+              title: 'Hide context pane',
+              detail: 'Close the context pane',
+              keywords: ['side panel', 'close'],
+              shortcut: CONTEXT_PANE_SHORTCUT,
+              firesWhileTyping: true,
+              enabled: () => asideVisible,
+              run: hideAside,
             },
             {
               id: 'ask-in-side-chat',
@@ -3185,6 +3446,8 @@ export function ChatView({
     streamingIndicator,
     readOnly,
     asideEnabled,
+    asideVisible,
+    hideAside,
     showAside,
     askInSideChat,
     conversation.agentProfile?.name,
@@ -3278,13 +3541,42 @@ export function ChatView({
                     />
                   )}
                 </div>
-                {asideEnabled && phoneViewport ? (
+                {asideEnabled ? (
+                  /* The pane button (§1.3.4): panel-right, panel-right-close
+                     while the pane is open beside the chat; on a phone it
+                     opens the drawer and carries the item count. */
                   <IconButton
-                    label="Side panel"
-                    className="size-12"
-                    onClick={() => setAsideSheetOpen(true)}
+                    label={
+                      asideVisible ? 'Hide context pane' : 'Show context pane'
+                    }
+                    aria-expanded={asideVisible}
+                    data-context-pane-button=""
+                    className={cn(
+                      'relative',
+                      phoneViewport ? 'size-12' : 'size-8',
+                    )}
+                    onClick={() =>
+                      asideVisible
+                        ? hideAside()
+                        : phoneViewport
+                          ? setAsideSheetOpen(true)
+                          : showAside('context')
+                    }
                   >
-                    <PanelRight aria-hidden />
+                    {asideVisible ? (
+                      <PanelRightClose aria-hidden />
+                    ) : (
+                      <PanelRight aria-hidden />
+                    )}
+                    {phoneViewport && contextCount > 0 ? (
+                      <span
+                        data-context-badge=""
+                        data-keep-mono=""
+                        className="absolute top-1 right-0.5 min-w-4 rounded-full bg-ink px-1 font-mono text-meta leading-4 text-background tabular-nums"
+                      >
+                        {badgeCount(contextCount)}
+                      </span>
+                    ) : null}
                   </IconButton>
                 ) : null}
                 {/* Status sits OUTSIDE the group — it is state, not a control.
@@ -3348,7 +3640,18 @@ export function ChatView({
               className="min-w-0 truncate font-medium text-ink"
               title={panelTitle ?? 'Chat'}
             >
-              {panelTitle ?? 'Chat'}
+              {canEditDetails ? (
+                /* The name opens Conversation details (§1.3.4). */
+                <button
+                  type="button"
+                  onClick={() => setDetailsOpen(true)}
+                  className="max-w-full truncate rounded-sm text-left hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                >
+                  {panelTitle ?? 'Chat'}
+                </button>
+              ) : (
+                (panelTitle ?? 'Chat')
+              )}
             </h2>
             {/* Beside the title only what sets this chat apart: read-only,
  or an agent other than the default. The model is in the composer. */}
@@ -3365,6 +3668,79 @@ export function ChatView({
           </div>
         </PageHeader>
       )}
+      {!side && (conversation.description || chatProject) ? (
+        /* Line 2 and the chips row of the header (chat-projects §1.3.4):
+           the description in Muted with "by agent · 2m" when the agent
+           wrote it, then the project and folder chips. */
+        <div
+          data-chat-header-details=""
+          className={cn(
+            headerPad,
+            'flex min-w-0 shrink-0 flex-col gap-1.5 pb-2 font-sans dark:border-x',
+          )}
+        >
+          {conversation.description ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                data-chat-description=""
+                disabled={!canEditDetails}
+                onClick={() => setDetailsOpen(true)}
+                title={conversation.description}
+                className="min-w-0 truncate rounded-sm text-left text-xs text-muted-foreground enabled:hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+              >
+                {conversation.description}
+              </button>
+              {conversation.descriptionBy === 'agent' ? (
+                <ByAgentPill atMs={conversation.descriptionAtMs} />
+              ) : null}
+            </div>
+          ) : null}
+          {chatProject ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                data-project-chip=""
+                onClick={() =>
+                  requestProjectDialog({
+                    mode: 'edit',
+                    projectId: chatProject.id,
+                  })
+                }
+                className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+              >
+                <ProjectDot color={chatProject.color} />
+                <span className="truncate">{chatProject.name}</span>
+              </button>
+              {conversation.workingDir ? (
+                <span
+                  data-folder-chip=""
+                  data-keep-mono=""
+                  title={conversation.workingDir}
+                  className="inline-flex h-6 max-w-56 items-center gap-1.5 rounded-md bg-surface px-2 font-mono text-meta text-ink-faint"
+                >
+                  <Folder aria-hidden className="size-4 shrink-0" />
+                  <span className="truncate">
+                    {tildePath(conversation.workingDir)}
+                  </span>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {conversationsCtx && !side ? (
+        <ConversationDetailsDialog
+          open={detailsOpen}
+          conversation={conversation}
+          onOpenChange={setDetailsOpen}
+          onSave={(draft) =>
+            conversationsCtx.saveDetails(conversation.id, draft)
+          }
+          projects={chatProjects.available ? chatProjects.projects : undefined}
+          agentSwitch={chatCaps.setDescription && chatSettings.agentWrites}
+        />
+      ) : null}
       {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
           onDisable={() => void approvalSettings.setMode('manual')}
@@ -3396,58 +3772,62 @@ export function ChatView({
           >
             <AskInSideChatContext.Provider value={sideChatValue}>
               <SideChatQuotesContext.Provider value={sideQuotesValue}>
-                <MessageList
-                  messages={shownMessages}
-                  header={
-                    side && shownMessages.length === 0 ? side.empty : undefined
-                  }
-                  agentName={conversation.agentProfile?.name}
-                  sessionId={conversation.id}
-                  spawnContext={{
-                    title: conversation.title,
-                    model: effectiveModel,
-                    appearance: conversation.subagentAppearance,
-                  }}
-                  transcriptHydrated={conversation.hydrated !== false}
-                  isThinking={isThinking || waitingOnAnswer}
-                  waitingOnPerson={waitingOnAnswer}
-                  turnVisualPhase={turnVisualState.phase}
-                  turnKey={turnVisualState.turnKey}
-                  thinkingDetail={
-                    waitingOnAnswer
-                      ? WAITING_ON_ANSWER_LABEL
-                      : conversation.status === 'working' &&
-                          conversation.statusReason
-                        ? conversation.statusReason
-                        : (phaseDetail ?? waitingFallback)
-                  }
-                  density={density}
-                  onResolveApproval={resolveApproval}
-                  onAlwaysAllow={handleAlwaysAllow}
-                  onResolveFilesystemAccess={handleFilesystemResolve}
-                  onManageFilesystemAccess={handleManageFilesystemAccess}
-                  onConfigureProvider={handleConfigureProvider}
-                  workingDir={conversation.workingDir ?? null}
-                  onWorkingDirChange={
-                    workingDirEnabled ? handleWorkingDirChange : undefined
-                  }
-                  defaultWorkingDir={defaultWorkingDir}
-                  worktreePicker={
-                    worktreeEnabled
-                      ? { enabled: true, onPick: handlePickWorktree }
-                      : undefined
-                  }
-                  observersById={observersById}
-                  focusMessageId={quoteFocusId ?? focusMessageId}
-                  onFocusMessageHandled={() => {
-                    setQuoteFocusId(null)
-                    handleFocusMessageHandled()
-                  }}
-                  history={side ? undefined : conversation.history}
-                  onLoadOlder={side ? undefined : handleLoadOlder}
-                  onLoadActivityEntries={handleLoadActivityEntries}
-                  onShowObservers={asideEnabled ? showObservers : undefined}
-                />
+                <SideChatRepliesContext.Provider value={sideRepliesValue}>
+                  <MessageList
+                    messages={shownMessages}
+                    header={
+                      side && shownMessages.length === 0
+                        ? side.empty
+                        : undefined
+                    }
+                    agentName={conversation.agentProfile?.name}
+                    sessionId={conversation.id}
+                    spawnContext={{
+                      title: conversation.title,
+                      model: effectiveModel,
+                      appearance: conversation.subagentAppearance,
+                    }}
+                    transcriptHydrated={conversation.hydrated !== false}
+                    isThinking={isThinking || waitingOnAnswer}
+                    waitingOnPerson={waitingOnAnswer}
+                    turnVisualPhase={turnVisualState.phase}
+                    turnKey={turnVisualState.turnKey}
+                    thinkingDetail={
+                      waitingOnAnswer
+                        ? WAITING_ON_ANSWER_LABEL
+                        : conversation.status === 'working' &&
+                            conversation.statusReason
+                          ? conversation.statusReason
+                          : (phaseDetail ?? waitingFallback)
+                    }
+                    density={density}
+                    onResolveApproval={resolveApproval}
+                    onAlwaysAllow={handleAlwaysAllow}
+                    onResolveFilesystemAccess={handleFilesystemResolve}
+                    onManageFilesystemAccess={handleManageFilesystemAccess}
+                    onConfigureProvider={handleConfigureProvider}
+                    workingDir={conversation.workingDir ?? null}
+                    onWorkingDirChange={
+                      workingDirEnabled ? handleWorkingDirChange : undefined
+                    }
+                    defaultWorkingDir={defaultWorkingDir}
+                    worktreePicker={
+                      worktreeEnabled
+                        ? { enabled: true, onPick: handlePickWorktree }
+                        : undefined
+                    }
+                    observersById={observersById}
+                    focusMessageId={quoteFocusId ?? focusMessageId}
+                    onFocusMessageHandled={() => {
+                      setQuoteFocusId(null)
+                      handleFocusMessageHandled()
+                    }}
+                    history={side ? undefined : conversation.history}
+                    onLoadOlder={side ? undefined : handleLoadOlder}
+                    onLoadActivityEntries={handleLoadActivityEntries}
+                    onShowObservers={asideEnabled ? showObservers : undefined}
+                  />
+                </SideChatRepliesContext.Provider>
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
           </RegisteredObserverStatusProvider>
@@ -3564,6 +3944,14 @@ export function ChatView({
                     ' The working-directory picker requires the shell worker.'}
                 </p>
               )}
+              {side?.metaLine ? (
+                <p
+                  data-side-chat-meta=""
+                  className="mb-1 truncate px-1 font-inter text-xs text-ink-faint"
+                >
+                  {side.metaLine}
+                </p>
+              ) : null}
               {!side && !conversation.parentId && backend.turnRest ? (
                 <TurnRestRow
                   sessionId={conversation.id}
@@ -3584,7 +3972,12 @@ export function ChatView({
               ) : null}
               <Composer
                 key={composerGeneration}
-                model={effectiveModel}
+                model={effectiveModel ?? side?.locked?.model ?? null}
+                lockedModel={
+                  side?.locked
+                    ? { label: side.locked.label, hint: SIDE_CHAT_LOCK_HINT }
+                    : undefined
+                }
                 modelOptions={modelOptions}
                 catalogLoading={catalogLoading}
                 modelPickerOpenRequest={modelPickerOpenRequest}
@@ -3657,6 +4050,9 @@ export function ChatView({
                 queueWhileStreaming={!!backend.queueMessage}
                 blocked={harnessBlocked}
                 submitBlocked={submitBlocked || modelSwitch.pending}
+                // An Enter while the transcript still loads (a side chat
+                // just opened) waits for it instead of doing nothing.
+                holdSubmit={sessionHydrating}
                 claimDraftSend={claimComposerSend}
                 autoFocus={
                   (side ? side.autoFocus === true : focusComposerOnOpen) &&
@@ -3675,10 +4071,14 @@ export function ChatView({
                     />
                   ) : undefined
                 }
-                idlePlaceholder={idleComposerPlaceholder(
-                  conversation.agentProfile,
-                  conversation.messages.length > 0,
-                )}
+                inputLabel={side?.placeholder}
+                idlePlaceholder={
+                  side?.placeholder ??
+                  idleComposerPlaceholder(
+                    conversation.agentProfile,
+                    conversation.messages.length > 0,
+                  )
+                }
                 blockedPlaceholder={
                   conversationsCtx
                     ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
@@ -3722,6 +4122,7 @@ export function ChatView({
             sheetOpen={asideSheetOpen}
             onSheetOpenChange={setAsideSheetOpen}
             request={asideRequest}
+            hideRequest={asideHideSeq}
             observers={mergedObservers}
             observerEvents={observerEvents}
             observersListed={observersSnapshotSessionId === conversation.id}
@@ -3729,6 +4130,12 @@ export function ChatView({
             landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
             pendingQuote={pendingQuote}
             onPendingQuoteChange={setPendingQuote}
+            contextItems={contextItems.items}
+            itemCount={contextCount}
+            engineSideChats={engineSideChats}
+            onSideChatsChanged={contextItems.refresh}
+            onShowInConversation={showInConversation}
+            onVisibleChange={setAsideVisible}
             onJumpToMessage={(id) => {
               // A source outside the loaded history would leave the jump
               // pending until some later page happened to load it.

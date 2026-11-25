@@ -459,54 +459,58 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 });
                 continue;
             }
-            let (target, mut payload, mut namespace) =
-                if is_agent_call_name(function_id) || expose == ExposeMode::AgentCall {
-                    // Only a real wrapper (a string `function`) has an envelope
-                    // `namespace`; a native-shaped call keeps its own argument.
-                    let wrapper = arguments.get("function").and_then(Value::as_str);
-                    let namespace = wrapper
-                        .and(arguments.get("namespace"))
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|ns| !ns.is_empty())
-                        .map(str::to_string);
-                    let target = wrapper.unwrap_or(function_id).to_string();
-                    let payload = match arguments.get("payload") {
-                        // A stringified payload is always wrong (the schema says
-                        // object): recover the object when the text is one.
-                        // Text after it is marked, not dropped: like the
-                        // router's top-level salvage, an object followed by
-                        // more text is most often one closed too soon, its
-                        // later fields cut off, and the turn loop refuses a
-                        // `_partial` call so the model re-sends it.
-                        Some(Value::String(s)) => recover_stringified_payload(s),
-                        Some(v) => v.clone(),
-                        // No `payload` key: the model flattened the target's
-                        // arguments beside `function` (or called the target name
-                        // as the tool). Hoist them instead of dropping them —
-                        // dropping yields a misleading `missing field` error for
-                        // fields the model visibly sent.
-                        None => {
-                            let mut map = match arguments {
-                                Value::Object(m) => m.clone(),
-                                _ => Default::default(),
-                            };
-                            map.remove("function");
-                            // Wrapper presentation belongs to the transcript,
-                            // never to the target function's request. Older
-                            // recovery logic hoists flattened target args, so
-                            // explicitly strip the new display-only field.
-                            map.remove("description");
-                            if wrapper.is_some() {
-                                map.remove("namespace");
-                            }
-                            Value::Object(map)
+            // `harness::set-description` is a tool of its own in every mode:
+            // its arguments (`description` among them) are never a wrapper's.
+            let own_tool = function_id == crate::description::SET_DESCRIPTION_ID;
+            let (target, mut payload, mut namespace) = if !own_tool
+                && (is_agent_call_name(function_id) || expose == ExposeMode::AgentCall)
+            {
+                // Only a real wrapper (a string `function`) has an envelope
+                // `namespace`; a native-shaped call keeps its own argument.
+                let wrapper = arguments.get("function").and_then(Value::as_str);
+                let namespace = wrapper
+                    .and(arguments.get("namespace"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|ns| !ns.is_empty())
+                    .map(str::to_string);
+                let target = wrapper.unwrap_or(function_id).to_string();
+                let payload = match arguments.get("payload") {
+                    // A stringified payload is always wrong (the schema says
+                    // object): recover the object when the text is one.
+                    // Text after it is marked, not dropped: like the
+                    // router's top-level salvage, an object followed by
+                    // more text is most often one closed too soon, its
+                    // later fields cut off, and the turn loop refuses a
+                    // `_partial` call so the model re-sends it.
+                    Some(Value::String(s)) => recover_stringified_payload(s),
+                    Some(v) => v.clone(),
+                    // No `payload` key: the model flattened the target's
+                    // arguments beside `function` (or called the target name
+                    // as the tool). Hoist them instead of dropping them —
+                    // dropping yields a misleading `missing field` error for
+                    // fields the model visibly sent.
+                    None => {
+                        let mut map = match arguments {
+                            Value::Object(m) => m.clone(),
+                            _ => Default::default(),
+                        };
+                        map.remove("function");
+                        // Wrapper presentation belongs to the transcript,
+                        // never to the target function's request. Older
+                        // recovery logic hoists flattened target args, so
+                        // explicitly strip the new display-only field.
+                        map.remove("description");
+                        if wrapper.is_some() {
+                            map.remove("namespace");
                         }
-                    };
-                    (target, payload, namespace)
-                } else {
-                    (function_id.clone(), arguments.clone(), None)
+                        Value::Object(map)
+                    }
                 };
+                (target, payload, namespace)
+            } else {
+                (function_id.clone(), arguments.clone(), None)
+            };
             // `engine::*` ids exist only in `default`, so a namespace beside a
             // contract lookup never routes it: it names the namespace to look
             // up, unless the payload already names one.

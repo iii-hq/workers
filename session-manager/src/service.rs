@@ -46,6 +46,7 @@ use crate::functions::messages::{
 };
 use crate::functions::messages_range::{MessagesRangeRequest, MessagesRangeResponse};
 use crate::functions::messages_tail::{MessagesTailRequest, MessagesTailResponse, TailItem};
+use crate::functions::patch_meta::{PatchMetaRequest, PatchMetaResponse};
 use crate::functions::put_attachment::{PutAttachmentRequest, PutAttachmentResponse};
 use crate::functions::search::{MatchedIn, SearchHit, SearchRequest, SearchResponse};
 use crate::functions::set_active_leaf::{SetActiveLeafRequest, SetActiveLeafResponse};
@@ -541,6 +542,66 @@ impl SessionService {
             session_metadata: meta.metadata.clone(),
         };
         Ok((SetMetaResponse { meta }, vec![event]))
+    }
+
+    /// Merge metadata keys under the session's write lock: each `set` key is
+    /// replaced whole, each `unset` key removed, every other key kept. One
+    /// `session::on-meta-updated` with the merged map; nothing is written
+    /// (and nothing emitted) when the patch changes nothing. `touch: false`
+    /// keeps `updated_at`.
+    pub async fn patch_meta(&self, req: PatchMetaRequest) -> ServiceResult<PatchMetaResponse> {
+        let set = req.set.unwrap_or_default();
+        let unset = req.unset.unwrap_or_default();
+        if let Some(key) = unset.iter().find(|key| set.contains_key(key.as_str())) {
+            return Err(SessionError::InvalidRequest(format!(
+                "metadata key `{key}` is named in both `set` and `unset`"
+            )));
+        }
+        let _guard = self.lock_session(&req.session_id).await;
+        let mut meta = self.meta_or_not_found(&req.session_id).await?;
+
+        let mut next = meta.clone();
+        if let Some(title) = req.title {
+            next.title = title;
+        }
+        if let Some(description) = req.description {
+            next.description = description;
+        }
+        if !set.is_empty() || !unset.is_empty() {
+            let mut metadata = next.metadata.take().unwrap_or_default();
+            for key in &unset {
+                metadata.remove(key);
+            }
+            for (key, value) in set {
+                metadata.insert(key, value);
+            }
+            next.metadata = Some(metadata);
+        }
+        let unchanged = next.title == meta.title
+            && next.description == meta.description
+            && next.metadata.clone().unwrap_or_default()
+                == meta.metadata.clone().unwrap_or_default();
+        if unchanged {
+            return Ok((PatchMetaResponse { meta }, vec![]));
+        }
+        meta = next;
+        let now = self.clock.now_ms();
+        if req.touch.unwrap_or(true) {
+            meta.updated_at = now;
+        }
+        self.store.put_meta(&meta).await?;
+
+        let event = EmittableEvent {
+            event: SessionEvent::MetaUpdated(MetaUpdatedEvent {
+                session_id: meta.session_id.clone(),
+                title: meta.title.clone(),
+                description: meta.description.clone(),
+                metadata: meta.metadata.clone(),
+                timestamp: now,
+            }),
+            session_metadata: meta.metadata.clone(),
+        };
+        Ok((PatchMetaResponse { meta }, vec![event]))
     }
 
     pub async fn set_draft(&self, req: SetDraftRequest) -> ServiceResult<SetDraftResponse> {

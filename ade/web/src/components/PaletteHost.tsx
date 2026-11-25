@@ -292,6 +292,11 @@ export function PaletteHost({
         id: `chat:${conversation.id}`,
         kind: 'chat',
         title: conversation.title || 'untitled chat',
+        // Search matches the name and the description (chat-projects §1.3.1).
+        detail: conversation.description ?? undefined,
+        ...(conversation.description
+          ? { keywords: [conversation.description] }
+          : {}),
         // The sidebar's own tag: two chats can share a title, not an age.
         meta: formatRelative(conversation.updatedAt),
         run: () => openChat(conversation.id),

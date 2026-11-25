@@ -1,0 +1,40 @@
+{
+  "function_id": "harness::projects::assign",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "project": {
+        "description": "A project id, or `\"none\"` to keep the conversations out of every project on purpose.",
+        "type": "string"
+      },
+      "session_ids": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "project",
+      "session_ids"
+    ],
+    "title": "ProjectAssignRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "updated": {
+        "description": "Sessions written: the named ones and their descendants.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "updated"
+    ],
+    "title": "ProjectAssignResponse",
+    "type": "object"
+  }
+}

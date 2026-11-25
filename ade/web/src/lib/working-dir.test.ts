@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HARNESS_PROJECTS_LIST_FUNCTION_ID } from '@/lib/backend/projects'
+import { HARNESS_FOLDERS_LIST_FUNCTION_ID } from '@/lib/backend/folders'
 import {
   activateWorkingDir,
   errMsg,
@@ -22,6 +22,12 @@ vi.mock('@/lib/iii-client', () => ({
 // these tests exercise the working-dir plumbing with shell present.
 vi.mock('@/lib/function-presence', () => ({
   functionRegistered: async () => true,
+}))
+// The folder catalogue is `harness::folders` on this engine (read with
+// internal functions, D37).
+vi.mock('@/lib/chat-capabilities', () => ({
+  getChatCapabilities: () => ({ loaded: true, folders: true }),
+  refreshChatCapabilities: async () => ({ loaded: true, folders: true }),
 }))
 
 beforeEach(() => {
@@ -111,7 +117,7 @@ describe('fetchDefaultWorkingDir', () => {
 })
 
 describe('fetchNewChatWorkingDir', () => {
-  it('prefers the most recently used harness project, shell-canonical', async () => {
+  it('prefers the most recently used saved folder, shell-canonical', async () => {
     callMock
       .mockResolvedValueOnce({
         projects: [
@@ -125,7 +131,7 @@ describe('fetchNewChatWorkingDir', () => {
     )
     expect(callMock).toHaveBeenNthCalledWith(
       1,
-      HARNESS_PROJECTS_LIST_FUNCTION_ID,
+      HARNESS_FOLDERS_LIST_FUNCTION_ID,
       {},
     )
     expect(callMock).toHaveBeenNthCalledWith(

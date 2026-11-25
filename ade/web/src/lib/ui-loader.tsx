@@ -16,10 +16,7 @@
 import { decisionChatCapabilities } from '@/components/chat/decision/host'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { hashForWorkerPage, workerRouteFromHash } from '@/hooks/use-hash-route'
-import {
-  listHarnessProjects,
-  recentHarnessProjectPaths,
-} from '@/lib/backend/projects'
+import { listSavedFolders, recentFolderPaths } from '@/lib/backend/folders'
 import {
   attachToComposer,
   composerForSession,
@@ -252,7 +249,7 @@ function makeHost(
     },
     workspace: {
       recentDirectories() {
-        return recentHarnessProjectPaths()
+        return recentFolderPaths()
       },
     },
     palette: {
@@ -601,7 +598,7 @@ export function startUiLoader(
   setUiAssetsStatus('loading')
   // Keep the synchronous injected-UI compatibility view backed by the same
   // durable harness catalog as the first-party project picker.
-  void listHarnessProjects(client).catch(() => undefined)
+  void listSavedFolders(client).catch(() => undefined)
   // Asset URLs resolve against the DOCUMENT base (the console supports
   // arbitrary subpath mounting); the loader itself lives in a Vite chunk
   // under assets/, so module-relative resolution would be wrong.

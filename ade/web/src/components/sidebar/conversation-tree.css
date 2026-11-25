@@ -194,14 +194,19 @@
 
 /* The open menu's rows: 14px Inter with an icon column, on the popover
    canon; the destructive row keeps its own tone. */
-.conversation-row-menu [data-slot="dropdown-menu-item"] svg {
+[data-row-menu] [data-slot="dropdown-menu-item"] svg {
   color: var(--color-ink-faint);
 }
 
-.conversation-row-menu
+[data-row-menu]
   [data-slot="dropdown-menu-item"][data-variant="destructive"]
   svg {
   color: inherit;
+}
+
+/* A row with a second line (the description or the status) stands taller. */
+.iii-ui-tree-item[data-two-line] {
+  --iii-ui-tree-row: 3.25rem;
 }
 
 /* ── project sections ─────────────────────────────────────────────── */
@@ -233,14 +238,102 @@
 
 /* The plus shows with the pointer on the project; touch keeps it visible. */
 @media (hover: hover) and (pointer: fine) {
-  .conversation-project-header .conversation-project-new {
+  .conversation-project-header [data-project-new] {
     opacity: 0;
   }
 
-  .conversation-project-header:hover .conversation-project-new,
-  .conversation-project-header:focus-within .conversation-project-new {
+  .conversation-project-header:hover [data-project-new],
+  .conversation-project-header:focus-within [data-project-new] {
     opacity: 1;
   }
+}
+
+/* A chat project's ⋯ shows with the pointer on it, like the plus; touch and
+   an open menu keep it visible. */
+@media (hover: hover) and (pointer: fine) {
+  .conversation-project-header [data-project-menu]:not([data-menu-open]) {
+    opacity: 0;
+  }
+
+  .conversation-project-header:hover [data-project-menu],
+  .conversation-project-header:focus-within [data-project-menu] {
+    opacity: 1;
+  }
+}
+
+/* ── the second line (chat-projects §1.3.1) ──────────────────────────────── */
+
+/* The title and, under it, the status line, the description or the folder:
+   one column that takes the label's place and its truncation. */
+.conversation-tree .conversation-row__text {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+
+.conversation-tree .conversation-row__line2 {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--color-ink-ghost);
+}
+
+.conversation-tree .conversation-row__line2-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A chat that needs the reader says so in the readable tone. */
+.conversation-tree .conversation-row__line2[data-kind="status"] {
+  color: var(--color-ink-faint);
+}
+
+.conversation-tree .conversation-row__line2[data-kind="folder"],
+.conversation-tree .conversation-row__folder {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+}
+
+.conversation-tree .conversation-row__folder {
+  margin-left: auto;
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.conversation-tree .conversation-row__line2-text + .conversation-row__folder {
+  margin-left: auto;
+}
+
+/* "N more", "Show less" and "No conversations yet" under a chat project. */
+.conversation-tree .conversation-project-more {
+  width: 100%;
+  color: var(--color-ink-ghost);
+}
+
+.conversation-tree .conversation-project-more:hover {
+  color: var(--color-ink);
+}
+
+.conversation-tree .conversation-project-empty {
+  color: var(--color-ink-ghost);
+  cursor: default;
+}
+
+.conversation-tree .conversation-project-empty:hover {
+  background: transparent;
 }
 
 /* ── scroll edges ─────────────────────────────────────────────────── */

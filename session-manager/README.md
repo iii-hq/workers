@@ -101,6 +101,22 @@ The full function surface (23 `session::*` functions: lifecycle,
 messages, branching/fork, attachments) is documented in the spec and on each
 function's registered schema — see `iii call engine::workers::info name=session-manager`.
 
+Two functions write a session's title, description and metadata.
+`session::set-meta` replaces the whole metadata map with the one it is given.
+`session::patch-meta { session_id, title?, description?, set?, unset?, touch? }`
+merges on the server, under the session's write lock: each key in `set`
+replaces that top-level key whole, each key in `unset` is removed, and every
+key the patch does not name stays as stored, so two writers that each change
+their own keys never lose one another's. A key named in both `set` and
+`unset` is refused (`session/invalid_request`), an unknown session is
+`session/not_found`, and a patch that changes nothing writes nothing. It
+calls `session::on-meta-updated` once, with the merged metadata, and answers
+`{ meta }`. Like `set-meta`, a write bumps `updated_at`, which orders
+`session::list`; `touch: false` keeps it, for writes that are not activity
+(the harness moving a conversation into a project) and must not re-order
+lists; the write and its event happen all the same. Write metadata with
+`patch-meta` unless you mean to replace it all.
+
 `session::list` accepts `roots: true` to keep only sessions whose metadata
 has no `spawned_by` key (missing or empty metadata qualifies). Omit `roots`
 or set it to false to include sub-agents. This combines with `status`,

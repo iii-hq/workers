@@ -1795,9 +1795,16 @@ async fn a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read() {
                     .unwrap();
             record.status = TurnStatus::Completed;
             record.continues = true;
-            // No other test reads this body, so no process cache answers for the store.
-            record.options.system_prompt =
-                Some("a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read".into());
+            // The body as another harness process (or this one before a
+            // restart) stored it: no process cache answers for the store.
+            let prompt = "a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read";
+            let digest = crate::state::prompt_digest(prompt);
+            let body = json!({ "body": prompt, "created_at": 1 });
+            let at = crate::state::PROMPT_SCOPE;
+            crate::state::state_set(&deps.iii, at, &digest, body, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            record.options.system_prompt_ref = Some(digest);
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
                 .await
                 .unwrap();
@@ -2740,4 +2747,87 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
     let calls = calls.lock().unwrap().clone();
     let turn = turn.lock().unwrap().clone();
     (result.unwrap(), calls, turn)
+}
+
+/// A reply that calls `harness::set-description` through `agent_call`, with
+/// or without reply text beside it.
+fn describe_reply(with_text: bool) -> Value {
+    let mut content = Vec::new();
+    if with_text {
+        content.push(json!({"type": "text", "text": "Fixed the login form."}));
+    }
+    content.push(json!({"type": "function_call", "id": "call_describe",
+        "function_id": "agent_call",
+        "arguments": {"function": "harness::set-description", "description": "Describe",
+            "payload": {"description": "Fixing   the login form", "title": "Login form fix"}}}));
+    json!({"role": "assistant", "stop_reason": "function_call",
+        "model": "fake", "provider": "fake", "timestamp": 2,
+        "usage": {"input": 10, "output": 2, "cost_usd": 0.1},
+        "content": content})
+}
+
+/// chat-projects §1.2.3, the terminal-step rule: a step whose only call is
+/// `harness::set-description`, beside reply text, ends the turn once its
+/// result is written. One session::patch-meta carries the description; the
+/// model is offered the tool and is not asked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_description_beside_the_reply_ends_the_turn_without_another_request() {
+    let (result, calls, turn) = generate(describe_reply(true)).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed, "{turn}");
+    assert!(
+        !calls
+            .iter()
+            .any(|(function, _)| function == "harness::turn"),
+        "no next step is queued: {calls:?}"
+    );
+    let patches: Vec<&Value> = calls
+        .iter()
+        .filter(|(function, _)| function == "session::patch-meta")
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(patches.len(), 1, "{calls:?}");
+    assert_eq!(patches[0]["session_id"], "s");
+    assert_eq!(patches[0]["description"], "Fixing the login form");
+    assert_eq!(patches[0]["set"]["description_by"], "agent");
+    assert_eq!(patches[0]["title"], "Login form fix");
+    assert_eq!(patches[0]["set"]["title_by"], "agent");
+    assert!(
+        !calls
+            .iter()
+            .any(|(function, _)| function == "session::set-meta"),
+        "descriptions are merged, never written whole"
+    );
+    let tools = calls
+        .iter()
+        .find(|(function, _)| function == "router::chat")
+        .map(|(_, data)| data["tools"].clone())
+        .expect("the model was asked once");
+    let names: Vec<&str> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert_eq!(names, ["agent_call", "harness::set-description"]);
+    let result = calls
+        .iter()
+        .find(|(function, data)| {
+            function == "session::append" && data["message"]["role"] == "function_result"
+        })
+        .map(|(_, data)| data["message"].clone())
+        .expect("the call's result is written");
+    assert_eq!(result["function_id"], "harness::set-description");
+    assert_eq!(result["details"]["ok"], true);
+}
+
+/// The same call with no reply text continues like any tool step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_description_alone_in_its_step_asks_the_model_again() {
+    let (result, calls, _) = generate(describe_reply(false)).await;
+    assert_eq!(result.unwrap().next_step, Some(2));
+    assert!(
+        calls
+            .iter()
+            .any(|(function, _)| function == "harness::turn")
+    );
 }

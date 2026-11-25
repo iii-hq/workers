@@ -590,6 +590,7 @@ mod tests {
             tree_sessions: Vec::new(),
             tree_statuses: Vec::new(),
             router_evidence: Value::Null,
+            meta_updates: Vec::new(),
         }
     }
 

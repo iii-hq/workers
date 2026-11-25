@@ -658,6 +658,15 @@ async fn seed_child(
     // nests the child (no policy inheritance, no parent-call resolution).
     // `spawned_by` is always "agent": every spawn is a direct call — an
     // observer delivery never creates an agent.
+    // A sub-agent belongs to its parent's project (chat-projects D8): the
+    // parent's `project_id` (or `"none"`) is copied into the child's metadata.
+    let parent_project = match parent
+        .map(|p| p.session_id.as_str())
+        .or(req.parent_session_id.as_deref())
+    {
+        Some(parent_id) => crate::functions::projects::session_project(&session, parent_id).await,
+        None => None,
+    };
     // The child's folder is mirrored into the session metadata too: the turn
     // record alone runs the child in it, but clients (the ADE composer's
     // project chip) read the session's `fs_scope.root`.
@@ -669,6 +678,7 @@ async fn seed_child(
                 depth,
                 display.as_ref(),
                 crate::judge::current_provider().as_deref(),
+                parent_project.as_deref(),
             ),
             agent.as_ref(),
         ),
@@ -972,8 +982,15 @@ fn child_session_metadata(
     depth: u32,
     display: Option<&SubagentDisplay>,
     judge_provider: Option<&str>,
+    project_id: Option<&str>,
 ) -> Option<Value> {
     let mut metadata = serde_json::Map::new();
+    if let Some(project_id) = project_id.filter(|id| !id.is_empty()) {
+        metadata.insert(
+            crate::projects::METADATA_KEY.into(),
+            Value::String(project_id.into()),
+        );
+    }
     if let Some(provider) = judge_provider {
         metadata.insert("judge_provider".into(), Value::String(provider.into()));
     }
@@ -1444,7 +1461,14 @@ mod tests {
             function_call_id: "call_spawn".into(),
         };
         assert_eq!(
-            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend")), None),
+            child_session_metadata(
+                Some(&parent),
+                None,
+                1,
+                Some(&display("Frontend")),
+                None,
+                None
+            ),
             Some(json!({
                 "parent_session_id": "s_parent",
                 "parent_turn_id": "t_parent",
@@ -1460,10 +1484,30 @@ mod tests {
         );
     }
 
+    /// A sub-agent joins its parent's project, or stays out with it
+    /// (chat-projects D8: the child metadata copies `project_id`).
+    #[test]
+    fn a_subagent_copies_its_parents_project() {
+        let parent = ParentLink {
+            session_id: "s_parent".into(),
+            turn_id: "t_parent".into(),
+            function_call_id: "call_spawn".into(),
+        };
+        let metadata =
+            child_session_metadata(Some(&parent), None, 1, None, None, Some("prj_01ABC")).unwrap();
+        assert_eq!(metadata["project_id"], "prj_01ABC");
+        assert_eq!(metadata["parent_session_id"], "s_parent");
+        let kept_out =
+            child_session_metadata(Some(&parent), None, 1, None, None, Some("none")).unwrap();
+        assert_eq!(kept_out["project_id"], "none");
+        let no_project = child_session_metadata(Some(&parent), None, 1, None, None, None).unwrap();
+        assert!(no_project.get("project_id").is_none());
+    }
+
     #[test]
     fn parentless_display_still_creates_session_metadata() {
         assert_eq!(
-            child_session_metadata(None, None, 0, Some(&display("Explorer")), None),
+            child_session_metadata(None, None, 0, Some(&display("Explorer")), None, None),
             Some(json!({
                 "subagent_display": {
                     "name": "Explorer",
@@ -1472,9 +1516,12 @@ mod tests {
                 }
             }))
         );
-        assert_eq!(child_session_metadata(None, None, 0, None, None), None);
         assert_eq!(
-            child_session_metadata(None, None, 0, None, Some("semif")),
+            child_session_metadata(None, None, 0, None, None, None),
+            None
+        );
+        assert_eq!(
+            child_session_metadata(None, None, 0, None, Some("semif"), None),
             Some(json!({ "judge_provider": "semif" }))
         );
     }

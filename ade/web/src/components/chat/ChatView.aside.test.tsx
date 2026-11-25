@@ -5,6 +5,7 @@ import type { ChatBackend } from '@/lib/backend'
 import type { Conversation } from '@/types/chat'
 
 vi.mock('./ChatAside', () => ({
+  CONTEXT_PANE_SHORTCUT: 'Mod+Alt+0',
   ChatAside: () => <div data-aside="" />,
   QuoteChip: () => null,
   SelectionToolbar: () => <div data-selection-toolbar="" />,

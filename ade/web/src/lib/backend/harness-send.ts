@@ -125,7 +125,8 @@ export interface HarnessSendRequest {
   session_id?: string
   /** A string is sugar for a user text message. */
   message: string | HarnessUserMessage
-  model: string
+  /** Omitted on a side chat: the engine runs it on its lock (chat-projects §2.2). */
+  model?: string
   provider?: string
   /** Webhook dedupe: a repeated key returns the original `{session_id, turn_id}`. */
   idempotency_key?: string
